@@ -11,14 +11,18 @@ blocks for the `cap_result`. This package runs *inside* the jailed
 satellite node, never in the harness VM, and is a separate build target so
 it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 
-The prelude serves **two seams**, and a submission is vetted against one
+The prelude serves **three seams**, and a submission is vetted against one
 of them (`codemode/vet/policy.Seam`). The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv}` — a program that
 orchestrates effects. The *orchestration* seam is `cap/strand` +
-`cap/report` and nothing else — a program that orchestrates agents. The
-sets are disjoint but for `cap/report`, and that disjointness is the
+`cap/report` and nothing else — a program that orchestrates agents. Those
+two sets are disjoint but for `cap/report`, and that disjointness is the
 point: an orchestrator that could also write files is a materially worse
-thing to hand a model than one that cannot.
+thing to hand a model than one that cannot. The *extension* seam is the
+workspace seam widened by `cap/ext` and the `ext` prelude, and its
+relation to the other two is a superset rather than a disjointness on
+purpose — an installed extension's tool is a workspace program with a
+different entry point.
 
 ## Key Types
 
@@ -77,6 +81,15 @@ thing to hand a model than one that cannot.
   adds it to write the code down and look at the paired list. Adding a
   variant on one side and not the other still compiles everywhere; the
   alarm is that you were made to read the sentence saying so.
+- `cap/ext.{Call, CallRefused}` — the one capability only an extension
+  makes, and the first thing an extension satellite does: `call()` asks
+  the harness which tool this execution is for, answered with
+  `{tool, args, strand, deadline_ms}`. `args` is **JSON text** rather
+  than a msgpack value, because an `ext.Tool` takes a `Dynamic` and
+  `gleam_json`'s parser is the only total route to one the extension
+  seam admits; decoding a msgpack value into a `Dynamic` would need an
+  FFI the prelude deliberately does not offer. On the extension seam and
+  no other, for the reason `cap/strand` is on exactly one.
 - `cap/runtime.{Transport, BootError}` — the boot runtime's injected
   transport (`send`, `recv`, `outcome_sink`) and its four setup failures.
   `run(main)` is the production convenience the generated satellite entry

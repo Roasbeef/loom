@@ -459,8 +459,9 @@ can repair from.
   the tool array and nothing varies between turns, because tool bytes are
   the byte prefix of the provider's cached region and a surface that
   changes per turn does not cost a cache write, it costs the cache
-  (issue #36). `gleam export package-interface` reports eleven modules
-  and the two seams admit ten between them: `cap/runtime` is on neither,
+  (issue #36). `gleam export package-interface` reports fourteen modules
+  and the three seams admit twelve between them: `cap/runtime` and
+  `cap/mcp` are on none,
   so `surface_text` runs each `SeamOffer.allowed_imports` over
   `prelude.surfaces` and not the other way round. Advertising a module
   vetting will reject is the same class of lie as classifying a

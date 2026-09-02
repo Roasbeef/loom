@@ -9,7 +9,7 @@ side of that — vet, compile, launch, host — and it never runs
 model-influenced code itself (Rule Zero). WP-J, and WP-N for the
 orchestration seam.
 
-There are **two seams over one pipeline**, and a submission is vetted
+There are **three seams over one pipeline**, and a submission is vetted
 against exactly one of them (`vet/policy.Seam`). The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
 `satellite.default_router` for the jailed `proc.run` and by
@@ -22,6 +22,18 @@ seams service, by one mechanism (`codemode/artifact`), because
 together is the whole of what the separation buys: a compromised
 orchestration program can spawn and message within the lineage its own
 strand roots, and can reach neither the disk, the network, nor a process.
+
+The *extension* seam is the third, and its relation to the other two is
+deliberately not disjointness: it is `extension_cap_modules` — the
+workspace seam's capabilities plus `cap/ext` and `ext` — over
+`extension_stdlib_modules`, the shared pure subset plus `gleam/dynamic`,
+`gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri` and `gleam/json`.
+An installed extension's tool *is* a workspace program with a different
+entry point, so carving it something narrower would buy nothing and
+would have to be kept in step by hand. The property test is therefore a
+superset claim, and the widening is pinned to exactly its two names so a
+`cap/strand` cannot arrive on the way. No router services it yet:
+phase 1 installs and compiles an extension, and phase 2 dispatches one.
 
 ## Key Types
 
@@ -73,6 +85,23 @@ strand roots, and can reach neither the disk, the network, nor a process.
   so only linted source can reach a build. `Seam` is closed at two
   variants, so "which capabilities travel together" is a decision this
   package owns and a host selects from rather than assembles.
+- `codemode/vet/package.{VettedPackage, Rejection, vet_package}` —
+  vetting a whole *package* rather than one program, which is what an
+  installed extension is. Three questions a single file does not ask:
+  which files may be here at all (Gleam compiles a native module found
+  under `src/` and links it into the artifact, which is `@external` with
+  the declaration moved out of the source the lint reads, so `src/`
+  admits `.gleam` and nothing else and `test/` is refused outright);
+  what the project file may name (`allowed_dependencies` is
+  `gleam_stdlib`, `gleam_json`, `cap`, `ext`, and an unknown top-level
+  key is an error); and which imports are intra-package (each file is
+  judged against the seam widened by the package's own module names and
+  *exactly* those, so an import of an absent sibling is a vetting
+  refusal naming the import and a module named `cap/fs` is refused
+  before it can become the `cap/fs` a sibling resolves). Every refusal
+  is a `#(path, Rejection)` pair, never a bare reason: an extension is
+  somebody else's repository, and a refusal without a path is a bug
+  report nobody can act on.
 - `codemode/orchestration.{Orchestration, router, ceilings, serviced_caps,
   refusal_code, default_spawn_ceiling, send_ceiling, note_ceiling,
   notes_ceiling, spawn_ceiling_code, admission_ceiling_code, emit_cap}` —
@@ -181,7 +210,9 @@ strand roots, and can reach neither the disk, the network, nor a process.
   `tools/fs`'s `PathError` and `ReadError` so a refusal keeps the
   harness's own vocabulary), `glance` 6.1+ + `glexer` (vetting parses and
   token-scans; the Glance floor admits the syntax accepted by the shipped
-  Gleam compiler), `simplifile` + `filepath`, `gleam_erlang`,
+  Gleam compiler), `tom` (the extension package's own `gleam.toml`, which
+  `vet/package` decodes to decide what it may depend on),
+  `simplifile` + `filepath`, `gleam_erlang`,
   `gleam_otp`, `weft` — `weft/state_machine` for the launcher's
   node-report holder, `weft` itself for the served-call deadline
   (`satellite.run_service`: one plain task, `weft.deadline`, kill-then-

@@ -293,9 +293,9 @@ timeout. The refusals a program reads are `mcp_unavailable`,
 `mcp_timeout`, `mcp_malformed`, `jsonrpc_<code>` for a server error, and
 `unsupported_cap` for a server this host never configured.
 
-## Two seams, and why the sets are disjoint
+## Three seams, and why two of the sets are disjoint
 
-There is not one prelude but two, and a submission is vetted against
+There is not one prelude but three, and a submission is vetted against
 exactly one of them (`codemode/vet/policy.Seam`).
 
 The **workspace seam** is the nine modules above: a program that
@@ -339,6 +339,59 @@ from the pooled outstanding-effect cap and from the Agency's live
 spawns again passes forever. It is enforced by the satellite host, because
 one host is stood up per execution holding the one `PhaseIdentity` a
 caller may mint, so the tally is keyed to that identity by construction.
+
+### The third seam: extensions, and why it is a superset
+
+The **extension seam** is the workspace seam widened, and its relation to
+the other two is deliberately not disjointness. It is
+`extension_cap_modules` — the nine workspace capabilities plus `cap/ext`
+and `ext` — over `extension_stdlib_modules`, the shared pure subset plus
+`gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
+and `gleam/json`.
+
+The argument for disjointness above does not apply here, and saying why
+matters more than restating it. Disjointness exists because an
+orchestrator and an effect program are *different kinds of thing*: which
+capabilities travel together is the question, and putting agent
+orchestration in the same program as the disk is a real widening of what
+a compromise buys. An installed extension's tool is not a different kind
+of thing from a workspace program — it reads files, runs processes and,
+under ADR-007, makes brokered HTTP requests. It differs in its *entry
+point*: the harness knows a code-mode program's arguments when it
+launches the node, and an extension is compiled once at install and run
+many times, so the call is what varies and something has to fetch it.
+That something is `cap/ext`, and the vocabulary it is typed against is
+`ext` (`packages/ext`).
+
+So the seam is written as `default_cap_modules()` widened rather than as
+a list of its own, and the property test is a superset claim where the
+other two have an intersection. The widening is pinned to exactly its two
+names, which is what stops a `cap/strand` arriving on the way and
+quietly putting the disk and the lineage in one program after all. The
+five extra standard-library modules are on a list of their own rather
+than in `default_stdlib_modules`, so widening them widens exactly one
+seam — the door the shared list leaves open, and the reason a test
+asserts the shared list holds no capability at all.
+
+Two consequences worth stating. **The extension seam sees no generated
+MCP façades**: an extension's allowlist is fixed at install and recorded,
+and a per-host widening applied afterwards would make an installed
+extension's reach depend on configuration the record never saw. And
+**the `code_mode` tool has no name for it**: `client/codemode.tool_seam`
+returns a `Result`, because an extension is dispatched by the harness
+from an install record and never named by a model in a `code_mode` call.
+
+Vetting an extension is also vetting a *package* rather than a program,
+which `codemode/vet/package` owns. Three rules a single file does not
+need: `src/` admits `.gleam` and nothing else (Gleam compiles a native
+module found there and links it into the artifact, which is `@external`
+with the declaration moved out of the source the lint reads); the
+package's `gleam.toml` may name only `gleam_stdlib`, `gleam_json`, `cap`
+and `ext`; and each file is judged against the seam widened by the
+package's own module names and exactly those, so an import of an absent
+sibling is a vetting refusal naming the import and a module named
+`cap/fs` is refused before it can become the `cap/fs` a sibling
+resolves.
 
 ### Who chooses the seam
 
@@ -414,9 +467,10 @@ costs nothing to run constantly; regeneration is the step that needs
 `gleam` and `python3`, the way `make gen-sql` needs `sqlite3`.
 
 **It is filtered through the allowlist, not through the package.**
-`package-interface` reports eleven modules, and the two seams admit ten
-between them: `cap/runtime`, the satellite's trusted boot runtime, is on
-neither. `tools/codemode` selects from the artifact using each
+`package-interface` reports fourteen modules, and the three seams admit
+twelve between them: `cap/runtime`, the satellite's trusted boot runtime,
+and `cap/mcp`, the types-only vocabulary a generated façade imports, are
+on none of them. `tools/codemode` selects from the artifact using each
 `SeamOffer`'s own `allowed_imports` — the same list vetting judges
 against — so a module vetting will reject can never be advertised.
 Advertising one would be the same class of lie as classifying a
@@ -612,12 +666,27 @@ dependency's path *relative to the project root*, treating a mismatch as a
 stale manifest and going back to resolution. A build root is created fresh
 per execution at whatever depth the session's scratch area lives, so no
 relative path to `packages/cap` could be stable — hence vendoring the
-prelude inside the build root at a fixed relative location. The pleasant
+preludes inside the build root at fixed relative locations
+(`compile.prelude_path` and `compile.ext_path`). The pleasant
 side effect is that a build root needs no read access outside itself. The
 builder refuses to run against a seed whose dependency table is not
 byte-identical to the one the compile service generated, and a build that
 nonetheless reaches for Hex is diagnosed as a broken seed rather than
 reported to the model as a broken program.
+
+That byte comparison is why there is **one dependency table and not one
+per seam**. `compile.default_dependencies` pins `gleam_stdlib`,
+`gleam_json`, the capability prelude at `vendor/cap` and the extension
+prelude at `vendor/ext`; every build root gets all four, whichever seam
+the submission was judged against. A second table would mean a second
+seed to prepare, ship and keep in step, and it would buy nothing: what a
+build may *import* is decided per seam by `codemode/vet/policy`, so a
+workspace program that names `ext` is refused by vetting long before the
+compiler would have found the module sitting there. The seed script
+builds until Gleam stops re-resolving rather than a fixed number of
+times, because Gleam writes one local dependency's config fingerprint per
+resolution pass and a hard-coded count breaks the next time something is
+vendored.
 
 What comes out is an `Artifact`: every package's compiled modules flattened
 into one directory, which is one `-pa` on the node's argv, plus a content

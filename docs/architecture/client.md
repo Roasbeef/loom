@@ -543,6 +543,65 @@ the current connection; automatic reconnect and sparse-sequence catch-up remain
 follow-up work. The server's approval and replay contracts are unchanged, and
 the client never claims either operation succeeded locally.
 
+## Installing an extension
+
+`loomd` grew its first subcommand with `loom ext`, and it is an operator
+surface rather than a model one: `install`, `list`, `remove`, `verify`,
+no daemon, no hot install. The session server reads the install records
+at boot and nothing re-reads them while it runs — the same
+restart-to-change posture `client/catalog` takes toward `loom.toml`, with
+the one difference the extension ruling names, that here the approval is
+*recorded* rather than implied by an edit.
+
+The pipeline is six steps and every failure names the layer it came from:
+resolve the source, fetch it (or copy a local directory), extract it,
+decode the manifest, vet the package, compile it, write the record.
+Naming the layer is the point of the type rather than a nicety. An
+extension is somebody else's repository, and the person reading the
+refusal is usually not the person who can fix it, so "vetting:
+src/w/nif.gleam: an `@external` is not permitted" is forwardable and
+"install failed" is not.
+
+Three properties are worth stating on their own.
+
+**The record is written last and the tree is renamed into place after
+it.** Everything happens under `<root>/.staging/<random>/`, so a
+directory under `~/.loom/extensions` is either a complete install or
+absent, and there is no state in which a half-installed extension is
+discoverable. Every failure removes its staging directory, including the
+ones that happen after a build has written megabytes into it. A name
+already taken is refused rather than overwritten: replacing an install is
+remove-then-install, so nobody loses a working extension to a failed
+reinstall.
+
+**The install is content-addressed from the moment it is recorded.** The
+record carries the digest of the extracted tree, the manifest hash, the
+allowlist and the net policy the source was vetted against, and the
+resolved revision. `client/extension/installed` re-derives all four from
+disk on every read and refuses the extension when any disagrees — so one
+edited byte under `src/` refuses it until it is reinstalled, whatever the
+remote did afterwards. The allowlist is *stored* rather than recomputed
+for the same reason: recomputing it would mean an operator's yes silently
+followed the harness's current idea of the seam, and storing it turns a
+widened seam into a question.
+
+**The compile is the code-mode build, not a second one.**
+`serve.start_build_plane` is the boot's own helper ladder, helper pool,
+broker, toolchain discovery and seed verification, factored out so the
+installer calls it rather than reimplementing it: two implementations
+would be two answers to "may this build run", and the whole point of the
+hermetic build is that there is one. The extension's own `gleam.toml`
+never reaches the compiler — the build root's is generated from
+`compile.default_dependencies` — so a dependency an author named would
+fail the build rather than enter it, and vetting refuses it before that
+anyway.
+
+The terminal client forwards rather than reimplements: `loom ext …`
+locates `loomd` by the same ladder an implicit local session uses, runs
+it, streams its output through and exits with its status. Two ladders
+would mean installing an extension into one server's world and then
+starting another.
+
 ## What the acceptance actually proves
 
 `client/demo` drives the entire M3 flow **through the protocol alone**,
@@ -579,6 +638,11 @@ real websocket `subscribe` returning a snapshot.
 | `client/grants.gleam` | The bridge between the runtime's stored escalation JSON and typed `broker/policy.Grant`; `first_unwanted`, the approval subset check. |
 | `client/wiring.gleam` | The production effect seam over the real provider gateway, broker, and tool registry. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions, and the collision that refuses a boot. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: tools, hooks, the net policy and its secret *names*. |
+| `client/extension/record.gleam` | The install record and the `Root` value that says where installs live. |
+| `client/extension/install.gleam` | The six-step pipeline, the staging discipline, and the generated satellite entry. |
+| `client/extension/installed.gleam` | Discovery: the four re-derivations that decide whether an install is still what was approved. |
+| `client/extension/cli.gleam` | `loom ext install|list|remove|verify`, and the build seam over a started plane. |
 | `client/demo.gleam` | The M3 acceptance flow, driven through the protocol only. |
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
 | `packages/client/protocol.md` | The normative ClientGateway body document. |

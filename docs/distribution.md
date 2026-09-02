@@ -126,10 +126,10 @@ What the release does instead:
 - `SHA256SUMS` in the tree covers every executable file in it — the
   helper, every NIF, the bundled `gleam` — **and everything under
   `share/`**, which is the build seed. That second half is not
-  thoroughness for its own sake: the seed holds `vendor/cap` and
-  `vendor/core`, the prelude compiled into every satellite a code-mode
-  program runs as, so a tampered seed is arbitrary code inside every
-  jailed node. "Executables only" would have left the one part of the
+  thoroughness for its own sake: the seed holds `vendor/cap`,
+  `vendor/core` and `vendor/ext` — the two preludes compiled into every
+  satellite a code-mode program or an installed extension runs as — so a
+  tampered seed is arbitrary code inside every jailed node. "Executables only" would have left the one part of the
   tarball that *becomes* code without being one outside the manifest.
   Every listed file is checkable with `sha256sum -c` from the moment the
   tarball is unpacked, by anyone, at any later time — which is the thing a
