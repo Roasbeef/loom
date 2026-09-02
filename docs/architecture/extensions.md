@@ -699,7 +699,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_contributions` at `client/serve.gleam:1354`). A `Refused`
+(`extension_contributions` at `client/serve.gleam:1369`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -717,7 +717,7 @@ rule that guards `bash`.
 **A call is one satellite execution of the artifact the install
 compiled.** No build happens — that was the install's job — so the call
 pays a node launch and nothing else. The declared tool timeout is
-clamped: `within` (`extension/dispatch.gleam:365`) takes the minimum of
+clamped: `within` (`extension/dispatch.gleam:334`) takes the minimum of
 the manifest's `timeout_ms` and the operator's `max_within_ms`, because
 an install is not a way to raise how long this host will hold a strand.
 
@@ -730,7 +730,7 @@ ceiling of one admission, since a satellite is launched to serve exactly
 one call.
 
 **A `net.request` is judged by the manifest an operator approved.**
-`policy.egress_for` (`extension/policy.gleam:157`) is the whole
+`policy.egress_for` (`extension/policy.gleam:142`) is the whole
 translation: the manifest's hosts, methods and secret *names* verbatim,
 and `redirects`, `timeout_ms` and `trust` fixed by the harness, because
 none of the three is something an author should be able to state about
@@ -739,7 +739,7 @@ settings — `max_response_bytes` is clamped to the harness ceiling
 (`max_response_bytes` at `extension/policy.gleam:67`, the install
 fetch's own archive cap, so the two egress callers share one bound), and
 `requests_per_call` becomes a per-execution admission ceiling alongside
-`ext.call`'s one (`ceilings` at `extension/policy.gleam:199`). A
+`ext.call`'s one (`ceilings` at `extension/policy.gleam:184`). A
 manifest with no `[net]` table is `ReachesNothing`, refused
 `network_off` rather than refused against an allowlist nobody wrote.
 
