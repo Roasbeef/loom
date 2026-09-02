@@ -228,7 +228,7 @@ fn forward(arguments: List(String)) -> Nil {
 fn flag_or_empty(arguments: List(String), flag: String) -> String {
   case flag_value(arguments, flag) {
     Ok(value) -> value
-    Error(_) -> ""
+    Error(Nil) -> ""
   }
 }
 

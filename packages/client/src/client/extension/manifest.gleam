@@ -63,11 +63,17 @@ pub const hook_events = [
   "agent_end", "agent_settled",
 ]
 
-/// Where an extension's body runs. Two variants because the ruling has
-/// two, and only one of them is installable today.
+/// Where an extension's body runs.
+///
+/// One variant, though the ruling names two. Tier H — a harness-resident
+/// body — is phase 4 and there is no loader for one, so it is not a
+/// variant here: a type with a constructor nothing can produce would let
+/// a `case` arm be written for a state that cannot exist. The *word* is
+/// still refused by name, in `tier_field`, so a manifest asking for it
+/// reads "not yet installable" rather than "unknown value".
 pub type Tier {
   /// Tier J: the body runs in a jailed satellite under the extension
-  /// seam. The default and the only value phase 1 accepts.
+  /// seam. The only value phase 1 accepts.
   Jailed
 }
 
@@ -78,9 +84,14 @@ pub type Tool {
     name: String,
     /// The description rendered to the model, as a built-in tool's is.
     description: String,
-    /// The one-line entry in the available-tools section. Adopted from
-    /// pi's `promptSnippet`, including the omission rule: a tool without
-    /// one is left out of that section.
+    /// The one-line entry in the available-tools section, adopted from
+    /// pi's `promptSnippet`.
+    ///
+    /// Required here, where pi's is optional, and the divergence is
+    /// deliberate: pi *omits* a custom tool from that section when it has
+    /// no snippet, so an author who forgets one ships a tool the model is
+    /// never told about and cannot debug. Making it required turns that
+    /// into an install-time refusal naming the tool.
     prompt_snippet: String,
     /// A path under `schema/` naming the tool's JSON Schema.
     parameters: String,
