@@ -78,6 +78,41 @@ fn sample_frames() -> List(framing.Frame) {
         usage: Some(msgpack.IntValue(1)),
       ),
     ),
+    framing.Frame(
+      id: 5,
+      body: framing.HookCall(
+        token: <<7, 7, 7>>,
+        kind: "tool",
+        name: "search",
+        args: msgpack.MapValue([
+          #(msgpack.StringValue("strand"), msgpack.StringValue("main")),
+          #(msgpack.StringValue("args"), msgpack.StringValue("{}")),
+        ]),
+        deadline_ms: 30_000,
+      ),
+    ),
+    framing.Frame(
+      id: 6,
+      body: framing.HookCall(
+        token: <<>>,
+        kind: "event",
+        name: "session_start",
+        args: msgpack.NilValue,
+        deadline_ms: 1,
+      ),
+    ),
+    framing.Frame(
+      id: 5,
+      body: framing.HookResult(
+        outcome: framing.CapOk(value: msgpack.ArrayValue([])),
+      ),
+    ),
+    framing.Frame(
+      id: 6,
+      body: framing.HookResult(
+        outcome: framing.CapErr(code: "unhandled", message: "no handler"),
+      ),
+    ),
     framing.Frame(id: 2, body: framing.Cancel),
     framing.Frame(id: 4, body: framing.Heartbeat),
     framing.Frame(
@@ -448,4 +483,79 @@ pub fn deframer_random_salad_never_crashes_test() {
       }
     })
   })
+}
+
+// --- the hook pair (protocol-change/012) ---------------------------------
+//
+// The two kinds the harness asks with. They are decoded by the same
+// strict rules as every other kind — exact key set, every field required
+// — and these cases pin that rather than the round trip, which
+// `roundtrip_every_kind_test` already covers for both.
+
+fn hook_envelope(
+  kind: String,
+  entries: List(#(String, msgpack.MsgPackValue)),
+) -> BitArray {
+  envelope(
+    v: msgpack.IntValue(1),
+    id: msgpack.IntValue(9),
+    kind: msgpack.StringValue(kind),
+    body: msgpack.MapValue(
+      list.map(entries, fn(entry) { #(msgpack.StringValue(entry.0), entry.1) }),
+    ),
+  )
+}
+
+pub fn hook_call_rejects_missing_field_test() {
+  let payload =
+    hook_envelope("hook_call", [
+      #("token", msgpack.BinaryValue(<<1>>)),
+      #("kind", msgpack.StringValue("tool")),
+      #("name", msgpack.StringValue("search")),
+      #("args", msgpack.NilValue),
+    ])
+  let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
+}
+
+pub fn hook_call_rejects_unknown_field_test() {
+  let payload =
+    hook_envelope("hook_call", [
+      #("token", msgpack.BinaryValue(<<1>>)),
+      #("kind", msgpack.StringValue("tool")),
+      #("name", msgpack.StringValue("search")),
+      #("args", msgpack.NilValue),
+      #("deadline_ms", msgpack.IntValue(10)),
+      #("strand", msgpack.StringValue("main")),
+    ])
+  let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
+}
+
+pub fn hook_call_rejects_wrong_typed_field_test() {
+  let payload =
+    hook_envelope("hook_call", [
+      #("token", msgpack.StringValue("not-bytes")),
+      #("kind", msgpack.StringValue("tool")),
+      #("name", msgpack.StringValue("search")),
+      #("args", msgpack.NilValue),
+      #("deadline_ms", msgpack.IntValue(10)),
+    ])
+  let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
+}
+
+pub fn hook_result_rejects_missing_error_test() {
+  let payload = hook_envelope("hook_result", [#("ok", msgpack.BoolValue(False))])
+  let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
+}
+
+// `usage` is a `cap_result` field and not a `hook_result` one: an
+// invocation reserves no budget of its own, so the key set is exact
+// rather than a superset of the pair it mirrors.
+pub fn hook_result_rejects_usage_test() {
+  let payload =
+    hook_envelope("hook_result", [
+      #("ok", msgpack.BoolValue(True)),
+      #("value", msgpack.NilValue),
+      #("usage", msgpack.IntValue(1)),
+    ])
+  let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
 }
