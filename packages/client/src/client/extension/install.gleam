@@ -64,7 +64,7 @@
 //// compile error naming the module, which is the earliest and clearest
 //// place that mistake can be caught.
 
-import client/extension/archive.{type Caps, type Tree}
+import client/extension/archive.{type Caps, type Tree, Tree}
 import client/extension/manifest.{type Manifest}
 import client/extension/record.{type Record, type Root}
 import client/extension/source.{type Source}
@@ -190,7 +190,8 @@ pub fn run(
   from: Source,
   rev rev: Option(String),
 ) -> Result(Installed, Failure) {
-  use tree <- result.try(acquire(config, from, rev))
+  use fetched <- result.try(acquire(config, from, rev))
+  use tree <- result.try(installed_tree(fetched))
   use files <- result.try(text_files(tree))
   use decoded <- result.try(read_manifest(files))
   use vetted <- result.try(vet_source(files))
@@ -317,13 +318,45 @@ fn fetched(
   |> result.map_error(fn(error) { Extract(archive.describe(error)) })
 }
 
+// The archive, narrowed to what an install keeps.
+//
+// This is the *first* thing done to a fetched tree, and everything after
+// it — the UTF-8 decode, the manifest, the vetting, the digest recorded
+// in the record, the bytes written under the extension's `src/` — sees
+// only what survived. A repository carries tests, a `.gitignore`,
+// `.github/`, docs, Gleam's resolved `manifest.toml` and a `build/`
+// directory, and none of that is part of what an operator approves; the
+// record's digest therefore describes the installed tree, which is also
+// the tree `installed.discover` re-reads.
+//
+// `Tree.root` and `Tree.commit` are carried through untouched: neither is
+// part of the digest, and the commit is the pin.
+fn installed_tree(tree: Tree) -> Result(Tree, Failure) {
+  use kept <- result.try(
+    package.installed_subset(
+      list.map(tree.files, fn(file) { #(file.path, file.bytes) }),
+    )
+    |> result.map_error(Vetting),
+  )
+  Ok(
+    Tree(
+      ..tree,
+      files: list.map(kept, fn(file) {
+        archive.File(path: file.0, bytes: file.1)
+      }),
+    ),
+  )
+}
+
 // The tree as text, or a refusal naming the file that is not.
 //
-// Dropping one was the wrong direction. A file the reader drops is never
-// vetted and never refused, yet `write_tree` stages the whole tree — so a
-// `src/nif.so` or a `priv/agent` would land under the installed
-// extension's `src/` having passed no rule at all. Refusing it here means
-// every file that reaches the staged tree is one `vet_package` judged.
+// Dropping one was the wrong direction, and pruning has already happened:
+// every file left here is one the install keeps and stages, so a
+// `src/nif.so` or a `schema/x.bin` that is not text would land under the
+// installed extension having passed no rule at all. Refusing it means
+// every file that reaches the staged tree is one `vet_package` judged. A
+// binary the *repository* carries — a screenshot under `docs/` — was
+// pruned a step earlier and never reaches this.
 fn text_files(tree: Tree) -> Result(List(#(String, String)), Failure) {
   list.try_map(tree.files, fn(file) {
     case bit_array.to_string(file.bytes) {

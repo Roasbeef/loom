@@ -830,17 +830,34 @@ The rest of the path is phase 1's own, and each module is one question:
   `Vetting`, `Compile`, `Record`. The fetch and the jailed build are
   both injected (`Fetcher`, `Build`), so the module holds no HTTP client
   and no broker, and a test drives the whole thing with a fetcher that
-  was never called. `entry_source` generates the `loom_satellite` module
+  was never called.
+  **`installed_tree` runs first and everything after sees only what it
+  kept.** A repository is not an installed extension — it has tests, a
+  `.gitignore`, `.github/`, docs, Gleam's resolved `manifest.toml` and a
+  `build/` directory — so `codemode/vet/package.installed_subset` prunes
+  it to `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
+  `gleam.toml`, `README*`, `LICENSE*` before the UTF-8 decode, the
+  manifest, the vetting, the digest and `write_tree`. That ordering is
+  what makes the recorded digest a claim about the *installed* tree, and
+  it is why the UTF-8 refusal reaches only installed files: a screenshot
+  under `docs/` is pruned, and one under `schema/` is refused. `entry_source` generates the `loom_satellite` module
   that imports each tool's entry module and calls `ext/runtime.serve`;
   its aliases are positional and per distinct module, because two tools
   may share an entry module and importing one twice is a compile error
   in generated code.
 - `client/extension/installed` — `discover(root)` and `one(root, name)`,
-  each returning `Ready` or `Refused`. Four things are re-derived from
-  disk and compared with the record: the tree digest, the manifest, the
-  vetting, and the allowlist. A refusal is a *value* rather than a
-  shorter list, because an operator who installed something and sees
-  nothing cannot tell "it is broken" from "I imagined it".
+  each returning `Ready` or `Refused`. Five things are re-derived from
+  disk and compared with the record: the tree digest, the artifact's
+  content address (with `build.fingerprint_directory`, the function the
+  build itself used), the manifest, the vetting, and the allowlist.
+  **Nothing is pruned here**, and that is the point: the install already
+  narrowed the repository to the extension's own tree and wrote exactly
+  that, so what is under `<name>/src/` *is* the installed tree and a file
+  dropped in afterwards must change the digest. Pruning again at load
+  would forgive exactly the tampering the digest exists to catch. A
+  refusal is a *value* rather than a shorter list, because an operator
+  who installed something and sees nothing cannot tell "it is broken"
+  from "I imagined it".
 - `client/extension/cli` — `install`, `list`, `remove`, `verify`, the
   first subcommand surface in the tree. The verb is the first argument
   and the rest is the flat-recursion flag parse `client/serve` uses.
