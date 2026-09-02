@@ -530,6 +530,24 @@ over one session file. WP-L.
   on a strand name, which is what `client/codemode` serves `schedule.*`
   over — one implementation behind both doors, so a program and a tool
   call cannot disagree about what this session's schedules are.
+  Both of its writes are guarded rather than blind: `create` commits the
+  config cell with `api.put_reserved_fact_expecting(expected: None)`, so
+  a name belongs to whichever writer commits first and the loser is
+  answered `NameTaken` rather than having its schedule replaced — which
+  is what makes "creating never silently replaces" a property of the
+  commit instead of the tool door's `Exclusive` serialization, an
+  argument that never covered the code-mode door's per-plan processes
+  (#162). `cancel` deletes the cell through `api.delete_reserved_fact`
+  instead of writing a tombstone over it, both because every scanner
+  tick and every seam call reads the whole `schedule/config/` prefix
+  (#164) and because, once `create` commits on the cell's absence, a
+  tombstone would hold the name against every later create for the life
+  of the session. The pre-checks stay — `name_is_free` is the only thing
+  that can catch an operator's `{target, name}`, which has no cell for a
+  claim to collide with — and the ceiling stays inexact under a
+  code-mode fan-out, which can over-admit by up to `max_outstanding`;
+  nothing rests on the exact count, so it is documented rather than
+  fixed.
 - `client/schedulescan.{Options, ModelDoor, Message, default_options,
   with_logger, with_model_door_open, poke, start, supervised}` — the
   scheduled-heartbeat scanner. Every tick unions the operator's fixed
