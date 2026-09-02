@@ -470,12 +470,13 @@ Branch `client/session-switcher` adds the interactive half. `/sessions` lists
 statically validated endpoint records from the active private state root, then
 resolves the selected workspace and database through the complete bootstrap
 path. Resolution, optional daemon startup, and replacement websocket startup
-run in a monitored worker with a 90-second monotonic outer deadline, enough for the launch lock, daemon start, and probes resolve can run in sequence. The terminal
-keeps the old session usable until it adopts the new socket, acknowledges the
-worker that retained it, swaps to a fresh mailbox, and closes the prior
-connection. Each attempt has its own result mailbox, so an expired attempt
-cannot be adopted by a later switch, and a queued result wins over the timeout
-edge. Late frames from the old socket cannot mutate the new session projection.
+run as one `weft` task under `weft.start_detached` with a 90-second deadline,
+enough for the launch lock, daemon start, and probes resolve can run in
+sequence; the terminal pulls the outcome once per tick with a zero wait. The
+terminal keeps the old session usable until it adopts the new socket, swaps to
+a fresh mailbox, and closes the prior connection. Each attempt is its own run,
+so an expired attempt cannot be adopted by a later switch, and weft's deadline
+kills and joins the task before the timeout is delivered. Late frames from the old socket cannot mutate the new session projection.
 A fresh full snapshot remains the authority after every switch. The selector
 uses and displays the canonical database path as identity, keeping databases
 distinct even when the server derives the same short session name from both.
@@ -483,9 +484,9 @@ distinct even when the server derives the same short session name from both.
 The selector is deliberately local. Explicit remote attachments have no
 authority to enumerate sibling sessions, and gaining that ability would need a
 separate authenticated server API. No ClientGateway command or event changed
-for this branch. The new `tui/sessions` module owns the overlay, worker monitor,
-and replacement-attachment state instead of adding another presentation domain
-to the already-large `tui.gleam` module.
+for this branch. The new `tui/sessions` module owns the overlay, the detached
+run, and replacement-attachment state instead of adding another presentation
+domain to the already-large `tui.gleam` module.
 
 `make e2e-client-bootstrap` builds the real Erlang shipment, resolves a
 `multi.part.db` session twice through the native Gleam bootstrap, discovers its
