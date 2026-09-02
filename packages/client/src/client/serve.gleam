@@ -286,6 +286,14 @@ pub type Settings {
     /// prompt pack entirely. `None` — the ordinary case — leaves `boot`
     /// to use the session's pinned prompt or render the pack.
     system: Option(String),
+    /// The operator's home directory, where the global `AGENTS.md`
+    /// default is looked for when the workspace has none of its own.
+    /// `resolve` fills it from `HOME`, and `None` records that `HOME`
+    /// was unset. It is a field rather than an environment read inside
+    /// the render for the same reason `base_policy` is one: a host — or
+    /// a test — must be able to stand a server up that does not consult
+    /// the machine's real home.
+    home: Option(String),
     /// The identity new strands are configured with.
     model: machine_strand.ModelIdentity,
     /// Fallback context window for the wiring config.
@@ -659,6 +667,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     ),
     catalog: catalogue,
     system: option.from_result(env_text(system_prompt.override_variable)),
+    home: option.from_result(env_text("HOME")),
     model: machine_strand.ModelIdentity(
       provider: main_entry.name,
       model_id: main_entry.model_id,
@@ -2288,16 +2297,22 @@ fn with_history(
 pub const helper_probe_ms = 15_000
 
 // Renders the prompt for a session that has none pinned yet. Everything
-// expensive lives behind this thunk — the pack file, the workspace's
-// `CLAUDE.md`, and the helper spawn the degraded question needs — so a
-// resumed session pays for none of it.
+// expensive lives behind this thunk — the pack file, the session's
+// instruction files, and the helper spawn the degraded question needs —
+// so a resumed session pays for none of it.
+//
+// The operator's home comes off `Settings` rather than out of the process
+// environment, so the lookup of the global `AGENTS.md` is a pure function
+// of its arguments and a test can stand a server up that never reads the
+// machine's real home.
 fn render_prompt(
   settings: Settings,
   base_policy: policy.SandboxPolicy,
   pool: Pool,
   tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
-  let #(guidance, notes) = system_prompt.guidance(settings.workspace)
+  let #(guidance, notes) =
+    system_prompt.guidance(workspace: settings.workspace, home: settings.home)
   use #(origin, source) <- result.try(
     system_prompt.pack_source(
       option.from_result(env_text(system_prompt.pack_path_variable)),

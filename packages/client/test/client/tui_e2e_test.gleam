@@ -75,6 +75,12 @@ import support/internal/ffi_ws
 import support/provider as provider_test
 import support/terminal.{type Terminal}
 
+// A home directory that does not exist, so a server booted here never
+// picks up the developer's own `~/.agents/AGENTS.md`. A home with no
+// global default is silent, which is what keeps these assertions about
+// the prompt pack and the workspace alone.
+const empty_home = Some("build/no-operator-home")
+
 const root = "build/tui-e2e"
 
 const session_id = "session"
@@ -615,6 +621,7 @@ fn settings() -> serve.Settings {
     ),
     catalog: scripted_catalog(),
     system: Some("You are a scripted model in a terminal end-to-end."),
+    home: empty_home,
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     context_window: 100_000,
     max_output_tokens: 4096,

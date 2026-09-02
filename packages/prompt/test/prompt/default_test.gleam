@@ -48,7 +48,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-2"
+  assert decoded.version == "loom-default-3"
 }
 
 pub fn shipped_pack_has_no_problems_test() {

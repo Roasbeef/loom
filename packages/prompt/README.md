@@ -28,7 +28,7 @@ comment. Anything else is corruption.
 
 ```
 %% loom-prompt-pack 1
-%% version loom-default-2
+%% version loom-default-3
 
 %% section identity
 You are an agent working inside Loom, a coding-agent harness running on
