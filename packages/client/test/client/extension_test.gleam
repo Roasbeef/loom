@@ -736,15 +736,32 @@ pub fn verify_refuses_a_tampered_install_test() {
 /// compile error inside generated code.
 pub fn the_generated_entry_aliases_positionally_test() {
   let source =
-    install.entry_source([
-      tool("first", "a/tool"),
-      tool("second", "b/tool"),
-    ])
+    install.entry_source(
+      [tool("first", "a/tool"), tool("second", "b/tool")],
+      [],
+    )
   assert string.contains(source, "import a/tool as ext_entry_0")
   assert string.contains(source, "import b/tool as ext_entry_1")
   assert string.contains(source, "#(\"first\", ext_entry_0.run)")
   assert string.contains(source, "#(\"second\", ext_entry_1.run)")
-  assert string.contains(source, "runtime.serve([")
+  assert string.contains(source, "runtime.serving(")
+}
+
+/// A hook shares the tool's alias table, so a module that serves both is
+/// imported once — and its two registrations name two different
+/// functions, which is why the hook entry point is not also `run`.
+pub fn the_generated_entry_serves_hooks_beside_tools_test() {
+  let source =
+    install.entry_source([tool("first", "a/tool")], [
+      manifest.Hook(event: "session_start", entry: "a/tool"),
+    ])
+  assert string.contains(source, "import a/tool as ext_entry_0")
+  assert !string.contains(source, "ext_entry_1")
+  assert string.contains(source, "#(\"first\", ext_entry_0.run)")
+  assert string.contains(
+    source,
+    "#(\"session_start\", ext_entry_0." <> install.hook_function <> ")",
+  )
 }
 
 // --- the real jailed build, feature-detected ------------------------------

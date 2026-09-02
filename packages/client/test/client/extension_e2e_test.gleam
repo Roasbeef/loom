@@ -54,6 +54,7 @@ import client/contributions
 import client/extension/archive
 import client/extension/cli
 import client/extension/dispatch
+import client/extension/hosts
 import client/extension/install
 import client/extension/installed
 import client/extension/manifest as extension_manifest
@@ -67,6 +68,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import core/msgpack
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -104,7 +106,7 @@ pub type EunitTest {
 /// 180 s of its own) and then three satellite launches, so a smaller
 /// ceiling would substitute an anonymous eunit timeout for this suite's
 /// own account of what happened.
-const e2e_timeout_seconds = 600
+const e2e_timeout_seconds = 1200
 
 const gleeunit_timeout_scale = 10
 
@@ -142,9 +144,11 @@ fn drive(ready: Ready) -> Nil {
     Ok(installed_at) -> {
       let taps = process.new_subject()
       let specs = process.new_subject()
+      let hosts_name = process.new_name(prefix: "loom_e2e_hosts")
       let config =
         dispatch.Config(
           host: installed_at.host,
+          hosts: hosts.seam(hosts_name, margin_ms: 30_000),
           // Only the fixture's own binding resolves. A lookup for
           // anything else answers `Error(Nil)`, which is what makes this
           // function's whole reach one variable.
@@ -161,7 +165,19 @@ fn drive(ready: Ready) -> Nil {
           launch: tapping(taps, specs),
         )
 
+      // The registry a booting server would build, and the satellite
+      // registry it would build beside it, from one configuration.
       let registry = contributed(config, installed_at)
+      let assert Ok(_started) =
+        hosts.start(hosts_name, [
+          dispatch.hosting(
+            config,
+            installed_at.record,
+            installed_at.manifest,
+            artifact: installed_at.artifact,
+          ),
+        ])
+        as "the session's satellite registry must start"
       assert list.contains(tool.names(registry), "fetcher")
 
       // Every tool the registry offers is offered to the model, so the
@@ -211,6 +227,33 @@ fn drive(ready: Ready) -> Nil {
         <> " frames on the channel, none carrying the credential",
       )
 
+      // The persistent shape's own claim: a second call reaches the same
+      // node. Counted from the launcher's specs rather than inferred from
+      // how quick it felt.
+      let second = call(registry, installed_at, url, times: 1)
+      assert !second.is_error
+      assert string.contains(rendered(second), "1 ok 200 the origin answered")
+      assert process.receive(specs, within: 250) == Error(Nil)
+      io.println("extension host e2e: two invocations, one node launch")
+
+      // And an event reaches the same node over the same channel. The
+      // payload is empty because wave B is what fixes the per-event
+      // shapes; what is proved here is that a hook_call of kind `event`
+      // is dispatched to the handler the manifest's [[hook]] named.
+      let greeted =
+        hosts.invoke_event(
+          hosts.seam(hosts_name, margin_ms: 30_000),
+          extension: "fetcher",
+          event: "session_start",
+          args: msgpack.MapValue([]),
+          at: dispatch.coordinates(live_ctx(
+            installed_at.workspace,
+            installed_at.base_policy,
+          )),
+          within: 20_000,
+        )
+      assert greeted == Ok(msgpack.StringValue("fetcher is awake"))
+
       // A host the manifest does not name is refused in band, as a
       // `NetDenied` the extension read and turned into a sentence.
       let refused =
@@ -239,9 +282,134 @@ fn drive(ready: Ready) -> Nil {
         carries(bytes, secret_value)
       })
 
+      // The last claim, and the one only a real node can make: an
+      // extension that does not answer inside its own deadline loses its
+      // satellite, and says so on the call after.
+      oversleeps(ready, installed_at, hosts_name)
+
       origin.stop(server)
       stop(installed_at)
     }
+  }
+}
+
+// A second extension, installed for real beside the first, whose one tool
+// sleeps in the kernel for far longer than its manifest allows.
+//
+// The deadline is the satellite host's, armed as the state timeout on the
+// invocation it belongs to; when it fires the node is destroyed and the
+// extension is out for the rest of the session. Both halves are asserted,
+// because a deadline that ended the call without ending the node would
+// leave a satellite the harness had stopped trusting still running.
+fn oversleeps(
+  ready: Ready,
+  installed_at: Installed,
+  hosts_name: process.Name(hosts.Message),
+) -> Nil {
+  case install_sleeper(ready, installed_at) {
+    Error(reason) -> io.println("SKIP the oversleeping extension: " <> reason)
+    Ok(#(written, decoded, artifact)) -> {
+      let config =
+        dispatch.Config(
+          host: installed_at.host,
+          hosts: hosts.seam(hosts_name, margin_ms: 30_000),
+          secrets: fn(_name) { Error(Nil) },
+          trust: egress.SystemRoots,
+          launch: dispatch.jailed_node,
+        )
+      let sleeper_hosts_name = process.new_name(prefix: "loom_e2e_sleeper")
+      let assert Ok(_started) =
+        hosts.start(sleeper_hosts_name, [
+          dispatch.hosting(
+            dispatch.Config(
+              ..config,
+              hosts: hosts.seam(sleeper_hosts_name, margin_ms: 30_000),
+            ),
+            written,
+            decoded,
+            artifact:,
+          ),
+        ])
+        as "the sleeper's registry must start"
+
+      let seam = hosts.seam(sleeper_hosts_name, margin_ms: 30_000)
+      let at =
+        dispatch.coordinates(live_ctx(
+          installed_at.workspace,
+          installed_at.base_policy,
+        ))
+      let overslept =
+        hosts.invoke(
+          seam,
+          extension: "sleeper",
+          invocation: satellite.Tool(name: "sleeper"),
+          args: tool_args("{}"),
+          at:,
+          within: extensions.sleeper_timeout_ms,
+        )
+      assert overslept == Error(hosts.Deadline)
+
+      // And the node is gone rather than merely unanswered: the next
+      // call never reaches a satellite at all.
+      let assert Error(hosts.Gone(reason:)) =
+        hosts.invoke(
+          seam,
+          extension: "sleeper",
+          invocation: satellite.Tool(name: "sleeper"),
+          args: tool_args("{}"),
+          at:,
+          within: extensions.sleeper_timeout_ms,
+        )
+        as "a destroyed satellite must stay destroyed for the session"
+      io.println("extension host e2e: the oversleeper was reaped: " <> reason)
+    }
+  }
+}
+
+// The invocation envelope `ext/runtime` reads for a tool.
+fn tool_args(args: String) -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("args"), msgpack.StringValue(args)),
+    #(msgpack.StringValue("strand"), msgpack.StringValue("main")),
+  ])
+}
+
+fn install_sleeper(
+  ready: Ready,
+  installed_at: Installed,
+) -> Result(#(record.Record, extension_manifest.Manifest, String), String) {
+  let _unused = ready
+  let tree =
+    extensions.materialise(
+      extensions.sleeper(),
+      installed_at.live_root <> "/sleeper-src",
+    )
+  case
+    install.run(
+      install.Config(
+        root: installed_at.root,
+        caps: archive.default_caps(),
+        fetch: fn(_url, _max) {
+          Error("an install from a local path fetches nothing")
+        },
+        build: cli.build_for(installed_at.plane, exec.BestEffort),
+        clock: wall_clock(),
+        entropy: fn() { 11 },
+        approved_by: "operator",
+      ),
+      source.LocalPath(path: tree),
+      rev: None,
+    )
+  {
+    Error(failure) ->
+      Error("the sleeper did not install: " <> install.describe(failure))
+    Ok(done) ->
+      case installed.one(installed_at.root, done.record.name) {
+        installed.Refused(name: _, reason:) ->
+          Error("the sleeper install did not discover: " <> reason)
+        installed.Ready(record: written, manifest: decoded, artifact:) ->
+          Ok(#(written, decoded, artifact))
+      }
   }
 }
 

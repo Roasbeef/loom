@@ -176,6 +176,7 @@ import client/codemode as codemode_wiring
 import client/contributions
 import client/escalate
 import client/extension/dispatch as extension_dispatch
+import client/extension/hosts as extension_hosts
 import client/extension/installed
 import client/extension/manifest as extension_manifest
 import client/extension/record as extension_record
@@ -1351,22 +1352,42 @@ fn code_mode_seam(
 // `Contribution` per extension, and a name two contributions both claim
 // refuses the boot in `contributions.registry`.
 
+// What the installed extensions contribute to a boot: the tools the
+// registry carries, and the recipes the session's satellite registry
+// launches nodes from.
+//
+// One value rather than two passes, because the two halves are derived
+// from one discovery and one configuration; deriving them separately is
+// how a host and a tool come to describe different extensions.
+type Extensions {
+  Extensions(
+    contributions: List(contributions.Contribution),
+    hosting: List(extension_hosts.Extension),
+  )
+}
+
 fn extension_contributions(
   settings: Settings,
   logger: Logger,
+  hosts: extension_hosts.Hosts,
   host: Option(codemode_wiring.Config),
-) -> List(contributions.Contribution) {
+) -> Extensions {
   case settings.home {
     // No home is no extensions root, which is the same fact to a booting
     // server as an empty one: there is nothing installed and nothing to
     // warn about.
-    None -> []
+    None -> Extensions(contributions: [], hosting: [])
 
     Some(home) -> {
       let root = extension_record.root_for(home)
-      list.filter_map(installed.discover(root), fn(found) {
-        extension_contribution(root, found, logger, host)
-      })
+      let registered =
+        list.filter_map(installed.discover(root), fn(found) {
+          extension_contribution(root, found, logger, hosts, host)
+        })
+      Extensions(
+        contributions: list.map(registered, fn(pair) { pair.0 }),
+        hosting: list.map(registered, fn(pair) { pair.1 }),
+      )
     }
   }
 }
@@ -1375,8 +1396,9 @@ fn extension_contribution(
   root: extension_record.Root,
   found: installed.Discovered,
   logger: Logger,
+  hosts: extension_hosts.Hosts,
   host: Option(codemode_wiring.Config),
-) -> Result(contributions.Contribution, Nil) {
+) -> Result(#(contributions.Contribution, extension_hosts.Extension), Nil) {
   case found {
     installed.Refused(name:, reason:) -> {
       log.warn(logger, "extension.refused", [
@@ -1387,7 +1409,15 @@ fn extension_contribution(
     }
 
     installed.Ready(record: written, manifest: decoded, artifact:) ->
-      extension_registered(root, written, decoded, artifact, logger, host)
+      extension_registered(
+        root,
+        written,
+        decoded,
+        artifact,
+        logger,
+        hosts,
+        host,
+      )
   }
 }
 
@@ -1397,8 +1427,9 @@ fn extension_registered(
   decoded: extension_manifest.Manifest,
   artifact: String,
   logger: Logger,
+  hosts: extension_hosts.Hosts,
   host: Option(codemode_wiring.Config),
-) -> Result(contributions.Contribution, Nil) {
+) -> Result(#(contributions.Contribution, extension_hosts.Extension), Nil) {
   case host {
     None -> {
       log.warn(logger, "extension.unavailable", [
@@ -1412,22 +1443,28 @@ fn extension_registered(
       Error(Nil)
     }
 
-    Some(config) ->
+    Some(config) -> {
+      let dispatch_config =
+        extension_dispatch.Config(
+          host: config,
+          // The session's satellite registry, reached by name: it starts
+          // under the service supervisor further down, after this
+          // registry is assembled.
+          hosts:,
+          // The process environment, the same store `api_key_env`
+          // reads. The value never reaches a `Tool`, a frame or a log:
+          // this function is handed to `broker/egress`, which reads it
+          // after the origin and method are judged and puts the result
+          // straight on the wire.
+          secrets: env_text,
+          // The platform trust store. A pinned root is a test-only
+          // shape, and there is no operator surface for one.
+          trust: egress.SystemRoots,
+          launch: extension_dispatch.jailed_node,
+        )
       case
         extension_dispatch.tools(
-          extension_dispatch.Config(
-            host: config,
-            // The process environment, the same store `api_key_env`
-            // reads. The value never reaches a `Tool`, a frame or a log:
-            // this function is handed to `broker/egress`, which reads it
-            // after the origin and method are judged and puts the result
-            // straight on the wire.
-            secrets: env_text,
-            // The platform trust store. A pinned root is a test-only
-            // shape, and there is no operator surface for one.
-            trust: egress.SystemRoots,
-            launch: extension_dispatch.jailed_node,
-          ),
+          dispatch_config,
           written,
           decoded,
           sources: extension_record.sources(root, written.name),
@@ -1453,12 +1490,21 @@ fn extension_registered(
               value: extension_dispatch.summary(written, decoded),
             ),
           ])
-          Ok(contributions.Contribution(
-            origin: contributions.Extension(name: written.name),
-            tools:,
+          Ok(#(
+            contributions.Contribution(
+              origin: contributions.Extension(name: written.name),
+              tools:,
+            ),
+            extension_dispatch.hosting(
+              dispatch_config,
+              written,
+              decoded,
+              artifact:,
+            ),
           ))
         }
       }
+    }
   }
 }
 
@@ -1774,6 +1820,19 @@ fn assemble(
   // every resolution silently changes what one of the two names means;
   // no built-in host can produce one, and an extension that would is
   // exactly the install an operator has to be told about.
+  // The session's satellite registry, on the same two-name pattern as the
+  // scratch store: the seam closes over the name now, and the actor that
+  // answers it starts under the service supervisor below, because the
+  // registry has to exist before the tools that reach it are built.
+  let hosts_name = process.new_name(prefix: "loom_ext_hosts")
+  let extensions =
+    extension_contributions(
+      settings,
+      logger,
+      extension_hosts.seam(hosts_name, margin_ms: extension_host_margin_ms),
+      code_mode_host,
+    )
+
   use tool_registry <- result.try(
     list.append(
       contributions.built_in(
@@ -1788,7 +1847,7 @@ fn assemble(
       // not what makes an extension unable to shadow `bash` — but the
       // collision message names the *second* claimant as the thing to
       // remove, and the newcomer is the extension.
-      extension_contributions(settings, logger, code_mode_host),
+      extensions.contributions,
     )
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
@@ -1984,6 +2043,12 @@ fn assemble(
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
     |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    // The satellite registry is in this tier because a restart costs
+    // exactly what a satellite crash costs, which extensions are already
+    // written to meet: every host it held is `Gone` to its next caller,
+    // the tools stay registered, and each lost node is reaped by the
+    // launcher's own janitor when the registry that owned it dies.
+    |> sup.add(extension_hosts.supervised(hosts_name, extensions.hosting))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     |> sup.add(
@@ -2225,6 +2290,16 @@ fn policy_label(policy: schedule.Policy) -> String {
     schedule.ModelSchedulesWake -> "wake"
   }
 }
+
+/// Slack over an invocation's own deadline before a caller gives up on the
+/// satellite registry.
+///
+/// The registry performs the invocation on its own timeline, so a caller's
+/// wait has to outlast the deadline the satellite host is enforcing —
+/// otherwise the caller would report a wedged registry for an invocation
+/// that was merely being timed out properly, and the registry's own answer
+/// would arrive to nobody.
+const extension_host_margin_ms = 30_000
 
 /// How many restarts the service supervisor allows within
 /// `service_restart_period` seconds before it gives up and the host

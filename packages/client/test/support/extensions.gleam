@@ -353,6 +353,7 @@ fn fetcher_manifest(origin: String, per_call: Int) -> String {
   <> "prompt_snippet = \"fetcher: fetch a url through the broker\"\n"
   <> "parameters = \"schema/fetcher.json\"\nentry = \"fetcher/tool\"\n"
   <> "timeout_ms = 60000\n\n"
+  <> "[[hook]]\nevent = \"session_start\"\nentry = \"fetcher/tool\"\n\n"
   <> "[net]\nhosts = [\""
   <> origin
   <> "\"]\nmethods = [\"GET\"]\nmax_response_bytes = 65536\n"
@@ -386,6 +387,7 @@ fn fetcher_schema() -> String {
 // that fires on the third of three has to leave the first two readable.
 fn fetcher_tool() -> String {
   "import cap/net
+import cap/report
 import ext
 import gleam/bit_array
 import gleam/dynamic
@@ -440,6 +442,84 @@ fn text(bytes: BitArray) -> String {
     Ok(body) -> body
     Error(Nil) -> \"<not text>\"
   }
+}
+
+/// The one hook this fixture registers. It answers a value the harness can
+/// recognise without knowing anything about the per-event shapes, which
+/// wave B of the extension work is what fixes.
+pub fn on_event(_payload: report.Value) -> Result(report.Value, String) {
+  Ok(report.string(\"fetcher is awake\"))
+}
+"
+}
+
+/// The oversleep fixture: one tool that runs `sleep` for far longer than
+/// its own manifest timeout, so the satellite host's invocation deadline
+/// fires and the node is destroyed.
+///
+/// Its whole purpose is the failure path, so it declares no `[net]` and
+/// asks for nothing: what is under test is what the harness does when an
+/// extension does not answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let files = extensions.sleeper()
+/// ```
+///
+pub fn sleeper() -> List(#(String, String)) {
+  [
+    #("extension.toml", sleeper_manifest()),
+    #("gleam.toml", sleeper_project()),
+    #("schema/sleeper.json", sleeper_schema()),
+    #("src/sleeper/tool.gleam", sleeper_tool()),
+  ]
+}
+
+/// How long the `sleeper` fixture is given before its invocation is over.
+/// Short, because the test waits it out; the sleep below is far longer, so
+/// which of the two fires is not a race.
+pub const sleeper_timeout_ms = 2000
+
+fn sleeper_manifest() -> String {
+  "[extension]\nname = \"sleeper\"\nversion = \"0.1.0\"\n"
+  <> "description = \"Sleep past its own deadline.\"\n"
+  <> "license = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \"sleeper\"\n"
+  <> "description = \"Sleep for longer than this tool is allowed.\"\n"
+  <> "prompt_snippet = \"sleeper: oversleep on purpose\"\n"
+  <> "parameters = \"schema/sleeper.json\"\nentry = \"sleeper/tool\"\n"
+  <> "timeout_ms = "
+  <> int.to_string(sleeper_timeout_ms)
+  <> "\n"
+}
+
+fn sleeper_project() -> String {
+  "name = \"sleeper\"\nversion = \"0.1.0\"\ngleam = \">= 1.18.0\"\n\n"
+  <> "[dependencies]\ngleam_stdlib = \">= 1.0.0 and < 2.0.0\"\n"
+  <> "cap = { path = \"../cap\" }\next = { path = \"../ext\" }\n"
+}
+
+fn sleeper_schema() -> String {
+  "{\n  \"type\": \"object\",\n  \"properties\": {},\n"
+  <> "  \"required\": []\n}\n"
+}
+
+// `cap/proc.run` rather than a busy loop: a jailed `sleep` blocks in the
+// kernel, so the node is genuinely unresponsive to the hook_call it is
+// answering rather than merely slow, which is the case the deadline is
+// for.
+fn sleeper_tool() -> String {
+  "import cap/proc
+import ext
+import gleam/dynamic
+
+pub fn run(
+  _arguments: dynamic.Dynamic,
+  _ctx: ext.Ctx,
+) -> Result(ext.Outcome, ext.Refusal) {
+  let _slept = proc.run([\"/bin/sleep\", \"120\"])
+  Ok(ext.text(\"awake\"))
 }
 "
 }

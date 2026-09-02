@@ -1,16 +1,21 @@
-//// The extension seam's harness-side router: the two capability arms a
+//// The extension seam's harness-side router: the one capability arm a
 //// jailed extension has that a code-mode program does not.
 ////
-//// An extension satellite is `codemode/workspace`'s seam plus two names.
-//// `ext.call` is how the node learns which tool this execution is for,
-//// and `net.request` is how it reaches the network — the one capability
-//// `cap/net` has always declared and nothing has ever served. Both are
-//// `satellite.ServedHere`: the harness answers them itself, no jail is
-//// entered, and the node's network namespace stays empty, which is the
-//// property ADR-007 turns on. Everything this router does not answer is
-//// handed to the router beneath, exactly as `codemode/workspace.routing`
-//// and `client/mcp.routing` do, so nothing about `fs.read` or `proc.run`
+//// An extension satellite is `codemode/workspace`'s seam plus
+//// `net.request` — the one capability `cap/net` has always declared and
+//// nothing has ever served. It is a `satellite.ServedHere`: the harness
+//// answers it itself, no jail is entered, and the node's network
+//// namespace stays empty, which is the property ADR-007 turns on.
+//// Everything this router does not answer is handed to the router
+//// beneath, exactly as `codemode/workspace.routing` and
+//// `client/mcp.routing` do, so nothing about `fs.read` or `proc.run`
 //// changes shape because an extension is what is running.
+////
+//// There used to be a second arm. `ext.call` was how a phase 1 node
+//// learned which tool its one execution was for, and phase 3 deleted it
+//// along with the pull it belonged to: a satellite that lives for the
+//// session is *told* what to answer over a `hook_call`
+//// (`protocol-change/012`), so there is nothing left to ask.
 ////
 //// # Why the seam speaks its own request type
 ////
@@ -43,7 +48,7 @@
 //// composes can carry it, whatever an extension asks for.
 
 import broker/framing.{type CapOutcome}
-import client/extension/policy.{call_cap, net_cap}
+import client/extension/policy.{net_cap}
 import codemode/satellite.{
   type CapDenial, type CapPlan, type CapRequest, type CapRouter, CapDenial,
   ServedHere,
@@ -52,32 +57,18 @@ import core/msgpack.{type MsgPackValue}
 import gleam/list
 import gleam/result
 
-/// The two names this router answers. `extension/dispatch_test` walks it and
+/// The names this router answers. `extension/dispatch_test` walks it and
 /// asserts each one routes, which is what keeps it the same list as the
 /// `case` arms below — Gleam patterns cannot name a constant, so the two
 /// could otherwise drift.
-pub const serviced_caps = [call_cap, net_cap]
+pub const serviced_caps = [net_cap]
 
 /// The code a structurally invalid argument travels under.
 ///
 /// Outside `cap/net.map_error`'s denial set on purpose: an extension that
 /// sent a malformed `net.request` has a bug rather than a policy problem,
-/// and `NetFailed("invalid_argument", …)` says which. `cap/ext` has no
-/// code vocabulary at all, so the same constant serves both arms.
+/// and `NetFailed("invalid_argument", …)` says which.
 pub const invalid_argument_code = "invalid_argument"
-
-/// The call one execution was launched to serve, in the shape `cap/ext`
-/// decodes.
-///
-/// Constructor invariants: `args` is JSON *text*, never a msgpack value —
-/// `cap/ext`'s module doc pins that and gives the reason, which is that
-/// `gleam_json`'s parser is the only route from bytes to a `Dynamic` the
-/// extension seam's allowlist admits. `deadline_ms` is what is left of
-/// the call's wall budget at the moment the call is handed over, not an
-/// absolute time, because the node has no clock the harness trusts.
-pub type Call {
-  Call(tool: String, args: String, strand: String, deadline_ms: Int)
-}
 
 /// One outbound request a jailed extension asked the harness to make.
 ///
@@ -117,20 +108,9 @@ pub type Egress {
   ReachesNothing(refusal: CapDenial)
 }
 
-/// The harness-side closures one extension execution's router calls.
+/// The harness-side closures one extension invocation's router calls.
 pub type Extension {
   Extension(
-    /// The call this execution serves, answered once (the `ext.call`
-    /// admission ceiling in `client/extension/policy` is what makes
-    /// "once" true rather than a convention).
-    ///
-    /// A thunk rather than a value because `Call.deadline_ms` is how much
-    /// of the budget is *left*, and how much is left is not known until
-    /// the node has booted and asked. Computing it when the router is
-    /// built would hand every extension the whole timeout however long
-    /// the launch took, which is the one number a tool uses to decide
-    /// whether to refuse rather than run past its own deadline.
-    call: fn() -> Call,
     /// How outbound requests are answered.
     egress: Egress,
   )
@@ -151,40 +131,18 @@ pub type Extension {
 pub fn routing(extension: Extension, over inner: CapRouter) -> CapRouter {
   fn(request: CapRequest) {
     case request.cap {
-      "ext.call" -> call_plan(extension.call)
       "net.request" -> net_plan(extension.egress, request)
       _other -> inner(request)
     }
   }
 }
 
-/// The `ext.call` answer for one call, as the value `cap/ext.decode`
-/// reads.
-///
-/// Public so a test can compare it against `cap/ext`'s own decoder
-/// without standing up a router: the two are halves of one wire shape,
-/// and the only way to keep them in agreement is to run one against the
-/// other.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // seam.call_value(seam.Call("hello", "{}", "main", 1000))
-/// ```
-///
-pub fn call_value(call: Call) -> MsgPackValue {
-  fields([
-    #("tool", msgpack.StringValue(call.tool)),
-    #("args", msgpack.StringValue(call.args)),
-    #("strand", msgpack.StringValue(call.strand)),
-    #("deadline_ms", msgpack.IntValue(call.deadline_ms)),
-  ])
-}
-
 /// One response as the value `cap/net.decode_response` reads.
 ///
-/// Public for the same reason `call_value` is: this and `cap/net`'s
-/// decoder are two halves of one shape.
+/// Public so a test can compare it against `cap/net`'s own decoder
+/// without standing up a router: this and that decoder are two halves of
+/// one wire shape, and the only way to keep them in agreement is to run
+/// one against the other.
 ///
 /// ## Examples
 ///
@@ -205,17 +163,6 @@ pub fn answer_value(answer: Answer) -> MsgPackValue {
     ),
     #("body", msgpack.BinaryValue(answer.body)),
   ])
-}
-
-// --- ext.call --------------------------------------------------------------
-
-// The call is decided before the node is launched, so this arm reads no
-// arguments and can never refuse. `cap/ext` sends the empty map and the
-// harness answers what it already knew; the whole point of asking over
-// the channel rather than through the environment is that the answer is
-// typed, unbounded and unreadable by every other process in the jail.
-fn call_plan(call: fn() -> Call) -> Result(CapPlan, CapDenial) {
-  Ok(ServedHere(fn() { framing.CapOk(value: call_value(call())) }))
 }
 
 // --- net.request -----------------------------------------------------------
