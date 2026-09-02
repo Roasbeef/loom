@@ -100,6 +100,13 @@ literate register", gives the complete conventions and examples.
   counts them; `docs/gleam-style.md` Part III, "No naked `Bool`", has the
   three escapes, one of which is that a frozen Part-1 field costs a
   `protocol-change/NNN.md` rather than an edit.
+- **Custom Erlang FFI is a last resort, kept to the minimum.** A new
+  `@external` or `.erl` file is taken only when `gleam_stdlib`,
+  `gleam_erlang`, `gleam_otp` or weft cannot express the thing at all,
+  never for convenience, and it lives in an `internal/ffi_*.gleam` module
+  with a comment saying why no pure alternative exists. This holds on
+  every branch, the egress proxy work included. `docs/gleam-style.md`
+  Part IV §4 has the rule; §5 has the three packages that allow none.
 - **Process machinery goes through weft.** A deadline-bounded spawn, a
   phase machine written as mutually recursive functions, a timer whose
   handler checks for a stale fire, a list of waiters flushed on a state

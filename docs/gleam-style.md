@@ -1028,9 +1028,16 @@ tighten the ecosystem defaults:
 3. **No `panic`/`let assert` outside tests**, except documented invariant
    violations that must fault the process (mirroring "failed admitted commit
    faults the harness"). Always with an `as "message"`.
-4. **FFI confinement**: `@external` only in `*/internal/ffi_*.gleam`
-   modules; every external carries a comment naming the OTP function used
-   and why no pure alternative exists. CI greps enforce this. Three
+4. **FFI confinement, and as little of it as possible**: `@external` only
+   in `*/internal/ffi_*.gleam` modules; every external carries a comment
+   naming the OTP function used and why no pure alternative exists. CI
+   greps enforce this. The rule is about *how much* as well as *where*:
+   custom Erlang — a new `@external`, a new `.erl` file — is a last
+   resort, taken only when `gleam_stdlib`, `gleam_erlang`, `gleam_otp` or
+   weft cannot express the thing at all, never for convenience or speed.
+   That holds for every package and every branch, the egress proxy work
+   included: a sidecar or a socket is still reached through the
+   bindings that exist before it earns a binding of its own. Three
    packages are stricter still — see 5.
 5. **Purity layering**: `core` and `machine` are pure — no I/O
    imports at all. Effects live behind the broker; the state machine is
