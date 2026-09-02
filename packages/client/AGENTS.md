@@ -880,7 +880,11 @@ Phase 3 adds the hook bus:
   and the first two do not. Five events fan out (`session_start`,
   `before_agent_start`, `tool_call`, `agent_end`, `agent_settled`), the
   two that need an answer through `sync_notify` plus a drained reply
-  subject. `context` and `tool_result` are chained transforms and so are
+  subject — on a weft-bounded worker, never on the caller, because
+  `sync_notify` is a `call` and a `call` that is not answered in time
+  panics its caller, and the callers are strand drivers sharing one
+  manager. An unanswered fan-out is an empty list: no injection, and no
+  block on a call the built-in clearance already cleared. `context` and `tool_result` are chained transforms and so are
   `fold_context`/`fold_tool_result` over the same ordered list, not bus
   events. `wire(effects, bus, session, clock)` composes the bus into a
   built `Effects` by *wrapping* five slots, the pattern

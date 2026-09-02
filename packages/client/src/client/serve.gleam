@@ -1471,7 +1471,7 @@ fn extension_registered(
               origin: contributions.Extension(name: written.name),
               tools:,
             ),
-            subscription: extension_subscription(decoded, logger),
+            subscription: extension_subscription(written, logger),
           ))
         }
       }
@@ -1485,21 +1485,29 @@ fn extension_registered(
 // on the same `Extension` value, so the declared list here is the whole
 // of what the extension asked for and the bus decides which plane each
 // name belongs to.
+//
+// The list comes from the **record** rather than from the manifest
+// beside it. Both say the same thing on a tree that has not been
+// tampered with — discovery re-derives the digest over the whole tree,
+// `extension.toml` included, and refuses the extension when it moved —
+// but the record is the operator's approval, and authority over the
+// harness's own timeline should be read from the yes rather than from
+// the file the yes was about.
 fn extension_subscription(
-  decoded: extension_manifest.Manifest,
+  written: extension_record.Record,
   logger: Logger,
 ) -> Option(extension_hooks.Extension) {
-  case list.map(decoded.hooks, fn(hook) { hook.event }) {
+  case list.map(written.hooks, fn(hook) { hook.0 }) {
     [] -> None
     events -> {
-      inert_hooks(decoded.name, events, logger)
+      inert_hooks(written.name, events, logger)
 
       // The invoker is `unwired` until the persistent satellite host
       // lands beside this: the subscription is real, and the first event
       // it receives drops it saying the satellite is not there. That is
       // the honest failure, and the join is one call.
       Some(extension_hooks.Extension(
-        name: decoded.name,
+        name: written.name,
         events:,
         invoke: extension_hooks.unwired(),
       ))

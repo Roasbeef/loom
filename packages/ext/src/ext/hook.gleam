@@ -75,6 +75,18 @@ pub type RunStart {
   RunStart(op_id: String, strand: String)
 }
 
+/// What a `context` hook is handed: the request's operation, and the
+/// message list as the previous extension in the chain left it.
+///
+/// The operation is here because every other event carries it and a
+/// context hook that could not tell two runs apart would be the odd one
+/// out — an extension keeping per-run state between
+/// `before_agent_start` and the requests that follow it needs the two to
+/// name the same thing.
+pub type Context {
+  Context(op_id: String, messages: List(Dynamic))
+}
+
 /// The typed behaviour behind one `[[hook]]` entry.
 ///
 /// One variant per event, so an entry that answers the wrong event is a
@@ -95,7 +107,7 @@ pub type Hook {
   /// message list. Chained: the list handed in is the previous
   /// extension's output. The harness discards a transform that grows the
   /// context past its token allowance.
-  OnContext(run: fn(List(Dynamic)) -> List(Json))
+  OnContext(run: fn(Context) -> List(Json))
 
   /// `tool_call`: a call was planned, before dispatch.
   OnToolCall(run: fn(Call) -> Verdict)
@@ -167,10 +179,10 @@ pub fn answer(hook: Hook, args: String) -> Result(String, String) {
     }
 
     OnContext(run:) -> {
-      use messages <- result.try(field_list(document, "messages"))
+      use context <- result.try(context_of(document))
       Ok(
         json.to_string(
-          json.object([#("messages", json.preprocessed_array(run(messages)))]),
+          json.object([#("messages", json.preprocessed_array(run(context)))]),
         ),
       )
     }
@@ -228,6 +240,12 @@ fn run_start(document: Dynamic) -> Result(RunStart, String) {
   use op_id <- result.try(field_string(document, "op_id"))
   use strand <- result.try(field_string(document, "strand"))
   Ok(RunStart(op_id:, strand:))
+}
+
+fn context_of(document: Dynamic) -> Result(Context, String) {
+  use op_id <- result.try(field_string(document, "op_id"))
+  use messages <- result.try(field_list(document, "messages"))
+  Ok(Context(op_id:, messages:))
 }
 
 fn call_of(document: Dynamic) -> Result(Call, String) {

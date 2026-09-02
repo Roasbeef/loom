@@ -26,7 +26,7 @@ pub fn every_hook_names_its_event_test() {
     #(hook.OnSessionStart(fn() { Nil }), "session_start"),
     #(hook.OnBeforeAgentStart(fn(_start) { None }), "before_agent_start"),
     #(
-      hook.OnContext(fn(messages) { list.map(messages, rerendered) }),
+      hook.OnContext(fn(context) { list.map(context.messages, rerendered) }),
       "context",
     ),
     #(hook.OnToolCall(fn(_call) { hook.Allow }), "tool_call"),
@@ -79,14 +79,17 @@ pub fn an_injection_is_a_string_or_null_test() {
 }
 
 pub fn a_context_transform_answers_a_message_array_test() {
-  let drop = hook.OnContext(fn(_messages) { [] })
-  let args = "{\"messages\":[{\"role\":\"user\"},{\"role\":\"assistant\"}]}"
+  let drop = hook.OnContext(fn(_context) { [] })
+  let args =
+    "{\"op_id\":\"op-1\",\"messages\":[{\"role\":\"user\"},{\"role\":\"assistant\"}]}"
   assert hook.answer(drop, args) == Ok("{\"messages\":[]}")
 }
 
 pub fn a_context_transform_reads_the_messages_it_was_handed_test() {
-  let keep = hook.OnContext(fn(messages) { list.map(messages, rerendered) })
-  let args = "{\"messages\":[{\"role\":\"user\"},{\"role\":\"assistant\"}]}"
+  let keep =
+    hook.OnContext(fn(context) { list.map(context.messages, rerendered) })
+  let args =
+    "{\"op_id\":\"op-1\",\"messages\":[{\"role\":\"user\"},{\"role\":\"assistant\"}]}"
   assert hook.answer(keep, args)
     == Ok("{\"messages\":[{\"role\":\"user\"},{\"role\":\"assistant\"}]}")
 }

@@ -16,7 +16,7 @@ import core/message
 import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
 import telemetry/log
@@ -104,6 +104,83 @@ pub fn a_declining_extension_keeps_its_place_test() {
   assert hooks.subscribers(bus) == 1
 }
 
+pub fn a_run_start_injection_is_collected_and_rendered_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "quiet",
+        events: ["before_agent_start"],
+        invoke: answering("{\"inject\":null}"),
+      ),
+      hooks.Extension(
+        name: "web_search",
+        events: ["before_agent_start"],
+        invoke: answering("{\"inject\":\"3 searches left\"}"),
+      ),
+    ])
+  let assert [injected] =
+    hooks.run_start_injections(bus, operation(), "main", 7)
+    as "only the extension with something to say injects"
+  assert text_of(injected) == hooks.injection("web_search", "3 searches left")
+}
+
+pub fn a_block_with_no_reason_is_still_a_block_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "terse",
+        events: ["tool_call"],
+        invoke: answering("{\"verdict\":\"block\"}"),
+      ),
+    ])
+
+  // Failing open on an unreadable reason would turn an author's empty
+  // string into a silently disabled gate, which is the one direction a
+  // gate must not fail in when the extension did say "block".
+  assert hooks.gate(bus, operation(), "bash", json.Object([]), 0)
+    == hooks.Block(extension: "terse", reason: "it gave no reason")
+}
+
+pub fn a_tool_result_hook_cannot_write_the_usage_ledger_test() {
+  let billed =
+    settled(
+      "free",
+      call: "call-1",
+      settlement: Succeeded,
+      usage: Some(core_usage()),
+      at: 999,
+    )
+  let bus =
+    started([
+      hooks.Extension(
+        name: "biller",
+        events: ["tool_result"],
+        invoke: retexting(billed),
+      ),
+    ])
+
+  // The content is the hook's; every other field is the harness's, so a
+  // usage the hook attached never becomes a durable ledger row.
+  assert hooks.fold_tool_result(bus, reply_ok("secret")) == reply_ok("free")
+}
+
+pub fn a_tool_result_hook_cannot_move_the_reply_to_another_call_test() {
+  let elsewhere =
+    settled("free", call: "call-2", settlement: Succeeded, usage: None, at: 0)
+  let bus =
+    started([
+      hooks.Extension(
+        name: "mover",
+        events: ["tool_result"],
+        invoke: retexting(elsewhere),
+      ),
+    ])
+
+  // The rebuild keeps the original's coordinates, so the transform is
+  // applied to the reply it was given and lands nowhere else.
+  assert hooks.fold_tool_result(bus, reply_ok("secret")) == reply_ok("free")
+}
+
 pub fn an_injection_is_fenced_and_attributed_test() {
   let rendered = hooks.injection("web_search", "3 searches left")
   assert string.contains(rendered, "<extension name=web_search>")
@@ -128,7 +205,7 @@ pub fn a_context_transform_is_chained_in_load_order_test() {
         invoke: appending("two"),
       ),
     ])
-  let folded = hooks.fold_context(bus, [user("start")])
+  let folded = hooks.fold_context(bus, operation(), [user("start")])
   assert list.map(folded, text_of) == ["start", "one", "two"]
 }
 
@@ -143,7 +220,8 @@ pub fn an_oversized_context_transform_is_discarded_test() {
         invoke: appending(repeat("x", hooks.context_growth_tokens * 8)),
       ),
     ])
-  assert hooks.fold_context(bus, [user("start")]) == [user("start")]
+  assert hooks.fold_context(bus, operation(), [user("start")])
+    == [user("start")]
 }
 
 pub fn a_tool_result_transform_is_applied_test() {
@@ -169,10 +247,10 @@ pub fn is_error_cannot_be_cleared_by_a_hook_test() {
       ),
     ])
 
-  // The transform is discarded whole, so the text does not change
-  // either: a hook that lied about the failure gets to change nothing.
+  // The hook's content is taken and its claim about the settlement is
+  // not: the reply the driver commits still reports the failure.
   assert hooks.fold_tool_result(bus, reply_failed("it failed"))
-    == reply_failed("it failed")
+    == reply_failed("all fine")
 }
 
 pub fn a_transform_from_a_gone_extension_is_discarded_test() {
@@ -185,7 +263,7 @@ pub fn a_transform_from_a_gone_extension_is_discarded_test() {
         invoke: appending("one"),
       ),
     ])
-  let folded = hooks.fold_context(bus, [user("start")])
+  let folded = hooks.fold_context(bus, operation(), [user("start")])
   assert list.map(folded, text_of) == ["start", "one"]
 }
 
@@ -305,49 +383,65 @@ fn user(text: String) -> message.AgentMessage {
   )
 }
 
-// The two settlements a tool reply can be, written as two constructors
-// rather than one taking a flag: `is_error` is the thing under test, and
-// a call site reading `reply_ok("secret")` says which one it means.
-fn reply_ok(text: String) -> message.AgentMessage {
-  settled(
-    text,
-    message.ToolResultMessage(
-      tool_call_id: "call-1",
-      tool_name: "bash",
-      content: [],
-      details: None,
-      usage: None,
-      added_tool_names: None,
-      is_error: False,
-      timestamp: 0,
-    ),
+// Whether a settled reply reports an in-band failure. A type rather than
+// a `Bool` at three call sites, because `is_error` is the thing under
+// test and `settled(.., True, ..)` names nothing.
+type Settlement {
+  Succeeded
+  Failed
+}
+
+// A settled tool reply, with every field a hook might try to move named
+// at the call site: which call it settles, whether it failed, and what
+// usage it claims. `usage` is here because a `ToolResultMessage`
+// carrying one becomes a durable ledger row, so "the hook could not
+// change it" is a property worth writing down rather than assuming.
+fn settled(
+  text: String,
+  call call: String,
+  settlement settlement: Settlement,
+  usage usage: option.Option(message.Usage),
+  at at: Int,
+) -> message.AgentMessage {
+  message.ToolResultMessage(
+    tool_call_id: call,
+    tool_name: "bash",
+    content: [message.ToolResultText(text:, text_signature: None)],
+    details: None,
+    usage:,
+    added_tool_names: None,
+    is_error: settlement == Failed,
+    timestamp: at,
   )
+}
+
+fn reply_ok(text: String) -> message.AgentMessage {
+  settled(text, call: "call-1", settlement: Succeeded, usage: None, at: 0)
 }
 
 fn reply_failed(text: String) -> message.AgentMessage {
-  settled(
-    text,
-    message.ToolResultMessage(
-      tool_call_id: "call-1",
-      tool_name: "bash",
-      content: [],
-      details: None,
-      usage: None,
-      added_tool_names: None,
-      is_error: True,
-      timestamp: 0,
-    ),
-  )
+  settled(text, call: "call-1", settlement: Failed, usage: None, at: 0)
 }
 
-fn settled(text: String, shell: message.AgentMessage) -> message.AgentMessage {
-  case shell {
-    message.ToolResultMessage(..) ->
-      message.ToolResultMessage(..shell, content: [
-        message.ToolResultText(text:, text_signature: None),
-      ])
-    _other -> shell
-  }
+// A usage a hook might try to attach. The numbers do not matter; that
+// the field survives the fold or does not is the whole question.
+fn core_usage() -> message.Usage {
+  message.Usage(
+    input: 1,
+    output: 1,
+    cache_read: 0,
+    cache_write: 0,
+    cache_write_1h: None,
+    reasoning: None,
+    total_tokens: 2,
+    cost: message.UsageCost(
+      input: 0.0,
+      output: 0.0,
+      cache_read: 0.0,
+      cache_write: 0.0,
+      total: 0.0,
+    ),
+  )
 }
 
 fn text_of(one: message.AgentMessage) -> String {

@@ -72,7 +72,7 @@
 ////                      value ignored
 //// before_agent_start   args {"op_id": str, "strand": str}
 ////                      value {"inject": str | null}
-//// context              args {"messages": [message, …]}
+//// context              args {"op_id": str, "messages": [message, …]}
 ////                      value {"messages": [message, …]}
 //// tool_call            args {"op_id": str, "tool": str,
 ////                            "arguments": json, "source_index": int}
@@ -95,13 +95,25 @@
 ////
 //// ## What a hook may not do
 ////
+//// The `context` transform's only bound is the token allowance, and that
+//// is the whole of what the ruling gives it. A context hook may drop
+//// messages, reorder them or add its own, and the harness does not
+//// second-guess any of it — a hook installed to remove a section of the
+//// transcript is doing exactly what a context hook is for, and a floor
+//// or an attribution rule here would be policy this design has not
+//// made. What bounds it is the install: a context hook is an operator's
+//// approval of an extension's whole authority over a request, recorded
+//// in the install record.
+////
 //// A `tool_call` hook may block a call and may not rewrite its
 //// arguments: a hook that edited arguments after clearance is the one
 //// thing vetting cannot see. A `tool_result` hook may transform the
-//// reply's content and may not clear `is_error`, may not change which
-//// call the reply belongs to, and may not turn it into some other kind
-//// of message; a transform that tries any of those is discarded whole
-//// and the original reply is committed.
+//// reply's *content* and nothing else, and that is obtained by
+//// construction: what is committed is the original reply with the
+//// hook's content substituted, so `is_error`, the usage, the timestamp
+//// and the call's coordinates are the harness's whatever the hook
+//// answered with. An answer that is not a tool reply at all is
+//// discarded whole.
 
 import client/extension/manifest
 import client/notes
@@ -121,6 +133,7 @@ import runtime/hooks as runtime_hooks
 import session/session.{type Session}
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft
 import weft/actor
 import weft/event_manager.{type Handler}
 
@@ -384,10 +397,9 @@ pub fn run_start_injections(
   strand: String,
   now: Int,
 ) -> List(AgentMessage) {
-  let reply = process.new_subject()
-  let event = BeforeAgentStart(op_id: operation, strand:, reply:)
-  event_manager.sync_notify(bus.manager, event, waiting: fan_out_ms(bus))
-  drain(reply, [])
+  fan_out(bus, "before_agent_start", fn(reply) {
+    BeforeAgentStart(op_id: operation, strand:, reply:)
+  })
   |> list.map(fn(injection) { injected(injection, now) })
 }
 
@@ -410,11 +422,10 @@ pub fn gate(
   arguments: JsonValue,
   source_index: Int,
 ) -> Verdict {
-  let reply = process.new_subject()
-  let event =
+  fan_out(bus, "tool_call", fn(reply) {
     ToolCall(op_id: operation, tool:, arguments:, source_index:, reply:)
-  event_manager.sync_notify(bus.manager, event, waiting: fan_out_ms(bus))
-  first_block(drain(reply, []))
+  })
+  |> first_block
 }
 
 /// Notifies `agent_end`. A notification only: the follow-up an extension
@@ -460,16 +471,17 @@ pub fn agent_settled(bus: Bus, operation: OpId) -> Nil {
 /// ## Examples
 ///
 /// ```gleam
-/// // hooks.fold_context(bus, messages) == messages
+/// // hooks.fold_context(bus, operation, messages) == messages
 /// ```
 ///
 pub fn fold_context(
   bus: Bus,
+  operation: OpId,
   messages: List(AgentMessage),
 ) -> List(AgentMessage) {
   use carried, extension <- list.fold(bus.chain, messages)
   let asked =
-    ask(extension, manifest.context_event, context_args(carried))
+    ask(extension, manifest.context_event, context_args(operation, carried))
     |> result.try(fn(value) {
       decode_messages(value)
       |> result.map_error(fn(reason) { Crashed(reason) })
@@ -481,13 +493,13 @@ pub fn fold_context(
 /// Folds every extension's `tool_result` hook over a settled reply,
 /// before it is committed.
 ///
-/// The reply is a whole `ToolResultMessage` rather than its content
-/// alone, because that is the document the store holds and the one
-/// `core/codec` can decode totally. What comes back is checked against
-/// what went in: same kind of message, same call, same `is_error`. A
-/// transform failing any of those is discarded whole — a hook may
-/// rewrite what the model reads and may not rewrite whether the call
-/// failed.
+/// The reply travels as a whole `ToolResultMessage` rather than as its
+/// content alone, because that is the document the store holds and the
+/// one `core/codec` can decode totally. What comes back is *narrowed*
+/// rather than checked: the committed reply is the original with the
+/// hook's content substituted, so a hook may rewrite what the model
+/// reads and cannot rewrite whether the call failed, what it cost, or
+/// which call it settles.
 ///
 /// ## Examples
 ///
@@ -503,7 +515,7 @@ pub fn fold_tool_result(bus: Bus, reply: AgentMessage) -> AgentMessage {
       decode_message(value)
       |> result.map_error(fn(reason) { Crashed(reason) })
     })
-    |> result.try(fn(produced) { same_settlement(carried, produced) })
+    |> result.try(fn(produced) { retexted(carried, produced) })
   keep(bus, extension, manifest.tool_result_event, carried, asked)
 }
 
@@ -564,35 +576,30 @@ fn tokens(messages: List(AgentMessage)) -> Int {
   })
 }
 
-// What a `tool_result` transform is allowed to have changed, stated as
-// what it is not: the reply still settles the same call, the same tool,
-// and the same success or failure. `is_error` is the one an extension
-// would most want and is exactly the one the ruling refuses.
-fn same_settlement(
+// What a `tool_result` transform is allowed to have changed, obtained by
+// construction rather than by checking: the reply that is committed is
+// the *original* with the hook's content substituted, so every other
+// field is the harness's whatever the hook answered with.
+//
+// Checking a field list was the first shape of this and it was wrong in
+// a way worth writing down. `is_error` was checked; `usage` was not, and
+// a `ToolResultMessage` carrying a usage becomes a durable row in the
+// session's ledger (`machine/planner`). A hook that may rewrite what the
+// model reads must not be able to write the session's accounting, and a
+// rebuild says that once instead of a check saying it per field and
+// missing the next one.
+fn retexted(
   before: AgentMessage,
   after: AgentMessage,
 ) -> Result(AgentMessage, HookFailure) {
   case before, after {
-    message.ToolResultMessage(
-      tool_call_id: id,
-      tool_name: name,
-      is_error: failed,
-      ..,
-    ),
-      message.ToolResultMessage(
-        tool_call_id: same_id,
-        tool_name: same_name,
-        is_error: same_failure,
-        ..,
-      )
-      if id == same_id && name == same_name && failed == same_failure
-    -> Ok(after)
+    message.ToolResultMessage(..), message.ToolResultMessage(content:, ..) ->
+      Ok(message.ToolResultMessage(..before, content:))
 
     _before, _after ->
       Error(Refused(
-        "a tool_result transform may change the reply's content and "
-        <> "nothing else; this one changed the call it settles or whether "
-        <> "it failed",
+        "a tool_result transform answers with the reply it was given, "
+        <> "its content changed; this one answered with something else",
       ))
   }
 }
@@ -818,8 +825,9 @@ fn settled_args(operation: OpId) -> JsonValue {
   json.Object([#("op_id", json.String(ids.op_id_to_string(operation)))])
 }
 
-fn context_args(messages: List(AgentMessage)) -> JsonValue {
+fn context_args(operation: OpId, messages: List(AgentMessage)) -> JsonValue {
   json.Object([
+    #("op_id", json.String(ids.op_id_to_string(operation))),
     #("messages", json.Array(list.map(messages, codec.encode_message))),
   ])
 }
@@ -846,12 +854,16 @@ fn verdict_of(name: String, value: JsonValue) -> Result(Verdict, String) {
   }
 }
 
+// A block with no readable reason is still a block. Treating it as
+// undecodable would fail the gate *open*, which turns an author's empty
+// string into a silently disabled hook; the model gets a sentence saying
+// the extension said nothing more, which at least names who to ask.
 fn blocked(name: String, value: JsonValue) -> Result(Verdict, String) {
   case field(value, "reason") {
     Ok(json.String(value: reason)) if reason != "" ->
       Ok(Block(extension: name, reason:))
     Ok(_other) | Error(_absent) ->
-      Error("a blocking verdict carries a non-empty reason")
+      Ok(Block(extension: name, reason: "it gave no reason"))
   }
 }
 
@@ -951,10 +963,83 @@ fn first_block(verdicts: List(Verdict)) -> Verdict {
   }
 }
 
-// The bound on the whole fan-out. Every handler may spend the per-call
-// deadline, so the manager's own call has to allow all of them to,
-// plus a margin for the decoding between them; otherwise a slow bus
-// crashes the caller rather than the extension that stalled it.
+// Every answer one fan-out produced, gathered on a worker process rather
+// than on the caller's.
+//
+// The worker is the whole point, and it is not defensive scaffolding.
+// `sync_notify` is a `call`, and a `call` whose callee does not answer in
+// time **panics the caller**. The callers here are strand drivers, and
+// one `Effects` record serves every strand of a session, so the manager
+// is shared: the wait is whatever is queued ahead of this event plus this
+// event's own fan-out, and the second term is the only one a chain length
+// can bound. A stalled extension has to cost a hook and never a strand,
+// so the wait happens inside a weft run whose deadline reaps it and whose
+// every unhappy outcome is "nobody answered".
+//
+// Answering with nothing is the right direction for both callers: no
+// injection, and no block on a call the built-in clearance already
+// cleared.
+fn fan_out(
+  bus: Bus,
+  event: String,
+  build: fn(Subject(answer)) -> Event,
+) -> List(answer) {
+  let collect = fn() {
+    let reply = process.new_subject()
+    event_manager.sync_notify(
+      bus.manager,
+      build(reply),
+      waiting: fan_out_ms(bus),
+    )
+    Ok(drain(reply, []))
+  }
+  let ran =
+    weft.new([collect])
+    |> weft.deadline(fan_out_ms(bus) + deadline_ms)
+    |> weft.start
+  gathered(bus, event, ran)
+}
+
+// A one-task run yields exactly one outcome; the impossible shapes are
+// answered rather than asserted away, because a wrong account from the
+// engine should cost a fan-out and not the driver behind it. Only a
+// managed task can lose a drain proof, and this run carries none, so
+// those two arms are exhaustiveness rather than cases.
+fn gathered(
+  bus: Bus,
+  event: String,
+  outcomes: List(weft.Outcome(List(answer), String)),
+) -> List(answer) {
+  case outcomes {
+    [weft.Completed(value:, ..)] -> value
+
+    [weft.Failed(..)]
+    | [weft.Crashed(..)]
+    | [weft.Abandoned(..)]
+    | [weft.NeverStarted(..)]
+    | [weft.DrainProofLost(..)]
+    | [weft.CancellationUnconfirmed(..)]
+    | []
+    | [_, _, ..] -> {
+      log.warn(bus.logger, "extension.hook.unanswered", [
+        field.ident(key: "event", value: event),
+        field.text(
+          key: "reason",
+          value: "the hook bus did not answer inside its deadline; the "
+            <> "event is treated as though every extension had nothing to say",
+        ),
+      ])
+      []
+    }
+  }
+}
+
+// The budget the fan-out itself is given. Every handler may spend the
+// per-call deadline, so the manager's own call has to allow all of them
+// to, plus one deadline's margin for the decoding between them. It is
+// deliberately not the bound the *caller* relies on: queueing behind
+// another strand's notification can outlast it, which is exactly why the
+// call happens on a worker whose death nobody feels.
 fn fan_out_ms(bus: Bus) -> Int {
   { list.length(bus.chain) + 1 } * deadline_ms
 }
@@ -1006,7 +1091,7 @@ pub fn wire(
         )
       },
       context: fn(operation, messages) {
-        fold_context(bus, built.context(operation, messages))
+        fold_context(bus, operation, built.context(operation, messages))
       },
       run_end: fn(operation) {
         // A notification beside the existing slot, never instead of it:
