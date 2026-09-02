@@ -104,6 +104,22 @@ from a leaf owner the scope adopts before releasing it
 `restart_reap_test.reaper_claim_outlives_a_driver_killed_mid_claim_test`
 pins it. Two-core runners hit the window; a workstation never did.
 
+**And the rule the macOS gate taught next.** That ordering is worth
+holding, but it is the claim protocol's own guarantee and it cannot be
+the ledger's only defence: on a contended two-core runner the interleave
+harness still lost roughly one run in seventy to a ledger that met a
+claim as `noproc` and shut a healthy session down. `noproc` is what a
+monitor answers about a pid that was already gone, never a reason a
+process exits with, and a claim reaches the ledger as a message, so a
+reaper that drains and exits in that gap can be met no other way.
+`drain_registry.Verdict` now tells the three apart and retires such a
+generation: a weft scope holds itself alive until every effect it adopted
+has exited and says `weft_drain_proof_lost` when it cannot, so a pid met
+as `noproc` provably left nothing running.
+`drain_registry_test.claim_naming_an_already_departed_reaper_retires_it_test`
+pins it, and 280 stressed local runs of `runtime/interleave_test` put the
+`noproc` share of the non-convergences at four of nine failures.
+
 **Left open, deliberately.** `cap/task` is a clean fit for the run engine
 but `cap` is the satellite-side prelude with no weft dependency; adding
 one puts weft into the offline build seed and is a distribution decision

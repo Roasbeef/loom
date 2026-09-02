@@ -68,9 +68,17 @@ extended by the M3 runtime wave.
   actor prevents a name-registry restart from erasing ownership barriers.
 - `runtime/internal/drain_registry.Message` — the session-local actor owning
   each logical strand's complete unadjudicated reaper chain. It precedes the
-  restartable registry and is a significant temporary child: only a normal
-  reaper `Down` retires a generation, while an abnormal `Down` kills the ledger
-  and stops the session instead of inventing an empty ownership history.
+  restartable registry and is a significant temporary child: a normal reaper
+  `Down` retires a generation, while a `Down` that says the reaper destroyed
+  its ownership set kills the ledger and stops the session instead of
+  inventing an empty ownership history. `noproc` is the exception, and
+  `drain_registry.Verdict` is where the three are told apart: it is what a
+  monitor answers about a pid that was already gone, never a reason a process
+  exits with, and a claim reaches this actor as a message, so a reaper that
+  drains and exits in that gap can be met no other way. A weft scope holds
+  itself alive until every effect it adopted has exited and says
+  `weft_drain_proof_lost` when it cannot, so a pid met as `noproc` left
+  nothing running: it retires like a normal exit.
 - `runtime/internal/provider_custodian.Prepared` — one provider request as a
   parked owner plus the one-way `begin` permit that releases it. The worker
   behind it is a `weft/state_machine`, `Parked → Forwarding → Cancelling →
@@ -267,8 +275,10 @@ extended by the M3 runtime wave.
     (`strand_runtime.claim_through`); the scope cannot settle while the
     claimant is inside the call, so the ledger's monitor always lands on a
     live pid — a claim made from the driver instead let a driver killed
-    mid-claim leave the ledger monitoring a scope that had already drained,
-    which reads as `noproc` and fails the session closed. The driver blocks
+    mid-claim leave the ledger monitoring a scope that had already drained.
+    That ordering is the claim protocol's own guarantee and not the ledger's
+    safety net: the ledger reads a `noproc` claim as a departure whatever
+    the claimant did. The driver blocks
     on the claimant's verdict in its guaranteed-first `AwaitPredecessors`
     handler; meanwhile an abort simply queues in the mailbox behind the
     barrier. Sender: `runtime/strand_runtime` through the closure the
@@ -374,8 +384,10 @@ extended by the M3 runtime wave.
   The effect installs a `DrainWitness` before granting begin, so it can delay
   `ProviderDone` until the original monitor reports `Drained`; the reaper holds
   an independent monitor for recovery. A provider owner or reaper must exit
-  normally to discharge its obligation; killed, abnormal, and late `noproc`
-  observations fail closed. `SessionTree`
+  normally to discharge its obligation; killed and abnormal observations fail
+  closed. A reaper the ledger meets as `noproc` is the one exception, and
+  retires: the pid is gone, and a weft scope cannot be gone with effects
+  still running. `SessionTree`
   retains the ledger's stable name, so
   `shutdown` waits it independently even when the root supervisor was killed
   abnormally. This transitive drain barrier, rather than scheduler
