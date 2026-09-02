@@ -32,9 +32,10 @@
 //// schedule now carries a mandatory expiry no model can raise, which
 //// turns "unsupervised forever" into "unsupervised for at most
 //// `default_max_fires` fires or a week." `Policy` is the operator's say
-//// over that door and defaults open; read its doc comment for the whole
-//// argument, and `docs/design-notes/scheduled-heartbeats.md`'s addendum
-//// for what the reversal cost.
+//// over that door and defaults to `steer`, which keeps the tools and
+//// forbids waking; read its doc comment for the whole argument, and
+//// `docs/design-notes/scheduled-heartbeats.md`'s addendum for what the
+//// reversal cost and why the default then moved back a step.
 ////
 //// The bounds are the important part of "the same value either way": a
 //// model-created schedule is built by `build`, which enforces exactly
@@ -1087,31 +1088,37 @@ pub fn injection(schedule: Schedule, late: Lateness, origin: Origin) -> String {
 /// and it is deliberately one knob with three positions rather than two
 /// booleans that can disagree.
 ///
-/// **The default is `ModelSchedulesWake`: the door is open.** That is a
-/// deliberate reversal of where this feature started, and the reason is
-/// that the half-open position is not a feature. A heartbeat exists to
-/// fire when nobody is prompting — to check on unattended work, to poll
-/// something that changes on its own — and a schedule that may only
-/// steer a run already open cannot do any of that. Shipping `steer` as
-/// the default would have meant shipping a cron that never fires when it
-/// matters, which reads as a bug rather than as a policy.
+/// **The default is `ModelSchedulesSteer`: the tools are registered and
+/// `wake` is capped.** A model can create schedules for itself, and every
+/// one of them steers a run already open and holds when the strand is
+/// idle, exactly as a triggered project rule does. What a model cannot
+/// do under the default is arrange to be woken: nothing it creates can
+/// start a run on an idle strand, so the session still ends when the
+/// work in flight ends, and the model's own reminders cost nothing while
+/// nobody is working.
 ///
-/// What makes the open default defensible is that the bound is
-/// structural rather than postural. Every recurring schedule expires,
-/// always, on both `max_fires` and `expires_after_s` with the earlier
-/// winning, and no model-created schedule can raise either. So a model
-/// can wake itself, and cannot wake itself indefinitely: the worst case
-/// is `max_model_schedules` schedules each firing `default_max_fires`
-/// times or for a week, whichever comes first, in a session an operator
-/// is running and can stop.
+/// The door once shipped open (`ModelSchedulesWake`), on the argument
+/// that a heartbeat which can only steer an open run never fires when a
+/// heartbeat is for, and that the per-schedule expiry bounded the worst
+/// case. The second half did not hold up: expiry is per schedule, a
+/// fresh name is a fresh clock, and a model that is running because its
+/// heartbeat woke it can create the next one before this one expires
+/// (issue #161). So under an open default a model could keep a session
+/// alive for as long as the operator left the server up, and Loom's
+/// priorities put isolation before capability: the posture that extends a
+/// session's life unsupervised is the operator's to opt into, not the
+/// build's to assume. Waking is one line of `loom.toml` away
+/// (`[schedules] model_created = "wake"`), and a model that asks to wake
+/// under the default gets a schedule that steers and a result that says
+/// so, rather than a refusal it would retry against.
 ///
-/// The other two positions remain for operators who want them.
-/// `ModelSchedulesSteer` keeps the tools but forbids waking, which is
-/// the right setting for a host that pays per token and wants a model's
-/// reminders to cost nothing while nobody is working. `ModelSchedulesOff`
-/// registers no schedule tool at all, which is the right setting for a
-/// host that wants scheduling to be its own decision entirely — and it is
-/// still the only position under which a model cannot see the door.
+/// The other two positions remain. `ModelSchedulesWake` is for an
+/// operator who wants unattended work checked on with nobody prompting
+/// and accepts that a model may chain such schedules for the life of the
+/// server. `ModelSchedulesOff` registers no schedule tool at all, which
+/// is the right setting for a host that wants scheduling to be its own
+/// decision entirely — and it is the only position under which a model
+/// cannot see the door.
 pub type Policy {
   /// No schedule tool is registered. The model cannot see the door.
   ModelSchedulesOff
@@ -1126,9 +1133,9 @@ pub type Policy {
 }
 
 /// What a document with no `[schedules]` table means, and what a server
-/// started with no config file at all gets. See `Policy` for why the door
-/// defaults open.
-pub const default_policy = ModelSchedulesWake
+/// started with no config file at all gets. See `Policy` for why the
+/// default steers rather than wakes.
+pub const default_policy = ModelSchedulesSteer
 
 /// The longest recurring interval, in seconds — the same 7 days
 /// `max_expires_after_s` caps the expiry window at.

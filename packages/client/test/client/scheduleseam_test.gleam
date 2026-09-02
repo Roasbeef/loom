@@ -121,6 +121,23 @@ fn every(
 
 // --- creating --------------------------------------------------------------
 
+// A server booted with no [schedules] table runs the default policy, and
+// under it a model's request to wake is honoured as far as the operator
+// allowed: the schedule is created, it steers, and the result says so.
+// This is the seam's half of the #161 ruling — the default never hands a
+// model a schedule that can start a run on an idle strand.
+pub fn the_default_policy_caps_a_wake_request_to_steer_test() {
+  let assert Ok(rig) = harness(schedule.default_policy, [])
+    as "the harness must boot"
+  let assert Ok(created) =
+    rig.seam.create(ctx("main"), every("poll", 300, schedule_tool.WakesIdle))
+    as "a wake request under the default must still be created"
+  assert created.wake == schedule_tool.SteersOnly
+  let assert Ok([listed]) = rig.seam.list(ctx("main"))
+    as "the capped schedule must be listed"
+  assert listed.wake == schedule_tool.SteersOnly
+}
+
 pub fn a_created_schedule_is_durable_and_listed_test() {
   let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
     as "the harness must boot"

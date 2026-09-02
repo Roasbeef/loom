@@ -320,9 +320,10 @@ pub type Settings {
     schedules: List(schedule.Schedule),
     /// Whether the model may create schedules of its own, from the
     /// `[schedules]` table. Defaults to `schedule.default_policy`, which
-    /// is open — see `client/schedule.Policy` for why. Only
-    /// `ModelSchedulesOff` registers no schedule tool at all, the way an
-    /// absent memory plane registers no `remember`.
+    /// registers the tools and caps `wake` — see `client/schedule.Policy`
+    /// for why waking is an opt-in. Only `ModelSchedulesOff` registers no
+    /// schedule tool at all, the way an absent memory plane registers no
+    /// `remember`.
     schedule_policy: schedule.Policy,
   )
 }

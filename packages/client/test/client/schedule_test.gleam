@@ -647,11 +647,12 @@ pub fn the_first_line_carries_the_late_marker_test() {
 
 // --- the [schedules] policy table ------------------------------------------
 
-// The door defaults open, and an operator who writes no [schedules] table
-// gets that default — including one who writes [[schedule]] tables and
-// nothing else. Pinned because it is a deliberate reversal: this feature
-// shipped its first version operator-only, and a silent drift back to
-// closed would look like a bug fix rather than the policy change it is.
+// The door defaults to steer, and an operator who writes no [schedules]
+// table gets that default — including one who writes [[schedule]] tables
+// and nothing else. Pinned because the default has moved twice already
+// (operator-only, then open, then steer per #161), and a silent drift in
+// either direction would look like a bug fix rather than the policy
+// change it is.
 pub fn a_document_with_no_schedules_table_takes_the_default_test() {
   assert schedule.parse_policy("") == Ok(schedule.default_policy)
   assert schedule.parse_policy(
@@ -660,11 +661,18 @@ pub fn a_document_with_no_schedules_table_takes_the_default_test() {
     == Ok(schedule.default_policy)
 }
 
-pub fn the_default_is_open_and_permits_waking_test() {
-  assert schedule.default_policy == schedule.ModelSchedulesWake
+// The default registers the tools and caps wake: a model that asks to be
+// woken gets a schedule that steers, never a refusal and never a wake.
+pub fn the_default_steers_and_caps_waking_test() {
+  assert schedule.default_policy == schedule.ModelSchedulesSteer
   assert schedule.policy_opens_the_door(schedule.default_policy)
   assert schedule.wake_under(
       schedule.default_policy,
+      requested: schedule.WakesIdle,
+    )
+    == schedule.SteersOnly
+  assert schedule.wake_under(
+      schedule.ModelSchedulesWake,
       requested: schedule.WakesIdle,
     )
     == schedule.WakesIdle
@@ -897,7 +905,7 @@ pub fn a_malformed_instant_is_refused_in_words_test() {
 pub fn the_committed_example_configs_policy_parses_test() {
   let assert Ok(text) = simplifile.read("../../docs/examples/loom.toml")
     as "the committed example config must be readable"
-  assert schedule.parse_policy(text) == Ok(schedule.ModelSchedulesWake)
+  assert schedule.parse_policy(text) == Ok(schedule.ModelSchedulesSteer)
 }
 
 // --- attribution -----------------------------------------------------------
