@@ -24,6 +24,7 @@ import broker/token
 import codemode/artifact
 import codemode/compile
 import codemode/identity.{type PhaseIdentity}
+import codemode/internal/args
 import codemode/satellite
 import codemode/workspace
 import core/clock
@@ -57,6 +58,9 @@ type Seen {
   EmitAsked(name: String, bytes: Int)
   WriteAsked(path: String, contents: String)
   EditAsked(path: String, edits: Int)
+  ScheduleCreateAsked(name: String)
+  ScheduleListAsked
+  ScheduleCancelAsked(name: String)
 }
 
 const file_contents = "the file's own bytes\n"
@@ -116,6 +120,30 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
     emit: fn(art: artifact.Artifact) {
       process.send(seen, EmitAsked(art.name, bit_array.byte_size(art.bytes)))
       Ok(emitted_id)
+    },
+    schedule_create: fn(request: workspace.ScheduleRequest) {
+      process.send(seen, ScheduleCreateAsked(request.name))
+      Ok(workspace.ScheduleCreated(
+        name: request.name,
+        when: "every 60s, at most 1000 times",
+        wake: request.wake,
+      ))
+    },
+    schedule_list: fn() {
+      process.send(seen, ScheduleListAsked)
+      Ok([
+        workspace.ScheduleRow(
+          name: "poll",
+          when: "every 60s, at most 1000 times",
+          wake: workspace.WakesIdle,
+          fired: 2,
+          body: "look",
+        ),
+      ])
+    },
+    schedule_cancel: fn(name) {
+      process.send(seen, ScheduleCancelAsked(name))
+      Ok(Nil)
     },
     emit_ceiling: artifact.default_emit_ceiling,
   )
@@ -197,6 +225,10 @@ fn map(fields: List(#(String, MsgPackValue))) -> MsgPackValue {
 
 fn text(value: String) -> MsgPackValue {
   msgpack.StringValue(value)
+}
+
+fn int(value: Int) -> MsgPackValue {
+  msgpack.IntValue(value)
 }
 
 fn field(value: MsgPackValue, key: String) -> Result(MsgPackValue, Nil) {
@@ -660,7 +692,7 @@ pub fn every_serviced_cap_routes_and_none_builds_a_clearance_test() {
       }
     })
   assert served == list.repeat(True, list.length(workspace.serviced_caps))
-  assert list.length(workspace.serviced_caps) == 8
+  assert list.length(workspace.serviced_caps) == 11
 }
 
 pub fn an_unrouted_cap_is_handed_to_the_inner_router_test() {
@@ -692,6 +724,13 @@ fn well_formed(cap: String) -> MsgPackValue {
         ),
       ])
     "kv.get" | "kv.delete" -> map([#("key", text("k"))])
+    "schedule.create" ->
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+      ])
+    "schedule.cancel" -> map([#("name", text("poll"))])
     "kv.set" ->
       map([#("key", text("k")), #("value", msgpack.BinaryValue(<<1, 2>>))])
     "report.emit" -> emit_args("out.txt", "hello")
@@ -880,4 +919,142 @@ fn fresh_dir(name: String) -> String {
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
     as "the test directory must be creatable"
   dir
+}
+
+// --- schedule ---------------------------------------------------------------
+
+pub fn schedule_create_carries_the_request_and_the_granted_wake_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+        #("wake", msgpack.BoolValue(True)),
+      ]),
+    )
+    as "schedule.create must be serviced"
+
+  assert drain(seen) == [ScheduleCreateAsked("poll")]
+  assert field(value, "name") == Ok(text("poll"))
+  assert field(value, "wake") == Ok(msgpack.BoolValue(True))
+  assert field(value, "when") == Ok(text("every 60s, at most 1000 times"))
+}
+
+// `wake` is optional and defaults false, so a program that never mentions
+// it gets a schedule that steers rather than one the host has to guess
+// about.
+pub fn schedule_create_defaults_wake_to_false_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+      ]),
+    )
+    as "schedule.create must be serviced"
+
+  assert field(value, "wake") == Ok(msgpack.BoolValue(False))
+}
+
+// Exactly one timing, refused here rather than at the host: a
+// contradictory request costs one denial instead of a round trip into a
+// store that would have had to invent an answer.
+pub fn schedule_create_refuses_both_or_neither_timing_test() {
+  let seen = recorder()
+  let both =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+        #("at", text("2026-09-01T09:00:00Z")),
+      ]),
+    )
+  let neither =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([#("name", text("poll")), #("body", text("look"))]),
+    )
+
+  assert both.code == args.invalid_argument_code
+  assert neither.code == args.invalid_argument_code
+  // Neither reached the host: a request the router can see is wrong is
+  // never handed on.
+  assert drain(seen) == []
+}
+
+pub fn schedule_create_refuses_a_mistyped_argument_test() {
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", text("60")),
+      ]),
+    )
+
+  assert denial.code == args.invalid_argument_code
+  assert drain(seen) == []
+}
+
+pub fn schedule_list_renders_every_row_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(answering(seen), "schedule.list", map([]))
+    as "schedule.list must be serviced"
+
+  assert drain(seen) == [ScheduleListAsked]
+  let assert Ok(msgpack.ArrayValue(items: [row])) = field(value, "schedules")
+    as "one row must come back"
+  assert field(row, "name") == Ok(text("poll"))
+  assert field(row, "fired") == Ok(int(2))
+  assert field(row, "wake") == Ok(msgpack.BoolValue(True))
+  assert field(row, "body") == Ok(text("look"))
+}
+
+pub fn schedule_cancel_names_the_schedule_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(answering(seen), "schedule.cancel", map([#("name", text("poll"))]))
+    as "schedule.cancel must be serviced"
+
+  assert drain(seen) == [ScheduleCancelAsked("poll")]
+  assert field(value, "cancelled") == Ok(msgpack.BoolValue(True))
+}
+
+// Each refusal gets its own code, because a program can act on the
+// difference: a name clash means pick another, a limit means cancel
+// something, an invalid request means fix the arguments.
+pub fn every_schedule_refusal_has_its_own_code_test() {
+  let codes =
+    [
+      workspace.ScheduleInvalid("r"),
+      workspace.ScheduleLimitReached("r"),
+      workspace.ScheduleNameTaken("r"),
+      workspace.ScheduleNotFound("r"),
+      workspace.ScheduleUnavailable("r"),
+    ]
+    |> list.map(fn(refusal) { workspace.schedule_denial(refusal).code })
+
+  assert codes
+    == [
+      "invalid_schedule", "schedule_limit_reached", "schedule_name_taken",
+      "schedule_not_found", "schedules_unavailable",
+    ]
+  // Distinct, which is the whole point of giving each one a code.
+  assert list.length(list.unique(codes)) == 5
 }

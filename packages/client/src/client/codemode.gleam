@@ -183,6 +183,7 @@ import broker/token
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/scheduleseam
 import client/scratch
 import codemode/artifact
 import codemode/build
@@ -204,6 +205,7 @@ import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -211,6 +213,7 @@ import tools/agent.{type Agency}
 import tools/blob
 import tools/codemode as codemode_tool
 import tools/fs
+import tools/schedule as schedule_tool
 import tools/tool
 
 /// The smallest pooled outstanding-effect cap a satellite can live under:
@@ -269,6 +272,18 @@ pub type Config {
     /// naming the reason — never a silent success, which a program would
     /// read as an eviction and loop on.
     scratch: Scratch,
+    /// The scheduling door `schedule.*` reaches, or `None` when the
+    /// operator shut it.
+    ///
+    /// A door rather than a runtime, for the same reason `scratch` is a
+    /// seam over a name: this configuration is assembled before
+    /// `api.open` has returned a runtime, and the door closes over the
+    /// borrow instead (`client/scheduleseam.door`). `None` leaves the
+    /// three capabilities unrouted, so a program calling one meets the
+    /// ordinary unknown-capability denial rather than a door that always
+    /// refuses — the same posture the tool registry takes, one layer
+    /// down.
+    schedules: Option(scheduleseam.Door),
     /// The MCP servers this host reached at boot, if any.
     ///
     /// One field for the same reason `surface` is one: a configured
@@ -322,6 +337,27 @@ pub type Scratch =
 ///
 pub fn over_scratch(config: Config, store: Scratch) -> Config {
   Config(..config, scratch: store)
+}
+
+/// The same host configuration, serving `schedule.*` over one scheduling
+/// door.
+///
+/// A host that never calls this leaves the three capabilities unrouted,
+/// so a program calling one meets the ordinary unknown-capability denial
+/// — which is what an operator who shut the door should get, and is a
+/// clearer answer than a door that exists and always refuses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.over_schedules(config, scheduleseam.door(wiring))
+/// ```
+///
+pub fn over_schedules(
+  config: Config,
+  door: Option(scheduleseam.Door),
+) -> Config {
+  Config(..config, schedules: door)
 }
 
 /// The same host configuration, writing `report.emit` artifacts into a
@@ -666,6 +702,11 @@ pub fn default_config(
     surface: Workspace,
     blob_root: workspace <> "/" <> blob_directory,
     scratch: scratch.none(),
+    // No scheduling plane by default, the same posture `scratch.none()`
+    // and `mcp.none()` take: a host wires one deliberately, and
+    // `client/serve` does when the operator's policy leaves the door
+    // open.
+    schedules: None,
     mcp: mcp_wiring.none(),
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
@@ -1572,6 +1613,7 @@ pub fn workspace_seam(
 ) -> workspace.Workspace {
   let filesystem = fs.real_filesystem()
   let root = request.workspace
+  let request_strand = request.strand
 
   // The protected list rides the request's own base policy — the same
   // value the launch composes against — so the bridge's write boundary
@@ -1589,9 +1631,154 @@ pub fn workspace_seam(
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
     kv_delete: config.scratch.delete,
+    // The strand is bound here, from the request, and never travels over
+    // the cap channel: a program cannot name a strand, so it cannot
+    // schedule into another one's context.
+    schedule_create: fn(request) {
+      schedule_create_in(config.schedules, request, on: request_strand)
+    },
+    schedule_list: fn() { schedule_list_in(config.schedules, request_strand) },
+    schedule_cancel: fn(name) {
+      schedule_cancel_in(config.schedules, name, on: request_strand)
+    },
     emit: emitting(filesystem, config.blob_root, config.entropy),
     emit_ceiling: artifact.default_emit_ceiling,
   )
+}
+
+// --- schedule.* ------------------------------------------------------------
+//
+// The bridge between two refusal vocabularies that say the same things.
+// `codemode` may not depend on `client`, so `workspace.ScheduleRefusal`
+// restates `tools/schedule.Refusal` in its own terms and these three
+// functions map across. The mapping is total on both sides by
+// construction: every arm below names one constructor, so a new refusal
+// on either side fails to compile here rather than silently becoming
+// something else.
+//
+// A shut door answers `ScheduleUnavailable` rather than being routed at
+// all — see `Config.schedules`. It cannot be reached in practice, because
+// a `None` door leaves the capabilities unrouted; the arm exists so the
+// closure is total without a panic.
+
+fn schedule_create_in(
+  door: Option(scheduleseam.Door),
+  request: workspace.ScheduleRequest,
+  on strand: String,
+) -> Result(workspace.ScheduleCreated, workspace.ScheduleRefusal) {
+  use door <- with_door(door)
+  use timing <- result.try(schedule_timing(request))
+  door.create(
+    strand,
+    schedule_tool.Request(
+      name: request.name,
+      timing:,
+      wake: requested_wake(request.wake),
+      body: request.body,
+    ),
+  )
+  |> result.map(fn(created: schedule_tool.Created) {
+    workspace.ScheduleCreated(
+      name: created.name,
+      when: created.when,
+      wake: granted_wake(created.wake),
+    )
+  })
+  |> result.map_error(schedule_refusal)
+}
+
+// The router has already refused both-or-neither, so this only has to
+// name which one arrived. The remaining arms are unreachable and say so
+// in the one vocabulary the caller can read.
+// `codemode` may not depend on `tools` either, so a wake crossing this
+// seam is translated the same way a refusal is. The two directions get a
+// function each because different sides read them: `requested_wake`
+// carries what the program asked into the door's vocabulary, and
+// `granted_wake` carries what the host granted back out.
+fn requested_wake(wake: workspace.ScheduleWake) -> schedule_tool.Wake {
+  case wake {
+    workspace.WakesIdle -> schedule_tool.WakesIdle
+    workspace.SteersOnly -> schedule_tool.SteersOnly
+  }
+}
+
+fn granted_wake(wake: schedule_tool.Wake) -> workspace.ScheduleWake {
+  case wake {
+    schedule_tool.WakesIdle -> workspace.WakesIdle
+    schedule_tool.SteersOnly -> workspace.SteersOnly
+  }
+}
+
+fn schedule_timing(
+  request: workspace.ScheduleRequest,
+) -> Result(schedule_tool.RequestedTiming, workspace.ScheduleRefusal) {
+  case request.every_seconds, request.at {
+    Some(seconds), None -> Ok(schedule_tool.Every(seconds:))
+    None, Some(instant) -> Ok(schedule_tool.At(instant:))
+    Some(_seconds), Some(_instant) | None, None ->
+      Error(workspace.ScheduleInvalid(
+        reason: "give exactly one of every_seconds or at",
+      ))
+  }
+}
+
+fn schedule_list_in(
+  door: Option(scheduleseam.Door),
+  strand: String,
+) -> Result(List(workspace.ScheduleRow), workspace.ScheduleRefusal) {
+  use door <- with_door(door)
+  door.list(strand)
+  |> result.map(fn(rows) {
+    list.map(rows, fn(row: schedule_tool.Listed) {
+      workspace.ScheduleRow(
+        name: row.name,
+        when: row.when,
+        wake: granted_wake(row.wake),
+        fired: row.fired,
+        body: row.body,
+      )
+    })
+  })
+  |> result.map_error(schedule_refusal)
+}
+
+fn schedule_cancel_in(
+  door: Option(scheduleseam.Door),
+  name: String,
+  on strand: String,
+) -> Result(Nil, workspace.ScheduleRefusal) {
+  use door <- with_door(door)
+  door.cancel(strand, name) |> result.map_error(schedule_refusal)
+}
+
+fn with_door(
+  door: Option(scheduleseam.Door),
+  then: fn(scheduleseam.Door) -> Result(a, workspace.ScheduleRefusal),
+) -> Result(a, workspace.ScheduleRefusal) {
+  case door {
+    None ->
+      Error(workspace.ScheduleUnavailable(
+        reason: "this session serves no scheduling plane",
+      ))
+    Some(door) -> then(door)
+  }
+}
+
+fn schedule_refusal(
+  refusal: schedule_tool.Refusal,
+) -> workspace.ScheduleRefusal {
+  case refusal {
+    schedule_tool.Invalid(reason:) -> workspace.ScheduleInvalid(reason:)
+    schedule_tool.CeilingReached(..) ->
+      workspace.ScheduleLimitReached(reason: schedule_tool.refusal_reason(
+        refusal,
+      ))
+    schedule_tool.NameTaken(..) ->
+      workspace.ScheduleNameTaken(reason: schedule_tool.refusal_reason(refusal))
+    schedule_tool.NotFound(..) ->
+      workspace.ScheduleNotFound(reason: schedule_tool.refusal_reason(refusal))
+    schedule_tool.Unavailable(reason:) -> workspace.ScheduleUnavailable(reason:)
+  }
 }
 
 // `fs.read`: resolve, then read, with both refusals kept structured.

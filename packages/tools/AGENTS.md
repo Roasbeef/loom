@@ -148,6 +148,31 @@ can repair from.
   (`IndexUnavailable` | `IndexRefused`). The tool never names a session:
   `ThisSession` means the *host's*, because a model that could name one
   could read a session it was never given.
+- `tools/schedule.{Schedules, Limits, Request, RequestedTiming, Created,
+  Listed, Wake, Refusal, tools, create_tool_name, list_tool_name,
+  cancel_tool_name, refusal_outcome, refusal_reason}` — the model's own
+  door onto scheduled heartbeats, a value over a seam the host fills
+  (`client/scheduleseam`), exactly as `remember` is. Three tools, exported
+  as one list so a host cannot register the writer without the reader.
+  `Limits` is passed **in** rather than defined here — the reverse of
+  `remember`'s caps — because these bounds are enforced on the far side
+  of the seam, and the direction is decided by which side owns the check.
+  `Request.wake` is what the model asked for and `Created.wake` is what
+  the operator's policy granted, which is the whole reason `create`
+  returns a record rather than `Nil`: under a `steer` policy the call
+  succeeds and the result says it will only steer, rather than refusing
+  and teaching the model to retry against a wall that will not move.
+  Both are `Wake` (`WakesIdle | SteersOnly`), this door's own name for a
+  distinction `client/schedule` holds under the same two names on the
+  durable side — `tools` may not import it, so `client/scheduleseam`
+  translates, exactly as it does for `Refusal`. The model still writes
+  `wake: true` and still reads a JSON boolean back.
+  `Refusal` gives each reason its own code because a model can act on the
+  difference; `refusal_reason` exposes the sentence without the
+  `ToolOutcome` wrapper, which is what `client/codemode` maps onto the
+  code-mode capability vocabulary. Both writers are `Never`/`Exclusive`:
+  a replayed create would silently replace a schedule the model believes
+  it already has, and two in one batch would race for the same ceiling.
 - `tools/remember.{Memory, Refusal, tool, tool_name, note_type,
   entry_types, max_note_chars, max_notes, refusal_outcome,
   says_something}` — the memory door and the `remember` tool over it.

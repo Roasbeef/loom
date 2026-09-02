@@ -34,11 +34,12 @@
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
 ////   199593ca31cce9e875b2216011aaaaa76767260dffc00eb061bf6b58b36ad2a3  packages/cap/src/cap/runtime.gleam
+////   25eb4efd48f17c523a587e8e02a0c5d9c31a12f71601c48276f9c28d1e2f696d  packages/cap/src/cap/schedule.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 7501966bef861a72aae7e85468136c241d55edf35ff2e51b6959365201e282c1
+//// Body digest (every line after the marker): 79b1669e31e22952fb43995795c910808885f899a0f6a57d273f68fc4a2ce844
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -563,6 +564,82 @@ pub fn read_token() -> Result(BitArray, BootError)
 /// boot. On any `BootError` it returns `Nil` — the node exits and the
 /// host treats the missing outcome as a failure.
 pub fn run(fn() -> report.Outcome) -> Nil
+",
+  ),
+  #(
+    "cap/schedule",
+    "### cap/schedule
+`cap/schedule` — heartbeats a program can set for the strand it is running
+on: text injected back into that strand's own context later, on a timer,
+whether or not anyone is watching.
+
+/// What a `create` actually produced.
+pub type Created {
+  Created(name: String, when: String, wake: Wake)
+}
+/// One schedule already set on this strand.
+pub type Schedule {
+  Schedule(name: String, when: String, wake: Wake, fired: Int, body: String)
+}
+/// Why a scheduling call failed.
+pub type ScheduleError {
+  /// The broker refused the call in band. `code` distinguishes the
+  /// reasons worth branching on: `invalid_schedule` (a bound was missed),
+  /// `schedule_limit_reached`, `schedule_name_taken`,
+  /// `schedule_not_found`, `schedules_unavailable`.
+  ScheduleDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  ScheduleUnavailable(reason: String)
+}
+/// What a schedule is allowed to do to this strand when it is idle at the
+/// moment the schedule fires.
+///
+/// A program asks for one of these and reads back what it was actually
+/// granted, which is not always the same — see the module doc on who owns
+/// that decision. The capability wire carries a boolean either way; this
+/// type is what a program writes and reads on this side of it.
+pub type Wake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+  /// The schedule steers a run already open, and holds when the strand is
+  /// idle. What a host that forbids waking grants instead.
+  SteersOnly
+}
+/// Schedules `body` to fire on this strand once, at `instant` — an
+/// RFC3339 UTC timestamp, for example `\"2026-09-01T09:00:00Z\"`.
+///
+/// An instant already past fires promptly, once, annotated as late. It is
+/// never replayed for every occurrence that was missed.
+///
+/// Capability: `schedule.create`.
+pub fn at(String, String, Wake, String) -> Result(Created, ScheduleError)
+/// Cancels one schedule on this strand by name. It will not fire again.
+///
+/// A name that is not this strand's own is denied with
+/// `schedule_not_found` rather than silently succeeding, so a program
+/// cannot believe it has tidied up when it has not.
+///
+/// Capability: `schedule.cancel`.
+pub fn cancel(String) -> Result(Nil, ScheduleError)
+/// Schedules `body` to fire on this strand every `seconds` seconds, until
+/// the schedule expires on its own.
+///
+/// `seconds` has a floor the host enforces; anything tighter is denied
+/// with `invalid_schedule` rather than quietly rounded up. `name` must be
+/// unique among this strand's schedules and among the host's own — a
+/// clash is denied with `schedule_name_taken` rather than replacing
+/// anything, so replacing one is always `cancel` then `every` again.
+///
+/// Capability: `schedule.create`.
+pub fn every(String, Int, Wake, String) -> Result(Created, ScheduleError)
+/// Lists the schedules set on this strand.
+///
+/// Only this strand's own, and only ones a program or the model created:
+/// a schedule the operator configured is not listed and cannot be
+/// cancelled here.
+///
+/// Capability: `schedule.list`.
+pub fn list() -> Result(List(Schedule), ScheduleError)
 ",
   ),
   #(

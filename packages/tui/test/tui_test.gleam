@@ -623,6 +623,50 @@ pub fn compact_user_turn_is_reversible_in_detail_mode_test() {
   assert composer.transcript_text(text, True) == text
 }
 
+// A heartbeat sits under both paste thresholds — seven lines and about a
+// hundred tokens — so before it was recognised as an injection it printed
+// in full, which is the whole reason this collapse exists rather than a
+// lowered threshold that would also swallow ordinary pastes.
+pub fn a_harness_injection_collapses_to_its_attribution_line_test() {
+  let text =
+    "[loom] scheduled heartbeat \"pulse\"\n\n"
+    <> "This is standing operator configuration, firing automatically on a "
+    <> "timer.\n\n--- begin scheduled heartbeat \"pulse\" ---\nbody\n"
+    <> "--- end scheduled heartbeat \"pulse\" ---"
+  let collapsed = composer.transcript_text(text, False)
+
+  assert collapsed == "[loom] scheduled heartbeat \"pulse\"  [Ctrl+G to expand]"
+  assert !string.contains(collapsed, "standing operator configuration")
+  assert !string.contains(collapsed, "body")
+  // Reversible, exactly like the paste bound above it.
+  assert composer.transcript_text(text, True) == text
+}
+
+// The late marker rides on the attribution line precisely so it survives
+// the collapse: it is the one fact about a fire that changes what the
+// reader should do, and it would otherwise sit inside an unopened body.
+pub fn a_late_heartbeat_says_so_while_collapsed_test() {
+  let text = "[loom] scheduled heartbeat \"pulse\" (late)\n\nprose\n\nbody"
+
+  assert composer.transcript_text(text, False)
+    == "[loom] scheduled heartbeat \"pulse\" (late)  [Ctrl+G to expand]"
+}
+
+pub fn an_ordinary_turn_is_not_treated_as_an_injection_test() {
+  assert composer.harness_injection_summary("ordinary turn") == None
+  // The marker has to start the message, not merely appear in it.
+  assert composer.harness_injection_summary("see [loom] here\nand here") == None
+  assert composer.transcript_text("short", False) == "short"
+}
+
+// A one-line injection is already its own summary, so there is nothing to
+// fold and no affordance to advertise.
+pub fn a_single_line_injection_is_left_alone_test() {
+  assert composer.harness_injection_summary("[loom] something") == None
+  assert composer.transcript_text("[loom] something", False)
+    == "[loom] something"
+}
+
 pub fn backspace_drops_only_the_newest_paste_test() {
   let first = composer.Attachment("first", 2)
   let second = composer.Attachment("second", 2)

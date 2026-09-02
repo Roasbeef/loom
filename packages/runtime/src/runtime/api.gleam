@@ -368,7 +368,48 @@ pub fn accept_quietly(
   runtime: Runtime,
   prompts: List(AgentMessage),
 ) -> Result(OpId, ApiError) {
-  accept_request(runtime, AcceptRun(prompts:))
+  accept_request(runtime, AcceptRun(prompts:), None)
+}
+
+/// Accepts a fresh run and stakes a reserved claim in one transaction:
+/// either the idle strand opens *and* the mark cell lands, or neither
+/// does.
+///
+/// The same argument as `steer_marking`, applied to the other admission
+/// door: an injector that must act at most once cannot make "the run
+/// opened" and "the claim is spent" two separate commits, because
+/// whichever one lands first leaves a window where a crash — or a
+/// concurrent retry — repeats or loses the injection. Folding the mark
+/// into the acceptance's own transaction removes that window; a
+/// restarted caller that re-derives the same decision meets
+/// `FactConflict` instead of opening a second run.
+///
+/// This is a building block, not the primary entry point: it does not
+/// attempt a steer first, so `send_to_strand_marking` — the steer-then-
+/// accept reconciliation — is the door most callers want; call this
+/// directly only when the caller already knows the strand is idle. It
+/// guards the reserved-key requirement itself, like `steer_marking`,
+/// rather than trusting a caller to have checked: cheap here, and a
+/// building block is exactly the shape that gets a second caller later
+/// who forgets to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.accept_quietly_marking(runtime, [user_message],
+/// //   api.Mark(key: "rule/fired/main/x", value: json.Null))
+/// ```
+///
+pub fn accept_quietly_marking(
+  runtime: Runtime,
+  prompts: List(AgentMessage),
+  mark: Mark,
+) -> Result(OpId, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(mark.key),
+    return: Error(UnreservedFactKey(key: mark.key)),
+  )
+  accept_request(runtime, AcceptRun(prompts:), Some(mark))
 }
 
 /// Accepts a standalone compaction and rings the doorbell. `preparation`
@@ -388,7 +429,11 @@ pub fn compact(
   custom_instructions custom_instructions: Option(String),
   preparation preparation: Option(StructuralPreparation),
 ) -> Result(OpId, ApiError) {
-  accept_request(runtime, AcceptCompaction(custom_instructions:, preparation:))
+  accept_request(
+    runtime,
+    AcceptCompaction(custom_instructions:, preparation:),
+    None,
+  )
 }
 
 /// Accepts a navigation request and rings the doorbell: moves the
@@ -423,6 +468,7 @@ pub fn navigate(
       preparation:,
       target_known:,
     ),
+    None,
   )
 }
 
@@ -430,10 +476,14 @@ pub fn navigate(
 // serialization line (strand state, leaf, pending queue), build the
 // request's plan against it, commit, and reload-and-retry on nothing but
 // a lost seq race. `accept_quietly`, `compact`, and `navigate` differ
-// only in which `AcceptRequest` they hand this.
+// only in which `AcceptRequest` they hand this; `accept_quietly_marking`
+// is the one caller that hands a `Some(mark)` — the rest pass `None`,
+// under which `marked`/`commit_admission` degrade to the plain
+// `commit_or_retry` this always did.
 fn accept_request(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
+  mark: Option(Mark),
 ) -> Result(OpId, ApiError) {
   retry_admission(4, fn() {
     use <- attempt
@@ -460,7 +510,11 @@ fn accept_request(
       acceptance.accept_prompt(request, ctx),
       fn(reason) { AcceptRejected(reason:) },
     )
-    commit_or_retry(writer.commit(w, plan_tx), on_ok: operation.id)
+    commit_admission(
+      writer.commit(w, marked(plan_tx, mark)),
+      mark,
+      on_ok: operation.id,
+    )
   })
 }
 
@@ -1053,22 +1107,23 @@ pub fn send_to_strand(
   to target: String,
   message message: AgentMessage,
 ) -> Result(Delivery, ApiError) {
-  send_attempts(on_strand(runtime, target), message, 4)
+  send_attempts(on_strand(runtime, target), message, None, 4)
 }
 
 fn send_attempts(
   target: Runtime,
   message: AgentMessage,
+  mark: Option(Mark),
   attempts: Int,
 ) -> Result(Delivery, ApiError) {
   use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
-  case steer_quietly(target, message) {
+  case enqueue(target, message, queue.enqueue_steer, mark) {
     Ok(entry) -> {
       nudge(target)
       Ok(Steered(entry:))
     }
     Error(QueueRejected(reason: queue.NoActiveRun)) ->
-      case accept_quietly(target, [message]) {
+      case accept_request(target, AcceptRun(prompts: [message]), mark) {
         Ok(operation) -> {
           nudge(target)
           Ok(Started(operation:))
@@ -1077,11 +1132,41 @@ fn send_attempts(
         // A run opened between the steer refusal and the accept: try
         // the steer again.
         Error(AcceptRejected(reason: StrandBusy)) ->
-          send_attempts(target, message, attempts - 1)
+          send_attempts(target, message, mark, attempts - 1)
         Error(error) -> Error(error)
       }
     Error(error) -> Error(error)
   }
+}
+
+/// Sends a message to another strand carrying one write-once claim, so
+/// whichever admission door it lands through — a steer onto an open run
+/// or a fresh run on an idle strand — the mark spends atomically with
+/// it. The same `send_attempts` as `send_to_strand`, with the mark
+/// threaded into both doors it tries, so the steer-versus-accept
+/// reconciliation exists once; the difference is entirely in *why* a
+/// caller reaches for it — see `steer_marking`'s doc comment for the
+/// write-once argument this applies to whichever path the message
+/// actually takes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.send_to_strand_marking(runtime, to: "main", message: findings,
+/// //   mark: api.Mark(key: "rule/fired/main/x", value: json.Null))
+/// ```
+///
+pub fn send_to_strand_marking(
+  runtime: Runtime,
+  to target: String,
+  message message: AgentMessage,
+  mark mark: Mark,
+) -> Result(Delivery, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(mark.key),
+    return: Error(UnreservedFactKey(key: mark.key)),
+  )
+  send_attempts(on_strand(runtime, target), message, Some(mark), 4)
 }
 
 /// Awaits another strand's terminal result for `operation` — the parent
@@ -1340,19 +1425,44 @@ pub const session_fact_prefix = "session/"
 /// and `facts` hides it — so the mark means what the scanner wrote.
 pub const rule_fact_prefix = "rule/"
 
+/// The reserved `fact.custom` key prefix scheduled heartbeats keep their
+/// durable state under. Two corners of it, disjoint by a second path
+/// segment (`client/schedule` builds both keys): `schedule/fired/…`, one
+/// write-once fired-mark per `{strand, schedule, occurrence}`, which is
+/// the only thing an operator's `[[schedule]]` needs to survive a crash
+/// or a restart; and `schedule/config/…`, one cell per schedule the
+/// model created for itself through the tool seam, overwritten with a
+/// tombstone when it is cancelled. An operator's schedules are never
+/// stored — they are read from `loom.toml` at boot, exactly as rules
+/// are.
+///
+/// Disjoint from `rule_fact_prefix` on purpose, per the same reasoning
+/// that keeps `lineage/` two letters from the model-writable `agent/`
+/// rather than folded into an existing prefix: a namespace holding a
+/// security-relevant write-once mark earns its own corner rather than
+/// sharing one with a mechanically similar but distinct feature, so
+/// neither can be mistaken for the other's key shape. What a forged write
+/// here would let a model do is the same shape of harm `rule/` guards
+/// against: mark an occurrence as already fired so a heartbeat the
+/// operator configured never fires (and, for a `wake = true` schedule,
+/// never wakes the strand it was meant to check on).
+pub const schedule_fact_prefix = "schedule/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The six corners, and what each would let a forged write do:
+/// The seven corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
 /// assumption the wait graph's acyclicity rests on; `prompt/` — rewrite
 /// the operator's channel; `session/` — re-point the session's own
 /// identity, and with it every stream keyed by it; `rule/` — mark an
-/// operator's project rule as already fired, so it never fires.
+/// operator's project rule as already fired, so it never fires;
+/// `schedule/` — mark a scheduled heartbeat's occurrence as already
+/// fired, so it never fires either.
 ///
 /// ## Examples
 ///
@@ -1371,6 +1481,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, prompt_fact_prefix)
   || string.starts_with(key, session_fact_prefix)
   || string.starts_with(key, rule_fact_prefix)
+  || string.starts_with(key, schedule_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

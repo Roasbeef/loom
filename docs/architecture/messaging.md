@@ -293,11 +293,28 @@ exactly the call approved.
 | A strand's existence | commit: `strand.config` / `strand.leaf` / `strand.state` | never lost; recovery reboots every strand |
 | The doorbell (`nudge`) | process message | target acts one poll-interval later |
 | An EventBus hint | best-effort `pg` send | subscriber catches up on the next hint or sync |
-| Progress ticks, heartbeats | process message | harmless by construction |
+| Progress ticks, liveness pings | process message | harmless by construction |
+| A scheduled heartbeat's fire | commit: a marked steer or fresh-run admission + its occurrence's fired-mark | never lost; a crash before the commit re-derives the same due occurrence and tries again |
 
 The rule reads straight down the table: if a row is a commit, a crash
 cannot lose it; if a row is a process message, losing it costs latency or
 a delayed display, never a payload.
+
+Two rows share the word "heartbeat" for unrelated things, and the
+distinction matters: a **liveness ping** is the ephemeral pacing signal
+§4.6 already licenses to ride a bare process message, because losing one
+costs nothing but a moment's staleness in a display. A **scheduled
+heartbeat** (`client/schedule`/`client/schedulescan`) is an
+operator-configured, time-triggered admission — a `[[schedule]]` firing
+onto a strand on a clock instead of on a human's or a sibling strand's
+say-so — and it changes what the model sees, so it commits like every
+other durable payload in this doctrine: the injected text and its
+write-once fired-mark land in one transaction, exactly the
+`steer_marking` argument this document already makes for triggered
+project rules, extended to the one door those never needed —
+`send_to_strand_marking` — because an opt-in scheduled heartbeat, unlike
+a rule, may start a fresh run on an idle strand.
+`docs/design-notes/scheduled-heartbeats.md` has the full ruling.
 
 ## Where the code lives
 
@@ -310,6 +327,8 @@ a delayed display, never a payload.
 | `runtime/escalation.gleam` | The durable escalation record, its `CallScope`, and its status transitions. |
 | `events/bus.gleam` | The EventBus: typed per-session topics of thin hints. |
 | `events/projection.gleam` | Pull-based read models that converge from the store on each hint. |
+| `client/schedule.gleam` | The scheduled-heartbeat config store, its bounds, and the occurrence arithmetic (`interval_late`, `interval_expired`). |
+| `client/schedulescan.gleam` | The timer-driven scanner: one marked admission per due occurrence, `steer_marking` or `send_to_strand_marking` depending on `wake`. |
 
 Each path is relative to its package's source root:
 `runtime/api.gleam` is `packages/runtime/src/runtime/api.gleam`. For the

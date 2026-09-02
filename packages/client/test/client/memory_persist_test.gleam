@@ -24,6 +24,7 @@ import client/catalog
 import client/codemode
 import client/distill
 import client/memory
+import client/schedule
 import client/serve
 import core/clock
 import core/ids as core_ids
@@ -77,7 +78,7 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
 
   let outcome =
     tool.dispatch(
-      serve.registry(None, None, None, Some(a_seam(root))),
+      serve.registry(None, None, None, Some(a_seam(root)), None),
       a_ctx(root),
       remember.tool_name,
       core_json_note(preference),
@@ -231,6 +232,8 @@ fn settings(
     codemode_seed: root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
     rules: [],
+    schedules: [],
+    schedule_policy: schedule.ModelSchedulesOff,
   )
 }
 

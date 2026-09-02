@@ -366,15 +366,35 @@ pub fn reaping_hooks(hooks: effects.Hooks, config: Config) -> effects.Hooks {
 // runs on its own monitored effect process, whose death the driver turns
 // into a synthetic error result rather than a fault.
 fn borrow(config: Config) -> Result(api.Runtime, Refusal) {
+  borrow_runtime(config) |> result.replace_error(agent.AgencyUnavailable)
+}
+
+/// Borrows the live runtime from the holder, for a seam other than this
+/// one.
+///
+/// The holder is the session's one answer to a problem every tool seam
+/// built before `api.open` has: the runtime does not exist yet, and a
+/// closure over it would be a value cycle rather than an ordering
+/// problem. Rather than stand up a second actor holding the same value,
+/// a second seam borrows from this one — `client/scheduleseam` does —
+/// and takes the same in-band unavailability when the holder is not up.
+///
+/// The `Nil` error is deliberate: a caller outside the messaging plane
+/// has its own refusal vocabulary and should not be handed
+/// `agent.AgencyUnavailable`, which names a plane it has nothing to do
+/// with.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.borrow_runtime(config)
+/// ```
+///
+pub fn borrow_runtime(config: Config) -> Result(api.Runtime, Nil) {
   let subject = process.named_subject(config.name)
-  case process.subject_owner(subject) {
-    Error(Nil) -> Error(agent.AgencyUnavailable)
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        False -> Error(agent.AgencyUnavailable)
-        True -> Ok(process.call(subject, config.holder_timeout_ms, Borrow))
-      }
-  }
+  use pid <- result.try(process.subject_owner(subject))
+  use <- bool.guard(when: !process.is_alive(pid), return: Error(Nil))
+  Ok(process.call(subject, config.holder_timeout_ms, Borrow))
 }
 
 // The whole ledger, once per Agency call. It is bounded by the session's

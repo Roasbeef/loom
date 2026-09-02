@@ -14,6 +14,7 @@ import client/codemode
 import client/host
 import client/protocol
 import client/rules
+import client/schedule
 import client/serve
 import client/summaries
 import client/system_prompt
@@ -123,6 +124,8 @@ fn settings_under(root: String) -> serve.Settings {
     codemode_seed: root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
     rules: [],
+    schedules: [],
+    schedule_policy: schedule.ModelSchedulesOff,
   )
 }
 
@@ -786,6 +789,48 @@ pub fn a_boot_with_rules_runs_a_supervised_scanner_test() {
     as "the server must boot with a rule configured"
   let assert Some(name) = booted.rulescan
     as "a configured rule must name a scanner"
+  let assert Ok(_pid) = process.named(name)
+    as "the scanner must be registered under that name"
+  serve.shutdown(booted)
+}
+
+const schedules_root = "build/serve-test-schedules"
+
+// The same posture as rules: a server nobody configured schedules for
+// starts no scanner at all.
+pub fn a_boot_with_no_schedules_starts_no_scanner_test() {
+  let _stale = simplifile.delete(schedules_root)
+  let assert Ok(booted) = serve.boot(settings_under(schedules_root))
+    as "the server must boot with no schedules configured"
+  assert booted.schedulescan == None
+  serve.shutdown(booted)
+}
+
+// And a server that *was* configured runs one, under the restartable
+// service supervisor, addressable by the name it registered under — not
+// a writer subscriber, unlike the rule scanner, but still reached by
+// name for the same restart-transparency reason.
+pub fn a_boot_with_schedules_runs_a_supervised_scanner_test() {
+  let _stale = simplifile.delete(schedules_root <> "-on")
+  let base = settings_under(schedules_root <> "-on")
+  let assert Ok(booted) =
+    serve.boot(
+      serve.Settings(..base, schedules: [
+        schedule.Schedule(
+          name: "heartbeat",
+          target: "main",
+          timing: schedule.Interval(
+            seconds: 300,
+            expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+          ),
+          wake: schedule.SteersOnly,
+          body: "Check on things.",
+        ),
+      ]),
+    )
+    as "the server must boot with a schedule configured"
+  let assert Some(name) = booted.schedulescan
+    as "a configured schedule must name a scanner"
   let assert Ok(_pid) = process.named(name)
     as "the scanner must be registered under that name"
   serve.shutdown(booted)

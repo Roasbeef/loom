@@ -127,6 +127,15 @@ pub const kv_set_cap = "kv.set"
 /// The capability a program removes a scratch key with.
 pub const kv_delete_cap = "kv.delete"
 
+/// The capability a program sets a heartbeat on its own strand with.
+pub const schedule_create_cap = "schedule.create"
+
+/// The capability a program lists its strand's heartbeats with.
+pub const schedule_list_cap = "schedule.list"
+
+/// The capability a program cancels one of its strand's heartbeats with.
+pub const schedule_cancel_cap = "schedule.cancel"
+
 /// The capability a program mints a durable artifact with. Serviced on
 /// **both** seams, by one mechanism (`codemode/artifact`).
 pub const emit_cap = artifact.emit_cap
@@ -136,7 +145,7 @@ pub const emit_cap = artifact.emit_cap
 /// set rather than a copy that can drift.
 pub const serviced_caps = [
   read_cap, list_cap, write_cap, edit_cap, kv_get_cap, kv_set_cap, kv_delete_cap,
-  emit_cap,
+  schedule_create_cap, schedule_list_cap, schedule_cancel_cap, emit_cap,
 ]
 
 /// The most entries one `fs.list` may answer with.
@@ -344,6 +353,79 @@ pub type KvRefusal {
   StoreUnavailable(reason: String)
 }
 
+/// What a schedule is allowed to do to the strand when it is idle at
+/// the moment the schedule fires.
+///
+/// `codemode` may depend on neither `client` nor `tools`, so this
+/// restates the host's distinction in this module's own vocabulary,
+/// exactly as `ScheduleRefusal` restates `tools/schedule.Refusal`. The
+/// capability wire on both sides of the router stays a msgpack boolean;
+/// this is what the router and the host seam read between them.
+pub type ScheduleWake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+
+  /// The schedule steers a run already open, and holds when the strand
+  /// is idle. What a host that forbids waking grants instead.
+  SteersOnly
+}
+
+/// One heartbeat a program asked for. `every_seconds` and `at` are the
+/// two shapes a schedule takes, and exactly one is present — the router
+/// refuses a request naming both or neither before the host sees it, so
+/// the host never has to decide what a contradictory request meant.
+pub type ScheduleRequest {
+  ScheduleRequest(
+    name: String,
+    every_seconds: Option(Int),
+    at: Option(String),
+    wake: ScheduleWake,
+    body: String,
+  )
+}
+
+/// What a schedule creation produced. `wake` is what the host actually
+/// granted, which is not always what was asked for: an operator policy
+/// may permit scheduling and forbid waking.
+pub type ScheduleCreated {
+  ScheduleCreated(name: String, when: String, wake: ScheduleWake)
+}
+
+/// One heartbeat, as `cap/schedule.list` reads it.
+pub type ScheduleRow {
+  ScheduleRow(
+    name: String,
+    when: String,
+    wake: ScheduleWake,
+    fired: Int,
+    body: String,
+  )
+}
+
+/// Why a scheduling call was refused, structurally rather than as a
+/// string, so the router can give each reason its own in-band code.
+///
+/// The vocabulary is the host's (`tools/schedule.Refusal`) restated in
+/// this package's terms, for the reason `KvRefusal` and `FsRefusal` are:
+/// `codemode` must not depend on `client`, and a shared string would make
+/// the code a program branches on a thing neither side owns.
+pub type ScheduleRefusal {
+  /// The request describes no schedule the host would accept.
+  ScheduleInvalid(reason: String)
+
+  /// This session already holds all the schedules it will.
+  ScheduleLimitReached(reason: String)
+
+  /// A schedule of this name already exists on this strand.
+  ScheduleNameTaken(reason: String)
+
+  /// No schedule of this name exists on this strand.
+  ScheduleNotFound(reason: String)
+
+  /// The schedule store could not be reached.
+  ScheduleUnavailable(reason: String)
+}
+
 /// What the router needs beyond the request: one closure per serviced
 /// capability, and the ceiling on artifact emissions.
 ///
@@ -374,6 +456,16 @@ pub type Workspace {
     kv_set: fn(String, BitArray) -> Result(Nil, KvRefusal),
     /// Removes a scratch key. Removing an absent key succeeds.
     kv_delete: fn(String) -> Result(Nil, KvRefusal),
+    /// Sets one heartbeat on the strand this execution belongs to. The
+    /// host binds the strand — this package never learns it, exactly as
+    /// it never learns a workspace root — so nothing a program sends can
+    /// redirect a schedule onto another strand.
+    schedule_create: fn(ScheduleRequest) ->
+      Result(ScheduleCreated, ScheduleRefusal),
+    /// Lists that strand's heartbeats.
+    schedule_list: fn() -> Result(List(ScheduleRow), ScheduleRefusal),
+    /// Cancels one of that strand's heartbeats by name.
+    schedule_cancel: fn(String) -> Result(Nil, ScheduleRefusal),
     /// Writes one artifact and answers its content address.
     emit: Emit,
     /// How many artifacts one execution may mint.
@@ -388,6 +480,16 @@ pub type Workspace {
 /// something that outlives the execution**. `report.emit` meets it — a
 /// content-addressed file in a store that outlives the session — and it
 /// is the only one of the eight that does.
+///
+/// `schedule.create` is the arm that most looks like it should have one
+/// and does not. It plainly mints something that outlives the execution —
+/// a durable cell that fires turns later — but it is bounded *store-side*
+/// by a live count ceiling the host enforces on every create, which is
+/// the same instrument `kv.*` is bounded by and the right one here for
+/// the same reason: what a schedule store must not do is grow, not answer
+/// often. An admission ceiling would additionally cap creates per
+/// execution, which buys nothing once the store itself refuses the one
+/// past its limit. `schedule.list` and `schedule.cancel` mint nothing.
 ///
 /// `fs.read` and `fs.list` are reads, bounded by the per-read size guard
 /// and by the pooled outstanding-effect cap and wall deadline every
@@ -471,6 +573,9 @@ pub fn routing(seam: Workspace, over inner: CapRouter) -> CapRouter {
       "kv.get" -> kv_get_plan(seam, request)
       "kv.set" -> kv_set_plan(seam, request)
       "kv.delete" -> kv_delete_plan(seam, request)
+      "schedule.create" -> schedule_create_plan(seam, request)
+      "schedule.list" -> schedule_list_plan(seam, request)
+      "schedule.cancel" -> schedule_cancel_plan(seam, request)
       "report.emit" -> artifact.plan(seam.emit, request)
       _other -> inner(request)
     }
@@ -826,6 +931,205 @@ fn fs_error_text(error: tool.FsError) -> String {
     tool.FsPermissionDenied(path:) -> "permission denied: " <> path
     tool.FsFailure(path:, reason:) ->
       "filesystem error on " <> path <> ": " <> reason
+  }
+}
+
+// --- schedule ---------------------------------------------------------------
+
+fn schedule_create_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use name <- result.try(args.string(request.args, "name"))
+  use body <- result.try(args.string(request.args, "body"))
+  use wake <- result.try(requested_wake(request.args))
+  use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
+  use at <- result.try(optional_string(request.args, "at"))
+
+  // Exactly one timing, decided here rather than at the host, so a
+  // contradictory request costs one denial instead of a round trip into
+  // a store that would have had to invent an answer.
+  use Nil <- result.try(case every_seconds, at {
+    Some(_seconds), Some(_instant) ->
+      Error(args.invalid(
+        "give either `every_seconds` or `at`, not both: a schedule is "
+        <> "either a recurring heartbeat or a one-shot",
+      ))
+    None, None ->
+      Error(args.invalid(
+        "give one of `every_seconds` (a recurring heartbeat) or `at` (a "
+        <> "one-shot RFC3339 UTC instant)",
+      ))
+    Some(_seconds), None | None, Some(_instant) -> Ok(Nil)
+  })
+  Ok(
+    ServedHere(fn() {
+      case
+        seam.schedule_create(ScheduleRequest(
+          name:,
+          every_seconds:,
+          at:,
+          wake:,
+          body:,
+        ))
+      {
+        Error(refusal) -> schedule_refused(refusal)
+        Ok(ScheduleCreated(name:, when:, wake:)) ->
+          answered([
+            #("name", msgpack.StringValue(name)),
+            #("when", msgpack.StringValue(when)),
+            #("wake", msgpack.BoolValue(wake_flag(wake))),
+          ])
+      }
+    }),
+  )
+}
+
+// A program may leave `wake` out entirely, and absent reads as the
+// milder of the two states — the same default the tool door and the
+// operator's TOML use, so a program that never considered waking never
+// gets it whichever door it came through.
+fn requested_wake(args: MsgPackValue) -> Result(ScheduleWake, CapDenial) {
+  case optional_bool(args, "wake") {
+    Error(denial) -> Error(denial)
+    Ok(Some(True)) -> Ok(WakesIdle)
+    Ok(Some(False)) | Ok(None) -> Ok(SteersOnly)
+  }
+}
+
+// The capability wire carries `wake` as a msgpack boolean in both
+// directions, which is what `cap/schedule` decodes on the far side. The
+// type stops at this line.
+fn wake_flag(wake: ScheduleWake) -> Bool {
+  case wake {
+    WakesIdle -> True
+    SteersOnly -> False
+  }
+}
+
+fn schedule_list_plan(
+  seam: Workspace,
+  _request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  Ok(
+    ServedHere(fn() {
+      case seam.schedule_list() {
+        Error(refusal) -> schedule_refused(refusal)
+        Ok(rows) ->
+          answered([
+            #("schedules", msgpack.ArrayValue(list.map(rows, schedule_row))),
+          ])
+      }
+    }),
+  )
+}
+
+fn schedule_row(row: ScheduleRow) -> MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("name"), msgpack.StringValue(row.name)),
+    #(msgpack.StringValue("when"), msgpack.StringValue(row.when)),
+    #(msgpack.StringValue("wake"), msgpack.BoolValue(wake_flag(row.wake))),
+    #(msgpack.StringValue("fired"), msgpack.IntValue(row.fired)),
+    #(msgpack.StringValue("body"), msgpack.StringValue(row.body)),
+  ])
+}
+
+fn schedule_cancel_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use name <- result.try(args.string(request.args, "name"))
+  Ok(
+    ServedHere(fn() {
+      case seam.schedule_cancel(name) {
+        Error(refusal) -> schedule_refused(refusal)
+        Ok(Nil) -> answered([#("cancelled", msgpack.BoolValue(True))])
+      }
+    }),
+  )
+}
+
+fn schedule_refused(refusal: ScheduleRefusal) -> CapOutcome {
+  let CapDenial(code:, message:) = schedule_denial(refusal)
+  framing.CapErr(code:, message:)
+}
+
+/// The in-band code and message one scheduling refusal travels under.
+///
+/// Each reason gets its own code because a program can act on the
+/// difference: a name clash means pick another or cancel first, a limit
+/// means cancel something, an invalid request means fix the arguments,
+/// and unavailable means try later. `cap/schedule` documents the same
+/// five strings, which is the contract a program branches on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.schedule_denial(ScheduleNotFound("x")).code
+/// //   == "schedule_not_found"
+/// ```
+///
+pub fn schedule_denial(refusal: ScheduleRefusal) -> CapDenial {
+  case refusal {
+    ScheduleInvalid(reason:) ->
+      CapDenial(code: "invalid_schedule", message: reason)
+    ScheduleLimitReached(reason:) ->
+      CapDenial(code: "schedule_limit_reached", message: reason)
+    ScheduleNameTaken(reason:) ->
+      CapDenial(code: "schedule_name_taken", message: reason)
+    ScheduleNotFound(reason:) ->
+      CapDenial(code: "schedule_not_found", message: reason)
+    ScheduleUnavailable(reason:) ->
+      CapDenial(code: "schedules_unavailable", message: reason)
+  }
+}
+
+// --- optional arguments -----------------------------------------------------
+//
+// `codemode/internal/args` has required readers only, because until now
+// every serviced capability wanted every field. A schedule is the first
+// with genuinely optional ones: `wake` defaults, and the two timings are
+// alternatives. Absent and null both read as `None`, matching how
+// `tools/tool.optional_*` treats a tool argument.
+
+fn optional_field(value: MsgPackValue, key: String) -> Option(MsgPackValue) {
+  case args.field(value, key) {
+    Error(_missing) -> None
+    Ok(msgpack.NilValue) -> None
+    Ok(found) -> Some(found)
+  }
+}
+
+fn optional_string(
+  value: MsgPackValue,
+  key: String,
+) -> Result(Option(String), CapDenial) {
+  case optional_field(value, key) {
+    None -> Ok(None)
+    Some(msgpack.StringValue(text)) -> Ok(Some(text))
+    Some(_other) -> Error(args.invalid("`" <> key <> "` must be text"))
+  }
+}
+
+fn optional_int(
+  value: MsgPackValue,
+  key: String,
+) -> Result(Option(Int), CapDenial) {
+  case optional_field(value, key) {
+    None -> Ok(None)
+    Some(msgpack.IntValue(number)) -> Ok(Some(number))
+    Some(_other) -> Error(args.invalid("`" <> key <> "` must be an integer"))
+  }
+}
+
+fn optional_bool(
+  value: MsgPackValue,
+  key: String,
+) -> Result(Option(Bool), CapDenial) {
+  case optional_field(value, key) {
+    None -> Ok(None)
+    Some(msgpack.BoolValue(flag)) -> Ok(Some(flag))
+    Some(_other) -> Error(args.invalid("`" <> key <> "` must be a boolean"))
   }
 }
 

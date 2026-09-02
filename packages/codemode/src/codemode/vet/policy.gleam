@@ -358,7 +358,7 @@ pub fn orchestration() -> VetPolicy {
 pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv",
+    "cap/task", "cap/actor", "cap/kv", "cap/schedule",
   ]
 }
 
@@ -382,6 +382,15 @@ pub fn default_cap_modules() -> List(String) {
 pub fn orchestration_cap_modules() -> List(String) {
   ["cap/strand", "cap/report"]
 }
+
+// `cap/schedule` is on the workspace seam and not this one, which is a
+// choice rather than an oversight. A heartbeat reads as orchestration —
+// it is about what happens later rather than about the files in front of
+// you — and putting it on both seams was considered and dropped, because
+// the intersection above *is* the confinement property and widening it
+// from one module to two costs a real guarantee to buy a convenience
+// nobody has asked for yet. An orchestration program that wants a
+// heartbeat can have the strand it is running on schedule one.
 
 /// The capability-prelude modules on **no** seam, deliberately.
 ///

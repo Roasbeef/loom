@@ -634,6 +634,143 @@ passes the full gate and `doc-check`. If a tiebreak is wanted, take
 regenerated prelude), so it lands while the others are still cheap to
 rebase.
 
+**#118 — durable scheduled heartbeats — is in review, PR #121, not yet on
+`main`.** Unphased new work, not part of the numbered plan: a `[[schedule]]`
+in `loom.toml` fires a durable, fenced injection onto a strand on a fixed
+interval or a one-shot UTC instant, mirroring the triggered-rules shape
+(`client/rules`/`client/rulescan`, issue #27) with a scanner that is
+time-triggered instead of content-triggered. `docs/design-notes/
+scheduled-heartbeats.md` is the pre-code design ruling (a Fable 5 advisor
+consult): the crux was whether a schedule may wake an idle strand, which a
+content-triggered rule is never allowed to do — ruled allowed, opt-in
+(`wake = true`), safe only because every recurring schedule now carries a
+mandatory, tightened expiry (`max_fires` and `expires_after_s` both always
+active, earliest wins, worst case exactly 1,000 fired-mark rows per
+schedule). Model self-scheduling is cut, not deferred — a self-scheduling
+model extends its own liveness and cost unsupervised, and framing cannot
+solve that the way it solves a rule's authority-confusion. The one runtime
+change: `runtime/api` gained `accept_quietly_marking`/
+`send_to_strand_marking`, the fresh-run door's version of the existing
+`steer_marking` write-once-claim mechanism — additive, no `machine` change,
+no `protocol-change/` needed. A closing adversarial review (Fable 5) caught
+a real tautological-boundary bug in the "late fire" annotation before it
+shipped (fixed and pinned with pure-function tests) and, on re-verify after
+the fix round, one narrow self-correcting crash-race footnote in the
+1,000-row bound (recorded in the design note, not worth a code change: per-
+occurrence exactly-once is untouched). One pre-existing, unrelated repo
+issue remains, not fixed here: an identical-before-and-after `make
+doc-check` citation-drift in docs this branch never touches. (#120,
+`gleam format --check`, turned out to be already fixed by #116's
+formatter reflow — closed.)
+
+Rebasing onto `main` after #146 turned up three things worth recording,
+all fixed on the branch. The compile break was mechanical: cancellable
+streams gave `stream.StreamHandle` a `cancel` closure and an optional
+owner pid, so the scanner test's parked provider had to move to
+`stream.immediate`. The other two were not. **`catalog.parse` owns the
+top-level key check for the whole config document, and nobody taught it
+about `schedule`** — so every `loom.toml` carrying a `[[schedule]]` was
+refused at boot with "unknown key `schedule`" and the feature was
+unreachable, its own parser correct behind a gate that ran first. The
+tests missed it by approaching from both ends and meeting in the middle:
+`schedule_test` parses schedule text directly, `serve_test` builds a
+`Settings` literal with a `Schedule` already in it, and neither goes
+through a config file, which is the only path an operator has. It was
+found by running the thing, not by reading it — worth remembering for a
+feature whose only interface is a file. The regression test now lives in
+`catalog_test`, where the gate is, and pins `[[rule]]` beside
+`[[schedule]]`. Third, `docs/examples/loom.toml` documented `[[rule]]`
+and stopped; for an operator-only feature that example *is* the
+discovery surface, so it now covers both timings and both bounds, gated
+by tests the same way the rules half already was.
+
+**The operator-only cut has since been reversed, and the model can now
+schedule its own heartbeats.** `docs/design-notes/scheduled-heartbeats.md`
+carries the addendum with the whole argument; the short form is that the
+original ruling read as one argument and was really two. Waking an idle
+strand keeps a session working after everyone has gone home, which is the
+sharp case. Steering a run already open cannot extend liveness at all,
+because it holds when the strand is idle exactly as a triggered rule does.
+The middle position (`ModelSchedulesSteer`) shipped as the default in the
+end: the open default rested on the per-schedule expiry bounding the
+session, #161 showed it does not (a fresh name is a fresh clock, and a
+woken model can create the next schedule before this one expires), and
+the priority order puts isolation before capability. The tools are still
+registered by default and a model can still create schedules; none of
+them can wake an idle strand unless the operator writes `[schedules]
+model_created = "wake"`. The design note's addendum records the ruling.
+
+It is reachable two ways, over one implementation
+(`client/scheduleseam.Door`): the `schedule_create`/`schedule_list`/
+`schedule_cancel` tools, and the `schedule.*` code-mode capabilities
+behind `cap/schedule`. Either door can cancel what the other created. A
+schedule always targets the strand that created it — there is no `target`
+argument on either door, and for code mode the strand is bound host-side
+from the request and never travels over the cap channel.
+
+Three things are deliberately still not built, each with an issue.
+**Scheduling on behalf of a subagent** (#154) is the obvious next
+increment and the case the original ruling named as motivating `wake`: a
+parent extending a child's liveness, which it already controls, is a
+defensible argument nobody has written down, and it needs a lineage
+check. **`cap/schedule` on the orchestration seam** (#156) is a decision
+rather than work: the intersection of the two seams' allowlists is a
+confinement property a test asserts, and widening it from one module to
+two costs a real guarantee. **A schedule that never fires never expires**
+(#157), because the clock runs from the earliest fired-mark — no fires,
+no marks, no clock; harmless but not what `expires_after_s` reads like.
+
+One thing was considered and dropped rather than deferred, so it has no
+issue: **the escalation-gated grant** the original note proposed. It was
+dropped on measurement — `gateway.attached` answers zero when nobody is
+watching and the escalation seam settles as a refusal, so a model could
+only get a schedule approved while someone was present, which is exactly
+when a heartbeat is least needed. The design-note addendum records it.
+
+The live check is worth repeating on any change here: point a
+`[[schedule]]` at a scratch session and watch it fire in the TUI, or ask
+the model to call `schedule_create` and watch the same thing happen with
+nobody having configured anything. An `every = "60s"` schedule fires at
+boot and again on the next boundary; a one-shot fires at its instant with
+no late annotation. `wake = true` opens a fresh run on an idle strand with
+nobody at the keyboard, which is the whole feature and the only part no
+unit test can show you. Both were run against a real Baseten model on this
+branch, not only against the fake provider.
+
+A Fable adversarial review ran over the whole branch after the reversal
+landed (the original PR's review predates every model-facing change).
+Three findings are fixed in `edb005b`: a timer chain leaked per `poke`,
+an unbounded timer delay that killed the scanner silently, and an
+`injection` that attributed model-written bodies to the operator. Four
+are filed — **#165** (weft's timer arms on the wall clock, so an actor
+riding the injected `Timers` seam cannot use it — which is why the
+scanner's generation tag is hand-rolled against the house rule, said so in
+its module doc), **#161** (a model can chain wake-schedules indefinitely;
+expiry is per-schedule, not per-session, and the design note's original
+claim to the contrary is corrected in place), **#162** (concurrent
+`schedule.create` through code mode), **#163** (settled-subagent
+schedules), **#164** (tombstone growth). A re-verify pass through the same reviewer confirmed all four fixes and
+raised one more, which is also fixed: **a subagent could schedule a waking
+heartbeat and then settle**, leaving a schedule nobody can cancel that
+keeps re-opening runs on a finished strand. Subagents inherit
+`schedule_create` by default (`agency.child_tools` passes on every tool
+but `agent_spawn`), so that was the ordinary path. `scheduleseam.create`
+now refuses a subagent outright — blunter than the problem, and it stays
+until the ownership model in #154/#163 exists.
+
+#161 was settled by moving the default to `ModelSchedulesSteer` rather than
+by closing the chaining hole: under the default no model-created schedule
+can wake an idle strand, and an operator who opts into `"wake"` accepts
+the property #161 describes. Closing the hole itself (a per-session
+creation budget, or a lineage on schedules) stays open work, only wanted
+by operators running under `"wake"`.
+
+One CI note for whoever picks this up: `soak (200 seeds)` is **red on
+`main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200
+pass locally on this branch (exit 0), as does the 101..150 band CI names.
+Do not read that failure as this branch's — it is **issue #155**.
+`gate (linux)`, `gate (macos)` and `jail (linux)` all pass.
+
 ---
 
 ## Start here: after phase 3

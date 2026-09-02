@@ -4,6 +4,7 @@
 //// usefully show. The composer keeps those bytes out of presentation state,
 //// but expands them back into the ordinary text prompt at the gateway edge.
 
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -259,21 +260,92 @@ pub fn admit_attachment(
   }
 }
 
+/// The marker every message the harness itself injected begins with.
+///
+/// A triggered project rule (`client/rules.injection`) and a scheduled
+/// heartbeat (`client/schedule.injection`) both arrive as ordinary user
+/// turns, because a user turn is the only shape a provider API has for
+/// context the harness supplies. They are not turns from the person at
+/// the keyboard, and reading a screen full of standing configuration
+/// every time one fires is noise: the transcript should say *which*
+/// standing instruction fired and let the reader open it if they care.
+pub const harness_injection_prefix = "[loom] "
+
+/// The single line a harness injection collapses to, or `None` when this
+/// is not one.
+///
+/// The contract this rests on is deliberately narrow, and it is the
+/// injecting module's to keep: **a harness injection's first line names
+/// it completely.** Both injectors write that line as an attribution —
+/// `[loom] scheduled heartbeat "pulse" (late)` — with the fenced body
+/// below it, so collapsing to the first line loses nothing a reader
+/// needs to decide whether to expand. Parsing that line rather than the
+/// body is what keeps this client from having to know the two injectors'
+/// prose, which is theirs to reword.
+///
+/// A single-line `[loom] ` message is already its own summary and is
+/// returned unchanged by the caller rather than collapsed to itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.harness_injection_summary("[loom] a \"b\"\n\nbody")
+///   == Some("[loom] a \"b\"")
+/// ```
+///
+/// ```gleam
+/// assert composer.harness_injection_summary("ordinary turn") == None
+/// ```
+pub fn harness_injection_summary(text: String) -> Option(String) {
+  use <- bool.guard(
+    when: !string.starts_with(text, harness_injection_prefix),
+    return: None,
+  )
+  case string.split_once(text, "\n") {
+    Ok(#(first, _body)) -> Some(first)
+    Error(Nil) -> None
+  }
+}
+
 /// Bounds a large durable user turn until transcript detail is requested.
+///
+/// Two different kinds of "too much to read" meet here and are answered
+/// differently. A harness injection has a *structure* — an attribution
+/// line and a fenced body — so it collapses to that line. An ordinary
+/// large paste has none, so it keeps the byte-estimate preview, which is
+/// the honest summary of something whose shape nothing here knows.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert composer.transcript_text("short", False) == "short"
 /// ```
+///
+/// ```gleam
+/// // an injection collapses to its attribution line
+/// assert composer.transcript_text("[loom] rule \"r\"\n\nbody", False)
+///   == "[loom] rule \"r\"  [Ctrl+G to expand]"
+/// ```
 pub fn transcript_text(text: String, details_expanded: Bool) -> String {
-  case classify(text), details_expanded {
-    Compact(Attachment(estimated_tokens:, ..)), False ->
+  use <- bool.lazy_guard(when: details_expanded, return: fn() { text })
+  case harness_injection_summary(text) {
+    Some(attribution) -> attribution <> "  [Ctrl+G to expand]"
+    None -> bounded_paste(text)
+  }
+}
+
+// The pre-existing paste bound, unchanged: an oversized paste previews
+// its own first bytes and says roughly how many there are. `Inline` and
+// an image attachment both render whole — one is small by construction,
+// the other is not text.
+fn bounded_paste(text: String) -> String {
+  case classify(text) {
+    Compact(Attachment(estimated_tokens:, ..)) ->
       preview(text, 120)
       <> "  [~"
       <> token_count(estimated_tokens)
       <> " tokens · Ctrl+G to expand]"
-    _, _ -> text
+    Compact(ImageAttachment(..)) | Inline(..) -> text
   }
 }
 

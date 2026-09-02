@@ -395,6 +395,115 @@ over one session file. WP-L.
   next invariant — so the ledger read happens once per strand per
   incarnation, on the pass a hold begins, and costs nothing before or
   after.
+- `client/schedule.{Schedule, Timing, Expiry, Wake, Lateness, Policy,
+  parse, parse_policy,
+  default_policy, policy_opens_the_door, wake_under, build,
+  encode, decode, config_key, config_key_prefix, cancelled_value,
+  parse_instant, render_instant, fired_key,
+  fired_key_prefix, fired_value, injection, interval_occurrence,
+  interval_late, interval_expired, max_schedules, max_model_schedules,
+  min_interval_s,
+  max_name_length, max_body_length, max_target_length,
+  default_max_fires, max_max_fires, default_expires_after_s,
+  max_expires_after_s}` — scheduled heartbeats (`docs/design-notes/
+  scheduled-heartbeats.md`), the time-triggered sibling of `client/rules`:
+  a `[[schedule]]` fires on a clock instead of on a literal match, parsed
+  from the same `loom.toml` by the same strict, total discipline. A
+  schedule reaches the scanner from one of **two** stores and is the same
+  value either way: the operator's `[[schedule]]` tables, and the model's
+  own `schedule/config/…` reserved cells created through
+  `tools/schedule` (`encode`/`decode`/`config_key`). `Policy` is the
+  operator's say over that second door — `off`/`steer`/`wake` from a
+  `[schedules]` table — and `default_policy` is **`ModelSchedulesSteer`**: the
+  tools are registered and a model may create schedules, but none of
+  them can wake an idle strand until the operator writes `"wake"`. The
+  design note's addendum has the whole history — the feature shipped
+  operator-only, reopened with an open default on the strength of the
+  per-schedule expiry, and settled on `steer` once #161 showed that
+  expiry bounds a schedule and not a session (a fresh name is a fresh
+  clock), which under the priority order makes unsupervised liveness an
+  opt-in. `build` is the constructor the model-facing door and `decode`
+  share: it enforces exactly what `parse` enforces, through the same
+  predicates and constants, so the two creation paths word refusals
+  differently and can never disagree about what is allowed. A schedule is
+  either `Interval(seconds,
+  expiry)`, aligned to a fixed grid (`slot = floor(now_s / seconds)`), or
+  `OneShot(at)`, a single RFC3339 UTC instant — never both, no five-field
+  cron syntax, no timezones. Every `Interval` schedule carries a
+  mandatory `Expiry`: `max_fires` and `expires_after_s` are both always
+  active, defaulted when unset, and whichever is reached first ends the
+  schedule — the guardrail that caps one schedule's durable fire-mark
+  footprint at exactly 1,000 rows and makes `WakesIdle` (below) safe to
+  offer at all. `Wake` is `WakesIdle | SteersOnly` and `Lateness` is
+  `OnTime | Late`: both are two-variant types rather than the `Bool`s
+  they were, because each is read at one end and written at another and
+  neither name carries its own polarity. The TOML `wake` key, the stored
+  config cell and the tool result all stay booleans on the wire, and
+  each boundary writes that translation down once.
+  `interval_occurrence`/`interval_late`/`interval_expired`
+  are pure functions over the occurrence arithmetic — deliberately
+  factored out of the actor that drives them so a fencepost error gets a
+  direct, deterministic test rather than one hidden behind a timer
+  harness.
+- `client/scheduleseam.{Wiring, Door, seam, door, limits,
+  describe_timing, cell}` — the host half of the model-facing scheduling
+  door, filling `tools/schedule`'s seam the way `client/memory` fills
+  `tools/remember`'s and for the same reason (`tools` may not reach a
+  session). It is the **only** enforcer of three things: the operator's
+  `Policy` (applied through `schedule.wake_under`, which caps `wake`
+  rather than vetoing the call, so the tool can tell the model what it
+  actually got), the `max_model_schedules`
+  ceiling, and the shared bounds via `client/schedule.build`. `Wiring`
+  carries `operator_schedules` for one reason worth knowing: both stores
+  feed one scanner, which derives a fired-mark from `{target, name}`
+  alone, so a model name colliding with an operator's would make two
+  schedules share a mark and suppress each other — and this is the only
+  place that check can live. `Wiring.runtime` is a **borrow closure**,
+  not a runtime: the registry this seam joins is threaded into
+  `api.open`, so it is built before a runtime exists, and it reads the
+  session's one holder through `agency.borrow_runtime` rather than
+  standing up a second actor. `Door` is the same three operations keyed
+  on a strand name, which is what `client/codemode` serves `schedule.*`
+  over — one implementation behind both doors, so a program and a tool
+  call cannot disagree about what this session's schedules are.
+- `client/schedulescan.{Options, ModelDoor, Message, default_options,
+  with_logger, with_model_door_open, poke, start, supervised}` — the
+  scheduled-heartbeat scanner. Every tick unions the operator's fixed
+  list with the model's config cells read fresh from the store, never a
+  cached list: a cell can appear or be cancelled between any two ticks
+  and this actor is restartable, so a cache would be a second source of
+  truth. `poke` is what the seam rings after a write so a new schedule
+  starts on time rather than at the next armed deadline; it checks the
+  name is registered first, because a send to an unregistered name
+  raises and the caller is a tool body. `with_model_door_open` sets
+  `Options.model_door` to `DoorOpen`, which keeps a slow rescan floor
+  when the model may create schedules, so a lost poke self-heals within
+  one `min_interval_s` instead of stalling forever.
+  Unlike
+  `client/rulescan` it is driven by its own injected
+  `runtime/effects.Timers.after` deadline, never by a writer hint, and it
+  holds no progress state across ticks: every tick re-derives which
+  schedules are due or expired from a bounded scan of the write-once
+  fired-marks already in the store, read straight off `storage`
+  (`client/schedule.fired_key_prefix`) rather than through the writer's
+  mailbox — the same isolation `client/rulescan`'s direct reads give it,
+  for the same reason: a slow tick must never queue in front of a
+  settlement. The same "durable-derived beats durable-stored" argument
+  keeps `client/rulescan`'s cursor a checkpoint rather than a source of
+  truth.
+  A fire is one `api.steer_marking` when `Schedule.wake` is `SteersOnly`
+  — the injection and the occurrence's write-once fired-mark in one
+  transaction, exactly `client/rulescan`'s at-most-once argument, held on
+  an idle strand rather than dropped or started. `WakesIdle` opts into
+  `api.send_to_strand_marking` instead, which may start a fresh run on an
+  idle strand: the one behavior a triggered rule is never allowed, safe
+  here only because a schedule's mandatory expiry bounds how long it can
+  keep a session alive. A session closed through a missed window catches
+  up to **at most one** late fire per schedule at the next tick, never a
+  replay of the backlog: an occurrence is judged late by whether the
+  *immediately preceding* slot's fired-mark is missing, never by
+  comparing the current time against a boundary computed from that same
+  current time, which is always trivially on-time by construction.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
@@ -550,7 +659,9 @@ over one session file. WP-L.
   `rulescan`, the triggered-rule scanner's *name* — `None` on a boot
   that configured no rules and therefore started no scanner, which is
   the `codemode.unavailable` posture applied to a second optional
-  plane.
+  plane; and `schedulescan`, the same posture applied to a third —
+  scheduled heartbeats — carried the same way for the same reason,
+  though this scanner answers to no writer subscription at all.
 - `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
   process tree. `adopt` runs a boot on a dedicated exit-trapping process
   so every link an `actor.start` forms lands there rather than on the
@@ -639,7 +750,12 @@ over one session file. WP-L.
   wiring promotion added `tools` (the registry and per-call `Ctx`);
   `client/serve` added `argv` (flags); `client/catalog` added `tom`
   (the pure-Gleam TOML parser behind `--config`); `client/system_prompt`
-  added `prompt`, whose purity is why the I/O had to live on this side.
+  added `prompt`, whose purity is why the I/O had to live on this side;
+  `client/schedule` added `gleam_time` as a direct dependency — already
+  resolved transitively through `tom`, and its total
+  `gleam/time/timestamp.parse_rfc3339` is what a one-shot schedule's
+  `at` field parses with, rather than a second RFC3339 parser or TOML's
+  own bare datetime literal.
 - **Depended on by**: `conformance`, whose wiring and e2e suites import
   `client/wiring` (legal — T depends on all). `packages/tui` is its
   native client, coupled only through the protocol and the golden fixtures.
@@ -1386,8 +1502,8 @@ over one session file. WP-L.
 - **The server has two supervision tiers, and the line between them is
   reachability.** A child under `Booted.services` — the commit
   forwarder, the Agency holder, the escalation holder, the scratch
-  store, the rule scanner, the search-index holder and its commit
-  subscriber, the gateway hub —
+  store, the rule scanner, the scheduled-heartbeat scanner, the
+  search-index holder and its commit subscriber, the gateway hub —
   is addressed by
   *name*, so a replacement under that name is the same address and a
   crash costs hints and the sockets already attached to the old hub
@@ -1401,11 +1517,14 @@ over one session file. WP-L.
 - **A plane nobody configured costs nothing, and says so.** A
   `loom.toml` with no `[[rule]]` starts no scanner at all — not a
   scanner holding an empty list — and logs `rules.none`; a configured
-  one logs `rules.loaded` with the count and the names. This is the
-  `codemode.unavailable` line's reasoning applied again: an operator who
-  configured something and sees no effect must have a line to reason
-  from, and a host that configured nothing must run exactly the
-  processes it ran before the feature existed.
+  one logs `rules.loaded` with the count and the names. A `loom.toml`
+  with no `[[schedule]]` takes the identical posture: `schedules.none`
+  or `schedules.loaded`, no scanner started or a supervised one holding
+  exactly the configured list. This is the `codemode.unavailable` line's
+  reasoning applied again: an operator who configured something and
+  sees no effect must have a line to reason from, and a host that
+  configured nothing must run exactly the processes it ran before the
+  feature existed.
 - **A dormant rule is byte-absent from a context, not merely cheap.**
   Rules live in the configuration file, fired-marks and cursors live in
   reserved registers, and neither is an entry — so nothing a rule
