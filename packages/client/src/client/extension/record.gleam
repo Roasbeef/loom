@@ -430,6 +430,55 @@ fn terms_decoder() -> Decoder(NetTerms) {
   ))
 }
 
+/// Reads a record this build knows how to read, or says which of the two
+/// things went wrong.
+///
+/// The version is decoded *first*, on its own, and that ordering is the
+/// whole of this function. A record written by an older server is
+/// missing whatever fields this build added, so the full decoder
+/// reaches it before the version check does and reports the missing
+/// field — "the install record does not decode: expected List at
+/// .hooks" — when the fact an operator needs is "this record is format
+/// 1 and this server reads 2, so reinstall it". Same two failures as
+/// `decode` then `current`, in the order that names the right one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert record.readable("{\"format\": 1}")
+///   == Error("the install record is format 1; this server reads 2")
+/// ```
+///
+pub fn readable(text: String) -> Result(Record, String) {
+  use Nil <- result.try(
+    json.parse(from: text, using: version_decoder())
+    |> result.map_error(describe_decode_error)
+    |> result.try(known_format),
+  )
+  decode(text)
+}
+
+// The version and nothing else, so a record whose *other* fields this
+// build cannot read still answers the version question.
+fn version_decoder() -> Decoder(Int) {
+  use format <- decode.field("format", decode.int)
+  decode.success(format)
+}
+
+fn known_format(format: Int) -> Result(Nil, String) {
+  case format == format_version {
+    True -> Ok(Nil)
+    False -> Error(skewed(format))
+  }
+}
+
+fn skewed(format: Int) -> String {
+  "the install record is format "
+  <> int.to_string(format)
+  <> "; this server reads "
+  <> int.to_string(format_version)
+}
+
 /// Refuses a record this build does not know how to read.
 ///
 /// Separate from `decode` because the two failures are different facts:
@@ -447,13 +496,7 @@ fn terms_decoder() -> Decoder(NetTerms) {
 pub fn current(written: Record) -> Result(Record, String) {
   case written.format == format_version {
     True -> Ok(written)
-    False ->
-      Error(
-        "the install record is format "
-        <> int.to_string(written.format)
-        <> "; this server reads "
-        <> int.to_string(format_version),
-      )
+    False -> Error(skewed(written.format))
   }
 }
 
