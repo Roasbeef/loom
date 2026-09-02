@@ -238,3 +238,77 @@ pub fn wait_for_close(ctx: PeerCtx) -> Nil {
     Error(Nil) -> Nil
   }
 }
+
+// --- the persistent host's direction --------------------------------------
+//
+// A `Host` (as against a `run`) speaks first: it sends `hook_call` and
+// waits for `hook_result`. A peer script for one is therefore a loop over
+// inbound frames rather than a straight line, so it needs a deframer it
+// can carry between reads — which `collect_results` hides inside its own
+// recursion and cannot lend out.
+
+/// A peer's read cursor over the host's outbound frames, carried between
+/// reads so a script can act on one frame and then wait for the next.
+pub opaque type Reading {
+  Reading(deframer: framing.Deframer, seen: List(framing.Frame))
+}
+
+/// A fresh cursor.
+pub fn reading() -> Reading {
+  Reading(deframer: framing.deframer(), seen: [])
+}
+
+/// The next frame the host wrote, or `Error(Nil)` if none arrived inside
+/// `timeout` (or the host closed the connection).
+pub fn next_frame(
+  ctx: PeerCtx,
+  cursor: Reading,
+  timeout: Int,
+) -> Result(#(Reading, framing.Frame), Nil) {
+  case cursor.seen {
+    [frame, ..rest] -> Ok(#(Reading(..cursor, seen: rest), frame))
+    [] ->
+      case process.receive(ctx.inbox, timeout) {
+        Error(Nil) -> Error(Nil)
+        Ok(InboundClose) -> Error(Nil)
+        Ok(InboundBytes(data:)) -> {
+          let framing.Pushed(deframer:, inbound:, fault: _) =
+            framing.push(cursor.deframer, data)
+          let frames =
+            list.filter_map(inbound, fn(item) {
+              case item {
+                framing.Known(frame:) -> Ok(frame)
+                framing.UnknownInbound(..) -> Error(Nil)
+              }
+            })
+          next_frame(ctx, Reading(deframer:, seen: frames), timeout)
+        }
+      }
+  }
+}
+
+/// The next `hook_call` the host wrote, skipping anything else on the way.
+pub fn next_hook_call(
+  ctx: PeerCtx,
+  cursor: Reading,
+  timeout: Int,
+) -> Result(#(Reading, framing.Frame), Nil) {
+  use #(cursor, frame) <- result.try(next_frame(ctx, cursor, timeout))
+  case frame.body {
+    framing.HookCall(..) -> Ok(#(cursor, frame))
+    _other -> next_hook_call(ctx, cursor, timeout)
+  }
+}
+
+/// Answers a `hook_call` under the same frame id.
+pub fn send_hook_result(ctx: PeerCtx, id: Int, outcome: CapOutcome) -> Nil {
+  send_frame(ctx, framing.Frame(id:, body: framing.HookResult(outcome:)))
+}
+
+/// The token, name and arguments a `hook_call` carried.
+pub fn hook_call_parts(frame: framing.Frame) -> #(BitArray, String, String) {
+  case frame.body {
+    framing.HookCall(token:, kind:, name:, ..) -> #(token, kind, name)
+    _other -> #(<<>>, "", "")
+  }
+}
