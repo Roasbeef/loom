@@ -6,7 +6,10 @@
 %% lines are the point, not an accident.
 -module(client_test_ffi).
 
--export([ws_roundtrip/4, which/1, run/3, gzip/1]).
+-export([ws_roundtrip/4, which/1, run/3, gzip/1,
+         origin_start/0, origin_stop/1, origin_seen/1]).
+
+-include_lib("public_key/include/public_key.hrl").
 
 %% Returns {ok, Payload} with the first text frame the server sends
 %% after our frame, or {error, Reason} naming the step that failed.
@@ -150,3 +153,180 @@ collect(Port, Acc) ->
 %% compression would put that back.
 gzip(Bytes) ->
     zlib:gzip(Bytes).
+
+%% ---------------------------------------------------------------------
+%% A real TLS origin on loopback, for the extension egress end-to-end.
+%%
+%% `broker/egress` refuses anything but https and verifies every chain
+%% against the policy's roots, and no test may relax either. So this is
+%% an actual `ssl` listener with a chain generated at test time by
+%% `public_key:pkix_test_data/1`, whose root the test pins through
+%% `egress.PinnedRoots` — the client's verification path runs for real.
+%% `packages/broker` has its own copy for its own suite; the two are
+%% deliberately separate rather than a shared module, because a test
+%% module inside a package is a module *of* that package and neither
+%% suite may import the other's.
+%%
+%% One route, `/get`, answering a fixed body that does **not** echo the
+%% request. That is the point: the extension end-to-end asserts that the
+%% injected credential reached the origin *and* that its value appears in
+%% no frame on the capability channel, and a server that echoed its
+%% headers back would put the value in the response body and defeat the
+%% second half. What the origin saw is read out of band with
+%% `origin_seen/1`, which never travels through the jail at all.
+%% ---------------------------------------------------------------------
+
+%% Starts a server on an ephemeral loopback port. Answers with the
+%% owning pid, the port, and the DER of the root a client must pin.
+origin_start() ->
+    {ok, _} = application:ensure_all_started(ssl),
+    {RootDer, ServerConf} = origin_chain(),
+    Parent = self(),
+    Ref = make_ref(),
+    Pid = spawn(fun() -> origin_listen(Parent, Ref, ServerConf) end),
+    receive
+        {Ref, Port} -> {Pid, Port, RootDer}
+    after 10000 ->
+        exit(origin_server_start_timeout)
+    end.
+
+%% Killing the owner closes the listen socket with it.
+origin_stop(Pid) ->
+    erlang:exit(Pid, kill),
+    nil.
+
+%% The headers of every request this origin has answered, newest first,
+%% each rendered as one `name: value` line. Read out of band, so nothing
+%% here has crossed the capability channel.
+origin_seen(Pid) ->
+    Ref = make_ref(),
+    Pid ! {seen, self(), Ref},
+    receive
+        {Ref, Lines} -> Lines
+    after 5000 ->
+        []
+    end.
+
+origin_chain() ->
+    Key = {?MODULE, origin_chain},
+    case persistent_term:get(Key, undefined) of
+        undefined ->
+            Chain = origin_generate_chain(),
+            persistent_term:put(Key, Chain),
+            Chain;
+        Chain ->
+            Chain
+    end.
+
+%% The peer certificate names localhost in a subjectAltName: the
+%% generator's default is this machine's own hostname, and the extension
+%% under test requests https://localhost:<port>.
+origin_generate_chain() ->
+    Root = public_key:pkix_test_root_cert("loom extension test root",
+                                          origin_key_opts()),
+    San = #'Extension'{extnID = ?'id-ce-subjectAltName',
+                       extnValue = [{dNSName, "localhost"}],
+                       critical = false},
+    Peer = origin_key_opts() ++ [{extensions, [San]}],
+    #{server_config := ServerConf} =
+        public_key:pkix_test_data(
+          #{server_chain => #{root => Root,
+                              intermediates => [],
+                              peer => Peer},
+            client_chain => #{root => [], intermediates => [], peer => []}}),
+    #{cert := RootDer} = Root,
+    {RootDer, ServerConf}.
+
+%% The generator's default key is whatever curve OpenSSL lists first,
+%% which on some machines is a legacy curve TLS 1.2 and 1.3 both refuse.
+%% Naming P-256 and SHA-256 keeps the failure the suite observes the one
+%% it is testing for.
+origin_key_opts() ->
+    [{digest, sha256}, {key, {namedCurve, secp256r1}}].
+
+origin_listen(Parent, Ref, ServerConf) ->
+    Options = ServerConf ++ [{reuseaddr, true}, {active, false},
+                             {mode, binary}, {ip, {127, 0, 0, 1}}],
+    {ok, Listen} = ssl:listen(0, Options),
+    {ok, {_Address, Port}} = ssl:sockname(Listen),
+    Parent ! {Ref, Port},
+    origin_loop(Listen, []).
+
+%% One process owns the listener, the accept loop and the record of what
+%% has been seen, so `origin_seen/1` is a message to the one party that
+%% knows. Accept is polled with a short timeout rather than blocked on,
+%% because the same process has to stay able to answer that message.
+origin_loop(Listen, Seen) ->
+    Next = case ssl:transport_accept(Listen, 200) of
+               {ok, Socket} -> origin_handshake(Socket, Seen);
+               {error, timeout} -> Seen;
+               {error, _Closed} -> Seen
+           end,
+    receive
+        {seen, From, Ref} ->
+            From ! {Ref, Next},
+            origin_loop(Listen, Next)
+    after 0 ->
+        origin_loop(Listen, Next)
+    end.
+
+origin_handshake(Socket, Seen) ->
+    case ssl:handshake(Socket, 5000) of
+        {ok, Tls} ->
+            Headers = origin_serve(Tls),
+            ssl:close(Tls),
+            [Headers | Seen];
+        {error, _Rejected} ->
+            Seen
+    end.
+
+origin_serve(Socket) ->
+    case origin_read_head(Socket, <<>>) of
+        {ok, Head} ->
+            {Path, Headers} = origin_parse(Head),
+            origin_respond(Socket, Path),
+            Headers;
+        {error, _Reason} ->
+            []
+    end.
+
+origin_read_head(Socket, Acc) ->
+    case binary:match(Acc, <<"\r\n\r\n">>) of
+        {Position, _Length} ->
+            {ok, binary:part(Acc, 0, Position)};
+        nomatch ->
+            case ssl:recv(Socket, 0, 10000) of
+                {ok, Data} -> origin_read_head(Socket, <<Acc/binary, Data/binary>>);
+                {error, Reason} -> {error, Reason}
+            end
+    end.
+
+origin_parse(Head) ->
+    [RequestLine | HeaderLines] = binary:split(Head, <<"\r\n">>, [global]),
+    [_Method, Path | _Version] = binary:split(RequestLine, <<" ">>, [global]),
+    Headers = [origin_header(Line) || Line <- HeaderLines, Line =/= <<>>],
+    {Path, Headers}.
+
+origin_header(Line) ->
+    case binary:split(Line, <<":">>) of
+        [Name, Value] ->
+            iolist_to_binary([string:lowercase(Name), <<": ">>,
+                              string:trim(Value)]);
+        [Name] ->
+            iolist_to_binary([string:lowercase(Name), <<": ">>])
+    end.
+
+%% The body carries no part of the request, deliberately: see the header
+%% comment. A path this origin does not know answers 404 with a body that
+%% is still not the request.
+origin_respond(Socket, <<"/get">>) ->
+    origin_send(Socket, 200, <<"the origin answered">>);
+origin_respond(Socket, _Path) ->
+    origin_send(Socket, 404, <<"no such route">>).
+
+origin_send(Socket, Status, Body) ->
+    Head = [<<"HTTP/1.1 ">>, integer_to_binary(Status), <<" OK\r\n">>,
+            <<"content-type: text/plain\r\n">>,
+            <<"content-length: ">>, integer_to_binary(byte_size(Body)),
+            <<"\r\n">>, <<"connection: close\r\n\r\n">>],
+    ssl:send(Socket, [Head, Body]).

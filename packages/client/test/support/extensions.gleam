@@ -51,6 +51,42 @@ pub fn hello() -> List(#(String, String)) {
   ]
 }
 
+/// The egress fixture: one tool that fetches a URL through the broker and
+/// reports what came back, once per requested attempt.
+///
+/// Parameterised by the origin the end-to-end started, because
+/// `[net].hosts` is an exact `host:port` and the port is ephemeral. The
+/// secret binding is the fixture's own: an environment variable the test
+/// sets, bound to a header the origin records having seen. Nothing in the
+/// tool's source names either — it sets no headers at all — which is the
+/// property the end-to-end exists to prove.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let files = extensions.fetcher(origin: "localhost:8443", per_call: 2)
+/// ```
+///
+pub fn fetcher(
+  origin origin: String,
+  per_call per_call: Int,
+) -> List(#(String, String)) {
+  [
+    #("extension.toml", fetcher_manifest(origin, per_call)),
+    #("gleam.toml", fetcher_project()),
+    #("schema/fetcher.json", fetcher_schema()),
+    #("src/fetcher/tool.gleam", fetcher_tool()),
+  ]
+}
+
+/// The environment variable the `fetcher` fixture's secret binding names.
+/// A *name*: the value is set by the end-to-end and never appears in the
+/// manifest, the record, or any file the fixture writes.
+pub const fetcher_env = "LOOM_FIXTURE_TOKEN"
+
+/// The header the broker injects the bound value into.
+pub const fetcher_header = "X-Fixture-Token"
+
 /// An extension whose source declares an `@external`.
 pub fn hostile_ffi() -> List(#(String, String)) {
   replace(
@@ -263,6 +299,108 @@ fn directory_of(path: String) -> String {
 
 fn env(name: String) -> Result(String, Nil) {
   secret.lookup(secret.env(), name)
+}
+
+// --- the fetcher fixture's pieces ------------------------------------------
+
+fn fetcher_manifest(origin: String, per_call: Int) -> String {
+  "[extension]\nname = \"fetcher\"\nversion = \"0.1.0\"\n"
+  <> "description = \"Fetch a URL through the broker.\"\n"
+  <> "license = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \"fetcher\"\n"
+  <> "description = \"Fetch a URL and report what came back.\"\n"
+  <> "prompt_snippet = \"fetcher: fetch a url through the broker\"\n"
+  <> "parameters = \"schema/fetcher.json\"\nentry = \"fetcher/tool\"\n"
+  <> "timeout_ms = 60000\n\n"
+  <> "[net]\nhosts = [\""
+  <> origin
+  <> "\"]\nmethods = [\"GET\"]\nmax_response_bytes = 65536\n"
+  <> "requests_per_call = "
+  <> int.to_string(per_call)
+  <> "\n\n[[net.secret]]\nenv = \""
+  <> fetcher_env
+  <> "\"\nhost = \""
+  <> origin
+  <> "\"\nheader = \""
+  <> fetcher_header
+  <> "\"\n"
+}
+
+fn fetcher_project() -> String {
+  "name = \"fetcher\"\nversion = \"0.1.0\"\ngleam = \">= 1.18.0\"\n\n"
+  <> "[dependencies]\ngleam_stdlib = \">= 1.0.0 and < 2.0.0\"\n"
+  <> "cap = { path = \"../cap\" }\next = { path = \"../ext\" }\n"
+}
+
+fn fetcher_schema() -> String {
+  "{\n  \"type\": \"object\",\n  \"properties\": {\n"
+  <> "    \"url\": { \"type\": \"string\" },\n"
+  <> "    \"times\": { \"type\": \"integer\" }\n  },\n"
+  <> "  \"required\": [\"url\", \"times\"]\n}\n"
+}
+
+// One line per attempt, naming which of `cap/net`'s three failure kinds
+// answered. Every outcome is text rather than a refusal because the
+// end-to-end asserts on *all* of the attempts in one reply: a ceiling
+// that fires on the third of three has to leave the first two readable.
+fn fetcher_tool() -> String {
+  "import cap/net
+import ext
+import gleam/bit_array
+import gleam/dynamic
+import gleam/dynamic/decode
+import gleam/int
+import gleam/list
+import gleam/string
+
+pub fn run(
+  arguments: dynamic.Dynamic,
+  _ctx: ext.Ctx,
+) -> Result(ext.Outcome, ext.Refusal) {
+  let decoder = {
+    use url <- decode.field(\"url\", decode.string)
+    use times <- decode.field(\"times\", decode.int)
+    decode.success(#(url, times))
+  }
+  case ext.decode_args(arguments, decoder) {
+    Error(refusal) -> Error(refusal)
+    Ok(#(url, times)) -> Ok(ext.text(attempts(url, times)))
+  }
+}
+
+fn attempts(url: String, times: Int) -> String {
+  string.join(list.reverse(collect(url, 1, times, [])), \"\\n\")
+}
+
+fn collect(url: String, n: Int, times: Int, found: List(String)) -> List(String) {
+  case n > times {
+    True -> found
+    False ->
+      collect(url, n + 1, times, [
+        int.to_string(n) <> \" \" <> attempt(url),
+        ..found
+      ])
+  }
+}
+
+fn attempt(url: String) -> String {
+  case net.fetch(url) {
+    Ok(response) ->
+      \"ok \" <> int.to_string(response.status) <> \" \" <> text(response.body)
+    Error(net.NetDenied(message:)) -> \"denied \" <> message
+    Error(net.NetFailed(code:, message:)) ->
+      \"failed \" <> code <> \" \" <> message
+    Error(net.NetUnavailable(reason:)) -> \"unavailable \" <> reason
+  }
+}
+
+fn text(bytes: BitArray) -> String {
+  case bit_array.to_string(bytes) {
+    Ok(body) -> body
+    Error(Nil) -> \"<not text>\"
+  }
+}
+"
 }
 
 // --- a tar writer, for the fetch path -------------------------------------
