@@ -501,3 +501,56 @@ recorded there when it lands. **#161** stays closed as ruled; the
 default remains `steer`, and the facts it rests on are revisited after
 the ownership model exists rather than before.
 
+---
+
+## Addendum: the ownership model
+
+#163 and #154 were one question — who owns a schedule and how long it
+lives — and the answer is two facts and a bound, landed together.
+
+**A schedule has an owner and a target.** The owner is recorded in the
+config cell (`Owner`: `OperatorOwned` for a `[[schedule]]` table, which
+no cell can spell, or `StrandOwned`); the target is the strand it fires
+onto and, with the name, its identity, so the `config/`, `seen/` and
+`fired/` key shapes are unchanged. `list` and `cancel` key on the owner,
+so a parent sees and ends what it set on its children, and a subagent
+may schedule onto itself again — the blunt refusal is gone.
+
+**A strand may target itself or a strand it spawned**, decided from the
+lineage ledger through `agency.owns` and failing closed when the ledger
+cannot be read. Never an arbitrary strand name: a sibling injecting text
+into another's context is prompt injection with a delivery mechanism.
+The ownership argument the earlier addendum said nobody had written
+down is this: a parent extends its child's *steering*, which it already
+controls, and never its liveness.
+
+**Waking is for roots only, whatever the policy says.** A subagent has
+exactly one run, and re-opening a settled one was the security-shaped
+half of #163. So `wake_onto` caps any schedule onto a `sub:` strand to
+`SteersOnly` at the seam, and `Created.wake` says so, as it already did
+under a `steer` policy.
+
+**A schedule lives no longer than its target.** The scanner asks, before
+firing onto a subagent, whether its lineage cell is `reaped` or its brief
+has settled — the two facts `client/agency` itself reaps on — and treats
+a dead target as expired; a `sub:` name with no cell reads as dead. That
+covers an operator's table naming a child too. A `run_end` hook
+(`scheduleseam.reaping_hooks`, composed beside `agency.reaping_hooks`)
+reaps a settled child's config, observation instant and marks on a
+process of its own, which is what frees the ceiling slots #163 said were
+burnt. And `cancel` retires the whole footprint — marks, then the seen
+cell, then the config cell, in that order so a fault leaves a live
+schedule with a reset count rather than an orphan clock — which is the
+ruling for the cancel-then-recreate finding rather than a per-creation
+nonce in every key.
+
+**The injected text names the owner** when it is not the reading strand
+(`Origin.OwnerScheduled`), so a parent's heartbeat onto a child never
+reads as the child's own note to itself.
+
+Residual, named: an operator `[[schedule]]` with `wake = true` onto a
+*live* subagent can still wake it in the window before the brief
+settles. The cap sits at the model door; the settled-target check bounds
+the operator case. And the ceiling stays session-wide and inexact under a
+code-mode fan-out, as before.
+
