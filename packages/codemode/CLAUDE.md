@@ -167,10 +167,17 @@ session and sends it many invocations.
   `satellite.ServedHere`: a workspace read, a process-local store write
   and a blob mint leave no VM, so there is nothing a jail could contain
   and a composed `SandboxPolicy` would have no enforcer. The `schedule.*`
-  arms are the newest and the strand they act on is **bound by the host**,
+  arms are the newest and the **calling** strand is **bound by the host**,
   from the code-mode request, and never travels over the cap channel: a
-  program cannot name a strand, so it cannot schedule into another one's
-  context. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
+  program cannot name the strand its own authority comes from. A
+  `ScheduleRequest.target` — and the target on a cancel — *is* a program's
+  to write, and it is a request rather than an instruction: the host
+  admits only the calling strand itself or a strand that strand spawned,
+  decided from its own lineage ledger, and refuses anything else as
+  `ScheduleInvalid`. So a program still cannot schedule into an
+  unrelated strand's context, and `ScheduleCreated.target` /
+  `ScheduleRow.target` are what tell it where a schedule actually
+  landed. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
   name for what a schedule may do to an idle strand, restated here the
   way `ScheduleRefusal` restates the host's refusal vocabulary, since
   `codemode` may depend on neither `client` nor `tools`; the cap wire

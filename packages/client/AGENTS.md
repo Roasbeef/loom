@@ -164,7 +164,15 @@ over one session file. WP-L.
   framing that marks another agent's text as data. `child_name` mints
   `sub:{parent}/{slug}-{digest}`, the digest being
   `agent.call_site_digest` over the caller's coordinates and the `Minter`
-  inside them.
+  inside them. `owns(runtime, ancestor:, strand:)` is the addressing rule
+  exposed for a seam outside the messaging plane —
+  `client/scheduleseam` asks it whether a schedule's target is a strand
+  the caller spawned — and it fails closed at every step: an unreadable
+  ledger, a strand with no cell and a cell that will not decode all
+  answer `False`, and the relation is strict, so a caller meaning "itself
+  or a descendant" says so at its own door. `is_subagent` is not a
+  substitute: it says a name was minted by *an* Agency, not by whom, and
+  a sibling's name is shaped exactly like a child's.
 - `client/codemode.{Config, Toolchain, seam, discover, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
@@ -444,13 +452,14 @@ over one session file. WP-L.
   next invariant — so the ledger read happens once per strand per
   incarnation, on the pass a hold begins, and costs nothing before or
   after.
-- `client/schedule.{Schedule, Timing, Expiry, Wake, Lateness, Policy,
+- `client/schedule.{Schedule, Owner, Timing, Expiry, Wake, Lateness,
+  Origin, Policy,
   parse, parse_policy,
   default_policy, policy_opens_the_door, wake_under, build,
-  encode, decode, config_key, config_key_prefix,
+  encode, decode, config_key, config_key_prefix, strand_prefixes,
   parse_instant, render_instant, fired_key,
   fired_key_prefix, fired_value, seen_key, seen_value, decode_seen,
-  injection, interval_occurrence,
+  injection, origin_of, interval_occurrence,
   interval_late, interval_expired, max_schedules, max_model_schedules,
   min_interval_s,
   max_name_length, max_body_length, max_target_length,
@@ -509,6 +518,35 @@ over one session file. WP-L.
   factored out of the actor that drives them so a fencepost error gets a
   direct, deterministic test rather than one hidden behind a timer
   harness.
+  **A schedule has an `Owner` as well as a `target`, and the pair is
+  what bounds its life** (#163, #154). `Owner` is `OperatorOwned |
+  StrandOwned(strand)`: a `[[schedule]]` table parses to the first, a
+  model-created cell always carries the second, and `decode` has **no
+  path** to `OperatorOwned` — a cell with no `owner` field reads as
+  `StrandOwned(target)`, which is what every cell an earlier build wrote
+  actually was, and the absent field can therefore only ever name the
+  strand the schedule already fires onto. Ownership decides who may
+  `list` and `cancel`; the target decides whose context a fire lands in.
+  Keying cancellation on the creator is the fix: a schedule used to be
+  cancellable only by the strand it fired onto, so a subagent's own
+  heartbeat became uncancellable the moment that subagent settled and
+  held a ceiling slot for the rest of the session. What ownership
+  deliberately does *not* touch is a schedule's **identity**, which
+  stays `{target, name}` — config, seen and fired keys are unchanged and
+  name uniqueness is still per target across both stores, because an
+  occurrence is a fact about a strand's timeline and two schedules
+  sharing that pair would share a mark whoever owned them.
+  `strand_prefixes(strand)` is the one place a strand's whole durable
+  scheduling footprint is written down — the config, seen and fired
+  prefixes, each ending in `/` so a reap cannot reach a
+  similarly-named neighbour — and it is what `client/scheduleseam`
+  retires on a run end. `Origin` gained a third variant with the owner:
+  `OperatorConfigured | SelfScheduled | OwnerScheduled(owner)`, derived
+  from the value by `origin_of` rather than paired on by the scanner,
+  and the third one exists because text a parent scheduled onto a child
+  must not reach the child as "a heartbeat *you* scheduled" — it names
+  the owner and says the instruction is worth what a steer from that
+  strand is worth, and no more.
 - `client/scheduleseam.{Wiring, Door, seam, door, limits,
   describe_timing, cell}` — the host half of the model-facing scheduling
   door, filling `tools/schedule`'s seam the way `client/memory` fills
@@ -527,9 +565,15 @@ over one session file. WP-L.
   `api.open`, so it is built before a runtime exists, and it reads the
   session's one holder through `agency.borrow_runtime` rather than
   standing up a second actor. `Door` is the same three operations keyed
-  on a strand name, which is what `client/codemode` serves `schedule.*`
-  over — one implementation behind both doors, so a program and a tool
-  call cannot disagree about what this session's schedules are.
+  on the **caller's** strand name, which is what `client/codemode` serves
+  `schedule.*` over — one implementation behind both doors, so a program
+  and a tool call cannot disagree about what this session's schedules
+  are. `list(caller)` answers every cell whose *owner* is the caller,
+  child-targeting ones included, and `cancel(caller, name, target)` finds
+  `{target or caller, name}` and requires the owner to match, else
+  `NotFound` — the same answer a name that does not exist gets, so a
+  caller guessing at a sibling's name learns nothing from the
+  difference.
   Both of its writes are guarded rather than blind: `create` commits the
   config cell with `api.put_reserved_fact_expecting(expected: None)`, so
   a name belongs to whichever writer commits first and the loser is
@@ -554,7 +598,11 @@ over one session file. WP-L.
   list with the model's config cells read fresh from the store, never a
   cached list: a cell can appear or be cancelled between any two ticks
   and this actor is restartable, so a cache would be a second source of
-  truth. `poke` is what the seam rings after a write so a new schedule
+  truth. The union is an append and nothing more, because a schedule now
+  carries its own `client/schedule.Owner`: whose text a fire is comes
+  from `schedule.origin_of` rather than from a pairing this actor used to
+  carry, and a config cell can never decode as the operator's.
+  `poke` is what the seam rings after a write so a new schedule
   starts on time rather than at the next armed deadline; it checks the
   name is registered first, because a send to an unregistered name
   raises and the caller is a tool body. `with_model_door_open` sets
@@ -585,6 +633,22 @@ over one session file. WP-L.
   must neither shorten a schedule's life nor lengthen it. The same "durable-derived beats durable-stored" argument
   keeps `client/rulescan`'s cursor a checkpoint rather than a source of
   truth.
+  **A settled target ends the schedule, and the check is a subagent's
+  only.** Before any timing arithmetic, a schedule whose target is a
+  subagent asks whether that strand has stopped: dead when its lineage
+  cell carries the `reaped` mark, or when its `brief` has a terminal
+  result (`api.await_strand_result(within_ms: 0)`, one immediate store
+  read) — exactly the pair `client/agency.is_live` and `reap` decide
+  from. A dead target's schedule is `Expired` for that tick: no fire, no
+  re-arm, and no wake whoever configured it, which is the belt to
+  `client/scheduleseam.reaping_hooks`' braces (#163). It **fails
+  closed**: a `sub:` target with no lineage cell, or one whose cell will
+  not decode, reads as finished — the opposite direction from
+  `client/rulescan`'s hold, deliberately, because a held rule costs a
+  tick while a fired schedule may open a run. A root strand answers
+  `False` without a read at all: `main` is idle between runs rather than
+  finished, so a terminal result there says the last prompt ended and
+  nothing about the next one.
   A fire is one `api.steer_marking` when `Schedule.wake` is `SteersOnly`
   — the injection and the occurrence's write-once fired-mark in one
   transaction, exactly `client/rulescan`'s at-most-once argument, held on
@@ -1601,6 +1665,26 @@ an install is under the extensions root.
   ancestor that still remembers the child's name from addressing it
   after the reap. `client/rulescan`'s module doc has the full argument
   and the FAIL OPEN branches (no cell, a cell that will not decode).
+- **A schedule is owned by the strand that created it and lives no
+  longer than the strand it fires onto.** Those are two rules and both
+  are needed. Ownership is what makes a schedule retirable: cancellation
+  and listing are keyed on the creator, so a parent can cancel a
+  heartbeat it set onto a child that has already settled — which nobody
+  could do while a schedule was cancellable only by its target (#163).
+  The target's lifetime is what makes it bounded: `client/scheduleseam`'s
+  `run_end` reap retires every schedule keyed to a strand whose brief
+  just ended, and `client/schedulescan` refuses to fire onto a target
+  the lineage ledger says is reaped or whose brief has settled, so
+  neither a lost reap nor an operator's `[[schedule]]` can keep a
+  finished child's clock running. A target may only ever be the caller
+  or a strand it spawned, decided from the ledger through
+  `agency.owns` — the addressing rule above, narrowed — and no schedule
+  onto a subagent may wake it, whatever the operator's policy permits,
+  because a subagent has one run and a fresh one after its work ended
+  would extend a child's life outside its parent's spawn budget. What
+  ownership does not move is a schedule's identity: the config, seen and
+  fired keys stay `{target, name}`, because an occurrence is a fact
+  about the target's timeline.
 - **A code-mode submission is judged against the seam it named, and
   routed by the seam the host wired.** The two halves are read from
   different places on purpose. The allowlist follows the *submission*

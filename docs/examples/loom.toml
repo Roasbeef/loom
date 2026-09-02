@@ -144,6 +144,12 @@ body = "Never force-push a shared branch. Open a new branch instead."
 # a quoted RFC3339 UTC timestamp; there is no timezone handling beyond
 # UTC. `target` names the strand to fire onto, defaulting to main.
 #
+# A schedule aimed at a SUBAGENT strand ends when that subagent's work
+# does — the server reads the same record it reaps children by, so a
+# heartbeat watching a child stops the moment the child's task settles
+# rather than ticking against a strand that has finished. That applies to
+# the tables here as well as to anything the model creates.
+#
 # `wake` is where a schedule differs from a rule, and it is opt-in. With
 # `wake = false` (the default) a schedule steers a run already in flight
 # and holds when the strand is idle, exactly as a rule does. With `wake =
@@ -214,11 +220,21 @@ body = "The migration window opens today. Confirm the plan is ready."
 #             and nobody else's.
 #
 # A model-created schedule is held to every limit a [[schedule]] table
-# above is held to, and it cannot raise any of them: it fires onto the
-# strand that created it and no other, it expires on both max_fires and
-# expires_after_s with the earlier winning, and one session holds a
-# limited number of them at once. Those bounds hold under every setting;
-# what "wake" adds is the one thing they do not bound, which is how long
-# a session that nobody is prompting keeps running.
+# above is held to, and it cannot raise any of them: it expires on both
+# max_fires and expires_after_s with the earlier winning, and one session
+# holds a limited number of them at once. Those bounds hold under every
+# setting; what "wake" adds is the one thing they do not bound, which is
+# how long a session that nobody is prompting keeps running.
+#
+# It fires onto the strand that created it, or onto a strand that strand
+# SPAWNED — a subagent it started, so a parent agent can watch its own
+# unattended work — and nowhere else. A strand cannot schedule onto a
+# sibling, onto its parent, or onto anything it did not start; the server
+# decides that from its own record of who spawned whom, not from a name
+# the model wrote. A schedule onto a subagent never wakes it under any
+# setting, "wake" included: a subagent has one run, so it steers that run
+# while there is one and ends when the subagent's work does. Whichever
+# strand a schedule fires onto, only the strand that created it can list
+# or cancel it.
 [schedules]
 model_created = "steer"

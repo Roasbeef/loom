@@ -110,8 +110,9 @@ below.
   every other code is the serving function's own vocabulary
   (`packages/ext`'s, in practice).
 - `cap/schedule.{Schedule, Created, Wake, ScheduleError}` — heartbeats a
-  program sets for the strand it is running on, the code-mode half of the
-  door `tools/schedule` opens for a tool call. Both land on one
+  program sets for the strand it is running on or for a strand that
+  strand spawned, the code-mode half of the door `tools/schedule` opens
+  for a tool call. Both land on one
   implementation (`client/scheduleseam.Door`), so either door can cancel
   what the other created. `Created.wake` is what the host actually
   granted and is not always what was asked for — an operator policy may
@@ -120,6 +121,21 @@ below.
   a `Wake` (`WakesIdle | SteersOnly`) rather than a `Bool`, so the
   request and the grant read the same way at both ends; the capability
   wire still carries a boolean in both directions.
+  **A target is a request, never an instruction.** `every_on`, `at_on`
+  and `cancel_on` are the three functions that name one, and the host
+  admits only the calling strand itself or a strand it spawned, decided
+  from its own lineage ledger and refused as `invalid_schedule`
+  otherwise — a program cannot reach a sibling's or a parent's context by
+  writing a name. The plain `every`/`at`/`cancel` mean this strand and
+  are unchanged. Two consequences a program has to read rather than
+  assume: a schedule onto a subagent is always `SteersOnly`, because a
+  subagent has one run and a fresh one after it would extend a child's
+  life past its work; and `list`/`cancel` are keyed on the strand that
+  **created** a schedule rather than the one it fires onto, which is what
+  makes a heartbeat onto a subagent cancellable at all once that
+  subagent has finished. `Schedule.target` and `Created.target` are how
+  a program tells the two apart, since one name may be in use on this
+  strand and on a child's at once.
   Workspace seam only and not orchestration, asked and decided in issue
   #156. The bar for the one entry the two seams share is the bar
   `cap/report` meets: `report.emit` mints nothing durable and causes no
