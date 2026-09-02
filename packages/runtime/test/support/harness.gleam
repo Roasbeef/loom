@@ -36,6 +36,8 @@ import session/session.{type Session}
 import storage/storage
 import support/fake
 import support/recorder
+import weft
+import weft/poll
 
 /// One interleave scenario.
 pub type Scenario {
@@ -142,7 +144,13 @@ pub fn run(scenario: Scenario, kill_at: Int) -> Report {
     None -> Nil
   }
   api.nudge(rt)
-  let outcome = wait_terminal(rt, sess, op, scenario, rec, 20_000)
+
+  // The pump is started before the wait and stopped before the tree, so no
+  // abort request can outlive the runtime it addresses.
+  let pump = start_abort_pump(rt, scenario, rec)
+  let outcome = wait_terminal(sess, op)
+  stop_abort_pump(pump)
+
   // A run armed to crash must actually have crashed: a bomb that never
   // fired would make the interleave loop vacuous.
   case kill_at > 0 {
@@ -161,52 +169,85 @@ pub fn run(scenario: Scenario, kill_at: Int) -> Report {
   Report(outcome:, projection:, usage_total:, commits:, rec:)
 }
 
-fn wait_terminal(
-  rt: api.Runtime,
-  sess: Session,
-  op: ids.OpId,
-  scenario: Scenario,
-  rec: Subject(recorder.Message),
-  remaining: Int,
-) -> LastResult {
-  case remaining <= 0 {
-    True -> panic as "the scenario did not converge to a terminal result"
-    False -> {
-      case scenario.abort_when {
-        Some(condition) ->
-          case condition(rec) {
-            // The pump runs in a disposable process: sends to a
-            // mid-restart strand panic, and that must not kill the test.
-            True -> {
-              let _pid = process.spawn_unlinked(fn() { api.abort(rt) })
-              Nil
-            }
-            False -> Nil
-          }
-        None -> Nil
-      }
+// The budget is wall-clock, which is the whole reason this is a `weft/poll`
+// and not a sleep-and-recurse. The loop it replaced subtracted its own
+// nominal sleep from a counter, so twenty thousand meant twenty thousand
+// sleeps of ten milliseconds plus every storage read and every scheduling
+// delay between them; on a loaded two-core runner that stretched past
+// eunit's own per-test timeout, which then reported the stack of whichever
+// poll it interrupted instead of this function's diagnosis. A wedged run
+// now says so itself.
+fn wait_terminal(sess: Session, op: ids.OpId) -> LastResult {
+  let settled =
+    poll.until(within: 20_000, every: 10, attempt: fn() {
       case session.last_result(sess, "main") {
         Ok(Some(session.Cell(value: last, ..))) ->
           case last_operation(last) == op {
-            True -> last
-            False -> retry_wait(rt, sess, op, scenario, rec, remaining)
+            True -> poll.Done(last)
+            False -> poll.Retry
           }
-        _ -> retry_wait(rt, sess, op, scenario, rec, remaining)
+
+        // No terminal result yet, or a read that raced a restart: both are
+        // ordinary mid-run states, and the budget is what ends the wait.
+        Ok(None) -> poll.Retry
+        Error(_reason) -> poll.Retry
       }
-    }
+    })
+  case settled {
+    poll.Answered(last) -> last
+    poll.Expired -> panic as "the scenario did not converge to a terminal result"
+
+    // The probe never reports `Fail`; the arm is exhaustiveness.
+    poll.Failed(Nil) ->
+      panic as "the scenario did not converge to a terminal result"
   }
 }
 
-fn retry_wait(
+// One pump process for the whole wait, when the scenario asks for aborts at
+// all. The abort itself still runs in a disposable process — a request made
+// through a mid-restart strand panics, and that must not kill the pump any
+// more than it may kill the test — but it is a weft task, joined before the
+// tick returns, rather than a fresh unlinked process every ten milliseconds
+// that nothing ever reaps. Those outlived `run`, and the storm of exit
+// reports they raised against a tree the harness had already killed is what
+// buried the real diagnosis in the CI log.
+fn start_abort_pump(
   rt: api.Runtime,
-  sess: Session,
-  op: ids.OpId,
   scenario: Scenario,
   rec: Subject(recorder.Message),
-  remaining: Int,
-) -> LastResult {
+) -> Option(process.Pid) {
+  case scenario.abort_when {
+    None -> None
+    Some(condition) ->
+      Some(process.spawn_unlinked(fn() { pump_aborts(rt, condition, rec) }))
+  }
+}
+
+fn pump_aborts(
+  rt: api.Runtime,
+  condition: fn(Subject(recorder.Message)) -> Bool,
+  rec: Subject(recorder.Message),
+) -> Nil {
+  case condition(rec) {
+    True -> {
+      let _outcomes =
+        weft.new([fn() { Ok(api.abort(rt)) }])
+        |> weft.start
+      Nil
+    }
+    False -> Nil
+  }
   process.sleep(10)
-  wait_terminal(rt, sess, op, scenario, rec, remaining - 10)
+  pump_aborts(rt, condition, rec)
+}
+
+// Asked to stop before the tree is killed, so the last request it made is
+// against a runtime that was still there to receive it.
+fn stop_abort_pump(pump: Option(process.Pid)) -> Nil {
+  case pump {
+    None -> Nil
+    Some(pid) -> process.kill(pid)
+  }
 }
 
 fn last_operation(last: LastResult) -> ids.OpId {
