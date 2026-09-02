@@ -529,10 +529,12 @@ session selector. The Erlang shim converted every path with `binary_to_list`,
 which double-encodes UTF-8, so a `HOME` or workspace with an accent broke the
 launcher; it now converts with `unicode:characters_to_list`, and a new
 `ffi_path_test` drives the externals through a `café-é` fixture. And every
-elapsed-time deadline in bootstrap moved from the wall clock to
-`monotonic_time_ms`. Two paths there, adopting another launcher's starting
-record and re-probing a live ready record, are converted by reading only:
-no test reaches them without a second concurrent launcher.
+elapsed-time wait in bootstrap is bounded on the monotonic clock: the four
+polls moved onto `weft/poll` with #167, which measures monotonic time, and
+the two that are not polls — the cold start's outer budget and the gateway
+snapshot receive — now take their deadline from `monotonic_time_ms`. Only
+the reads that compare against a persisted `started_at_ms` use the wall
+clock, to ask how much of a starting record's budget is already spent.
 
 The bounded limits are deliberate: automatic startup is macOS/Linux only;
 trusted `loom.toml` configuration and manually managed servers use explicit

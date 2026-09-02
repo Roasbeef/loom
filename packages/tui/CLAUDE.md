@@ -172,12 +172,14 @@ that tree separately from the self-contained server.
   are canonical before their endpoint key and kernel lock are chosen. The
   bearer token always lives under the private state root, even when an explicit
   session database lives in the workspace.
-- **Launcher waits are monotonic.** The lock, cold start, live probe, starting
-  record adoption, and snapshot deadlines come from `monotonic_time_ms`, so a
-  wall-clock step cannot stretch or cut them. Only the reads that compare
-  against a persisted `started_at_ms` use the wall clock, and a starting
-  record's remaining budget is converted to a monotonic deadline before the
-  wait begins.
+- **Launcher waits are monotonic.** The lock, live probe, starting record
+  adoption and cold-start polls run on `weft/poll`, which measures the
+  monotonic clock; the cold start's outer budget and the gateway snapshot
+  receive, which are not polls, take their deadline from `monotonic_time_ms`.
+  A wall-clock step therefore cannot stretch or cut any of them. Only the
+  reads that compare against a persisted `started_at_ms` use the wall clock,
+  and a starting record's remaining budget is computed there once and handed
+  to the poll as a duration.
 - **FFI stays mechanical.** The Erlang shim may expose platform primitives,
   but branching policy and state transitions belong in readable, testable
   Gleam. New compound behavior should first be decomposed into the smallest
