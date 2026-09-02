@@ -13,6 +13,16 @@
 //// acknowledgement; a missing ledger or any abnormal exit fails shutdown
 //// closed and cannot authorize writer-lease release.
 ////
+//// One abnormal `Down` is not a failure, and telling it apart is what keeps
+//// a healthy session alive. `noproc` is what a monitor answers when its
+//// target was already gone; it is never a reason a process exits with. A
+//// claim travels to this actor as a message, so a reaper that drains and
+//// exits in the gap between the claim leaving its claimant and this actor
+//// installing the monitor can only be met that way. Reading that as a
+//// destroyed proof killed the ledger, and with it — this being a
+//// significant child — the whole session, over a generation that had in
+//// fact drained cleanly.
+////
 //// ```text
 //// old driver Down -> old reaper drains -----------+
 ////                                                  |
@@ -22,6 +32,8 @@
 //// ```
 
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor
@@ -135,25 +147,78 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
       }
     }
-    ReaperDown(process.ProcessDown(pid:, reason: process.Normal, ..)) -> {
-      let waiters = acknowledge_departure(state.waiters, pid)
-      continue_or_stop(
-        State(..state, chains: forget(state.chains, pid), waiters:),
-      )
-    }
-    ReaperDown(process.ProcessDown(reason: process.Killed, ..))
-    | ReaperDown(process.ProcessDown(reason: process.Abnormal(_), ..)) -> {
-      // No replacement process can reconstruct the killed reaper's ownership
-      // set. This actor traps its supervisor's exit, so actor.stop_abnormal
-      // would trap its own reason and then return normally. An untrappable
-      // kill preserves the outward failure fact: the significant child stops
-      // the session and close cannot release the lease.
-      process.kill(process.self())
-      actor.stop()
-    }
+    ReaperDown(process.ProcessDown(pid:, reason:, ..)) ->
+      case verdict(reason) {
+        Drained -> retire(state, pid)
+
+        // Gone before the monitor reached it. The only monitor this actor
+        // installs on a reaper is the one in `Claim`, so `noproc` can only
+        // name a reaper that died between its driver sending the claim and
+        // this actor reading it. At that moment a reaper owns nothing but
+        // the parked claimant leaf: the driver adopts effects only after
+        // the claim is answered. A scope whose owners are all leaves cannot
+        // lose its drain proof, because a leaf's exit completes it whatever
+        // the reason, so however that reaper ended it left nothing running,
+        // which is the fact the barrier needs. The exit reason it left with
+        // is only the account of how it got there. Nothing in the tree kills
+        // a scope where it stands, and a reaper that has adopted a real
+        // effect is one this actor is already monitoring live, so its exit
+        // arrives with its true reason and is judged by the arms above.
+        Absent -> retire(state, pid)
+
+        Destroyed -> {
+          // No replacement process can reconstruct the killed reaper's
+          // ownership set. This actor traps its supervisor's exit, so
+          // actor.stop_abnormal would trap its own reason and then return
+          // normally. An untrappable kill preserves the outward failure
+          // fact: the significant child stops the session and close cannot
+          // release the lease.
+          process.kill(process.self())
+          actor.stop()
+        }
+      }
     ReaperDown(process.PortDown(..)) -> actor.continue(state)
     ParentExit(_exit) -> continue_or_stop(State(..state, closing: True))
   }
+}
+
+/// What one reaper's `Down` says about the generation it witnessed.
+type Verdict {
+  /// A normal exit: every effect the reaper adopted is provably gone.
+  Drained
+
+  /// The reaper was already gone when this actor's monitor reached it, so
+  /// the monitor answered `noproc` and no exit reason was ever on file.
+  Absent
+
+  /// The reaper died carrying its ownership set with it.
+  Destroyed
+}
+
+// `noproc` is the monitor's answer, never a process's exit reason, so it is
+// the one abnormal `Down` that says nothing about how the reaper ended. It
+// arrives when a claim outlives the reaper it names — the reaper drained and
+// exited between the claim being sent and this actor reaching it — and the
+// window is real because the claim travels as a message, not as a monitor.
+fn verdict(reason: process.ExitReason) -> Verdict {
+  case reason {
+    process.Normal -> Drained
+    process.Killed -> Destroyed
+    process.Abnormal(reason) ->
+      case decode.run(reason, atom.decoder()) == Ok(atom.create("noproc")) {
+        True -> Absent
+        False -> Destroyed
+      }
+  }
+}
+
+// Retire one generation: forget its pid and release every claim that was
+// waiting only on it.
+fn retire(state: State, departed: Pid) -> actor.Next(State, Message) {
+  let waiters = acknowledge_departure(state.waiters, departed)
+  continue_or_stop(
+    State(..state, chains: forget(state.chains, departed), waiters:),
+  )
 }
 
 fn acknowledge_departure(

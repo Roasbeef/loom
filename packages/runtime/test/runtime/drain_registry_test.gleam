@@ -64,6 +64,53 @@ pub fn replacement_claim_waits_for_ledger_authored_drain_test() {
   process.send(stop_second, Nil)
 }
 
+/// A claim can outlive the reaper it names: the reaper drains and exits
+/// while the claim is still in the ledger's mailbox, and the monitor then
+/// answers `noproc`. That is a departure, not a destroyed proof, and the
+/// session must survive it.
+pub fn claim_naming_an_already_departed_reaper_retires_it_test() {
+  let name = process.new_name(prefix: "drain-ledger-departed")
+  let assert Ok(started) = drain_registry.start(name)
+  let ledger = started.data
+  let assert Ok(ledger_pid) = process.subject_owner(ledger)
+
+  // As in the fault test above: production links the ledger to its
+  // supervisor, and the gleeunit caller must outlive whatever the ledger
+  // decides to do here.
+  process.unlink(ledger_pid)
+  let ledger_monitor = process.monitor(ledger_pid)
+
+  assert drain_registry.claim(ledger, "main", departed_reaper()) == []
+
+  // The generation was retired, so the replacement is released at once
+  // rather than waiting on a predecessor that will never report again.
+  let #(replacement, stop) = parked_reaper()
+  assert drain_registry.claim(ledger, "main", replacement) == []
+    as "a departed predecessor must not hold the replacement back"
+
+  let survived =
+    process.new_selector()
+    |> process.select_specific_monitor(ledger_monitor, fn(down) { down })
+    |> process.selector_receive(50)
+  assert survived == Error(Nil)
+    as "a claim met as noproc must not fail the session closed"
+
+  process.send(stop, Nil)
+}
+
+// A reaper that has finished and gone, confirmed by its own `Down`, so the
+// claim naming it can only ever be met as `noproc`.
+fn departed_reaper() -> process.Pid {
+  let pid = process.spawn_unlinked(fn() { Nil })
+  let monitor = process.monitor(pid)
+  let assert Ok(_down) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "the reaper must be gone before the claim names it"
+  pid
+}
+
 fn parked_reaper() -> #(process.Pid, process.Subject(Nil)) {
   let ready = process.new_subject()
   let pid =
