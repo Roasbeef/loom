@@ -146,6 +146,7 @@
 //// confined to a host supplying its own, lossier `Timers`.
 
 import client/agency
+import client/cron
 import client/schedule.{type Schedule}
 import core/clock
 import core/ids.{type EntryId}
@@ -455,6 +456,10 @@ fn process_schedule(
   case sched.timing {
     schedule.Interval(seconds:, expiry:) ->
       process_interval(state, sched, seconds, expiry, now_ms, now_s)
+
+    schedule.Cron(expression:, expiry:) ->
+      process_cron(state, sched, expression, expiry, now_ms, now_s)
+
     schedule.OneShot(at:) -> process_one_shot(state, sched, at, now_ms, now_s)
   }
 }
@@ -644,12 +649,7 @@ fn interval_with_marks(
   now_s: Int,
   marks: List(#(String, JsonValue)),
 ) -> ScheduleStatus {
-  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
-  let occurrences =
-    list.filter_map(marks, fn(pair) {
-      let #(key, _value) = pair
-      key |> string.drop_start(string.length(prefix)) |> int.parse
-    })
+  let occurrences = marked_occurrences(sched, marks)
 
   // The age half of expiry needs an instant these marks cannot supply,
   // so it comes from the schedule's own seen cell — claimed here if this
@@ -659,7 +659,7 @@ fn interval_with_marks(
   // cell behind: one row, and no further ticks to write another.
   let since_s = observed_since(state, sched, now_s)
 
-  case schedule.interval_expired(occurrences:, expiry:, now_s:, since_s:) {
+  case schedule.recurring_expired(occurrences:, expiry:, now_s:, since_s:) {
     True -> Expired
     False -> {
       let occurrence = schedule.interval_occurrence(seconds:, now_s:)
@@ -813,6 +813,160 @@ fn maybe_fire_interval(
 fn next_interval_delay_ms(occurrence: Int, seconds: Int, now_ms: Int) -> Int {
   let boundary_ms = { occurrence + seconds } * 1000
   int.max(boundary_ms - now_ms, 1000)
+}
+
+// --- cron schedules ------------------------------------------------------
+//
+// The same three steps `process_interval` takes — read the marks, settle
+// the observation instant, test expiry — over arithmetic that searches a
+// calendar instead of dividing. Everything cron-specific about that
+// arithmetic is in `client/schedule`, so this half stays a scanner: it
+// reads the store, asks, and arms.
+
+fn process_cron(
+  state: State,
+  sched: Schedule,
+  expression: cron.Expression,
+  expiry: schedule.Expiry,
+  now_ms: Int,
+  now_s: Int,
+) -> ScheduleStatus {
+  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
+  case read_prefix(state, prefix) {
+    // A store read that fails is retried on the rescan floor rather than
+    // on the schedule's own cadence: unlike an interval there is no
+    // configured period to fall back on, and the floor is the same
+    // bound-well-above-a-busy-loop this actor already uses when it has
+    // nothing else to go on.
+    Error(Nil) -> Active(next_delay_ms: idle_rescan_ms())
+
+    Ok(marks) ->
+      cron_with_marks(state, sched, expression, expiry, now_ms, now_s, marks)
+  }
+}
+
+fn cron_with_marks(
+  state: State,
+  sched: Schedule,
+  expression: cron.Expression,
+  expiry: schedule.Expiry,
+  now_ms: Int,
+  now_s: Int,
+  marks: List(#(String, JsonValue)),
+) -> ScheduleStatus {
+  let occurrences = marked_occurrences(sched, marks)
+
+  // Read before the expiry test for the same reason the interval path
+  // reads it there: the age bound needs the instant, and the `since_s`
+  // rule below needs it too — a cron schedule's very first tick is
+  // exactly the tick that claims this cell, and the occurrence it owes
+  // is decided against the value that claim settled on.
+  let since_s = observed_since(state, sched, now_s)
+
+  case schedule.recurring_expired(occurrences:, expiry:, now_s:, since_s:) {
+    True -> Expired
+
+    False -> {
+      maybe_fire_cron(state, sched, expression, occurrences, since_s, now_s)
+      cron_rearm(state, sched, expression, now_ms, now_s)
+    }
+  }
+}
+
+// The due occurrence, fired if it is owed and its mark is still absent.
+//
+// "At most one late fire" holds here by construction and not by a
+// separate check: `schedule.cron_occurrence` answers with the single
+// last match at or before now, so a scanner resuming after a week of
+// downtime fires that one occurrence and never walks the matches it
+// slept through. `None` — nothing owed, because the last match predates
+// the schedule's own observation instant — is the ordinary state of a
+// freshly created schedule and not an error.
+fn maybe_fire_cron(
+  state: State,
+  sched: Schedule,
+  expression: cron.Expression,
+  occurrences: List(Int),
+  since_s: Int,
+  now_s: Int,
+) -> Nil {
+  case schedule.cron_occurrence(expression:, now_s:, since_s:) {
+    None -> Nil
+
+    Some(occurrence) ->
+      fire_cron_occurrence(
+        state,
+        sched,
+        expression,
+        occurrences,
+        since_s,
+        occurrence,
+      )
+  }
+}
+
+fn fire_cron_occurrence(
+  state: State,
+  sched: Schedule,
+  expression: cron.Expression,
+  occurrences: List(Int),
+  since_s: Int,
+  occurrence: Int,
+) -> Nil {
+  use <- bool.guard(when: list.contains(occurrences, occurrence), return: Nil)
+  let key =
+    schedule.fired_key(strand: sched.target, name: sched.name, occurrence:)
+  let late =
+    schedule.cron_late(expression:, occurrences:, occurrence:, since_s:)
+  let _verdict = fire(state, sched, key, late:)
+  Nil
+}
+
+// The wait until the next match, or the end of the schedule.
+//
+// An expression can legally name a date that never comes — `0 0 30 2 *`
+// is the standing example — and a search that finds nothing within
+// `cron.search_horizon_days` means exactly that. Such a schedule is
+// `Expired`: it re-arms nothing and stops costing a tick, which is the
+// honest answer and the only one that does not leave the actor waking up
+// forever over an expression that will never match. It is logged because
+// an operator who wrote that expression meant something else.
+fn cron_rearm(
+  state: State,
+  sched: Schedule,
+  expression: cron.Expression,
+  now_ms: Int,
+  now_s: Int,
+) -> ScheduleStatus {
+  case schedule.cron_next_delay_ms(expression:, now_s:, now_ms:) {
+    Some(next_delay_ms) -> Active(next_delay_ms:)
+
+    None -> {
+      log.warn(state.options.logger, "schedule.cron_never_matches", [
+        field.text(key: "schedule", value: sched.name),
+        field.text(key: "strand", value: sched.target),
+        field.text(key: "expression", value: cron.source(expression)),
+      ])
+      Expired
+    }
+  }
+}
+
+// The occurrence numbers under one schedule's fired-mark prefix.
+//
+// Shared by both recurring paths because both ask the same two questions
+// of it — how many fires have been spent, and whether one particular
+// occurrence is among them — and a second copy of the key-suffix parse
+// would be a second place for the prefix length to be got wrong.
+fn marked_occurrences(
+  sched: Schedule,
+  marks: List(#(String, JsonValue)),
+) -> List(Int) {
+  let prefix = schedule.fired_key_prefix(strand: sched.target, name: sched.name)
+  list.filter_map(marks, fn(pair) {
+    let #(key, _value) = pair
+    key |> string.drop_start(string.length(prefix)) |> int.parse
+  })
 }
 
 // --- one-shot schedules --------------------------------------------------

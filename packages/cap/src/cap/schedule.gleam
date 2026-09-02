@@ -46,6 +46,34 @@
 //// on it. A host may also disable the capability entirely, in which case
 //// every call here is denied.
 ////
+//// ## Four timings, and the two that are not conveniences
+////
+//// `every` is a fixed interval, `at` a UTC instant, `cron` a five-field
+//// calendar expression, and `after` a one-shot a fixed while from now.
+//// One of the four per schedule.
+////
+//// `after` exists because **nothing tells a program the current time**.
+//// The strand's prompt carries no clock and no date, so "check back in
+//// three quarters of an hour" cannot be turned into the RFC3339 instant
+//// `at` wants; `after("check", 2700, …)` is how a program says it, and
+//// the host resolves it against the session's own clock.
+////
+//// `cron` exists because an interval cannot express a *phase*. The
+//// interval grid is aligned to the epoch, so `every(…, 86_400, …)` is
+//// always 00:00 UTC and no argument moves it. `cron("standup", "0 9 * *
+//// 1-5", …)` is 09:00 on weekdays. Everything is **UTC** — there is no
+//// timezone or offset handling anywhere in Loom — and the grammar is
+//// the standard five fields and nothing more: no seconds field, no
+//// month or day names (`JAN`, `MON`), and none of `L`, `W`, `?` or `#`.
+//// When *both* day fields are restricted they are ORed rather than
+//// ANDed, which is standard cron and catches everybody out: `"0 9 1 *
+//// 1"` fires on the first of the month *and* on every Monday.
+////
+//// `every_within` and `cron_within` are the same two recurring shapes
+//// with the expiry bounds stated rather than defaulted. They can only
+//// narrow a schedule — the host holds `Bounds` to its own ceilings, and
+//// `DefaultBounds` is what the four plain functions pass.
+////
 //// ## Not a scratch store, and not a way to keep a program alive
 ////
 //// A schedule outlives the execution that created it, which makes it the
@@ -103,8 +131,10 @@ pub type Schedule {
     /// `cancel` takes the name alone and means this strand's own, so a
     /// row naming another target is cancelled with `cancel_on`.
     target: String,
-    /// When it fires, rendered — `"every 300s, at most 1000 times"` or a
-    /// UTC instant.
+    /// When it fires, rendered — `"every 300s, at most 1000 times"`,
+    /// `"cron \"0 9 * * 1-5\" UTC, at most 1000 times"`, or a UTC
+    /// instant. A one-shot created with `after` reads as the instant the
+    /// host resolved it to, not as the delay that was asked for.
     when: String,
     /// Whether it may start a fresh run on an idle strand.
     wake: Wake,
@@ -277,6 +307,314 @@ pub fn at_on(
     #("at", wire.string(instant)),
     #("target", wire.string(target)),
   ])
+}
+
+/// Whether a recurring schedule takes the host's default expiry or a
+/// narrower one this program states.
+///
+/// Two variants rather than a pair of `Option`s, because "say nothing
+/// and get the host's ceiling" and "state both bounds" are the only two
+/// things a caller can usefully mean, and a record of two `Option`s
+/// would offer four. Both bounds are always active whichever variant is
+/// used — the host applies its default in place of anything this does
+/// not state — and whichever is reached first ends the schedule.
+///
+/// `Bounds` can only ever *narrow*. The host holds both numbers to the
+/// same ceilings it holds its own configuration to, so a value above one
+/// is denied with `invalid_schedule` rather than granted.
+pub type Bounds {
+  /// The host's defaults: its ceiling on both bounds. What `every`,
+  /// `cron`, `at` and `after` pass.
+  DefaultBounds
+
+  /// The bounds this program wants, each at or under the host's ceiling.
+  Bounds(
+    /// End the schedule after this many fires, at least 1.
+    max_fires: Int,
+    /// End the schedule this many seconds after it is created, at
+    /// least 1.
+    expires_after_s: Int,
+  )
+}
+
+/// Schedules `body` to fire on this strand on a five-field cron
+/// expression — `"0 9 * * 1-5"` for 09:00 on weekdays.
+///
+/// **All times are UTC**, and both day fields are ORed when both are
+/// restricted; the module doc has the whole of the grammar and what it
+/// deliberately does not accept. An expression the host cannot parse is
+/// denied with `invalid_schedule`, and the refusal names the field and
+/// the item that caused it.
+///
+/// Reach for this rather than `every` whenever the *time of day* matters:
+/// an interval is a grid aligned to the epoch, so `every(…, 86_400, …)`
+/// fires at midnight UTC and there is no argument that moves it.
+///
+/// A cron schedule's first fire is its first match **after the host
+/// loaded it**. A match earlier the same day, before this program ran,
+/// was never asked for and does not fire.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.cron(
+///     "standup",
+///     "0 9 * * 1-5",
+///     schedule.WakesIdle,
+///     "Summarise what is in flight, as a standup note.",
+///   )
+/// ```
+///
+pub fn cron(
+  name: String,
+  expression: String,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create(schedule_fields(
+    name,
+    body,
+    wake,
+    DefaultBounds,
+    "cron",
+    wire.string(expression),
+  ))
+}
+
+/// `cron`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.cron_on(
+///     spawned.strand,
+///     "hourly-check",
+///     "0 * * * *",
+///     schedule.SteersOnly,
+///     "Say where the review has got to.",
+///   )
+/// ```
+///
+pub fn cron_on(
+  target: String,
+  name: String,
+  expression: String,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create([
+    #("target", wire.string(target)),
+    ..schedule_fields(
+      name,
+      body,
+      wake,
+      DefaultBounds,
+      "cron",
+      wire.string(expression),
+    )
+  ])
+}
+
+/// Schedules `body` to fire on this strand once, `seconds` from now.
+///
+/// This is the relative one-shot, and it exists because **nothing tells
+/// this program the current time**: the strand's prompt carries no clock
+/// and no date, so an absolute instant for `at` cannot be computed here
+/// and a guessed one is either refused or fired at the wrong moment. The
+/// host resolves this against the session's own clock.
+///
+/// `seconds` is between 1 and 604800 (seven days); outside that it is
+/// denied with `invalid_schedule`, and the refusal says why the upper
+/// bound is where it is — a schedule only fires while this session's
+/// server is running.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.after(
+///     "recheck",
+///     2700,
+///     schedule.WakesIdle,
+///     "Check whether the migration finished.",
+///   )
+/// ```
+///
+pub fn after(
+  name: String,
+  seconds: Int,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create(schedule_fields(
+    name,
+    body,
+    wake,
+    DefaultBounds,
+    "in_seconds",
+    wire.int(seconds),
+  ))
+}
+
+/// `after`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.after_on(
+///     spawned.strand,
+///     "nudge",
+///     600,
+///     schedule.SteersOnly,
+///     "Wrap up and report what you have.",
+///   )
+/// ```
+///
+pub fn after_on(
+  target: String,
+  name: String,
+  seconds: Int,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create([
+    #("target", wire.string(target)),
+    ..schedule_fields(
+      name,
+      body,
+      wake,
+      DefaultBounds,
+      "in_seconds",
+      wire.int(seconds),
+    )
+  ])
+}
+
+/// `every`, with the expiry bounds stated rather than defaulted.
+///
+/// The only way to ask for a *shorter* life than the host's ceiling —
+/// four fires, or an hour — which is what a program wants when the thing
+/// it is watching will plainly be over long before a week is. `Bounds`
+/// cannot widen anything: a value above the host's ceiling is denied
+/// with `invalid_schedule`.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.every_within(
+///     "poll",
+///     300,
+///     schedule.Bounds(max_fires: 12, expires_after_s: 3600),
+///     schedule.WakesIdle,
+///     "Check whether the build finished.",
+///   )
+/// ```
+///
+pub fn every_within(
+  name: String,
+  seconds: Int,
+  bounds: Bounds,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create(schedule_fields(
+    name,
+    body,
+    wake,
+    bounds,
+    "every_seconds",
+    wire.int(seconds),
+  ))
+}
+
+/// `cron`, with the expiry bounds stated rather than defaulted. The
+/// bounds rule is `every_within`'s exactly.
+///
+/// Capability: `schedule.create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(made) =
+///   schedule.cron_within(
+///     "standup",
+///     "0 9 * * 1-5",
+///     schedule.Bounds(max_fires: 5, expires_after_s: 604_800),
+///     schedule.SteersOnly,
+///     "Summarise what is in flight, as a standup note.",
+///   )
+/// ```
+///
+pub fn cron_within(
+  name: String,
+  expression: String,
+  bounds: Bounds,
+  wake: Wake,
+  body: String,
+) -> Result(Created, ScheduleError) {
+  create(schedule_fields(
+    name,
+    body,
+    wake,
+    bounds,
+    "cron",
+    wire.string(expression),
+  ))
+}
+
+// The fields every creation shares, plus the one that names its timing.
+//
+// Written once because the timing is the only thing that differs between
+// six of these functions, and a seventh spelling of `name`/`body`/`wake`
+// is a seventh place for one of them to be misspelled — the host denies
+// an unknown argument, so a typo here is a capability that never works
+// rather than one that works oddly.
+fn schedule_fields(
+  name: String,
+  body: String,
+  wake: Wake,
+  bounds: Bounds,
+  timing_key: String,
+  timing: MsgPackValue,
+) -> List(#(String, MsgPackValue)) {
+  [
+    #("name", wire.string(name)),
+    #("body", wire.string(body)),
+    #("wake", wire.bool(wake_flag(wake))),
+    #(timing_key, timing),
+    ..bounds_fields(bounds)
+  ]
+}
+
+// `DefaultBounds` sends no field at all rather than sending the host's
+// ceiling back to it: the default is the host's to state, and a program
+// that echoed today's number would pin a bound the host may later
+// narrow.
+fn bounds_fields(bounds: Bounds) -> List(#(String, MsgPackValue)) {
+  case bounds {
+    DefaultBounds -> []
+
+    Bounds(max_fires:, expires_after_s:) -> [
+      #("max_fires", wire.int(max_fires)),
+      #("expires_after_s", wire.int(expires_after_s)),
+    ]
+  }
 }
 
 fn create(

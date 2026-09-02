@@ -1828,6 +1828,8 @@ fn schedule_create_in(
       name: request.name,
       target: request.target,
       timing:,
+      max_fires: request.max_fires,
+      expires_after_s: request.expires_after_s,
       wake: requested_wake(request.wake),
       body: request.body,
     ),
@@ -1843,9 +1845,6 @@ fn schedule_create_in(
   |> result.map_error(schedule_refusal)
 }
 
-// The router has already refused both-or-neither, so this only has to
-// name which one arrived. The remaining arms are unreachable and say so
-// in the one vocabulary the caller can read.
 // `codemode` may not depend on `tools` either, so a wake crossing this
 // seam is translated the same way a refusal is. The two directions get a
 // function each because different sides read them: `requested_wake`
@@ -1868,12 +1867,25 @@ fn granted_wake(wake: schedule_tool.Wake) -> workspace.ScheduleWake {
 fn schedule_timing(
   request: workspace.ScheduleRequest,
 ) -> Result(schedule_tool.RequestedTiming, workspace.ScheduleRefusal) {
-  case request.every_seconds, request.at {
-    Some(seconds), None -> Ok(schedule_tool.Every(seconds:))
-    None, Some(instant) -> Ok(schedule_tool.At(instant:))
-    Some(_seconds), Some(_instant) | None, None ->
+  let named =
+    [
+      option.map(request.in_seconds, schedule_tool.In),
+      option.map(request.every_seconds, schedule_tool.Every),
+      option.map(request.cron, schedule_tool.Cron),
+      option.map(request.at, schedule_tool.At),
+    ]
+    |> option.values
+
+  case named {
+    [only] -> Ok(only)
+
+    // The router has already refused none and more than one, so both of
+    // these are unreachable in practice; the arm exists so this closure
+    // is total without a panic, and says so in the one vocabulary the
+    // caller can read.
+    [] | [_first, _second, ..] ->
       Error(workspace.ScheduleInvalid(
-        reason: "give exactly one of every_seconds or at",
+        reason: "give exactly one of in_seconds, every_seconds, cron or at",
       ))
   }
 }

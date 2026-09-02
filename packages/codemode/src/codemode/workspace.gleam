@@ -370,10 +370,16 @@ pub type ScheduleWake {
   SteersOnly
 }
 
-/// One heartbeat a program asked for. `every_seconds` and `at` are the
-/// two shapes a schedule takes, and exactly one is present — the router
-/// refuses a request naming both or neither before the host sees it, so
-/// the host never has to decide what a contradictory request meant.
+/// One heartbeat a program asked for.
+///
+/// Four timing fields and **exactly one is present** — the router
+/// refuses a request naming none or more than one before the host sees
+/// it, so the host never has to decide what a contradictory request
+/// meant. The two beyond the original pair each say something the pair
+/// cannot: `cron` names a phase and a calendar shape, which an
+/// epoch-aligned interval has no argument for, and `in_seconds` names a
+/// relative one-shot, which a program running with no clock in its
+/// prompt cannot express as an absolute instant.
 pub type ScheduleRequest {
   ScheduleRequest(
     name: String,
@@ -383,8 +389,26 @@ pub type ScheduleRequest {
     /// one it spawned is admitted — because the lineage ledger that
     /// decides is on the other side of this seam.
     target: Option(String),
+    /// A recurring interval in seconds.
     every_seconds: Option(Int),
+    /// A one-shot at an RFC3339 UTC instant, as the program wrote it.
+    /// The host parses it: it owns the one parser.
     at: Option(String),
+    /// A recurring five-field cron expression, UTC, as the program wrote
+    /// it. The host parses it, for the reason it parses `at`.
+    cron: Option(String),
+    /// A one-shot this many seconds from now. The host resolves it
+    /// against the session's own clock, which is the point of the field:
+    /// this package has no clock and neither does the program.
+    in_seconds: Option(Int),
+    /// End a recurring schedule after this many fires, or `None` for the
+    /// host's default. The host holds it to its own ceiling, so this can
+    /// only narrow a schedule.
+    max_fires: Option(Int),
+    /// End a recurring schedule this many seconds after it is created,
+    /// or `None` for the host's default. Bounded exactly as `max_fires`
+    /// is.
+    expires_after_s: Option(Int),
     wake: ScheduleWake,
     body: String,
   )
@@ -970,23 +994,18 @@ fn schedule_create_plan(
   use target <- result.try(optional_string(request.args, "target"))
   use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
   use at <- result.try(optional_string(request.args, "at"))
+  use cron <- result.try(optional_string(request.args, "cron"))
+  use in_seconds <- result.try(optional_int(request.args, "in_seconds"))
+  use max_fires <- result.try(optional_int(request.args, "max_fires"))
+  use expires_after_s <- result.try(optional_int(
+    request.args,
+    "expires_after_s",
+  ))
 
   // Exactly one timing, decided here rather than at the host, so a
   // contradictory request costs one denial instead of a round trip into
   // a store that would have had to invent an answer.
-  use Nil <- result.try(case every_seconds, at {
-    Some(_seconds), Some(_instant) ->
-      Error(args.invalid(
-        "give either `every_seconds` or `at`, not both: a schedule is "
-        <> "either a recurring heartbeat or a one-shot",
-      ))
-    None, None ->
-      Error(args.invalid(
-        "give one of `every_seconds` (a recurring heartbeat) or `at` (a "
-        <> "one-shot RFC3339 UTC instant)",
-      ))
-    Some(_seconds), None | None, Some(_instant) -> Ok(Nil)
-  })
+  use Nil <- result.try(one_timing(every_seconds, at, cron, in_seconds))
   Ok(
     ServedHere(fn() {
       case
@@ -995,6 +1014,10 @@ fn schedule_create_plan(
           target:,
           every_seconds:,
           at:,
+          cron:,
+          in_seconds:,
+          max_fires:,
+          expires_after_s:,
           wake:,
           body:,
         ))
@@ -1010,6 +1033,49 @@ fn schedule_create_plan(
       }
     }),
   )
+}
+
+// Which of the four timing arguments arrived, refusing none and more
+// than one by name.
+//
+// The names are collected into a list rather than crossed in a `case`,
+// so this is a question about a length: four spellings crossed would be
+// sixteen arms saying three things, and the refusal a program reads is
+// better for naming exactly what it sent.
+fn one_timing(
+  every_seconds: Option(Int),
+  at: Option(String),
+  cron: Option(String),
+  in_seconds: Option(Int),
+) -> Result(Nil, CapDenial) {
+  let named =
+    [
+      option.map(in_seconds, fn(_seconds) { "in_seconds" }),
+      option.map(every_seconds, fn(_seconds) { "every_seconds" }),
+      option.map(cron, fn(_expression) { "cron" }),
+      option.map(at, fn(_instant) { "at" }),
+    ]
+    |> option.values
+
+  case named {
+    [_only] -> Ok(Nil)
+
+    [] ->
+      Error(args.invalid(
+        "give one of `in_seconds` (a one-shot that many seconds from now), "
+        <> "`every_seconds` (a recurring heartbeat), `cron` (a recurring "
+        <> "five-field UTC calendar expression) or `at` (a one-shot "
+        <> "RFC3339 UTC instant)",
+      ))
+
+    [_first, _second, ..] ->
+      Error(args.invalid(
+        "give exactly one of `in_seconds`, `every_seconds`, `cron` or `at` "
+        <> "— this request gave "
+        <> string.join(named, " and ")
+        <> ": a schedule fires on one timing, never two",
+      ))
+  }
 }
 
 // A program may leave `wake` out entirely, and absent reads as the

@@ -998,6 +998,95 @@ pub fn schedule_create_refuses_both_or_neither_timing_test() {
   assert drain(seen) == []
 }
 
+// The refusal names the arguments the program actually sent, because a
+// program told "give exactly one timing" with four spellings to choose
+// from cannot tell which two of them it used.
+pub fn a_two_timing_refusal_names_both_timings_test() {
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("cron", text("0 9 * * *")),
+        #("in_seconds", int(600)),
+      ]),
+    )
+
+  assert string.contains(denial.message, "in_seconds")
+  assert string.contains(denial.message, "cron")
+  assert drain(seen) == []
+}
+
+// Each of the four timings on its own is serviced and reaches the host.
+// A table rather than four tests, because the property is that the
+// router admits exactly these four and the difference between them is
+// one argument.
+pub fn each_single_timing_is_serviced_test() {
+  let timings = [
+    #("every_seconds", int(60)),
+    #("cron", text("0 9 * * 1-5")),
+    #("at", text("2026-09-01T09:00:00Z")),
+    #("in_seconds", int(2700)),
+  ]
+  list.each(timings, fn(timing) {
+    let seen = recorder()
+    let assert framing.CapOk(value:) =
+      serviced(
+        answering(seen),
+        "schedule.create",
+        map([#("name", text("poll")), #("body", text("look")), timing]),
+      )
+      as "one timing on its own must be serviced"
+
+    assert drain(seen) == [ScheduleCreateAsked("poll")]
+    assert field(value, "name") == Ok(text("poll"))
+  })
+}
+
+// The two expiry arguments cross the router untouched: the host holds
+// them to its own ceilings, and this package has no ceiling of its own
+// to state.
+pub fn the_expiry_bounds_reach_the_host_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+        #("max_fires", int(4)),
+        #("expires_after_s", int(3600)),
+      ]),
+    )
+    as "a bounded request must be serviced"
+
+  assert drain(seen) == [ScheduleCreateAsked("poll")]
+  assert field(value, "name") == Ok(text("poll"))
+}
+
+pub fn a_mistyped_expiry_bound_is_refused_test() {
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+        #("max_fires", text("4")),
+      ]),
+    )
+
+  assert denial.code == args.invalid_argument_code
+  assert drain(seen) == []
+}
+
 pub fn schedule_create_refuses_a_mistyped_argument_test() {
   let seen = recorder()
   let denial =

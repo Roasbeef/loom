@@ -161,8 +161,10 @@
 //// half-built.
 
 import client/agency
+import client/cron
 import client/schedule.{type Policy, type Schedule}
 import client/schedulescan
+import core/clock
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/bool
@@ -221,6 +223,9 @@ pub fn limits() -> schedule_tool.Limits {
     min_interval_seconds: schedule.min_interval_s,
     default_max_fires: schedule.default_max_fires,
     max_schedules: schedule.max_model_schedules,
+    max_in_seconds: schedule.max_in_seconds,
+    max_max_fires: schedule.max_max_fires,
+    max_expires_after_s: schedule.max_expires_after_s,
   )
 }
 
@@ -330,7 +335,7 @@ fn create(
   // `Option` each.
   let target = option.unwrap(request.target, caller)
   use Nil <- result.try(schedulable(runtime, caller, target))
-  use timing <- result.try(requested_timing(request.timing))
+  use timing <- result.try(requested_timing(runtime, request))
 
   // Two caps on `wake`, in this order, and they answer different
   // questions. The policy is the operator's say over the door; the
@@ -498,28 +503,78 @@ fn wake_onto(wake: schedule.Wake, target: String) -> schedule.Wake {
   }
 }
 
-// The model writes an interval in plain seconds and a one-shot as an
-// RFC3339 string, because those are the two shapes a tool argument can
-// carry honestly. Turning them into a `Timing` is this module's job
-// because `client/schedule` owns the one RFC3339 parser and the defaulted
-// expiry a recurring schedule always gets.
+// The four shapes a tool argument can carry honestly, turned into the
+// one `Timing` the store works in.
+//
+// This is the seam's job rather than the door's because everything it
+// needs is on this side: `client/schedule` owns the single RFC3339
+// parser, `client/cron` owns the single cron grammar, the defaulted
+// expiry a recurring schedule always gets is `client/schedule`'s pair of
+// constants, and the clock a relative one-shot resolves against is the
+// session's injected one.
+//
+// **`In` is the only arm that reads a clock**, and it reads the same
+// `runtime/effects.clock` every other instant in the session comes from
+// — never a wall-clock call of its own — so a simulated session resolves
+// it on logical time exactly as the scanner ticks on logical time. The
+// model cannot do this arithmetic itself: the system prompt carries no
+// date, which is why `In` exists at all.
 fn requested_timing(
-  requested: schedule_tool.RequestedTiming,
+  runtime: Runtime,
+  request: schedule_tool.Request,
 ) -> Result(schedule.Timing, schedule_tool.Refusal) {
-  case requested {
-    schedule_tool.Every(seconds:) ->
-      Ok(schedule.Interval(
-        seconds:,
-        expiry: schedule.Expiry(
-          max_fires: schedule.default_max_fires,
-          expires_after_s: schedule.default_expires_after_s,
-        ),
-      ))
+  case request.timing {
+    schedule_tool.Every(seconds:) -> {
+      use expiry <- result.try(requested_expiry(request))
+      Ok(schedule.Interval(seconds:, expiry:))
+    }
+
+    schedule_tool.Cron(expression:) -> {
+      use expiry <- result.try(requested_expiry(request))
+      use parsed <- result.try(
+        cron.parse(expression)
+        |> result.map_error(fn(reason) {
+          schedule_tool.Invalid(reason: "cron: " <> reason)
+        }),
+      )
+      Ok(schedule.Cron(expression: parsed, expiry:))
+    }
+
     schedule_tool.At(instant:) ->
       schedule.parse_instant(instant)
       |> result.map(fn(at) { schedule.OneShot(at:) })
       |> result.map_error(fn(reason) { schedule_tool.Invalid(reason:) })
+
+    schedule_tool.In(seconds:) -> {
+      let #(now_ms, _clock) = clock.read(runtime.effects.clock)
+      schedule.relative_instant(now_s: now_ms / 1000, in_seconds: seconds)
+      |> result.map(fn(at) { schedule.OneShot(at:) })
+      |> result.map_error(fn(reason) { schedule_tool.Invalid(reason:) })
+    }
   }
+}
+
+// The bounds a recurring schedule expires under: what the request asked
+// for, defaulted where it asked for nothing.
+//
+// Nothing is *checked* here. Both values go on to `schedule.build`,
+// whose `checked_expiry` holds them to exactly the ceilings a
+// `[[schedule]]` table is held to, through the same constants — so a
+// request asking for a wider bound than the build allows is refused by
+// the constructor rather than by a second copy of the limit living at
+// this door. The tool door has already refused either bound beside a
+// one-shot, so an absent value here means "default", never "not
+// applicable".
+fn requested_expiry(
+  request: schedule_tool.Request,
+) -> Result(schedule.Expiry, schedule_tool.Refusal) {
+  Ok(schedule.Expiry(
+    max_fires: option.unwrap(request.max_fires, schedule.default_max_fires),
+    expires_after_s: option.unwrap(
+      request.expires_after_s,
+      schedule.default_expires_after_s,
+    ),
+  ))
 }
 
 fn room_for_one_more(
@@ -527,7 +582,7 @@ fn room_for_one_more(
 ) -> Result(Nil, schedule_tool.Refusal) {
   // "Are there this many or more" needs only the elements up to the
   // bound, not a full walk to count them (lint R5) — the same idiom
-  // `client/schedule.interval_expired` uses for its own ceiling.
+  // `client/schedule.recurring_expired` uses for its own ceiling.
   case list.drop(existing, schedule.max_model_schedules - 1) {
     [] -> Ok(Nil)
     [_at_the_limit, ..] ->
@@ -899,6 +954,8 @@ fn unavailable(error: api.ApiError) -> schedule_tool.Refusal {
 /// ```gleam
 /// // scheduleseam.describe_timing(schedule.OneShot(at: 0))
 /// //   == "once at 1970-01-01T00:00:00Z"
+/// // scheduleseam.describe_timing(cron_timing)
+/// //   == "cron \"0 9 * * 1-5\" UTC, at most 1000 times"
 /// ```
 ///
 pub fn describe_timing(timing: schedule.Timing) -> String {
@@ -909,6 +966,18 @@ pub fn describe_timing(timing: schedule.Timing) -> String {
       <> "s, at most "
       <> int.to_string(expiry.max_fires)
       <> " times"
+
+    // The expression as it was written, quoted, and `UTC` said out loud:
+    // a caller reading `0 9 * * 1-5` back has no other way to know which
+    // 09:00 it got, and this module is the last place that can say so
+    // before the string reaches a model.
+    schedule.Cron(expression:, expiry:) ->
+      "cron \""
+      <> cron.source(expression)
+      <> "\" UTC, at most "
+      <> int.to_string(expiry.max_fires)
+      <> " times"
+
     schedule.OneShot(at:) -> "once at " <> schedule.render_instant(at)
   }
 }

@@ -16,6 +16,7 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import client/cron
 import client/schedule
 import client/scheduleseam
 import core/clock
@@ -121,10 +122,22 @@ fn every(
   seconds: Int,
   wake: schedule_tool.Wake,
 ) -> schedule_tool.Request {
+  request(name, schedule_tool.Every(seconds:), wake)
+}
+
+// One request with the two expiry arguments left at their defaults,
+// which is what every test that is not about the bounds wants.
+fn request(
+  name: String,
+  timing: schedule_tool.RequestedTiming,
+  wake: schedule_tool.Wake,
+) -> schedule_tool.Request {
   schedule_tool.Request(
     name:,
     target: None,
-    timing: schedule_tool.Every(seconds:),
+    timing:,
+    max_fires: None,
+    expires_after_s: None,
     wake:,
     body: "look at it",
   )
@@ -460,12 +473,10 @@ pub fn the_door_enforces_the_shared_bounds_test() {
   let assert Error(schedule_tool.Invalid(..)) =
     rig.seam.create(
       ctx("main"),
-      schedule_tool.Request(
-        name: "when",
-        target: None,
-        timing: schedule_tool.At(instant: "tomorrow"),
-        wake: schedule_tool.SteersOnly,
-        body: "b",
+      request(
+        "when",
+        schedule_tool.At(instant: "tomorrow"),
+        schedule_tool.SteersOnly,
       ),
     )
     as "prose where RFC3339 belongs must be refused at the door"
@@ -835,6 +846,234 @@ pub fn a_strand_cannot_cancel_another_strands_schedule_test() {
     as "another strand must not be able to cancel it"
   let assert Ok([_still_there]) = rig.seam.list(ctx("main"))
     as "the schedule must survive the attempt"
+  stop(rig)
+}
+
+// --- the four timings ------------------------------------------------------
+//
+// The rig's clock is `clock.fixed(at: 0)`, so `now_s` is zero for every
+// call below and a relative one-shot resolves to exactly its own delay.
+
+// `In` is the arm that reads a clock, and it is the reason the argument
+// exists: the model is told no date, so this is the only way it can ask
+// for a one-shot at all.
+pub fn a_relative_one_shot_resolves_against_the_session_clock_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Ok(created) =
+    rig.seam.create(
+      ctx("main"),
+      request(
+        "recheck",
+        schedule_tool.In(seconds: 2700),
+        schedule_tool.SteersOnly,
+      ),
+    )
+    as "a relative one-shot must be created"
+
+  // The rig's clock is fixed at zero, so now + 2700 is 2700 exactly.
+  assert created.when == "once at " <> schedule.render_instant(2700)
+  let assert Ok(cells) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "the config prefix must be readable"
+  let assert [#(_key, value)] = cells as "exactly one cell must be written"
+  let assert Ok(stored) = schedule.decode(value) as "the cell must decode"
+  assert stored.timing == schedule.OneShot(at: 2700)
+  stop(rig)
+}
+
+pub fn a_relative_one_shot_outside_its_bounds_is_refused_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Error(schedule_tool.Invalid(reason: too_soon)) =
+    rig.seam.create(
+      ctx("main"),
+      request("now", schedule_tool.In(seconds: 0), schedule_tool.SteersOnly),
+    )
+    as "a zero delay must be refused at the door"
+  assert string.contains(too_soon, "at least")
+
+  let assert Error(schedule_tool.Invalid(reason: too_far)) =
+    rig.seam.create(
+      ctx("main"),
+      request(
+        "later",
+        schedule_tool.In(seconds: schedule.max_in_seconds + 1),
+        schedule_tool.SteersOnly,
+      ),
+    )
+    as "a delay past the horizon must be refused at the door"
+  assert string.contains(too_far, "at most")
+  stop(rig)
+}
+
+pub fn a_cron_schedule_is_created_and_listed_with_its_rendering_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Ok(created) =
+    rig.seam.create(
+      ctx("main"),
+      request(
+        "standup",
+        schedule_tool.Cron(expression: "0 9 * * 1-5"),
+        schedule_tool.SteersOnly,
+      ),
+    )
+    as "a cron schedule must be created"
+  assert created.when == "cron \"0 9 * * 1-5\" UTC, at most 1000 times"
+
+  let assert Ok([listed]) = rig.seam.list(ctx("main"))
+    as "the cron schedule must be listed"
+  assert listed.when == created.when
+
+  // The cell holds the source text and decodes back to a Cron timing.
+  let assert Ok(cells) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "the config prefix must be readable"
+  let assert [#(_key, value)] = cells as "exactly one cell must be written"
+  let assert Ok(stored) = schedule.decode(value) as "the cell must decode"
+  let assert schedule.Cron(expression:, ..) = stored.timing
+    as "the stored timing must be a Cron"
+  assert cron.source(expression) == "0 9 * * 1-5"
+  stop(rig)
+}
+
+pub fn a_cron_expression_the_grammar_refuses_is_refused_at_the_door_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Error(schedule_tool.Invalid(reason:)) =
+    rig.seam.create(
+      ctx("main"),
+      request(
+        "monday",
+        schedule_tool.Cron(expression: "0 9 * * MON"),
+        schedule_tool.SteersOnly,
+      ),
+    )
+    as "a day name must be refused at the door"
+  assert string.contains(reason, "cron")
+  assert string.contains(reason, "MON")
+  stop(rig)
+}
+
+// --- the expiry bounds a request may narrow itself to ---------------------
+
+pub fn a_narrower_max_fires_is_stored_and_rendered_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let asked =
+    schedule_tool.Request(
+      ..every("poll", 300, schedule_tool.SteersOnly),
+      max_fires: Some(4),
+      expires_after_s: Some(3600),
+    )
+  let assert Ok(created) = rig.seam.create(ctx("main"), asked)
+    as "a narrowed schedule must be created"
+  assert string.contains(created.when, "at most 4 times")
+
+  let assert Ok(cells) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "the config prefix must be readable"
+  let assert [#(_key, value)] = cells as "exactly one cell must be written"
+  let assert Ok(stored) = schedule.decode(value) as "the cell must decode"
+  assert stored.timing
+    == schedule.Interval(
+      seconds: 300,
+      expiry: schedule.Expiry(max_fires: 4, expires_after_s: 3600),
+    )
+  stop(rig)
+}
+
+// The bounds narrow and never widen, and the check is `schedule.build`'s
+// — the same `checked_expiry` a `[[schedule]]` table meets — rather than
+// a second copy of the ceiling living at this door.
+pub fn a_max_fires_above_the_cap_is_refused_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Error(schedule_tool.Invalid(reason: fires)) =
+    rig.seam.create(
+      ctx("main"),
+      schedule_tool.Request(
+        ..every("poll", 300, schedule_tool.SteersOnly),
+        max_fires: Some(schedule.max_max_fires + 1),
+      ),
+    )
+    as "a max_fires above the cap must be refused"
+  assert string.contains(fires, "max_fires must be between")
+
+  let assert Error(schedule_tool.Invalid(reason: window)) =
+    rig.seam.create(
+      ctx("main"),
+      schedule_tool.Request(
+        ..every("poll", 300, schedule_tool.SteersOnly),
+        expires_after_s: Some(schedule.max_expires_after_s + 1),
+      ),
+    )
+    as "an expires_after_s above the cap must be refused"
+  assert string.contains(window, "expires_after_s must be between")
+  stop(rig)
+}
+
+// A cron schedule is held to the identical pair, because both recurring
+// shapes carry the same `Expiry`.
+pub fn a_cron_schedule_narrows_and_cannot_widen_its_bounds_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let cron_request = fn(name, bounds) {
+    let #(max_fires, expires_after_s) = bounds
+    schedule_tool.Request(
+      ..request(
+        name,
+        schedule_tool.Cron(expression: "0 9 * * *"),
+        schedule_tool.SteersOnly,
+      ),
+      max_fires:,
+      expires_after_s:,
+    )
+  }
+  let assert Ok(created) =
+    rig.seam.create(ctx("main"), cron_request("narrow", #(Some(3), None)))
+    as "a narrowed cron schedule must be created"
+  assert string.contains(created.when, "at most 3 times")
+
+  let assert Error(schedule_tool.Invalid(..)) =
+    rig.seam.create(
+      ctx("main"),
+      cron_request("wide", #(Some(schedule.max_max_fires + 1), None)),
+    )
+    as "a cron schedule may not raise max_fires either"
+  stop(rig)
+}
+
+// The tool door refuses a bound beside a one-shot, and it refuses it
+// there rather than here so the message can name the argument the model
+// wrote. This pins that the *seam* is not where that refusal lives: a
+// bound arriving beside an `At` is simply the default it would have had,
+// because a one-shot carries no `Expiry` at all.
+pub fn bounds_beside_a_one_shot_reach_no_expiry_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Ok(created) =
+    rig.seam.create(
+      ctx("main"),
+      schedule_tool.Request(
+        ..request(
+          "window",
+          schedule_tool.At(instant: "1970-01-01T00:01:00Z"),
+          schedule_tool.SteersOnly,
+        ),
+        max_fires: Some(4),
+      ),
+    )
+    as "the seam builds a one-shot regardless of the bounds argument"
+  assert created.when == "once at 1970-01-01T00:01:00Z"
+
+  let assert Ok(cells) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "the config prefix must be readable"
+  let assert [#(_key, value)] = cells as "exactly one cell must be written"
+  let assert Ok(stored) = schedule.decode(value) as "the cell must decode"
+  assert stored.timing == schedule.OneShot(at: 60)
   stop(rig)
 }
 

@@ -55,6 +55,38 @@
 //// child's open run and holds when there is none, and the result says
 //// so, exactly as it already does under a `steer` policy.
 ////
+//// # Four timings, and why two of them are not conveniences
+////
+//// A schedule fires on a fixed interval, on a five-field cron
+//// expression, at a UTC instant, or a fixed while from now. The first
+//// and third are what this door shipped with; the other two are here
+//// because each of the originals leaves something a model cannot say.
+////
+//// `in_seconds` exists because **the model has no clock**. Loom's system
+//// prompt carries neither the date nor the time, deliberately, so a
+//// model asked to check back in three quarters of an hour cannot compute
+//// the RFC3339 instant `at` wants — it can only guess, and a guess is
+//// either refused as unparseable or accepted and fired at the wrong
+//// time. That made the model-facing one-shot unusable in practice for
+//// the case it is most wanted in. The seam resolves `in_seconds` against
+//// the session's own injected clock, which is the side of the seam that
+//// has one.
+////
+//// `cron` exists because an interval cannot express a *phase*. The
+//// interval grid is aligned to the epoch, so `every_seconds: 86400` is
+//// always 00:00 UTC and there is no argument that moves it; "09:00 on
+//// weekdays" and "the first of the month" are not multiples of anything.
+//// Everything about the expression is UTC and the grammar is the
+//// standard five fields and nothing more — the description says so, at
+//// length, because a model that assumes local time or reaches for `L`
+//// gets a refusal it cannot debug from the outside.
+////
+//// `max_fires` and `expires_after_s` are the third addition and the
+//// smallest: a model could not previously ask for a *shorter* bound than
+//// the defaults. They narrow and never widen — the host holds them to
+//// the same ceilings a `[[schedule]]` table is held to — and they are
+//// refused beside a one-shot, which fires once by construction.
+////
 //// # A seam of closures, like `remember`
 ////
 //// `tools` depends on `core` and `broker` and nothing else, which is
@@ -89,12 +121,21 @@
 //// `execution_mode: Exclusive` for the two writers, because two of them
 //// in one batch race for the same ceiling count and one would be refused
 //// in band for no reason a model could act on.
+////
+//// One consequence of `in_seconds` worth stating beside replay: it is
+//// resolved to an absolute instant *when the call runs*, so a replayed
+//// `create` would resolve it again, later, and mean a different time.
+//// `replay: Never` already covers that, and the name claim already
+//// refuses the second attempt, but the shape is worth naming — a
+//// relative timing is the one argument whose meaning depends on when it
+//// was read.
 
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
@@ -117,6 +158,16 @@ pub type Limits {
     default_max_fires: Int,
     /// How many model-created schedules one session holds at once.
     max_schedules: Int,
+    /// The furthest ahead a relative one-shot (`in_seconds`) may be
+    /// asked for, in seconds.
+    max_in_seconds: Int,
+    /// The largest `max_fires` a request may narrow itself to. It is
+    /// also the default, so this number is a ceiling a caller can only
+    /// come in under.
+    max_max_fires: Int,
+    /// The largest `expires_after_s` a request may narrow itself to,
+    /// which is likewise the default and therefore a ceiling.
+    max_expires_after_s: Int,
   )
 }
 
@@ -160,8 +211,9 @@ pub type Listed {
     /// across different targets, so a row without this is ambiguous and
     /// a cancellation built from it would be a guess.
     target: String,
-    /// A rendered description of when it fires — `"every 300s"` or a UTC
-    /// instant — built by the seam, which owns the timing vocabulary.
+    /// A rendered description of when it fires — `"every 300s, at most
+    /// 1000 times"`, a cron expression, or a UTC instant — built by the
+    /// seam, which owns the timing vocabulary.
     when: String,
     /// Whether this schedule may start a fresh run on an idle strand.
     wake: Wake,
@@ -223,23 +275,51 @@ pub type Request {
     /// the caller spawned; nothing on this side of it can tell those
     /// apart, which is why the argument travels as the model wrote it.
     target: Option(String),
-    /// A recurring interval in seconds, or a one-shot UTC instant. The
-    /// tool refuses to build a `Request` that names neither or both, so
-    /// the seam never sees that case.
+    /// Which of the four shapes a schedule may take this request asked
+    /// for. The tool refuses to build a `Request` naming none or more
+    /// than one, so the seam never sees that case.
     timing: RequestedTiming,
+    /// How many fires this schedule should be held to, or `None` for the
+    /// default. Only meaningful beside a recurring timing; the tool
+    /// refuses it beside a one-shot, and the seam holds it to the same
+    /// ceiling a `[[schedule]]` table is held to.
+    max_fires: Option(Int),
+    /// How long this schedule should live, in seconds, or `None` for the
+    /// default. Bounded exactly as `max_fires` is, and refused beside a
+    /// one-shot for the same reason.
+    expires_after_s: Option(Int),
     wake: Wake,
     body: String,
   )
 }
 
-/// The timing half of a creation request.
+/// The timing half of a creation request: two recurring shapes and two
+/// one-shots.
+///
+/// Two of each rather than one, and the pairs exist for opposite
+/// reasons. `Cron` says something `Every` cannot say at all — a phase or
+/// a calendar shape, "09:00 on weekdays" rather than "every 86400
+/// seconds", which on an epoch-aligned grid is always midnight UTC.
+/// `In` says exactly what `At` says and says it in the vocabulary a
+/// model actually has: Loom's system prompt carries no clock and no
+/// date, so a model asked to check back in three quarters of an hour
+/// cannot compute the instant `At` wants.
 pub type RequestedTiming {
-  /// Fire every `seconds`, until `max_fires` or the default expiry.
+  /// Fire every `seconds`, until the expiry bounds end it.
   Every(seconds: Int)
 
   /// Fire once, at this RFC3339 UTC instant, as the model wrote it. The
   /// seam parses it, because the seam owns the one RFC3339 parser.
   At(instant: String)
+
+  /// Fire on this five-field cron expression, UTC, as the model wrote
+  /// it. The seam parses it, for the reason it parses `At`: one grammar,
+  /// one parser, one set of refusals.
+  Cron(expression: String)
+
+  /// Fire once, `seconds` from now. The seam resolves it against the
+  /// session's own clock, which is the whole point — see the type doc.
+  In(seconds: Int)
 }
 
 /// What a creation actually produced, which may differ from what was
@@ -283,14 +363,24 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
       <> "strand's context later — your own, by default — on a timer, "
       <> "whether or not anyone is watching. Use it to check back on long-running work, to poll "
       <> "something that changes on its own, or to leave yourself a "
-      <> "reminder at a fixed time. Give either `every_seconds` for a "
-      <> "recurring heartbeat (at least "
+      <> "reminder at a fixed time. Give exactly one of four timings, "
+      <> "never two: `in_seconds` for a one-shot a fixed while from now, "
+      <> "`every_seconds` for a recurring heartbeat (at least "
       <> int.to_string(limits.min_interval_seconds)
-      <> "s apart) or `at` for a one-shot UTC instant, never both. A "
-      <> "recurring schedule always expires on its own — after "
+      <> "s apart), `cron` for a recurring heartbeat on a calendar, or "
+      <> "`at` for a one-shot at a UTC instant. **Prefer `in_seconds` "
+      <> "for anything relative**: you are not told the current date or "
+      <> "time, so you cannot work out the instant `at` wants, and "
+      <> "`in_seconds` is how you say \"in 45 minutes\" (2700) without "
+      <> "one. Use `cron` when the time of day matters — `every_seconds` "
+      <> "is a grid aligned to the epoch, so a daily interval always "
+      <> "lands at 00:00 UTC and only `cron` can ask for 09:00 on "
+      <> "weekdays. A recurring schedule always expires on its own — "
+      <> "after "
       <> int.to_string(limits.default_max_fires)
       <> " fires or a week, whichever comes first — so it cannot run "
-      <> "forever. This session holds at most "
+      <> "forever; `max_fires` and `expires_after_s` narrow that, and "
+      <> "cannot widen it. This session holds at most "
       <> int.to_string(limits.max_schedules)
       <> " of them at a time; cancel one you no longer need with "
       <> cancel_tool_name
@@ -321,20 +411,77 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
           ),
         ),
         #(
+          "in_seconds",
+          tool.integer_property(
+            "for a one-shot a fixed while from now: how many seconds to "
+            <> "wait, 1 to "
+            <> int.to_string(limits.max_in_seconds)
+            <> " (seven days). This exists because you have no clock — "
+            <> "nothing tells you the current date or time, so this is the "
+            <> "only way you can ask for \"in half an hour\" (1800). Give "
+            <> "exactly one timing",
+          ),
+        ),
+        #(
           "every_seconds",
           tool.integer_property(
             "for a recurring heartbeat: how many seconds between fires, at "
             <> "least "
             <> int.to_string(limits.min_interval_seconds)
-            <> ". Give this or `at`, not both",
+            <> ". The grid is aligned to the epoch, so a daily interval "
+            <> "fires at 00:00 UTC — use `cron` if the time of day "
+            <> "matters. Give exactly one timing",
+          ),
+        ),
+        #(
+          "cron",
+          tool.string_property(
+            "for a recurring heartbeat on a calendar: a standard "
+            <> "five-field cron expression, `minute hour day-of-month "
+            <> "month day-of-week`, for example \"0 9 * * 1-5\" for 09:00 "
+            <> "on weekdays. Every field takes `*`, a number, a range "
+            <> "`a-b`, a step `*/n` or `a-b/n`, or a comma-separated list "
+            <> "of those; day-of-week is 0-7 with 0 and 7 both Sunday. "
+            <> "**All times are UTC** — there is no timezone or offset "
+            <> "handling anywhere. There is no seconds field, month and "
+            <> "day names such as JAN or MON are not understood, and "
+            <> "neither are the extensions L, W, ? and #. When both day "
+            <> "fields are restricted they are ORed, not ANDed, which is "
+            <> "standard cron and surprising: \"0 9 1 * 1\" fires on the "
+            <> "first of the month AND on every Monday. Give exactly one "
+            <> "timing",
           ),
         ),
         #(
           "at",
           tool.string_property(
-            "for a one-shot: the UTC instant to fire at, RFC3339, for "
-            <> "example \"2026-09-01T09:00:00Z\". Give this or "
-            <> "`every_seconds`, not both",
+            "for a one-shot at a known instant: the UTC instant to fire "
+            <> "at, RFC3339, for example \"2026-09-01T09:00:00Z\". You are "
+            <> "not told the current time, so use `in_seconds` for "
+            <> "anything relative and keep this for an instant you were "
+            <> "actually given. Give exactly one timing",
+          ),
+        ),
+        #(
+          "max_fires",
+          tool.integer_property(
+            "for a recurring heartbeat only: end it after this many "
+            <> "fires, 1 to "
+            <> int.to_string(limits.max_max_fires)
+            <> ". Defaults to the ceiling, so this can only narrow the "
+            <> "schedule, never extend it. Refused beside `at` or "
+            <> "`in_seconds`, which fire once by construction",
+          ),
+        ),
+        #(
+          "expires_after_s",
+          tool.integer_property(
+            "for a recurring heartbeat only: end it this many seconds "
+            <> "after it is created, 1 to "
+            <> int.to_string(limits.max_expires_after_s)
+            <> " (seven days). Defaults to the ceiling, so this can only "
+            <> "narrow the schedule. Whichever of this and `max_fires` is "
+            <> "reached first ends it. Refused beside `at` or `in_seconds`",
           ),
         ),
         #(
@@ -370,13 +517,28 @@ fn create_tool(schedules: Schedules, limits: Limits) -> Tool {
 fn run_create(schedules: Schedules, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use name <- tool.with_arg(tool.required_string(args, "name"))
   use body <- tool.with_arg(tool.required_string(args, "body"))
-  use every <- tool.with_arg(tool.optional_int(args, "every_seconds"))
-  use at <- tool.with_arg(tool.optional_string(args, "at"))
   use wanted <- tool.with_arg(requested_wake(args))
   use target <- tool.with_arg(tool.optional_string(args, "target"))
-  use timing <- tool.with_arg(requested_timing(every, at))
+  use timing <- tool.with_arg(requested_timing(args))
+  use max_fires <- tool.with_arg(tool.optional_int(args, "max_fires"))
+  use expires_after_s <- tool.with_arg(tool.optional_int(
+    args,
+    "expires_after_s",
+  ))
+  use Nil <- tool.with_arg(licensed_bounds(timing, max_fires, expires_after_s))
+
+  let request =
+    Request(
+      name:,
+      target:,
+      timing:,
+      max_fires:,
+      expires_after_s:,
+      wake: wanted,
+      body:,
+    )
   use created <- tool.or_outcome(
-    schedules.create(ctx, Request(name:, target:, timing:, wake: wanted, body:)),
+    schedules.create(ctx, request),
     refusal_outcome,
   )
   created_outcome(created, ctx, asked_for_wake: wanted)
@@ -396,26 +558,100 @@ fn requested_wake(args: JsonValue) -> Result(Wake, String) {
   }
 }
 
-// Exactly one of the two timing arguments, decided here rather than at
-// the seam so the refusal names the two argument spellings the model
-// actually wrote rather than the internal vocabulary they map onto.
-fn requested_timing(
-  every: Option(Int),
-  at: Option(String),
-) -> Result(RequestedTiming, String) {
-  case every, at {
-    Some(_seconds), Some(_instant) ->
+// Exactly one of the four timing arguments, decided here rather than at
+// the seam so the refusal names the argument spellings the model actually
+// wrote rather than the internal vocabulary they map onto.
+//
+// The arguments are read into one list of what was present, so "exactly
+// one" is a question about that list's length. With four spellings a
+// case over the cross product would be sixteen arms saying three things,
+// and a fifth timing would make it thirty-two.
+fn requested_timing(args: JsonValue) -> Result(RequestedTiming, String) {
+  use every <- result.try(tool.optional_int(args, "every_seconds"))
+  use at <- result.try(tool.optional_string(args, "at"))
+  use expression <- result.try(tool.optional_string(args, "cron"))
+  use in_seconds <- result.try(tool.optional_int(args, "in_seconds"))
+
+  let named =
+    [
+      option.map(in_seconds, In),
+      option.map(every, Every),
+      option.map(expression, Cron),
+      option.map(at, At),
+    ]
+    |> option.values
+
+  case named {
+    [only] -> Ok(only)
+
+    [] ->
       Error(
-        "give either every_seconds or at, not both: a schedule is either a "
-        <> "recurring heartbeat or a one-shot",
+        "give one of in_seconds (a one-shot that many seconds from now), "
+        <> "every_seconds (a recurring heartbeat), cron (a recurring "
+        <> "heartbeat on a five-field UTC calendar expression) or at (a "
+        <> "one-shot at an RFC3339 UTC instant)",
       )
-    None, None ->
+
+    [_first, _second, ..] ->
       Error(
-        "give one of every_seconds (a recurring heartbeat) or at (a "
-        <> "one-shot UTC instant)",
+        "give exactly one of in_seconds, every_seconds, cron or at — you "
+        <> "gave "
+        <> string.join(list.map(named, timing_argument), " and ")
+        <> ": a schedule fires on one timing, never two",
       )
-    Some(seconds), None -> Ok(Every(seconds:))
-    None, Some(instant) -> Ok(At(instant:))
+  }
+}
+
+// Which argument one timing arrived as, for a refusal that has to name
+// the spelling the model wrote rather than the variant it became.
+fn timing_argument(timing: RequestedTiming) -> String {
+  case timing {
+    Every(..) -> "every_seconds"
+    Cron(..) -> "cron"
+    At(..) -> "at"
+    In(..) -> "in_seconds"
+  }
+}
+
+// The two expiry arguments only mean something beside a *recurring*
+// timing, so a one-shot carrying one is a contradiction refused here
+// rather than quietly dropped.
+//
+// It is refused at the tool and not at the seam for the reason the
+// timing count is: the seam sees a `Timing` that has already forgotten
+// which spellings arrived, and a model told "max_fires is not valid
+// here" needs to know that "here" was its own `at`.
+fn licensed_bounds(
+  timing: RequestedTiming,
+  max_fires: Option(Int),
+  expires_after_s: Option(Int),
+) -> Result(Nil, String) {
+  case recurrence_of(timing), max_fires, expires_after_s {
+    Recurring, _fires, _window -> Ok(Nil)
+    OneOccurrence, None, None -> Ok(Nil)
+
+    OneOccurrence, Some(_fires), _window | OneOccurrence, None, Some(_window) ->
+      Error(
+        "max_fires and expires_after_s are only valid beside every_seconds "
+        <> "or cron: "
+        <> timing_argument(timing)
+        <> " fires exactly once by construction, so there is nothing for "
+        <> "either bound to end",
+      )
+  }
+}
+
+// Whether a timing produces a series or a single fire, which is the one
+// thing the bounds care about.
+type Recurrence {
+  Recurring
+  OneOccurrence
+}
+
+fn recurrence_of(timing: RequestedTiming) -> Recurrence {
+  case timing {
+    Every(..) | Cron(..) -> Recurring
+    At(..) | In(..) -> OneOccurrence
   }
 }
 

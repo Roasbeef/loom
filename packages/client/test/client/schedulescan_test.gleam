@@ -17,6 +17,7 @@
 //// about a turn completing, so a request that never resolves keeps a
 //// strand's run open indefinitely without a scripted answer to maintain.
 
+import client/cron
 import client/schedule
 import client/schedulescan
 import core/clock.{type Clock}
@@ -432,6 +433,30 @@ fn aging_schedule(
   )
 }
 
+// A cron schedule whose expiry's fire-count bound is the one under test
+// and whose window is not: seven days is longer than any jump this file
+// makes, so nothing here expires by age.
+fn cron_schedule(
+  name name: String,
+  expression expression: String,
+  wake wake: schedule.Wake,
+  max_fires max_fires: Int,
+) -> schedule.Schedule {
+  let assert Ok(parsed) = cron.parse(expression)
+    as "the fixture's cron expression must parse"
+  schedule.Schedule(
+    name:,
+    target: "main",
+    owner: schedule.OperatorOwned,
+    timing: schedule.Cron(
+      expression: parsed,
+      expiry: schedule.Expiry(max_fires:, expires_after_s: 604_800),
+    ),
+    wake:,
+    body: "heartbeat",
+  )
+}
+
 fn one_shot_schedule(name name: String, at at: Int) -> schedule.Schedule {
   schedule.Schedule(
     name:,
@@ -629,6 +654,187 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
   // re-arm from the now-expired schedule.
   assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
     as "an expired schedule must stop contributing to the re-arm"
+  stop(rig)
+}
+
+// --- 7. cron: the first fire is the first match after it was observed -----
+//
+// Every instant below is UTC, from the first week of September 2026:
+//
+//   2026-09-02T09:00:00Z (Wed) = 1788339600
+//   2026-09-02T15:00:00Z (Wed) = 1788361200
+//   2026-09-03T09:00:00Z (Thu) = 1788426000
+//   2026-09-04T09:00:00Z (Fri) = 1788512400
+//   2026-09-05T09:00:00Z (Sat) = 1788598800
+//   2026-09-06T09:00:00Z (Sun) = 1788685200
+//   2026-09-06T10:00:00Z (Sun) = 1788688800
+
+const wednesday_at_three_pm_ms = 1_788_361_200_000
+
+const wednesday_at_nine_ms = 1_788_339_600_000
+
+const sunday_at_ten_s = 1_788_688_800
+
+// A daily heartbeat created in the afternoon must not fire this
+// morning's occurrence — it was never asked for — and must arm for
+// tomorrow's rather than for a slot boundary nobody chose. This is the
+// whole difference from `Interval`, which fires the slot it is created
+// inside.
+pub fn a_daily_cron_does_not_fire_at_creation_and_arms_for_tomorrow_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+  let assert Ok(rig) = harness([sched], wednesday_at_three_pm_ms)
+    as "the harness must boot"
+
+  // The first tick: nothing due, because 09:00 this morning passed
+  // before the scanner had ever seen this schedule.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(150)
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 0
+    as "a cron schedule must not fire an occurrence that predates it"
+  assert idle(rig, "main") as "the strand must not have been woken"
+
+  // It armed for 09:00 tomorrow: eighteen hours from 15:00.
+  assert fake_earliest_delay_ms(rig.fc) == Some(64_800_000)
+    as "the re-arm must wait for the next match, not for a grid boundary"
+
+  // Tomorrow's occurrence fires, exactly once.
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+  let thursday =
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_426_000,
+    )
+  assert await_true(fn() { fired(rig.runtime, thursday) }, 2000)
+    as "the first match after the schedule was observed must fire"
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 1
+
+  // And it is not annotated late: the occurrence before it — 09:00 the
+  // day the schedule was created — predates the observation instant, so
+  // it was never due and nothing was missed.
+  assert !string.contains(injected_text(rig, "main"), "(late)")
+    as "a cron schedule's first fire must not read as a catch-up"
+
+  // And re-armed a day out, for the match after that.
+  assert await_true(
+    fn() { fake_earliest_delay_ms(rig.fc) == Some(86_400_000) },
+    2000,
+  )
+    as "a daily cron must re-arm twenty-four hours later"
+  stop(rig)
+}
+
+// A window the server slept through costs exactly one catch-up fire, the
+// same property `interval_schedule` has, reached a different way: the
+// due occurrence is the single last match at or before now, so the
+// matches in between are never even looked at. The `(late)` marker is on
+// the injection's first line, which is all a collapsed client shows.
+pub fn a_cron_jump_past_three_occurrences_fires_one_late_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+  let assert Ok(rig) = harness([sched], wednesday_at_three_pm_ms)
+    as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(150)
+
+  // Sunday morning: Thursday, Friday and Saturday's 09:00 have all gone
+  // by unobserved, and Sunday's is the one that is due.
+  fake_jump_to(rig.fc, sunday_at_ten_s * 1000)
+  assert fake_advance(rig.fc) as "the resumed tick must be pending"
+
+  let sunday =
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_685_200,
+    )
+  assert await_true(fn() { fired(rig.runtime, sunday) }, 2000)
+    as "the resumed tick must fire the last match at or before now"
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_426_000,
+    ),
+  )
+    as "a skipped match must never fire"
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_598_800,
+    ),
+  )
+    as "nor the one immediately before the due occurrence"
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 1
+    as "at most one late fire, not a replay of the whole backlog"
+
+  let text = injected_text(rig, "main")
+  assert string.contains(text, "(late)")
+    as "the catch-up fire must say so on its first line"
+  assert string.contains(text, "scheduled window for this occurrence has")
+  stop(rig)
+}
+
+// `max_fires` ends a cron schedule exactly as it ends an interval one:
+// both carry the same `Expiry`, and `schedule.recurring_expired` is the
+// one predicate either goes through.
+pub fn a_capped_cron_expires_after_its_one_fire_test() {
+  let sched =
+    cron_schedule(
+      name: "capped",
+      expression: "0 9 * * *",
+      wake: schedule.WakesIdle,
+      max_fires: 1,
+    )
+
+  // Created exactly on a match, so the very first tick has something
+  // due: the observation instant and the occurrence coincide, and the
+  // `>= since_s` rule admits the boundary.
+  let assert Ok(rig) = harness([sched], wednesday_at_nine_ms)
+    as "the harness must boot"
+  let first =
+    schedule.fired_key(
+      strand: "main",
+      name: "capped",
+      occurrence: 1_788_339_600,
+    )
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(fn() { fired(rig.runtime, first) }, 2000)
+    as "an occurrence landing on the observation instant must fire"
+  assert fired_count(rig.runtime, "schedule/fired/main/capped/") == 1
+
+  // The next tick finds the cap already spent: no fire, and no re-arm.
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+  process.sleep(150)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "capped",
+      occurrence: 1_788_426_000,
+    ),
+  )
+    as "an expired cron schedule must not fire again"
+  assert fired_count(rig.runtime, "schedule/fired/main/capped/") == 1
+
+  // The one deadline left in the wheel is the strand driver's own
+  // checkpoint poll, parked far out by `harness` — not a re-arm.
+  assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
+    as "an expired cron schedule must stop contributing to the re-arm"
   stop(rig)
 }
 

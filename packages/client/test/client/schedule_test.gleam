@@ -6,11 +6,13 @@
 //// refusal, named for the thing it proves, so a failing test names the
 //// bound that broke rather than leaving that to a diff.
 
+import client/cron
 import client/schedule
 import client/schedulescan
 import core/json
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 
@@ -278,13 +280,13 @@ pub fn malformed_toml_is_refused_in_words_test() {
   assert string.contains(reason, "not valid toml")
 }
 
-// --- every/at, and their mutual exclusivity ---------------------------------
+// --- every/cron/at, and their mutual exclusivity ----------------------------
 
-pub fn neither_every_nor_at_is_refused_test() {
+pub fn no_timing_at_all_is_refused_test() {
   let assert Error(reason) =
     schedule.parse("[[schedule]]\nname = \"s\"\nbody = \"b\"")
     as "a schedule with no timing must be refused"
-  assert string.contains(reason, "must set exactly one of .every or .at")
+  assert string.contains(reason, "must set exactly one of .every, .cron, .at")
 }
 
 pub fn both_every_and_at_is_refused_test() {
@@ -549,7 +551,7 @@ pub fn lateness_only_looks_at_the_immediately_preceding_slot_test() {
 }
 
 pub fn expiry_is_reached_by_fire_count_alone_test() {
-  assert schedule.interval_expired(
+  assert schedule.recurring_expired(
     occurrences: [0, 60],
     expiry: schedule.Expiry(max_fires: 2, expires_after_s: 604_800),
     now_s: 120,
@@ -558,7 +560,7 @@ pub fn expiry_is_reached_by_fire_count_alone_test() {
 }
 
 pub fn expiry_is_reached_by_age_alone_test() {
-  assert schedule.interval_expired(
+  assert schedule.recurring_expired(
     occurrences: [0],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 100),
     now_s: 101,
@@ -567,7 +569,7 @@ pub fn expiry_is_reached_by_age_alone_test() {
 }
 
 pub fn expiry_is_not_reached_below_either_bound_test() {
-  assert !schedule.interval_expired(
+  assert !schedule.recurring_expired(
     occurrences: [0],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
     now_s: 120,
@@ -582,7 +584,7 @@ pub fn expiry_is_not_reached_below_either_bound_test() {
 // that never happened. The predecessor of this test asserted the
 // opposite and was the bug's own witness.
 pub fn a_schedule_that_never_fired_still_expires_by_age_test() {
-  assert schedule.interval_expired(
+  assert schedule.recurring_expired(
     occurrences: [],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
     now_s: 604_800,
@@ -594,7 +596,7 @@ pub fn age_is_measured_from_first_observation_not_first_fire_test() {
   // Every mark is recent, so the earliest of them is young; the schedule
   // itself was first seen a week ago, and that is the clock the bound
   // reads.
-  assert schedule.interval_expired(
+  assert schedule.recurring_expired(
     occurrences: [600_000, 600_060],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
     now_s: 604_800,
@@ -604,7 +606,7 @@ pub fn age_is_measured_from_first_observation_not_first_fire_test() {
   // The reverse, which is what stops the fix from being "expire sooner":
   // an old mark under the same prefix must not end a schedule this
   // scanner only just observed.
-  assert !schedule.interval_expired(
+  assert !schedule.recurring_expired(
     occurrences: [0, 60],
     expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
     now_s: 604_800,
@@ -667,12 +669,12 @@ pub fn the_committed_example_config_parses_its_schedules_test() {
   let assert Ok(parsed) = schedule.parse(text)
     as "the committed example config's schedules must parse"
   assert list.map(parsed, fn(sched: schedule.Schedule) { sched.name })
-    == ["watch-reviewer", "migration-window"]
+    == ["watch-reviewer", "weekday-standup", "migration-window"]
 }
 
-// The example shows both timings, because an operator reading one shape
-// only would have to infer the other from prose.
-pub fn the_committed_example_shows_both_timings_test() {
+// The example shows all three timings, because an operator reading one
+// shape only would have to infer the others from prose.
+pub fn the_committed_example_shows_every_timing_test() {
   let assert Ok(text) = simplifile.read("../../docs/examples/loom.toml")
     as "the committed example config must be readable"
   let assert Ok(parsed) = schedule.parse(text)
@@ -681,10 +683,11 @@ pub fn the_committed_example_shows_both_timings_test() {
     list.map(parsed, fn(sched: schedule.Schedule) {
       case sched.timing {
         schedule.Interval(..) -> "interval"
+        schedule.Cron(..) -> "cron"
         schedule.OneShot(..) -> "one-shot"
       }
     })
-  assert timings == ["interval", "one-shot"]
+  assert timings == ["interval", "cron", "one-shot"]
 }
 
 // --- the collapsed-line contract ------------------------------------------
@@ -1093,4 +1096,409 @@ pub fn the_toml_path_refuses_an_interval_above_the_maximum_test() {
   let assert Error(reason) = schedule.parse(text)
     as "an operator interval above the maximum must be refused"
   assert string.contains(reason, "maximum")
+}
+
+// --- cron: the TOML surface ------------------------------------------------
+
+pub fn a_cron_schedule_parses_with_its_fields_test() {
+  let assert Ok([sched]) =
+    schedule.parse(
+      "[[schedule]]
+name = \"standup\"
+cron = \"0 9 * * 1-5\"
+body = \"Say where things are.\"
+",
+    )
+    as "a well-formed cron schedule must parse"
+  assert sched.name == "standup"
+  assert sched.target == "main"
+  let assert schedule.Cron(expression:, expiry:) = sched.timing
+    as "a `cron` key must produce a Cron timing"
+  assert cron.source(expression) == "0 9 * * 1-5"
+  assert expiry
+    == schedule.Expiry(
+      max_fires: schedule.default_max_fires,
+      expires_after_s: schedule.default_expires_after_s,
+    )
+}
+
+pub fn cron_beside_every_is_refused_test() {
+  let assert Error(reason) =
+    schedule.parse(
+      "[[schedule]]\nname = \"s\"\nevery = \"60s\"\ncron = \"* * * * *\"\n"
+      <> "body = \"b\"",
+    )
+    as "two timings must be refused"
+  assert string.contains(reason, "mutually exclusive")
+  assert string.contains(reason, "every")
+  assert string.contains(reason, "cron")
+}
+
+pub fn cron_beside_at_is_refused_test() {
+  let assert Error(reason) =
+    schedule.parse(
+      "[[schedule]]\nname = \"s\"\nat = \"2026-01-01T00:00:00Z\"\n"
+      <> "cron = \"* * * * *\"\nbody = \"b\"",
+    )
+    as "two timings must be refused"
+  assert string.contains(reason, "mutually exclusive")
+  assert string.contains(reason, "cron")
+  assert string.contains(reason, "at")
+}
+
+// The refusal is `client/cron`'s own — this parser has nothing to add
+// about an hour field — with the table named in front of it so an
+// operator knows which one to edit.
+pub fn a_bad_cron_expression_is_refused_naming_the_field_test() {
+  let assert Error(reason) =
+    schedule.parse(
+      "[[schedule]]\nname = \"s\"\ncron = \"0 24 * * *\"\nbody = \"b\"",
+    )
+    as "an out-of-range hour must be refused"
+  assert string.contains(reason, "schedule 1 (s).cron")
+  assert string.contains(reason, "hour")
+}
+
+pub fn a_cron_expression_with_the_wrong_field_count_is_refused_test() {
+  let assert Error(reason) =
+    schedule.parse(
+      "[[schedule]]\nname = \"s\"\ncron = \"0 9 * *\"\nbody = \"b\"",
+    )
+    as "a four-field expression must be refused"
+  assert string.contains(reason, "five whitespace-separated fields")
+}
+
+// The two expiry keys are licensed by `cron` exactly as they are by
+// `every`: both are recurring, and both owe a bound.
+pub fn max_fires_alongside_cron_is_accepted_test() {
+  let assert Ok([sched]) =
+    schedule.parse(
+      "[[schedule]]\nname = \"s\"\ncron = \"0 9 * * *\"\nmax_fires = 7\n"
+      <> "expires_after_s = 3600\nbody = \"b\"",
+    )
+    as "max_fires and expires_after_s must be licensed beside cron"
+  let assert schedule.Cron(expiry:, ..) = sched.timing
+    as "a `cron` key must produce a Cron timing"
+  assert expiry == schedule.Expiry(max_fires: 7, expires_after_s: 3600)
+}
+
+pub fn a_cron_max_fires_above_the_ceiling_is_refused_test() {
+  let assert Error(reason) =
+    schedule.parse(
+      "[[schedule]]\nname = \"s\"\ncron = \"0 9 * * *\"\n"
+      <> "max_fires = 1001\nbody = \"b\"",
+    )
+    as "a cron schedule's max_fires is capped like an interval's"
+  assert string.contains(reason, "max_fires must be between 1 and 1000")
+}
+
+// --- cron: the config cell round trip ------------------------------------
+
+pub fn a_cron_schedule_survives_the_round_trip_test() {
+  let assert Ok(expression) = cron.parse("*/15 9-17 * * 1-5")
+    as "the expression must parse"
+  let sched =
+    schedule.Schedule(
+      name: "office-hours",
+      target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
+      timing: schedule.Cron(
+        expression:,
+        expiry: schedule.Expiry(max_fires: 40, expires_after_s: 86_400),
+      ),
+      wake: schedule.SteersOnly,
+      body: "check the queue",
+    )
+  assert schedule.decode(schedule.encode(sched)) == Ok(sched)
+}
+
+// The cell stores the source text and `decode` re-parses it, so a cell
+// whose expression this build's grammar no longer accepts is dropped
+// exactly as an out-of-bounds interval is — the schedule stops firing
+// rather than running on a value nothing would admit today.
+pub fn a_cell_whose_cron_no_longer_parses_is_dropped_test() {
+  let assert Ok(expression) = cron.parse("0 9 * * *")
+    as "the expression must parse"
+  let sched =
+    schedule.Schedule(
+      name: "standup",
+      target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
+      timing: schedule.Cron(
+        expression:,
+        expiry: schedule.Expiry(max_fires: 10, expires_after_s: 86_400),
+      ),
+      wake: schedule.SteersOnly,
+      body: "b",
+    )
+  let assert json.Object(fields:) = schedule.encode(sched)
+    as "a cell is a JSON object"
+  let broken =
+    json.Object(
+      fields: list.map(fields, fn(pair) {
+        let #(key, value) = pair
+        case key == "cron" {
+          True -> #(key, json.String("0 9 LAST-FRIDAY * *"))
+          False -> #(key, value)
+        }
+      }),
+    )
+  assert schedule.decode(broken) == Error(Nil)
+}
+
+pub fn a_cell_naming_two_timings_is_not_a_schedule_test() {
+  let assert Ok(expression) = cron.parse("0 9 * * *")
+    as "the expression must parse"
+  let sched =
+    schedule.Schedule(
+      name: "standup",
+      target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
+      timing: schedule.Cron(
+        expression:,
+        expiry: schedule.Expiry(max_fires: 10, expires_after_s: 86_400),
+      ),
+      wake: schedule.SteersOnly,
+      body: "b",
+    )
+  let assert json.Object(fields:) = schedule.encode(sched)
+    as "a cell is a JSON object"
+  let both = json.Object(fields: [#("every_s", json.Int(60)), ..fields])
+  assert schedule.decode(both) == Error(Nil)
+}
+
+// --- cron occurrence arithmetic ------------------------------------------
+//
+// Every instant below is derived from `0 9 * * 1-5` over the first week
+// of September 2026, which `cron_test` already dates:
+//
+//   2026-09-02T00:00:00Z (Wed) = 1788307200
+//   2026-09-03T09:00:00Z (Thu) = 1788426000
+//   2026-09-03T12:00:00Z (Thu) = 1788436800
+//   2026-09-04T09:00:00Z (Fri) = 1788512400
+//   2026-09-04T09:30:00Z (Fri) = 1788514200
+//   2026-09-04T10:00:00Z (Fri) = 1788516000
+//   2026-09-07T09:00:00Z (Mon) = 1788771600
+
+fn weekdays_at_nine() -> cron.Expression {
+  let assert Ok(expression) = cron.parse("0 9 * * 1-5")
+    as "`0 9 * * 1-5` must parse"
+  expression
+}
+
+// An hour after Friday's 09:00, with the schedule observed on Wednesday:
+// Friday's occurrence is the last match at or before now, and it is
+// after the observation instant, so it is what is due.
+pub fn the_due_cron_occurrence_is_the_last_match_at_or_before_now_test() {
+  assert schedule.cron_occurrence(
+      expression: weekdays_at_nine(),
+      now_s: 1_788_516_000,
+      since_s: 1_788_307_200,
+    )
+    == Some(1_788_512_400)
+}
+
+// A tick landing exactly on a match sees that match, not the one before
+// it: `cron.previous_occurrence` is strictly-before, so the seed has to
+// be `now_s + 1` and this is the fencepost that proves it.
+pub fn a_tick_exactly_on_a_match_finds_that_match_test() {
+  assert schedule.cron_occurrence(
+      expression: weekdays_at_nine(),
+      now_s: 1_788_512_400,
+      since_s: 1_788_307_200,
+    )
+    == Some(1_788_512_400)
+}
+
+// The rule the whole feature turns on. Observed at 09:30 on the Friday,
+// so Friday's 09:00 passed before anybody had asked for it: nothing is
+// due, and the schedule waits for Monday.
+pub fn an_occurrence_before_the_observation_instant_is_not_due_test() {
+  assert schedule.cron_occurrence(
+      expression: weekdays_at_nine(),
+      now_s: 1_788_516_000,
+      since_s: 1_788_514_200,
+    )
+    == None
+}
+
+// The boundary is inclusive: an occurrence landing exactly on the
+// observation instant was observed, so it is owed.
+pub fn an_occurrence_exactly_at_the_observation_instant_is_due_test() {
+  assert schedule.cron_occurrence(
+      expression: weekdays_at_nine(),
+      now_s: 1_788_516_000,
+      since_s: 1_788_512_400,
+    )
+    == Some(1_788_512_400)
+}
+
+// Friday's fire, with the schedule observed on Wednesday and no mark on
+// Thursday's 09:00: a window was due and nothing ticked through it.
+pub fn a_cron_fire_whose_preceding_occurrence_was_missed_is_late_test() {
+  assert schedule.cron_late(
+      expression: weekdays_at_nine(),
+      occurrences: [],
+      occurrence: 1_788_512_400,
+      since_s: 1_788_307_200,
+    )
+    == schedule.Late
+}
+
+// The same fire with Thursday's mark present: the series is prompt.
+pub fn a_cron_fire_whose_preceding_occurrence_fired_is_on_time_test() {
+  assert schedule.cron_late(
+      expression: weekdays_at_nine(),
+      occurrences: [1_788_426_000],
+      occurrence: 1_788_512_400,
+      since_s: 1_788_307_200,
+    )
+    == schedule.OnTime
+}
+
+// The same fire again, from a schedule only observed at midday on the
+// Thursday. Thursday's 09:00 predates that, so it was never due and its
+// absent mark says nothing — which is what makes a first fire on time.
+pub fn a_cron_first_fire_is_on_time_test() {
+  assert schedule.cron_late(
+      expression: weekdays_at_nine(),
+      occurrences: [],
+      occurrence: 1_788_512_400,
+      since_s: 1_788_436_800,
+    )
+    == schedule.OnTime
+}
+
+// Lateness is never a comparison against `now_s`: the occurrence is
+// chosen *from* `now_s`, so a check there would read as on-time whenever
+// a tick is prompt and late whenever it is a second slow. This pins the
+// property from the other side — the same `now_s` produces both verdicts
+// depending only on the marks.
+pub fn cron_lateness_is_decided_by_marks_and_not_by_now_test() {
+  let expression = weekdays_at_nine()
+  let assert Some(occurrence) =
+    schedule.cron_occurrence(
+      expression:,
+      now_s: 1_788_516_000,
+      since_s: 1_788_307_200,
+    )
+    as "Friday's occurrence must be due"
+
+  assert schedule.cron_late(
+      expression:,
+      occurrences: [],
+      occurrence:,
+      since_s: 1_788_307_200,
+    )
+    == schedule.Late
+  assert schedule.cron_late(
+      expression:,
+      occurrences: [1_788_426_000],
+      occurrence:,
+      since_s: 1_788_307_200,
+    )
+    == schedule.OnTime
+}
+
+// From the Friday fire, the next match is the Monday: three days, with
+// the weekend skipped.
+pub fn the_cron_rearm_waits_for_the_next_match_test() {
+  assert schedule.cron_next_delay_ms(
+      expression: weekdays_at_nine(),
+      now_s: 1_788_512_400,
+      now_ms: 1_788_512_400_000,
+    )
+    == Some(259_200_000)
+}
+
+// A boundary the clock has already reached must not arm a zero delay and
+// spin the scanner: the floor is the same second `next_interval_delay_ms`
+// uses.
+pub fn the_cron_rearm_never_arms_below_a_second_test() {
+  assert schedule.cron_next_delay_ms(
+      expression: weekdays_at_nine(),
+      now_s: 1_788_512_400,
+      now_ms: 1_788_771_600_000,
+    )
+    == Some(1000)
+}
+
+// An expression that names a date which never comes has no next match
+// within the search horizon, and the scanner reads that as the end of
+// the schedule rather than re-arming on a guess.
+pub fn a_cron_expression_that_never_matches_has_no_next_delay_test() {
+  let assert Ok(never) = cron.parse("0 0 30 2 *") as "`0 0 30 2 *` must parse"
+  assert schedule.cron_next_delay_ms(
+      expression: never,
+      now_s: 1_788_512_400,
+      now_ms: 1_788_512_400_000,
+    )
+    == None
+}
+
+// --- relative instants ----------------------------------------------------
+
+pub fn a_relative_instant_is_now_plus_the_delay_test() {
+  assert schedule.relative_instant(now_s: 1_788_512_400, in_seconds: 2700)
+    == Ok(1_788_515_100)
+}
+
+pub fn a_relative_instant_at_either_bound_is_accepted_test() {
+  assert schedule.relative_instant(
+      now_s: 0,
+      in_seconds: schedule.min_in_seconds,
+    )
+    == Ok(schedule.min_in_seconds)
+  assert schedule.relative_instant(
+      now_s: 0,
+      in_seconds: schedule.max_in_seconds,
+    )
+    == Ok(schedule.max_in_seconds)
+}
+
+pub fn a_relative_instant_below_the_floor_is_refused_test() {
+  let assert Error(reason) =
+    schedule.relative_instant(now_s: 1000, in_seconds: 0)
+    as "a zero delay must be refused"
+  assert string.contains(reason, "at least")
+}
+
+pub fn a_relative_instant_past_the_horizon_is_refused_test() {
+  let assert Error(reason) =
+    schedule.relative_instant(
+      now_s: 1000,
+      in_seconds: schedule.max_in_seconds + 1,
+    )
+    as "a delay past the horizon must be refused"
+  assert string.contains(reason, "at most")
+  assert string.contains(reason, "seven days")
+}
+
+// --- build: a cron schedule is held to the recurring bounds --------------
+
+pub fn build_refuses_a_cron_expiry_outside_its_caps_test() {
+  let assert Ok(expression) = cron.parse("0 9 * * *")
+    as "the expression must parse"
+  let with_expiry = fn(expiry) {
+    schedule.build(
+      name: "standup",
+      target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
+      timing: schedule.Cron(expression:, expiry:),
+      wake: schedule.SteersOnly,
+      body: "b",
+    )
+  }
+  let assert Error(reason) =
+    with_expiry(schedule.Expiry(
+      max_fires: schedule.max_max_fires + 1,
+      expires_after_s: 60,
+    ))
+    as "a cron schedule may not raise max_fires"
+  assert string.contains(reason, "max_fires must be between")
+
+  let assert Ok(_narrowed) =
+    with_expiry(schedule.Expiry(max_fires: 5, expires_after_s: 60))
+    as "a narrower expiry must be accepted"
+  Nil
 }
