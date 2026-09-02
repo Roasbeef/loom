@@ -485,6 +485,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
   tool.Tool(
     name: tool_name,
     description: description(mode),
+    prompt_snippet: option.Some(
+      "`code_mode` runs a Gleam program against the capability prelude in "
+      <> "place of a batch of tool calls.",
+    ),
     schema: tool.object_schema(
       list.flatten([
         [
@@ -1372,12 +1376,14 @@ fn bounded(
         content: [tool.text_block(text)],
         details: option.Some(details),
         is_error:,
+        terminate: tool.ContinueRun,
       )
     Ok(bounded) ->
       tool.ToolOutcome(
         content: [tool.text_block(blob.bounded_text(bounded))],
         details: option.Some(details),
         is_error:,
+        terminate: tool.ContinueRun,
       )
       |> blob.with_blob_details(bounded)
   }

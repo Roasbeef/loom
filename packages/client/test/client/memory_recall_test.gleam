@@ -50,6 +50,7 @@ import session/session
 import simplifile
 import storage/storage
 import support/provider as provider_test
+import support/tool_registry
 import tools/history as history_tool
 import tools/tool
 
@@ -141,7 +142,7 @@ pub fn a_fresh_session_finds_a_compacted_away_decision_test() {
 pub fn the_tool_is_registered_only_when_the_index_opened_test() {
   let name = process.new_name(prefix: "loom_recall_registry")
   let with_index =
-    serve.registry(
+    tool_registry.built_in(
       None,
       None,
       Some(history.seam(name, timeout_ms: 1000)),
@@ -149,7 +150,7 @@ pub fn the_tool_is_registered_only_when_the_index_opened_test() {
       None,
     )
   assert list.contains(tool.names(with_index), history_tool.tool_name)
-  let without = serve.registry(None, None, None, None, None)
+  let without = tool_registry.built_in(None, None, None, None, None)
   assert list.contains(tool.names(without), history_tool.tool_name) == False
 }
 
@@ -292,7 +293,7 @@ fn wiring_config(
       compaction: compaction_settings(),
       broker: broker_actor,
       broker_timeout_ms: 1000,
-      registry: serve.registry(
+      registry: tool_registry.built_in(
         None,
         None,
         Some(history.seam(holder, timeout_ms: history.default_timeout_ms)),

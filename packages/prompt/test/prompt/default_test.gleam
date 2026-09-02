@@ -26,6 +26,7 @@ fn on(enforcement: pack.Enforcement) -> Environment {
     platform: "linux/x86_64",
     shell: "/bin/bash",
     tools: ["bash", "fs_read"],
+    available_tools: [],
     enforcement:,
     network: pack.NetworkBlocked,
     protected_paths: [],
@@ -48,7 +49,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-3"
+  assert decoded.version == "loom-default-4"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -248,4 +249,51 @@ pub fn environment_section_states_only_workspace_platform_and_shell_test() {
     list.find(shipped().sections, fn(section) { section.name == "environment" })
   assert pack.placeholders(section.template)
     == ["workspace", "platform", "shell"]
+}
+
+// --- the available-tools index -------------------------------------------
+
+fn with_snippets(snippets: List(String)) -> String {
+  pack.render(
+    shipped(),
+    pack.environment(
+      workspace: "/work",
+      platform: "linux/x86_64",
+      shell: "/bin/bash",
+      tools: ["bash", "fs_read"],
+      available_tools: snippets,
+      enforcement: pack.FullyEnforced,
+      network: pack.NetworkBlocked,
+      protected_paths: [],
+      repository_guidance: None,
+    ),
+  )
+}
+
+pub fn the_index_renders_in_the_order_it_was_given_test() {
+  // Registration order, not sorted order: the host's own tools follow
+  // the core ones, which is how an operator reads the list.
+  let rendered =
+    with_snippets(["`grep` searches.", "`bash` runs.", "`fs_read` reads."])
+  assert string.contains(
+    rendered,
+    "- `grep` searches.\n- `bash` runs.\n- `fs_read` reads.",
+  )
+}
+
+pub fn the_index_is_absent_when_nothing_carries_a_snippet_test() {
+  // A section that renders to nothing is dropped along with its blank
+  // line, so a host with no snippets pays no bytes and reads no dangling
+  // heading.
+  let rendered = with_snippets([])
+  assert !string.contains(string.lowercase(rendered), "one line each")
+}
+
+pub fn the_index_says_the_schema_is_what_binds_test() {
+  // The snippet is an index entry; the wire tool array is the contract.
+  // A model that read the line as the specification would call tools
+  // wrong, so the fragment says which of the two is authoritative.
+  let rendered = string.lowercase(with_snippets(["`bash` runs."]))
+  assert string.contains(rendered, "not a specification")
+  assert string.contains(rendered, "callable all the same")
 }

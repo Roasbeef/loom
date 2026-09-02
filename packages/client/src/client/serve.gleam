@@ -172,6 +172,7 @@ import broker/token
 import client/agency
 import client/catalog
 import client/codemode as codemode_wiring
+import client/contributions
 import client/escalate
 import client/gateway as hub
 import client/history
@@ -220,14 +221,10 @@ import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
 import tools/agent.{type Agency}
-import tools/bash
 import tools/codemode as codemode_tool
-import tools/fs
-import tools/grep
 import tools/history as history_tool
 import tools/remember
-import tools/schedule as schedule_tool
-import tools/tool.{type Registry}
+import tools/tool
 import weft/poll
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
@@ -1485,22 +1482,27 @@ fn assemble(
   // The tool half of the scheduling plane decided above, over the same
   // wiring the code-mode half already holds.
   let schedule_seam = option.map(schedule_wiring, scheduleseam.seam)
-  let tool_registry =
-    registry(
+
+  // A collision refuses the boot rather than resolving itself, because
+  // every resolution silently changes what one of the two names means;
+  // no built-in host can produce one, and an extension that would is
+  // exactly the install an operator has to be told about.
+  use tool_registry <- result.try(
+    contributions.built_in(
       Some(agency_seam),
       code_mode,
       history_seam,
       memory_seam,
       schedule_seam,
     )
+    |> contributions.registry
+    |> result.map_error(contributions.collision_message),
+  )
 
-  // The registry itself, once, at boot. Four planes decide their own
-  // presence from the host they found — a messaging plane, a code-mode
-  // pipeline, a search index, a memory session — so "which tools does
-  // this server actually offer" is not derivable from the flags, and it is the same sorted
-  // list that renders into the provider's cached byte prefix. Naming it
-  // here is what lets a release smoke assert on registration rather than
-  // on a proxy for it.
+  // Naming the registered tools here is what lets a release smoke assert
+  // on registration rather than on a proxy for it: which tools this
+  // server actually offers is decided by the planes above rather than by
+  // the flags, so no flag dump answers the question.
   log.info(logger, "server.tools", [
     field.text(key: "names", value: string.join(tool.names(tool_registry), ",")),
   ])
@@ -1515,7 +1517,13 @@ fn assemble(
   use pinned <- result.try(system_prompt.pinned_for(opened, settings.demand))
   use assembled <- result.try(
     system_prompt.assemble(pinned:, override: settings.system, render: fn() {
-      render_prompt(settings, base_policy, pool, tool.names(tool_registry))
+      render_prompt(
+        settings,
+        base_policy,
+        pool,
+        tool.names(tool_registry),
+        tool.snippets(tool_registry),
+      )
     }),
   )
   list.each(assembled.warnings, fn(warning) {
@@ -2310,6 +2318,7 @@ fn render_prompt(
   base_policy: policy.SandboxPolicy,
   pool: Pool,
   tools: List(String),
+  available_tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
   let #(guidance, notes) =
     system_prompt.guidance(workspace: settings.workspace, home: settings.home)
@@ -2326,6 +2335,7 @@ fn render_prompt(
       platform: ffi_os.platform(),
       shell: shell_path,
       tools:,
+      available_tools:,
       demand: settings.demand,
       degraded: degraded(pool),
       base_policy:,
@@ -2465,66 +2475,6 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
       <> "host-path scratch of `/` grants read-write over the whole "
       <> "filesystem at that layer whatever the mount layer does"
   }
-}
-
-/// The tool registry: the five core tools, plus the six `agent_*` tools
-/// when this host wired a messaging plane, plus `code_mode` when it wired
-/// a code-mode pipeline, plus `history_search` when its search index
-/// opened.
-///
-/// Registration is gated on the seam existing rather than the tools being
-/// registered unconditionally and refusing at call time, and the reason
-/// is arithmetic rather than tidiness: the wire tool array is built from
-/// this registry, renders ahead of the system prompt, and is the byte
-/// prefix of the provider's cached region — so permanently-refusing
-/// definitions would be paid for on every request of every strand for the
-/// life of the session. A host with none of the three simply has five
-/// tools.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // tool.lookup(serve.registry(option.None, option.None, option.None, None, None), "bash")
-/// ```
-///
-pub fn registry(
-  agency: Option(agent.Agency),
-  code_mode: Option(codemode_tool.CodeMode),
-  history: Option(history_tool.History),
-  memory: Option(remember.Memory),
-  schedules: Option(schedule_tool.Schedules),
-) -> Registry {
-  tool.registry(
-    list.flatten([
-      [
-        bash.tool(),
-        grep.tool(),
-        fs.read_tool(),
-        fs.write_tool(),
-        fs.edit_tool(),
-      ],
-      case agency {
-        None -> []
-        Some(agency) -> agent.tools(agency)
-      },
-      case code_mode {
-        None -> []
-        Some(code_mode) -> codemode_tool.tools(code_mode)
-      },
-      case history {
-        None -> []
-        Some(history) -> [history_tool.tool(history)]
-      },
-      case memory {
-        None -> []
-        Some(memory) -> [remember.tool(memory)]
-      },
-      case schedules {
-        None -> []
-        Some(schedules) -> schedule_tool.tools(schedules, scheduleseam.limits())
-      },
-    ]),
-  )
 }
 
 // How this session reaches its schedule store, or `None` when the

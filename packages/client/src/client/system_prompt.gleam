@@ -119,9 +119,10 @@ pub const max_guidance_file_bytes = 1_048_576
 /// sources by whoever boots. Each field's source, in order: the resolved
 /// `--workspace`; `ffi_os.platform`; the shell jailed commands actually
 /// run under (`exec.SpawnConfig.shell_path`); the tool registry's sorted
-/// names; `serve`'s `--best-effort` demand paired with the `degraded`
-/// feature from a helper's hello; the composed session base policy; and
-/// the session's instruction files, from `guidance`.
+/// names and its ordered prompt snippets; `serve`'s `--best-effort`
+/// demand paired with the `degraded` feature from a helper's hello; the
+/// composed session base policy; and the session's instruction files,
+/// from `guidance`.
 ///
 /// Constructor invariant, and the only one that matters: **every field is
 /// fixed for the life of the session.** Nothing here may be re-read per
@@ -137,6 +138,10 @@ pub type Host {
     shell: String,
     /// The registered tool names (`tool.names`, already sorted).
     tools: List(String),
+    /// The available-tools index: each registered tool's
+    /// `prompt_snippet` in registration order, from `tool.snippets`,
+    /// with the tools carrying none already left out.
+    available_tools: List(String),
     /// The enforcement posture demanded of the helper.
     demand: EnforcementDemand,
     /// Whether a helper's hello advertised `degraded`.
@@ -165,6 +170,7 @@ pub fn environment(host: Host) -> pack.Environment {
     platform: platform(host.platform),
     shell: host.shell,
     tools: host.tools,
+    available_tools: host.available_tools,
     enforcement: enforcement(host.demand, host.degraded),
     network: posture(host.base_policy.network),
     protected_paths: host.base_policy.protected,

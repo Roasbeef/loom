@@ -1322,6 +1322,9 @@ pub fn spawn_tool(agency: Agency) -> Tool {
       <> "The child is a strand in this session with its own context; it "
       <> "sees only the brief you write, so write a complete one. Join it "
       <> "with agent_wait.",
+    prompt_snippet: Some(
+      "`agent_spawn` starts a subagent on a brief and hands back a handle.",
+    ),
     schema: tool.object_schema(
       [
         #(
@@ -1469,6 +1472,9 @@ pub fn wait_tool(agency: Agency) -> Tool {
       <> "deadline, not one after another. A handle that has not settled "
       <> "when the deadline expires comes back pending, which is an answer, "
       <> "not a failure — call again or do other work first.",
+    prompt_snippet: Some(
+      "`agent_wait` joins a list of handles against one deadline.",
+    ),
     schema: tool.object_schema(
       [
         #(
@@ -1705,6 +1711,10 @@ pub fn send_tool(agency: Agency) -> Tool {
     description: "Send a message to your parent or to one of your "
       <> "subagents. It arrives as a durable message on their next "
       <> "checkpoint; this does not wait for a reply.",
+    prompt_snippet: Some(
+      "`agent_send` delivers a message to your parent or to one of your "
+      <> "subagents, to be read once.",
+    ),
     schema: tool.object_schema(
       [
         #(
@@ -1768,6 +1778,10 @@ pub fn note_tool(agency: Agency) -> Tool {
       <> result_note_key
       <> "` is where your final structured result goes, and it is checked "
       <> "against that schema before it is written.",
+    prompt_snippet: Some(
+      "`agent_note` leaves one durable cell on the shared blackboard, under "
+      <> "your own name, notifying nobody.",
+    ),
     schema: tool.object_schema(
       [
         #(
@@ -1805,6 +1819,7 @@ pub fn notes_tool(agency: Agency) -> Tool {
     description: "Read the shared blackboard. Omit the prefix to read every "
       <> "agent's notes in this session; pass one to narrow (for example "
       <> "another agent's strand name).",
+    prompt_snippet: Some("`agent_notes` reads the shared blackboard."),
     schema: tool.object_schema(
       [
         #(
@@ -1848,6 +1863,10 @@ pub fn roster_tool(agency: Agency) -> Tool {
     description: "List your parent and your subagents, with their handles "
       <> "and whether they have finished. Use this when you have lost a "
       <> "handle.",
+    prompt_snippet: Some(
+      "`agent_roster` lists your parent and your subagents with their "
+      <> "handles.",
+    ),
     schema: tool.object_schema([], []),
     replay: tool.Safe,
     execution_mode: tool.Concurrent,

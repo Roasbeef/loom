@@ -59,6 +59,10 @@ pub fn tool() -> tool.Tool {
     name: "grep",
     description: "Search file contents with ripgrep. Returns matching "
       <> "lines as path:line:text plus structured match details.",
+    prompt_snippet: Some(
+      "`grep` searches file contents with ripgrep and answers with "
+      <> "path:line:text plus structured matches.",
+    ),
     schema: tool.object_schema(
       [
         #("pattern", tool.string_property("the regular expression to search")),
@@ -299,6 +303,7 @@ fn render(
       content: [tool.text_block(body)],
       details: Some(details),
       is_error: False,
+      terminate: tool.ContinueRun,
     )
   case blob.bound(ctx, body) {
     Error(_error) -> outcome

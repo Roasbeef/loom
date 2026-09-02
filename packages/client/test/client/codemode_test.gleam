@@ -26,7 +26,6 @@ import broker/framing
 import broker/policy
 import client/agency
 import client/codemode
-import client/serve
 import codemode/artifact
 import codemode/build
 import codemode/codemode as pipeline
@@ -55,6 +54,7 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
 import tools/tool
@@ -591,12 +591,13 @@ pub fn code_mode_is_registered_only_where_a_pipeline_is_wired_test() {
   // definition would be paid for on every request of every strand. A host
   // with no toolchain simply has no `code_mode`.
   assert !list.contains(
-    tool.names(serve.registry(None, None, None, None, None)),
+    tool.names(tool_registry.built_in(None, None, None, None, None)),
     codemode_tool.tool_name,
   )
   let broker_actor = idle_broker()
   let seam = codemode.seam(config_for(broker_actor))
-  let wired = tool.names(serve.registry(None, Some(seam), None, None, None))
+  let wired =
+    tool.names(tool_registry.built_in(None, Some(seam), None, None, None))
   assert list.contains(wired, codemode_tool.tool_name)
   assert list.length(wired) == 6
   broker.stop(broker_actor)

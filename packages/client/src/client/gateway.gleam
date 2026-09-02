@@ -201,7 +201,7 @@ pub fn with_catalog(options: Options, catalog: catalog.Catalog) -> Options {
 ///
 /// ```gleam
 /// // gateway.default_options("sess-01", runtime)
-/// // |> gateway.with_registry(serve.registry(, None))
+/// // |> gateway.with_registry(the_registry_the_effect_wiring_holds)
 /// ```
 ///
 pub fn with_registry(options: Options, registry: Registry) -> Options {

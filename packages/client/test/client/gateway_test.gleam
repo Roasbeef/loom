@@ -9,7 +9,6 @@ import client/gateway
 import client/grants
 import client/protocol
 import client/provider_relay
-import client/serve
 import core/clock
 import core/entry as core_entry
 import core/ids
@@ -28,6 +27,7 @@ import runtime/effects
 import runtime/escalation as durable
 import session/session
 import storage/storage
+import support/tool_registry
 import tools/tool
 
 // --- wiring ----------------------------------------------------------------
@@ -51,7 +51,7 @@ fn start_harness() -> Harness {
 fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
   start_harness_full(
     catalogue,
-    Some(serve.registry(None, None, None, None, None)),
+    Some(tool_registry.built_in(None, None, None, None, None)),
   )
 }
 

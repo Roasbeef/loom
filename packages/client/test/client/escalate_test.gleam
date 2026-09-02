@@ -27,7 +27,6 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/grants
-import client/serve
 import client/summaries
 import client/system_prompt
 import client/wiring
@@ -57,6 +56,7 @@ import runtime/escalation
 import session/session
 import simplifile
 import support/provider as provider_test
+import support/tool_registry
 import tools/codemode as codemode_tool
 
 // --- the harness -----------------------------------------------------------
@@ -252,7 +252,7 @@ fn start(setup: Setup) -> Harness {
       ),
       broker: helperless_broker(),
       broker_timeout_ms: 5000,
-      registry: serve.registry(None, code_mode, None, None, None),
+      registry: tool_registry.built_in(None, code_mode, None, None, None),
       workspace:,
       blob_root: workspace <> "/.blobs",
       // Narrower than `bash` requires: it wants the whole filesystem

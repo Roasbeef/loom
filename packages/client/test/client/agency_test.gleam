@@ -16,7 +16,6 @@
 //// exactly the shape production uses.
 
 import client/agency
-import client/serve
 import core/clock.{type Clock}
 import core/ids
 import core/json
@@ -32,6 +31,7 @@ import runtime/api
 import runtime/effects
 import runtime/lineage
 import session/session
+import support/tool_registry
 import tools/agent.{type Caller, type Handle, Caller}
 import tools/tool
 
@@ -1276,11 +1276,12 @@ pub fn agent_tools_are_registered_only_where_a_plane_exists_test() {
   // region — so six permanently-refusing definitions would be paid for on
   // every request of every strand for the life of the session. An
   // unwired host has five tools, not eleven that mostly refuse.
-  assert tool.names(serve.registry(None, None, None, None, None))
+  assert tool.names(tool_registry.built_in(None, None, None, None, None))
     == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
   let name = process.new_name(prefix: "loom_agency_registry_test")
   let seam = agency.seam(agency.default_config(name, clock.fixed(at: 0)))
-  let wired = tool.names(serve.registry(Some(seam), None, None, None, None))
+  let wired =
+    tool.names(tool_registry.built_in(Some(seam), None, None, None, None))
   assert list.length(wired) == 11
   list.each(agent.tool_names, fn(each) {
     assert list.contains(wired, each)
