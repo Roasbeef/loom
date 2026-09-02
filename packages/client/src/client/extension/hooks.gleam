@@ -40,7 +40,11 @@
 //// `context` and `tool_result` are **not** bus events, because each
 //// extension must see its predecessor's output. They are folds —
 //// `fold_context` and `fold_tool_result` — over the same ordered list,
-//// run on the caller's process. A fold that fails an extension cannot
+//// run on the caller's process, which is the strand driver. There is no
+//// worker between the driver and the invoker there, so the fold's
+//// liveness *is* the invoker's: an `Invoker` must return inside
+//// `deadline_ms` and must never raise, and its own documentation is
+//// where that contract is written down. A fold that fails an extension cannot
 //// remove that extension's handler from the manager (the list lives in
 //// another process), so it discards that one transform and logs; the
 //// next bus event the extension mishandles drops it for good. Two
@@ -197,6 +201,21 @@ pub type HookFailure {
 /// module (`client/extension/hosts`, phase 3 wave A) can be swapped in
 /// at one place. The four positional arguments are the `hook_call`
 /// frame's own fields, in the frame's order.
+///
+/// **An invoker must return inside `deadline_ms`, and must never
+/// raise.** Both halves are load-bearing and neither is checked here,
+/// because neither can be. A handler runs *in the manager's process*,
+/// which is linked to the process that started the bus and has no
+/// rescue — Gleam has no exception handling, so `weft/event_manager`
+/// isolates a handler that says it is `Failed` and cannot isolate one
+/// that raises. And `fold_context`/`fold_tool_result` call an invoker
+/// directly on the strand driver, with no worker between them, so an
+/// invoker that blocks forever blocks that strand. The failure
+/// vocabulary exists so that neither has to happen: a satellite that is
+/// gone, has crashed or has overslept is a `Gone`/`Crashed`/`Deadline`
+/// *value*, and the host is the thing that turns a dead process and an
+/// expired timer into one. `client/extension/hosts.invoke_event` is
+/// held to this contract.
 pub type Invoker =
   fn(String, String, MsgPackValue, Int) -> Result(MsgPackValue, HookFailure)
 
