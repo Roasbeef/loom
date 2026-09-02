@@ -54,9 +54,13 @@ can repair from.
 ## Key Types
 
 - `tools/tool.Tool` — the record every tool is: `name`, `description`,
-  `schema`, `replay` (`ReplaySafety`), `execution_mode`, `requirements`
-  (a function from workspace root to `SandboxPolicy`), and
-  `run: fn(Ctx, JsonValue) -> ToolOutcome`.
+  `prompt_snippet`, `schema`, `replay` (`ReplaySafety`),
+  `execution_mode`, `requirements` (a function from workspace root to
+  `SandboxPolicy`), and `run: fn(Ctx, JsonValue) -> ToolOutcome`.
+  `prompt_snippet` is pi's `promptSnippet`: one line for the system
+  prompt's available-tools index, and `None` omits the tool from that
+  index without making it any less callable — the wire tool array is the
+  authoritative definition and the index is prose.
 - `tools/tool.Ctx` — every seam a tool may touch: workspace root, the
   driver's own coordinates (`strand`, `op_id`, `step_id`,
   `source_index`), base policy and grants, enforcement demand, the
@@ -185,8 +189,20 @@ can repair from.
   disjointness test against `client/memory.pipeline_types` intersects two
   lists rather than comparing two spellings.
 - `tools/tool.ToolOutcome` — text plus `is_error` plus optional typed
-  `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8).
-- `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is total.
+  `details`, mirroring pi's `ToolResultMessage.isError` (pi §3.8), plus
+  `terminate`.
+- `tools/tool.Terminate` (`ContinueRun` | `TerminateRun`) — whether the
+  run ends once this call's batch settles. `success`, `failure` and
+  `with_details` all answer `ContinueRun`, so ending a run is something
+  a tool says rather than something it falls into;
+  `client/wiring.run_tool` converts the answer into the `Bool` on
+  `effects.ToolCompleted`, which is the one place the two vocabularies
+  touch. No built-in answers `TerminateRun`.
+- `tools/tool.Registry` — opaque name → `Tool` lookup; `dispatch` is
+  total. It remembers registration order as well as the table:
+  `names` is sorted (the provider cache's byte prefix), while
+  `registered` and `snippets` read in the order tools were registered,
+  which is the order the prompt's index prints.
 - `tools/hashline.{AnchoredLine, Ref, Hunk, Plan, Stale, ApplyError}` — the
   pure anchor/window/plan core.
 - `tools/blob.Bounded` — the overflow decision plus `{ref, size,
@@ -204,7 +220,7 @@ can repair from.
   `client` (`client/wiring` builds the per-call `Ctx`
   and dispatches through the registry; `client/agency` fills the
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
-  and `client/serve` registers all four families; `client/history` fills
+  and `client/contributions` registers all four families; `client/history` fills
   the `history.History` record and `client/memory` fills the
   `remember.Memory` record),
   `conformance` (the wiring/e2e suites drive the same adapter).

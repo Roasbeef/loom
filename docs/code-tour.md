@@ -90,10 +90,15 @@ after the open.
 The tool registry is assembled next, and what goes into it is decided
 here rather than at call time: the `agent_*` family when a messaging
 plane was wired, and `code_mode` only if this host has the toolchain and
-the build seed code mode needs (§15). One registry serves two masters —
-the effect wiring dispatches through it and the hub validates
-`set_config active_tools` against it — so they must be the same registry
-or the check means nothing.
+the build seed code mode needs (§15). It arrives as a *list of
+contributions* (`client/contributions.gleam`), each naming who it came
+from — a built-in, the code-mode pipeline, or a named extension — and
+`contributions.registry` refuses a name two contributions both claim
+rather than letting the later one win, so nothing installed out of tree
+can redefine what `bash` means. A collision refuses the boot, naming both
+origins. One registry serves two masters — the effect wiring dispatches
+through it and the hub validates `set_config active_tools` against it —
+so they must be the same registry or the check means nothing.
 
 The system prompt is assembled once and pinned into a reserved `prompt/`
 cell, read straight off the store before the open (nothing owns it yet)
@@ -697,7 +702,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1400`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1382`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1407`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -705,10 +710,10 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:1206`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1214`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:367`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:454`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
@@ -983,7 +988,7 @@ for a final answer that stands on its own, with anything that needs shape
 left as notes, which come back attached to the result.
 
 A pack's problems carry a severity, and the split is the point.
-`severity` (`prompt/pack.gleam:388`) calls an unknown placeholder, or a
+`severity` (`prompt/pack.gleam:443`) calls an unknown placeholder, or a
 missing *fragment*, `Corrupting`: the pack names something it does not
 carry, so a section that is present says nothing on some host, and the
 shortfall is invisible in the rendered bytes. A missing *canonical
@@ -1307,7 +1312,8 @@ renders only what it adds, because tool bytes are the byte prefix of the
 provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
-`serve.registry` (`client/serve.gleam`) appends the tool only when
+`contributions.built_in` (`client/contributions.gleam`) contributes the
+tool only when
 `codemode.discover` (`client/codemode.gleam:764`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built

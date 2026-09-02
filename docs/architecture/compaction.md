@@ -228,7 +228,7 @@ here would be answering its own compaction.
 
 The words a summarizer reads live in the `prompt` package, as a second
 pack alongside the system prompt, with its own version identity and the
-same total decoder (`summary_source`, `prompt/default.gleam:253`). It
+same total decoder (`summary_source`, `prompt/default.gleam:264`). It
 carries four sections — a summarization system prompt, an initial
 compaction instruction, an iterative update instruction, a branch-summary
 instruction — plus three fragments the input selects between. The format

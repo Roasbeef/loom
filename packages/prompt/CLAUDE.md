@@ -34,9 +34,14 @@ Editing one must not reprice the other.
   living in Gleam.
 - `prompt/pack.Environment` — opaque; built only through
   `pack.environment(...)`, which trims, sorts and de-duplicates every
-  list field. Workspace, platform, shell, tools, enforcement, network
-  posture, protected paths, repository guidance. Nothing else, and
-  nothing numeric.
+  list field. Workspace, platform, shell, tools, available tools,
+  enforcement, network posture, protected paths, repository guidance.
+  Nothing else, and nothing numeric. `available_tools` — the one-line
+  snippets that become the prompt's tool index — is the single field
+  trimmed and de-duplicated but **not** sorted: its order is the host's
+  registration order, which is fixed for the session and is what a reader
+  wants, so sorting would scatter a host's own tools through the
+  built-ins and hide an unstable registry rather than fix one.
 - `prompt/pack.Enforcement` — `FullyEnforced` / `PlatformEnforced` /
   `DegradedRefusing` / `BestEffort`. Behavioural posture, not a layer inventory; see
   Invariants.
@@ -104,8 +109,11 @@ unrecognized directive is corruption. The cost of that strictness is
 that a body line may not begin with `%%`.
 
 The default system pack carries the canonical sections — `identity`,
-`tool_discipline`, `delegation`, `conduct`, `environment`, `sandbox`,
-`repository_guidance` — plus the fragments the last two select between.
+`tool_discipline`, `available_tools`, `delegation`, `conduct`,
+`environment`, `sandbox`, `repository_guidance` — plus the fragments
+three of them select between. `available_tools` renders the host's tool
+index through the `_available_tools` fragment and disappears entirely on
+a host whose registry offered no snippets.
 `pack.canonical_sections` is the list, in render order, and the shipped
 pack is held against it.
 

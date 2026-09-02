@@ -597,6 +597,12 @@ over one session file. WP-L.
   `ToolRun`. There is deliberately **no** session-wide grant list,
   because a grant that cannot be attributed to the call in hand must
   widen nothing.
+- `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
+  the one conversion across it. `run_tool` always settles as
+  `effects.ToolCompleted`, and its `terminate` is now the outcome's own
+  `tool.Terminate` rather than the hardcoded `False` it was: `terminates`
+  is where `TerminateRun` becomes the `Bool` the frozen effect type
+  carries, and it is the only place the polarity is written down.
 - `client/wiring.{compaction_hooks, recording_summaries}` — the two
   halves of live compaction, separable so a host with its own provider
   surface can run the real ones. `compaction_hooks` builds the whole
@@ -627,12 +633,26 @@ over one session file. WP-L.
   `LOOM_COMPACTION_KEEP_RECENT` override them; settings that cannot
   describe a working compaction disable it rather than firing a
   threshold that prepares nothing.
-- `client/serve.registry(Option(Agency), Option(CodeMode),
-  Option(History))` — the tool registry: five core tools, plus the six
-  `agent_*` tools only when a messaging plane exists, plus `code_mode`
-  only when this host wired a code-mode pipeline, plus `history_search`
-  only when its search index opened, plus `remember` only when the memory
-  session beside the session file opened.
+- `client/contributions.{Origin, Contribution, Collision}` — who
+  contributed a tool (`BuiltIn` | `CodeModeTools` | `Extension(name)`),
+  one origin's ordered tool list, and the refusal when two contributions
+  claim one name.
+- `client/contributions.built_in(Option(Agency), Option(CodeMode),
+  Option(History), Option(Memory), Option(Schedules))` — the host's own
+  contributions: five core tools, plus the six `agent_*` tools only when
+  a messaging plane exists, plus `code_mode` only when this host wired a
+  code-mode pipeline, plus `history_search` only when its search index
+  opened, plus `remember` only when the memory session beside the session
+  file opened, plus the three `schedule_*` tools only when the schedule
+  store did. A plane that is absent contributes nothing, never an empty
+  contribution.
+- `client/contributions.registry(List(Contribution)) ->
+  Result(Registry, Collision)` — the seam an installed extension enters
+  the registry through. Last-registration-wins survives *inside* one
+  contribution; a name two contributions both claim is refused, so an
+  extension can shadow neither a built-in nor a peer. `serve.boot`
+  turns a `Collision` into a boot refusal through
+  `contributions.collision_message`, which names both origins.
 - `client/serve.protecting_index(SandboxPolicy, String)` — the base
   policy with the search index added to `protected`. A security property,
   not hygiene: snippets from that index are read back into *future*
@@ -956,7 +976,10 @@ over one session file. WP-L.
   value — and no numeric field at all, which is the shape all of those
   arrive in. The list fields are sorted and de-duplicated by
   `pack.environment` before they can reach the bytes, for the same reason
-  the tool array is sorted: both sit inside the cached prefix.
+  the tool array is sorted: both sit inside the cached prefix. The one
+  exception is `available_tools`, the prompt's tool index, which is
+  de-duplicated but not sorted: its order is the registry's registration
+  order, which is fixed for the session and is what a reader wants.
 - **A prompt pack refuses loudly or serves; it never disappears.** A pack
   file that cannot be read, does not decode, or renders to nothing stops
   the boot with a worded message naming the file and the fault — a
