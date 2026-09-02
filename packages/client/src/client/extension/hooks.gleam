@@ -44,12 +44,23 @@
 //// worker between the driver and the invoker there, so the fold's
 //// liveness *is* the invoker's: an `Invoker` must return inside
 //// `deadline_ms` and must never raise, and its own documentation is
-//// where that contract is written down. A fold that fails an extension cannot
-//// remove that extension's handler from the manager (the list lives in
-//// another process), so it discards that one transform and logs; the
-//// next bus event the extension mishandles drops it for good. Two
-//// planes, one ordering, and the divergence is written down here rather
-//// than discovered.
+//// where that contract is written down.
+////
+//// A fold that fails an extension cannot remove that extension's
+//// handler from the manager (the list lives in another process), so it
+//// discards that one transform and logs; the next bus event the
+//// extension mishandles drops it for good. Two planes, one ordering,
+//// and the divergence is written down here rather than discovered.
+////
+//// The standing cost of that is one `Gone` per request, per dropped
+//// extension, for the rest of the session: the chain is not mutated, so
+//// a fold keeps asking a satellite that is not there. It is an
+//// immediate answer rather than a round trip — the host knows its
+//// satellite is gone without asking it — so it costs a function call
+//// and a log line, not a deadline. `Gone` is therefore logged at debug
+//// in the folds while `Crashed`, `Deadline` and a refusal stay at warn:
+//// the first is a fact the bus already reported once, and the others
+//// are news.
 ////
 //// ## `agent_settled` has no producer in this wave
 ////
@@ -555,6 +566,20 @@ fn keep(
     Ok(produced) -> produced
 
     Error(Unhandled) -> carried
+
+    // A satellite that is already gone answers `Gone` to every later
+    // request, because a fold does not mutate the chain. The bus warned
+    // once when it dropped the handler; repeating that warning on every
+    // provider request would bury the line that mattered, so this one is
+    // a debug note.
+    Error(Gone) -> {
+      log.debug(bus.logger, "extension.hook.absent", [
+        field.ident(key: "extension", value: extension.name),
+        field.ident(key: "event", value: event),
+        field.text(key: "reason", value: describe(Gone)),
+      ])
+      carried
+    }
 
     Error(failure) -> {
       log.warn(bus.logger, "extension.hook.discarded", [
