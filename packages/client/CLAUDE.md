@@ -740,6 +740,44 @@ over one session file. WP-L.
   reached into the process environment for it would make every test that
   stands a server up read the developer's own `~/.agents/AGENTS.md`.
 
+## Extensions
+
+`client/extension/*` is the install half of the extension design
+(`docs/design-notes/extension-architecture.md`, "Hardening the
+install"). Two rulings shape it: an install fetches a **tree, not a git
+session**, so there is no git client anywhere in the path; and the tree
+it fetches is **untrusted input read outside any jail**, so every reader
+here is total.
+
+- `client/extension/source` — the grammar of what an operator may type.
+  `Source` is `LocalPath | ArchiveUrl | GitHub`; `parse` refuses
+  `git://`, `ssh://`, `git+ssh://`, the scp-style `git@host:path`,
+  `file://` and `http://` by name, with a message that states the three
+  accepted forms. `archive_url` derives codeload's
+  `https://codeload.github.com/<owner>/<repo>/tar.gz/<rev>` (`HEAD` when
+  no revision was named) and refuses a revision paired with an archive
+  URL, because an archive URL already names exactly one tree. `host`
+  extracts the lowercase host the fetch policy allows, refusing userinfo
+  rather than stripping it.
+- `client/extension/archive` — the total tar.gz reader, the local
+  directory walker, and the tree digest. `extract` inflates through
+  `client/internal/ffi_zlib` under `Caps.max_total_bytes`, abandoning
+  the stream the moment it goes over, so a decompression bomb is never
+  materialised; the ustar reader then admits only regular files,
+  directories and pax headers, refusing links, devices, fifos and GNU
+  long-name extensions by name. `from_directory` pushes a real directory
+  through the same collector, additionally refuses a symlink (the root
+  included — `path` is lstat'd before the walk) and a non-regular file,
+  and skips a directory named exactly `.git` so that a working checkout
+  reads as its export. `digest` is
+  lowercase hex SHA-256 (via `tools/blob.ref_for`, the tree's one
+  SHA-256) over a length-prefixed encoding of the sorted files, and is
+  independent of `Tree.root` and `Tree.commit` — which is what lets an
+  install record be re-verified against a tree staged anywhere.
+
+The exact path subset, and why the space and the invisible formatting
+code points are outside it, is stated in `archive`'s module doc.
+
 ## Relationships
 
 - **Depends on**: `core` (json, codec, entries, messages), `session`,
