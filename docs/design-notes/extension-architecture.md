@@ -350,6 +350,38 @@ as a tool reply. Latency is a satellite boot per call, which the hermetic
 build cache already makes acceptable for code mode. A persistent
 per-extension satellite (Decision 3) removes it later.
 
+**What phase 2 built, where it decided something this ruling did not.**
+The shape above is what landed (`client/extension/{policy,seam,dispatch}`,
+and `serve.extension_contributions` for the boot). Four decisions were
+taken along the way and are recorded here rather than in a commit
+message:
+
+- **An escalation approval does not widen an extension.** `tool.Ctx`
+  carries the grants a human approved for the call being dispatched, and
+  a `code_mode` call composes them onto its run phase. An extension does
+  not. The operator approved *this extension* once, at install, having
+  read a manifest; a grant approved mid-run would widen the jail past the
+  terms of that approval, and the two approvals are not the same kind of
+  yes.
+- **A host with no code-mode toolchain registers no extension tools**,
+  and logs why per extension. No `erl` means no satellite to boot, and a
+  definition that can only ever fail still renders into the provider's
+  cached byte prefix on every request — the argument that already gates
+  `code_mode` itself.
+- **Every policy refusal reaches the jail under one denial code.**
+  `cap/net.map_error` sorts on the code alone, so the vocabulary an
+  extension can branch on is "would this policy ever permit this
+  request?" (`not_allowed`, or `network_off` for a manifest with no
+  `[net]`, or `policy` for the per-execution ceiling) against "it was
+  permitted and failed on the wire" (`net_failed`, which is `NetFailed`).
+  The message names which refusal it was; the code is what stops a retry
+  loop.
+- **`redirects`, the request timeout and `trust` are the harness's, not
+  the manifest's.** The ruling names the allowlist, the methods, the size
+  cap, the request ceiling and the secret bindings as manifest keys, and
+  those are exactly the five. An author who could set `trust` could pin a
+  root of their own choosing, so it is not a key and will not become one.
+
 ## Decision 3 (phase 3): a persistent extension satellite, and callbacks
 
 Hooks need the harness to call into the extension: `tool_call` fires on
