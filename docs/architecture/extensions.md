@@ -797,7 +797,7 @@ exit criterion, and it is met.
 
 ## Phases 3 to 5
 
-**Phase 3, planned: a persistent satellite and callbacks.** Hooks need
+**Phase 3, in flight: a persistent satellite and callbacks.** Hooks need
 the harness to call *into* the extension, and `cap_call` only flows
 satellite → broker. Phase 3 adds a `hook_call` frame in the other
 direction over the same authenticated channel, answered by `hook_result`,
@@ -811,9 +811,11 @@ drift, and it is written before the phase starts:
 
 The harness side is built, and it is one `weft/event_manager` per session
 with a handler per installed extension: an ordered list, each holding
-private state (its name, the events it declared, its invoker, how many
-answers it has declined), a broken one dropped and logged while its
-siblings carry on. Notifications (`session_start`, `agent_end`,
+private state (its name, the events it declared, its invoker), a broken
+one dropped and logged while its siblings carry on. An extension is
+broken when its satellite is gone, has crashed or has overslept — and
+also when its answer cannot be read at all, because a verdict nobody can
+parse is not a policy the harness can apply. Notifications (`session_start`, `agent_end`,
 `agent_settled`) are `notify`; the two events that need an answer —
 `before_agent_start`, whose answer is an injection, and `tool_call`,
 whose answer is a verdict — are a `sync_notify` whose event carries a
