@@ -836,7 +836,7 @@ Where each event lands in the harness:
 | `session_start` | `serve.assemble`, once the session's extension hosts are wired |
 | `before_agent_start` | `effects.Hooks.run_start`, appended after the harness's own digests; the text is fenced `<extension name=…>` and attributed by the harness, never by the extension |
 | `context` | `effects.Hooks.context`, a phase-3 slot on the frozen-in-shape hooks record, applied in `runtime/strand_runtime` to the projection a generation attempt is about to send. A transform that grows the context past its allowance is discarded and logged |
-| `tool_call` | `effects.ToolSurface.clear`, **after** the built-in clearance; a `Block` becomes the `ClearanceRefused` the driver turns into the in-band error the model reads, reading `<extension> blocked <tool>: <reason>` |
+| `tool_call` | `effects.ToolSurface.clear`, **after** the built-in clearance; a `Block` becomes the `ClearanceRefused` the driver turns into the in-band error the model reads, reading `<extension> blocked <tool>: <reason>`. A verdict the harness cannot read allows the call in hand and costs the extension its place on the bus, because a gate whose answers do not parse is not a policy |
 | `tool_result` | `effects.ToolSurface.run`, over the settled reply before the driver commits it. The transform is applied by rebuilding the original reply with the hook's content, so `is_error`, `usage`, the timestamp and the call's coordinates stay the harness's — a hook may rewrite what the model reads and may not write the session's accounting |
 | `agent_end` | `effects.Hooks.run_end`, beside the follow-up the harness was already placing |
 | `agent_settled` | nowhere yet; see the design note's table for why it is not faked |

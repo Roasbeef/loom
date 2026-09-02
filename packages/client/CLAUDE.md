@@ -829,6 +829,10 @@ The rest of the path is phase 1's own, and each module is one question:
   silently followed the harness's current idea of the seam. A format-1
   record is refused rather than read with an empty hook list: it cannot
   say whether hooks were approved, and the honest answer is to ask.
+  `readable(text)` is the door discovery uses, and it decodes the
+  version *first* — the full decoder would otherwise reach a format-1
+  file before the version check and report a missing `hooks` field when
+  the fact an operator needs is the version skew.
 - `client/extension/install` — the pipeline, as six steps each returning
   a `Failure` naming its layer: `Fetch`, `Extract`, `Manifest`,
   `Vetting`, `Compile`, `Record`. The fetch and the jailed build are
