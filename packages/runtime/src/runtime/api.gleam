@@ -1444,8 +1444,9 @@ pub const rule_fact_prefix = "rule/"
 /// write-once fired-mark per `{strand, schedule, occurrence}`, which is
 /// the only thing an operator's `[[schedule]]` needs to survive a crash
 /// or a restart; and `schedule/config/…`, one cell per schedule the
-/// model created for itself through the tool seam, overwritten with a
-/// tombstone when it is cancelled. An operator's schedules are never
+/// model created for itself through the tool seam, claimed on its
+/// absence and deleted outright when it is cancelled. An operator's
+/// schedules are never
 /// stored — they are read from `loom.toml` at boot, exactly as rules
 /// are.
 ///

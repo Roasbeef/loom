@@ -56,11 +56,16 @@
 //// # Replay and batching
 ////
 //// `replay: Never` for `schedule_create` and `schedule_cancel` — both
-//// write a durable cell, and a replayed call would write it twice. The
-//// second write is idempotent in effect for `cancel` and would silently
-//// replace a schedule for `create`, which is exactly the kind of quiet
-//// difference a crash should not produce. `schedule_list` reads nothing
-//// durable and is `Safe`.
+//// write a durable cell, and a replayed call would act on it twice. The
+//// host claims a config cell on its absence, so a replayed `create` whose
+//// first attempt landed is refused as `NameTaken` rather than replacing
+//// anything; what replay still cannot make honest is a `create` whose
+//// name was cancelled between the two attempts, which would be admitted
+//// as a fresh schedule the model believes it already has. `cancel`
+//// deletes the cell, and a second deletion is a no-op in effect but a
+//// `NotFound` in answer. Neither is a quiet difference a crash should
+//// produce, so neither replays. `schedule_list` reads nothing durable
+//// and is `Safe`.
 ////
 //// `execution_mode: Exclusive` for the two writers, because two of them
 //// in one batch race for the same ceiling count and one would be refused

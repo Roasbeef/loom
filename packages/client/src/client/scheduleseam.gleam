@@ -34,37 +34,84 @@
 //// ## Why the writes are plain cells and not marked commits
 ////
 //// A fired-mark is written once and must never be written twice, so it
-//// rides inside the admission's own transaction (`runtime/api.Mark`). A
-//// config cell is different: it says a schedule *exists*, it is the only
-//// writer of its own key, and writing it twice with the same value is
-//// indistinguishable from writing it once. So it is an ordinary
-//// `put_reserved_fact`, and the tool is `replay: Never` for the one thing
-//// that ordering cannot fix — a replayed create silently replacing a
-//// schedule the model believes it already has.
+//// rides inside the admission's own transaction (`runtime/api.Mark`) —
+//// the injection it authorizes and the mark land together or neither
+//// does. A config cell has nothing to ride with: it says a schedule
+//// *exists*, this module is the only writer of its key, and no entry is
+//// admitted alongside it. So each write is a fact commit of its own.
 ////
-//// ## The check-then-write gap, and where it is genuinely open
+//// Being alone is not the same as being blind, and neither of these
+//// writes is blind. `create` claims the cell's *absence* through
+//// `api.put_reserved_fact_expecting(expected: None)`, so a name belongs
+//// to whichever writer commits first and the loser is told rather than
+//// erased. `cancel` removes the cell with `api.delete_reserved_fact`
+//// instead of overwriting it with a tombstone, so what a reader of this
+//// prefix walks is the schedules that are live and not every name the
+//// session has ever used (issue #164). The tombstone was there so that
+//// "no such key" and "there was one and it is finished" could be told
+//// apart by hand, and nothing here ever asked: the scanner and the
+//// listing both want the schedules that run today, and a name whose cell
+//// is gone is exactly the free name `create` is hoping for.
 ////
-//// `create` checks for a name collision and for room under the ceiling,
-//// then writes, and the write is a blind `put_reserved_fact` rather than
-//// a compare-and-set.
+//// The two writes interlock, which is why they changed together. Once
+//// `create` commits on the cell's absence, a tombstone left behind by a
+//// cancel would hold the name against every later create for the life of
+//// the session — `decode` refusing the value is no help, because the
+//// claim never looks at it. Retiring the record by deletion is what
+//// keeps a cancelled name reusable.
 ////
-//// Through the **tool** door that gap is closed by scheduling rather than
-//// by the store: both writers are `execution_mode: Exclusive`, so the
-//// strand driver never runs two in one batch, and a strand runs one batch
-//// at a time. Across strands the keys are disjoint, since a strand may
-//// only schedule onto itself.
+//// `schedule_create` stays `replay: Never` all the same. A replay now
+//// meets the claim and refuses instead of replacing, which is an
+//// improvement rather than a licence — a replayed create whose name was
+//// cancelled in between would be admitted honestly, and the model asked
+//// for that schedule once.
 ////
-//// Through the **code-mode** door it is open, and this doc claimed
-//// otherwise until an adversarial review caught it. `codemode/satellite`
-//// runs every `ServedHere` plan on its own process, so a program can fan
-//// out concurrent `schedule.create` calls that all pass the checks before
-//// any of them writes: up to `max_outstanding` over the ceiling, and two
-//// same-name creates that both answer `Created` with the last body
-//// winning — which defeats "creating never silently replaces". The fix is
-//// an expect-absent reserved CAS mapped onto `NameTaken`, tracked as
-//// **issue #162**; it is new `runtime/api` surface rather than a
-//// correction here. Until it lands, do not read the tool door's
-//// serialization as a property of this module.
+//// ## The check-then-write gap, and what is still open
+////
+//// `create` checks for a name collision and for room under the ceiling
+//// before it writes, and the name check is not what makes a name unique.
+//// The write is. `expected: None` commits only while the cell is absent,
+//// and the `FactConflict` a loser gets back is reported as `NameTaken`,
+//// in the same words the pre-check would have used. It also catches the
+//// one collision the pre-check structurally cannot see: a cell
+//// `live_schedules` dropped because it would not decode is a name the
+//// check reports as free, and the claim refuses it anyway rather than
+//// writing over whatever is there.
+////
+//// That ordering is load-bearing because a whole store round trip
+//// separates the checks from the write, and two creates can sit inside
+//// that window. Through the **tool** door they cannot today: both
+//// writers are `execution_mode: Exclusive`, so the strand driver never
+//// runs two in one batch, and a strand runs one batch at a time. Through
+//// the **code-mode** door they can, because `codemode/satellite` runs
+//// every `ServedHere` plan on its own process, so a program can fan out
+//// `schedule.every` calls that all pass the checks before any of them
+//// writes. Until the claim landed, that produced two same-name creates
+//// both answering `Created` with the last body winning — precisely what
+//// "creating never silently replaces" forbids (issue #162). The property
+//// now rests on the commit, on both doors, so the tool door's
+//// serialization is a scheduling convenience rather than the thing
+//// keeping this store honest.
+////
+//// The pre-checks stay, and not out of caution. `name_is_free` also
+//// consults the *operator's* schedules, which live in `loom.toml` and
+//// have no cell for a claim to collide with, so it is the only thing
+//// that can catch a model shadowing an operator's `{target, name}` and
+//// stealing its fired-mark. And a worded refusal reached before any
+//// write is what a model can act on; the conflict is the store saying
+//// the same thing the hard way.
+////
+//// What is genuinely still open is the **ceiling**.
+//// `room_for_one_more` counts live cells, so N concurrent creates that
+//// read the same count all pass it and a program can admit up to
+//// `max_outstanding` schedules past `max_model_schedules`. Nothing here
+//// rests on the exact count: the ceiling bounds the durable footprint
+//// this store can grow to, and each schedule's mandatory expiry bounds
+//// what one of them costs, so over-admission by the width of one batch
+//// is over-admission rather than a broken invariant. Making it exact
+//// needs a durable counter or a claim cell to serialize on — a mechanism
+//// rather than a correction — so it stays written down here instead of
+//// half-built.
 
 import client/agency
 import client/schedule.{type Policy, type Schedule}
@@ -73,6 +120,7 @@ import core/json.{type JsonValue}
 import gleam/erlang/process.{type Name}
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/string
 import runtime/api.{type Runtime}
@@ -245,13 +293,19 @@ fn create(
     strand,
     built.name,
   ))
-  use Nil <- result.try(
-    api.put_reserved_fact(
+
+  // The write is the name's only real claim. `expected: None` commits
+  // only while the cell is absent, so two creates racing through the
+  // checks above cannot both land: the loser hears `NameTaken` instead
+  // of watching its schedule be replaced by the other's body (#162).
+  use _seq <- result.try(
+    api.put_reserved_fact_expecting(
       runtime,
       schedule.config_key(strand:, name: built.name),
       schedule.encode(built),
+      expected: None,
     )
-    |> result.map_error(unavailable),
+    |> result.map_error(fn(error) { claim_refused(error, built.name) }),
   )
 
   // The cell is durable now; the scanner has no reason to look at it
@@ -264,6 +318,29 @@ fn create(
     when: describe_timing(built.timing),
     wake: granted_wake(built.wake),
   ))
+}
+
+// What a failed claim means to the model. `FactConflict` is the arm
+// this door exists for: the cell is there, so somebody holds the name,
+// and the answer is the refusal `name_is_free` would have worded had it
+// been able to see the cell. Every other arm is a store that could not
+// answer at all, which is nothing the model can act on beyond asking
+// again later.
+fn claim_refused(error: api.ApiError, name: String) -> schedule_tool.Refusal {
+  case error {
+    api.FactConflict(..) -> schedule_tool.NameTaken(name:)
+    api.AcceptRejected(..)
+    | api.QueueRejected(..)
+    | api.ReadFailed(..)
+    | api.CommitFailed(..)
+    | api.SessionStolen(..)
+    | api.RaceLost
+    | api.ReservedFactKey(..)
+    | api.UnreservedFactKey(..)
+    | api.EscalationExists(..)
+    | api.EscalationNotFound(..)
+    | api.EscalationWrongStatus(..) -> unavailable(error)
+  }
 }
 
 // `tools` may not depend on `client`, so the door states the two wake
@@ -445,12 +522,19 @@ fn cancel(
     Ok(_sched) -> Ok(Nil)
     Error(Nil) -> Error(schedule_tool.NotFound(name:))
   })
+
+  // Deleted rather than overwritten with a tombstone: no reader of this
+  // prefix asks whether a name was once used, and a marker that said so
+  // would sit in every later scan of it for the life of the session
+  // (#164). A cell that is already gone is a delete that succeeds, so a
+  // second cancel racing this one is refused by the `NotFound` check
+  // above or lands harmlessly.
   use Nil <- result.try(
-    api.put_reserved_fact(runtime, key, schedule.cancelled_value)
+    api.delete_reserved_fact(runtime, key)
     |> result.map_error(unavailable),
   )
 
-  // Nothing breaks without this — the next tick would find the tombstone
+  // Nothing breaks without this — the next tick would find the cell gone
   // on its own — but a cancelled schedule that fires once more before the
   // scanner notices reads as the cancel having failed.
   schedulescan.poke(wiring.scanner)
@@ -461,10 +545,14 @@ fn cancel(
 
 // Every live model-created schedule in the session, keyed by its cell.
 // A cell that does not decode is dropped rather than failing the read:
-// `client/schedule.decode` refuses a cancellation tombstone by design,
-// and it also refuses a schedule stored by an older build under bounds
-// this one has since tightened. Both are "not a schedule that runs
-// today", which is exactly what every caller here is asking.
+// `client/schedule.decode` refuses a schedule an older build stored
+// under bounds this one has since tightened, and anything else that ever
+// appears under this prefix reads the same way. Both are "not a schedule
+// that runs today", which is exactly what every caller here is asking.
+//
+// The drop is also why `create` cannot let this read decide a name: a
+// cell dropped here is a name reported free, and only the claiming write
+// sees what is actually in the store.
 fn live_schedules(
   runtime: Runtime,
 ) -> Result(List(#(String, Schedule)), schedule_tool.Refusal) {

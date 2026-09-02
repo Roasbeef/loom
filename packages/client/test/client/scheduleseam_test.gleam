@@ -20,6 +20,7 @@ import client/schedule
 import client/scheduleseam
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -292,6 +293,39 @@ pub fn creating_never_silently_replaces_test() {
   stop(rig)
 }
 
+// The refusal above is the pre-check's; this is the store's, and the
+// store's is the one the property actually rests on. Reaching it from a
+// serialized test needs a cell the pre-check cannot see, and an
+// undecodable value under the config key is exactly that: `live_schedules`
+// drops it with `filter_map`, so `name_is_free` reports the name free and
+// nothing but the `expected: None` claim is left to refuse. That is the
+// same state a concurrent create leaves behind — a cell written after
+// another create read the prefix and before it wrote — with no second
+// process needed to produce it.
+pub fn the_claim_refuses_a_name_the_precheck_thinks_is_free_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let key = schedule.config_key(strand: "main", name: "poll")
+  let planted = json.String("not a schedule")
+  let assert Ok(Nil) = api.put_reserved_fact(rig.runtime, key, planted)
+    as "the undecodable cell must be planted"
+
+  // The pre-check really does pass: the listing cannot see this cell.
+  assert rig.seam.list(ctx("main")) == Ok([])
+
+  let assert Error(schedule_tool.NameTaken(name: "poll")) =
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))
+    as "the claim must refuse a name the pre-check thought was free"
+
+  // Refused, not overwritten: a blind write would have replaced this.
+  let assert Ok([#(stored_key, stored)]) =
+    api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    as "exactly the planted cell must remain"
+  assert stored_key == key
+  assert stored == planted
+  stop(rig)
+}
+
 // The collision that matters most, because nothing else can catch it: an
 // operator schedule and a model schedule sharing {target, name} would
 // derive the same fired-mark and suppress each other.
@@ -369,6 +403,34 @@ pub fn cancelling_removes_it_from_the_listing_test() {
   let assert Ok(Nil) = rig.seam.cancel(ctx("main"), "poll")
     as "cancelling must succeed"
   assert rig.seam.list(ctx("main")) == Ok([])
+  stop(rig)
+}
+
+// Cancelling deletes the cell rather than writing a marker over it, so
+// create-and-cancel churn under fresh names cannot grow the config prefix
+// — which every tick of the scanner and every seam call reads whole
+// (#164). The re-create at the end is the other half of the same ruling:
+// `create` now commits on the cell's absence, so a marker left in place
+// would hold the name for the life of the session however unreadable it
+// was. This test asserts the representation, deliberately: an earlier
+// build wrote a `json.Null` tombstone into the cell here and passed
+// every test above it.
+pub fn cancelling_leaves_no_cell_behind_test() {
+  let assert Ok(rig) = harness(schedule.ModelSchedulesWake, [])
+    as "the harness must boot"
+  let assert Ok(_created) =
+    rig.seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))
+    as "the schedule must be created"
+  let assert Ok(Nil) = rig.seam.cancel(ctx("main"), "poll")
+    as "cancelling must succeed"
+
+  assert api.reserved_facts(rig.runtime, prefix: schedule.config_key_prefix)
+    == Ok([])
+
+  let assert Ok(again) =
+    rig.seam.create(ctx("main"), every("poll", 120, schedule_tool.SteersOnly))
+    as "the freed name must be claimable again"
+  assert again.name == "poll"
   stop(rig)
 }
 
