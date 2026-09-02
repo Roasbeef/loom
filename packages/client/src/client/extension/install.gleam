@@ -375,7 +375,7 @@ fn build_and_record(
     record.for_install(
       decoded,
       from:,
-      revision: revision(tree, rev),
+      revision: revision(from, tree, rev),
       tree_digest: archive.digest(tree),
       manifest_hash: artifact.manifest_hash,
       allowlist: allowlist(),
@@ -388,15 +388,19 @@ fn build_and_record(
   Ok(Installed(record: written, manifest: decoded, directory:))
 }
 
-// The revision the record pins. An archive that carried one wins; a
-// `--rev` the operator gave is next; a local path has neither and says
-// so, because "local" is a fact about the install rather than a missing
-// value.
-fn revision(tree: Tree, rev: Option(String)) -> String {
-  case tree.commit, rev {
-    Some(commit), _ -> commit
-    None, Some(named) -> named
-    None, None -> record.local_revision
+// The revision the record pins. An archive that carried one wins — a
+// code host's tarball names the commit its `--rev` resolved to, which is
+// what makes a branch install content-addressed — then the operator's own
+// `--rev`. With neither, a local path and a fetched archive are different
+// facts and read differently: one has no revision to have, and the other
+// is pinned by its URL alone.
+fn revision(from: Source, tree: Tree, rev: Option(String)) -> String {
+  case tree.commit, rev, from {
+    Some(commit), _, _ -> commit
+    None, Some(named), _ -> named
+    None, None, source.LocalPath(..) -> record.local_revision
+    None, None, source.ArchiveUrl(..) | None, None, source.GitHub(..) ->
+      record.unpinned_revision
   }
 }
 

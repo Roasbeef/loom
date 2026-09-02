@@ -294,6 +294,48 @@ pub fn a_url_install_is_refused_by_the_fetch_layer_test() {
   assert string.starts_with(install.describe(failure), "fetch:")
 }
 
+/// The fetch path, with the network faked one layer above the client: a
+/// fetcher that hands back a real gzipped tar of the working fixture, and
+/// the same extractor a live fetch would have fed. What is being proved
+/// is that the pipeline reaches the archive at all — the extractor's own
+/// refusals live beside it in `client/extension/archive_test`.
+pub fn an_archive_install_extracts_and_records_test() {
+  let root = fresh_root("archive-install")
+  let bytes = extensions.tarball("hello-main", extensions.hello())
+  let assert Ok(done) =
+    install.run(
+      config(root, fn(_url, _max) { Ok(bytes) }),
+      source.ArchiveUrl(url: "https://example.com/hello.tar.gz"),
+      rev: None,
+    )
+    as "a fetched archive must install"
+  assert done.record.name == "hello"
+
+  // The archive named no commit and the URL already names one tree, so
+  // the URL is the whole of the pin — which reads differently from a
+  // local path, which has no revision to have.
+  assert done.record.revision == record.unpinned_revision
+  assert exists(record.sources(root, "hello") <> "/src/hello/tool.gleam")
+  let assert [installed.Ready(..)] = installed.discover(root)
+    as "an archive install must discover"
+}
+
+/// A fetch that fails is a `Fetch` failure and nothing else: the layer
+/// naming is what makes the difference between "the host was down" and
+/// "your extension is broken" legible to whoever reads it.
+pub fn a_failed_fetch_names_the_fetch_layer_test() {
+  let root = fresh_root("archive-refused")
+  let assert Error(failure) =
+    install.run(
+      config(root, fn(_url, _max) { Error("no route to host") }),
+      source.ArchiveUrl(url: "https://example.com/hello.tar.gz"),
+      rev: None,
+    )
+    as "a fetch that fails must refuse the install"
+  assert install.describe(failure) == "fetch: no route to host"
+  assert !exists(record.directory(root, "hello"))
+}
+
 pub fn a_hostile_fixture_is_refused_by_its_own_layer_test() {
   assert layer_of(extensions.hostile_ffi(), "ffi") == "vetting"
   assert layer_of(extensions.hostile_import(), "import") == "vetting"

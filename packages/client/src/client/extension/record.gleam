@@ -79,8 +79,14 @@ pub const staging_directory = ".staging"
 /// half-decoded.
 pub const format_version = 1
 
-/// What is written when a source names no revision.
+/// The revision a local path records: it has none, and saying so is a
+/// fact about the install rather than a missing value.
 pub const local_revision = "local"
+
+/// The revision a fetched archive records when it carried no commit and
+/// the operator named none. The URL is then the whole of the pin, which
+/// is worth reading differently from `local`.
+pub const unpinned_revision = "unpinned"
 
 /// The extensions root: `<home>/.loom/extensions`.
 ///

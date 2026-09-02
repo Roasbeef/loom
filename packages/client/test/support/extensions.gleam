@@ -33,6 +33,8 @@
 //// Each hostile fixture differs from `hello` in exactly one way, so a test
 //// that passes says which rule caught it rather than that something did.
 
+import gleam/bit_array
+import gleam/int
 import gleam/list
 import gleam/string
 import provider/secret
@@ -262,3 +264,107 @@ fn directory_of(path: String) -> String {
 fn env(name: String) -> Result(String, Nil) {
   secret.lookup(secret.env(), name)
 }
+
+// --- a tar writer, for the fetch path -------------------------------------
+//
+// Only *well formed* archives, which is what makes this a different
+// writer from the one in `client/extension/archive_test`: that one exists
+// to build the shapes an honest `tar` will not write, and every hostile
+// header belongs beside the reader that refuses it. What is wanted here
+// is the opposite — one archive a fetch could really have returned — so
+// duplicating fifty lines beats importing a test module's private
+// vocabulary or widening it into a shared one nobody else needs.
+
+const block = 512
+
+/// A gzipped tar of `files`, under one top-level directory, as a code
+/// host's archive endpoint would return it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let bytes = extensions.tarball("hello-main", extensions.hello())
+/// ```
+///
+pub fn tarball(root: String, files: List(#(String, String))) -> BitArray {
+  let entries =
+    list.map(files, fn(file) {
+      entry(root <> "/" <> file.0, bit_array.from_string(file.1))
+    })
+  gzip(
+    bit_array.concat(
+      list.flatten([[entry(root <> "/", <<>>)], entries, [zeros(block * 2)]]),
+    ),
+  )
+}
+
+// One entry: a checksummed ustar header, the body, and the padding that
+// rounds the body up to a whole block. A trailing `/` in the name is what
+// makes an entry a directory.
+fn entry(name: String, body: BitArray) -> BitArray {
+  let size = bit_array.byte_size(body)
+  let kind = case string.ends_with(name, "/") {
+    True -> "5"
+    False -> "0"
+  }
+  bit_array.concat([header(name, kind, size), body, padding(size)])
+}
+
+fn header(name: String, kind: String, size: Int) -> BitArray {
+  let unchecked =
+    bit_array.concat([
+      text_field(name, 100),
+      octal_field(0o644, 8),
+      octal_field(0, 8),
+      octal_field(0, 8),
+      octal_field(size, 12),
+      octal_field(0, 12),
+      <<"        ":utf8>>,
+      text_field(kind, 1),
+      text_field("", 100),
+      <<"ustar":utf8, 0>>,
+      <<"00":utf8>>,
+      text_field("", 32),
+      text_field("", 32),
+      octal_field(0, 8),
+      octal_field(0, 8),
+      text_field("", 155),
+      text_field("", 12),
+    ])
+  patch_checksum(unchecked, sum(unchecked, 0))
+}
+
+fn patch_checksum(unchecked: BitArray, value: Int) -> BitArray {
+  let assert <<head:bytes-size(148), _blank:bytes-size(8), tail:bits>> =
+    unchecked
+    as "a tar header is 512 bytes with its checksum at offset 148"
+  bit_array.concat([head, octal_field(value, 8), tail])
+}
+
+fn sum(bytes: BitArray, total: Int) -> Int {
+  case bytes {
+    <<value:int-size(8), rest:bits>> -> sum(rest, total + value)
+    _empty -> total
+  }
+}
+
+fn text_field(text: String, width: Int) -> BitArray {
+  let bytes = bit_array.from_string(text)
+  bit_array.concat([bytes, zeros(width - bit_array.byte_size(bytes))])
+}
+
+fn octal_field(value: Int, width: Int) -> BitArray {
+  let padded = string.pad_start(int.to_base8(value), width - 1, "0")
+  bit_array.concat([bit_array.from_string(padded), <<0>>])
+}
+
+fn padding(size: Int) -> BitArray {
+  zeros({ { size + block - 1 } / block * block } - size)
+}
+
+fn zeros(count: Int) -> BitArray {
+  <<0:size(count * 8)>>
+}
+
+@external(erlang, "client_test_ffi", "gzip")
+fn gzip(bytes: BitArray) -> BitArray

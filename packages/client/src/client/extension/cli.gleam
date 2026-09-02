@@ -28,6 +28,7 @@
 //// question is "is this loadable" and the answer was no.
 
 import broker/budget
+import broker/egress
 import broker/exec.{type EnforcementDemand}
 import client/extension/archive
 import client/extension/install
@@ -41,6 +42,7 @@ import codemode/compile
 import codemode/identity
 import core/clock.{type Clock}
 import core/ids
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -64,6 +66,10 @@ https://github.com/<owner>/<repo> URL. Extensions install under
 /// How long the jailed build of an extension may take. The same bound
 /// code mode gives a program's build, because it is the same build.
 pub const build_timeout_ms = 180_000
+
+/// One deadline for the whole archive fetch: connect, TLS, every
+/// redirect hop and the body. Not a per-hop budget.
+pub const fetch_ms = 60_000
 
 /// The step id an install's clearances are accounted under. An install is
 /// not part of any run, so it mints its own operation and names its one
@@ -253,7 +259,7 @@ fn config(
   install.Config(
     root:,
     caps: archive.default_caps(),
-    fetch: unwired_fetch,
+    fetch:,
     build: jailed_build(plane, flags),
     clock: wall_clock(),
     entropy: ffi_os.unique_positive_integer,
@@ -261,17 +267,33 @@ fn config(
   )
 }
 
-// The fetch is not wired in this build. `broker/egress` is the module
-// that will make it, under the one-host policy the ruling describes, and
-// the orchestrator wires `broker/egress` here. Until then a URL source is
-// refused saying so rather than silently falling back to something less
-// policed.
-fn unwired_fetch(url: String, _max_bytes: Int) -> Result(BitArray, String) {
-  Error(
-    "network fetch not wired: "
-    <> url
-    <> " cannot be fetched by this build; install from a local path",
+// The one network-bound step in the whole design, and it runs as the
+// operator outside any jail — so it is a `broker/egress` request under a
+// policy of exactly one host rather than a client of its own. Same
+// mechanism as a jailed extension's own `net.request` (ADR-007): the
+// install path and the extension path share one HTTP surface and one set
+// of caps, so there is one place where "may this request be made" is
+// answered.
+fn fetch(url: String, max_bytes: Int) -> Result(BitArray, String) {
+  use host <- result.try(source.host(url))
+  let policy =
+    egress.one_host(host, max_response_bytes: max_bytes, timeout_ms: fetch_ms)
+  use response <- result.try(
+    egress.request(
+      policy,
+      egress.Request(method: egress.Get, url:, headers: [], body: <<>>),
+      // No credential reaches a public archive fetch, and the policy
+      // binds none — so the resolver is asked nothing and can answer
+      // nothing.
+      secrets: fn(_name) { Error(Nil) },
+    )
+    |> result.map_error(egress.describe),
   )
+  case response.status {
+    200 -> Ok(response.body)
+    other ->
+      Error(url <> " answered " <> int.to_string(other) <> " rather than 200")
+  }
 }
 
 // The extension build is the code-mode build with one call's worth of
