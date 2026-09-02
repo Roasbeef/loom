@@ -208,6 +208,7 @@ pub opaque type Environment {
     platform: String,
     shell: String,
     tools: List(String),
+    available_tools: List(String),
     enforcement: Enforcement,
     network: NetworkPosture,
     protected_paths: List(String),
@@ -224,6 +225,15 @@ pub opaque type Environment {
 /// stability contract hold against a careless caller: two callers that
 /// discovered the same tools in different orders render the same bytes.
 ///
+/// `available_tools` is the one field that is trimmed and de-duplicated
+/// but **not** sorted, and the exemption is deliberate. Sorting exists to
+/// stop a discovery order from reaching the bytes; the snippets have no
+/// discovery order to hide, because they arrive in the order the host
+/// registered its tool contributions, and that order is what a reader
+/// wants — the core tools before whatever a host added to them. A caller
+/// that hands them over in a different order every boot has an unstable
+/// registry, which is a bug that sorting would conceal rather than fix.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -233,6 +243,7 @@ pub opaque type Environment {
 ///     platform: "linux/x86_64",
 ///     shell: "/bin/bash",
 ///     tools: ["grep", "bash", "bash"],
+///     available_tools: [],
 ///     enforcement: pack.FullyEnforced,
 ///     network: pack.NetworkBlocked,
 ///     protected_paths: [],
@@ -246,6 +257,7 @@ pub fn environment(
   platform platform: String,
   shell shell: String,
   tools tools: List(String),
+  available_tools available_tools: List(String),
   enforcement enforcement: Enforcement,
   network network: NetworkPosture,
   protected_paths protected_paths: List(String),
@@ -256,6 +268,7 @@ pub fn environment(
     platform:,
     shell:,
     tools: normalize(tools),
+    available_tools: kept(available_tools),
     enforcement:,
     network: case network {
       NetworkProxied(allow:) -> NetworkProxied(allow: normalize(allow))
@@ -290,6 +303,7 @@ fn non_blank(text: String) -> Option(String) {
 ///     platform: "p",
 ///     shell: "s",
 ///     tools: ["b", "a"],
+///     available_tools: [],
 ///     enforcement: pack.BestEffort,
 ///     network: pack.NetworkOpen,
 ///     protected_paths: [],
@@ -300,6 +314,33 @@ fn non_blank(text: String) -> Option(String) {
 ///
 pub fn tools(environment: Environment) -> List(String) {
   environment.tools
+}
+
+/// The environment's available-tool snippets, in the order they were
+/// given. Exposed for the same reason `tools` is: a caller that assembled
+/// them wants to read back what actually survived the trimming.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let environment =
+///   pack.environment(
+///     workspace: "/w",
+///     platform: "p",
+///     shell: "s",
+///     tools: [],
+///     available_tools: ["`grep` searches.", " ", "`bash` runs."],
+///     enforcement: pack.BestEffort,
+///     network: pack.NetworkOpen,
+///     protected_paths: [],
+///     repository_guidance: option.None,
+///   )
+/// assert pack.available_tools(environment)
+///   == ["`grep` searches.", "`bash` runs."]
+/// ```
+///
+pub fn available_tools(environment: Environment) -> List(String) {
+  environment.available_tools
 }
 
 // Trims, drops empties, sorts, and de-duplicates — the normalization
@@ -313,14 +354,25 @@ fn normalize(values: List(String)) -> List(String) {
   |> list.unique
 }
 
+// The same treatment with the sort left out, for the one field whose
+// order carries meaning. De-duplication still applies: a snippet
+// repeated verbatim is a registry that registered the same tool twice,
+// and printing it twice helps nobody.
+fn kept(values: List(String)) -> List(String) {
+  values
+  |> list.map(string.trim)
+  |> list.filter(fn(value) { value != "" })
+  |> list.unique
+}
+
 // --- names the pack and the renderer agree on ----------------------------
 
 /// The sections a complete pack carries, in the order the design settled
 /// on. `render` uses the pack's own order, not this one; this is the
 /// list `problems` checks a pack against.
 pub const canonical_sections = [
-  "identity", "tool_discipline", "delegation", "conduct", "environment",
-  "sandbox", "repository_guidance",
+  "identity", "tool_discipline", "available_tools", "delegation", "conduct",
+  "environment", "sandbox", "repository_guidance",
 ]
 
 /// The fragments the bindings can select. A pack missing one of these
@@ -330,8 +382,8 @@ pub const canonical_sections = [
 pub const required_fragments = [
   "_enforcement_enforced", "_enforcement_platform", "_enforcement_degraded",
   "_enforcement_best_effort", "_network_blocked", "_network_proxied",
-  "_network_open", "_protected_paths", "_repository_guidance",
-  "_repository_guidance_truncated",
+  "_network_open", "_protected_paths", "_available_tools",
+  "_repository_guidance", "_repository_guidance_truncated",
 ]
 
 /// Every placeholder name a pack may use. The closed list is half of why
@@ -340,8 +392,8 @@ pub const required_fragments = [
 /// visible edits in a file whose module doc says not to.
 pub const binding_names = [
   "workspace", "platform", "shell", "tools", "protected_paths", "network_allow",
-  "repository_guidance_text", "enforcement", "network", "protected",
-  "repository_guidance",
+  "available_tools_list", "repository_guidance_text", "enforcement", "network",
+  "protected", "available_tools", "repository_guidance",
 ]
 
 /// Something wrong with a pack that is not bad syntax: the file decoded,
@@ -826,6 +878,7 @@ pub fn encode(pack: Pack) -> String {
 ///     platform: "linux/x86_64",
 ///     shell: "/bin/bash",
 ///     tools: [],
+///     available_tools: [],
 ///     enforcement: pack.FullyEnforced,
 ///     network: pack.NetworkBlocked,
 ///     protected_paths: [],
@@ -864,6 +917,7 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
       #("tools", join(environment.tools)),
       #("protected_paths", join(environment.protected_paths)),
       #("network_allow", join(allowed_hosts(environment.network))),
+      #("available_tools_list", snippet_list(environment.available_tools)),
       #("repository_guidance_text", guidance_text(pack, environment)),
     ])
   let selected = [
@@ -875,6 +929,10 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
     #("protected", case environment.protected_paths {
       [] -> ""
       _ -> fragment(pack, "_protected_paths", literal)
+    }),
+    #("available_tools", case environment.available_tools {
+      [] -> ""
+      _ -> fragment(pack, "_available_tools", literal)
     }),
     #("repository_guidance", case environment.repository_guidance {
       None -> ""
@@ -929,6 +987,17 @@ fn body(pack: Pack, name: String) -> Result(String, Nil) {
 
 fn join(values: List(String)) -> String {
   string.join(values, ", ")
+}
+
+// The available-tools index, one snippet per line as a bullet. The
+// bullet lives here rather than in each tool's snippet so that a host
+// contributing a tool decides what its line says and never how the list
+// looks; a snippet is a sentence, and the pack owns the layout around
+// it.
+fn snippet_list(snippets: List(String)) -> String {
+  snippets
+  |> list.map(fn(snippet) { "- " <> snippet })
+  |> string.join("\n")
 }
 
 // Repository guidance is project-authored data, not the operator's

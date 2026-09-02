@@ -407,6 +407,22 @@ and the deadline bounds that.
 All four phases are commissioned; phase 2 is the milestone the user
 named and phase 4 exists so that the design does not say "never".
 
+**Phase 5, named but not commissioned: LSP and DAP as extensions.** A
+language server or a debug adapter is a long-lived JSON-RPC process over
+stdio plus a small tool set (`lsp_definition`, `lsp_references`,
+`lsp_diagnostics`; `dap_launch`, `dap_breakpoint`, `dap_continue`,
+`dap_evaluate`), and nothing in it touches the TCB, so the extension
+route is the better home for both than a core tool (#26). Phase 3's
+persistent satellite is the piece that makes it possible: the server
+process outlives one call as a child the extension starts from
+`session_start` through `cap/proc`, in the jail, seeing only the
+workspace roots and no network. What the plan does not yet contain is a
+grant for binaries: the jail's readable roots would need the toolchain
+and the policy would need to name which commands the extension may run,
+a `[proc]` table in the manifest beside `[net]`, with the same
+per-execution ceiling shape. `cap/lsp` exists today as an allowlisted
+stub, and this route retires it.
+
 Phases 1 and 2 touch `broker`
 (serving `net.request`), `codemode` (a third seam and its router arm),
 `client` (discovery, install records, the registry as a list, dispatch),

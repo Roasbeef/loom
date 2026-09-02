@@ -556,6 +556,10 @@ pub fn read_tool() -> tool.Tool {
       <> "Use offset/limit to window large files; anchors are what fs_edit "
       <> "hunks must reference, and the details carry the file digest "
       <> "fs_edit requires.",
+    prompt_snippet: Some(
+      "`fs_read` reads a text file as anchored lines, which is where an "
+      <> "edit's anchors come from.",
+    ),
     schema: tool.object_schema(
       [
         #("path", tool.string_property("file path under the workspace root")),
@@ -742,6 +746,7 @@ pub fn write_tool() -> tool.Tool {
     name: "fs_write",
     description: "Create or overwrite a whole file with the given content. "
       <> "Parent directories are created as needed.",
+    prompt_snippet: Some("`fs_write` creates or replaces a whole file."),
     schema: tool.object_schema(
       [
         #("path", tool.string_property("file path under the workspace root")),
@@ -836,6 +841,10 @@ pub fn edit_tool() -> tool.Tool {
       <> "fs_read's details; each hunk references lines by the {line, anchor} "
       <> "pairs from fs_read. A stale anchor or a changed file rejects the "
       <> "whole edit and returns fresh anchors and the fresh digest.",
+    prompt_snippet: Some(
+      "`fs_edit` applies anchored hunks to a file, and rejects the patch "
+      <> "rather than corrupting a file that moved under you.",
+    ),
     schema: edit_schema(),
     replay: tool.Safe,
     execution_mode: tool.Exclusive,

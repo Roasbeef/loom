@@ -45,6 +45,7 @@ import runtime/effects
 import session/session
 import simplifile
 import support/provider as provider_test
+import support/tool_registry
 import tools/tool
 
 const root = "build/system-prompt-test"
@@ -57,6 +58,9 @@ fn host() -> system_prompt.Host {
     platform: #("linux", "x86_64-pc-linux-gnu"),
     shell: "/bin/sh",
     tools: ["bash", "fs_read", "grep"],
+    available_tools: [
+      "`bash` runs a shell command.", "`grep` searches file contents.",
+    ],
     demand: exec.FullEnforcement,
     degraded: False,
     base_policy: policy.SandboxPolicy(
@@ -165,6 +169,33 @@ pub fn protected_paths_appear_only_when_the_policy_has_them_test() {
   assert string.contains(text, "/work/.env, /work/.git")
 }
 
+// --- the available-tools index ---------------------------------------------
+
+pub fn the_index_carries_the_registrys_snippets_in_order_test() {
+  // The whole path, end to end: what `tool.snippets` reads off the
+  // registry is what an operator finds in the assembled prompt, in the
+  // order the contributions were registered rather than sorted.
+  let registry = tool_registry.built_in(None, None, None, None, None)
+  let text =
+    rendered(
+      system_prompt.Host(..host(), available_tools: tool.snippets(registry)),
+    ).text
+  let assert Ok(#(_before, index)) = string.split_once(text, "one line each")
+    as "the shipped pack must carry the available-tools fragment"
+  let assert Ok(bash_at) = string.split_once(index, "`bash` runs")
+    as "the index must name bash"
+  let assert Ok(edit_at) = string.split_once(index, "`fs_edit` applies")
+    as "the index must name fs_edit"
+  // `bash` is registered first and `fs_edit` last, so the text before
+  // the `fs_edit` line is the longer of the two prefixes.
+  assert string.length(bash_at.0) < string.length(edit_at.0)
+}
+
+pub fn a_host_with_no_snippets_renders_no_index_test() {
+  let text = rendered(system_prompt.Host(..host(), available_tools: [])).text
+  assert !string.contains(text, "one line each")
+}
+
 // --- byte stability --------------------------------------------------------
 
 pub fn the_same_host_renders_the_same_bytes_test() {
@@ -184,7 +215,7 @@ pub fn the_shipped_prompt_is_complete_and_affordable_test() {
   // Nothing to warn about: the shipped pack carries every canonical
   // section and every fragment, and spells every placeholder right.
   assert rendered.warnings == []
-  assert rendered.version == "loom-default-3"
+  assert rendered.version == "loom-default-4"
   assert rendered.digest == pack.fingerprint(default.source)
   // Every byte here is paid on every request of every strand for the life
   // of the session. The bound is loose; it is here to make a prompt that

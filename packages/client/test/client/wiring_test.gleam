@@ -20,7 +20,6 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/grants
-import client/serve
 import client/summaries
 import client/system_prompt
 import client/wiring
@@ -47,6 +46,8 @@ import provider/stream
 import runtime/effects
 import session/session
 import support/provider as provider_test
+import support/tool_registry
+import tools/tool
 
 // --- fixtures --------------------------------------------------------------
 
@@ -117,7 +118,7 @@ fn helperless_broker() -> broker.Broker {
   broker_actor
 }
 
-// The registry is production's own (`serve.registry(, None)`), so a tool that
+// The registry is production's own (`contributions.built_in`), so a tool that
 // stops being registered breaks these tests rather than silently
 // changing what a request advertises.
 fn config() -> wiring.Config {
@@ -142,7 +143,7 @@ fn config() -> wiring.Config {
     ),
     broker: helperless_broker(),
     broker_timeout_ms: 1000,
-    registry: serve.registry(None, None, None, None, None),
+    registry: tool_registry.built_in(None, None, None, None, None),
     workspace:,
     blob_root: workspace <> "/.blobs",
     base_policy: policy.workspace_default(workspace),
@@ -720,4 +721,60 @@ pub fn tool_context_drops_an_undecodable_grant_test() {
   let junk = json.Object([#("grant", json.String("teleport"))])
   let ctx = wiring.tool_context(config(), tool_run([junk, approved]))
   assert ctx.grants == [policy.GrantEnv(name: "PATH")]
+}
+
+// --- a tool that ends the run ---------------------------------------------
+
+// A tool whose whole point is the answer under test. `run_tool` never
+// inspects a tool beyond dispatching it, so the smallest possible one is
+// also the most honest fixture.
+fn terminating_tool(terminate: tool.Terminate) -> tool.Tool {
+  tool.Tool(
+    name: "halt",
+    description: "Ends the run.",
+    prompt_snippet: None,
+    schema: tool.object_schema([], []),
+    replay: tool.Safe,
+    execution_mode: tool.Concurrent,
+    requirements: fn(_workspace) { policy.workspace_default("/nonexistent") },
+    run: fn(_ctx, _args) {
+      tool.ToolOutcome(..tool.success("halted"), terminate:)
+    },
+  )
+}
+
+fn halt_outcome(terminate: tool.Terminate) -> effects.ToolOutcome {
+  let config =
+    wiring.Config(
+      ..config(),
+      registry: tool.registry([terminating_tool(terminate)]),
+    )
+  let run = tool_run([])
+  wiring.run_tool(
+    config,
+    effects.ToolRun(..run, call: message.ToolCall(..run.call, name: "halt")),
+  )
+}
+
+// The conversion this boundary exists for. `terminate` has been on
+// `MessageEntry` and in the planner since WP-D with nothing upstream able
+// to set it; a tool saying `TerminateRun` is what finally reaches the
+// frozen effect field as `True`.
+pub fn a_terminating_outcome_reaches_the_effect_as_true_test() {
+  let assert effects.ToolCompleted(result: _, terminate: True) =
+    halt_outcome(tool.TerminateRun)
+    as "a TerminateRun outcome must commit with terminate: True"
+}
+
+pub fn a_continuing_outcome_reaches_the_effect_as_false_test() {
+  let assert effects.ToolCompleted(result: _, terminate: False) =
+    halt_outcome(tool.ContinueRun)
+    as "a ContinueRun outcome must commit with terminate: False"
+}
+
+pub fn terminates_maps_the_two_answers_test() {
+  // The conversion itself, both ways: this is the only place the tool
+  // vocabulary's polarity is written down.
+  assert wiring.terminates(tool.ContinueRun) == False
+  assert wiring.terminates(tool.TerminateRun)
 }

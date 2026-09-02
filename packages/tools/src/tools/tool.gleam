@@ -261,12 +261,37 @@ pub type Ctx {
   )
 }
 
+/// Whether the run this call belongs to carries on after the reply is
+/// committed.
+///
+/// The durable plane already carries the question — `core/entry`'s
+/// `MessageEntry.terminate` and the planner's `CompletedByTerminatedTools`
+/// — but until now nothing upstream could answer it, so the wiring
+/// hardcoded the negative. This is the answer a tool gives, converted at
+/// the `wiring.run_tool` boundary into the `Bool` the frozen effect type
+/// takes. It is a two-variant type rather than a `Bool` because the
+/// polarity of `terminate: False` is exactly the thing a reader of a call
+/// site should not have to hold in their head.
+pub type Terminate {
+  /// The run proceeds: the model sees the reply and plans its next step.
+  ContinueRun
+
+  /// The run reaches a terminal state once this batch settles, if every
+  /// call in it did — the planner's rule, not this tool's alone, so one
+  /// terminating call beside a continuing one ends nothing. Reserved for
+  /// a tool whose whole purpose is to end the operation; every built-in
+  /// answers `ContinueRun`.
+  TerminateRun
+}
+
 /// What a tool call produced: content blocks for the model plus
 /// machine-readable details, exactly the shape WP-E commits as a
 /// `ToolResultMessage`.
 ///
 /// Constructor invariants: `content` is non-empty; `is_error` marks an
-/// in-band failure the model should react to, never a harness fault.
+/// in-band failure the model should react to, never a harness fault;
+/// `terminate` is `ContinueRun` for every built-in, and the constructors
+/// below default it there so that a tool ends a run only by saying so.
 pub type ToolOutcome {
   ToolOutcome(
     /// Content blocks, in the core message vocabulary.
@@ -275,6 +300,8 @@ pub type ToolOutcome {
     details: Option(JsonValue),
     /// Whether this outcome is an in-band failure.
     is_error: Bool,
+    /// Whether the run ends once this call's batch settles.
+    terminate: Terminate,
   )
 }
 
@@ -287,12 +314,24 @@ pub type ToolOutcome {
 /// session base by the broker — ask for exactly what you need, nothing
 /// more); `run` is total — it returns error outcomes, it does not
 /// crash.
+///
+/// `prompt_snippet` is a second, much smaller model-facing surface than
+/// `description`, and the two are paid for on different schedules. The
+/// description travels in the provider's tool array whatever happens; the
+/// snippet is one line in the system prompt's available-tools index, so
+/// it is read before the model has decided to look at any tool at all. A
+/// tool without one is simply absent from that index — pi's rule, adopted
+/// whole — and is still perfectly callable, because the authoritative
+/// definition is the tool array and never the prose.
 pub type Tool {
   Tool(
     /// Unique tool name as the model calls it.
     name: String,
     /// Model-facing description.
     description: String,
+    /// One line for the system prompt's available-tools index, or `None`
+    /// to be omitted from it.
+    prompt_snippet: Option(String),
     /// JSON schema for the arguments, as a core `JsonValue`.
     schema: JsonValue,
     /// Crash-recovery replay safety.
@@ -306,14 +345,18 @@ pub type Tool {
   )
 }
 
-/// A name → `Tool` table.
+/// A name → `Tool` table that also remembers the order it was built in.
 pub opaque type Registry {
-  /// Invariant: `tools` is keyed by each tool's `name`.
-  Registry(tools: Dict(String, Tool))
+  /// Invariants: `tools` is keyed by each tool's `name`, and `order`
+  /// holds every one of those names exactly once, in the order each
+  /// first appeared at registration.
+  Registry(tools: Dict(String, Tool), order: List(String))
 }
 
 /// Builds a registry from a tool list. A duplicated name keeps the
-/// later tool, mirroring "last registration wins".
+/// later tool, mirroring "last registration wins", while the position
+/// stays where the name first appeared: shadowing replaces a definition,
+/// it does not move the tool down the prompt's index.
 ///
 /// ## Examples
 ///
@@ -323,11 +366,15 @@ pub opaque type Registry {
 /// ```
 ///
 pub fn registry(tools: List(Tool)) -> Registry {
-  Registry(
-    tools: list.fold(tools, dict.new(), fn(table, tool) {
+  let table =
+    list.fold(tools, dict.new(), fn(table, tool) {
       dict.insert(table, tool.name, tool)
-    }),
-  )
+    })
+
+  // The order is read off the argument rather than off the table, since
+  // a `Dict` has no order to read; `list.unique` keeps the first
+  // occurrence, which is the position the doc above promises.
+  Registry(tools: table, order: list.unique(list.map(tools, fn(t) { t.name })))
 }
 
 /// Looks a tool up by name.
@@ -356,6 +403,48 @@ pub fn names(registry: Registry) -> List(String) {
   |> list.sort(string.compare)
 }
 
+/// The registered tools in registration order.
+///
+/// Separate from `names` on purpose, and the two orders are not a
+/// redundancy. `names` is sorted because the wire tool array and the
+/// durable active list are the provider cache's byte prefix, and sorting
+/// is what stops a discovery order from reaching those bytes. The prose
+/// index in the system prompt is the other case: an operator reading it
+/// should meet the five core tools before whatever a host bolted on, and
+/// that is the order the contributions arrived in.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let registry = tool.registry([grep.tool(), bash.tool()])
+/// let named = list.map(tool.registered(registry), fn(t) { t.name })
+/// assert named == ["grep", "bash"]
+/// ```
+///
+pub fn registered(registry: Registry) -> List(Tool) {
+  list.filter_map(registry.order, fn(name) { lookup(registry, name) })
+}
+
+/// The available-tools index for the system prompt: each registered
+/// tool's `prompt_snippet`, in registration order, with the tools that
+/// carry none left out.
+///
+/// This is the whole of pi's `promptSnippet` rule. It renders to the
+/// empty list rather than to a placeholder sentence, because a host with
+/// nothing to say here should cost the prompt no bytes at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.snippets(tool.registry([])) == []
+/// ```
+///
+pub fn snippets(registry: Registry) -> List(String) {
+  list.filter_map(registered(registry), fn(tool) {
+    option.to_result(tool.prompt_snippet, Nil)
+  })
+}
+
 /// Runs one call through the registry. An unknown name settles as the
 /// ordinary in-band unavailable-tool result (pi §3.8): `is_error` text,
 /// no `details` — the registry must not invent a value for a tool's
@@ -381,6 +470,7 @@ pub fn dispatch(
         content: [text_block("the tool `" <> name <> "` is unavailable")],
         details: None,
         is_error: True,
+        terminate: ContinueRun,
       )
   }
 }
@@ -396,7 +486,12 @@ pub fn dispatch(
 /// ```
 ///
 pub fn success(text: String) -> ToolOutcome {
-  ToolOutcome(content: [text_block(text)], details: None, is_error: False)
+  ToolOutcome(
+    content: [text_block(text)],
+    details: None,
+    is_error: False,
+    terminate: ContinueRun,
+  )
 }
 
 /// An in-band failure outcome.
@@ -408,7 +503,12 @@ pub fn success(text: String) -> ToolOutcome {
 /// ```
 ///
 pub fn failure(text: String) -> ToolOutcome {
-  ToolOutcome(content: [text_block(text)], details: None, is_error: True)
+  ToolOutcome(
+    content: [text_block(text)],
+    details: None,
+    is_error: True,
+    terminate: ContinueRun,
+  )
 }
 
 /// Attaches machine-readable details to an outcome.

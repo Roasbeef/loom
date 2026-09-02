@@ -26,11 +26,11 @@
 import broker/broker
 import broker/exec
 import broker/token
+import client/contributions
 import client/escalate
 import client/gateway
 import client/grants
 import client/protocol
-import client/serve
 import client/server
 import client/summaries
 import client/system_prompt
@@ -1303,6 +1303,16 @@ fn compaction_wiring(
     |> result.map_error(fn(_) { "the demo broker did not start" }),
   )
   let workspace = "/nonexistent/loom-demo"
+
+  // The demo registers only what the harness compiles in, so the
+  // collision path is unreachable here; it is still threaded rather than
+  // asserted away, because `wiring.Config` is built inside a `Result`
+  // already and a refusal costs one line.
+  use tool_registry <- result.try(
+    contributions.built_in(None, None, None, None, None)
+    |> contributions.registry
+    |> result.map_error(contributions.collision_message),
+  )
   Ok(wiring.Config(
     gateway: demo_gateway(),
     role: model.Main,
@@ -1325,7 +1335,7 @@ fn compaction_wiring(
     ),
     broker: broker_actor,
     broker_timeout_ms: 1000,
-    registry: serve.registry(None, None, None, None, None),
+    registry: tool_registry,
     workspace:,
     blob_root: workspace <> "/.blobs",
     base_policy: policy.workspace_default(workspace),

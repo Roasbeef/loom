@@ -220,6 +220,26 @@ sends it as the reply instead, carrying both `reply_to` and the same
 therefore sees each durable event exactly once whether or not it issued
 the command.
 
+`set_config`'s `active_tools` is checked against the live tool registry,
+which is why the registry the hub holds must be the one the effect wiring
+dispatches through. That registry is built at boot from an ordered list
+of **contributions** (`client/contributions.gleam`), each naming its
+origin: the harness's own built-ins, or an installed extension. Within one contribution a repeated name is the
+author overriding themselves and the later tool wins; *between*
+contributions a repeated name is refused outright and takes the boot down
+with it, naming both origins. That asymmetry is the seam's whole security
+argument — an extension that could register `bash` would silently
+redefine what the model's `bash` call does, and every sandbox argument in
+the tree would be about the wrong function. Each tool may also carry a
+one-line `prompt_snippet`; the registry's snippets, in registration
+order, are the available-tools index in the system prompt, and a tool
+without one is absent from the index while staying perfectly callable
+through the wire tool array. Like the tool array itself, that index is
+fixed at session creation: the prompt is rendered once and pinned, and
+`active_tool_names` is seeded from the same registry at the same moment,
+so installing an extension changes what the *next* session sees rather
+than growing the one already running.
+
 Error codes are `bad_request`, `unknown_session`, `unknown_strand`,
 `unknown_escalation`, `not_pending`, `conflict`, `unsupported`, and
 `internal`. The set is open and clients display unknown codes verbatim,
@@ -558,6 +578,7 @@ real websocket `subscribe` returning a snapshot.
 | `client/catalog.gleam` | The `loom.toml` model catalogue: strict parser, role chains, the provider-gateway builder, name lookups. |
 | `client/grants.gleam` | The bridge between the runtime's stored escalation JSON and typed `broker/policy.Grant`; `first_unwanted`, the approval subset check. |
 | `client/wiring.gleam` | The production effect seam over the real provider gateway, broker, and tool registry. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions, and the collision that refuses a boot. |
 | `client/demo.gleam` | The M3 acceptance flow, driven through the protocol only. |
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
 | `packages/client/protocol.md` | The normative ClientGateway body document. |

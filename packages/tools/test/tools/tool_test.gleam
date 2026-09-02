@@ -6,9 +6,14 @@ import gleam/option.{None, Some}
 import gleam/string
 import support/fake_broker
 import support/memory_fs
+import tools/agent
 import tools/bash
+import tools/codemode
 import tools/fs
 import tools/grep
+import tools/history
+import tools/remember
+import tools/schedule
 import tools/tool
 
 fn ctx() -> tool.Ctx {
@@ -70,6 +75,72 @@ pub fn dispatch_runs_the_named_tool_test() {
       json.Object([#("path", json.String("f.txt"))]),
     )
   assert outcome.is_error == False
+}
+
+pub fn registered_keeps_registration_order_test() {
+  // `names` is sorted for the provider cache's byte prefix; `registered`
+  // is not, because the prompt's index reads in contribution order and
+  // sorting there would scatter a host's own tools through the built-ins.
+  let ordered = tool.registered(full_registry())
+  assert list.map(ordered, fn(each) { each.name })
+    == ["bash", "grep", "fs_read", "fs_write", "fs_edit"]
+}
+
+pub fn snippets_follow_registration_order_and_omit_the_silent_test() {
+  // pi's rule, adopted whole: a tool with no `prompt_snippet` is absent
+  // from the prompt's index and callable all the same, because the
+  // authoritative definition is the wire tool array.
+  let silent = tool.Tool(..fs.read_tool(), prompt_snippet: None)
+  let registry =
+    tool.registry([grep.tool(), silent, fs.write_tool(), bash.tool()])
+  let assert Some(grep_snippet) = grep.tool().prompt_snippet
+  let assert Some(write_snippet) = fs.write_tool().prompt_snippet
+  let assert Some(bash_snippet) = bash.tool().prompt_snippet
+  assert tool.snippets(registry) == [grep_snippet, write_snippet, bash_snippet]
+
+  // Omission from the index is not removal from the registry.
+  let assert Ok(_) = tool.lookup(registry, "fs_read")
+}
+
+pub fn every_built_in_tool_carries_a_snippet_test() {
+  // A built-in with no snippet would be invisible in the prompt's index
+  // while still being on the wire, which is the one inconsistency the
+  // omission rule must not be used to create by accident. Every
+  // constructor in the package is listed, not just the five a bare host
+  // registers, because the twelve behind a plane are the ones nothing
+  // else here would notice losing their line.
+  let every =
+    list.flatten([
+      [
+        bash.tool(),
+        grep.tool(),
+        fs.read_tool(),
+        fs.write_tool(),
+        fs.edit_tool(),
+        history.tool(unused_history()),
+        remember.tool(unused_memory()),
+        codemode.tool_for(unused_code_mode()),
+      ],
+      agent.tools(unused_agency()),
+      schedule.tools(unused_schedules(), unused_limits()),
+    ])
+  assert list.length(every) == 17
+  list.each(every, fn(each) {
+    assert each.prompt_snippet != None
+  })
+}
+
+// --- terminate -----------------------------------------------------------
+
+pub fn outcome_constructors_continue_the_run_test() {
+  // Ending a run is a thing a tool has to say, never a thing it can
+  // fall into: every constructor defaults to `ContinueRun`.
+  assert tool.success("ok").terminate == tool.ContinueRun
+  assert tool.failure("no").terminate == tool.ContinueRun
+  assert tool.with_details(tool.success("ok"), json.Object([])).terminate
+    == tool.ContinueRun
+  assert tool.dispatch(full_registry(), ctx(), "teleport", json.Null).terminate
+    == tool.ContinueRun
 }
 
 pub fn duplicate_name_keeps_later_tool_test() {
@@ -138,4 +209,75 @@ pub fn failure_outcome_maps_to_is_error_message_test() {
       timestamp: 0,
     )
   let assert message.ToolResultMessage(is_error: True, ..) = result
+}
+
+// --- seams the snippet census needs ----------------------------------------
+//
+// Every plane-gated tool is built from a seam record, and the census
+// above wants all seventeen constructors rather than the five a bare
+// host registers. None of these seams is ever called: a `prompt_snippet`
+// is decided when the tool is constructed.
+
+fn unused_refusal() -> String {
+  "this seam is never called"
+}
+
+fn unused_agency() -> agent.Agency {
+  agent.Agency(
+    spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
+    send: fn(_caller, _to, _text) { Error(agent.AgencyUnavailable) },
+    wait: fn(_caller, _handles, _within) { Error(agent.AgencyUnavailable) },
+    note: fn(_caller, _key, _value) { Error(agent.AgencyUnavailable) },
+    notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
+    roster: fn(_caller) { Error(agent.AgencyUnavailable) },
+    max_wait_ms: 1000,
+  )
+}
+
+fn unused_code_mode() -> codemode.CodeMode {
+  codemode.CodeMode(
+    execute: fn(_request) { panic as "the census never runs a program" },
+    seams: codemode.one_seam(
+      codemode.SeamOffer(
+        seam: codemode.WorkspaceSeam,
+        allowed_imports: ["cap/report"],
+        serviced_caps: ["proc.run"],
+        extra_surfaces: [],
+      ),
+    ),
+    default_within_ms: 300_000,
+    max_within_ms: 900_000,
+  )
+}
+
+fn unused_history() -> history.History {
+  history.History(search: fn(_text, _limit, _scope) {
+    Error(history.IndexUnavailable(reason: unused_refusal()))
+  })
+}
+
+fn unused_memory() -> remember.Memory {
+  remember.Memory(remember: fn(_note) {
+    Error(remember.MemoryUnavailable(reason: unused_refusal()))
+  })
+}
+
+fn unused_schedules() -> schedule.Schedules {
+  schedule.Schedules(
+    create: fn(_ctx, _request) {
+      Error(schedule.Unavailable(reason: unused_refusal()))
+    },
+    list: fn(_ctx) { Error(schedule.Unavailable(reason: unused_refusal())) },
+    cancel: fn(_ctx, _name) {
+      Error(schedule.Unavailable(reason: unused_refusal()))
+    },
+  )
+}
+
+fn unused_limits() -> schedule.Limits {
+  schedule.Limits(
+    min_interval_seconds: 60,
+    default_max_fires: 10,
+    max_schedules: 10,
+  )
 }
