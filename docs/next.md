@@ -1,1095 +1,444 @@
 # Next
 
-**Read this first.** It is the handoff between sessions: where the tree
-actually is, what to do next, and the decisions already taken so you do not
-re-litigate them.
+**Read this first.** This is the handoff between sessions: where the tree
+stands against the plan of record, what to work on next, the rulings
+already made so nobody re-litigates them, what is deliberately left open,
+and how to verify a change. Rewrite it when you finish a body of work.
 
-Keep it current. When you finish a body of work, rewrite this file — it is
-worth more than any status comment.
-
----
-
-## `AGENTS.md` instruction files (branch `client/agents-md`)
-
-The system prompt now carries the cross-tool
-[`AGENTS.md`](https://agents.md/) alongside the `CLAUDE.md` it always
-read. `client/system_prompt.discover` fills two slots: the `AGENTS.md`
-instructions — the workspace's own, else the operator's global one under
-`~/.agents` then `~/.loom` — and then the workspace's `CLAUDE.md`. A
-workspace file beats both globals; `AGENTS.md` renders first because it
-is the file every other harness reads and `CLAUDE.md` is the additions to
-it. Each file arrives inside an `<instructions>` fence naming its path
-and an origin of `workspace` or `user-default`, and the default pack's
-`_repository_guidance` fragment (now `loom-default-3`) is written against
-those two words: it tells the model that at most one `user-default` block
-exists and that it is always the first, which is the one claim a project
-file cannot forge by position. Every read warns and continues, per file,
-under the same `max_guidance_file_bytes` bound as before — including
-`HOME` unset, which is the launcher's hard failure degraded to a warning.
-
-**Left open, deliberately.** Nested `AGENTS.md` files in subdirectories
-are not read. The convention's precedence rule is "the closest file to
-the edited file wins", and Loom's prompt assembly has no notion of *the
-files under a path* at all: `Host.guidance` is one string, fixed at
-session open and pinned for the life of the session, and per-edit
-precedence needs a per-tool-call channel instead — a run-start injection
-or a `fs_*` seam, landing after the cached prefix rather than inside it.
-That is a design question about where in the two-channel doctrine
-directory-scoped instructions belong, not a missing `simplifile.read`,
-and it should be answered before anything is built.
+It is deliberately not a history; the git log and the PR bodies carry how
+each change was reviewed. Re-baselined 2026-09-02 against `main` at
+`96232c2`, with every claim below checked against the tree or against a CI
+run rather than carried forward, and the places where the previous edition
+was wrong named as such.
 
 ---
 
-## Weft adoption: issue #159, phases 1 and 2 (branch `weft/managed-adoption`)
+## Where the tree is
 
-The hand-rolled process machinery is on [weft](https://github.com/Roasbeef/weft)
-now, and `docs/weft.md` is the standing guide: which of the five shapes
-maps to which primitive, the rules a port is held to, the rejections that
-stand, and how to extend the library. The survey and the per-site record
-are `docs/design-notes/weft-adoption.md` (status: built through phase 2);
-the checklist is loom#159.
+The plan of record is `docs/issue-plan.md` and its milestone `v0.1 —
+claimed, true, and self-extending`, with the acceptance rows and the
+evidence rule in `docs/loom-implementation-spec.md` Part 4. Phases 1
+through 3 are substantively in the tree. Phase 4, the promotion ladder
+that the milestone's own name calls self-extending, has not been started.
+Phase 5 has not been started either, but the substrate it needs exists.
 
-What is on the branch, in commit order: phase 1 (the strand driver's
-recovery gate on `continuing`, the TUI's guarded startup, the exec helper
-and the code-mode holder on `weft/state_machine`, the conformance
-`attempt` and MCP bring-up on the run engine); phase 2a (`provider/
-custodian` as a witnessed run behind an unchanged API); 2c (the effect
-reaper as a witnessed run, the ledger claim in the driver's continuing
-handler); 2b (the gateway, relay and runtime-custodian guards as state
-machines); the census tail (bounded reads and calls, `postpone` for the
-exec ready-waiters, `weft/poll` for the launcher's waits, `api.
-await_result` and the satellite accept loop, the simulation's starved
-owner); and `loom --config <loom.toml>` for the local launcher, which the
-real-drive verification needed.
+| Phase | Body of work | Where it stands |
+|---|---|---|
+| 1 | Claimed and true (M0–M4), #1–#13 | Code done and CI green; the gate itself is one owner action away (#1). #62 and #99 are answered by measurement and want closing. |
+| 2 | Orchestration seam (M4.5 / WP-N), #20–#24 | Landed. M4.5's row stays `partial` because the sample's fan-out reaches a scripted Agency rather than live children. #24 and #93 are still open. |
+| 3 | Semantic tools, routing, memory (M5), #14, #15, #16, #25–#29 | Routing, session id, the capability router, triggered rules, MCP through code mode and both memory stages are on `main` and tested. #25 and #26 moved to phase 5. #106 stays open on the jail decision. |
+| 4 | Promotion ladder (M6 / WP-M), #18, #30–#33, #100 | Zero. No `packages/ext`, and `ExtensionZone`, `ExtTool`, `ExtHook`, `ExtProjection` and `load_binary` return no hits across `packages/*/src`. |
+| 5 | Language-service tier, #25 (LSP), #26 (DAP) | Not started. The supervised long-lived stdio peer both need is `packages/mcp`'s client and transport, which exist. |
 
-**Dependencies.** The branch was developed against the sibling weft
-checkout as a path dependency and switched back to hex `>= 0.4.0` in its
-last commits, with every manifest relocked and the full gate green on the
-hex resolution. Two things the resolver does not do when a local
-package's requirements change, both hand-patched then and both worth
-knowing next time: the requirement lists of local packages in dependents'
-manifests are not refreshed, and a package that reaches weft only through
-another (`tools`, through `broker`) gets no entry, which presents as
-`weft.app` not found at application start. Phase 1 (PR #160, hex 0.1.0)
-can merge on its own first; its CI red is main's own flake pattern,
-verified against four consecutive main runs.
+### Phase 1: the gate has started closing
 
-**What was measured, so nobody re-argues it.** Weft does not shrink the
-tree: the source moved by +4,046 / −2,855 (net +1,191) across the whole
-adoption, and weft itself grew by 3,300 lines of source and tests, because an exhaustive `case state, message` matrix with every
-unreachable pair written and commented is larger than the recursive
-functions it replaces. What it bought is one owner per race (the ledger,
-the timer book, the cancellation order), a lint census that dropped where
-the ports landed, and 131 library tests for contracts loom kept by hand;
-each port's mutation results are in its commit. Two behaviour changes
-were accepted and are recorded in the design note: owners may hear their
-cancel twice (idempotent by protocol-change/010), and the poisoned
-witness exits with weft's named reason rather than a kill.
+The previous edition said CI had never completed a run and that Landlock
+had never executed anywhere. Both were true when written and both are
+false now.
 
-**Verification that ran.** Every package gate per slice with mutation
-tests; full `make check` at 2a; a 200-seed soak on the 2c tree; a real
-session driven through the terminal against the Baseten catalogue with a
-plain prompt, a sub-agent spawn-and-wait, and a code-mode program in a
-jailed satellite. Re-run the soak and the drive after the hex switch.
+CI completes. The last six merge runs on `main` are green across all four
+jobs: `gate (linux)`, `gate (macos)`, `jail (linux)` and `soak (200
+seeds)`. The `jail (linux)` job runs the sandbox self-test with **nine of
+nine probes ENFORCED and zero skipped**, and the enforcement matrix step
+agrees with `.github/enforcement-expectations`. On that same job the
+applied-layer list printed by `make e2e` and by both code-mode stages
+reads `degraded=False` with `landlock:abi=7` beside `bwrap`, `cgroup-v2`,
+the two rlimits, `no-new-privs` and `seccomp-net`. That is the layer #62
+was filed against, observed rather than asserted.
 
-**One rule the first CI run of the branch taught.** The drain ledger
-installs its monitor when it *handles* a claim, so the pid a claim names
-must still be alive at that moment whatever the driver does in between; a
-pid the ledger first meets as `noproc` reads as a lost reaper, kills the
-ledger, and — it being a significant child — shuts the session tree down,
-which the interleave harness then reports as a run that never converged.
-The old reaper claimed from inside itself; the weft reaper makes the claim
-from a leaf owner the scope adopts before releasing it
-(`strand_runtime.claim_through`), and
-`restart_reap_test.reaper_claim_outlives_a_driver_killed_mid_claim_test`
-pins it. Two-core runners hit the window; a workstation never did.
+Phase 1's remaining work is therefore bookkeeping and one owner action:
 
-**And the rule the macOS gate taught next.** That ordering is worth
-holding, but it is the claim protocol's own guarantee and it cannot be
-the ledger's only defence: on a contended two-core runner the interleave
-harness still lost roughly one run in seventy to a ledger that met a
-claim as `noproc` and shut a healthy session down. `noproc` is what a
-monitor answers about a pid that was already gone, never a reason a
-process exits with, and a claim reaches the ledger as a message, so a
-reaper that drains and exits in that gap can be met no other way.
-`drain_registry.Verdict` now tells the three apart and retires such a
-generation: a weft scope holds itself alive until every effect it adopted
-has exited and says `weft_drain_proof_lost` when it cannot, so a pid met
-as `noproc` provably left nothing running.
-`drain_registry_test.claim_naming_an_already_departed_reaper_retires_it_test`
-pins it, and 280 stressed local runs of `runtime/interleave_test` put the
-`noproc` share of the non-convergences at four of nine failures.
+- **#1** (set `gate-linux` as the required check on `main`) is unblocked
+  and is the last thing the closing criterion names.
+- **#99** ("CI has never completed a run") and **#62** ("nobody has ever
+  run Landlock") both need the measurement posted on them and then
+  closing. Per `docs/execution.md` §6 the correction goes on the issue,
+  not only in a commit.
+- **#155** ("soak (200 seeds) is red on `main`") is a flake rather than a
+  standing red: it has failed once in the last twelve `main` runs. The
+  evidence that is still live is the **nightly long soak**, whose last run
+  failed `make soak` in the `seeds 1001..` and `seeds 1501..` bands while
+  `seeds 1..` and `seeds 501..` passed. Re-scope the issue onto the
+  nightly bands before picking it up.
 
-**Left open, deliberately.** `cap/task` is a clean fit for the run engine
-but `cap` is the satellite-side prelude with no weft dependency; adding
-one puts weft into the offline build seed and is a distribution decision
-(`docs/distribution.md`). Two coverage gaps the ports exposed and did not
-close, because closing them needs a worker pid the API deliberately hides:
-the runtime custodian's consumer-death-withholds-terminal and
-lost-proof-exits-abnormally paths survive mutation on the old code and the
-new alike.
+Part 4's caveat that no CI run had ever completed, and its M2 note that
+Landlock had never executed, are corrected in the same change as this
+file. What they do not do is promote any row: a green gate is the evidence
+the rows were missing, not a re-reading of their acceptance criteria.
 
----
+### Phases 2 and 3: the work landed, some issues did not close
 
-## Weft adoption: phase 3, the two extensions (branch `weft/periodic-and-clock`)
+Everything phases 2 and 3 name is on `main`: the orchestration seam, the
+capability router (`fs.*`, `kv.*`, `report.emit` and `mcp.<server>` all
+served through `codemode/workspace` and `client/mcp`), one canonical
+session id, model routing walking a real fallback chain, triggered rules,
+memory stages M1 and M2, and MCP reached through generated per-server
+capability modules. Three issues stay open over completed work, for
+different reasons:
 
-Two of the three gaps phase 2's census named are closed upstream in weft
-`0.4.1`, and the sites that asked for them have moved. The per-site
-record with the measured line deltas is the phase-3 addendum in
-`docs/design-notes/weft-adoption.md`; `docs/weft.md` is still the
-standing guide and now carries the two new "reach for it" bullets, the
-two sharper rejections, and rule 8.
+- **#106** (MCP through code mode) is **open, and the work is on `main`.**
+  Earlier editions of this file said both "closed on the issue" and "still
+  open on #106", which is how a reader loses trust in a handoff. The truth
+  is that the increment shipped and the issue is held open by one
+  question that was split out of it: whether an MCP server process runs
+  inside a jail (**#109**), which is undesigned rather than unbuilt. Do
+  not close #106 on the strength of the code; close it when #109 has an
+  answer, or close it and let #109 carry the question alone.
+- **#24** (let an approved escalation widen a code-mode execution) is
+  open, and Part 4's M4.5 section records the grant composing onto the run
+  phase and only the run phase as done. Verify against `make e2e-codemode`
+  before closing.
+- **#93** (phase-2 closeout doc pass) is why the README carried false
+  statements about the tree: that the router served only `proc.run`, that
+  triggered rules and hindsight memory did not exist, and, worst, that no
+  MCP server runs anywhere but in the jail. Those are fixed, along with
+  the stale Landlock and #97 claims and Part 4's M4, M5 and CI notes. The
+  rest of #93's sweep over the build and getting-started docs is owed.
 
-**What landed upstream.** `sm.with_periodic_timeout(name:, every:,
-sending:)` and `actor.periodic(every:, sending:)` — a named timeout that
-arms itself again, fixed delay rather than fixed rate, cancelled by name
-with the same generation-stamped flush every other kind gets (weft PR
-Roasbeef/weft#7). And `poll.Clock(now:, sleep:)`, `poll.until_on`,
-`poll.fold_until` and `poll.Interval` — the bounded wait on the caller's
-own time base, with a state threaded through the probe and handed back on
-expiry (weft PR Roasbeef/weft#8, stacked on the first). `until` keeps its
-exact signature; every addition is additive.
+M4.5's row stays `partial` for a real reason and not a doc lag: no single
+run has put a model-written program in front of *live* child strands, and
+by Part 4's own rule a criterion met with a test-supplied substitute is
+not met.
 
-**What moved here.** `broker/exec`'s idle heartbeat and
-`runtime/writer`'s lease renewal are periodic timeouts, and both lost the
-subject they carried purely to have somewhere to `send_after` to.
-`client/escalate.park` and `client/agency.wait_loop` are `weft/poll` on
-the session's clock, adapted by the new `client/internal/timebase`, which
-is where the successor-clock ruling now lives: the successor `core/clock.
-read` hands back is discarded, because `from_function` returns itself and
-re-calls the injected function, and `clock.stepping` cannot serve a loop
-that holds one clock value across many reads.
+### Phase 4 is at zero, and it is the release's named capability
 
-**What did not move, and why it will not.** The strand driver's
-`PollTick` stays on `runtime/effects.Timers` — that is the injection seam
-a simulated session's poll clock runs on, and a periodic timeout is
-`send_after` underneath. `broker.clear_awaiting_helper` stays hand-rolled
-because it charges its budget by subtracting its own nap (so it
-terminates on the `clock.fixed` five of its seven tests wire), stops on a
-retry-admission floor rather than on the deadline, and never clips its
-nap. Both are written up as standing rejections in `docs/weft.md` rather
-than left as unfinished work.
+There is no `packages/ext`, and grepping `packages/*/src` for
+`ExtensionZone`, `ExtTool`, `ExtHook`, `ExtProjection` and `load_binary`
+returns nothing. `docs/issue-plan.md` says M6 is at 0% and that is still
+exactly true. Its hard part was never `code:load_binary` but the TCB
+freeze (#33) plus a recorded adversarial review, so budget for that rather
+than for the loader. The extension ruling below changes the shape of the
+phase: most of what the first extensions need no longer requires the L3
+loader at all.
 
-**The one gap still open upstream:** a monitored, non-panicking call
-against a pre-existing pid (`broker/internal/call.try_call` and its
-siblings). Nothing else in the census wants a primitive weft lacks.
+### Memory: the consumer is live, the producer is inert
 
-**Dependencies, and the CI colour.** The branch develops against the
-sibling weft checkout as a path dependency and switches the seven
-`gleam.toml` files back to `>= 0.4.1 and < 1.0.0` in its last commit.
-weft `0.4.1` is not on hex until the two weft PRs merge and it is
-published, so the loom PR's CI is red until then — that is expected, not
-a failure to chase. The manifest hand-patching phase 2 documented applies
-again: local packages' requirement lists are not refreshed by the
-resolver, and `packages/tools` reaches weft only through `broker` and
-gets no entry of its own.
+The recall half is real and proved: `client/history` and the
+`history_search` tool, the notes digest at `run_start`, the memory store
+and its protected digest sidecar, the `remember` tool, the distillation
+pipeline in `client/distill` with leases, caps, redaction and provenance,
+the erasure cascade, and the structural anti-feedback exclusion, with two
+cross-session proofs in `packages/client/test`.
 
-**Verification.** Every touched package gate green, the full `make check`
-green, and each port mutation-tested per `docs/weft.md` rule 7 with the
-failing tests named in its commit body. The soak and the real Baseten
-drive have **not** been re-run for phase 3; do that before merging if the
-heartbeat or the lease renewal is load-bearing for the release.
+The producer never runs in the shipped product. `import client/distill`
+appears in exactly two files and both are tests; `client/serve` imports
+`client/memory` for the digest read and the `remember` seam, and never
+`client/distill`. `client/distill.main` exists, but no Makefile target, no
+`bin/` shim and no release entry point reach it, so an operator gets
+distillation only from a source checkout. That is **#149**, a release
+blocker, and it is the whole gap between "memory is built" and "memory is
+a product feature".
+
+**#124** is the bug underneath it: provenance is batch-level and a live
+head is exactly one batch, so a cascade over a session that fed the
+current head empties the head outright, and the surviving sources keep
+their high-water cursors, so the pipeline can never rebuild. A test pins
+the loss deliberately.
+
+Memory is also the only subsystem with no `docs/architecture/` page.
 
 ---
 
-## Literate style: R9, R10, R11 (branch `style/literate-gleam`)
+## What to do next
 
-Three house rules that were prose in `docs/gleam-style.md` and enforced by
-nobody are now lint rules, and the guide states them as rules rather than as
-preferences.
+In this order. The first item is a body of work; the rest are smaller and
+can be interleaved by whoever is not on it.
 
-- **R9 `naked-bool`** — a `Bool` in a function parameter or a record field.
-  Return position is deliberately outside the rule: `is_empty(xs) -> Bool` is
-  the predicate `case`, `&&` and `bool.guard` are built to consume, and
-  flagging it would flag the language. Census **223**.
-- **R10 `comment-stanza`** — a comment between two siblings with code on the
-  line directly above it. Siblings are the statements of a body, the arms of
-  a `case`, and the **variants of a custom type** (720 of the original
-  1137 — it is where most of the tree's `///` prose lives). Census was
-  **1137**; it is **0** now, in `src/` and `test/` alike, and the rule
-  **gates**.
-- **R11 `dense-stanza`** — a function whose longest run of statements with
-  no blank line and no comment between any two of them exceeds 8. Census
-  **17**.
+### 1. Extensions: out-of-tree capability that never touches the TCB
 
-R10 gates; R9 and R11 warn. `finding.error_by_default`'s doc comment carries
-the census and the argument for each; `packages/lint/CLAUDE.md` has the
-rules in full. The whole run is `0 errors, 576 warnings` in under two
-seconds.
+`docs/design-notes/extension-architecture.md` carries the argument, the
+vocabulary, the manifest and the phased plan; **ADR-007** records the two
+rulings that outlive it. Both arrive with PR #170, so on a tree where that
+has not merged the two files are a forward reference. This is the next
+body of work and it subsumes most of phase 4.
 
-**The R10 sweep is done and it is worth knowing how it was verified**, because
-the same method applies to the next one. 1137 blank lines went in by script
-rather than by hand — pure whitespace, no judgement, so no agent and no
-model touched a line of code. Then the only authority that could contradict
-the rule was asked: `gleam format --check` passes on all eighteen packages
-afterwards, proving no finding ever demanded a blank line the formatter
-would delete. Every swept package went to exactly 0 with nothing re-firing,
-which is the convergence proof. `make gen-prelude` had to be re-run — `cap`'s
-sources changed — and the regenerated `prelude.gleam` differed only in the
-recorded source digests, which is independent confirmation that the sweep
-did not touch a public surface.
+The acceptance test for the whole of it is a new repository that
+implements web search as an extension: an operator installs it, the model
+has a `web_search` tool it calls directly, and the API key never enters
+the jail and never enters `loom.toml`.
 
-**What is next.** R11's 17 are a small, genuinely interesting sweep —
-`runtime/supervisor.start` is ten `let`s in a wall that reads as three
-stanzas once broken — and unlike R10's they need judgement about where the
-paragraphs go, so they are not scriptable. R9's 223 are the largest and the
-least mechanical of all: each site needs a domain-named two-variant type and
-edits at every construction and match site. Some are frozen Part-1 fields
-(`terminate: Bool`, `from_hook: Bool`) which cost a `protocol-change/NNN.md`
-rather than an edit, and four are irreducible (`core/json`'s `Bool(value:
-Bool)`, `core/msgpack`'s `BoolValue`, `cap/wire`'s `bool`, `core/codec`'s
-`encode_default_false`). R9 is the one where fanning work out across
-packages would actually pay; R10's never would have.
+Four phases, in order:
 
-**Narrowings forced by measurement, none of which may be removed.** R11
-counted `use` chains and reported 57, of which the worst was
-`core/codec.decode_assistant_message` — nineteen `use field <-
-result.try(…)` lines, which is a table of fields and exactly right. A `use`
-binding is now weightless: it carries a run across without lengthening it,
-and the census fell to 17. R10 ignores a comment inside a wrapped literal
-for the same family of reason R2 measures depth on the AST — a comment
-naming one element of a `json.Object([…])` opens no stanza. And R10 reaches
-the variants of a type but **not the fields of a constructor**, because
-`gleam format` preserves a blank line in the first position and deletes it
-in the second. All three have tests from both sides.
+1. **`loom_ext`, the manifest, vetting, install records, `loom ext`.**
+   Exit: installing a fixture extension writes an install record, and a
+   hostile fixture (FFI, a forbidden import, an oversleep at load) is
+   refused naming the layer that caught it.
+2. **Tool registration and jailed dispatch, plus broker-served
+   `net.request` with an allowlist, caps and secret bindings.** Exit: the
+   web-search repository installs and the model calls `web_search` in a
+   real drive, a request outside the allowlist is refused in band, and an
+   end-to-end reads both the jail's environment and every frame on the
+   capability channel and finds no key. **This is the milestone the owner
+   named.**
+3. **Persistent satellite and the `hook_call` frame.** A reverse direction
+   on the capability channel, so it is a `protocol-change/` proposal
+   written before the phase starts, not drift.
+4. **Tier H behaviours, hot load, rollback and the TCB freeze** (#32,
+   #33), only for what phase 3 cannot express.
 
-**Before adding a fourth sibling kind to `lint/layout`, ask the formatter.**
-`gleam format --stdin < probe.gleam` settles in one second whether a blank
-line survives in a given position, and a rule that demands one the formatter
-deletes is unsatisfiable — the worst kind of gate. That check is how the
-field-versus-variant split above was found rather than guessed.
+Phases 1 and 2 touch `broker`, `codemode`, `client`, `tools` and a new
+`packages/ext`, and no frozen Part-1 interface. The promotion ladder's L1
+skill store (#30) and L2 candidate pipeline (#31) become the
+agent-authored on-ramp into the same manifest and the same install record
+rather than a parallel mechanism, and **#100**'s vocabulary work is done
+inside the design note's hook table rather than after it.
 
-## Provider stream ownership (#131)
+Note what this does *not* do: **#144** (provider-backed web search as a
+core tool) is the other answer to the same question and it is a core
+change by construction, because `loom.toml`'s top-level key list, the
+`cap` prelude, its digest-gated description, the vetting allowlist, the
+capability router and `client/serve`'s fixed `registry(...)` signature are
+each a closed literal in this repository. The extension route is the one
+that opens the registry seam. Decide which one #144 becomes before
+building either.
 
-PR #133 (`provider/cancellable-streams`) is rebased on `main` at `9849b3f`.
-It implements #131 across the provider, runtime, and client wrapper boundaries.
-A `StreamHandle` carries an idempotent cancellation capability and an optional
-owner pid; when present, normal owner exit acknowledges that every asynchronous
-descendant has stopped. That pid is a deliberately boring custodian rather
-than a worker that can crash while retaining live children. A custodian
-publishes first, adopts each worker and child owner synchronously, and only
-then permits work to begin. Cancellation closures run on disposable helpers,
-so a faulty closure cannot take the public drain witness with it.
+### 2. Close the phase-1 gate
 
-The operational invariant is stronger than late-result suppression: once a
-strand effect no longer owns a provider request, its runtime worker, client
-relay and observer, fallback guard and pump, native HTTP owner, and dedicated
-request handler must all drain before replacement work begins. Runtime
-timeout, explicit abort, driver restart, worker crash, wrapper death, and
-direct consumer death now propagate along that chain. A bounded grace decides
-whether the public terminal is confirmed or `CancellationUnconfirmed`; it does
-not authorize killing the drain witness. `DrainProofLost` separately records
-an abnormal transitive owner exit; none of these terminal results can advance a
-fallback or retry. Critical callers install a `DrainWitness` before begin, so
-they retain the original exit reason rather than observing a late `noproc`.
-The frozen contract change and race table are in
-`protocol-change/010-provider-stream-cancellation.md`.
+Small, and it is what the milestone's closing criterion actually asks for.
+Post the CI and Landlock measurements on **#99** and **#62** and close
+them, re-scope **#155** onto the nightly soak bands, and set `gate-linux`
+as the required check (**#1**). Part 4's own stale caveats are corrected
+in this change.
 
-The only provider-specific Erlang remains the existing `provider_ffi` shim.
-Gleam cannot selectively receive raw `{http, ...}` tuples, and OTP exposes
-`httpc` cancellation as an asynchronous cast rather than a socket-drain
-acknowledgement. Three small externals prepare, begin, and cancel one native
-owner. The typed transport returns `PreparedRequest(running, begin)`, so its
-raw owner is publishable before `begin` can touch the network. That owner
-disables redirects and automatic retries that could migrate the
-handler behind a stable request id. The manager publishes the request's exact
-handler PID in its protected table before successful admission returns; a
-request-local unlimited handler allowance also prevents this dedicated request
-from entering the manager's queue. The response callback pauses inside the
-handler until the owner acknowledges that its exact monitor is installed, so a
-fast terminal cannot delete that row first. The normal capture path remains one
-O(1) lookup. Any miss enters a deadline-bounded scan which asks `httpc_handler`
-processes for their current request. A busy handler, no match, or an unfamiliar
-private layout keeps recovery inconclusive and the owner alive rather than
-authorizing drain; expiry destroys the witness abnormally. Provider ownership
-above that raw mailbox, fallback, deadlines, and terminal arbitration remain
-typed Gleam.
+One thing to land first, because it is the only red left in the loop: the
+**macOS `runtime` interleave stall**. `gate (macos)` has failed twice in
+the last twelve `main` runs, both times on
+`runtime@interleave_test.abort_interleave_test` timing out inside
+`support/harness.wait_terminal`, with a `process.call` panic from
+`runtime/strand_runtime.claim_through` in the crash dump beside it. The
+cause and the fix are **#171**: the drain ledger read a `noproc` reaper as
+a destroyed drain proof, and the harness counted its wait in sleeps rather
+than in time, so on a loaded runner it never got to say what it thought
+had happened. That PR was open when this was written and may already be
+merged; the ruling it establishes is below.
 
-The runtime closes both ends of its former publication gap. Production exposes
-a `PreparedProviderSurface`; each layer returns a parked `PreparedStream`,
-publishes its custodian to the parent owner, and only then grants the begin
-permit. Route resolution, secret lookup, transport startup, and socket work all
-remain behind that permit. Immediate `ProviderSurface` values remain for
-in-memory fakes which own no external work; they may still use a self-reaping
-in-memory owner to model cancellation. Reaper generations live
-in a drain ledger before the restartable name registry, so a replacement waits
-for the ledger's original monitors to acknowledge every older generation.
-`api.close` captures and monitors the live ledger
-before terminating the root, then releases the lease only for its clean
-normal/OTP-shutdown exit. A missing or killed ledger fails closed and leaves
-the lease to its TTL. Tests pin cancellation
-before begin, startup death, wrapper and gateway worker crashes,
-handler-delayed socket closure, manager replacement, redirect cancellation,
-fast terminal capture, timeout drain, restart ordering, and close/reopen
-exclusion. Shared fixture transports also monitor their preparing process until
-begin transfers custody; failure inside `prepare_streaming` therefore retires
-the parked owner instead of leaving it unpublished.
+### 3. Memory: make the producer run, then fix the cascade
 
-The first cold review and exact-head CI rejected `fd0c9e3`. CI seed 33 proved
-that even a 500 ms wall-clock retry budget could expire while a rest-for-one
-tree was still rebuilding. Intervention admission now retries while the root
-supervisor remains alive; a dead root, rather than scheduler timing, is the
-failure boundary. Review also found that a handler-supervisor restart can
-orphan a live `httpc_handler`, that handler discovery itself introduced
-latency and orphan risks, and that abnormal reaper or transitive-owner exits
-must not count as drain. The corrective pass made exact table capture the normal
-path and distinguishes leaf completion from transitive proof. A second review
-found the fast-terminal deletion race, late monitors in the gateway and
-distiller, and the fixture publication gap; the current callback handshake and
-retained typed witnesses close those paths. The final adversarial pass found
-two more timing assumptions: each late post-cancel delta renewed a relative
-grace timeout, and a replacement installed a fresh monitor after the drain
-ledger returned predecessor PIDs. Cancellation now schedules one deadline per
-layer, while the ledger retains each claim until its original monitors prove
-that exact predecessor snapshot drained. Deterministic delta-flood and
-ledger-barrier tests pin both failures. The replacement initializes before that
-potentially long barrier, while its reaper claims the ledger directly. A
-private PID-bound subject returns the claim and every other incarnation-local
-callback, so the actor can retain an abort request without admitting recovery
-work and a predecessor cannot settle replayed work through the replacement's
-stable name. A negative control restores the old stable-name retry route and
-makes the regression admit a second provider attempt. The same pass found that
-a gateway guard stopped consuming attempt registrations after cancellation
-expired; it now rejects late prepared attempts until the pump exits, preserving
-both transitive ownership publication and bounded drain.
+**#149** first: distillation has to run in the shipped session lifecycle,
+with a release entry point rather than a source checkout. **#124** after
+it, because an unrecoverable cascade matters much more once the pipeline
+is actually producing. A `docs/architecture/memory.md` belongs with the
+first of the two.
 
-Issue #141 is folded into this branch by explicit operator direction. Every
-package now requires Gleam 1.18, the supported runtime floor is OTP 29, and PR
-and nightly CI pin the exact local pair Gleam 1.18.1 plus OTP 29.0.5 (ERTS
-17.0.5). OTP-only compatibility branches and old-style Erlang catches are gone.
-The Linux gate builds and smokes both release profiles so its retained log can
-replace the distribution guide's old OTP 28 measurements with observed OTP 29
-values.
+### 4. After that
 
-The completed focused gates are green: provider 149, runtime 90, client 576,
-and conformance 68. `make check` exits zero, `make e2e-codemode` passes 210
-tests, and the OTP 29 release and both distribution profiles pass their
-no-host-Erlang smoke with the bundled SQLite NIF. The first 200-seed soak
-exposed two one-second ownership-handshake timeouts: under scheduler pressure a
-live reaper could answer late and make a provider effect disappear without a
-terminal. Those handshakes now wait for either their typed acknowledgement or
-the reaper's monitored death, and the complete 200-seed rerun passes.
-
-Three independent cold reviews approved the simplified implementation head
-without a P0, P1, or P2 finding. That final simplification removed native
-accounting which could not truthfully bound `httpc` before delivery and removed
-fragment-local redaction which could not protect secrets split across streamed
-deltas. Issue #147 owns a transport boundary that can bound non-success bodies
-before buffering, and issue #148 owns stateful cross-fragment response
-redaction. Neither limitation weakens #131's cancellation and drain ownership
-contract; keeping them separate avoids claiming security properties the
-current transport does not provide.
-
-The final 2,000-seed Nightly found seed 584 before merge. A fault-free script
-put an abort and a steer at the same logical trigger; because abort is an
-asynchronous cast, Linux closed the run before the synchronous admission while
-macOS admitted the steer first. The simulation now preserves queue-admission
-order and sends same-moment aborts after those admissions, giving its comparison
-oracle one baseline without changing the runtime's abort race. Seed 584 is a
-pinned corpus test.
-
-## Platform-strict enforcement is the production default
-
-PR #134 merged WP-H phase 2 at `5289c4e`. The helper now translates
-`SandboxPolicyV1` into a generated,
-deny-default Seatbelt profile: host-visible reads, parameterized writable
-roots, final protected-path carveouts, private scratch, local capability
-sockets, and no internet access unless the policy grants `NetworkFull`. The
-broker selects the Darwin enforcement matrix from the helper's hello frame,
-and the macOS CI lane runs the live self-test, jailed end-to-end, and code-mode
-end-to-end rather than accepting the former platform skip.
-
-The boundary is deliberately narrower than Linux's. Darwin's finite
-`RLIMIT_AS` is attempted but rejected by current kernels; `RLIMIT_NPROC`
-counts the whole login account and is not installed without a concurrency
-reserve above the existing process count. The sample still races unrelated
-same-user forks. A process-group plus birth-qualified process-table tracker
-reaps descendants it observes after `setsid`, but no PID namespace, subreaper,
-or stable process handle closes the rapid-reparenting and PID-reuse races.
-Output drainage is bounded if a missed descendant retains a pipe. Every
-execution reports those exact gaps, and `FullEnforcement` refuses them. ADR-006
-is the ruling; do not
-turn the passing observed-escape probe into a claim of kernel lifecycle
-containment.
-
-That truthful report exposed the next product bug: the production default also
-selected `FullEnforcement`, so every ordinary Darwin `code_mode` call failed
-before compilation. `PlatformEnforcement` is now the production default. Linux
-remains fully strict. Darwin requires Seatbelt, all enforceable rlimits, and an
-explicit applied-or-skipped report for every layer, but may admit only
-ADR-006's three named gaps. `--full-enforcement` keeps the stronger
-cross-platform contract and `--best-effort` remains the broad development
-override.
-
-The focused broker, prompt, and client gates are green. `make check` also
-passes with its own exit status, including the 208-test real code-mode suite
-under `PlatformEnforcement`, and `make doc-check` reports zero errors. A second
-agent rebased the native eTUI onto `4f5e012`, started a fresh server with no
-enforcement override, and asked K3 to run a minimal `code_mode` program. The
-durable result completed with `platform strict live`; both the build and node
-reported Seatbelt filesystem and network confinement, CPU and file-size
-rlimits, and only ADR-006's three skipped layers. The remaining exit criterion
-was an adversarial review of the exact change.
-
-That review is complete. It found one behavioral defect before the PR: prompt
-bytes were pinned without the enforcement demand that made their sandbox claim
-true, so a resumed session could keep stronger words while booting under a
-weaker demand. `prompt/system` now stores `{text, enforcement}` atomically. A
-same-demand boot reuses the bytes; a changed demand or a legacy string pin
-renders and pins once; a malformed harness-owned record refuses the boot. The
-review also found three stale descriptions of the production default and
-corrected them. The full `make check` gate passes at the reviewed head after a
-transient Hex fetch failure on the first attempt, and `make doc-check` reports
-zero errors.
-
-## Code-mode vetting admits current Gleam syntax
-
-Issue #89's parser split is repaired by raising codemode's Glance floor from
-1.0 to 6.1. The vetter now accepts the labelled-argument shorthand used by
-Loom's own house style, together with the other compiler-valid constructs the
-issue identified. The corpus pins calls, patterns, `assert`,
-`let assert ... as`, `echo`, and string-prefix alias patterns, while a live
-client fixture sends shorthand through vetting and the hermetic compiler. The
-obsolete repair note has been removed so a parse failure no longer teaches a
-restriction that does not exist.
+Phase 5 (**#25** LSP, **#26** DAP) starts from `mcp/client` plus
+`mcp/transport`, which is the supervised long-lived stdio peer both need.
+**#18** (chaos runner and ten-minute soak) is the only test that separates
+a rollback from a leak and so belongs with extension phase 4. **#107**
+(async code mode) sits outside every ladder with its design dossier on the
+issue, awaiting prioritization.
 
 ---
 
-## Native TUI adoption: issue #114
+## Rulings already made
 
-The issue #114 evaluation landed in `packages/tui`, and the native client
-is now the shipped `loom` client. The legacy Go package has been retired while the
-frozen ClientGateway wire and its thirty-five fixtures moved under
-`packages/client`. The client works in a real PTY, attaches to the real gateway,
-opens searchable model and agent overlays,
-and renders assistant CommonMark through Mork into etui spans. Typing `/` now
-opens a prefix-filtered command palette. `/agents` has a real selection cursor;
-Up and Down move it and Enter opens the selected strand's transcript. `/notes`
-keeps the server-injected note digest out of operator speech while retaining an
-explicit inspection surface. Strand switches request that strand's effective
-configuration before replacing the model label, and long agent lists keep the
-selected row inside the inspector viewport.
+Each of these is settled. Re-open one only with new evidence, and record
+the reopening where the ruling lives.
 
-The transcript distinguishes tool calls, results, and failures. Bash calls show
-their command, `apply_patch` calls render a bounded unified diff, and structured
-`code_mode` programs use fenced Gleam rather than escaped JSON. Long prompts
-wrap into a one-to-four-row editor without changing submitted bytes. Page Up,
-Page Down, and the mouse wheel share one clamped tail-relative viewport. The
-footer reports the server's complete usage ledger: input, output, cache
-read/write tokens, and accumulated cost. Active work uses an animated title
-marker rather than relying on the word `thinking` alone.
+**Extensions run jailed by default, and reach the network through the
+broker** (`docs/adr/007-extension-tiers-and-brokered-egress.md`,
+`docs/design-notes/extension-architecture.md`). An installed extension has
+one manifest and up to two bodies. A tool is always jailed; a hook is
+harness-resident only when it cannot be jailed, because the risk is in the
+hooks and not the tools: a tool call is a request the model made and the
+broker judges, while a hook fires on the harness's own timeline with the
+harness's own data in hand. `net.request` is served by the broker making
+the HTTP request on the host under a per-extension policy, so no socket
+ever exists in the jail and the credential is named in configuration, held
+by the harness, and absent from both the jail and the channel.
 
-The historical render cache is now per record. Stable entries keep their
-already-wrapped Mork rows; only the live stream buffer is rewrapped for a new
-fragment. Background-strand deltas no longer invalidate the visible transcript,
-streams accumulate fragments without repeatedly copying their prefix, and
-records are stored newest-first. This closes the history-sized work that was
-visible during streaming. Upstream etui PR
-[#8](https://github.com/lupodevelop/etui/pull/8) adds the same-Buffer diff
-short circuit and state-dependent poll timeout requested in issues #6 and #7.
-The Loom adoption returns the exact cached Buffer term for an unchanged frame,
-polls at 40 ms for 320 ms after activity, and then backs off to 400 ms. A
-matched 120x60 idle sample moved from 5.1-5.4% of one core to below `top`'s
-0.1% display precision; CPU-time growth implies roughly 0.07%, so treat the
-result as a directional greater-than-50x idle reduction rather than a general
-throughput claim. Until upstream merges the PR, the package is temporarily
-pinned to the exact commit on the contributor fork.
+**Process machinery goes through weft, and `docs/weft.md` is the standing
+guide.** Phases 1 through 3 of loom#159 are on `main`: the strand driver's
+recovery gate, `broker/exec` and `codemode/launch` as state machines,
+`provider/custodian` and the effect reaper as witnessed runs, the
+launcher's bounded waits on `weft/poll`, and then weft 0.4.1's periodic
+timeout and injected clock under the broker heartbeat, the writer's lease
+renewal, `client/escalate.park` and `client/agency.wait_loop`. The page
+carries which shape maps to which primitive, the nine rules a port is held
+to, and the standing rejections. Weft does not shrink the tree and nobody
+should expect it to: the adoption measured net +1,191 lines here, because
+an exhaustive `case state, message` matrix with every unreachable pair
+written out is larger than the recursive functions it replaces. What it
+buys is one owner per race.
 
-The footer follows the compact project/status layout used by modern coding
-clients. It discovers the surrounding repository once at startup, showing its
-abbreviated path and branch beside the selected model. At narrower widths it
-reserves a second row for the complete usage ledger and agent status. If those
-sections collide, agent status moves to a third row so etui cannot truncate the
-usage tail first. Repository marker and HEAD reads validate and consume one
-descriptor, accept only regular files up to 4 KiB, and bound displayed refs.
-Expanded tool output also strips complete ANSI CSI and OSC sequences before
-rendering. Malformed sequences stay visibly inert instead of consuming the
-ordinary transcript text after them.
+**The `noproc` claim rule, both halves.** The drain ledger installs its
+monitor when it *handles* a claim, so the pid a claim names should still
+be alive at that moment whatever the driver does in between. The claim is
+therefore made from a leaf owner the scope adopts before releasing it
+(`runtime/strand_runtime.claim_through`), pinned by
+`restart_reap_test.reaper_claim_outlives_a_driver_killed_mid_claim_test`.
+That ordering is the claim protocol's own guarantee and it cannot be the
+ledger's only defence, because a claim reaches the ledger as a message and
+a reaper that drains and exits in the gap can be met no other way.
+`noproc` is what a monitor answers about a pid that was already gone and
+never a reason a process exits with, so the ledger reads it as a departure
+and retires that generation rather than treating it as a lost drain proof
+and taking the session tree down (#171,
+`drain_registry_test.claim_naming_an_already_departed_reaper_retires_it_test`).
+A weft scope holds itself alive until every effect it adopted has exited
+and says `weft_drain_proof_lost` when it cannot, so a pid met as `noproc`
+provably left nothing running. `Killed` and every other abnormal reason
+still fail the session closed.
 
-Websocket startup runs in a monitored, unlinked helper with a five-second
-deadline. A dependency initialiser panic or silent dial becomes a client error
-instead of killing or hanging the terminal; success restores the socket actor's
-link to the caller. The focused package gate passes with 75 tests. Its expected
-panic regression prints an Erlang crash report while proving that the parent
-survives. The repository floor is now Gleam 1.18 and OTP 29, and the package is
-part of root `PACKAGES`. The client release is a separate Erlang shipment. It
-does not bundle a second ERTS, so the terminal host needs compatible OTP 29 on
-`PATH`; the server release remains self-contained.
+**A model-created schedule may steer, but may not wake.**
+`ModelSchedulesSteer` is the default; the addendum in
+`docs/design-notes/scheduled-heartbeats.md` carries the argument. The
+original open default rested on per-schedule expiry bounding the session,
+and **#161** showed it does not: a fresh name is a fresh clock, so a woken
+model can create the next schedule before this one expires, and the
+priority order puts isolation before capability. The tools stay registered
+and a model can still create schedules; none wakes an idle strand unless
+the operator writes `[schedules] model_created = "wake"`. A schedule
+always targets the strand that created it, and `scheduleseam.create`
+refuses a subagent outright until the ownership model in #154 and #163
+exists.
 
-A fresh default-policy session completed the combined eTUI-to-code-mode path on
-Darwin. Both the hermetic build and satellite reported enforced Seatbelt
-filesystem and network confinement plus CPU and file-size limits, with exactly
-ADR-006's three named gaps. Do not replace this proof with `--best-effort`; the
-supported Darwin contract is `PlatformEnforcement`.
+**`AGENTS.md` and `CLAUDE.md` are both read, in that order** (#169).
+`client/system_prompt.discover` fills two slots: the `AGENTS.md`
+instructions, taken from the workspace, else the operator's global under
+`~/.agents` then `~/.loom`, and then the workspace's `CLAUDE.md`. A
+workspace file beats both globals, and `AGENTS.md` renders first because
+it is the file every other harness reads and `CLAUDE.md` is the additions
+to it. Each file arrives in an `<instructions>` fence naming its path and
+an origin of `workspace` or `user-default`, and the default pack tells the
+model that at most one `user-default` block exists and that it is always
+first, which is the one claim a project file cannot forge by position.
+Every read warns and continues under the same byte bound, `HOME` unset
+included.
 
-Image drop is deliberately not smuggled through the text-only command.
-`protocol-change/011-prompt-content-blocks.md` is accepted and adds the
-version-skew-safe `prompt_content` command carrying the existing total
-`UserBlock` codec. The gateway preserves block order and admits exactly one
-durable user message; malformed, empty, or unknown content refuses the whole
-command. The eTUI recognizes one regular PNG, JPEG, GIF, or WebP from terminal
-paste, bounds the read at 20 MiB, keeps local paths off the wire, and leaves
-live-strand steering text-only. One prompt retains at most four images and 20
-MiB of raw image data in aggregate; a monitored one-second read deadline keeps
-a swapped FIFO from blocking the terminal. Package tests cover the classifier,
-bounded reader, ordered wire frame, total decoder, and durable admission. A real
-terminal drag event remains outside the automated harness, so do not mistake
-the protocol and transition coverage for terminal-emulator proof.
+**MCP is code-mode only, and the jail decision is open** (#106, #109).
+Generated per-server capability modules, never a generic
+`cap/tools.invoke` dispatcher: a generic dispatcher does not falsify the
+vetting theorem, it collapses its discriminating power, because the bound
+becomes "the whole registry, for every program". The bound is per server
+and not per tool, deliberately, because a human trusts a server. What
+remains undecided is where the server process runs.
+`mcp/transport.PortTransport` spawns it **unjailed** and its own module
+doc says so: an unjailed spawn there is the production primitive and not
+the final security posture. `docs/architecture/mcp.md` records the jail as
+an open decision. Do not let any document claim otherwise.
 
-Escape still exposes a server-side cancellation boundary beyond this client
-wave. Admission can now send an abort during the prompt-to-live transition, but
-the provider relay, pump, and HTTP transport are not linked to the waiter that
-the runtime kills. Late deltas also lack operation identity at the TUI boundary.
-Treat "the request stopped billing and cannot contaminate its successor" as
-unproved until that runtime lifecycle is repaired and tested.
+**The ledger keys on `{op_id, step_id}`; paths key on `{op_id, step_id,
+source_index}`.** The pair is the batch identity the broker pools on and
+the triple is the execution identity; `source_index` is absent from
+`ExecIdentity` because adding it would mint one ledger per `code_mode`
+call and read the pooled cap as a per-call cap by another door (ADR-005's
+addendum). Relatedly, the abort-epoch table is measured and not pruned,
+because pruning is unsafe in both directions and the dangerous one is
+silent.
 
-Two adoption debts remain explicit. Implement protocol-change/007 approval with
-exact action and grant echo, then sparse-sequence reconnect/catch-up behavior.
-The native terminal end-to-end proves prompt, durable answer, fork, and clean
-detach, but it does not claim approval until the first debt lands. Neither gap
-changes the server's frozen enforcement or replay contracts.
+**A host missing a code-mode prerequisite registers no `code_mode` tool at
+all**, because a tool definition is a byte prefix of the provider's cached
+region, paid on every request of every strand for the session's life. Code
+mode itself ships in the main release artifact with `DIST_CODEMODE=0` as
+the opt-out (`docs/distribution.md`).
 
----
-
-## Local client bootstrap and session switching
-
-PR #150 is on `main` at merge commit `dd84063`. The shipped `loom` client is
-the one-command local entry point without merging the client and server. A
-canonical workspace maps to a private session under `~/.loom`; an authenticated
-protocol-v1 snapshot reuses the recorded loopback endpoint, while an OS file
-lock selects one detached server for a cold start. A second invocation
-reconnects to the same server after the first terminal exits. Explicit
-`--addr` attachment and `--demo` are unchanged, and no frozen interface moved.
-
-The launcher treats workspace content as data, not launch authority. It does
-not load a repository `loom.toml`, runs the server from private state rather
-than the workspace, and pins a sibling installed `loom-exec` when present.
-Endpoint version 2 pairs the server pid with a Darwin or Linux process birth
-identity, so pid reuse replaces a stale record while a temporarily slow copy of
-the original server is retried and preserved. The session-name derivation is
-byte-for-byte aligned with the server's first-dot rule, including `.db` and
-multi-dot paths.
-
-Branch `client/session-switcher` adds the interactive half. `/sessions` lists
-statically validated endpoint records from the active private state root, then
-resolves the selected workspace and database through the complete bootstrap
-path. Resolution, optional daemon startup, and replacement websocket startup
-run as one `weft` task under `weft.start_detached` with a 90-second deadline,
-enough for the launch lock, daemon start, and probes resolve can run in
-sequence; the terminal pulls the outcome once per tick with a zero wait. The
-terminal keeps the old session usable until it adopts the new socket, swaps to
-a fresh mailbox, and closes the prior connection. Each attempt is its own run,
-so an expired attempt cannot be adopted by a later switch, and weft's deadline
-kills and joins the task before the timeout is delivered. Late frames from the old socket cannot mutate the new session projection.
-A fresh full snapshot remains the authority after every switch. The selector
-uses and displays the canonical database path as identity, keeping databases
-distinct even when the server derives the same short session name from both.
-
-The selector is deliberately local. Explicit remote attachments have no
-authority to enumerate sibling sessions, and gaining that ability would need a
-separate authenticated server API. No ClientGateway command or event changed
-for this branch. The new `tui/sessions` module owns the overlay, the detached
-run, and replacement-attachment state instead of adding another presentation
-domain to the already-large `tui.gleam` module.
-
-`make e2e-client-bootstrap` builds the real Erlang shipment, resolves a
-`multi.part.db` session twice through the native Gleam bootstrap, discovers its
-launcher record, opens plus adopts a replacement websocket, and drains the
-replacement's full snapshot from the adopted inbox in the adopting process.
-This proves authenticated readiness, same-pid reuse, manual replacement
-attachment, and process-group cleanup. The focused `make check-tui` gate
-passes 96 tests; the expected panic regression prints an Erlang crash report
-while proving the terminal process survives.
-
-Review of the first draft found that the worker created the replacement frame
-inbox itself. A `Subject` delivers to its creator, so the new session's frames
-went to the worker and the terminal panicked on its first receive after
-adoption; every gate was green because nothing drained the adopted inbox. The
-fix creates both attempt mailboxes in the terminal and has the worker return a
-private outcome that names no inbox, so the module has one `new_inbox` call
-site. The same pass found that a literal `0` monotonic deadline is decades in
-the future on BEAM, so the deadline tests now derive an expired deadline from
-the clock, and that an undecodable endpoint filename would have crashed
-`/sessions`; the Erlang listing now omits such entries.
-
-Driving the shipped client by hand through two cold-started daemons found
-three more. The selector wrapped canonical paths, so one entry's detail line
-consumed the next entry's rows; rows now render unwrapped with each path cut
-to its tail. Switching to a session whose daemon had died made bootstrap
-probe the stale endpoint from inside the running client, and Stratus's
-logged handshake refusal printed over the etui frame; `main` now sets the
-OTP logger's primary level to `none` first. And a local launch labelled the
-footer from the current directory even under an explicit `--workspace`,
-while a switch labelled it from the chosen workspace; both now derive it the
-same way. The stale-record switch itself behaved: the old session stayed on
-screen with an `opening session` notice, the worker cold-started a daemon,
-and the terminal adopted the replacement with its model catalogue loaded.
-
-Branch `tui/overlay-path-deadline-hardening`, stacked on the switcher, takes
-the three pre-existing findings the review pass surfaced. The model selector
-and agent inspector had the same wrap-inside-row-arithmetic shape and now
-render by rows with `text_hygiene.fit_tail`, which moved there from the
-session selector. The Erlang shim converted every path with `binary_to_list`,
-which double-encodes UTF-8, so a `HOME` or workspace with an accent broke the
-launcher; it now converts with `unicode:characters_to_list`, and a new
-`ffi_path_test` drives the externals through a `café-é` fixture. And every
-elapsed-time wait in bootstrap is bounded on the monotonic clock: the four
-polls moved onto `weft/poll` with #167, which measures monotonic time, and
-the two that are not polls — the cold start's outer budget and the gateway
-snapshot receive — now take their deadline from `monotonic_time_ms`. Only
-the reads that compare against a persisted `started_at_ms` use the wall
-clock, to ask how much of a starting record's budget is already spent.
-
-The bounded limits are deliberate: automatic startup is macOS/Linux only;
-trusted `loom.toml` configuration and manually managed servers use explicit
-attachment; there is no daemon status/shutdown/upgrade protocol or automatic
-restart loop; and the port reservation-to-bind gap fails visibly rather than
-retrying an ambiguous launch. The launcher and its lifecycle policy are pure
-Gleam. A confined Erlang shim supplies only the operating-system primitives
-that Gleam does not expose directly: private filesystem operations, process
-launch and identity, a kernel lock, loopback port reservation, time, and
-SHA-256.
+**R3 and R8 will never gate, and R10's exemptions are the formatter's.**
+The first two over-report by construction, and measuring rather than
+refusing is the point. R10 exempts a comment at the top of a block and one
+between two constructor fields because `gleam format` deletes a blank line
+in both positions while preserving one between two *variants*, so
+"completing" the rule with constructor fields would demand what the
+formatter removes.
 
 ---
 
-## State, as of `main` at the end of phase 3
+## Deliberately open
 
-Everything below is on `main` unless it says otherwise.
+Named, with an issue where one exists. None of these is unfinished work
+somebody forgot.
 
-**#106 — MCP through code mode — is done and on `main`** (merged at
-`0f4dfac`'s lineage): generated per-server capability modules, wired end
-to end, proved against a real server process, documented in
-`docs/architecture/mcp.md`, closed on the issue with the rulings. Its
-follow-ups are filed: #108 (HTTP+OAuth), #109 (the server-jail decision,
-undesigned), #110 (wild-server e2e), #111 (elicitation), #112
-(listChanged), and #107 (async code mode, with the state-machine
-argument and Claude Code's replay-continuation prior art on the issue).
-
-**#15 — one canonical id per session — is done and on `main`**
-(`protocol-change/008`): a UUIDv7 in the reserved `session/id` fact cell,
-minted at first open under a CAS, adopted verbatim on a lost race,
-projected into the SQLite catalog as repairable convenience (the
-lease-free `sqlite.identity(path:)` read exists for cross-session
-tooling), carried through fork parentage — a fork into an
-already-identified destination now refuses — and scoping `events/search`
-through an opaque `SessionKey`. One residual, tracked on the issue: the
-generated `events/sql` module is hand-mirrored (no `sqlite3` in the
-build container); a statement-for-statement pin bounds the drift and
-`make gen-sql` on an equipped host restores byte-identity.
-
-**#14 — model routing — is done and on `main`** under the rulings
-recorded on the issue and `protocol-change/009`: on-route dispatches walk
-the role's chain inside one attempt with the turn's thinking overlaid on
-every walked target; off-route strands and deferred polls stay
-`ForResolved`; children seed from the `Subagent` route; model facts and
-admission follow the identity per query, read from the step's own
-snapshot (the closing review's one behavioral catch — a mid-wait
-`set_config` no longer makes admission describe a model the attempt
-never reaches). The M5 429-storm conformance row is real. **#19 ruled
-itself out of the release by its own text** — re-checked, dispositioned,
-no work.
-
-**#16 + #105 + #91 item 1 — the harness-side capability bridge — is
-done and on `main`.** All eight workspace capabilities route:
-`fs.read`, `fs.list`, `fs.write`, `fs.edit`, `kv.get`/`set`/`delete`
-and `report.emit`, as `satellite.ServedHere` through
-`codemode/workspace` — a seam record of injected closures wrapped in
-front of the MCP arm and `satellite.default_router`, zero broker
-changes, no `CallSpec` anywhere on the path. The closures are built
-from `tools/fs`'s own boundaries: reads through `resolve_real` +
-`read_text_file`, writes through `resolve_writable` — `resolve_real`
-plus the protected-path refusal #105 added to the shared write path, so
-the model's own `fs_write` gained it in the same commit and a satellite
-write to `.git/hooks/post-checkout` is refused in band (proved through
-a real jailed program, with the mutation run leaving the hook on disk
-when the policy entry is removed). `kv.*` is `client/scratch`,
-ephemeral and bounded three ways; `report.emit` is `codemode/artifact`,
-one closure on **both** seams (#91 item 1) with a 1 MiB per-emit bound
-and a 64-admission ceiling, content-addressed into the session's one
-blob store — which the base policy now protects from jailed
-pre-planting.
-
-**The `fs.edit` ruling is made and implemented** (recorded in
-`codemode/workspace`'s module doc): honest whole-file find/replace —
-each `find` exactly once (zero → `StaleContent`, which now means "the
-file no longer contains your text"; several → refused ambiguous), in
-order, all-or-nothing, read-apply-write inside one served call. The
-harness editor's anchor discipline was **not** synthesised on the
-program's behalf; `cap/fs.Replacement`'s doc stopped lying. Real pins
-remain open as a later layer.
-
-The branch went through a full adversarial-review cycle (review →
-verified fixes → re-verify by the same reviewer). Its findings are
-worth knowing: a relative `protected` entry used to fail open on the
-harness path (now refused in band *and* at boot via
-`serve.base_policy_fault`); the component-prefix predicate existed as
-three copies (now one public `policy.covers`); blobs are now
-established by atomic rename, never direct write. `make check` passes
-end to end at the head.
-
-`main` holds phases 1 and 2 plus #106, the bridge, #15, #14, #27
-(triggered rules; dead-strand follow-up is #113), #28 (memory M1;
-accepted gaps are spec-gaps items 6–9 in its section) and #29 (memory
-M2 — the memory session, `client/distill`, the protected sidecar
-digest, the `remember` door; erasure cascade filed as #115, the
-recorded limits in spec-gaps' M2 section). **Phase 3 is complete.**
-Every `phase:3` release-blocker landed through the same loop — a
-measured census, rulings posted to the issue, an implementation
-worker, and a closing adversarial review with per-finding
-re-verification — and #19 dispositioned itself out by its own text.
-The debt wave that follows it is **built and in review as four PRs**,
-not yet merged: **#125** (events test hygiene, closing #119),
-**#126** (dead-strand rule holds, closing #113), **#128** (#91's four
-remaining defects), and **#130** (the erasure cascade, closing #115).
-**Merge #125 first, then the other three in any order.** Only #125 is
-genuinely ordered: the events flake it fixes went deterministic and
-runs before every other package, so until it lands `make check` cannot
-reach `client` at all. The remaining three share no source file — their
-only common surface is `packages/client/CLAUDE.md` and its mirror,
-which they append to in separate regions. Measured rather than assumed:
-all four merge clean in sequence, and the combined four-branch tree
-passes the full gate and `doc-check`. If a tiebreak is wanted, take
-#128 first of the three — it is the widest (four packages plus the
-regenerated prelude), so it lands while the others are still cheap to
-rebase.
-
-**#118 — durable scheduled heartbeats — is in review, PR #121, not yet on
-`main`.** Unphased new work, not part of the numbered plan: a `[[schedule]]`
-in `loom.toml` fires a durable, fenced injection onto a strand on a fixed
-interval or a one-shot UTC instant, mirroring the triggered-rules shape
-(`client/rules`/`client/rulescan`, issue #27) with a scanner that is
-time-triggered instead of content-triggered. `docs/design-notes/
-scheduled-heartbeats.md` is the pre-code design ruling (a Fable 5 advisor
-consult): the crux was whether a schedule may wake an idle strand, which a
-content-triggered rule is never allowed to do — ruled allowed, opt-in
-(`wake = true`), safe only because every recurring schedule now carries a
-mandatory, tightened expiry (`max_fires` and `expires_after_s` both always
-active, earliest wins, worst case exactly 1,000 fired-mark rows per
-schedule). Model self-scheduling is cut, not deferred — a self-scheduling
-model extends its own liveness and cost unsupervised, and framing cannot
-solve that the way it solves a rule's authority-confusion. The one runtime
-change: `runtime/api` gained `accept_quietly_marking`/
-`send_to_strand_marking`, the fresh-run door's version of the existing
-`steer_marking` write-once-claim mechanism — additive, no `machine` change,
-no `protocol-change/` needed. A closing adversarial review (Fable 5) caught
-a real tautological-boundary bug in the "late fire" annotation before it
-shipped (fixed and pinned with pure-function tests) and, on re-verify after
-the fix round, one narrow self-correcting crash-race footnote in the
-1,000-row bound (recorded in the design note, not worth a code change: per-
-occurrence exactly-once is untouched). One pre-existing, unrelated repo
-issue remains, not fixed here: an identical-before-and-after `make
-doc-check` citation-drift in docs this branch never touches. (#120,
-`gleam format --check`, turned out to be already fixed by #116's
-formatter reflow — closed.)
-
-Rebasing onto `main` after #146 turned up three things worth recording,
-all fixed on the branch. The compile break was mechanical: cancellable
-streams gave `stream.StreamHandle` a `cancel` closure and an optional
-owner pid, so the scanner test's parked provider had to move to
-`stream.immediate`. The other two were not. **`catalog.parse` owns the
-top-level key check for the whole config document, and nobody taught it
-about `schedule`** — so every `loom.toml` carrying a `[[schedule]]` was
-refused at boot with "unknown key `schedule`" and the feature was
-unreachable, its own parser correct behind a gate that ran first. The
-tests missed it by approaching from both ends and meeting in the middle:
-`schedule_test` parses schedule text directly, `serve_test` builds a
-`Settings` literal with a `Schedule` already in it, and neither goes
-through a config file, which is the only path an operator has. It was
-found by running the thing, not by reading it — worth remembering for a
-feature whose only interface is a file. The regression test now lives in
-`catalog_test`, where the gate is, and pins `[[rule]]` beside
-`[[schedule]]`. Third, `docs/examples/loom.toml` documented `[[rule]]`
-and stopped; for an operator-only feature that example *is* the
-discovery surface, so it now covers both timings and both bounds, gated
-by tests the same way the rules half already was.
-
-**The operator-only cut has since been reversed, and the model can now
-schedule its own heartbeats.** `docs/design-notes/scheduled-heartbeats.md`
-carries the addendum with the whole argument; the short form is that the
-original ruling read as one argument and was really two. Waking an idle
-strand keeps a session working after everyone has gone home, which is the
-sharp case. Steering a run already open cannot extend liveness at all,
-because it holds when the strand is idle exactly as a triggered rule does.
-The middle position (`ModelSchedulesSteer`) shipped as the default in the
-end: the open default rested on the per-schedule expiry bounding the
-session, #161 showed it does not (a fresh name is a fresh clock, and a
-woken model can create the next schedule before this one expires), and
-the priority order puts isolation before capability. The tools are still
-registered by default and a model can still create schedules; none of
-them can wake an idle strand unless the operator writes `[schedules]
-model_created = "wake"`. The design note's addendum records the ruling.
-
-It is reachable two ways, over one implementation
-(`client/scheduleseam.Door`): the `schedule_create`/`schedule_list`/
-`schedule_cancel` tools, and the `schedule.*` code-mode capabilities
-behind `cap/schedule`. Either door can cancel what the other created. A
-schedule always targets the strand that created it — there is no `target`
-argument on either door, and for code mode the strand is bound host-side
-from the request and never travels over the cap channel.
-
-Three things are deliberately still not built, each with an issue.
-**Scheduling on behalf of a subagent** (#154) is the obvious next
-increment and the case the original ruling named as motivating `wake`: a
-parent extending a child's liveness, which it already controls, is a
-defensible argument nobody has written down, and it needs a lineage
-check. **`cap/schedule` on the orchestration seam** (#156) is a decision
-rather than work: the intersection of the two seams' allowlists is a
-confinement property a test asserts, and widening it from one module to
-two costs a real guarantee. **A schedule that never fires never expires**
-(#157), because the clock runs from the earliest fired-mark — no fires,
-no marks, no clock; harmless but not what `expires_after_s` reads like.
-
-One thing was considered and dropped rather than deferred, so it has no
-issue: **the escalation-gated grant** the original note proposed. It was
-dropped on measurement — `gateway.attached` answers zero when nobody is
-watching and the escalation seam settles as a refusal, so a model could
-only get a schedule approved while someone was present, which is exactly
-when a heartbeat is least needed. The design-note addendum records it.
-
-The live check is worth repeating on any change here: point a
-`[[schedule]]` at a scratch session and watch it fire in the TUI, or ask
-the model to call `schedule_create` and watch the same thing happen with
-nobody having configured anything. An `every = "60s"` schedule fires at
-boot and again on the next boundary; a one-shot fires at its instant with
-no late annotation. `wake = true` opens a fresh run on an idle strand with
-nobody at the keyboard, which is the whole feature and the only part no
-unit test can show you. Both were run against a real Baseten model on this
-branch, not only against the fake provider.
-
-A Fable adversarial review ran over the whole branch after the reversal
-landed (the original PR's review predates every model-facing change).
-Three findings are fixed in `edb005b`: a timer chain leaked per `poke`,
-an unbounded timer delay that killed the scanner silently, and an
-`injection` that attributed model-written bodies to the operator. Four
-are filed — **#165** (weft's timer arms on the wall clock, so an actor
-riding the injected `Timers` seam cannot use it — which is why the
-scanner's generation tag is hand-rolled against the house rule, said so in
-its module doc), **#161** (a model can chain wake-schedules indefinitely;
-expiry is per-schedule, not per-session, and the design note's original
-claim to the contrary is corrected in place), **#162** (concurrent
-`schedule.create` through code mode), **#163** (settled-subagent
-schedules), **#164** (tombstone growth). A re-verify pass through the same reviewer confirmed all four fixes and
-raised one more, which is also fixed: **a subagent could schedule a waking
-heartbeat and then settle**, leaving a schedule nobody can cancel that
-keeps re-opening runs on a finished strand. Subagents inherit
-`schedule_create` by default (`agency.child_tools` passes on every tool
-but `agent_spawn`), so that was the ordinary path. `scheduleseam.create`
-now refuses a subagent outright — blunter than the problem, and it stays
-until the ownership model in #154/#163 exists.
-
-#161 was settled by moving the default to `ModelSchedulesSteer` rather than
-by closing the chaining hole: under the default no model-created schedule
-can wake an idle strand, and an operator who opts into `"wake"` accepts
-the property #161 describes. Closing the hole itself (a per-session
-creation budget, or a lineage on schedules) stays open work, only wanted
-by operators running under `"wake"`.
-
-One CI note for whoever picks this up: `soak (200 seeds)` is **red on
-`main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200
-pass locally on this branch (exit 0), as does the 101..150 band CI names.
-Do not read that failure as this branch's — it is **issue #155**.
-`gate (linux)`, `gate (macos)` and `jail (linux)` all pass.
+- **The MCP server jail** (#109). Undesigned, not unbuilt, and the
+  load-bearing gap in the only third-party extension path that works
+  today. `mcp/transport` is the seam an answer attaches to.
+- **The rest of MCP's v1 cuts**: HTTP transport plus OAuth (#108), an
+  end-to-end against a third-party server from the wild (#110),
+  elicitation (#111), `listChanged` (#112). Together these are what
+  separates "a third party can add a tool" from "a third party can add a
+  hosted tool".
+- **Nested `AGENTS.md` files** are not read (#172). The convention's rule
+  is that the closest file to the edited file wins, and Loom's prompt
+  assembly has no notion of the files under a path: `Host.guidance` is one
+  string fixed at session open. Per-edit precedence needs a per-tool-call
+  channel instead, landing after the cached prefix rather than inside it.
+  That is a question about where directory-scoped instructions belong in
+  the two-channel doctrine, and it should be answered before anything is
+  built.
+- **`cap/task` on weft.** A clean fit for the run engine, but `cap` is the
+  satellite-side prelude with no weft dependency, and adding one puts weft
+  into the offline build seed. That is a distribution decision
+  (`docs/distribution.md`).
+- **One weft gap upstream**: a monitored, non-panicking call against a
+  pre-existing pid, which is what `broker/internal/call.try_call` and its
+  siblings hand-roll. The other two the census named are closed in 0.4.1.
+- **The residual `runtime` interleave flakes** that #171 does not claim to
+  close. #171 removes the `noproc` cause and makes the harness honest
+  about time; it names the rest as pre-existing, none of them yet seen in
+  CI.
+- **Playbooks** (#139). Loom has no prompt-level skill mechanism, and the
+  word "skill" appears once in `packages/*/src`, unrelated. The extension
+  design note proposes that an extension may ship `skills/<name>/SKILL.md`
+  and that the server surfaces name, description and location in the
+  system prompt, which would make #139 arrive as a side effect. Track it
+  there rather than building it twice.
+- **Scheduling follow-ups**: on behalf of a subagent (#154), `cap/schedule`
+  on the orchestration seam (#156, a decision rather than work: widening
+  the intersection of the two allowlists costs a confinement property a
+  test asserts), a schedule that never fires never expires (#157), and
+  #162 through #165.
+- **`net.request` is unserved** today, gated on an egress proxy sidecar
+  that is out of the release. ADR-007 is the route that changes this, for
+  extensions, without the sidecar.
+- **Compaction stages C1/C2 and memory stage M3** are out of the release
+  by design and have no issue.
 
 ---
 
-## Start here: after phase 3
+## How to verify
 
-The debt wave is done and awaiting merge (the four PRs above). What it
-turned up on the way is worth reading before the next one, because most
-of it is about the gates rather than the code: **#129** — `check.sh`'s
-`tee /dev/stderr` truncates a redirected gate log mid-run, so the log
-half of `execution.md` §4's discipline is silently destroyed while the
-exit code stays honest (the pipe route, `2>&1 | tee log` reading
-`PIPESTATUS[0]`, is immune, and is what an agent should reach for here);
-**#127** — a third load-sensitive test, after #119's and storage's, each
-occurrence costing an agent a control run to exonerate its own diff;
-and the review-driven follow-ups **#122**, **#123** and **#124**.
+`make help` lists the commands. `make check` is the full gate and is
+exactly what CI runs; `make check-<package>` narrows it; `make doc-check`
+checks the doc graph and the citations; `make lint` is the house-rule
+lint; `make selftest` says which enforcement layers the kernel actually
+provides; `make e2e` and `make e2e-codemode` are the jailed end-to-ends
+(`make codemode-seed` prepares the offline cache the second needs).
 
-Then **phase 4, the promotion ladder** (#30–#33,
-#100), which #16 gated and which is now unblocked; **phase 5** (#25
-LSP, #26 DAP) starts from the supervised stdio substrate the MCP
-client already is. **#107** (async code mode) sits outside the ladder
-with its design dossier on the issue, awaiting prioritization.
+Four hazards, each of which has cost real time here.
 
-### The MCP increment, in detail
+**Verify a gate by its own exit code.** `make check > log; echo $?; tail
+log` reports `tail`'s status and has produced confident false greens here
+more than once. Capture `make`'s status directly into the log, then read
+the log for failures. The background form is the same trap: a detached
+gate finishes with the wrapper's status, and the recorded `MAKE_EXIT=`
+line means nothing until somebody reads it.
 
-**#106 — MCP through code mode: the first increment is done.**
-`docs/architecture/mcp.md` is the living account; the rulings and their
-reasons are on the issue. The shape: generated per-server capability
-modules (`import cap/mcp/github`), never registered harness tools and
-never a generic dispatcher; `[mcp.<name>]` in `loom.toml`, file only;
-`packages/mcp` holds the protocol codecs, the stdio client actor, the
-façade generator and the value interchange; `client/mcp` starts one
-client per configured server at boot, widens the workspace seam's
-allowlist/description/generated-table/router as one field, and answers
-`mcp.<server>` as `ServedHere`; `codemode.execute` narrows the generated
-table to the vetted program's own imports before the builder vendors
-them into the prelude — fifty configured servers cost an unimporting
-program nothing. A checked-in `escript` fixture proves it against a real
-server process over a real pipe, wire names byte-identical end to end,
-including the `isError` leg and OS-pid teardown. The hostile-`tools/list`
-corpus is **built, not owed**: mangling digests on any change and a
-collision refuses the server; description text is stripped of every
-control/direction codepoint and a `glexer`-shaped `@` backstop asserts
-the cage held; schema reading is three-tier and total with nothing
-silently dropped; tool count, surface bytes, listing pages, result size
-and result depth are all capped with worded refusals.
+**`make check-<package>` does not run lint, and a failing package never
+reaches lint either.** `scripts/check.sh` runs the lint only when it is
+given no package arguments, and it runs it last under `set -e`, so a
+package that fails aborts before it. `make doc-check` is a separate target
+that `make check` never runs at all, and in CI it is a separate step after
+the gate, so a red gate means neither ran. After fixing a failure, run
+`make lint` and `make doc-check` on their own.
 
-Still open on #106, deliberately: the **jail decision** for MCP server
-processes — `mcp/transport.PortTransport` spawns unjailed and the seam
-is where jailing would attach; this is undesigned, not merely unbuilt —
-an e2e against a third-party server from the wild, and the deliberate
-v1 cuts with their reversal triggers (HTTP transport, OAuth,
-elicitation, `listChanged`, restart supervision; see the architecture
-doc). **#107** (filed this increment) is the async-code-mode question —
-kept-alive satellite versus continuation handles versus a
-replay-with-memoized-effects shape; its comments carry the
-state-machine-expansion argument and the prior art.
+**A fresh worktree can fail on Hex rather than on your diff.** A new tree
+resolves every package's dependencies from scratch, and enough parallel
+requests hit the Hex API rate limit; it presents as a build failure with
+nothing to do with the change. Wait and re-run before diagnosing.
 
-The finding carried into phase 5 held: the MCP stdio client **is** the
-supervised long-lived stdio substrate #25 needs, and it now exists
-(`mcp/client` + `mcp/transport`), so phase 5 starts from something
-rather than nothing.
+**Do not put a verification worktree under `/tmp`.** Code mode correctly
+refuses a cap socket there, because the jail replaces `/tmp` with the
+scratch tmpfs, and `/tmp` also breaks `make codemode-seed` discovery. Put
+it beside the repository and remove it when done.
 
-**Phase 5** is the language-service tier: **#25** (`lsp_*` over a sandboxed
-per-project client) and **#26** (`dap_*` over the same port seam). Both need
-a long-lived stateful stdio peer that phase 3 deliberately does not build.
+Two more belong to the tree rather than to the gates: a long-lived tree's
+incremental build cache can produce a deterministic failure in a package
+the diff never touched, so check a fresh-worktree control before calling
+it a flake; and `make gen-prelude` and `make gen-sql` produce committed
+artifacts the build gates rather than regenerates, so changing
+`packages/cap`'s public surface without regenerating fails
+`make prelude-check`.
 
-Phase 4 is the promotion ladder (#30–#33, #100) and is built directly on the
-router being real, which is why #16 gates it.
-
----
-
-## Reading the issue tracker
-
-Every open issue carries exactly one `phase:` label. **`phase:debt` is the
-largest bucket and that is correct** — it means found work with no phase
-gate, picked up in a debt wave between phases, and most of this tracker is
-review-wave findings rather than planned milestone work. Do not read a
-thin `phase:3` as a light phase; read it as an honest one.
-
-*(Housekeeping: `phase:debt` was created implicitly by first use, so it has
-GitHub's default grey and no description. Someone with web access should set
-them.)*
-
-### The dependency edges that matter
-
-- **#99 is the root of the phase-1 subtree.** A check that has never
-  completed cannot be made required (#1), and CI is the only environment
-  likely to have a Landlock-capable kernel (#62).
-- **#16's thirteen names are not equally blocked.** `#105` blocks only the
-  `fs.write`/`fs.edit` arms; `#25` blocks the four `lsp.*` names; the egress
-  proxy blocks `net.request`. **Nine of the thirteen are unblocked today.**
-- **#16 blocks #30**, and therefore the whole phase-4 ladder — a skill that
-  can only call `proc.run` is not a capability. This is the phase-3 → phase-4
-  seam.
-- **#30 → #31 → #32 → #33** in order, and #32 does not close until #33 does.
-  **#100's classification work belongs before or during #32**, not after: it
-  exists to shape the hook vocabulary while #32 is designing it.
-- **#80 blocks #81** — the full-argument pager must render through #80's
-  sanitiser, or a 40 KB model-controlled blob pages straight into a terminal.
-- **#73's rule-A fix gates #74's census** — the fixes are independent, the
-  measurement is not.
-- **#89 no longer blocks #30**: L1 can re-vet stored source containing current
-  Gleam syntax without rejecting the repository's own labelled-argument
-  shorthand.
-
-Decide-together pairs: **#77 + #82** (same single-latched door, spend site
-and raise site). **#66 + #79** (bounding retries trades capability for
-security with nowhere for capability to go until the session-widening valve
-exists). #58's terminal-counter race was separate from #69's intervention
-waiter. The CI repair branch now fences terminal accounting and gives
-intervention payloads a correlated durable identity; retain that distinction
-when closing the two filings after the branch's soak gate is green.
-
-### Known-stale filings — re-scope before picking up
-
-- **#42's scope shrank** when #35 landed; it may now be a few log calls
-  rather than an events-plane addition.
-- **#91 item 1 overlaps #16**: both cover `report.emit` being unrouted, on
-  the orchestration and workspace seams. Service both seams in one change or
-  each issue half-fixes it.
-- **#73's baseline numbers are already moving.** Re-measure; do not trust
-  the header.
-- **#98 is a research record whose question is settled**, carried forward
-  into #100. It will sit in the phase-4 bucket looking like a task.
-
-**A general warning, learned twice this week.** An issue's own severity note
-can be stale in either direction. #68 was filed as "benign today, fix it when
-#65 lands"; #65 landed, and a plausible reading said #68 had therefore become
-live and urgent. The code said otherwise — it had been fixed inside #65 and
-never closed, with a test named for it. **Read the code before acting on a
-filing's self-assessment, including when the filing sounds alarming.**
-
-## Standing decisions — do not re-litigate
-
-- **The ledger keys on `{op_id, step_id}`; paths key on
-  `{op_id, step_id, source_index}`.** The pair is the *batch* identity the
-  broker pools on; the triple is the *execution* identity. `source_index` is
-  deliberately absent from `ExecIdentity`, whose exports feed ledger keys —
-  adding it would mint one ledger per `code_mode` call and read the pooled cap
-  as a per-call cap by another door. ADR-005's addendum has the argument.
-- **The abort-epoch table is measured, not pruned.** Pruning is unsafe in both
-  directions and the dangerous one is silent. See #104.
-- **A host missing a code-mode prerequisite registers no `code_mode` tool at
-  all**, deliberately: a tool definition is a byte prefix of the provider's
-  cached region, paid on every request of every strand for the session's life.
-  The *reason* it is missing is what got better, not the mechanism.
-- **Code mode ships in the main release artifact**, with `DIST_CODEMODE=0` as
-  the opt-out. See `docs/distribution.md` and #102.
-- **MCP is code-mode only** (#106): generated per-server modules, never a
-  generic `cap/tools.invoke` dispatcher. A generic dispatcher does not
-  falsify the vetting theorem — it collapses its discriminating power, since
-  the bound becomes "the whole registry, for every program", leaving one
-  layer where code mode was built to have two. The bound is per *server*, not
-  per tool, and that is deliberate: a human trusts a server. The
-  once-unanswered question — `tools/list` is attacker-controlled JSON
-  compiled into allowlisted source — is now answered structurally in
-  `mcp/codegen`: server text reaches a module only as sanitized comments
-  and escaped literals, names mangle with a digest and collide into
-  refusal, and a backstop scan proves per module that the cage held.
-  `docs/architecture/mcp.md` carries the whole argument.
-- **R3 and R8 will never gate.** Both over-report by construction; they are
-  censuses, and measuring rather than refusing is the point.
-- **R10's exemptions are the formatter's, not the rule's.** A comment at the
-  top of a block and a comment between two fields of a constructor are
-  exempt because `gleam format` deletes a blank line in both positions —
-  while preserving one between two *variants* of the same type. Do not
-  "complete" the rule by adding constructor fields; it would demand what the
-  formatter removes and no source could satisfy it.
-
----
-
-## Known-open, deliberately
-
-- **CI has never completed a run** (#99) — all jobs die in under four seconds.
-  This is owner-action; local `make check` is the real gate today.
-- **`make lint` reports 576 warnings at 0 errors.** That is the designed
-  state. R5's promotion is five one-line fixes away (#73 names the files).
-  240 of the 576 are R9's 223 and R11's 17, the two literate-style rules
-  that still warn; R10's 1137 were swept to zero and it now gates.
-- **Jail and sandbox tests degrade in this container** — no cgroup v2, no
-  Landlock. `make selftest` says what the host actually enforces. Failures
-  there are environmental until run on a real host; #62 is that nobody has
-  ever run Landlock.
-
----
-
-## How to work here
-
-Read `docs/execution.md` before dispatching sub-agents. It carries the wave
-pattern, the briefing checklist, the verification standard, and the hazards
-that have already cost time — including the two that will catch you first: a
-verification worktree under `/tmp` breaks code mode, and `make check > log;
-echo $?` reports the exit code of `tail`, not of `make`.
-
-Three skills now live in `.claude/skills/` and earned their keep on the
-#106 work: `/advisor` (a read-only design consult before code), `/advisor-review`
-(the closing gate — one independent top-tier pass over a pinned diff:
-invariants, simplification, live variants of the shapes just fixed; verify
-every finding yourself, fix, then re-verify through the *same* reviewer),
-and `/technical-writing` (read all six references before writing prose).
-The two review cycles on this branch each returned real findings — a
-quadratic over attacker-controlled schema input, an invisible-character
-gap, servers spawned that nothing could reach — that same-author review
-had read past. Treat the closing review as part of finishing, not polish.
+`docs/execution.md` is the rest: how a wave is planned, how sub-agents are
+briefed and monitored, the standard of proof, and why a correction goes on
+the issue rather than only in a commit.
