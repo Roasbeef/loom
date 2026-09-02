@@ -61,6 +61,7 @@ type ClockMessage {
   JumpTo(now: Int)
   PendingCount(reply: Subject(Int))
   EarliestAt(reply: Subject(Option(Int)))
+  PendingDelays(reply: Subject(List(Int)))
 }
 
 type ClockState {
@@ -119,6 +120,18 @@ fn handle_clock_message(
       process.send(
         reply,
         option.map(earliest_deadline(state.deadlines), fn(due) { due.at }),
+      )
+      actor.continue(state)
+    }
+
+    // Every pending deadline as a delay from now, which is the shape an
+    // assertion about the *clamp* needs: the clamped arming is not the
+    // earliest deadline in the wheel, so a peek at the front cannot see
+    // it.
+    PendingDelays(reply:) -> {
+      process.send(
+        reply,
+        list.map(state.deadlines, fn(due: Deadline) { due.at - state.now }),
       )
       actor.continue(state)
     }
@@ -198,6 +211,12 @@ fn fake_earliest_delay_ms(fc: FakeClock) -> Option(Int) {
   }
 }
 
+// The delay, in ms from `now`, of every pending deadline. A peek,
+// consuming nothing.
+fn fake_delays(fc: FakeClock) -> List(Int) {
+  process.call(fc.subject, waiting: 1000, sending: PendingDelays)
+}
+
 // --- polling ----------------------------------------------------------------
 
 // Tick handling is asynchronous on the scanner's own process, so every
@@ -239,8 +258,38 @@ type Rig {
   )
 }
 
+// The strand driver's own checkpoint poll, parked far beyond any
+// interval this file uses so it never becomes the earliest pending
+// deadline and never interferes with `fake_advance`. Named rather than
+// written twice because `await_armed` below tells the scanner's armings
+// from it by exactly this number.
+const driver_poll_ms = 1_000_000_000
+
 fn harness(
   schedules: List(schedule.Schedule),
+  from_ms: Int,
+) -> Result(Rig, String) {
+  harness_with(schedulescan.default_options(schedules), from_ms)
+}
+
+// The same rig with the model-facing door open, which is the one setting
+// that changes what a scan finding nothing active does: it arms the
+// rescan floor rather than cancelling the timer. A fixed delay from
+// *now* is also what makes two scans at two logical instants arm two
+// distinguishable deadlines, which the supersession test needs.
+fn harness_open(
+  schedules: List(schedule.Schedule),
+  from_ms: Int,
+) -> Result(Rig, String) {
+  harness_with(
+    schedulescan.default_options(schedules)
+      |> schedulescan.with_model_door_open,
+    from_ms,
+  )
+}
+
+fn harness_with(
+  options: schedulescan.Options,
   from_ms: Int,
 ) -> Result(Rig, String) {
   let fc = start_fake_clock(from: from_ms)
@@ -264,32 +313,49 @@ fn harness(
       thinking_level: machine_strand.ThinkingOff,
       active_tool_names: [],
     )
-  let options = api.default_options(configuration)
+  let options_of_api = api.default_options(configuration)
   use runtime <- result.try(
     api.open(
       opened,
       effects_record,
-      // Far larger than any interval this file uses, so the strand
-      // driver's own checkpoint poll never becomes the earliest pending
-      // deadline and never interferes with `fake_advance`.
-      api.Options(..options, poll_interval_ms: 1_000_000_000),
+      api.Options(..options_of_api, poll_interval_ms: driver_poll_ms),
     )
     |> result.map_error(string.inspect),
   )
   let scanner = process.new_name(prefix: "loom_schedulescan_test")
   use services <- result.try(
     sup.new(sup.OneForOne)
-    |> sup.add(schedulescan.supervised(
-      schedulescan.default_options(schedules),
-      runtime,
-      scanner,
-    ))
+    |> sup.add(schedulescan.supervised(options, runtime, scanner))
     |> sup.start
     |> result.replace_error("the scanner supervisor did not start"),
   )
   process.unlink(services.pid)
   await_named(scanner, 2000)
+
+  // The scanner's first arming is made on the way into `Watching`, which
+  // weft runs after `start` has acknowledged — so the name being
+  // registered is not yet proof that a deadline is in the wheel, and a
+  // `fake_advance` racing it would pop the strand driver's poll instead
+  // and jump logical time eleven days. Waiting for an arming that is not
+  // the driver's is what makes every fixture below deterministic.
+  await_armed(fc, 2000)
   Ok(Rig(runtime:, session: opened, fc:, scanner:, services: services.pid))
+}
+
+// Waits until the wheel holds a deadline that is not the strand driver's
+// checkpoint poll, which is to say until the scanner has armed.
+fn await_armed(fc: FakeClock, remaining_ms: Int) -> Nil {
+  let _armed =
+    await_true(
+      fn() {
+        case fake_earliest_delay_ms(fc) {
+          None -> False
+          Some(delay) -> delay < driver_poll_ms
+        }
+      },
+      remaining_ms,
+    )
+  Nil
 }
 
 fn stop(rig: Rig) -> Nil {
@@ -303,15 +369,6 @@ fn stop(rig: Rig) -> Nil {
 // what `poke` sends, and is the shape an out-of-band wake actually takes.
 fn replay_tick(rig: Rig) -> Nil {
   process.send(process.named_subject(rig.scanner), schedulescan.Rescan)
-}
-
-// A wake tagged with a generation the actor has already moved past — the
-// shape a superseded timer chain delivers.
-fn stale_tick(rig: Rig, generation: Int) -> Nil {
-  process.send(
-    process.named_subject(rig.scanner),
-    schedulescan.Tick(generation:),
-  )
 }
 
 // A provider whose every request parks forever: the returned handle
@@ -439,6 +496,7 @@ fn aging_schedule(
 fn cron_schedule(
   name name: String,
   expression expression: String,
+  offset_s offset_s: Int,
   wake wake: schedule.Wake,
   max_fires max_fires: Int,
 ) -> schedule.Schedule {
@@ -450,6 +508,7 @@ fn cron_schedule(
     owner: schedule.OperatorOwned,
     timing: schedule.Cron(
       expression: parsed,
+      offset_s:,
       expiry: schedule.Expiry(max_fires:, expires_after_s: 604_800),
     ),
     wake:,
@@ -685,6 +744,7 @@ pub fn a_daily_cron_does_not_fire_at_creation_and_arms_for_tomorrow_test() {
     cron_schedule(
       name: "standup",
       expression: "0 9 * * *",
+      offset_s: 0,
       wake: schedule.WakesIdle,
       max_fires: 1000,
     )
@@ -740,6 +800,7 @@ pub fn a_cron_jump_past_three_occurrences_fires_one_late_test() {
     cron_schedule(
       name: "standup",
       expression: "0 9 * * *",
+      offset_s: 0,
       wake: schedule.WakesIdle,
       max_fires: 1000,
     )
@@ -797,6 +858,7 @@ pub fn a_capped_cron_expires_after_its_one_fire_test() {
     cron_schedule(
       name: "capped",
       expression: "0 9 * * *",
+      offset_s: 0,
       wake: schedule.WakesIdle,
       max_fires: 1,
     )
@@ -835,6 +897,98 @@ pub fn a_capped_cron_expires_after_its_one_fire_test() {
   // checkpoint poll, parked far out by `harness` — not a re-arm.
   assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
     as "an expired cron schedule must stop contributing to the re-arm"
+  stop(rig)
+}
+
+// --- cron with a fixed UTC offset -----------------------------------------
+//
+// `0 9 * * *` read against UTC+02:00. Every instant below is UTC:
+//
+//   2026-09-02T07:00:00Z = 1788332400  (09:00 local, Wed — an occurrence)
+//   2026-09-02T09:00:00Z = 1788339600  (11:00 local — not an occurrence)
+//   2026-09-03T07:00:00Z = 1788418800  (09:00 local, Thu — an occurrence)
+
+const wednesday_at_seven_ms = 1_788_332_400_000
+
+const two_hours_east = 7200
+
+// The property the whole offset rests on, end to end: a `+02:00`
+// schedule fires when the clock two hours east says 09:00 — 07:00 UTC —
+// and the mark it writes is keyed on that **UTC** second. Nothing about
+// the durable key shape moves with the offset, which is what lets an
+// operator add or change one without stranding a fire history.
+pub fn an_offset_cron_fires_at_the_shifted_utc_second_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      offset_s: two_hours_east,
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+
+  // Booted exactly on the occurrence, so the observation instant and the
+  // occurrence coincide and the `>= since_s` rule admits the boundary —
+  // the same arrangement `a_capped_cron_expires_after_its_one_fire_test`
+  // uses, one offset along.
+  let assert Ok(rig) = harness([sched], wednesday_at_seven_ms)
+    as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+
+  let utc_second =
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_332_400,
+    )
+  assert await_true(fn() { fired(rig.runtime, utc_second) }, 2000)
+    as "the local 09:00 must fire at the UTC second it falls on"
+
+  // And nothing was recorded under the second the expression would have
+  // named read in UTC. This is the assertion that fails if the search's
+  // shift is not undone before the occurrence becomes an id.
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_339_600,
+    ),
+  )
+    as "an occurrence id must be a UTC second, never a local one"
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 1
+
+  // The re-arm waits for the next local 09:00, twenty-four hours on.
+  assert await_true(
+    fn() { fake_earliest_delay_ms(rig.fc) == Some(86_400_000) },
+    2000,
+  )
+    as "an offset cron must re-arm at the next local match"
+  stop(rig)
+}
+
+// The mirror, which is what makes the test above a measurement: booted
+// at 09:00 **UTC**, which is 11:00 on the schedule's own clock, this
+// morning's local 09:00 has already passed and was never asked for. So
+// nothing fires, and the wait is twenty-two hours rather than a day.
+pub fn an_offset_cron_created_after_its_local_time_waits_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      offset_s: two_hours_east,
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+  let assert Ok(rig) = harness([sched], wednesday_at_nine_ms)
+    as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(150)
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 0
+    as "a local occurrence that predates the schedule must not fire"
+  assert idle(rig, "main") as "the strand must not have been woken"
+  assert fake_earliest_delay_ms(rig.fc) == Some(79_200_000)
+    as "the wait is to the next local 09:00, twenty-two hours from 09:00 UTC"
   stop(rig)
 }
 
@@ -947,6 +1101,13 @@ pub fn a_reaped_target_stops_the_schedule_test() {
   // strand driver's own checkpoint poll (parked far out by `harness`), so
   // the assertion is against that baseline rather than a count: an
   // `Active` schedule would add exactly one deadline to it.
+  //
+  // The baseline is settled before it is read. `start_child` returns as
+  // soon as the strand exists, and *that* strand's driver arms its own
+  // poll on its own process afterwards — so a count taken in the gap is
+  // one short of the baseline the assertion below will meet, and the
+  // test fails claiming a re-arm that was somebody else's poll arriving.
+  process.sleep(200)
   let before = fake_pending(rig.fc)
   replay_tick(rig)
   process.sleep(200)
@@ -1246,22 +1407,86 @@ pub fn pokes_leave_exactly_one_live_timer_chain_test() {
   stop(rig)
 }
 
-// The other half of the same mechanism, isolated: a wake from a chain the
-// actor has replaced must die where it lands rather than re-arming.
-pub fn a_stale_tick_does_not_rearm_test() {
-  let sched =
-    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
+// The other half of the same mechanism, isolated: a wake for an arming
+// a later scan replaced must die where it lands rather than re-arming.
+//
+// Since the port this is weft's property rather than this module's — the
+// timer book stamps every arming under `scan_timer` with a generation
+// and drops a fire that does not carry the current one — so the test
+// drives it the only way an injected source can be driven: arm, poke to
+// supersede, then run the superseded wake on purpose and look at what
+// the wheel holds afterwards. An injected `after` yields no handle, so
+// the superseded wake is genuinely delivered; nothing here is racing it.
+//
+// The door is open and there are no schedules, which is what makes the
+// two armings tellable apart: each scan arms the rescan floor as a fixed
+// delay from *now*, so a jump between them puts the second arming
+// strictly later than the first and the earliest deadline is certainly
+// the superseded one.
+pub fn a_superseded_wake_dies_in_the_book_test() {
+  let assert Ok(rig) = harness_open([], 0) as "the harness must boot"
+
+  // Run the first arming so the machine has scanned once and armed the
+  // floor from t=0.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(
+    fn() { fake_earliest_delay_ms(rig.fc) == Some(idle_floor_ms()) },
+    2000,
+  )
+    as "an idle scan with the door open must arm the rescan floor"
+  let armed = fake_pending(rig.fc)
+
+  // A poke half a floor later: its scan arms the floor again, from the
+  // new now, so the wheel holds two armings under one name and the older
+  // one is the superseded one.
+  fake_jump_to(rig.fc, idle_floor_ms() / 2)
+  replay_tick(rig)
+  assert await_true(fn() { fake_pending(rig.fc) == armed + 1 }, 2000)
+    as "the poke's own scan must arm under the same name"
+
+  // The superseded wake, delivered. It must reach no handler: nothing is
+  // armed by it, so the count falls back to one live chain rather than
+  // staying where a re-arm would have kept it.
+  assert fake_advance(rig.fc) as "the superseded wake must be pending"
+  process.sleep(200)
+  assert fake_pending(rig.fc) == armed
+    as "a superseded wake must die in the timer book without re-arming"
+  stop(rig)
+}
+
+// The rescan floor, as the scanner computes it. Written here rather than
+// inlined because two tests read it and it is a product of an imported
+// constant, which a Gleam `const` cannot be.
+fn idle_floor_ms() -> Int {
+  schedule.min_interval_s * 1000
+}
+
+// The clamp, which nothing else in this suite can reach: an interval is
+// capped at `schedule.max_interval_s` (a week, three orders of magnitude
+// inside the limit), so only a one-shot naming an instant far enough out
+// can ask for a delay a BEAM `receive after` would refuse.
+//
+// `runtime/effects.real_timers` sleeps for the delay on an *unlinked*
+// process, so an unclamped 5·10^12 ms would raise `timeout_value` where
+// nobody is listening: the chain would end silently and every schedule
+// in the session with it. The assertion is over every pending delay
+// rather than the earliest, because the strand driver's own poll is
+// nearer than the clamp.
+pub fn a_delay_beyond_the_timer_limit_is_clamped_test() {
+  // 5·10^9 epoch seconds is a little past the year 2128; the wait from
+  // t=0 is 5·10^12 ms, which is a thousand times the limit.
+  let sched = one_shot_schedule(name: "far", at: 5_000_000_000)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
-  process.sleep(300)
-  let before = fake_pending(rig.fc)
 
-  // Generation 0 is behind whatever the actor has reached.
-  stale_tick(rig, 0)
-  stale_tick(rig, 0)
-  process.sleep(300)
-
-  // No new deadline was armed by either: a stale tick is inert.
-  assert fake_pending(rig.fc) == before
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(
+    fn() {
+      list.fold(fake_delays(rig.fc), 0, int.max)
+      == schedulescan.max_timer_delay_ms
+    },
+    2000,
+  )
+    as "a delay beyond what a BEAM timer holds must be armed at the limit"
   stop(rig)
 }
 

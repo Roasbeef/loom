@@ -24,7 +24,7 @@ system messages, so it shows up in the observer like anything else).
 | `weft` | The run engine: a scope process owns every worker by link, with `limit`, `deadline`, an external cancel signal, input-order `start` and completion-order `fold`. Every task gets exactly one `Outcome`. | spawn + monitor + race a reply against `DOWN` + kill on timeout |
 | `weft` managed tasks | `prepared_task`/`prepared_leaf` (owner known up front) and `managed` (owners discovered while the task runs, published through a `Ledger` with `adopt`, `adopt_leaf`, `adopt_under`). A task's slot is held and its outcome withheld until its worker *and every owner* have exited; only a normal transitive-owner exit proves drain. `start_witnessed` runs with no consumer at all — the scope's exit reason is the whole report — and `cancel_when_exits` names a consumer whose death cancels. | an ad-hoc ledger of monitored pids with cancel closures; the custodian |
 | `weft/actor` | A strict superset of `gleam/otp/actor`: `continuing` (a message guaranteed to be handled before the mailbox), `then_handle`, `hibernate_after`, `idle_timeout`, `periodic` (a fixed-delay heartbeat), `on_shutdown`, `trapping_exits`, `unlinked`. | an init gate every handler checks first; a `ready` subject handshake; a `send_after` its own handler re-arms |
-| `weft/state_machine` | A typed gen_statem: a state ADT with exhaustive `case state, message` dispatch, `postpone`, state / event / named / **periodic** timeouts with generation-stamped cancel-with-flush, enter callbacks, `selecting` for monitors and ports, `unlinked`. | mutually recursive functions with ten arguments each rebuilding one selector; a timer carrying an id so its handler can detect a stale fire; a hand-kept list of waiters; a `send_after` its own handler re-arms |
+| `weft/state_machine` | A typed gen_statem: a state ADT with exhaustive `case state, message` dispatch, `postpone`, state / event / named / **periodic** timeouts with generation-stamped cancel-with-flush, enter callbacks, `selecting` for monitors and ports, `unlinked`, and `with_timer_source` to arm every one of those timeouts on an **injected** clock rather than the wall clock. | mutually recursive functions with ten arguments each rebuilding one selector; a timer carrying an id so its handler can detect a stale fire; a hand-kept list of waiters; a `send_after` its own handler re-arms |
 | `weft/poll` | `until(within:, every:, attempt:)`, bounded polling in the caller's own process: immediate first attempt, a last attempt at the deadline, `Fail` kept apart from `Retry`, `Expired` as its own outcome. `until_on` runs the same loop on an injected `Clock(now:, sleep:)`; `fold_until` threads a state from one attempt to the next and hands it back as `RanOut` on expiry; `Interval` is `Fixed` or `Doubling(from:, to:)`. | sleep-and-recurse until a deadline, on the wall clock or on an injected one |
 | `weft/event_manager` | A typed gen_event: an ordered handler list, each handler's state sealed in its own closure, `notify` and `sync_notify` (which returns only once every handler has finished), and `Failed(reason)` as the answer a broken handler gives — it is dropped and logged while its siblings carry on. | a fan-out written by hand over a list of subscribers with a removal policy and a per-subscriber state record |
 
@@ -98,6 +98,22 @@ reasons, and name the primitive in the commit:
   (`context`, `tool_result`) are deliberately not on the bus: each must
   see its predecessor's output, which is a fold rather than a fan-out,
   and weft grows the shape before Loom grows a second bus.
+- **Something must happen at a deadline you recompute each time.** Not a
+  fixed cadence but a *fixed delay per pass*: a scanner that reads its
+  store, works out when the soonest thing it watches is next due, and
+  arms one wake for exactly that. That is a **named** timeout re-armed
+  from the step that finishes each pass — `sm.with_named_timeout(name:,
+  after:, sending:)` under one constant name — and not a periodic one,
+  whose single interval cannot carry a delay that moves. Arming a name
+  supersedes what was armed under it, so a poke that scans out of band
+  costs no second chain and the superseded wake dies in the timer book's
+  generation check; a pass with nothing left to wait for
+  `sm.cancel_timeout`s the name rather than arming nothing, which is what
+  keeps rule 8 below true of every path. In-tree:
+  `client/schedulescan`, whose one `Watching` state exists so the timer
+  belongs to the machine rather than to a phase, and which arms on the
+  session's own clock through
+  `sm.with_timer_source(timer.Injected(after: runtime.effects.timers.after))`.
 - **You are waiting in the foreground on a synchronous probe.** A lock, a
   server coming up, a durable row landing. `weft/poll`. In-tree:
   `tui/bootstrap`'s four waits, `runtime/api.await_result`,
@@ -137,14 +153,17 @@ reasons, and name the primitive in the commit:
   sentinel. And its nap is deliberately never clipped to the remaining
   budget, where `weft/poll` clips by design. Forcing it in would break its
   arithmetic and the test that pins it.
-- **The strand driver's `PollTick` stays a `Timers` call.** `runtime/
-  effects.Timers` is an injection seam so a simulated session's poll clock
-  runs on logical time; a periodic timeout is `process.send_after` under
-  the hood, and moving the tick would silently convert the driver's
-  checkpoint poll from injected to wall-clock. The tick also has to start
+- **The strand driver's `PollTick` stays a `Timers` call**, and it is now
+  down to two reasons rather than three. The first has closed: weft 0.4.2
+  grew `with_timer_source`, so a machine can arm every timeout on
+  `runtime/effects.Timers` itself and a port no longer silently converts
+  the driver's checkpoint poll from injected to wall-clock —
+  `client/schedulescan` is the consumer that asked for it and the port
+  that proves it. What still keeps the driver hand-rolled is the other
+  two, and both are about *when* and *what for*: the tick has to start
   when the predecessor-drain barrier resolves rather than at init, and it
   grants a poll permit for the duration of exactly one planning pass. A
-  weft periodic timeout answers none of those three.
+  weft periodic timeout answers neither.
 - **The cross-generation drain barrier stays.** `runtime/internal/
   drain_registry` sequences *across* driver restarts; weft's model is one
   generation, and no primitive covers a chain of scopes for one logical
@@ -220,5 +239,8 @@ transitively. Both are hand-edited, and a missing one presents as
 One gap weft has been asked for and does not yet have, so a consumer
 should say so rather than force a fit: a monitored, non-panicking call
 against a pre-existing pid (`broker/internal/call.try_call` and its
-siblings). The other two the census named are closed — weft 0.4.1 carries
-the periodic timeout kind and the injected clock for `weft/poll`.
+siblings). Every other gap the census named is closed — weft 0.4.1
+carries the periodic timeout kind and the injected clock for `weft/poll`,
+and 0.4.2 carries the injectable timer source that let the last
+hand-rolled generation tag in this tree
+(`client/schedulescan`'s) be deleted rather than documented.
