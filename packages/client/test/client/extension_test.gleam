@@ -632,7 +632,13 @@ fn real_jailed_build() -> Nil {
         install.run(
           install.Config(
             ..config(root, never_fetch),
-            build: cli.build_for(plane, exec.PlatformEnforcement),
+            // Best effort, as the code-mode end-to-end demands: the CI gate
+            // runners carry a helper that is honest about lacking a layer
+            // (no user namespaces on the Linux gate), and a test that asked
+            // for the platform's full enforcement there would fail on the
+            // runner rather than on the build. The CLI's own default for a
+            // real install stays `PlatformEnforcement`.
+            build: cli.build_for(plane, exec.BestEffort),
           ),
           source.LocalPath(path: tree),
           rev: None,
