@@ -25,6 +25,7 @@
 //// names the file that moved:
 ////
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
+////   78d6d97ba0fdb11c518b76bc0cc224c0f262521c3a22bd775d7b379a0590cc2f  packages/cap/src/cap/ext.gleam
 ////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
 ////   37332eb8a0ad5118fdf4391729121e71ea153714d53fed8592813308e240b010  packages/cap/src/cap/kv.gleam
@@ -39,7 +40,7 @@
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 79b1669e31e22952fb43995795c910808885f899a0f6a57d273f68fc4a2ce844
+//// Body digest (every line after the marker): e1fce6055e52a23a699f4bd93cb8b717cece4a924cd0d4831686c2d0e2218466
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -113,6 +114,31 @@ pub fn spawn(a, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 pub fn spawn_bounded(a, Int, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 /// Stop the actor after this message.
 pub fn stop() -> Next(a)
+",
+  ),
+  #(
+    "cap/ext",
+    "### cap/ext
+`cap/ext` — the one capability an extension satellite calls before it does
+anything else: \"which tool did the model ask for, and with what?\"
+
+/// The call an extension satellite was launched to serve.
+pub type Call {
+  Call(tool: String, args: String, strand: String, deadline_ms: Int)
+}
+/// Why the call could not be fetched.
+pub type CallRefused {
+  /// The harness refused to hand over a call.
+  CallDenied(code: String, message: String)
+  /// The capability channel could not carry the request.
+  CallUnavailable(reason: String)
+}
+/// Asks the harness which tool this execution is for.
+///
+/// Capability: `ext.call`. Exactly one per execution: the satellite is
+/// launched to serve one call, and a second request would be a second
+/// admission against the same token.
+pub fn call() -> Result(Call, CallRefused)
 ",
   ),
   #(
