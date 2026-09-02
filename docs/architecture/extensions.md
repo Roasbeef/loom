@@ -172,7 +172,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:201`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:207`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** That is not fussiness, it is how the `[client]`
 table the design note reserves for a later ruling gets refused without a
@@ -185,7 +185,7 @@ codepoint (`manifest.is_legal_name` at
 lookalike in a tool name is not a normalization variant of anything.
 
 Three rules need the tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:158`): a tool's `parameters`
+`Surroundings` (`extension/manifest.gleam:168`): a tool's `parameters`
 must be a path under `schema/` that exists and *parses as JSON*; its
 `entry` must name a module `src/` actually ships; and a secret's `host`
 must be one of `[net].hosts`. The last is a contradiction check rather
@@ -753,7 +753,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
-| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:201`), the closed key lists, the name grammars, and `no_net()`. |
+| `client/extension/manifest.gleam` | The total `extension.toml` decoder: `decode` (`extension/manifest.gleam:207`), the closed key lists, the name grammars, and `no_net()`. |
 | `client/extension/install.gleam` | The pipeline: `run` (`extension/install.gleam:188`), the staging discipline, the generated satellite entry. |
 | `client/extension/record.gleam` | The install record and the `Root` that says where installs live: `Record` (`extension/record.gleam:114`), `terms`, `root_for`. |
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:197`), `artifact_matches`, `summarise`. |
