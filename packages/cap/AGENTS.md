@@ -109,7 +109,7 @@ below.
   codes this loop mints itself are `bad_kind`, `busy` and `crashed`;
   every other code is the serving function's own vocabulary
   (`packages/ext`'s, in practice).
-- `cap/schedule.{Schedule, Created, Wake, ScheduleError}` — heartbeats a
+- `cap/schedule.{Schedule, Created, Wake, Bounds, ScheduleError}` — heartbeats a
   program sets for the strand it is running on or for a strand that
   strand spawned, the code-mode half of the door `tools/schedule` opens
   for a tool call. Both land on one
@@ -121,13 +121,32 @@ below.
   a `Wake` (`WakesIdle | SteersOnly`) rather than a `Bool`, so the
   request and the grant read the same way at both ends; the capability
   wire still carries a boolean in both directions.
-  **A target is a request, never an instruction.** `every_on`, `at_on`
-  and `cancel_on` are the three functions that name one, and the host
+  **Four timings, and two of them are not conveniences.** `every` is a
+  fixed interval, `at` a UTC instant, `cron` a five-field calendar
+  expression, and `after` a one-shot a fixed while from now — one of the
+  four per schedule. `after` exists because *nothing tells a program the
+  current time*: the strand's prompt carries no clock and no date, so an
+  absolute instant for `at` cannot be computed inside a program and a
+  guessed one is either refused or fired at the wrong moment; the host
+  resolves it against the session's own clock, bounded at 1..604800
+  seconds. `cron` exists because an interval cannot express a *phase* —
+  the grid is aligned to the epoch, so `every(…, 86_400, …)` is always
+  00:00 UTC — and it is the standard five fields and nothing more: UTC
+  throughout, no seconds field, no month or day names, none of
+  `L`/`W`/`?`/`#`, and the two day fields ORed rather than ANDed when
+  both are restricted. `every_within` and `cron_within` are the same two
+  recurring shapes with `Bounds(max_fires:, expires_after_s:)` stated
+  rather than defaulted; `DefaultBounds` is what the four plain
+  functions pass, and `Bounds` can only *narrow* — the host holds both
+  numbers to the same ceilings it holds its own configuration to and
+  denies anything above one as `invalid_schedule`.
+  **A target is a request, never an instruction.** `every_on`, `at_on`,
+  `cron_on`, `after_on` and `cancel_on` are the functions that name one, and the host
   admits only the calling strand itself or a strand it spawned, decided
   from its own lineage ledger and refused as `invalid_schedule`
   otherwise — a program cannot reach a sibling's or a parent's context by
-  writing a name. The plain `every`/`at`/`cancel` mean this strand and
-  are unchanged. Two consequences a program has to read rather than
+  writing a name. The plain `every`/`at`/`cron`/`after`/`cancel` mean
+  this strand. Two consequences a program has to read rather than
   assume: a schedule onto a subagent is always `SteersOnly`, because a
   subagent has one run and a fresh one after it would extend a child's
   life past its work; and `list`/`cancel` are keyed on the strand that

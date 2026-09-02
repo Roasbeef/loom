@@ -177,7 +177,18 @@ session and sends it many invocations.
   `ScheduleInvalid`. So a program still cannot schedule into an
   unrelated strand's context, and `ScheduleCreated.target` /
   `ScheduleRow.target` are what tell it where a schedule actually
-  landed. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
+  landed. `ScheduleRequest` carries **four timing fields** — `every_seconds`,
+  `cron`, `at`, `in_seconds` — of which the router admits exactly one,
+  refusing none and more than one by name (`one_timing`) before the host
+  sees the request, plus `max_fires` and `expires_after_s`, which cross
+  untouched because the ceilings on them are the host's. The two newer
+  timings each say something the original pair could not: `cron` names a
+  phase and a calendar shape, which an epoch-aligned interval has no
+  argument for, and `in_seconds` names a relative one-shot, which a
+  program with no clock in its prompt cannot express as an absolute
+  instant. Neither is parsed here — the host owns the one RFC3339 parser
+  and the one cron grammar — so this package gains no calendar code and
+  no clock. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
   name for what a schedule may do to an idle strand, restated here the
   way `ScheduleRefusal` restates the host's refusal vocabulary, since
   `codemode` may depend on neither `client` nor `tools`; the cap wire

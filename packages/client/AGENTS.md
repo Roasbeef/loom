@@ -460,11 +460,12 @@ over one session file. WP-L.
   parse_instant, render_instant, fired_key,
   fired_key_prefix, fired_value, seen_key, seen_value, decode_seen,
   injection, origin_of, interval_occurrence,
-  interval_late, interval_expired, max_schedules, max_model_schedules,
+  interval_late, recurring_expired, cron_occurrence, cron_late,
+  cron_next_delay_ms, relative_instant, max_schedules, max_model_schedules,
   min_interval_s,
   max_name_length, max_body_length, max_target_length,
   default_max_fires, max_max_fires, default_expires_after_s,
-  max_expires_after_s}` — scheduled heartbeats (`docs/design-notes/
+  max_expires_after_s, min_in_seconds, max_in_seconds}` — scheduled heartbeats (`docs/design-notes/
   scheduled-heartbeats.md`), the time-triggered sibling of `client/rules`:
   a `[[schedule]]` fires on a clock instead of on a literal match, parsed
   from the same `loom.toml` by the same strict, total discipline. A
@@ -485,10 +486,34 @@ over one session file. WP-L.
   share: it enforces exactly what `parse` enforces, through the same
   predicates and constants, so the two creation paths word refusals
   differently and can never disagree about what is allowed. A schedule is
-  either `Interval(seconds,
-  expiry)`, aligned to a fixed grid (`slot = floor(now_s / seconds)`), or
-  `OneShot(at)`, a single RFC3339 UTC instant — never both, no five-field
-  cron syntax, no timezones. Every `Interval` schedule carries a
+  exactly one of three: `Interval(seconds, expiry)`, aligned to a fixed
+  grid (`slot = floor(now_s / seconds)`); `Cron(expression, expiry)`, a
+  five-field UTC calendar expression parsed by `client/cron`; or
+  `OneShot(at)`, a single RFC3339 UTC instant. Never two, never none, and
+  still no timezones anywhere — the design note cut cron as a swamp, and
+  what changed is that the swamp is the *timezone* half rather than the
+  syntax half. `cron` buys the one thing an interval cannot say at all:
+  a **phase**. The interval grid is aligned to the epoch, so `every =
+  "86400s"` is always 00:00 UTC and `0 9 * * 1-5` is the only way to ask
+  for 09:00 on weekdays. It needs no `min_interval_s` check, and that is
+  a property of the grammar rather than an omission — cron's finest grain
+  is a minute, so `* * * * *` is already exactly at the floor.
+  **`Interval` and `Cron` answer "what is due" differently, on purpose.**
+  An interval fires the slot `now_s` falls in whether or not that slot
+  began before the schedule existed, because a heartbeat grid has no
+  wall-clock meaning and "the current slot" is the only honest reading of
+  *now*. A cron occurrence *is* an instant somebody named, so
+  `cron_occurrence` answers with the last match at or before `now_s`
+  (`cron.previous_occurrence(before_s: now_s + 1)`) **and only if that
+  match is at or after `since_s`** — the observation instant from the
+  seen cell. A `0 9 * * *` schedule created at 15:00 therefore does not
+  fire this morning's 09:00; it waits for tomorrow's. `cron_late` follows
+  the same instant: the preceding occurrence has to have been *owed*
+  (`>= since_s`) and unmarked for a fire to be `Late`, which is what
+  makes a first fire on time. `cron_next_delay_ms` is the re-arm, floored
+  at a second like the interval one, and `None` — no match within
+  `cron.search_horizon_days` — is a schedule that will not fire again.
+  Both recurring shapes carry a
   mandatory `Expiry`: `max_fires` and `expires_after_s` are both always
   active, defaulted when unset, and whichever is reached first ends the
   schedule — the guardrail that caps one schedule's durable fire-mark
@@ -513,7 +538,18 @@ over one session file. WP-L.
   neither name carries its own polarity. The TOML `wake` key, the stored
   config cell and the tool result all stay booleans on the wire, and
   each boundary writes that translation down once.
-  `interval_occurrence`/`interval_late`/`interval_expired`
+  `relative_instant` (with `min_in_seconds`/`max_in_seconds`) turns a
+  model's "in N seconds" into the absolute epoch second a `OneShot`
+  needs, refusing anything outside 1..604800 in words. It exists because
+  **the model has no clock**: the system prompt carries neither the date
+  nor the time, so a model asked to check back in 45 minutes cannot
+  compute the instant `at` wants, and the model-facing one-shot was
+  unusable in practice for the case it is most wanted in. The caller
+  supplies `now_s` rather than this module reading one, because this
+  module performs no I/O — `client/scheduleseam` reads the injected
+  `runtime/effects.clock`.
+  `interval_occurrence`/`interval_late`/`recurring_expired`/
+  `cron_occurrence`/`cron_late`/`cron_next_delay_ms`
   are pure functions over the occurrence arithmetic — deliberately
   factored out of the actor that drives them so a fencepost error gets a
   direct, deterministic test rather than one hidden behind a timer
@@ -555,7 +591,24 @@ over one session file. WP-L.
   `Policy` (applied through `schedule.wake_under`, which caps `wake`
   rather than vetoing the call, so the tool can tell the model what it
   actually got), the `max_model_schedules`
-  ceiling, and the shared bounds via `client/schedule.build`. `Wiring`
+  ceiling, and the shared bounds via `client/schedule.build`.
+  `requested_timing` maps the door's four `RequestedTiming` shapes onto
+  one `Timing`, and it is the seam's job rather than the door's because
+  everything it needs is on this side: the one RFC3339 parser, the one
+  cron grammar (`client/cron.parse`), the defaulted `Expiry` a recurring
+  schedule always gets, and — for the relative one-shot `In(seconds)` —
+  the session's injected `runtime/effects.clock`, read through
+  `core/clock.read` exactly as the scanner reads it, never a wall-clock
+  call of its own. `In` is the only arm that reads a clock, and it is the
+  reason the argument exists at all: the model is told no date, so it
+  cannot compute an `at`. `requested_expiry` defaults `max_fires` and
+  `expires_after_s` and checks *neither* — both go on to
+  `schedule.build`, whose `checked_expiry` is the same ceiling a
+  `[[schedule]]` table meets, so this door holds no second copy of a
+  bound. `describe_timing` is the one rendering both `create` and `list`
+  use, and a cron reads back as `cron "0 9 * * 1-5" UTC, at most N
+  times` — `UTC` said out loud, because a caller reading `0 9 * * 1-5`
+  has no other way to know which 09:00 it got. `Wiring`
   carries `operator_schedules` for one reason worth knowing: both stores
   feed one scanner, which derives a fired-mark from `{target, name}`
   alone, so a model name colliding with an operator's would make two
@@ -592,6 +645,25 @@ over one session file. WP-L.
   code-mode fan-out, which can over-admit by up to `max_outstanding`;
   nothing rests on the exact count, so it is documented rather than
   fixed.
+- `client/cron.{Expression, parse, source, matches, next_occurrence,
+  previous_occurrence, max_expression_length, search_horizon_days}` —
+  standard five-field cron: the parsed expression, what it refuses in
+  words, and pure occurrence arithmetic over a UTC calendar. `Expression`
+  is opaque because its value sets carry invariants only `parse`
+  establishes (sorted, deduplicated, in range, `7` folded to `0` in
+  day-of-week), so `client/schedule` stores the **source text** and
+  re-parses on `decode` rather than storing an expansion. `parse` is
+  total and its error is prose, because the only thing a caller does with
+  it is put it in front of whoever wrote the expression. Both searches
+  are strictly-greater/strictly-less and bounded by
+  `search_horizon_days` — a legal expression need not recur (`0 0 30 2 *`
+  asks for the thirtieth of February), so an unbounded search would not
+  return. The one rule a reimplementation gets wrong is in here and
+  documented at length: **when both day fields are restricted they are
+  ORed, not ANDed**, so `0 9 1 * 1` fires on the first of the month *and*
+  on every Monday. No timezone handling, no seconds field, no names, and
+  `L`/`W`/`?`/`#` refused by name. Performs no I/O and reads no clock:
+  the scanner supplies the instant.
 - `client/schedulescan.{Options, ModelDoor, Message, default_options,
   with_logger, with_model_door_open, poke, start, supervised}` — the
   scheduled-heartbeat scanner. Every tick unions the operator's fixed
@@ -609,7 +681,20 @@ over one session file. WP-L.
   `Options.model_door` to `DoorOpen`, which keeps a slow rescan floor
   when the model may create schedules, so a lost poke self-heals within
   one `min_interval_s` instead of stalling forever.
-  Unlike
+  `process_schedule` dispatches the three timings, and `process_cron`
+  mirrors `process_interval` step for step — read the marks
+  (`marked_occurrences`, shared), settle the observation instant
+  (`observed_since`), test `schedule.recurring_expired`, fire what is
+  due, re-arm. The cron-specific arithmetic is all in `client/schedule`,
+  so this half stays a scanner. Two differences are worth knowing. The
+  seen cell is claimed by this actor as it always was, so `since_s` is
+  available on a schedule's very first tick — which is exactly the tick
+  that decides whether anything is owed, since a cron occurrence
+  predating `since_s` was never asked for. And a cron expression with no
+  next match inside `cron.search_horizon_days` is `Expired` for the
+  tick, with a `schedule.cron_never_matches` warning: `0 0 30 2 *` is
+  legal, will never fire, and must not leave the actor waking up over it
+  forever. Unlike
   `client/rulescan` it is driven by its own injected
   `runtime/effects.Timers.after` deadline, never by a writer hint, and it
   holds no progress state across ticks: every tick re-derives which
