@@ -210,6 +210,10 @@ fn render_search(
   )
 }
 
+// The window is one row per catalogue entry, so it must be rendered by rows
+// as well. A wrapping render would give a wide row two of them, push the
+// selected entry past the clip, and leave the operator navigating a cursor
+// they cannot see; each row is instead cut to the overlay width.
 fn render_models(
   buf: buffer.Buffer,
   area: Rect,
@@ -223,7 +227,7 @@ fn render_models(
     |> list.drop(start)
     |> list.take(height)
     |> list.index_map(fn(model, offset) {
-      model_line(model, start + offset == selected)
+      model_line(model, start + offset == selected, area.size.width)
     })
   let rows = case rows {
     [] -> [
@@ -233,10 +237,10 @@ fn render_models(
     ]
     rows -> rows
   }
-  paragraph.render_text(buf, area, span.text_new(rows))
+  paragraph.render_styled(buf, area, rows)
 }
 
-fn model_line(model: ModelInfo, selected: Bool) -> span.Line {
+fn model_line(model: ModelInfo, selected: Bool, width: Int) -> span.Line {
   let ModelInfo(name:, dialect:, model_id:, active:, ..) = model
   let #(marker, name_style) = case selected {
     True -> #("▸ ", overlay_signal())
@@ -246,14 +250,29 @@ fn model_line(model: ModelInfo, selected: Bool) -> span.Line {
     [] -> ""
     roles -> "  ● " <> string.join(roles, ",")
   }
+  let identifier =
+    "  "
+    <> text_hygiene.single_line(dialect)
+    <> "/"
+    <> text_hygiene.single_line(model_id)
+  let name = text_hygiene.single_line(name)
+
+  // The badge names the roles this row is currently routing, which is the one
+  // field an operator is reading the list to check, so it keeps its cells
+  // before anything else is measured. The name is what the search box matches
+  // against and takes up to half of what is left; whatever it does not use
+  // falls to the identifier, whose provider-qualified tail is the part that
+  // separates two builds of the same model.
+  let budget =
+    int.max(1, width - string.length(marker) - string.length(active_badge))
+  let name_width = int.min(string.length(name), int.max(1, budget / 2))
+  let identifier_width = int.max(0, budget - name_width)
+
   span.line_new([
     span.span_styled(marker, name_style),
-    span.span_styled(text_hygiene.single_line(name), name_style),
+    span.span_styled(text_hygiene.fit_tail(name, name_width), name_style),
     span.span_styled(
-      "  "
-        <> text_hygiene.single_line(dialect)
-        <> "/"
-        <> text_hygiene.single_line(model_id),
+      text_hygiene.fit_tail(identifier, identifier_width),
       overlay_quiet(),
     ),
     span.span_styled(active_badge, overlay_current()),

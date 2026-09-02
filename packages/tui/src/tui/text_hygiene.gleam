@@ -148,6 +148,29 @@ pub fn single_line(text: String) -> String {
   text |> multiline |> string.replace("\n", " ")
 }
 
+/// Keeps the last `width` graphemes of a value, marking any cut with `…`.
+///
+/// A fixed-height overlay row must survive its own clip rather than reflow
+/// into the row below, so an over-wide path or identifier is cut here instead.
+/// The cut takes the front because a canonical path and a catalogue model id
+/// share their leading segments; the tail is what tells two rows apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert text_hygiene.fit_tail("/home/me/work/project", 10) == "…k/project"
+/// ```
+pub fn fit_tail(text: String, width: Int) -> String {
+  let length = string.length(text)
+  case width <= 0, length <= width {
+    True, _ -> ""
+    False, True -> text
+    False, False ->
+      "…"
+      <> string.slice(text, at_index: length - { width - 1 }, length: width - 1)
+  }
+}
+
 fn invisible(code: Int) -> Bool {
   code < 0x20
   || code == 0x7F

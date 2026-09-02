@@ -481,7 +481,15 @@ fn start_server(
     ffi_bootstrap.reserve_loopback_port()
     |> result.map_error(fn(reason) { "reserve loopback port: " <> reason }),
   )
+
+  // Two clocks are read at the same instant. The wall-clock time is what
+  // the starting record publishes, so a later launcher can ask how much of
+  // the budget has already been spent; the monotonic one bounds this
+  // launcher's own wait, so a wall-clock step while the server boots
+  // cannot stretch or cut it.
   let started_at_ms = ffi_bootstrap.system_time_ms()
+  let startup_deadline_ms =
+    ffi_bootstrap.monotonic_time_ms() + startup_timeout_ms
   let endpoint =
     Endpoint(
       version: endpoint_version,
@@ -519,7 +527,13 @@ fn start_server(
           stop_started(StartedProcess(process:, pid:))
           Error("publish server process: " <> reason)
         }
-        Ok(Nil) -> release_and_await(endpoint, started, paths.endpoint)
+        Ok(Nil) ->
+          release_and_await(
+            endpoint,
+            started,
+            paths.endpoint,
+            startup_deadline_ms,
+          )
       }
     }
   }
@@ -529,6 +543,7 @@ fn release_and_await(
   endpoint: Endpoint,
   started: StartedProcess,
   endpoint_path: String,
+  startup_deadline_ms: Int,
 ) -> Result(Target, String) {
   let StartedProcess(process:, pid:) = started
   case ffi_bootstrap.release_server_process(process) {
@@ -537,12 +552,7 @@ fn release_and_await(
       Error("release loomd process: " <> reason)
     }
     Ok(Nil) ->
-      await_new_server(
-        endpoint,
-        started,
-        endpoint.started_at_ms + startup_timeout_ms,
-        endpoint_path,
-      )
+      await_new_server(endpoint, started, startup_deadline_ms, endpoint_path)
   }
 }
 
@@ -554,7 +564,7 @@ fn await_new_server(
 ) -> Result(Target, String) {
   let outcome =
     poll.until(
-      within: deadline - ffi_bootstrap.system_time_ms(),
+      within: deadline - ffi_bootstrap.monotonic_time_ms(),
       every: startup_poll_ms,
       attempt: fn() {
         case probe(endpoint) {
@@ -1141,7 +1151,7 @@ fn probe(endpoint: Endpoint) -> Result(Target, String) {
     await_snapshot(
       inbox,
       endpoint.session,
-      ffi_bootstrap.system_time_ms() + probe_timeout_ms,
+      ffi_bootstrap.monotonic_time_ms() + probe_timeout_ms,
     )
   connection.close(socket)
   result
@@ -1155,7 +1165,11 @@ fn await_snapshot(
   expected_session: String,
   deadline: Int,
 ) -> Result(Nil, String) {
-  let remaining = int.max(0, deadline - ffi_bootstrap.system_time_ms())
+  // The wait is elapsed time on a message inbox rather than a probe, so
+  // it is not a poll; the deadline is monotonic for the same reason every
+  // other launcher wait is, and each frame that is not the answer resumes
+  // the receive against what remains of it.
+  let remaining = int.max(0, deadline - ffi_bootstrap.monotonic_time_ms())
   case process.receive(inbox, remaining) {
     Error(Nil) -> Error("gateway snapshot timed out")
     Ok(connection.Connected) ->

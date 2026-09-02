@@ -558,7 +558,7 @@ fn choice_lines(
     span.line_new([
       span.span_styled(marker, row_style),
       span.span_styled(
-        fit_tail(text_hygiene.single_line(session), width - 2),
+        text_hygiene.fit_tail(text_hygiene.single_line(session), width - 2),
         row_style,
       ),
       span.span_styled(current_badge, theme.overlay_current()),
@@ -566,36 +566,19 @@ fn choice_lines(
     span.line_new([
       span.span_styled(detail_indent, theme.overlay_plain()),
       span.span_styled(
-        fit_tail(text_hygiene.single_line(workspace), path_width),
+        text_hygiene.fit_tail(text_hygiene.single_line(workspace), path_width),
         theme.overlay_quiet(),
       ),
       span.span_styled(separator, theme.overlay_quiet()),
       span.span_styled(
-        fit_tail(text_hygiene.single_line(session_file), path_width),
+        text_hygiene.fit_tail(
+          text_hygiene.single_line(session_file),
+          path_width,
+        ),
         theme.overlay_quiet(),
       ),
     ]),
   ]
-}
-
-/// Keeps the last `width` graphemes of a path, marking any cut with `…`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// sessions.fit_tail("/home/me/work/project", 10)
-/// // -> "…k/project"
-/// ```
-@internal
-pub fn fit_tail(text: String, width: Int) -> String {
-  let length = string.length(text)
-  case width <= 0, length <= width {
-    True, _ -> ""
-    False, True -> text
-    False, False ->
-      "…"
-      <> string.slice(text, at_index: length - { width - 1 }, length: width - 1)
-  }
 }
 
 fn render_help(buf: buffer.Buffer, area: Rect) -> buffer.Buffer {
