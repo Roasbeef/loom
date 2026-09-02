@@ -4,7 +4,8 @@
 -module(broker_test_ffi).
 
 -export([find_executable/1, os_cmd/1,
-         egress_start/0, egress_stop/1, egress_foreign_root/0]).
+         egress_start/0, egress_start_tls12/0, egress_stop/1,
+         egress_foreign_root/0]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -36,11 +37,22 @@ os_cmd(Command) ->
 %% server's controlling pid, its port, and the DER of the root the
 %% client must pin to reach it.
 egress_start() ->
+    egress_start_with([]).
+
+%% The same server pinned to TLS 1.2. Session resumption is only
+%% reachable there: TLS 1.3 resumes through tickets, and OTP's client
+%% has those off by default, so a 1.3 origin cannot exercise the
+%% abbreviated handshake at all. The client still offers both versions,
+%% so 1.2 is the negotiated outcome rather than an imposed one.
+egress_start_tls12() ->
+    egress_start_with([{versions, ['tlsv1.2']}]).
+
+egress_start_with(Extra) ->
     {ok, _} = application:ensure_all_started(ssl),
     {RootDer, ServerConf} = egress_chain(),
     Parent = self(),
     Ref = make_ref(),
-    Pid = spawn(fun() -> egress_listen(Parent, Ref, ServerConf) end),
+    Pid = spawn(fun() -> egress_listen(Parent, Ref, ServerConf, Extra) end),
     receive
         {Ref, Port} -> {Pid, Port, RootDer}
     after 10000 ->
@@ -103,9 +115,9 @@ egress_generate_chain() ->
 egress_key_opts() ->
     [{digest, sha256}, {key, {namedCurve, secp256r1}}].
 
-egress_listen(Parent, Ref, ServerConf) ->
-    Options = ServerConf ++ [{reuseaddr, true}, {active, false},
-                             {mode, binary}, {ip, {127, 0, 0, 1}}],
+egress_listen(Parent, Ref, ServerConf, Extra) ->
+    Options = ServerConf ++ Extra ++ [{reuseaddr, true}, {active, false},
+                                      {mode, binary}, {ip, {127, 0, 0, 1}}],
     {ok, Listen} = ssl:listen(0, Options),
     {ok, {_Address, Port}} = ssl:sockname(Listen),
     Parent ! {Ref, Port},

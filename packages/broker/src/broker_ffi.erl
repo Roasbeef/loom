@@ -489,9 +489,9 @@ egress_cancel(RequestId) ->
 %% ~0P rather than ~0p: a handler crash forwarded as {error, {Error,
 %% Stacktrace}} can carry an #request{} argument with the outgoing
 %% headers in it, and an unbounded print would put an injected credential
-%% into a refusal message. Depth 8 elides that while leaving the shapes
-%% that actually matter — {failed_connect,[{to_address,_},{inet,_,
-%% {tls_alert,{unknown_ca,_}}}]} — intact.
+%% into a refusal message. The bounded depth elides that while leaving
+%% the shapes that actually matter intact; ?EGRESS_REASON_DEPTH carries
+%% the measurement behind the number.
 egress_reason(Reason) ->
     Rendered = unicode:characters_to_binary(
                  io_lib:format("~0P", [Reason, ?EGRESS_REASON_DEPTH]),

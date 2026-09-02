@@ -74,15 +74,19 @@
 ////   verification its roots were supposed to force. A policy's roots
 ////   have to be applied to a full handshake every time, or they are not
 ////   applied at all.
-//// - **A header that could end early never reaches the socket.**
-////   `httpc` type-checks a header and does not scan it, so a CR, LF or
-////   NUL in a name or a value would reach the wire verbatim and let the
-////   caller append headers of its own — a second credential ahead of the
-////   injected one, a different `Host`, or a whole second request with a
-////   method this policy never permitted. Every header this module sends,
-////   the caller's and the injected credential's alike, is scanned for
-////   those code points first, and `HeaderMalformed` names the header
-////   with them escaped. The scan is over code points rather than
+//// - **A header this module cannot put on the wire never reaches the
+////   socket.** `httpc` type-checks a header and does not scan it, so a
+////   CR, LF or NUL in a name or a value would reach the wire verbatim
+////   and let the caller append headers of its own — a second credential
+////   ahead of the injected one, a different `Host`, or a whole second
+////   request with a method this policy never permitted. Above latin-1
+////   the failure is the mirror image: `httpc` refuses the header itself
+////   and puts the offending *value* into the error term, so a credential
+////   with one such character would render itself into a
+////   `TransportFailed`. Every header this module sends, the caller's and
+////   the injected credential's alike, is scanned for both first, and
+////   `HeaderMalformed` names the header — never the value — with its
+////   line endings escaped. The scan is over code points rather than
 ////   substrings on purpose: `string.contains` works on grapheme
 ////   clusters and CRLF is one cluster, so a substring scan for `"\r"`
 ////   misses the exact sequence an injection uses.
@@ -248,9 +252,12 @@ pub type Refusal {
   /// secret's header, or one of the client-owned transport headers.
   HeaderReserved(header: String)
 
-  /// A header name or value carries a byte that would end the header
-  /// early on the wire: CR, LF or NUL. The name is reported with those
-  /// bytes escaped, because this text is logged.
+  /// A header name or value carries a code point this module will not
+  /// send: CR, LF or NUL, which would end the header early on the wire,
+  /// or one above latin-1, which `httpc` refuses in a way that renders
+  /// the value into the error. The name is reported with the line
+  /// endings escaped, because this text is logged; the value never
+  /// appears.
   HeaderMalformed(header: String)
 
   /// A secret binding names an environment variable that is not set.
@@ -297,6 +304,17 @@ const client_owned_headers = [
 /// `Host`, or an entire second request. One table rather than two lists
 /// so that a point cannot be refused without also being printable.
 const line_ending_escapes = [#(13, "\\r"), #(10, "\\n"), #(0, "\\0")]
+
+/// The largest code point `httpc` will place in a header.
+///
+/// Above it, `http_request:mk_key_value_str` raises `{invalid_header,
+/// {Key, Value}}`, and that term reaches the caller as a
+/// `TransportFailed` carrying the offending *value* — so a credential
+/// holding one character above latin-1 would render itself into a
+/// refusal message. This is `httpc`'s own sendability bound, and
+/// refusing it before a socket exists is both the safe answer and the
+/// honest one.
+const max_header_point = 255
 
 /// The scheme's default port, normalized away so that
 /// `https://example.com` and `https://example.com:443` compare equal.
@@ -443,7 +461,8 @@ pub fn describe(refusal: Refusal) -> String {
     HeaderMalformed(header:) ->
       "header "
       <> header
-      <> " carries a line break or NUL and cannot be placed on the wire"
+      <> " carries a line break, a NUL, or a character that cannot be"
+      <> " placed on the wire"
 
     SecretMissing(env:) ->
       "secret binding names "
@@ -776,9 +795,9 @@ fn check_headers(
   })
 }
 
-/// Refuses a header whose name or value could end the header early.
+/// Refuses a header whose name or value this module cannot send.
 fn check_header_shape(name: String, value: String) -> Result(Nil, Refusal) {
-  case ends_a_header(name) || ends_a_header(value) {
+  case unsendable(name) || unsendable(value) {
     True -> Error(HeaderMalformed(escape_line_endings(name)))
     False -> Ok(Nil)
   }
@@ -789,17 +808,28 @@ fn line_ending_escape(point: UtfCodepoint) -> Result(String, Nil) {
   list.key_find(line_ending_escapes, string.utf_codepoint_to_int(point))
 }
 
-/// Whether a string carries a code point that ends a header on the wire.
+/// Whether a string carries a code point this module will not send.
+///
+/// Two reasons a point is refused, and they are different failures. CR,
+/// LF and NUL would reach the wire verbatim and let the sender append
+/// headers of its own; anything above `max_header_point` `httpc` refuses
+/// itself, in a way that puts the value into the error term.
 ///
 /// Code points, not substrings, because Gleam's `string.contains` and
 /// `string.replace` work on grapheme clusters and **CRLF is a single
 /// cluster** — `string.contains("a\r\nb", "\r")` is `False`. A substring
 /// scan would therefore miss the one sequence a smuggled header actually
 /// uses, which is the whole point of the check.
-fn ends_a_header(text: String) -> Bool {
+fn unsendable(text: String) -> Bool {
   text
   |> string.to_utf_codepoints
-  |> list.any(fn(point) { result.is_ok(line_ending_escape(point)) })
+  |> list.any(fn(point) { refuses_point(string.utf_codepoint_to_int(point)) })
+}
+
+/// Whether one code point is one of the two kinds this module refuses.
+fn refuses_point(value: Int) -> Bool {
+  value > max_header_point
+  || result.is_ok(list.key_find(line_ending_escapes, value))
 }
 
 /// Renders the offending code points visibly, so a refusal that reaches

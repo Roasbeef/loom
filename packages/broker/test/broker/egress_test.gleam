@@ -231,6 +231,24 @@ pub fn refuses_a_credential_value_that_would_end_a_header_test() {
     == Error(egress.HeaderMalformed(secret_header))
 }
 
+/// Above latin-1 `httpc` refuses the header itself, and its
+/// `{invalid_header, {Key, Value}}` carries the value — so a credential
+/// with one such character would print itself into a `TransportFailed`.
+/// Refusing it here means the value never reaches a term at all.
+pub fn refuses_a_credential_value_httpc_cannot_send_test() {
+  let policy = bound_policy("api.example.com")
+  let unsendable = "good\u{2028}bad"
+  let secrets = fn(_name) { Ok(unsendable) }
+
+  let outcome =
+    egress.request(policy, get("https://api.example.com/search"), secrets:)
+
+  assert outcome == Error(egress.HeaderMalformed(secret_header))
+
+  let assert Error(refusal) = outcome as "an unsendable credential refuses"
+  assert !string.contains(egress.describe(refusal), unsendable)
+}
+
 pub fn reports_an_unset_credential_before_connecting_test() {
   let policy = bound_policy("api.example.com")
 
@@ -554,8 +572,13 @@ pub fn refuses_a_chain_it_has_no_root_for_test() {
 /// had already established to the origin would carry the second request
 /// past the roots it was supposed to be held to. So the pin has to
 /// refuse even when a good session to the same origin exists.
+///
+/// The origin is pinned to TLS 1.2 because that is the only place the
+/// bypass lives: 1.3 resumes through tickets, which OTP's client has off
+/// by default, so a 1.3 origin would make this test pass whatever the
+/// client did.
 pub fn does_not_resume_a_session_established_under_other_roots_test() {
-  let #(server, port, root) = origin.start()
+  let #(server, port, root) = origin.start_tls12()
   let trusted = live_policy(port, root)
   let pinned_elsewhere =
     egress.Policy(

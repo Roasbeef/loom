@@ -101,7 +101,10 @@ credential, or that the client owns (`Host`, `Content-Length`,
 `Transfer-Encoding`, `Connection`), is refused before a socket exists —
 as is any header, the injected credential's included, carrying a CR, LF
 or NUL, since `httpc` type-checks a header without scanning it and those
-bytes on the wire would let the sender append headers of its own.
+bytes on the wire would let the sender append headers of its own. A
+character above latin-1 is refused for the mirror-image reason: `httpc`
+rejects the header itself and puts the offending *value* into the error
+term, so a credential holding one would print itself into a refusal.
 
 A redirect is treated as a new request rather than as a continuation:
 scheme, origin and method are re-judged on every hop, a 3xx is followed

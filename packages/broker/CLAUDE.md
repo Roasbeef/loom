@@ -212,10 +212,13 @@ protocol (spec Part 1.4). WP-G.
   redirect is a new request; a bound credential injected only for the
   origin it names; `Host`, `Content-Length`, `Transfer-Encoding`,
   `Connection` and every bound secret's header reserved to the client;
-  every header scanned for CR, LF and NUL before it can reach the socket,
-  over **code points** rather than substrings because `string.contains`
-  works on grapheme clusters and CRLF is one, so a substring scan misses
-  the exact sequence an injection uses; a
+  every header — the caller's and the injected credential's alike —
+  scanned before it can reach the socket for CR, LF and NUL (which would
+  end it early on the wire) and for anything above latin-1 (which `httpc`
+  refuses in a way that renders the *value* into the error term), over
+  **code points** rather than substrings because `string.contains` works
+  on grapheme clusters and CRLF is one, so a substring scan misses the
+  exact sequence an injection uses; a
   redirect followed only under `SameHost(n)`, only within the origin, at
   most `n` times, with 303 becoming a bodyless `GET`; one deadline for
   connect, every hop and the body; TLS always `verify_peer` with
@@ -227,7 +230,10 @@ protocol (spec Part 1.4). WP-G.
   on host and port alone, and a resumed TLS 1.2 handshake carries no
   certificate, so without `reuse_sessions: false` a session established
   by another policy — or by the provider's client, which shares the node
-  — would carry a request past the roots it was held to. Two limits are honest
+  — would carry a request past the roots it was held to. The test for it
+  runs against a TLS 1.2 origin on purpose: 1.3 resumes through tickets,
+  which OTP's client has off by default, so a 1.3 origin would make the
+  test pass whatever the client did. Two limits are honest
   rather than hidden: `httpc` streams only 200 and 206, so on any other
   status the size cap is a check after receipt rather than a brake (a
   declared `Content-Length` over the cap is still refused first), and a

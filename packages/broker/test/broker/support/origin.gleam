@@ -24,6 +24,16 @@ pub type Server
 @external(erlang, "broker_test_ffi", "egress_start")
 pub fn start() -> #(Server, Int, BitArray)
 
+/// The same server, pinned to TLS 1.2.
+///
+/// Session resumption is only reachable on 1.2: TLS 1.3 resumes through
+/// tickets and OTP's client has those off by default, so a 1.3 origin
+/// cannot exercise the abbreviated handshake at all and a test that used
+/// one would pass whatever the client did. The client's own version list
+/// still offers both, so 1.2 is negotiated rather than imposed.
+@external(erlang, "broker_test_ffi", "egress_start_tls12")
+pub fn start_tls12() -> #(Server, Int, BitArray)
+
 /// Stops a server. Killing the owner closes the listen socket with it.
 @external(erlang, "broker_test_ffi", "egress_stop")
 pub fn stop(server: Server) -> Nil
