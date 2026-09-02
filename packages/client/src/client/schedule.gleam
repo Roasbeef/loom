@@ -817,7 +817,25 @@ pub fn interval_occurrence(seconds seconds: Int, now_s now_s: Int) -> Int {
   { now_s / seconds } * seconds
 }
 
-/// Whether an about-to-fire occurrence should be annotated `late`: not
+/// Whether a fire is landing inside the window it was due in, or after
+/// that window has already closed.
+///
+/// A late fire injects the same body through the same path, so the
+/// annotation changes only what the text says about itself. It travels
+/// as a value rather than as a `Bool` because both states are ones a
+/// reader has to name — a bare `True` three arguments into a call names
+/// neither of them.
+pub type Lateness {
+  /// The fire is landing in the window it was due in.
+  OnTime
+
+  /// The window closed before anything fired, most often because the
+  /// server was not running. It is exactly one catch-up fire, never a
+  /// replay of every occurrence that was missed.
+  Late
+}
+
+/// Whether an about-to-fire occurrence should be annotated `Late`: not
 /// this schedule's very first occurrence ever, and the immediately
 /// preceding slot's occurrence is missing from what has already fired.
 ///
@@ -836,35 +854,43 @@ pub fn interval_occurrence(seconds seconds: Int, now_s now_s: Int) -> Int {
 ///
 /// ```gleam
 /// // the very first occurrence is never late
-/// assert !schedule.interval_late(occurrences: [], seconds: 60, occurrence: 0)
+/// assert schedule.interval_late(occurrences: [], seconds: 60, occurrence: 0)
+///   == schedule.OnTime
 /// ```
 ///
 /// ```gleam
 /// // on-time: the previous slot's mark exists
-/// assert !schedule.interval_late(
-///   occurrences: [0],
-///   seconds: 60,
-///   occurrence: 60,
-/// )
+/// assert schedule.interval_late(
+///     occurrences: [0],
+///     seconds: 60,
+///     occurrence: 60,
+///   )
+///   == schedule.OnTime
 /// ```
 ///
 /// ```gleam
 /// // late: several windows were skipped, so the previous slot has no mark
 /// assert schedule.interval_late(
-///   occurrences: [0],
-///   seconds: 60,
-///   occurrence: 240,
-/// )
+///     occurrences: [0],
+///     seconds: 60,
+///     occurrence: 240,
+///   )
+///   == schedule.Late
 /// ```
 ///
 pub fn interval_late(
   occurrences occurrences: List(Int),
   seconds seconds: Int,
   occurrence occurrence: Int,
-) -> Bool {
-  case occurrences {
-    [] -> False
-    _ -> !list.contains(occurrences, occurrence - seconds)
+) -> Lateness {
+  case occurrences, list.contains(occurrences, occurrence - seconds) {
+    // Nothing has fired at all, so this is the schedule's first
+    // occurrence ever and there is no earlier window it could have
+    // missed. The mark check is meaningless here and is ignored.
+    [], _preceding -> OnTime
+
+    [_fired, ..], True -> OnTime
+    [_fired, ..], False -> Late
   }
 }
 
@@ -918,31 +944,8 @@ fn earliest(occurrences: List(Int)) -> Option(Int) {
 
 // --- the injected text ---------------------------------------------------
 
-/// The text one fire injects: an attribution line naming the schedule, a
-/// sentence saying whose text this is and that it is time-driven rather
-/// than triggered by anything the model said, an optional late
-/// annotation, and the body inside a named fence.
-///
-/// The framing mirrors `client/rules.injection` in spirit, adapted for a
-/// different kind of "whose text is this": a triggered rule explains
-/// that it was not a turn from the user, and a schedule additionally
-/// explains that it is not a turn from *anyone* — a standing instruction
-/// firing on a timer, with nobody necessarily present to have prompted
-/// it. `late` is set when `client/schedulescan` is firing a schedule
-/// noticeably after its window closed (most often because the server was
-/// not running), and says so plainly rather than leaving the model to
-/// infer a gap in the conversation's own timeline.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // schedule.injection(sched, False, schedule.OperatorConfigured)
-/// ```
-///
-/// ```gleam
-/// // schedule.injection(sched, True, schedule.ModelCreated)
-/// ```
-///
+/// Whose text a fire is injecting, which is the one question the fence
+/// around it exists to answer.
 pub type Origin {
   /// An operator's `[[schedule]]` table. Standing configuration the model
   /// had no hand in.
@@ -979,15 +982,40 @@ fn attribution(origin: Origin) -> String {
   }
 }
 
-pub fn injection(schedule: Schedule, late: Bool, origin: Origin) -> String {
+/// The text one fire injects: an attribution line naming the schedule, a
+/// sentence saying whose text this is and that it is time-driven rather
+/// than triggered by anything the model said, an optional late
+/// annotation, and the body inside a named fence.
+///
+/// The framing mirrors `client/rules.injection` in spirit, adapted for a
+/// different kind of "whose text is this": a triggered rule explains
+/// that it was not a turn from the user, and a schedule additionally
+/// explains that it is not a turn from *anyone* — a standing instruction
+/// firing on a timer, with nobody necessarily present to have prompted
+/// it. `Late` is passed when `client/schedulescan` is firing a schedule
+/// noticeably after its window closed (most often because the server was
+/// not running), and says so plainly rather than leaving the model to
+/// infer a gap in the conversation's own timeline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.injection(sched, schedule.OnTime, schedule.OperatorConfigured)
+/// ```
+///
+/// ```gleam
+/// // schedule.injection(sched, schedule.Late, schedule.ModelCreated)
+/// ```
+///
+pub fn injection(schedule: Schedule, late: Lateness, origin: Origin) -> String {
   let late_line = case late {
-    True ->
+    Late ->
       "This fire is late: the scheduled window for this occurrence has "
       <> "already closed, whether because the server was not running or "
       <> "because nothing was there to act on it in time. It is exactly "
       <> "one catch-up fire, not a replay of every occurrence that was "
       <> "missed.\n\n"
-    False -> ""
+    OnTime -> ""
   }
 
   // The attribution line carries the late marker as well as the name,
@@ -999,8 +1027,8 @@ pub fn injection(schedule: Schedule, late: Bool, origin: Origin) -> String {
   // should do about it, so it belongs above that fold rather than four
   // paragraphs into a body nobody has opened.
   let late_marker = case late {
-    True -> " (late)"
-    False -> ""
+    Late -> " (late)"
+    OnTime -> ""
   }
   "[loom] scheduled heartbeat \""
   <> schedule.name

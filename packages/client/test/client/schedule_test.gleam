@@ -468,7 +468,8 @@ pub fn interval_occurrence_floors_to_the_slot_boundary_test() {
 }
 
 pub fn the_very_first_occurrence_is_never_late_test() {
-  assert !schedule.interval_late(occurrences: [], seconds: 60, occurrence: 0)
+  assert schedule.interval_late(occurrences: [], seconds: 60, occurrence: 0)
+    == schedule.OnTime
 }
 
 // The case the bug lived in: a naive "is `now_s` past this occurrence's
@@ -476,18 +477,21 @@ pub fn the_very_first_occurrence_is_never_late_test() {
 // *from* `now_s` in the first place (`interval_occurrence`). Lateness has
 // to come from whether the immediately preceding slot actually fired.
 pub fn an_on_time_fire_whose_previous_slot_fired_is_not_late_test() {
-  assert !schedule.interval_late(occurrences: [0], seconds: 60, occurrence: 60)
-  assert !schedule.interval_late(
-    occurrences: [0, 60],
-    seconds: 60,
-    occurrence: 120,
-  )
+  assert schedule.interval_late(occurrences: [0], seconds: 60, occurrence: 60)
+    == schedule.OnTime
+  assert schedule.interval_late(
+      occurrences: [0, 60],
+      seconds: 60,
+      occurrence: 120,
+    )
+    == schedule.OnTime
 }
 
 pub fn a_fire_after_a_skipped_window_is_late_test() {
   // Only slot 0 ever fired; the current occurrence is four windows later,
   // so the immediately preceding slot (180) was never fired.
   assert schedule.interval_late(occurrences: [0], seconds: 60, occurrence: 240)
+    == schedule.Late
 }
 
 pub fn lateness_only_looks_at_the_immediately_preceding_slot_test() {
@@ -495,6 +499,7 @@ pub fn lateness_only_looks_at_the_immediately_preceding_slot_test() {
   // present — this must still read as late, not as "some history exists
   // so it's fine."
   assert schedule.interval_late(occurrences: [0], seconds: 60, occurrence: 120)
+    == schedule.Late
 }
 
 pub fn expiry_is_reached_by_fire_count_alone_test() {
@@ -545,7 +550,8 @@ fn sched() -> schedule.Schedule {
 }
 
 pub fn the_injection_names_itself_and_fences_the_body_test() {
-  let text = schedule.injection(sched(), False, schedule.OperatorConfigured)
+  let text =
+    schedule.injection(sched(), schedule.OnTime, schedule.OperatorConfigured)
   assert string.contains(text, "scheduled heartbeat \"heartbeat\"")
   assert string.contains(text, "not a turn from the user")
   assert string.contains(
@@ -557,12 +563,14 @@ pub fn the_injection_names_itself_and_fences_the_body_test() {
 }
 
 pub fn a_prompt_fire_carries_no_late_annotation_test() {
-  let text = schedule.injection(sched(), False, schedule.OperatorConfigured)
+  let text =
+    schedule.injection(sched(), schedule.OnTime, schedule.OperatorConfigured)
   assert !string.contains(text, "This fire is late")
 }
 
 pub fn a_late_fire_says_so_test() {
-  let text = schedule.injection(sched(), True, schedule.OperatorConfigured)
+  let text =
+    schedule.injection(sched(), schedule.Late, schedule.OperatorConfigured)
   assert string.contains(text, "This fire is late")
 }
 
@@ -610,7 +618,7 @@ pub fn the_committed_example_shows_both_timings_test() {
 pub fn the_first_line_names_the_schedule_completely_test() {
   let assert Ok(#(first, _body)) =
     string.split_once(
-      schedule.injection(sched(), False, schedule.OperatorConfigured),
+      schedule.injection(sched(), schedule.OnTime, schedule.OperatorConfigured),
       "\n",
     )
     as "an injection must have a body below its attribution line"
@@ -624,7 +632,7 @@ pub fn the_first_line_names_the_schedule_completely_test() {
 pub fn the_first_line_carries_the_late_marker_test() {
   let assert Ok(#(first, _body)) =
     string.split_once(
-      schedule.injection(sched(), True, schedule.OperatorConfigured),
+      schedule.injection(sched(), schedule.Late, schedule.OperatorConfigured),
       "\n",
     )
     as "a late injection must have a body below its attribution line"
@@ -632,7 +640,7 @@ pub fn the_first_line_carries_the_late_marker_test() {
   assert first == "[loom] scheduled heartbeat \"heartbeat\" (late)"
   // The prose reason stays in the body, where an expanded reader finds it.
   assert string.contains(
-    schedule.injection(sched(), True, schedule.OperatorConfigured),
+    schedule.injection(sched(), schedule.Late, schedule.OperatorConfigured),
     "This fire is late",
   )
 }
@@ -875,7 +883,7 @@ pub fn the_committed_example_configs_policy_parses_test() {
 // reading "standing operator configuration" above a body it wrote itself
 // has been handed an authority nobody granted, on a schedule it set.
 pub fn a_model_created_fire_does_not_claim_to_be_operator_configuration_test() {
-  let text = schedule.injection(sched(), False, schedule.ModelCreated)
+  let text = schedule.injection(sched(), schedule.OnTime, schedule.ModelCreated)
 
   assert !string.contains(text, "standing operator configuration")
   assert !string.contains(text, "operator")
@@ -884,7 +892,8 @@ pub fn a_model_created_fire_does_not_claim_to_be_operator_configuration_test() {
 }
 
 pub fn an_operator_fire_still_says_it_is_operator_configuration_test() {
-  let text = schedule.injection(sched(), False, schedule.OperatorConfigured)
+  let text =
+    schedule.injection(sched(), schedule.OnTime, schedule.OperatorConfigured)
 
   assert string.contains(text, "standing operator configuration")
 }
@@ -895,7 +904,7 @@ pub fn an_operator_fire_still_says_it_is_operator_configuration_test() {
 pub fn both_origins_disclaim_the_user_and_a_reply_test() {
   [schedule.OperatorConfigured, schedule.ModelCreated]
   |> list.each(fn(origin) {
-    let text = schedule.injection(sched(), False, origin)
+    let text = schedule.injection(sched(), schedule.OnTime, origin)
     // Lowercased: one origin opens the clause mid-sentence, the other
     // starts a sentence with it.
     let lowered = string.lowercase(text)

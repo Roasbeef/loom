@@ -624,6 +624,19 @@ fn held_or_failed_retry_ms() -> Int {
   schedule.min_interval_s * 1000
 }
 
+// A one-shot is the only schedule whose lateness a wall clock decides.
+// Its single occurrence is `at` itself, so there is no preceding slot
+// whose missing mark could stand in for the window having closed the way
+// `schedule.interval_late` reads one. The grace period is what keeps
+// ordinary scheduling jitter from reading to the model as a catch-up
+// fire it is not.
+fn one_shot_lateness(at at: Int, now_s now_s: Int) -> schedule.Lateness {
+  case now_s >= at + late_grace_s {
+    True -> schedule.Late
+    False -> schedule.OnTime
+  }
+}
+
 // Not yet due: re-arm at the real remaining wait, clamped. Due: fire, and
 // stop re-arming for good the moment the mark actually lands (`Fired` or
 // `AlreadyFired`) — a one-shot never re-arms once its single occurrence
@@ -641,7 +654,7 @@ fn due_one_shot(
   case now_s >= at {
     False -> Active(next_delay_ms: int.max(at * 1000 - now_ms, 1000))
     True ->
-      case fire(state, due, key, late: now_s >= at + late_grace_s) {
+      case fire(state, due, key, late: one_shot_lateness(at:, now_s:)) {
         Fired | AlreadyFired -> Expired
         Held | Failed(..) -> Active(next_delay_ms: held_or_failed_retry_ms())
       }
@@ -669,7 +682,12 @@ type Fire {
   Failed(reason: String)
 }
 
-fn fire(state: State, due: Due, key: String, late late: Bool) -> Fire {
+fn fire(
+  state: State,
+  due: Due,
+  key: String,
+  late late: schedule.Lateness,
+) -> Fire {
   let mark = api.Mark(key:, value: schedule.fired_value(due.schedule))
   let text = injected_message(state, due, late)
   let verdict = case due.schedule.wake {
@@ -696,7 +714,7 @@ fn fire(state: State, due: Due, key: String, late late: Bool) -> Fire {
 fn injected_message(
   state: State,
   due: Due,
-  late: Bool,
+  late: schedule.Lateness,
 ) -> message.AgentMessage {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
   message.UserMessage(
