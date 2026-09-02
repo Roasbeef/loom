@@ -567,3 +567,68 @@ fn fact_runtime() -> api.Runtime {
     as "the session tree must boot"
   rt
 }
+
+// The reserved side of the same compare-and-set, which is what lets a
+// harness component mint a record under its own prefix exactly once: the
+// second writer through the check-then-write gap is told it lost rather
+// than silently overwriting the first (issue #162).
+pub fn put_reserved_fact_expecting_claims_a_cell_once_test() {
+  let rt = fact_runtime()
+  let key = "schedule/config/main/poll"
+  let assert Ok(_seq) =
+    api.put_reserved_fact_expecting(
+      rt,
+      key,
+      json.String("first"),
+      expected: None,
+    )
+    as "an absent reserved cell is a legitimate expectation"
+  let assert Error(api.FactConflict(key: conflicted)) =
+    api.put_reserved_fact_expecting(
+      rt,
+      key,
+      json.String("second"),
+      expected: None,
+    )
+    as "a second claim against the same absent expectation must lose"
+  assert conflicted == key
+  let assert Ok(Some(json.String("first"))) = api.fact(rt, key)
+
+  // Disjoint from the unreserved door: an ordinary key is refused here
+  // exactly as a reserved one is refused to `put_fact_expecting`.
+  let assert Error(api.UnreservedFactKey(key: "review/findings")) =
+    api.put_reserved_fact_expecting(
+      rt,
+      "review/findings",
+      json.Null,
+      expected: None,
+    )
+  process.kill(rt.tree.supervisor)
+}
+
+// Retiring a reserved record leaves nothing behind for a prefix scan to
+// read and discard, and frees the key to be claimed afresh (issue #164).
+pub fn delete_reserved_fact_removes_the_cell_test() {
+  let rt = fact_runtime()
+  let key = "schedule/config/main/poll"
+  let assert Ok(Nil) = api.put_reserved_fact(rt, key, json.String("live"))
+  let assert Ok(Nil) = api.delete_reserved_fact(rt, key)
+  let assert Ok(None) = api.fact(rt, key) as "a deleted cell reads as absent"
+  let assert Ok([]) = api.reserved_facts(rt, prefix: "schedule/config/")
+    as "a deleted cell leaves no tombstone under its prefix"
+
+  // Already absent: the intent is met, so this is not an error.
+  let assert Ok(Nil) = api.delete_reserved_fact(rt, key)
+
+  // The key is free again, which is what a cancel-then-recreate needs.
+  let assert Ok(_seq) =
+    api.put_reserved_fact_expecting(
+      rt,
+      key,
+      json.String("again"),
+      expected: None,
+    )
+  let assert Error(api.UnreservedFactKey(key: "review/findings")) =
+    api.delete_reserved_fact(rt, "review/findings")
+  process.kill(rt.tree.supervisor)
+}

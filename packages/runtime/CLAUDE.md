@@ -36,10 +36,17 @@ extended by the M3 runtime wave.
   retrying — `retry_admission` decrements only on `Retry`, so spending
   four attempts against a fence that refuses all four would report
   `RaceLost` and name the wrong cause.
-- `runtime/api.{put_reserved_fact, reserved_facts, reserved_fact_key}` —
-  the harness-only door to the reserved corners of `fact.custom`, and the
+- `runtime/api.{put_reserved_fact, put_reserved_fact_expecting,
+  delete_reserved_fact, reserved_facts, reserved_fact_key}` — the
+  harness-only door to the reserved corners of `fact.custom`, and the
   predicate naming them. Deliberately disjoint from `put_fact`/`facts`,
-  which refuse and hide the same keys.
+  which refuse and hide the same keys. `put_reserved_fact_expecting` is
+  `put_fact_expecting`'s compare-and-set on the reserved side — the
+  `expected: None` form is how a harness component mints a record under
+  its own prefix exactly once instead of read-then-blind-write (#162) —
+  and `delete_reserved_fact` is the blackboard's one delete door, reserved
+  only, so a retired record leaves no tombstone for every later prefix
+  scan to discard (#164); nothing a model reaches can make a cell vanish.
 - `runtime/supervisor.SessionTree` — a rest-for-one supervisor over six
   children in order: the significant temporary **drain ledger**, the
   restartable strand **registry**, the **StorageWriter**, the

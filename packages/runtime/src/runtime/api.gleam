@@ -1303,6 +1303,19 @@ pub fn put_fact_expecting(
     when: reserved_fact_key(key),
     return: Error(ReservedFactKey(key:)),
   )
+  commit_fact_expecting(runtime, key, value, expected)
+}
+
+// The compare-and-set fact commit both expecting doors share. As with
+// `commit_fact`, the reservation check is the caller's, and it is the
+// only thing that differs between `put_fact_expecting` and
+// `put_reserved_fact_expecting`.
+fn commit_fact_expecting(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  expected: Option(Seq),
+) -> Result(Seq, ApiError) {
   let plan_tx =
     tx.Tx(
       writes: [
@@ -1538,6 +1551,82 @@ pub fn put_reserved_fact(
   case reserved_fact_key(key) {
     False -> Error(UnreservedFactKey(key:))
     True -> commit_fact(runtime, key, value)
+  }
+}
+
+/// Writes one reserved `fact.custom` cell only if it is still at the seq
+/// the caller read — `put_fact_expecting`'s compare-and-set, on the
+/// harness-only side of the reservation.
+///
+/// `expected` is what `fact_cell` returned, or `None` for a cell that
+/// must still be absent. That second form is the one this door exists
+/// for. A harness component that mints a durable record under a reserved
+/// prefix — a model-created schedule's config cell, say — and must never
+/// silently replace one that already exists needs "write only if nobody
+/// has" to be one commit rather than a read followed by a blind write:
+/// two callers racing through the gap between those two would both see
+/// absence and both write, and the second would erase the first without
+/// either learning it (issue #162). A cell that moved answers
+/// `FactConflict`, exactly as the unreserved door does.
+///
+/// Unreserved keys are refused, as they are to `put_reserved_fact`: the
+/// two write paths stay disjoint so neither can be pressed into service
+/// as the other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.put_reserved_fact_expecting(runtime, config_key, payload,
+/// //   expected: None)
+/// ```
+///
+pub fn put_reserved_fact_expecting(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  expected expected: Option(Seq),
+) -> Result(Seq, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(key),
+    return: Error(UnreservedFactKey(key:)),
+  )
+  commit_fact_expecting(runtime, key, value, expected)
+}
+
+/// Deletes one reserved `fact.custom` cell. Deleting a cell that is
+/// already absent succeeds: the caller's intent — that the cell not exist
+/// — is met either way, which is also what `core/tx.DeleteRegister`
+/// promises.
+///
+/// The one delete door on the blackboard, and reserved-only on purpose.
+/// An unreserved fact is a last-write-wins cell a model owns, and nothing
+/// a model can reach should be able to make a record vanish rather than
+/// change. A harness component that owns a reserved namespace, by
+/// contrast, needs to retire a record without leaving a tombstone that
+/// every later scan of the prefix has to read and discard (issue #164).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.delete_reserved_fact(runtime, config_key)
+/// ```
+///
+pub fn delete_reserved_fact(
+  runtime: Runtime,
+  key: String,
+) -> Result(Nil, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(key),
+    return: Error(UnreservedFactKey(key:)),
+  )
+  let plan_tx =
+    tx.Tx(
+      writes: [tx.DeleteRegister(ns: register.FactCustom, key:)],
+      expected: [],
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(_) -> Ok(Nil)
+    Error(error) -> Error(commit_failure(error))
   }
 }
 
