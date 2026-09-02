@@ -14,13 +14,13 @@
 ////
 //// The shape the design note names is gen_event's exactly: an ordered
 //// list of subscribers, each holding private state (its name, the
-//// events it declared, its invoker, how many times it has declined),
-//// receiving every event in load order, with a broken one dropped and
-//// logged while its siblings carry on. `weft/event_manager` is the
-//// typed binding of that, and the state each handler keeps is sealed in
-//// its own closure, so two extensions with unrelated state still share
-//// one list. Writing the fan-out here would be a hand-rolled copy of a
-//// weft primitive, which is a review finding rather than a shortcut.
+//// events it declared, its invoker), receiving every event in load
+//// order, with a broken one dropped and logged while its siblings carry
+//// on. `weft/event_manager` is the typed binding of that, and the state
+//// each handler keeps is sealed in its own closure, so two extensions
+//// with unrelated state still share one list. Writing the fan-out here
+//// would be a hand-rolled copy of a weft primitive, which is a review
+//// finding rather than a shortcut.
 ////
 //// The manager's own limit is the intended semantics: a handler stalls
 //// the bus for as long as its round trip takes, and the per-call
@@ -367,19 +367,6 @@ pub fn start(
   Ok(Bus(manager: started.data, chain: extensions, logger:))
 }
 
-/// The extensions this bus fans out to, in load order. What a caller
-/// asserts on, and what the folds walk.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // list.map(hooks.extensions(bus), fn(e) { e.name }) == ["web_search"]
-/// ```
-///
-pub fn extensions(bus: Bus) -> List(Extension) {
-  bus.chain
-}
-
 /// How many handlers the manager still holds. Falls as broken
 /// extensions are dropped, which is the observable side of a `Gone`.
 ///
@@ -650,28 +637,22 @@ fn retexted(
 
 // --- handlers -------------------------------------------------------------
 
-// One extension's subscription. The state is the extension plus a count
-// of the answers it declined: a decline is an ordinary answer and must
-// not drop anybody, but an extension that declines everything is worth
-// being able to see, and the count is what a later `RemoveSelf` policy
-// would be built from.
-type Subscription {
-  Subscription(extension: Extension, declined: Int)
-}
-
+// One extension's subscription. The handler's whole state is the
+// extension itself: what it is called, what it declared, and how to
+// reach it. There is nothing to accumulate, because every outcome is
+// decided by the answer in hand — an ordinary answer keeps the handler
+// where it is, and a broken one removes it now rather than on some
+// threshold.
 fn handler_for(extension: Extension, logger: Logger) -> Handler(Event) {
-  use state, event <- event_manager.handler(Subscription(
-    extension:,
-    declined: 0,
-  ))
+  use state, event <- event_manager.handler(extension)
   handle(state, event, logger)
 }
 
 fn handle(
-  state: Subscription,
+  state: Extension,
   event: Event,
   logger: Logger,
-) -> Result(Subscription, String) {
+) -> Result(Extension, String) {
   case event {
     SessionStart ->
       settle(state, manifest.session_start_event, session_start_args(), logger)
@@ -682,7 +663,7 @@ fn handle(
         manifest.before_agent_start_event,
         run_start_args(op_id, strand),
         logger,
-        fn(value) { forward_injection(state.extension.name, value, reply) },
+        fn(value) { forward_injection(state.name, value, reply, logger) },
       )
 
     ToolCall(op_id:, tool:, arguments:, source_index:, reply:) ->
@@ -691,7 +672,7 @@ fn handle(
         manifest.tool_call_event,
         tool_call_args(op_id, tool, arguments, source_index),
         logger,
-        fn(value) { forward_verdict(state.extension.name, value, reply) },
+        fn(value) { forward_verdict(state.name, value, reply) },
       )
 
     AgentEnd(op_id:) ->
@@ -705,29 +686,33 @@ fn handle(
 // A notification: the round trip still happens, because the extension is
 // entitled to know, but nothing is read back from it.
 fn settle(
-  state: Subscription,
+  state: Extension,
   event: String,
   args: JsonValue,
   logger: Logger,
-) -> Result(Subscription, String) {
-  answer(state, event, args, logger, fn(_value) { Nil })
+) -> Result(Extension, String) {
+  answer(state, event, args, logger, fn(_value) { Ok(Nil) })
 }
 
 // The shape both kinds of delivery share. An event the extension never
 // declared is skipped *before* the call, which is the property that
 // keeps a hook bus from waking every satellite on every event.
 fn answer(
-  state: Subscription,
+  state: Extension,
   event: String,
   args: JsonValue,
   logger: Logger,
-  forward: fn(JsonValue) -> Nil,
-) -> Result(Subscription, String) {
-  case ask(state.extension, event, args) {
-    Ok(value) -> {
+  forward: fn(JsonValue) -> Result(Nil, String),
+) -> Result(Extension, String) {
+  case ask(state, event, args) {
+    // An answer this module cannot read is not an answer. `forward`
+    // reports that as an `Error`, and it lands on the same arm a dead
+    // satellite lands on, because the two are the same fact to the
+    // harness: this extension is not one whose answers mean anything.
+    Ok(value) ->
       forward(value)
-      Ok(state)
-    }
+      |> result.replace(state)
+      |> result.map_error(fn(reason) { broken(state, event, reason) })
 
     // Not declared, or declined in band. Neither is a broken extension,
     // so neither costs it its place in the list.
@@ -735,49 +720,84 @@ fn answer(
 
     Error(Refused(reason:)) -> {
       log.info(logger, "extension.hook.declined", [
-        field.ident(key: "extension", value: state.extension.name),
+        field.ident(key: "extension", value: state.name),
         field.ident(key: "event", value: event),
         field.text(key: "reason", value: reason),
       ])
-      Ok(Subscription(..state, declined: state.declined + 1))
+      Ok(state)
     }
 
     // Gone, crashed, or past its deadline. The manager drops the handler
     // and logs the reason; the run carries on without this extension for
     // the rest of the session.
-    Error(failure) ->
-      Error(state.extension.name <> " " <> event <> ": " <> describe(failure))
+    Error(failure) -> Error(broken(state, event, describe(failure)))
   }
+}
+
+// The sentence `weft/event_manager` logs when it drops a handler. Both
+// removal paths render it the same way, because an operator reading the
+// line cares which extension and which event, not which of the two
+// checks caught it.
+fn broken(state: Extension, event: String, reason: String) -> String {
+  state.name <> " " <> event <> ": " <> reason
 }
 
 fn forward_injection(
   name: String,
   value: JsonValue,
   reply: Subject(Injection),
-) -> Nil {
+  logger: Logger,
+) -> Result(Nil, String) {
   case injection_of(value) {
-    Ok(Some(text)) -> process.send(reply, Injection(extension: name, text:))
+    Ok(Some(text)) -> {
+      process.send(reply, Injection(extension: name, text:))
+      Ok(Nil)
+    }
 
-    // Nothing to inject, or an answer that did not decode. A malformed
-    // answer to an optional injection is worth no more than a silent
-    // one: there is nothing to attribute and nothing to insert.
-    Ok(None) | Error(_reason) -> Nil
+    Ok(None) -> Ok(Nil)
+
+    // An injection is optional, so an answer that does not decode is
+    // treated as "nothing to add" rather than as a broken extension —
+    // there is nothing to attribute and nothing to insert. It is said
+    // out loud, because an author whose injection silently never
+    // appears has no other way to find out why.
+    Error(reason) -> {
+      log.info(logger, "extension.hook.unreadable", [
+        field.ident(key: "extension", value: name),
+        field.ident(key: "event", value: manifest.before_agent_start_event),
+        field.text(key: "reason", value: reason),
+      ])
+      Ok(Nil)
+    }
   }
 }
 
+// A verdict this module cannot read costs the handler its place.
+//
+// The first shape of this sent `Allow` and carried on, on the argument
+// that the built-in clearance had already run. That was wrong in a way
+// worth writing down: `{"verdict":"Block"}` — one capital letter — would
+// have been a gate silently disabled for the rest of the session, and
+// nothing anywhere would have said so. An extension whose answers do not
+// parse is not a policy the harness can apply, and the honest response
+// is to stop asking it and log why. The call in hand is still allowed:
+// removing a handler is not a reason to refuse work the built-in
+// clearance cleared.
 fn forward_verdict(
   name: String,
   value: JsonValue,
   reply: Subject(Verdict),
-) -> Nil {
+) -> Result(Nil, String) {
   case verdict_of(name, value) {
-    Ok(verdict) -> process.send(reply, verdict)
+    Ok(verdict) -> {
+      process.send(reply, verdict)
+      Ok(Nil)
+    }
 
-    // An undecodable verdict is not a block. A gate that fails open is
-    // the deliberate direction: the built-in clearance has already run,
-    // and an extension whose answers do not parse is a broken extension
-    // rather than a policy.
-    Error(_reason) -> process.send(reply, Allow)
+    Error(reason) -> {
+      process.send(reply, Allow)
+      Error(reason)
+    }
   }
 }
 

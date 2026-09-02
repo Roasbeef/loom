@@ -19,6 +19,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
+import machine/operation
+import machine/strand
+import runtime/effects
+import session/session
 import telemetry/log
 
 pub fn main() -> Nil {
@@ -267,7 +271,65 @@ pub fn a_transform_from_a_gone_extension_is_discarded_test() {
   assert list.map(folded, text_of) == ["start", "one"]
 }
 
+pub fn a_malformed_verdict_allows_the_call_and_drops_the_handler_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "typo",
+        events: ["tool_call"],
+        // One capital letter. The first shape of this module sent
+        // `Allow` and carried on, which is a gate silently disabled for
+        // the rest of the session with nothing anywhere saying so.
+        invoke: answering("{\"verdict\":\"Block\"}"),
+      ),
+      hooks.Extension(name: "sound", events: ["tool_call"], invoke: allow()),
+    ])
+
+  // The call in hand is allowed: dropping a handler is not a reason to
+  // refuse work the built-in clearance cleared.
+  assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
+
+  // And the extension has lost its place, so the next call is not gated
+  // on an answer nobody can read.
+  assert hooks.subscribers(bus) == 1
+}
+
 // --- wiring ---------------------------------------------------------------
+
+pub fn a_blocked_call_becomes_the_attributed_refusal_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "web_search",
+        events: ["tool_call"],
+        invoke: blocking("the workspace is frozen"),
+      ),
+    ])
+  let wired = hooks.wire(cleared_effects(), bus, no_session(), clock.fixed(0))
+  assert wired.tools.clear(clearance_query("bash"))
+    == effects.ClearanceRefused(
+      reason: "web_search blocked bash: the workspace is frozen",
+    )
+}
+
+pub fn a_refused_clearance_never_wakes_the_bus_test() {
+  let calls = recorder()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "gate",
+        events: ["tool_call"],
+        invoke: recording(calls, allow()),
+      ),
+    ])
+  let wired = hooks.wire(refusing_effects(), bus, no_session(), clock.fixed(0))
+
+  // A call the harness already refused is not a call an extension has an
+  // opinion about, and asking would wake a satellite for nothing.
+  assert wired.tools.clear(clearance_query("bash"))
+    == effects.ClearanceRefused(reason: "the tool `bash` is unavailable")
+  assert seen(calls) == []
+}
 
 pub fn the_unwired_invoker_says_the_satellite_is_gone_test() {
   let invoke = hooks.unwired()
@@ -276,6 +338,71 @@ pub fn the_unwired_invoker_says_the_satellite_is_gone_test() {
 }
 
 // --- fixtures -------------------------------------------------------------
+
+// An effects record whose only real part is the tool surface's answer.
+// `wire` wraps five slots and this test exercises one of them, so the
+// rest are the inert defaults rather than a session's worth of scaffolding.
+fn effects_answering(clearance: effects.Clearance) -> effects.Effects {
+  effects.Effects(
+    clock: clock.fixed(0),
+    entropy: fn() { 0 },
+    timers: effects.Timers(after: fn(_delay, _wake) { Nil }),
+    provider: effects.ProviderSurface(
+      request: fn(_spec) { panic as "no request is made" },
+      timeout_ms: 0,
+    ),
+    tools: effects.ToolSurface(
+      clear: fn(_query) { clearance },
+      run: fn(_run) { panic as "no tool is run" },
+      replay_still_safe: fn(_name) { False },
+      execution_mode: fn(_name) { effects.ExclusiveExecution },
+    ),
+    hooks: effects.default_hooks(),
+  )
+}
+
+fn cleared_effects() -> effects.Effects {
+  effects_answering(effects.Cleared(
+    effective_arguments: json.Object([]),
+    replay: operation.ReplayNever,
+  ))
+}
+
+fn refusing_effects() -> effects.Effects {
+  effects_answering(effects.ClearanceRefused(
+    reason: "the tool `bash` is unavailable",
+  ))
+}
+
+fn clearance_query(tool: String) -> effects.ClearanceQuery {
+  effects.ClearanceQuery(
+    operation: operation(),
+    step_id: "step-1",
+    source_index: 0,
+    call: message.ToolCall(
+      id: "call-1",
+      name: tool,
+      arguments: json.Object([]),
+      thought_signature: None,
+      namespace: None,
+    ),
+    configuration: strand.StrandConfiguration(
+      model: strand.ModelIdentity(provider: "p", model_id: "m"),
+      thinking_level: strand.ThinkingOff,
+      active_tool_names: [tool],
+    ),
+    grants: [],
+  )
+}
+
+// `wire`'s `run_start` slot resolves a strand through the session store,
+// and nothing here drives a run, so an unopened session is exactly what
+// the gate tests need: the slot is never called.
+fn no_session() -> session.Session {
+  let assert Ok(opened) = session.open_memory(clock.fixed(0))
+    as "an in-memory session always opens"
+  opened
+}
 
 fn started(extensions: List(hooks.Extension)) -> hooks.Bus {
   let assert Ok(bus) = hooks.start(extensions, log.discard())
