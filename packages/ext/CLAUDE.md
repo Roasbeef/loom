@@ -17,8 +17,9 @@ what varies, and something has to fetch it, dispatch on it, and marshal
 the reply. That something is `ext/runtime.serve`, the one line a generated
 entry module contains.
 
-Phase 1 of `docs/design-notes/extension-architecture.md` (Decision 1,
-tier J). Nothing here reaches the harness: an extension's whole effect
+Phases 1 and 3 of `docs/design-notes/extension-architecture.md`
+(Decision 1, tier J; Decision 3 for hooks). Nothing here reaches the
+harness: an extension's whole effect
 surface is `cap/*`, judged per call by the broker exactly as a code-mode
 program's is.
 
@@ -44,6 +45,19 @@ program's is.
   author can exercise a tool in their own tests with no channel; in the
   satellite it is `cap/report.emit`, best-effort, so a partial that could
   not be emitted never fails the call it was narrating.
+- `ext/hook.{Hook, Verdict, Call, RunStart, event, answer}` — phase 3's
+  half of the hook surface. `Hook` is one variant per event
+  (`OnSessionStart`, `OnBeforeAgentStart`, `OnContext`, `OnToolCall`,
+  `OnToolResult`, `OnAgentEnd`, `OnAgentSettled`), so an entry that
+  answers the wrong event is a compile error rather than a shape mismatch
+  on the wire. `event` is the manifest name a hook answers; `answer` runs
+  one against the harness's `args` document and renders the
+  `hook_result` value. Both documents are JSON text, because the
+  extension seam admits `gleam/json` and no msgpack decoder. A
+  conversation message arrives as `Dynamic` and leaves as `Json`: `core`
+  is not on the seam, so this package cannot hold the message type, and
+  the harness re-decodes what comes back with `core/codec`'s own total
+  decoder.
 - `ext/runtime.{serve, answer, dispatch}` — `serve` is the generated
   entry's one call; `answer` is the program `serve` hands to
   `cap/runtime.run`, separated so the round trip is drivable over an
