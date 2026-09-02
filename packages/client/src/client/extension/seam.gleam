@@ -114,9 +114,11 @@ pub type Egress {
   /// credential lookup and the refusal mapping.
   Reaches(perform: fn(Ask) -> Result(Answer, CapDenial))
 
-  /// Every request is refused with this denial, before anything is
-  /// decoded. The refusal is a value rather than a computation so that a
-  /// reader can see it is the same one every time.
+  /// Every request is refused with this denial, by the router rather
+  /// than by a served closure — so nothing is decoded, no ordinal is
+  /// claimed and no admission is spent. The refusal is a value rather
+  /// than a computation so that a reader can see it is the same one
+  /// every time.
   ReachesNothing(refusal: CapDenial)
 }
 
@@ -223,14 +225,20 @@ fn call_plan(call: fn() -> Call) -> Result(CapPlan, CapDenial) {
 
 // --- net.request -----------------------------------------------------------
 
-// The arguments are decoded *before* the plan is returned rather than
-// inside the served closure, so a malformed request is refused without
-// consuming an admission against the ceiling: a call refused by argument
-// decoding was never admitted, which is the rule `satellite.CapRequest`'s
-// `ordinal` doc states.
+// Refusals are returned by the *plan* rather than from inside a served
+// closure, and both of them for the same reason: the host admits a call
+// only once the router has answered `Ok`, so a plan that refuses costs no
+// ordinal and no admission against the ceiling — the rule
+// `satellite.CapRequest`'s `ordinal` doc states.
+//
+// That ordering is also what makes `network_off` reachable at all. An
+// extension with no `[net]` has a `net.request` ceiling of zero
+// admissions, so a `ServedHere` plan here would be overtaken by the
+// ceiling's own refusal and the author would read "lifetime cap of 0"
+// where they should read "this extension declares no [net] table".
 fn net_plan(egress: Egress, request: CapRequest) -> Result(CapPlan, CapDenial) {
   case egress {
-    ReachesNothing(refusal:) -> Ok(ServedHere(fn() { refused(refusal) }))
+    ReachesNothing(refusal:) -> Error(refusal)
     Reaches(perform:) -> {
       use ask <- result.try(decode_ask(request.args))
       Ok(

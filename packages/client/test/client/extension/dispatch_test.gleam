@@ -316,10 +316,13 @@ pub fn a_refusal_travels_back_under_its_own_code_test() {
 }
 
 pub fn an_extension_with_no_net_is_refused_before_anything_is_decoded_test() {
-  // The arm answers without touching the arguments, so a malformed
-  // request from an extension that reaches nothing still reads
-  // `network_off` rather than `invalid_argument` — which is the sentence
-  // that tells the author what to fix.
+  // Refused by the *plan*, without touching the arguments, so a
+  // malformed request from an extension that reaches nothing still reads
+  // `network_off` rather than `invalid_argument`. Refusing here rather
+  // than from a served closure is also what makes the sentence reachable
+  // at all: such an extension's `net.request` ceiling is zero
+  // admissions, and a plan the host admitted would be overtaken by the
+  // ceiling's own "lifetime cap of 0".
   let router =
     seam.routing(
       seam.Extension(
@@ -330,13 +333,10 @@ pub fn an_extension_with_no_net_is_refused_before_anything_is_decoded_test() {
       ),
       over: refusing_router,
     )
-  let assert Ok(satellite.ServedHere(serve:)) =
-    router(a_request("net.request", msgpack.NilValue))
-    as "net.request routes even with no policy"
-  let assert framing.CapErr(code:, message:) = serve()
+  let assert Error(denial) = router(a_request("net.request", msgpack.NilValue))
     as "an extension with no [net] is refused"
-  assert code == ext_policy.network_off_code
-  assert string.contains(message, "hello")
+  assert denial.code == ext_policy.network_off_code
+  assert string.contains(denial.message, "hello")
 }
 
 pub fn a_malformed_request_is_refused_before_it_is_admitted_test() {
@@ -390,7 +390,8 @@ pub fn every_serviced_cap_routes_and_nothing_else_does_test() {
     let routed = router(a_request(cap, ask_args("GET", "https://h/", [], <<>>)))
     assert case routed {
       Ok(satellite.ServedHere(..)) -> True
-      Ok(satellite.ClearedCall(..)) | Error(_) -> False
+      Ok(satellite.ClearedCall(..)) -> False
+      Error(denial) -> denial.code != "beneath"
     }
   })
 
