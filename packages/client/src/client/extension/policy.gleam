@@ -294,14 +294,25 @@ fn code_for(refusal: egress.Refusal) -> String {
   }
 }
 
-// One manifest method name as the closed-set value `egress` judges
-// against. A name outside the set is dropped rather than refused, and that
-// direction is the safe one: a policy that cannot name a method cannot
-// permit it, so an unrecognised entry narrows what the extension may do
-// instead of widening it. It is not reachable from an installed extension
-// — the record stores the same table the install decoded — so this is the
-// fail-closed answer to a shape that has no other way in.
-fn method(name: String) -> Result(egress.Method, Nil) {
+/// One method name as the closed-set value `egress` judges against.
+///
+/// Public because the dispatch has to ask the same question of the
+/// *call's* method as this module asks of the manifest's, and two tables
+/// would be two chances to disagree about what `PATCH` means.
+///
+/// A name outside the set is `Error(Nil)` rather than a refusal, because
+/// this function has no vocabulary for one — the callers compose theirs.
+/// It is unreachable from a manifest, which `manifest.known_methods`
+/// refuses at install, and reachable from a call, which an extension
+/// composes itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.method("GET") == Ok(egress.Get)
+/// ```
+///
+pub fn method(name: String) -> Result(egress.Method, Nil) {
   case name {
     "GET" -> Ok(egress.Get)
     "POST" -> Ok(egress.Post)

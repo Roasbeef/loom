@@ -57,7 +57,7 @@ pub const call_cap = "ext.call"
 /// The capability a satellite makes an outbound request with.
 pub const net_cap = "net.request"
 
-/// The two names this router answers. `extension_test` walks it and
+/// The two names this router answers. `extension/dispatch_test` walks it and
 /// asserts each one routes, which is what keeps it the same list as the
 /// `case` arms below — Gleam patterns cannot name a constant, so the two
 /// could otherwise drift.

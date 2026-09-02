@@ -200,6 +200,27 @@ pub fn summary(written: Record, decoded: Manifest) -> String {
 
 // --- one tool ---------------------------------------------------------------
 
+// Everything one call is dispatched under, in one value.
+//
+// A record rather than seven positional parameters threaded through four
+// functions, and the reason is not only length. `written` and `declared`
+// are both records with a `name` field, so a signature carrying both is
+// one a caller can get the wrong way round with every type still
+// agreeing — and the two names differ (an extension is `web_search` and
+// so is its tool, until an extension registers two). Fields close that.
+type Dispatching {
+  Dispatching(
+    config: Config,
+    written: Record,
+    decoded: Manifest,
+    declared: manifest.Tool,
+    egress: ext_policy.Egress,
+    artifact: String,
+    ctx: Ctx,
+    arguments: JsonValue,
+  )
+}
+
 // The `Tool` an extension's `[[tool]]` becomes.
 //
 // `replay: tool.Never` because an extension call is an external effect by
@@ -232,9 +253,18 @@ fn tool_for(
     // the work root under the workspace is written, the toolchain and the
     // artifact outside it are read, and every jailed stage inside the
     // execution then composes its own far narrower requirements.
-    requirements: fn(workspace_root) { requirements(workspace_root) },
+    requirements:,
     run: fn(ctx, arguments) {
-      call(config, written, decoded, declared, egress, artifact, ctx, arguments)
+      call(Dispatching(
+        config:,
+        written:,
+        decoded:,
+        declared:,
+        egress:,
+        artifact:,
+        ctx:,
+        arguments:,
+      ))
     },
   )
 }
@@ -267,16 +297,9 @@ pub fn requirements(workspace_root: String) -> SandboxPolicy {
 // creating the directory would leave one behind for an execution that
 // never ran — the ordering `client/codemode.execute_after_vetting` takes,
 // for the same reason.
-fn call(
-  config: Config,
-  written: Record,
-  decoded: Manifest,
-  declared: manifest.Tool,
-  egress: ext_policy.Egress,
-  artifact: String,
-  ctx: Ctx,
-  arguments: JsonValue,
-) -> ToolOutcome {
+fn call(dispatching: Dispatching) -> ToolOutcome {
+  let Dispatching(config:, written:, declared:, artifact:, ctx:, ..) =
+    dispatching
   let root =
     codemode.work_root(
       config.host,
@@ -291,7 +314,7 @@ fn call(
     Error(reason) -> failed(ctx, written.name, declared.name, reason)
     Ok(Nil) -> {
       let #(now, _clock) = clock.read(config.host.clock)
-      let deadline_ms = now + declared.timeout_ms
+      let deadline_ms = now + within(config, declared)
       let ran =
         satellite.run(
           artifact_at(artifact, written),
@@ -301,17 +324,7 @@ fn call(
             budget: codemode.pooled_budget(config.host, deadline_ms),
           )),
           config.host.broker,
-          satellite_config(
-            config,
-            written,
-            decoded,
-            declared,
-            egress,
-            ctx,
-            arguments,
-            root,
-            deadline_ms,
-          ),
+          satellite_config(dispatching, root, deadline_ms),
           config.launch(launch.LaunchConfig(
             broker: config.host.broker,
             clock: config.host.clock,
@@ -329,6 +342,28 @@ fn call(
       settle(ctx, written, declared, ran)
     }
   }
+}
+
+/// How long this call may take: the manifest's `timeout_ms`, clamped to
+/// the operator's ceiling on any one execution.
+///
+/// The clamp is the same one `tools/codemode` applies to a `within_ms` a
+/// model wrote, and it is here for the same reason one layer out. An
+/// extension tool is `tool.Exclusive`, so the call holds the strand's
+/// exclusive slot for the whole of its deadline, and `timeout_ms` is a
+/// number in somebody else's repository — decoded as positive and
+/// otherwise unbounded. The operator's `max_within_ms` is what says how
+/// long *this host* will hold a strand for one execution, and an install
+/// is not a way to raise it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // dispatch.within(config, declared) <= config.host.max_within_ms
+/// ```
+///
+pub fn within(config: Config, declared: manifest.Tool) -> Int {
+  int.min(declared.timeout_ms, config.host.max_within_ms)
 }
 
 // The installed artifact as the satellite host reads it. The beam set is
@@ -356,16 +391,11 @@ fn artifact_at(artifact: String, written: Record) -> compile.Artifact {
 // router, ceilings). Nothing is the extension's: an install approved a
 // manifest, not a launch.
 fn satellite_config(
-  config: Config,
-  written: Record,
-  decoded: Manifest,
-  declared: manifest.Tool,
-  egress: ext_policy.Egress,
-  ctx: Ctx,
-  arguments: JsonValue,
+  dispatching: Dispatching,
   root: String,
   deadline_ms: Int,
 ) -> satellite.SatelliteConfig {
+  let Dispatching(config:, decoded:, ctx:, ..) = dispatching
   satellite.SatelliteConfig(
     base_policy: codemode.execution_policy(ctx.base_policy),
     demand: ctx.demand,
@@ -381,16 +411,7 @@ fn satellite_config(
     clock: config.host.clock,
     write_token_file: satellite.private_token_writer(root <> "/token"),
     unlink_token_file: satellite.unlink_token_file,
-    router: router(
-      config,
-      written,
-      decoded,
-      declared,
-      egress,
-      ctx,
-      arguments,
-      deadline_ms,
-    ),
+    router: router(dispatching, deadline_ms),
     ceilings: list.append(
       ext_policy.ceilings(decoded.net),
       workspace.ceilings(bridge(config, ctx)),
@@ -401,16 +422,9 @@ fn satellite_config(
 
 // The three layers, outermost first. See the module doc for why the MCP
 // arm is not among them.
-fn router(
-  config: Config,
-  written: Record,
-  decoded: Manifest,
-  declared: manifest.Tool,
-  egress: ext_policy.Egress,
-  ctx: Ctx,
-  arguments: JsonValue,
-  deadline_ms: Int,
-) -> satellite.CapRouter {
+fn router(dispatching: Dispatching, deadline_ms: Int) -> satellite.CapRouter {
+  let Dispatching(config:, declared:, ctx:, arguments:, ..) = dispatching
+
   // The model's arguments verbatim, as JSON text. Re-serialising the
   // value the driver decoded is the one step where the harness and the
   // extension could disagree about what was asked, and `core/json`'s
@@ -431,7 +445,7 @@ fn router(
           deadline_ms: int.max(deadline_ms - now, 0),
         )
       },
-      egress: reaching(config, written, decoded, egress),
+      egress: reaching(dispatching),
     ),
     over: workspace.routing(bridge(config, ctx), over: satellite.default_router),
   )
@@ -458,12 +472,8 @@ fn bridge(config: Config, ctx: Ctx) -> workspace.Workspace {
 // matching hop, and returns a `Response` that has no field for it. A
 // refusal has none either, so the mapping below cannot leak one however
 // it is worded.
-fn reaching(
-  config: Config,
-  written: Record,
-  decoded: Manifest,
-  egress: ext_policy.Egress,
-) -> seam.Egress {
+fn reaching(dispatching: Dispatching) -> seam.Egress {
+  let Dispatching(config:, written:, decoded:, egress:, ..) = dispatching
   case egress {
     ext_policy.ReachesNothing ->
       seam.ReachesNothing(refusal: ext_policy.network_off(written.name))
@@ -497,23 +507,17 @@ fn requested_method(
   name: String,
   decoded: Manifest,
 ) -> Result(egress.Method, satellite.CapDenial) {
-  case name {
-    "GET" -> Ok(egress.Get)
-    "POST" -> Ok(egress.Post)
-    "PUT" -> Ok(egress.Put)
-    "DELETE" -> Ok(egress.Delete)
-    "PATCH" -> Ok(egress.Patch)
-    "HEAD" -> Ok(egress.Head)
-    other ->
-      Error(satellite.CapDenial(
-        code: ext_policy.denied_code,
-        message: "`"
-          <> other
-          <> "` is not an HTTP method this client can send; this extension's "
-          <> "manifest permits "
-          <> string.join(decoded.net.methods, ", "),
-      ))
-  }
+  ext_policy.method(name)
+  |> result.map_error(fn(_nil) {
+    satellite.CapDenial(
+      code: ext_policy.denied_code,
+      message: "`"
+        <> name
+        <> "` is not an HTTP method this client can send; this extension's "
+        <> "manifest permits "
+        <> string.join(decoded.net.methods, ", "),
+    )
+  })
 }
 
 fn answered(response: egress.Response) -> seam.Answer {
@@ -569,7 +573,7 @@ pub fn settle(
           <> details_text(details),
         errored_details(written, declared, message, details),
         tool.ContinueRun,
-        True,
+        Refused,
       )
 
     Ok(satellite.Completed(value:)) -> completed(ctx, written, declared, value)
@@ -594,7 +598,7 @@ fn completed(
       #("value", value_json(value)),
     ]),
     reply.terminate,
-    False,
+    Answered,
   )
 }
 
@@ -769,8 +773,30 @@ fn failed(
       #("reason", json.String(reason)),
     ]),
     tool.ContinueRun,
-    True,
+    Refused,
   )
+}
+
+// Whether a reply is the model's to act on or the model's to repair.
+//
+// `ToolOutcome.is_error` is the frozen field underneath, and this is the
+// domain name for it: `bounded(ctx, text, details, ContinueRun, True)`
+// says nothing at the call site about which `True` means, and there are
+// four such call sites here.
+type Standing {
+  /// The extension answered. `is_error: False`.
+  Answered
+
+  /// The extension refused, or the execution never produced an outcome.
+  /// `is_error: True`, in band, for the model to read and repair.
+  Refused
+}
+
+fn errored(standing: Standing) -> Bool {
+  case standing {
+    Answered -> False
+    Refused -> True
+  }
 }
 
 // The same blob overflow every other unbounded tool reply goes through
@@ -782,8 +808,9 @@ fn bounded(
   text: String,
   details: JsonValue,
   terminate: tool.Terminate,
-  is_error: Bool,
+  standing: Standing,
 ) -> ToolOutcome {
+  let is_error = errored(standing)
   case blob.bound(ctx, text) {
     Error(_error) ->
       tool.ToolOutcome(

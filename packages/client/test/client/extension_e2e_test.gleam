@@ -349,8 +349,15 @@ fn relay(
   }
 }
 
+// Every frame the tap recorded, waiting a moment for a straggler.
+//
+// Two processes send here — the relay and the host's own `send` closure —
+// so ordering against `tool.dispatch` returning is only pairwise
+// guaranteed. A zero timeout would make a late frame a *weaker*
+// assertion rather than a failure, which is the wrong direction for a
+// test whose whole claim is that no frame carried the credential.
 fn drain(taps: Subject(BitArray), found: List(BitArray)) -> List(BitArray) {
-  case process.receive(taps, within: 0) {
+  case process.receive(taps, within: 250) {
     Ok(bytes) -> drain(taps, [bytes, ..found])
     Error(Nil) -> found
   }

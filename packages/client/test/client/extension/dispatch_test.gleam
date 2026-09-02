@@ -74,31 +74,39 @@ pub fn a_net_table_translates_field_by_field_test() {
 }
 
 pub fn every_method_the_manifest_can_name_translates_test() {
-  // A method that did not translate would be dropped, which narrows —
-  // safe, but it would also mean an extension whose manifest an operator
-  // approved could not make the request they approved.
+  // The two lists are one list: `manifest.http_methods` is what an
+  // install accepts and `policy.method` is what a policy is built from,
+  // and a name on the first that is not on the second would install
+  // clean and then permit nothing at all. Walking the manifest's own
+  // list is what keeps them the same list.
   let assert ext_policy.Reaches(policy: translated) =
     ext_policy.egress_for(
-      manifest.Net(..brave_net(), methods: [
-        "GET",
-        "POST",
-        "PUT",
-        "DELETE",
-        "PATCH",
-        "HEAD",
-      ]),
+      manifest.Net(..brave_net(), methods: manifest.http_methods),
       trust: egress.SystemRoots,
     )
     as "a manifest with hosts reaches something"
-  assert translated.methods
-    == [
-      egress.Get,
-      egress.Post,
-      egress.Put,
-      egress.Delete,
-      egress.Patch,
-      egress.Head,
-    ]
+  assert list.length(translated.methods) == list.length(manifest.http_methods)
+
+  list.each(manifest.http_methods, fn(name) {
+    let assert Ok(_value) = ext_policy.method(name)
+      as "every method a manifest may name has an egress value"
+  })
+}
+
+pub fn a_method_egress_cannot_send_is_refused_at_install_test() {
+  // The case that matters is a lowercase one, which used to install
+  // clean and then translate to a policy permitting nothing while the
+  // record and the boot log both went on quoting `["get"]`.
+  let assert Error(reason) =
+    manifest.decode(
+      string.replace(fixture_manifest(), "\"GET\"", "\"get\""),
+      manifest.Surroundings(files: [#("schema/x.json", "{}")], modules: [
+        "fetch/tool",
+      ]),
+    )
+    as "[net].methods takes only methods egress can send"
+  assert string.contains(reason, "get")
+  assert string.contains(reason, "GET")
 }
 
 pub fn a_manifest_with_no_net_reaches_nothing_test() {
@@ -518,6 +526,19 @@ pub fn a_malformed_outcome_renders_rather_than_vanishing_test() {
 }
 
 // --- fixtures --------------------------------------------------------------
+
+// A whole `extension.toml` with a `[net]` table, for the decoder tests
+// that need one. The tree beside it is the two promises `decode` checks
+// against: one schema file and one module.
+fn fixture_manifest() -> String {
+  "[extension]\nname = \"fetch\"\nversion = \"0.1.0\"\n"
+  <> "description = \"d\"\nlicense = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \"fetch\"\ndescription = \"d\"\n"
+  <> "prompt_snippet = \"s\"\nparameters = \"schema/x.json\"\n"
+  <> "entry = \"fetch/tool\"\ntimeout_ms = 1000\n\n"
+  <> "[net]\nhosts = [\"api.example.com\"]\nmethods = [\"GET\"]\n"
+  <> "max_response_bytes = 1024\nrequests_per_call = 2\n"
+}
 
 fn brave_net() -> manifest.Net {
   manifest.Net(

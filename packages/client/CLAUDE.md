@@ -905,7 +905,11 @@ Phase 2 adds the dispatch half, as three modules with no shared state:
   three-layer router — `seam.routing` over
   `codemode.workspace_seam_for`'s bridge over `satellite.default_router`
   — and settles the `outcome` frame with `settle`, which is public
-  because it is the one part of a dispatch a test can hold still. There
+  because it is the one part of a dispatch a test can hold still. A
+  call's wall budget is `within`, the manifest's `timeout_ms` clamped to
+  the operator's `max_within_ms` — an extension tool is `Exclusive`, so
+  the call holds the strand's exclusive slot for the whole of it, and an
+  install is not a way to raise a host's ceiling. There
   is no MCP arm: `cap/mcp` is on no seam, so an extension cannot name it.
   `Ctx.grants` are **not** composed onto the run phase — an extension
   runs at exactly what its install approved, where a `code_mode` call is
