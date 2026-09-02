@@ -92,6 +92,7 @@ touches the world.
 | `tools` | effect | bash, hash-anchored filesystem reads and edits, grep, the `agent_*` family, and the `code_mode` door. |
 | `codemode` | effect | The vetting lint, the hermetic compile service, the satellite launcher, and the in-harness host that answers a running program's capability calls. |
 | `cap` | effect | The capability prelude a model-written program is written against — compiled *into* the jail, never linked into the harness. |
+| `ext` | effect | The extension prelude: the behaviours an out-of-tree extension's tools are typed against, and the satellite runtime that serves one call. |
 | `mcp` | effect | The MCP client, transport, and the per-server module generator that puts MCP tools behind code mode. |
 | `tui` | client | The native terminal client over the gateway protocol, with a local `--demo` mode. Gleam over etui. |
 | `client` | client | The Gleam side of that gateway protocol: the hub, the websocket server, the production wiring, and the `loomd` entry point. |
@@ -247,11 +248,73 @@ Every executed program is an entry in the tree, and so a candidate for
 promotion: **L0** ephemeral and satellite-jailed, **L1** a named session
 skill at L0 privileges, **L2** a candidate compiled against the wider
 extension API and passing its own tests in the sandbox, **L3** an
-installed extension hot-loaded after a human approves it, **L4** a pull
-request against Loom itself. L3 is the only rung that touches the harness
-VM, and even there the harness compiles the source itself. L0 is the rung
-that exists; the ladder above it is design, and the rules stated for it
-are constraints its implementation will be held to.
+installed extension, **L4** a pull request against Loom itself.
+
+ADR-007 changed what L3 costs. An installed extension runs *jailed* by
+default — in the same satellite an L0 program runs in, against a widened
+allowlist, judged by the same broker — so installing one touches the
+harness VM not at all, and hot-loading is reserved for the one case that
+cannot be expressed as a jailed callback. **L0 and operator-installed L3
+extensions both exist**; the section below is the second of them. The
+*agent-authored* on-ramp, L1's skill store and L2's candidate pipeline,
+is still design, and when it is built it feeds the same manifest and the
+same install record rather than a parallel mechanism.
+
+## Extensions
+
+A tool the model can call is normally defined in this repository and
+shipped in a release. An extension is capability that arrives from
+somebody else's repository without arriving inside the trusted computing
+base: it is written in Gleam, installed by an operator, vetted and
+compiled by the harness itself, and executed in the same kernel jail a
+code-mode program is executed in. Installing one links no foreign code
+into the harness VM, so Rule Zero holds by construction rather than by
+argument.
+
+The credential is the sharp end. An extension's manifest names an
+*environment variable* and the header it belongs in for one host; the
+harness reads the value at request time and injects it into the request
+it makes on the host. The extension's own source never sees the key, no
+file holds it, and no frame on the capability channel carries it.
+
+```mermaid
+flowchart TB
+    subgraph I["Install — operator, once, no git client"]
+      SRC[github.com/Roasbeef/loom-web-search] --> FET[one-host GET through broker/egress]
+      FET --> EXT[total tar reader, pruned to the extension's own tree]
+      EXT --> VET[vet every module against the extension seam]
+      VET --> BLD[gleam build, network off, offline seed]
+      BLD --> REC[install record written last, then renamed into place]
+    end
+    subgraph C["A call — one satellite per tool call"]
+      MOD[model calls web_search] --> SAT[jailed satellite: the compiled extension]
+      SAT -->|net.request| EGR[broker/egress, on the host]
+      EGR -->|X-Subscription-Token injected here| API[api.search.brave.com]
+      API --> EGR
+      EGR -->|response only| SAT
+      SAT --> MOD
+    end
+    KEY["BRAVE_API_KEY — in loomd's environment, never in the jail"] -.-> EGR
+```
+
+The acceptance extension is [loom-web-search][ws], a separate
+repository that gives the model a `web_search` tool:
+
+```sh
+export BRAVE_API_KEY=…   # only loomd ever reads it; it is in no file
+loom ext install https://github.com/Roasbeef/loom-web-search
+loom ext list
+```
+
+`loom ext` also has `remove` and `verify`; every install is
+content-addressed, and a load re-derives the tree digest, the manifest,
+the vetting, the recorded allowlist and the artifact's own content
+address before an extension is used. The install pipeline is built; the
+dispatch that lets the model *call* an installed tool, and the
+broker-served `net.request` behind it, is the milestone in flight.
+`docs/architecture/extensions.md` says what stands where.
+
+[ws]: https://github.com/Roasbeef/loom-web-search
 
 ## Beyond one machine
 
@@ -375,9 +438,12 @@ tree part company. Each line names the issue that tracks it.
   jailed at all is an open decision rather than a deferred implementation
   (#109). Its credential, named by `api_key_env`, is in that unjailed
   process's environment.
-- **Nothing self-improves.** No skill store, no extension candidate
-  pipeline, no extension zone, no hot code loading: the ladder above L0 is
-  design.
+- **Self-improvement is operator-driven only.** An operator installs an
+  extension with `loom ext` and it runs jailed. Not built: the
+  agent-authored on-ramp (no skill store, no extension candidate
+  pipeline), the harness-resident tier and its hot code loading, and —
+  until the next milestone lands — the dispatch that lets the model call
+  an installed extension's tool at all.
 - **The chaos runner is unbuilt.** `make soak` is the deterministic seed
   soak; random process kills under load are not tested.
 - **Distribution is single-platform and unpublished.** `make dist` builds
@@ -568,8 +634,8 @@ byte-identical.
 - `docs/architecture/` — the system as built: `durability.md`,
   `orchestration.md`, `effects.md` for the three planes; then
   `messaging.md`, `events.md`, `client.md`, `models.md`, `compaction.md`,
-  `code-mode.md`, `mcp.md`, `simulation.md`. Start here to understand the
-  code that exists.
+  `code-mode.md`, `mcp.md`, `extensions.md`, `simulation.md`. Start here
+  to understand the code that exists.
 - `docs/weft.md` — when and why a process is built on weft, the in-tree
   ports to copy from, and how the library is extended.
 - `docs/loom-design.md` — the intent: why the BEAM, the three planes, Rule
