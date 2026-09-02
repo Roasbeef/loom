@@ -394,6 +394,7 @@ fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
       Manifest("the tree holds no " <> manifest_file)
     }),
   )
+
   // A `[[hook]]` used to be decoded and then refused, because the harness
   // had no way to call into a satellite and an extension carrying one
   // would have installed and never fired. `protocol-change/012` is the
