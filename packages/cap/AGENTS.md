@@ -120,10 +120,20 @@ below.
   a `Wake` (`WakesIdle | SteersOnly`) rather than a `Bool`, so the
   request and the grant read the same way at both ends; the capability
   wire still carries a boolean in both directions.
-  Workspace seam only, not orchestration: the intersection of the two
-  seams' allowlists *is* the confinement property, and widening it from
-  one module to two was judged too expensive for a convenience nobody has
-  asked for.
+  Workspace seam only and not orchestration, asked and decided in issue
+  #156. The bar for the one entry the two seams share is the bar
+  `cap/report` meets: `report.emit` mints nothing durable and causes no
+  later effect, it is only how a program says what it found. A `create`
+  here mints a durable reserved cell that admits a turn onto a strand at
+  a later time, with nobody present and possibly waking an idle strand,
+  which is the ability to cause future execution and so is authority.
+  The intersection of the two seams' allowlists *is* the confinement
+  property, so widening it from one module to two would spend one rule
+  read in two directions on a convenience nobody has asked for; nothing
+  is unreachable, only indirect, since an orchestration program has the
+  strand it runs on schedule a heartbeat through the `schedule_*` tools.
+  The intersection test pinning `["cap/report"]` is the ruling's
+  checkable form.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services

@@ -637,14 +637,36 @@ pub fn extension_stdlib_modules() -> List(String) {
   ])
 }
 
-// `cap/schedule` is on the workspace seam and not this one, which is a
-// choice rather than an oversight. A heartbeat reads as orchestration —
-// it is about what happens later rather than about the files in front of
-// you — and putting it on both seams was considered and dropped, because
-// the intersection above *is* the confinement property and widening it
-// from one module to two costs a real guarantee to buy a convenience
-// nobody has asked for yet. An orchestration program that wants a
-// heartbeat can have the strand it is running on schedule one.
+// `cap/schedule` stays on the workspace seam and not this one. A
+// heartbeat reads as orchestration — it is about what happens later
+// rather than about the files in front of you — so issue #156 asked
+// whether it belonged on both, and the answer there is no. The bar for
+// the one shared entry is the bar `cap/report` meets: `report.emit`
+// mints nothing durable and causes no later effect, it is only how a
+// program says what it found, so a seam that carries it gains no
+// authority by carrying it. `schedule.create` does not meet that bar.
+// It mints a durable reserved cell whose whole purpose is to admit a
+// turn onto a strand at a later time, with nobody present and possibly
+// waking an idle strand — the ability to cause future execution, which
+// is authority however it is spelled.
+//
+// What admitting it would cost is the property rather than the module:
+// the intersection above *is* the confinement, so widening the shared
+// entry from one module to two spends a real guarantee — one rule read
+// in two directions — on a convenience nobody has asked for. Nothing
+// becomes unreachable, only indirect — an orchestration program that
+// wants a heartbeat has the strand it is running on schedule one
+// through the `schedule_*` tools, and a workspace program can already
+// schedule for the strand it runs on. The intersection test asserting
+// `shared == ["cap/report"]` is therefore this ruling's checkable form,
+// which is where a rule belongs here rather than in prose.
+//
+// The extension seam is different in kind and is not the exception it
+// looks like: `extension_cap_modules` is the workspace seam widened by
+// the `ext` vocabulary, a superset by construction, so `cap/schedule`
+// reaches an installed extension's tool exactly as `cap/fs` does — as a
+// workspace capability, never as a second shared entry between the two
+// seams whose intersection the test pins.
 
 /// The capability-prelude modules on **no** seam, deliberately.
 ///
