@@ -35,11 +35,10 @@
 ////
 //// `tier` decodes only `"jailed"`. A harness-resident body is phase 4 and
 //// there is no loader for one, so a manifest naming the tier is refused
-//// saying that rather than installed and ignored. `[[hook]]` decodes —
-//// the vocabulary is fixed by the ruling and an author reading a refusal
-//// should see their event name checked — but the install refuses a
-//// manifest carrying one, because the harness cannot call into a
-//// satellite until phase 3 adds the reverse frame.
+//// saying that rather than installed and ignored. `[[hook]]` is accepted
+//// from phase 3 on: the event must be one of the seven the ruling fixes
+//// and the entry must name a module the package ships, both checked here
+//// so that the hook bus never has to re-check either.
 
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -66,11 +65,35 @@ pub const jailed_tier = "jailed"
 /// clean and then refuses every request the extension makes.
 pub const http_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
 
-/// The hook events the ruling fixes. Decoded now, refused at install
-/// until phase 3 gives the harness a way to call into a satellite.
+/// `session_start`: the session server booted the extension.
+pub const session_start_event = "session_start"
+
+/// `before_agent_start`: a run was accepted, before planning.
+pub const before_agent_start_event = "before_agent_start"
+
+/// `context`: before each provider request. A chained transform rather
+/// than a notification, so it never travels the bus.
+pub const context_event = "context"
+
+/// `tool_call`: a tool call was planned, before dispatch.
+pub const tool_call_event = "tool_call"
+
+/// `tool_result`: a tool settled, before the reply is committed. The
+/// second chained transform.
+pub const tool_result_event = "tool_result"
+
+/// `agent_end`: a run reached a terminal state.
+pub const agent_end_event = "agent_end"
+
+/// `agent_settled`: the run and every follow-up it queued are done.
+pub const agent_settled_event = "agent_settled"
+
+/// The hook events the ruling fixes, in the table's order. The whole
+/// vocabulary: an event outside this list refuses the manifest naming
+/// what it takes, and the harness has one slot per name here.
 pub const hook_events = [
-  "session_start", "before_agent_start", "context", "tool_call", "tool_result",
-  "agent_end", "agent_settled",
+  session_start_event, before_agent_start_event, context_event, tool_call_event,
+  tool_result_event, agent_end_event, agent_settled_event,
 ]
 
 /// Where an extension's body runs.

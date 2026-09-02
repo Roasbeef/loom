@@ -77,7 +77,14 @@ pub const staging_directory = ".staging"
 /// The record format's own version. Bumped when the shape changes, so a
 /// record written by an older server is refused by name rather than
 /// half-decoded.
-pub const format_version = 1
+///
+/// Version 2 added `hooks`. A version-1 record is refused rather than
+/// read with an empty hook list, because the approval a record carries
+/// is "what was approved", and a record written before hooks existed
+/// cannot say whether the operator approved any — the honest answer is
+/// to ask them again. The cost is one `loom ext install` per installed
+/// extension, and extensions have shipped in exactly one phase.
+pub const format_version = 2
 
 /// The revision a local path records: it has none, and saying so is a
 /// fact about the install rather than a missing value.
@@ -134,6 +141,12 @@ pub type Record {
     net: NetTerms,
     /// The tools the manifest registers.
     tools: List(String),
+    /// The hooks the manifest registers, as `#(event, entry)` in the
+    /// manifest's own order. Stored for the reason the allowlist is: a
+    /// hook is authority over the harness's own timeline, so the events
+    /// an operator approved are part of the approval rather than
+    /// something re-read from a file that may have changed.
+    hooks: List(#(String, String)),
     /// When the approval happened, RFC3339 UTC.
     approved_at: String,
     /// Who approved it: the `USER` environment, or `unknown`.
@@ -293,6 +306,7 @@ pub fn for_install(
     allowlist:,
     net: terms(decoded.net),
     tools: list.map(decoded.tools, fn(tool) { tool.name }),
+    hooks: list.map(decoded.hooks, fn(hook) { #(hook.event, hook.entry) }),
     approved_at: instant(approved_at),
     approved_by:,
     artifact:,
@@ -320,9 +334,17 @@ pub fn encode(written: Record) -> Json {
     #("allowlist", json.array(written.allowlist, json.string)),
     #("net", encode_terms(written.net)),
     #("tools", json.array(written.tools, json.string)),
+    #("hooks", json.array(written.hooks, encode_hook)),
     #("approved_at", json.string(written.approved_at)),
     #("approved_by", json.string(written.approved_by)),
     #("artifact", json.string(written.artifact)),
+  ])
+}
+
+fn encode_hook(hook: #(String, String)) -> Json {
+  json.object([
+    #("event", json.string(hook.0)),
+    #("entry", json.string(hook.1)),
   ])
 }
 
@@ -365,6 +387,7 @@ fn decoder() -> Decoder(Record) {
   use allowlist <- decode.field("allowlist", decode.list(decode.string))
   use net <- decode.field("net", terms_decoder())
   use tools <- decode.field("tools", decode.list(decode.string))
+  use hooks <- decode.field("hooks", decode.list(hook_decoder()))
   use approved_at <- decode.field("approved_at", decode.string)
   use approved_by <- decode.field("approved_by", decode.string)
   use artifact <- decode.field("artifact", decode.string)
@@ -379,10 +402,17 @@ fn decoder() -> Decoder(Record) {
     allowlist:,
     net:,
     tools:,
+    hooks:,
     approved_at:,
     approved_by:,
     artifact:,
   ))
+}
+
+fn hook_decoder() -> Decoder(#(String, String)) {
+  use event <- decode.field("event", decode.string)
+  use entry <- decode.field("entry", decode.string)
+  decode.success(#(event, entry))
 }
 
 fn terms_decoder() -> Decoder(NetTerms) {
@@ -411,7 +441,7 @@ fn terms_decoder() -> Decoder(NetTerms) {
 ///
 /// ```gleam
 /// assert record.current(Record(..written, format: 99))
-///   == Error("the install record is format 99; this server reads 1")
+///   == Error("the install record is format 99; this server reads 2")
 /// ```
 ///
 pub fn current(written: Record) -> Result(Record, String) {
