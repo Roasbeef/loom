@@ -333,8 +333,16 @@ fn parse_archive(text: String) -> Result(Source, String) {
 // --- the alphabets ---------------------------------------------------------
 
 /// GitHub's own alphabet for an owner and a repository name.
+///
+/// `.` and `..` are refused on top of it. They are legal graphemes here
+/// and neither is a repository, but both are path components in the
+/// codeload URL the two are pasted into, so admitting them would let
+/// `GitHub("..", "..")` render a URL that climbs out of the archive
+/// path — the same climb `archive_url` already refuses a revision for.
 fn is_legal_name(name: String) -> Bool {
-  name != "" && string.to_graphemes(name) |> list.all(is_name_grapheme)
+  let shaped = name != "" && name != "." && name != ".."
+
+  shaped && string.to_graphemes(name) |> list.all(is_name_grapheme)
 }
 
 fn is_name_grapheme(grapheme: String) -> Bool {

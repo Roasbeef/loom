@@ -51,8 +51,9 @@
 //// - `U+0021`–`U+007E` (printable ASCII), **excluding** `\` (`U+005C`)
 ////   and excluding the space `U+0020`.
 //// - `U+00A0` and above, **excluding** the invisible formatting code
-////   points `U+200B`–`U+200F`, `U+2028`, `U+2029`, `U+202A`–`U+202E`,
-////   `U+2066`–`U+2069` and `U+FEFF`.
+////   points `U+00AD`, `U+200B`–`U+200F`, `U+2028`, `U+2029`,
+////   `U+202A`–`U+202E`, `U+2060`–`U+2064`, `U+2066`–`U+2069`,
+////   `U+FE00`–`U+FE0F` and `U+FEFF`.
 ////
 //// So a leading `/` is refused (it produces an empty first component),
 //// `..` is refused, NUL and every other C0 or C1 control character is
@@ -258,7 +259,9 @@ pub fn extract(gzipped: BitArray, caps: Caps) -> Result(Tree, ArchiveError) {
 /// A local path is the one source that could carry shapes a tar cannot
 /// even express, so the rules are the archive's plus three. A symlink
 /// is refused rather than followed, because following one is exactly
-/// the escape the archive reader refuses to admit. Anything that is not
+/// the escape the archive reader refuses to admit; that includes `path`
+/// itself, which is lstat'd before the walk begins so a symlinked root
+/// cannot walk in through the front door. Anything that is not
 /// a regular file or a directory is refused. And a directory named
 /// exactly `.git` is skipped, never opened, so that an operator can
 /// point the install at a working checkout and get the same tree an
@@ -282,9 +285,15 @@ pub fn from_directory(path: String, caps: Caps) -> Result(Tree, ArchiveError) {
   let trimmed = trim_trailing_slashes(path)
   let root = last_component(trimmed)
 
-  // The root has to be admitted before the walk so that an unreadable
-  // or oddly named directory is one refusal rather than a refusal per
-  // file underneath it.
+  // The root gets the same lstat every entry beneath it gets. Without
+  // it a symlinked directory handed straight to `from_directory` would
+  // be followed, which is exactly the escape the walk exists to refuse
+  // one level down.
+  use Nil <- result.try(admit_root(trimmed, root))
+
+  // The root is admitted before the walk so that an unreadable or oddly
+  // named directory is one refusal rather than a refusal per file
+  // underneath it.
   use state <- result.try(admit_directory(initial(caps), root))
   use state <- result.try(walk_directory(trimmed, root, state))
 
@@ -604,7 +613,10 @@ fn is_legal_codepoint(code: Int) -> Bool {
 fn is_invisible_codepoint(code: Int) -> Bool {
   { code >= 0x200B && code <= 0x200F }
   || { code >= 0x202A && code <= 0x202E }
+  || { code >= 0x2060 && code <= 0x2064 }
   || { code >= 0x2066 && code <= 0x2069 }
+  || { code >= 0xFE00 && code <= 0xFE0F }
+  || code == 0x00AD
   || code == 0x2028
   || code == 0x2029
   || code == 0xFEFF
@@ -818,15 +830,45 @@ fn read_pax_extended(
   use records <- result.try(read_pax_body(data, offset, header, reading))
 
   let pending_path = record(records, "path")
-  let pending_size =
-    record(records, "size")
-    |> option.then(fn(text) { option.from_result(int.parse(text)) })
+
+  use pending_size <- result.try(pax_size(records, header.name))
 
   read_from(
     data,
     offset + block_bytes + padded(header.size),
     Reading(..reading, pending_path:, pending_size:),
   )
+}
+
+/// Reads a pax `size` record, which replaces the *next* entry's header
+/// size and therefore decides how many bytes its body is sliced from.
+///
+/// A value that is not a non-negative integer refuses the header rather
+/// than being ignored, and both halves of that matter. A negative
+/// length is not a large number a cap would catch: `bit_array.slice`
+/// reads *backwards* from the offset, so `size=-5` would hand the
+/// collector five bytes the reader has already passed, and `padded`
+/// would move the next header's offset backwards with it. Silently
+/// falling back to the header's own size would leave a crafted record
+/// choosing which of two sizes the reader used, which is the
+/// disagreement between two competing mechanisms that the GNU
+/// long-name typeflags are refused for.
+fn pax_size(
+  records: List(#(String, String)),
+  entry: String,
+) -> Result(Option(Int), ArchiveError) {
+  case record(records, "size") {
+    None -> Ok(None)
+
+    Some(text) ->
+      case int.parse(text) {
+        Ok(size) if size >= 0 -> Ok(Some(size))
+
+        Ok(_negative) -> Error(MalformedPaxHeader(entry:))
+
+        Error(Nil) -> Error(MalformedPaxHeader(entry:))
+      }
+  }
 }
 
 /// A pax global header ('g') carries archive-wide records. GitHub's
@@ -891,29 +933,27 @@ fn record(records: List(#(String, String)), key: String) -> Option(String) {
 
 /// The parts of a ustar header the reader acts on.
 type Header {
-  Header(
-    name: String,
-    /// Parsed only to prove the header is well formed. Nothing here
-    /// carries a mode onto disk: the caller stages the tree and picks
-    /// its own permissions, so an archive cannot ask for a setuid bit.
-    mode: Int,
-    size: Int,
-    kind: Int,
-  )
+  Header(name: String, size: Int, kind: Int)
 }
 
 fn parse_header(block: BitArray, at: Int) -> Result(Header, ArchiveError) {
   use name <- or_malformed(field_string(block, 0, 100), at, "name")
-  use mode <- or_malformed(field_octal(block, 100, 8), at, "mode")
+
+  // The mode is parsed to prove the header is well formed and then
+  // dropped. Nothing here carries a mode onto disk — the caller stages
+  // the tree and picks its own permissions — so an archive has no way
+  // to ask for a setuid bit.
+  use _mode <- or_malformed(field_octal(block, 100, 8), at, "mode")
   use size <- or_malformed(field_octal(block, 124, 12), at, "size")
   use stated <- or_malformed(field_octal(block, 148, 8), at, "checksum")
   use kind <- or_malformed(field_byte(block, 156), at, "typeflag")
   use magic <- or_malformed(field_string(block, 257, 5), at, "magic")
   use prefix <- or_malformed(field_string(block, 345, 155), at, "prefix")
 
-  // ustar is the only format an install reads. GNU's own format shares
-  // the layout but spells its magic differently, and admitting it would
-  // mean admitting the long-name typeflags this reader refuses.
+  // The magic pins the layout every offset above is read at. It is not
+  // what keeps GNU's extensions out — GNU spells the field `"ustar "`,
+  // whose first five bytes are these — so the long-name typeflags are
+  // refused by kind below instead.
   use <- bool.lazy_guard(when: magic != ustar_magic, return: fn() {
     Error(MalformedHeader(at:, field: "magic"))
   })
@@ -924,7 +964,7 @@ fn parse_header(block: BitArray, at: Int) -> Result(Header, ArchiveError) {
     Error(BadChecksum(at:, stated:, computed:))
   })
 
-  Ok(Header(name: join_prefix(prefix, name), mode:, size:, kind:))
+  Ok(Header(name: join_prefix(prefix, name), size:, kind:))
 }
 
 const ustar_magic = "ustar"
@@ -1112,6 +1152,23 @@ fn pax_length(
 /// Depth-first over a sorted listing, so the refusal an operator sees
 /// for a directory holding two problems does not depend on the order
 /// the filesystem happened to hand back.
+fn admit_root(path: String, root: String) -> Result(Nil, ArchiveError) {
+  use info <- result.try(link_info(path))
+
+  case simplifile.file_info_type(info) {
+    simplifile.Directory -> Ok(Nil)
+
+    simplifile.Symlink ->
+      Error(UnsupportedEntry(entry: root, kind: "a symbolic link"))
+
+    simplifile.File ->
+      Error(DirectoryUnreadable(path:, reason: "it is a file, not a directory"))
+
+    simplifile.Other ->
+      Error(DirectoryUnreadable(path:, reason: "it is not a directory"))
+  }
+}
+
 fn walk_directory(
   directory: String,
   prefix: String,
@@ -1145,14 +1202,7 @@ fn walk_entry(
   // is not part of what the operator is approving.
   use <- bool.guard(when: name == ".git", return: Ok(state))
 
-  // `link_info` is lstat: it describes the link itself, so a symlink is
-  // seen as a symlink rather than as whatever it points at.
-  use info <- result.try(
-    simplifile.link_info(path)
-    |> result.map_error(fn(error) {
-      DirectoryUnreadable(path:, reason: simplifile.describe_error(error))
-    }),
-  )
+  use info <- result.try(link_info(path))
 
   case simplifile.file_info_type(info) {
     simplifile.Directory -> {
@@ -1169,6 +1219,15 @@ fn walk_entry(
     simplifile.Other ->
       Error(UnsupportedEntry(entry: relative, kind: "not a regular file"))
   }
+}
+
+/// lstat rather than stat: it describes the link itself, so a symlink
+/// is seen as a symlink rather than as whatever it points at.
+fn link_info(path: String) -> Result(simplifile.FileInfo, ArchiveError) {
+  simplifile.link_info(path)
+  |> result.map_error(fn(error) {
+    DirectoryUnreadable(path:, reason: simplifile.describe_error(error))
+  })
 }
 
 fn walk_file(

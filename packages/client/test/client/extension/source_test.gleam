@@ -44,6 +44,22 @@ pub fn github_name_alphabet_test() {
     as "a space is outside github's own alphabet"
 }
 
+/// `.` and `..` are legal in github's own alphabet and neither is a
+/// repository, but both are path components in the codeload url they
+/// would be pasted into.
+pub fn github_dot_names_test() {
+  let refused = [
+    "https://github.com/../..",
+    "https://github.com/roasbeef/..",
+    "https://github.com/./loom",
+  ]
+
+  list.each(refused, fn(text) {
+    let assert Error(_message) = source.parse(text)
+      as "a dot name cannot become a codeload path component"
+  })
+}
+
 pub fn archive_url_test() {
   assert source.parse("https://example.com/ext/hello-1.0.0.tar.gz")
     == Ok(source.ArchiveUrl(url: "https://example.com/ext/hello-1.0.0.tar.gz"))

@@ -391,6 +391,50 @@ pub fn malformed_pax_header_test() {
     == Error(archive.MalformedPaxHeader(entry: "repo/x"))
 }
 
+/// A negative pax size is not a large number a cap catches: it would
+/// slice backwards into bytes the reader has already passed.
+pub fn negative_pax_size_test() {
+  let bytes =
+    tarball([
+      entry("repo/", directory, <<>>),
+      entry("repo/x", pax_extended, pax_record("size", "-5")),
+      entry("repo/x", regular, utf8("hello")),
+    ])
+
+  assert archive.extract(bytes, archive.default_caps())
+    == Error(archive.MalformedPaxHeader(entry: "repo/x"))
+}
+
+/// A `size` record that is not a number refuses the header rather than
+/// falling back to the header's own size, so a crafted record cannot
+/// choose which of the two the reader used.
+pub fn unparseable_pax_size_test() {
+  let bytes =
+    tarball([
+      entry("repo/", directory, <<>>),
+      entry("repo/x", pax_extended, pax_record("size", "abc")),
+      entry("repo/x", regular, utf8("hello")),
+    ])
+
+  assert archive.extract(bytes, archive.default_caps())
+    == Error(archive.MalformedPaxHeader(entry: "repo/x"))
+}
+
+pub fn pax_size_override_test() {
+  let bytes =
+    tarball([
+      entry("repo/", directory, <<>>),
+      entry("repo/x", pax_extended, pax_record("size", "3")),
+      entry("repo/x", regular, utf8("hello")),
+    ])
+
+  let assert Ok(tree) = archive.extract(bytes, archive.default_caps())
+    as "a pax size override is honoured"
+  let assert [file] = tree.files as "one file in, one file out"
+
+  assert file.bytes == utf8("hel")
+}
+
 // --- the caps --------------------------------------------------------------
 
 pub fn entry_cap_test() {
@@ -420,10 +464,17 @@ pub fn per_file_cap_test() {
 /// A megabyte of zeros compresses to about a kilobyte, so the archive is
 /// small and the extraction is not: this is the bomb the bounded
 /// inflation exists for, and it must never be materialised.
+///
+/// The illegal path in front of the bomb is what makes the assertion
+/// mean that. If the inflation were unbounded, the tar reader would run
+/// and refuse `repo/../escape` first, so the answer would be
+/// `IllegalPath`; `TotalBytesExceeded` can only come from a stream that
+/// was abandoned before any of it reached the reader.
 pub fn total_cap_bomb_test() {
   let bytes =
     tarball([
       entry("repo/", directory, <<>>),
+      entry("repo/../escape", regular, utf8("x")),
       entry("repo/bomb", regular, zeros(1024 * 1024)),
     ])
 
@@ -595,6 +646,37 @@ pub fn from_directory_skips_git_test() {
   // ordinary directory to the reader.
   assert list.map(tree.files, fn(file) { file.path })
     == [".github/workflow.yml", "gleam.toml"]
+}
+
+/// The root is lstat'd like every entry beneath it, so a symlink handed
+/// straight to `from_directory` is refused rather than followed.
+pub fn from_directory_refuses_a_symlinked_root_test() {
+  let root = scratch("linked-root")
+
+  write(root <> "/a.txt", "alpha")
+
+  let link = "build/extension-archive-test/linked-root-alias"
+  let _ = simplifile.delete(link)
+  let assert Ok(Nil) = simplifile.create_symlink(to: "linked-root", from: link)
+    as "the fixture has a symlinked root"
+
+  assert archive.from_directory(link, archive.default_caps())
+    == Error(archive.UnsupportedEntry(
+      entry: "linked-root-alias",
+      kind: "a symbolic link",
+    ))
+}
+
+pub fn from_directory_refuses_a_file_as_a_root_test() {
+  let root = scratch("file-root")
+
+  write(root <> "/a.txt", "alpha")
+
+  let assert Error(archive.DirectoryUnreadable(reason:, ..)) =
+    archive.from_directory(root <> "/a.txt", archive.default_caps())
+    as "a file is not a source tree"
+
+  assert string.contains(reason, "not a directory")
 }
 
 pub fn from_directory_missing_test() {

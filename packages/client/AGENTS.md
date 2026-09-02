@@ -766,9 +766,10 @@ here is total.
   materialised; the ustar reader then admits only regular files,
   directories and pax headers, refusing links, devices, fifos and GNU
   long-name extensions by name. `from_directory` pushes a real directory
-  through the same collector, additionally refuses a symlink and a
-  non-regular file, and skips a directory named exactly `.git` so that a
-  working checkout reads as its export. `digest` is
+  through the same collector, additionally refuses a symlink (the root
+  included — `path` is lstat'd before the walk) and a non-regular file,
+  and skips a directory named exactly `.git` so that a working checkout
+  reads as its export. `digest` is
   lowercase hex SHA-256 (via `tools/blob.ref_for`, the tree's one
   SHA-256) over a length-prefixed encoding of the sorted files, and is
   independent of `Tree.root` and `Tree.commit` — which is what lets an
