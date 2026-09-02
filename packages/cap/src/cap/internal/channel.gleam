@@ -139,6 +139,17 @@ pub opaque type Msg {
     reply: Subject(Result(MsgPackValue, CallError)),
   )
   Deliver(id: Int, outcome: CapOutcome)
+
+  /// Replaces the token every later `cap_call` presents.
+  ///
+  /// A single-shot node never sends one: it boots with the execution's
+  /// token and dies with it. A persistent satellite has no token of its
+  /// own at all — the harness mints one per invocation and hands it over
+  /// on the `hook_call` — so the serving loop installs it here for the
+  /// duration of the answer and clears it afterwards. Calls already in
+  /// flight keep the token they were framed with, which is right: they
+  /// belong to the invocation that made them.
+  SetToken(token: BitArray)
   CallerDown(down: process.Down)
 
   /// The inbound reader hit a channel-fatal condition (a malformed frame,
@@ -215,6 +226,27 @@ pub fn to_channel(handle: Handle) -> Channel {
   })
 }
 
+/// Installs `token` as the one every later `cap_call` on this channel
+/// presents.
+///
+/// The persistent satellite's whole authority story: the harness mints a
+/// token per invocation, hands it over on the `hook_call`, and revokes it
+/// on the `hook_result`. `cap/runtime`'s serving loop calls this twice per
+/// invocation — the frame's token on the way in, empty bytes on the way
+/// out — so a process the extension kept alive between invocations frames
+/// its calls with something the harness has already refused. Both halves
+/// matter and neither is sufficient: the harness's revocation is what
+/// makes the refusal authoritative, and clearing here is what stops the
+/// satellite presenting a token whose invocation is over.
+///
+/// Fire-and-forget, and ordered behind anything already in the actor's
+/// mailbox, which is what makes "for the duration of the answer" true:
+/// the loop installs before it starts the worker and clears after the
+/// worker is done.
+pub fn set_token(handle: Handle, token: BitArray) -> Nil {
+  process.send(handle.subject, SetToken(token:))
+}
+
 /// Feeds one decoded inbound `cap_result` to the actor. Called by the J3
 /// read loop for each such frame, and by tests to simulate the broker.
 pub fn deliver(handle: Handle, id: Int, outcome: CapOutcome) -> Nil {
@@ -267,6 +299,8 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
       handle_perform(state, cap, args, deadline_ms, caller, reply)
 
     Deliver(id:, outcome:) -> handle_deliver(state, id, outcome)
+
+    SetToken(token:) -> actor.continue(State(..state, token:))
 
     CallerDown(down:) ->
       case down {

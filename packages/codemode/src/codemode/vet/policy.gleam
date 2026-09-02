@@ -50,7 +50,7 @@
 ////   actor, kv}` — a program that orchestrates *effects*;
 //// - the **orchestration** seam — `cap/strand` and `cap/report`, and
 ////   nothing else — a program that orchestrates *agents*;
-//// - the **extension** seam — the workspace seam plus `ext`, `cap/ext`
+//// - the **extension** seam — the workspace seam plus `ext`
 ////   and the decoding half of the standard library — an installed
 ////   extension's tool, compiled once and run per call.
 ////
@@ -360,7 +360,7 @@ pub fn orchestration() -> VetPolicy {
 /// carving it a fourth, narrower capability set would buy nothing and
 /// would have to be kept in step by hand. What it additionally needs is
 /// the vocabulary its entry point is typed against (`ext`), the client
-/// that fetches the call (`cap/ext`), and enough of the standard library
+/// it is typed against (`ext`), and enough of the standard library
 /// to decode arguments and encode a reply.
 ///
 /// ## Examples
@@ -428,7 +428,7 @@ pub fn orchestration_cap_modules() -> List(String) {
 }
 
 /// The capability-prelude and prelude-package modules on the extension
-/// seam: every workspace capability, plus `cap/ext` and `ext`.
+/// seam: every workspace capability, plus `ext`.
 ///
 /// Written as `default_cap_modules()` widened rather than as a list of
 /// its own, so the superset relation is a fact about the code and not a
@@ -439,19 +439,22 @@ pub fn orchestration_cap_modules() -> List(String) {
 ///
 /// `ext` is not a `cap/*` module and carries no authority: it is the
 /// vocabulary an extension's tools are typed against (`packages/ext`),
-/// vendored into the build beside the prelude. `cap/ext` is the one
-/// capability only an extension makes — "which call am I serving?" — and
-/// it is on this seam and no other for the same reason `cap/strand` is on
-/// exactly one.
+/// vendored into the build beside the prelude.
+///
+/// There is no capability here for "which call am I serving?", and the
+/// absence is the point. Phase 1 had one — `cap/ext.call`, a pull the
+/// node made once at boot — and phase 3 deleted it: a satellite that
+/// lives for the session is *told* what to answer over a `hook_call`
+/// (`protocol-change/012`), so the question no longer has a caller.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert list.contains(policy.extension_cap_modules(), "cap/ext")
+/// assert list.contains(policy.extension_cap_modules(), "ext")
 /// ```
 ///
 pub fn extension_cap_modules() -> List(String) {
-  list.append(default_cap_modules(), ["cap/ext", "ext"])
+  list.append(default_cap_modules(), ["ext"])
 }
 
 /// The standard-library modules on the extension seam: the shared pure

@@ -21,8 +21,10 @@
 //// calls in-band and closes the channel (spec §3.3 invariant 6). A
 //// well-formed frame of any *other* kind is `IgnoredKind` — the reader
 //// drops it and keeps the channel open, matching the broker's
-//// forward-compatible treatment of unknown kinds. The only kind a
-//// satellite acts on is `cap_result`.
+//// forward-compatible treatment of unknown kinds. The two kinds a
+//// satellite acts on are `cap_result` — the answer to something it
+//// asked — and `hook_call`, the one frame the harness asks *it*
+//// (`protocol-change/012`).
 ////
 //// The deframer is pure and incremental: frame boundaries never depend on
 //// how the transport chunked its reads, so feeding a byte stream one byte
@@ -54,8 +56,26 @@ pub type Inbound {
   /// directly.
   CapResult(id: Int, outcome: CapOutcome)
 
-  /// A structurally valid frame of a kind a satellite does not act on
-  /// (anything but `cap_result`). Dropped; the channel stays open.
+  /// The harness asking this satellite to answer one invocation. Only a
+  /// persistent satellite ever sees one; a single-shot code-mode node
+  /// runs a program nobody calls into, and its reader drops these.
+  ///
+  /// `token` is the token for this invocation and for nothing else: it
+  /// is installed on the channel for the duration of the answer and
+  /// cleared afterwards, which is the satellite's half of the rule that
+  /// an extension may reach a capability only while the harness is
+  /// asking it something.
+  HookCall(
+    id: Int,
+    token: BitArray,
+    kind: String,
+    name: String,
+    args: msgpack.MsgPackValue,
+    deadline_ms: Int,
+  )
+
+  /// A structurally valid frame of a kind a satellite does not act on.
+  /// Dropped; the channel stays open.
   IgnoredKind(id: Int, kind: String)
 }
 
@@ -213,6 +233,7 @@ fn decode_kind(
 ) -> Result(Inbound, Fault) {
   case kind {
     "cap_result" -> decode_cap_result(id, body)
+    "hook_call" -> decode_hook_call(id, body)
     _ -> Ok(IgnoredKind(id:, kind:))
   }
 }
@@ -256,6 +277,27 @@ fn decode_result_error(
           Ok(CapResult(id:, outcome: CapErr(code:, message:)))
         _, _ -> Error(malformed("cap_result.error", "code and msg"))
       }
+  }
+}
+
+// Every field is required, so a `hook_call` missing one is a fault
+// rather than an invocation served with a guessed name or an absent
+// token. Both ends of this wire ship from one tree.
+fn decode_hook_call(
+  id: Int,
+  body: msgpack.MsgPackValue,
+) -> Result(Inbound, Fault) {
+  case
+    wire.binary_field(body, "token"),
+    wire.string_field(body, "kind"),
+    wire.string_field(body, "name"),
+    wire.field(body, "args"),
+    wire.int_field(body, "deadline_ms")
+  {
+    Ok(token), Ok(kind), Ok(name), Ok(args), Ok(deadline_ms) ->
+      Ok(HookCall(id:, token:, kind:, name:, args:, deadline_ms:))
+    _, _, _, _, _ ->
+      Error(malformed("hook_call", "token, kind, name, args and deadline_ms"))
   }
 }
 

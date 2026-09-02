@@ -564,7 +564,7 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
 
   // And the widening is real rather than an equality dressed up as one.
   assert list.length(extension) > list.length(workspace)
-  assert list.contains(extension, "cap/ext")
+  assert list.contains(extension, "ext")
   assert list.contains(extension, "ext")
 }
 
@@ -580,7 +580,7 @@ pub fn the_extension_seam_widens_by_exactly_two_names_test() {
     list.filter(policy.extension_cap_modules(), fn(name) {
       !list.contains(policy.default_cap_modules(), name)
     })
-  assert extra == ["cap/ext", "ext"]
+  assert extra == ["ext"]
   assert !policy.contains(policy.extension(), "cap/strand")
 }
 

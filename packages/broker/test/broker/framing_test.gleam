@@ -109,9 +109,10 @@ fn sample_frames() -> List(framing.Frame) {
     ),
     framing.Frame(
       id: 6,
-      body: framing.HookResult(
-        outcome: framing.CapErr(code: "unhandled", message: "no handler"),
-      ),
+      body: framing.HookResult(outcome: framing.CapErr(
+        code: "unhandled",
+        message: "no handler",
+      )),
     ),
     framing.Frame(id: 2, body: framing.Cancel),
     framing.Frame(id: 4, body: framing.Heartbeat),
@@ -543,7 +544,8 @@ pub fn hook_call_rejects_wrong_typed_field_test() {
 }
 
 pub fn hook_result_rejects_missing_error_test() {
-  let payload = hook_envelope("hook_result", [#("ok", msgpack.BoolValue(False))])
+  let payload =
+    hook_envelope("hook_result", [#("ok", msgpack.BoolValue(False))])
   let assert Error(framing.Malformed(..)) = framing.decode_payload(payload)
 }
 
