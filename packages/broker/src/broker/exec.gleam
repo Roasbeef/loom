@@ -28,10 +28,14 @@
 //// recognising a stale fire. Reaching `Idle` or `Dead` *is* the
 //// cancellation.
 ////
-//// The idle heartbeat is the one deadline still hand-rolled. It must
-//// fire every N ms regardless of activity, and none of weft's three
-//// timeout kinds — cancelled by a state change, by the next event, or by
-//// name — says that.
+//// The idle heartbeat is the third, and it is a **periodic timeout**:
+//// it must fire every N ms regardless of activity, which is what a
+//// liveness probe means and what neither a state timeout (dies with its
+//// state) nor an event timeout (measures quiet, so a chatty helper is
+//// never probed) says. It is armed on the way out of `AwaitingHello`
+//// and cancelled on the way into `Dead`, so the two arms that used to
+//// absorb a tick arriving in a phase with nothing to probe are now
+//// unreachable rather than merely unlikely.
 ////
 //// ## Policy delivery (the fd-3 gap)
 ////
@@ -358,7 +362,12 @@ pub opaque type Msg {
   /// so reaching `Idle` or `Dead` cancels it.
   HandshakeDeadline
 
+  /// The idle liveness probe came round. Carries no execution id and no
+  /// generation stamp: it is a periodic timeout armed under one name, so
+  /// weft's timer book drops a tick that raced its own cancellation and
+  /// nothing here has to recognise a stale one.
   HeartbeatTick
+
   Heartbeat(reply: Subject(Result(Nil, ExecFailure)))
   Shutdown
   FromWire(event: WireEvent)
@@ -430,12 +439,14 @@ type RunningExec {
 /// timeout; a change of state cancels one. So the deframer, the id
 /// counter and the outstanding-tick flag live here — putting any of them
 /// in the state would make an ordinary inbound chunk cancel the cancel
-/// escalation.
+/// escalation. The heartbeat itself is in neither: it is a periodic
+/// timeout, which belongs to the machine rather than to a phase, and
+/// what stays here is only the one-deep record of whether the last probe
+/// was answered.
 type Data {
   Data(
     config: HelperConfig,
     wire_out: Wire,
-    commands: Subject(Msg),
     deframer: framing.Deframer,
     next_id: Int,
     pending_heartbeats: List(#(Int, Subject(Result(Nil, ExecFailure)))),
@@ -489,7 +500,6 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
       Data(
         config:,
         wire_out:,
-        commands:,
         deframer: framing.deframer(),
         next_id: 1,
         pending_heartbeats: [],
@@ -852,8 +862,10 @@ fn handle(
     | Cancelling(..) as phase, HeartbeatTick
     -> handle_heartbeat_tick(Machine(phase:, data:))
 
-    // Before the handshake the helper is not expected to answer, and
-    // after death there is nothing to probe.
+    // Unreachable by construction, and written out because weft's
+    // exhaustiveness is what proves it: the probe is armed on the way
+    // out of `AwaitingHello` and cancelled on the way into `Dead`, and a
+    // tick in flight at either boundary is flushed by the timer book.
     AwaitingHello, HeartbeatTick | Dead(..), HeartbeatTick ->
       state_machine.keep(data)
 
@@ -892,7 +904,7 @@ fn handle(
 /// write that fails lands in `Dead` instead. Only a machine that really
 /// reached `Cancelling` gets the deadline.
 fn entered(
-  _from: Phase,
+  from: Phase,
   to: Phase,
   data: Data,
 ) -> state_machine.Enter(Phase, Data, Msg) {
@@ -911,7 +923,54 @@ fn entered(
         sending: CancelDeadline,
       )
 
-    Idle(..) | Running(..) | Dead(..) -> state_machine.keep(data)
+    // The probe starts when the handshake finishes, and the move out of
+    // `AwaitingHello` is the only path that arms it. Arming on every
+    // entry to `Idle` would turn a liveness probe into an idle timeout:
+    // a helper settling executions faster than the interval would push
+    // the next tick out for ever and never be probed at all.
+    Idle(..) ->
+      case from {
+        AwaitingHello -> arm_heartbeat(data)
+        Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
+          state_machine.keep(data)
+      }
+
+    // Nothing left to probe. Cancelling rather than letting the ticks
+    // arrive and be ignored is what makes the `Dead(..), HeartbeatTick`
+    // arm in `handle` unreachable: a tick already in flight when the
+    // machine dies carries a stale generation stamp and dies in weft's
+    // timer book instead of reaching the handler.
+    Dead(..) ->
+      state_machine.keep(data)
+      |> state_machine.cancel_timeout(name: heartbeat_timer)
+
+    Running(..) -> state_machine.keep(data)
+  }
+}
+
+// The name the idle liveness probe is armed under.
+//
+// A periodic timeout shares weft's named-timeout name space, so one
+// constant is what keeps the arm in `entered` and the cancel in `Dead`
+// talking about the same timer rather than about two.
+const heartbeat_timer = "helper.heartbeat"
+
+// Arms the idle liveness probe, unless the configuration disables it.
+//
+// The zero guard survives the port and is not a leftover: `0` means "do
+// not probe", and a periodic timeout armed for zero milliseconds is a
+// spin rather than a disabled probe.
+fn arm_heartbeat(data: Data) -> state_machine.Enter(Phase, Data, Msg) {
+  case data.config.heartbeat_interval_ms > 0 {
+    True ->
+      state_machine.keep(data)
+      |> state_machine.with_periodic_timeout(
+        name: heartbeat_timer,
+        every: data.config.heartbeat_interval_ms,
+        sending: HeartbeatTick,
+      )
+
+    False -> state_machine.keep(data)
   }
 }
 
@@ -963,15 +1022,19 @@ fn handle_heartbeat_tick(
   }
 }
 
-// Arms the next tick before writing this one, so that a write which
-// kills the channel still leaves no gap in the schedule for a machine
-// that survives it.
+// Writes this tick's probe; the next one is weft's to arm.
+//
+// A periodic timeout re-arms itself once this handler has returned, so
+// the ordering the hand-rolled version had to arrange by hand — arm
+// before the write, so a write that kills the channel leaves no gap —
+// comes for free and is now stronger. A write that kills the channel
+// lands in `Dead`, whose enter callback cancels the series, so there is
+// no tick scheduled for a machine with nothing left to probe.
 fn send_heartbeat_tick(
   machine: Machine,
 ) -> state_machine.Next(Phase, Data, Msg) {
   let #(data, id) = fresh_id(machine.data)
   let data = Data(..data, tick_outstanding: True)
-  schedule_tick(data)
   send_or_die(
     Machine(..machine, data:),
     framing.Frame(id:, body: framing.Heartbeat),
@@ -1465,7 +1528,6 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
     Dead(_) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
       let data = run_cleanup(machine.data)
-      schedule_tick(data)
       Machine(phase: Idle(features:), data:)
     }
   }
@@ -1586,30 +1648,6 @@ fn running_with_id(phase: Phase, id: Int) -> Option(RunningExec) {
         False -> None
       }
     AwaitingHello | Idle(..) | Dead(..) -> None
-  }
-}
-
-// Arms the next idle liveness probe.
-//
-// This one stays a hand-rolled `process.send_after` rather than becoming
-// a weft timeout, and the reason is a gap rather than an oversight: the
-// tick must fire every N ms *regardless of activity*, and weft's three
-// kinds are cancelled by a state change, by the next event, or by name.
-// An event timeout re-armed from its own handler would be a forcing, not
-// a fit — it would measure quiet, and a chatty helper would never be
-// probed at all.
-fn schedule_tick(data: Data) -> Nil {
-  case data.config.heartbeat_interval_ms > 0 {
-    True -> {
-      let _ =
-        process.send_after(
-          data.commands,
-          data.config.heartbeat_interval_ms,
-          HeartbeatTick,
-        )
-      Nil
-    }
-    False -> Nil
   }
 }
 
