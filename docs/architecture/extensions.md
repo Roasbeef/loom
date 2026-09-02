@@ -116,9 +116,10 @@ arguments when it launches the node; an extension is compiled once at
 install and run many times, so the call is what varies and something has
 to fetch it. That something is `cap/ext`.
 
-The widening is pinned rather than trusted. `the_extension_seam_widens_by_exactly_two_names_test`
-asserts the set difference is exactly those two names and that
-`cap/strand` is not among them
+The widening is pinned rather than trusted. `the_extension_seam_widens_by_exactly_three_names_test`
+asserts the set difference is exactly `cap/ext`, `ext` and `ext/hook` —
+the one capability only an extension makes, and the two vocabulary
+modules `packages/ext` ships — and that `cap/strand` is not among them
 (`codemode/test/codemode_test.gleam:578`) — because the superset test
 alone would pass if the extension seam had quietly picked up agent
 orchestration, putting the disk and the lineage in one program after all.

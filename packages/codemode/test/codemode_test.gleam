@@ -574,13 +574,14 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
 /// had picked up `cap/strand` on the way, which would put agent
 /// orchestration and effects in one program — the exact pairing the
 /// workspace/orchestration split exists to prevent. So the widening is
-/// pinned to its two named entries.
-pub fn the_extension_seam_widens_by_exactly_two_names_test() {
+/// pinned to its three named entries: the one capability only an
+/// extension makes, and the two vocabulary modules `packages/ext` ships.
+pub fn the_extension_seam_widens_by_exactly_three_names_test() {
   let extra =
     list.filter(policy.extension_cap_modules(), fn(name) {
       !list.contains(policy.default_cap_modules(), name)
     })
-  assert extra == ["cap/ext", "ext"]
+  assert extra == ["cap/ext", "ext", "ext/hook"]
   assert !policy.contains(policy.extension(), "cap/strand")
 }
 
