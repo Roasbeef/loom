@@ -60,7 +60,7 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2060`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2102`)
 takes a `spawn` closure and hands helpers out through `checkout`
 (`packages/broker/src/broker/exec.gleam:1533`) and `checkin`
 (`packages/broker/src/broker/exec.gleam:1542`). "One microVM per helper"
@@ -105,7 +105,7 @@ selected matrix described below. `required_layers_for_features` now chooses
 Linux or Darwin from the helper's hello features, and each backend names its
 own mechanisms. The discussion remains as the argument that led there.
 
-`required_layers` (`packages/broker/src/broker/exec.gleam:1111`) derives
+`required_layers` (`packages/broker/src/broker/exec.gleam:1174`) derives
 the layer tags an execution must be able to show as applied. Four are
 unconditional — `["bwrap", "mounts", "landlock", "no-new-privs"]` — and
 four more are conditional on what the policy asked for: `seccomp-net`
@@ -117,7 +117,7 @@ shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
 (`packages/broker/src/broker/exec.gleam:951`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:1267`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:1330`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -144,7 +144,7 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:1361`), and at the time
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:1424`), and at the time
 that list was consulted for exactly one thing: whether it contained
 `"degraded"` (`degraded_features`,
 `packages/broker/src/broker/exec.gleam:828`). Issue #64 already proposes
@@ -403,7 +403,7 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2006`), wired
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2048`), wired
 through `LOOM_HELPER_POOL` (`start_pool`,
 `packages/client/src/client/serve.gleam:894`), which means there are
 several cold slots to fill rather than one, and a wide first batch pays
@@ -420,7 +420,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:1760`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:1802`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

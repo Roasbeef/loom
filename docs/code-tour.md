@@ -298,7 +298,7 @@ handle behind a suspended poll, the pending payloads for every queued id
 state exists to go stale, which is why a pass after a restart runs the
 same code as a pass mid-run.
 
-`plan` (`runtime/strand_runtime.gleam:864`) then calls the one frozen
+`plan` (`runtime/strand_runtime.gleam:867`) then calls the one frozen
 entry point:
 
 ```gleam
@@ -467,7 +467,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1249`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1252`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -694,7 +694,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1397`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1400`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1382`). That is the
@@ -775,7 +775,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1883`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1921`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1138,7 +1138,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:441`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:444`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:458`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1308,7 +1308,7 @@ provider's cached region and are paid on every request of the session.
 
 Registration is gated on discovery rather than on refusing at call time.
 `serve.registry` (`client/serve.gleam`) appends the tool only when
-`codemode.discover` (`client/codemode.gleam:760`) finds `gleam` and `erl`
+`codemode.discover` (`client/codemode.gleam:764`) finds `gleam` and `erl`
 on `PATH` *and* a prepared build seed whose dependency table is
 byte-identical to the one the compile service generates — a seed built
 from a different table resolved a different graph, so building against it
@@ -1502,7 +1502,7 @@ the record's scope to the call standing at the door now, because a retry
 always arrives under a call id the provider has just minted and a scope
 frozen to the first attempt would leave an approval nothing can spend.
 Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:555`) holds the call —
+someone is attached, `park` (`client/escalate.gleam:561`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
 approval is consumed by CAS — after a scope check that is still exact

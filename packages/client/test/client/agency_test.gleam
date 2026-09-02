@@ -719,6 +719,59 @@ pub fn a_join_answers_every_handle_against_one_deadline_test() {
   close(harness)
 }
 
+/// What the injected `rest` bumps, so a test can watch the wait loop rest
+/// rather than infer it from wall time.
+type Slices {
+  Taken(reply: Subject(Int))
+}
+
+fn slice_counter() -> Subject(Slices) {
+  let assert Ok(started) =
+    actor.new(0)
+    |> actor.on_message(fn(taken, message) {
+      let Taken(reply:) = message
+      process.send(reply, taken)
+      actor.continue(taken + 1)
+    })
+    |> actor.start
+    as "the slice counter must start"
+  started.data
+}
+
+/// The number of slices rested so far. Reading bumps the counter too, as
+/// the escalate suite's does, so a test asserts on a value it has just
+/// advanced past.
+fn slices(counter: Subject(Slices)) -> Int {
+  process.call(counter, waiting: 1000, sending: Taken)
+}
+
+pub fn a_join_that_cannot_settle_rests_between_its_passes_test() {
+  // The retry itself, made visible. Every other join in this file reaches
+  // its answer on the first pass, so a loop that never rested at all would
+  // still pass them; this one waits on a child that never settles and
+  // counts the slices. The harness leaves `first_slice_ms` and
+  // `max_slice_ms` at 1, so the backoff cannot outrun the budget.
+  let counter = slice_counter()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, rest: fn(_slice) {
+        let _taken = slices(counter)
+        Nil
+      })
+    })
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(spawned) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the child must spawn"
+
+  let assert Ok(waited) = harness.seam.wait(caller, [spawned.handle], 200)
+    as "the join must answer"
+  let assert [only] = waited
+  let assert agent.Pending(..) = only
+
+  assert slices(counter) >= 1
+  close(harness)
+}
+
 fn handle_of(waited: agent.Waited) -> Handle {
   case waited {
     agent.Ready(handle:, ..) -> handle

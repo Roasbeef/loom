@@ -113,6 +113,7 @@
 //// that finishes in between is still woken; the window is small and named
 //// rather than claimed shut.
 
+import client/internal/timebase
 import core/clock.{type Clock}
 import core/entry
 import core/ids.{type EntryId, type OpId}
@@ -139,6 +140,7 @@ import tools/agent.{
   type Refusal, type ResultSchema, type Spawned, type TerminalResult,
   type Waited, Aborted, Completed, Failed, Handle, Pending, Ready, Spawned,
 }
+import weft/poll
 
 /// The name prefix every minted subagent strand carries. It is what
 /// `api.Options.subagent` matches on to route a model-spawned strand into
@@ -955,23 +957,15 @@ fn wait(
   // registered from evaporating.
   reap_overdue(config, runtime, ledger)
   let #(started, _clock) = clock.read(config.clock)
-  let budget = clamp(within_ms, 0, config.max_wait_ms)
   Ok(wait_loop(
     config,
     runtime,
     handles,
-    dict.new(),
     started,
-    started + budget,
-    config.first_slice_ms,
+    clamp(within_ms, 0, config.max_wait_ms),
   ))
 }
 
-// One loop, one deadline, every handle. The deadline is computed from the
-// injected clock rather than accumulated by subtraction, so the overshoot
-// is bounded by one slice plus one read instead of growing with every
-// iteration; the slice backs off, which cuts a join's store traffic from
-// a hundred reads a second to roughly four.
 // One handle's non-blocking settlement check, folded into the running
 // `found` map: already-settled handles are left alone, an unsettled one
 // is polled once more.
@@ -997,50 +991,82 @@ fn settle_handle(
   }
 }
 
+// One wait, one budget, every handle.
+//
+// The loop is `weft/poll`'s folding form, and the fold is what earns it:
+// the map of handles that have already settled has to reach the next
+// attempt, or every slice would re-ask the store about children that
+// answered on the first one. Expiry hands that map back (`RanOut`)
+// instead of only reporting that time ran out, which is exactly what a
+// join needs — the children that did settle are reported as `Ready` and
+// only the ones that did not are `Pending`.
+//
+// The wait runs on `config.clock` rather than on the monotonic clock, so
+// a simulated session's join is bounded by logical time its runner steps;
+// `client/internal/timebase` has that argument and the ruling on the
+// successor clock. The slice still backs off, now as a `Doubling`
+// interval, which is what keeps a long join at roughly four store reads a
+// second rather than a hundred.
 fn wait_loop(
   config: Config,
   runtime: api.Runtime,
   handles: List(Handle),
-  settled: Dict(String, LastResult),
   started: Int,
-  deadline: Int,
-  slice: Int,
+  budget: Int,
 ) -> List(Waited) {
+  // The probe never reports `Broken`: a handle that cannot be read yet is
+  // simply unsettled, so there is no failure to distinguish from waiting.
+  let verdict: poll.Verdict(_, Nil, _) =
+    poll.fold_until(
+      clock: timebase.on(config.clock, config.rest),
+      within: budget,
+      every: poll.Doubling(from: config.first_slice_ms, to: config.max_slice_ms),
+      from: dict.new(),
+      attempt: fn(settled) { settle_pass(runtime, handles, settled) },
+    )
+
+  let settled = case verdict {
+    poll.Answer(settled) | poll.RanOut(settled) -> settled
+
+    // Unreachable: `settle_pass` never reports `Broken`. The arm is
+    // written out because that is what makes it checkable, and it answers
+    // with what an empty pass would have — every handle still pending.
+    poll.Failure(Nil) -> dict.new()
+  }
+
+  let #(now, _clock) = clock.read(config.clock)
+  list.map(handles, fn(handle) {
+    case dict.get(settled, agent.handle_to_string(handle)) {
+      Ok(last) -> ready(runtime, handle, last)
+      Error(Nil) -> Pending(handle:, waited_ms: now - started)
+    }
+  })
+}
+
+// One pass over every handle, and the question of whether that was the
+// last one needed.
+//
+// "Everything has settled" is asked at the bound rather than by counting.
+// Every key in `settled` is one of *these* handles' own — the fold below
+// inserts under `handle_to_string` and nothing else puts a key in — so
+// the dict can never outgrow the list, and "as many settled as there are
+// handles" is the same question as "no handle sits past the ones that
+// have settled". `dict.size` is a constant-time read of the map's own
+// counter; `list.drop` stops at it. The alternative walked the handle
+// list on every slice of every wait, which is the one loop in this module
+// that runs on a timer.
+fn settle_pass(
+  runtime: api.Runtime,
+  handles: List(Handle),
+  settled: Dict(String, LastResult),
+) -> poll.Pass(Dict(String, LastResult), Nil, Dict(String, LastResult)) {
   let settled =
     list.fold(handles, settled, fn(found, handle) {
       settle_handle(runtime, found, handle)
     })
-  let #(now, _clock) = clock.read(config.clock)
-
-  // "Everything has settled" asked at the bound rather than by counting.
-  // Every key in `settled` is one of *these* handles' own — the fold
-  // above inserts under `handle_to_string` and nothing else puts a key in
-  // — so the dict can never outgrow the list, and "as many settled as
-  // there are handles" is the same question as "no handle sits past the
-  // ones that have settled". `dict.size` is a constant-time read of the
-  // map's own counter; `list.drop` stops at it. The alternative walked
-  // the handle list on every slice of every wait, which is the one loop
-  // in this module that runs on a timer.
-  case list.drop(handles, dict.size(settled)) == [] || now >= deadline {
-    True ->
-      list.map(handles, fn(handle) {
-        case dict.get(settled, agent.handle_to_string(handle)) {
-          Ok(last) -> ready(runtime, handle, last)
-          Error(Nil) -> Pending(handle:, waited_ms: now - started)
-        }
-      })
-    False -> {
-      config.rest(slice)
-      wait_loop(
-        config,
-        runtime,
-        handles,
-        settled,
-        started,
-        deadline,
-        int.min(slice * 2, config.max_slice_ms),
-      )
-    }
+  case list.drop(handles, dict.size(settled)) == [] {
+    True -> poll.Settled(settled)
+    False -> poll.Pending(settled)
   }
 }
 

@@ -434,3 +434,108 @@ through the terminal against a Baseten catalogue — a plain prompt, a
 sub-agent spawn and wait, and a code-mode program in a jailed satellite —
 with no lost-proof or unconfirmed event in any server log.
 
+---
+
+## Addendum: phase 3, the two extensions (2026-09-01)
+
+The census closed phase 2 naming three gaps weft did not have. Two are
+now closed upstream in weft `0.4.1`, and the sites that asked for them
+have moved. The third — a monitored, non-panicking call against a
+pre-existing pid — is untouched and stays named.
+
+**A periodic timeout kind.** `sm.with_periodic_timeout(name:, every:,
+sending:)` is a named timeout that arms itself again, and
+`actor.periodic(every:, sending:)` is the same tick as a builder setting.
+The cadence is fixed delay — the next fire is armed once the handler for
+this one has returned — so a slow handler slows the ticks rather than
+queueing a backlog of them; two heartbeats delivered back to back say
+nothing a single one did not. The re-arm runs after the step's own timer
+actions, which is what lets a handler cancel the series from inside the
+very fire it is handling.
+
+Two of the three sites moved. `broker/exec`'s idle heartbeat lost
+`schedule_tick`, the `process.send_after` inside it, and `Data.commands`
+— a subject the machine carried for no purpose but being that timer's
+target (+78 / −40 over the module, the growth being the prose on why the
+probe is armed on exactly one path and cancelled on exactly one other). It is armed in the
+enter callback for `Idle` and only on the way out of `AwaitingHello`:
+arming on every entry would turn a liveness probe into an idle timeout,
+since a helper settling executions faster than the interval would push
+the tick out for ever. It is cancelled on the way into `Dead`, which is
+what makes the two `HeartbeatTick` arms for phases with nothing to probe
+unreachable by construction rather than merely unlikely. Deleting the arm
+fails three tests: `missed_heartbeat_declares_helper_dead_test`,
+`pool_retires_a_wedged_helper_rather_than_faulting_test` and
+`status_of_a_wedged_helper_is_unresponsive_test`.
+
+`runtime/writer` moved from `gleam/otp/actor` to `weft/actor` for its
+lease renewal (+43 / −48, net −5, and the only file in phase 3 that
+shrank). The interesting part is what the port
+deleted rather than what it wrote: `State.renewal`, the `@internal`
+`renewal_subject` constructor, and the two-subject selector all existed
+to defend one hazard — an Erlang timer addressed through a registered
+name outlives the process that armed it and reaches whatever replacement
+claims that name, so every restart would have added a permanent second
+renewal cadence. A weft periodic timeout fires into a subject weft
+creates inside the actor's own process and never registers, so the
+address a successor could inherit does not exist. The structural test
+that guarded it went with the seam it asserted on, replaced by the
+behaviour nothing in the suite covered: that the renewal runs repeatedly,
+that a session with no lease renews nothing, and that a lost lease stops
+the writer abnormally. Deleting the arm fails the first and the third.
+
+The third site is a standing rejection now. `runtime/strand_runtime`'s
+`PollTick` goes through `runtime/effects.Timers`, which is an injection
+seam so a simulated session's poll clock runs on logical time; a periodic
+timeout is `process.send_after` underneath, and moving the tick would
+silently convert the driver's checkpoint poll from injected to
+wall-clock. It also has to start when the predecessor-drain barrier
+resolves rather than at init, and it grants a poll permit for the
+duration of exactly one planning pass. A periodic timeout answers none of
+the three.
+
+**An injectable clock for `weft/poll`.** `poll.Clock(now:, sleep:)`,
+`until_on`, and `fold_until` — which threads a state from one attempt to
+the next and hands it back as `RanOut` on expiry — plus `Interval`, so a
+long wait can back off. `client/internal/timebase` is loom's adapter and
+the one place the successor-clock ruling is written: the successor is
+discarded, because `from_function` (the runtime's clock and the
+simulation's alike) returns itself and re-calls the injected function on
+every read, and `clock.stepping` cannot serve a loop that holds one clock
+value across many reads however it is threaded.
+
+`client/escalate.park` and `client/agency.wait_loop` moved (+149 / −78
+across the two modules, the growth being the doc comments the split into
+probe-and-loop earns). Both keep their observable behaviour: the cell
+still travels to the CAS so the consume asserts the seq the decision was
+made against, and the join still exits on `list.drop(handles,
+dict.size(settled)) == []` with the backoff intact as a `Doubling`
+interval. One behaviour did move, deliberately: `park` used to check its
+deadline before reading the record, so a window already shut settled
+without a read; `weft/poll` always makes its first attempt immediately
+and its last at the deadline, which costs one read on a park with no
+window left and honours an approval landing exactly on the deadline.
+Every existing test at both sites passes unchanged, and one was added —
+`a_join_that_cannot_settle_rests_between_its_passes_test` — because the
+mutation exposed that every join in the suite reached its answer on the
+first pass and so no test watched the retry at all.
+
+`broker.clear_awaiting_helper` did **not** move, and the rejection is
+sharper than the one it replaces. It charges its budget by subtracting
+its own nap, so it terminates on a clock that never moves — five of its
+seven tests wire `clock.fixed`, against which a deadline-based poll waits
+forever. It stops on a retry-*admission* floor rather than on the
+deadline, and returns the last refusal rather than an expiry sentinel.
+And its nap is deliberately never clipped to what remains, where
+`weft/poll` clips by design.
+
+**The line count, again honestly.** Phase 3 moved `packages/*/src` by
++333 / −166 (net +167) over five files, one of them new (the 63-line
+`client/internal/timebase`, which is mostly the ruling and a handful of
+lines of code).
+Weft grew by about 900 lines of source and tests. Nothing here shrank the
+tree either; what it bought is three `send_after` calls whose handles
+were discarded — so nothing could cancel them — replaced by timers a
+generation stamp can flush, and two waits that no longer have to
+re-decide what an immediate first attempt and a last attempt at the
+deadline mean.

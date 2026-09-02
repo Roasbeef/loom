@@ -228,7 +228,16 @@ extended by the M3 runtime wave.
     `Commit(tx, reply)`, `GetEntries`, `GetRegister`, `ListRegisters`,
     `ScanBranch`, `ScanUsage`, `Stats`, `Subscribe(subscriber)`,
     `RenewTick`. Senders: `runtime/api`, `runtime/strand_runtime`, and the
-    conformance harnesses.
+    conformance harnesses — except `RenewTick`, which nobody sends. It is
+    a `weft/actor` **periodic timeout** armed by `writer.start` when
+    `Session.lease_interval_ms` is `Some`, so the writer is a `weft/actor`
+    rather than a `gleam/otp/actor`. The tick fires into a subject weft
+    creates inside the writer's own process and never registers under a
+    name, which is what makes a predecessor's timer unable to reach a
+    replacement claiming the same registered name; the writer used to
+    carry a private subject in its state for exactly that defence, and no
+    longer does. A renewal that fails stops the writer abnormally, so the
+    rest-for-one supervisor re-runs the open path.
   - `strand_runtime.Message` (all casts): `AwaitPredecessors(resolution)`
     (the guaranteed-first barrier message weft's `continuing` injects at
     init — opaque, so nothing else can construct it), `Nudge` (the
