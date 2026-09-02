@@ -691,13 +691,14 @@ original ruling read as one argument and was really two. Waking an idle
 strand keeps a session working after everyone has gone home, which is the
 sharp case. Steering a run already open cannot extend liveness at all,
 because it holds when the strand is idle exactly as a triggered rule does.
-The middle position is built (`ModelSchedulesSteer`) and is not the
-default, because a heartbeat that can only steer an open run never fires
-when a heartbeat is for. The default is `ModelSchedulesWake` — open — and
-what makes that defensible is the guardrail the original ruling already
-identified as what made operator `wake = true` safe, applied unchanged to
-a model: every recurring schedule expires on both bounds with the earlier
-winning, and no model-created schedule can raise either.
+The middle position (`ModelSchedulesSteer`) shipped as the default in the
+end: the open default rested on the per-schedule expiry bounding the
+session, #161 showed it does not (a fresh name is a fresh clock, and a
+woken model can create the next schedule before this one expires), and
+the priority order puts isolation before capability. The tools are still
+registered by default and a model can still create schedules; none of
+them can wake an idle strand unless the operator writes `[schedules]
+model_created = "wake"`. The design note's addendum records the ruling.
 
 It is reachable two ways, over one implementation
 (`client/scheduleseam.Door`): the `schedule_create`/`schedule_list`/
@@ -757,11 +758,12 @@ but `agent_spawn`), so that was the ordinary path. `scheduleseam.create`
 now refuses a subagent outright — blunter than the problem, and it stays
 until the ownership model in #154/#163 exists.
 
-#161 is the one that matters before merge, and it is a decision rather
-than a defect: it breaks no property the code tests, but it does mean the
-open default rests on a narrower argument than the design note first
-made. Read #161 before deciding whether `default_policy` stays
-`ModelSchedulesWake`.
+#161 was settled by moving the default to `ModelSchedulesSteer` rather than
+by closing the chaining hole: under the default no model-created schedule
+can wake an idle strand, and an operator who opts into `"wake"` accepts
+the property #161 describes. Closing the hole itself (a per-session
+creation budget, or a lineage on schedules) stays open work, only wanted
+by operators running under `"wake"`.
 
 One CI note for whoever picks this up: `soak (200 seeds)` is **red on
 `main` itself** (056e2c6) on the same `make soak` step, and seeds 1..200

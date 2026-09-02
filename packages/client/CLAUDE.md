@@ -414,13 +414,15 @@ over one session file. WP-L.
   own `schedule/config/…` reserved cells created through
   `tools/schedule` (`encode`/`decode`/`config_key`). `Policy` is the
   operator's say over that second door — `off`/`steer`/`wake` from a
-  `[schedules]` table — and `default_policy` is **`ModelSchedulesWake`,
-  open**, reversing this feature's original operator-only ruling; the
-  design note's addendum has the argument, and the short form is that the
-  liveness objection is answered by a mandatory expiry no model can
-  raise, while the half-open middle position is not a feature because a
-  heartbeat that only steers an open run never fires when a heartbeat is
-  for. `build` is the constructor the model-facing door and `decode`
+  `[schedules]` table — and `default_policy` is **`ModelSchedulesSteer`**: the
+  tools are registered and a model may create schedules, but none of
+  them can wake an idle strand until the operator writes `"wake"`. The
+  design note's addendum has the whole history — the feature shipped
+  operator-only, reopened with an open default on the strength of the
+  per-schedule expiry, and settled on `steer` once #161 showed that
+  expiry bounds a schedule and not a session (a fresh name is a fresh
+  clock), which under the priority order makes unsupervised liveness an
+  opt-in. `build` is the constructor the model-facing door and `decode`
   share: it enforces exactly what `parse` enforces, through the same
   predicates and constants, so the two creation paths word refusals
   differently and can never disagree about what is allowed. A schedule is

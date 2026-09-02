@@ -352,8 +352,31 @@ feared.
 An operator who wants the strong property has `ModelSchedulesSteer`,
 under which no model-created schedule can wake an idle strand at all, and
 `ModelSchedulesOff`. Whether the *default* should remain
-`ModelSchedulesWake` given the chaining hole is a live question, tracked
-as **issue #161** rather than silently settled here.
+`ModelSchedulesWake` given the chaining hole was left as **issue #161**
+rather than silently settled here; the section below records how it was
+settled.
+
+### The default moved to `steer`
+
+Ruled while the PR was being taken to merge, on the priority order the
+repository is built to: isolation, then correctness, then robustness,
+then performance, then capability. The open default was a capability
+argument — a heartbeat that can only steer never fires when a heartbeat
+is for — resting on a safety claim the correction above withdrew. Once
+the per-schedule bound stopped bounding the session, the posture that
+lets a model keep a session running unsupervised became the operator's
+to opt into rather than the build's to assume.
+
+So `default_policy` is `ModelSchedulesSteer`. The tools are still
+registered by default, a model can still create schedules for itself,
+and every one of them steers an open run and holds when the strand is
+idle. `wake` is one line of `loom.toml` away, and the example config
+says what choosing it permits. A model that asks to wake under the
+default gets a schedule that steers and a result that says so, which the
+tool already did under a `steer` policy, so nothing about the model's
+side of the door changed. Issue #161 closes with this: the chaining
+property is now something an operator accepts by writing `"wake"`, not
+something the default ships.
 
 ### The rest of what that review found
 
