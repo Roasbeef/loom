@@ -34,12 +34,12 @@
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
 ////   199593ca31cce9e875b2216011aaaaa76767260dffc00eb061bf6b58b36ad2a3  packages/cap/src/cap/runtime.gleam
-////   ddf0a259a058e049f48efd520532d38fea3087a24fceb260913dd714bf2d5ca4  packages/cap/src/cap/schedule.gleam
+////   25eb4efd48f17c523a587e8e02a0c5d9c31a12f71601c48276f9c28d1e2f696d  packages/cap/src/cap/schedule.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 6ccf802ff0adeb3e0a406625e1548b6ae8ace48aec7524842fdc56b334ed7357
+//// Body digest (every line after the marker): 79b1669e31e22952fb43995795c910808885f899a0f6a57d273f68fc4a2ce844
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -575,11 +575,11 @@ whether or not anyone is watching.
 
 /// What a `create` actually produced.
 pub type Created {
-  Created(name: String, when: String, wake: Bool)
+  Created(name: String, when: String, wake: Wake)
 }
 /// One schedule already set on this strand.
 pub type Schedule {
-  Schedule(name: String, when: String, wake: Bool, fired: Int, body: String)
+  Schedule(name: String, when: String, wake: Wake, fired: Int, body: String)
 }
 /// Why a scheduling call failed.
 pub type ScheduleError {
@@ -591,6 +591,20 @@ pub type ScheduleError {
   /// The capability channel could not carry the call.
   ScheduleUnavailable(reason: String)
 }
+/// What a schedule is allowed to do to this strand when it is idle at the
+/// moment the schedule fires.
+///
+/// A program asks for one of these and reads back what it was actually
+/// granted, which is not always the same — see the module doc on who owns
+/// that decision. The capability wire carries a boolean either way; this
+/// type is what a program writes and reads on this side of it.
+pub type Wake {
+  /// The schedule may start a fresh run when the strand is idle.
+  WakesIdle
+  /// The schedule steers a run already open, and holds when the strand is
+  /// idle. What a host that forbids waking grants instead.
+  SteersOnly
+}
 /// Schedules `body` to fire on this strand once, at `instant` — an
 /// RFC3339 UTC timestamp, for example `\"2026-09-01T09:00:00Z\"`.
 ///
@@ -598,7 +612,7 @@ pub type ScheduleError {
 /// never replayed for every occurrence that was missed.
 ///
 /// Capability: `schedule.create`.
-pub fn at(String, String, Bool, String) -> Result(Created, ScheduleError)
+pub fn at(String, String, Wake, String) -> Result(Created, ScheduleError)
 /// Cancels one schedule on this strand by name. It will not fire again.
 ///
 /// A name that is not this strand's own is denied with
@@ -617,7 +631,7 @@ pub fn cancel(String) -> Result(Nil, ScheduleError)
 /// anything, so replacing one is always `cancel` then `every` again.
 ///
 /// Capability: `schedule.create`.
-pub fn every(String, Int, Bool, String) -> Result(Created, ScheduleError)
+pub fn every(String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// Lists the schedules set on this strand.
 ///
 /// Only this strand's own, and only ones a program or the model created:
