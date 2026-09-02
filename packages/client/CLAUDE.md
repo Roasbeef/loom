@@ -22,10 +22,11 @@ over one session file. WP-L.
 ## Key Types
 
 - `client/protocol.{CommandEnvelope, Command}` — the client→server
-  envelope `{v, id, cmd, body}` and its fifteen commands (`Subscribe`,
+  envelope `{v, id, cmd, body}` and its seventeen commands (`Subscribe`,
   `CatchUp`, `Prompt`, `PromptContent`, `Steer`, `FollowUp`, `Abort`,
   `Approve`, `Deny`, `Fork`, `Navigate`, `Compact`, `CreateStrand`,
-  `ListModels` (wire name `models`), `SetConfig`) plus `UnknownCommand`,
+  `ListModels` (wire name `models`), `SetConfig`, `ListSchedules` (wire name
+  `schedules`), `CancelSchedule` (wire name `schedule_cancel`)) plus `UnknownCommand`,
   which keeps an unrecognized name as data.
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
@@ -34,6 +35,30 @@ over one session file. WP-L.
   with `Snapshot`, `Strand`, `LiveOp`, `EntryRecord`, `EscalationRecord`,
   `Denial`, and `ModelInfo` as the body shapes (`ModelsSnapshot` is the
   `models` command's reply).
+- `client/protocol.{ListSchedules, CancelSchedule, SchedulesSnapshot,
+  ScheduleInfo, ScheduleWake}` — the operator's scheduling surface,
+  `protocol-change/012`. `schedules` `{}` lists every schedule the
+  session holds — operator `[[schedule]]` tables first, then every live
+  model-created cell — as a `snapshot` mode `schedules`; `schedule_cancel`
+  `{target, name}` retires one model-created schedule and replies with
+  **the listing as it stands after the cancel**, so a client re-renders
+  from one round trip. A row is `{name, target, owner, when, wake, fired,
+  body}`, every field always present: `{target, name}` is a schedule's
+  durable identity, which is why both are required on a cancel; `owner`
+  is the wire string a client renders (`"operator"`, or the owning
+  strand's name) rather than a discriminated type, because the host knows
+  which kind a row is and a client cannot; `when` is
+  `scheduleseam.describe_timing`'s rendering, printed verbatim and never
+  parsed; `wake` is the wire's one boolean here, and in Gleam it is
+  `ScheduleWake { WakesIdle | SteersOnly }` with the boolean confined to
+  the codec — 012 declined the "frozen contract" escape for a `Bool`
+  while the field was still being minted. Refusals: an operator table is
+  `conflict` naming the configuration file and the restart; nothing live
+  is `bad_request` (a name never used and one already cancelled are the
+  same absence, since the store keeps no tombstone); a hub with no
+  scheduling plane answers `schedules` with an empty listing on the
+  `models` posture and `schedule_cancel` with `unsupported`, because a
+  cancel that cancelled nothing must never read as one that worked.
 - `client/protocol.ProtocolFault` — what a malformed frame decodes to;
   nothing here crashes.
 - `client/gateway.{Gateway, Options, Message, start}` — the hub actor,
@@ -664,6 +689,21 @@ over one session file. WP-L.
   on every Monday. No timezone handling, no seconds field, no names, and
   `L`/`W`/`?`/`#` refused by name. Performs no I/O and reads no clock:
   the scanner supplies the instant.
+- `client/scheduleadmin.{Admin, Row, CancelRefusal, admin}` — the
+  operator's door onto the scheduling store, opposite
+  `client/scheduleseam`'s model-facing one: it lists **everything** (an
+  operator watching a session watches all of it) and cancels only what a
+  strand wrote. A `[[schedule]]` table has no durable cell — it is
+  configuration, parsed at boot, and the file is the record, the posture
+  `client/rulescan` takes toward `[[rule]]` — so naming one is refused
+  with the reason rather than ignored. Cancellation reuses
+  `scheduleseam.retire` and then `schedulescan.poke`: one deletion order
+  for both doors, because the order (marks, seen cell, config cell last)
+  *is* the crash story, and a second order written here would be a
+  second chance to get it wrong. `gateway.with_schedules` takes the
+  `Admin`, and `client/serve` builds it over the very
+  `scheduleseam.Wiring` the model's door uses, so `None` there means no
+  admin.
 - `client/schedulescan.{Options, ModelDoor, Message, default_options,
   with_logger, with_model_door_open, poke, start, supervised}` — the
   scheduled-heartbeat scanner. Every tick unions the operator's fixed
