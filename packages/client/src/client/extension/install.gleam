@@ -420,6 +420,13 @@ fn compiled(
     products.beam_dir,
     staging <> "/" <> record.artifact_directory,
   ))
+
+  // The build root is scaffolding: a vendored copy of both preludes, the
+  // seeded package cache, and every intermediate the compiler wrote —
+  // tens of megabytes that would otherwise be promoted into the
+  // extension's directory and sit there for its lifetime. What is kept is
+  // what the record describes: the source, the artifact, and the record.
+  let _cleared = simplifile.delete_all([build_root])
   Ok(compile.Artifact(
     build_root:,
     beam_dir: staging <> "/" <> record.artifact_directory,

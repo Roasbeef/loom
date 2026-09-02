@@ -277,6 +277,10 @@ pub fn a_local_install_never_fetches_test() {
   assert done.directory == record.directory(root, "hello")
   assert exists(record.file(root, "hello"))
   assert exists(record.sources(root, "hello") <> "/src/hello/tool.gleam")
+
+  // The build root is scaffolding and does not survive the promotion:
+  // what is kept is exactly what the record describes.
+  assert !exists(record.directory(root, "hello") <> "/build")
 }
 
 /// A URL source is refused naming the layer, because the fetch is not
