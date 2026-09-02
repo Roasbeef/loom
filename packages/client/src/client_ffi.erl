@@ -9,7 +9,8 @@
 -export([system_time_ms/0, unique_positive_integer/0, find_executable/1,
          wait_for_sigterm/0, halt/1, constant_time_equal/2,
          create_exclusive_private_file/2, platform/0,
-         terminate_supervisor/2, code_root_dir/0, erts_version/0]).
+         terminate_supervisor/2, code_root_dir/0, erts_version/0,
+         inflate_gzip/2]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -108,6 +109,54 @@ create_exclusive_private_file(Path, Bytes) ->
     catch
         _:_ -> {error, nil}
     end.
+
+%% zlib inflate of a gzip stream, bounded by Limit output bytes.
+%%
+%% The bound is the whole point: an extension archive is untrusted input
+%% and a decompression bomb is a handful of bytes on the wire. safeInflate
+%% hands back one chunk per call rather than the whole stream, so the loop
+%% can compare the running output size against Limit after every chunk and
+%% abandon the stream the moment it goes over -- the bomb is never
+%% materialised, and the caller learns which cap it hit rather than losing
+%% the node to an out-of-memory kill. inflateInit/2 with a window bits of
+%% 31 selects the gzip wrapper (15 window bits + 16), so the header and the
+%% trailing CRC are checked by zlib rather than by us.
+%%
+%% Every zlib failure -- a bad header, a corrupt deflate block, a CRC that
+%% does not match -- raises, and all of them collapse to stream_corrupt:
+%% the caller's recourse is identical in each case, which is to refuse the
+%% archive.
+inflate_gzip(Bytes, Limit) when is_binary(Bytes), is_integer(Limit) ->
+    Z = zlib:open(),
+    try
+        zlib:inflateInit(Z, 31),
+        inflate_bounded(Z, Bytes, Limit, 0, [])
+    catch
+        _:_ -> {error, stream_corrupt}
+    after
+        zlib:close(Z)
+    end.
+
+%% Input is handed to safeInflate on the first call only; every later call
+%% passes <<>> so zlib drains what it already holds.
+inflate_bounded(Z, Input, Limit, Written, Acc) ->
+    case zlib:safeInflate(Z, Input) of
+        {continue, Output} ->
+            inflate_more(Z, Limit, Written + iolist_size(Output),
+                         [Acc, Output]);
+        {finished, Output} ->
+            inflate_done(Limit, Written + iolist_size(Output), [Acc, Output])
+    end.
+
+inflate_more(Z, Limit, Written, Acc) when Written =< Limit ->
+    inflate_bounded(Z, <<>>, Limit, Written, Acc);
+inflate_more(_Z, _Limit, _Written, _Acc) ->
+    {error, output_too_large}.
+
+inflate_done(Limit, Written, Acc) when Written =< Limit ->
+    {ok, iolist_to_binary(Acc)};
+inflate_done(_Limit, _Written, _Acc) ->
+    {error, output_too_large}.
 
 %% --- gen_event callbacks ---------------------------------------------------
 %% State is the pid waiting in wait_for_sigterm/0. Swap-installed

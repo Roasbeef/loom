@@ -252,8 +252,8 @@ pub fn a_github_source_resolves_to_an_archive_test() {
   let assert Ok(parsed) = source.parse("https://github.com/o/r")
     as "a GitHub URL is a source"
   assert parsed == source.GitHub(owner: "o", repo: "r")
-  assert source.archive_url(parsed, rev: Some("v1"))
-    == Ok("https://github.com/o/r/archive/v1.tar.gz")
+  assert source.archive_url(parsed, Some("v1"))
+    == Ok("https://codeload.github.com/o/r/tar.gz/v1")
 }
 
 pub fn a_url_with_credentials_is_refused_test() {

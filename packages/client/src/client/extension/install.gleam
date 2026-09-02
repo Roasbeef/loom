@@ -254,7 +254,7 @@ fn fetched(
   rev: Option(String),
 ) -> Result(Tree, Failure) {
   use url <- result.try(
-    source.archive_url(from, rev:) |> result.map_error(Fetch),
+    source.archive_url(from, rev) |> result.map_error(Fetch),
   )
   use bytes <- result.try(
     config.fetch(url, max_archive_bytes) |> result.map_error(Fetch),

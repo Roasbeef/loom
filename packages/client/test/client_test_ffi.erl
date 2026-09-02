@@ -6,7 +6,7 @@
 %% lines are the point, not an accident.
 -module(client_test_ffi).
 
--export([ws_roundtrip/4, which/1, run/3]).
+-export([ws_roundtrip/4, which/1, run/3, gzip/1]).
 
 %% Returns {ok, Payload} with the first text frame the server sends
 %% after our frame, or {error, Reason} naming the step that failed.
@@ -141,3 +141,12 @@ collect(Port, Acc) ->
         end,
         {error, <<"the program did not exit within five minutes">>}
     end.
+
+%% --- gzip, for the extension archive tests ---------------------------------
+%%
+%% zlib:gzip/1 rather than a `tar`/`gzip` binary: the archive tests build
+%% their tars byte by byte in Gleam precisely so that nothing about what
+%% they assert depends on a tool version, and shelling out for the
+%% compression would put that back.
+gzip(Bytes) ->
+    zlib:gzip(Bytes).
