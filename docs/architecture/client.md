@@ -602,6 +602,48 @@ it, streams its output through and exits with its status. Two ladders
 would mean installing an extension into one server's world and then
 starting another.
 
+## Dispatching an extension
+
+The install is half of it. The other half is a boot that finds what was
+installed and a tool call that spends a jailed node.
+
+`serve.assemble` reads `installed.discover(record.root_for(Settings.home))`
+before it builds the registry. A `Refused` is logged under
+`extension.refused` and registers nothing — an operator who installed
+something and then sees nothing has no way to tell "it is broken" from "I
+imagined installing it". A `Ready` on a host with no code-mode toolchain
+is logged too and registers nothing, because no `erl` means no satellite
+to boot and a tool definition that can only fail still renders into the
+provider's cached byte prefix on every request. Everything else becomes
+one `contributions.Contribution(Extension(name), tools)`, appended after
+the built-ins, and a repeated name refuses the boot.
+
+A call to one of those tools is **one satellite execution of the
+artifact the install compiled**. `client/extension/dispatch` prepares a
+work directory keyed on `{op_id, step_id, source_index}` — the same
+digest `code_mode` uses, so an extension call and a `code_mode` call in
+one assistant message cannot share a socket or a token file — runs
+`satellite.run` on the install's `artifact/` beam set, removes the
+directory, and settles the `outcome` frame into an ordinary
+`ToolOutcome`. Latency is a node launch per call and no build, because
+the build happened at install; a persistent per-extension satellite
+(phase 3) removes even that.
+
+The router the execution runs behind is
+`docs/architecture/code-mode.md`'s "Dispatching an extension": the
+extension arm answering `ext.call` and `net.request` over the workspace
+bridge over `satellite.default_router`. Two things about it belong here
+rather than there. The `Ctx.grants` an escalation approval attributed to
+*this call* are deliberately **not** composed onto the run phase: an
+operator approved an extension once, at install, having read a manifest,
+and a grant approved mid-run would widen the jail past the terms of that
+approval. A `code_mode` call is the opposite case — the model wrote that
+program in this turn and the human approved this turn's widening — and
+does compose them. And the secret bindings' values are read by
+`broker/egress` through the same `env_text` lookup `api_key_env` uses,
+inside the request, and appear in no `Tool`, no frame, no `LaunchSpec`
+environment and no log line.
+
 ## What the acceptance actually proves
 
 `client/demo` drives the entire M3 flow **through the protocol alone**,
@@ -643,6 +685,9 @@ real websocket `subscribe` returning a snapshot.
 | `client/extension/install.gleam` | The six-step pipeline, the staging discipline, and the generated satellite entry. |
 | `client/extension/installed.gleam` | Discovery: the four re-derivations that decide whether an install is still what was approved. |
 | `client/extension/cli.gleam` | `loom ext install|list|remove|verify`, and the build seam over a started plane. |
+| `client/extension/policy.gleam` | The manifest's `[net]` table as an `egress.Policy`, the per-execution ceilings, and the refusal vocabulary. |
+| `client/extension/seam.gleam` | The `ext.call` and `net.request` router arms: msgpack in, msgpack out, no policy. |
+| `client/extension/dispatch.gleam` | An install record as `tool.Tool`s, and one jailed satellite per call. |
 | `client/demo.gleam` | The M3 acceptance flow, driven through the protocol only. |
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
