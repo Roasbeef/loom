@@ -607,7 +607,7 @@ starting another.
 
 `docs/architecture/extensions.md` is the whole of it from the extension's
 side: the two tiers, the seam, the manifest, brokered egress and the
-secret bindings, and what stands built against what is still in flight.
+secret bindings, and what stands built against what is still planned.
 
 ## Dispatching an extension
 
@@ -690,7 +690,7 @@ real websocket `subscribe` returning a snapshot.
 | `client/extension/manifest.gleam` | The total `extension.toml` decoder: tools, hooks, the net policy and its secret *names*. |
 | `client/extension/record.gleam` | The install record and the `Root` value that says where installs live. |
 | `client/extension/install.gleam` | The pipeline and its six named layers, the prune that runs first, the staging discipline, and the generated satellite entry. |
-| `client/extension/installed.gleam` | Discovery: the four re-derivations that decide whether an install is still what was approved. |
+| `client/extension/installed.gleam` | Discovery: the five re-derivations that decide whether an install is still what was approved — the tree digest, the manifest, the vetting, the recorded allowlist and the artifact's own content address. |
 | `client/extension/cli.gleam` | `loom ext install|list|remove|verify`, and the build seam over a started plane. |
 | `client/extension/policy.gleam` | The manifest's `[net]` table as an `egress.Policy`, the per-execution ceilings, and the refusal vocabulary. |
 | `client/extension/seam.gleam` | The `ext.call` and `net.request` router arms: msgpack in, msgpack out, no policy. |

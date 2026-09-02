@@ -50,8 +50,8 @@ Two more sit beside the planes rather than in one. `telemetry` is a leaf
 over `core`, so any impure package may log through it, and its
 correlation context travels as a value because `logger`'s process
 metadata does not survive a spawn and the effect sandwich is nothing but
-spawns. `lint` is Loom's own house-rule lint over Gleam source — seven
-rules, four of which gate `make check` at error level — and it depends on
+spawns. `lint` is Loom's own house-rule lint over Gleam source — twelve
+rules, five of which gate `make check` at error level — and it depends on
 nothing in the harness at all.
 
 Purity is layered on purpose. `core`, `machine`, and `prompt` perform no
@@ -1360,7 +1360,7 @@ authorization model it does not claim is proved on `client`'s side against
 a live runtime instead.
 
 One thing the router does not do is worth stating here rather than
-leaving to the depth. Of the nine modules the workspace seam admits,
+leaving to the depth. Of the ten modules the workspace seam admits,
 `satellite.default_router` maps exactly one capability, `proc.run`, onto a
 jailed `broker.clear_call`; every other name comes back `unsupported_cap`.
 That is a routing table still being filled in (issue #16), not a security
