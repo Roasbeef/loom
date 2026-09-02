@@ -868,7 +868,7 @@ pub fn toolchain_path(toolchain: Toolchain) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.registry(list.append(core, codemode_tool.tools(codemode.seam(config))))
+/// // contributions.built_in(_, option.Some(codemode.seam(config)), ..)
 /// ```
 ///
 pub fn seam(config: Config) -> codemode_tool.CodeMode {

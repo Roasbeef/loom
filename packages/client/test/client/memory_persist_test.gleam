@@ -44,6 +44,7 @@ import provider/secret
 import runtime/api
 import simplifile
 import support/provider as provider_test
+import support/tool_registry
 import tools/remember
 import tools/tool
 
@@ -84,7 +85,7 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
 
   let outcome =
     tool.dispatch(
-      serve.registry(None, None, None, Some(a_seam(root)), None),
+      tool_registry.built_in(None, None, None, Some(a_seam(root)), None),
       a_ctx(root),
       remember.tool_name,
       core_json_note(preference),

@@ -323,7 +323,7 @@ pub fn is_subagent(strand: String) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // tool.registry(list.append(core, agent.tools(agency.seam(config))))
+/// // contributions.built_in(option.Some(agency.seam(config)), ..)
 /// ```
 ///
 pub fn seam(config: Config) -> Agency {

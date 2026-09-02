@@ -11,7 +11,6 @@ import broker/exec
 import broker/policy
 import client/memory
 import client/notes
-import client/serve
 import core/clock
 import core/entry
 import core/ids
@@ -25,6 +24,7 @@ import gleam/string
 import runtime/effects
 import simplifile
 import storage/storage
+import support/tool_registry
 import tools/remember
 import tools/tool
 
@@ -209,7 +209,7 @@ pub fn remember_writes_one_redacted_note_test() {
 pub fn the_tool_is_registered_only_when_memory_is_wired_test() {
   let root = fresh_root("gate")
   let with_memory =
-    serve.registry(
+    tool_registry.built_in(
       None,
       None,
       None,
@@ -217,7 +217,7 @@ pub fn the_tool_is_registered_only_when_memory_is_wired_test() {
       None,
     )
   assert list.contains(tool.names(with_memory), remember.tool_name)
-  let without = serve.registry(None, None, None, None, None)
+  let without = tool_registry.built_in(None, None, None, None, None)
   assert list.contains(tool.names(without), remember.tool_name) == False
 }
 
@@ -565,7 +565,7 @@ fn a_seam(path: String) -> remember.Memory {
 // which is what makes this a test of the tool and not of the closure.
 fn dispatch(root: String, note: String) -> tool.ToolOutcome {
   let registry =
-    serve.registry(
+    tool_registry.built_in(
       None,
       None,
       None,

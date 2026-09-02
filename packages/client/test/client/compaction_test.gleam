@@ -20,7 +20,6 @@ import broker/exec
 import broker/policy
 import broker/token
 import client/escalate
-import client/serve
 import client/summaries
 import client/system_prompt
 import client/wiring
@@ -45,6 +44,7 @@ import runtime/effects
 import session/session
 import storage/storage
 import support/provider as provider_test
+import support/tool_registry
 
 // The text the scripted provider answers a summary request with. If a
 // `CompactionEntry` carries this, a provider produced it — the hooks did
@@ -262,7 +262,7 @@ fn wiring_config(
       compaction: compaction_settings(),
       broker: broker_actor,
       broker_timeout_ms: 1000,
-      registry: serve.registry(None, None, None, None, None),
+      registry: tool_registry.built_in(None, None, None, None, None),
       workspace:,
       blob_root: workspace <> "/.blobs",
       base_policy: policy.workspace_default(workspace),

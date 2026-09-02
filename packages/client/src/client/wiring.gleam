@@ -246,7 +246,7 @@ pub type Config {
     broker: Broker,
     /// Bound on the synchronous broker clearance call, in milliseconds.
     broker_timeout_ms: Int,
-    /// The tool registry (`tool.registry([...])`).
+    /// The tool registry, as `client/contributions` built it.
     registry: Registry,
     /// Absolute workspace root.
     workspace: String,
@@ -1199,6 +1199,14 @@ pub fn clear(
 /// the runtime commits. Always `ToolCompleted` — dispatch is total and
 /// tool failures are in-band `is_error` results, never harness faults.
 ///
+/// This is where the tool vocabulary's `Terminate` meets the effect
+/// plane's `Bool`. `runtime/effects`, `machine` and `core` have carried
+/// `terminate` since WP-D; what they never had was a producer, so the
+/// answer was welded to `False` here. It is now the tool's, converted at
+/// this one boundary — which is the only place the two vocabularies
+/// touch, and therefore the only place the polarity has to be written
+/// down.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1218,9 +1226,23 @@ pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
       tool_name: run.call.name,
       timestamp: now,
     ),
-    // No core tool terminates a run; the field exists for future tools.
-    terminate: False,
+    terminate: terminates(outcome.terminate),
   )
+}
+
+/// The tool vocabulary's answer as the effect plane's frozen field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wiring.terminates(tool.TerminateRun)
+/// ```
+///
+pub fn terminates(terminate: tool.Terminate) -> Bool {
+  case terminate {
+    tool.ContinueRun -> False
+    tool.TerminateRun -> True
+  }
 }
 
 /// The per-call tool context: the caller's durable coordinates from the
