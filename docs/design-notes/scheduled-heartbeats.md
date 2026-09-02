@@ -634,3 +634,35 @@ purpose:
   crons will wake the session again. Loom's equivalent is the
   `schedules` command, which any client can ask at any time.
 
+---
+
+## Addendum: the scanner on weft, and one offset
+
+**#165 closed on the loom side.** `client/schedulescan` is a
+`weft/state_machine` with one state, `Watching`, one named timeout under
+one constant name re-armed by every scan for the soonest boundary, and a
+`cancel_timeout` on the path where nothing is left to wait for, so the
+timer belongs to the machine and every path says what is armed. It arms
+through `sm.with_timer_source(timer.Injected(after:
+runtime.effects.timers.after))`, which is what weft 0.4.2 added for
+exactly this: the simulation runner and the fake wheel drive it
+unchanged, and the hand-rolled generation tag the first version carried
+is deleted rather than documented, since arming a name supersedes the
+previous arming and a superseded wake dies in weft's timer book. The
+first arming is made by `on_enter`, which runs once because the machine
+has one state; `continuing` would have scanned inside `start`'s own
+continuation and taken away the "armed and not yet run" state the fixtures
+step through. `docs/weft.md` has the port and the two reasons the strand
+driver's poll tick still stays hand-rolled.
+
+**A fixed UTC offset for cron, and emphatically not a zone.** `Cron`
+carries `offset_s` (`utc_offset = "+02:00"` in the table, `utc_offset` on
+the tool, `cron_at_offset` in the cap module), bounded to fourteen hours
+either way. The shift is a reading of the clock, never a change to an
+occurrence's identity: matching and searching happen in shifted time and
+every fired-mark still records the UTC second, so changing an offset
+later re-fires nothing. It is not daylight-saving aware and every
+description says to write the offset in force now. This is the one
+concession to Claude Code's local-time interpretation; a zone database
+remains the swamp the first ruling named.
+

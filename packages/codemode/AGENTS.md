@@ -186,9 +186,17 @@ session and sends it many invocations.
   phase and a calendar shape, which an epoch-aligned interval has no
   argument for, and `in_seconds` names a relative one-shot, which a
   program with no clock in its prompt cannot express as an absolute
-  instant. Neither is parsed here — the host owns the one RFC3339 parser
-  and the one cron grammar — so this package gains no calendar code and
-  no clock. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
+  instant. `utc_offset` is a fifth field and not a fifth timing: it
+  shifts the clock `cron`'s fields are read against, so the router
+  refuses it beside any other timing (`licensed_offset`) rather than
+  handing on a request the host would have to invent a meaning for. It
+  is a **fixed offset and not a timezone** — nothing in Loom follows a
+  daylight-saving change — and the router says so in the field's doc
+  because it is the one thing a program will otherwise get wrong. None
+  of the four, and not the offset, is parsed here — the host owns the one
+  RFC3339 parser, the one cron grammar and the one `[+-]HH:MM` grammar —
+  so this package gains no calendar code, no offset arithmetic and no
+  clock. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
   name for what a schedule may do to an idle strand, restated here the
   way `ScheduleRefusal` restates the host's refusal vocabulary, since
   `codemode` may depend on neither `client` nor `tools`; the cap wire

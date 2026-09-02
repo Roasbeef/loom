@@ -131,17 +131,32 @@ below.
   resolves it against the session's own clock, bounded at 1..604800
   seconds. `cron` exists because an interval cannot express a *phase* —
   the grid is aligned to the epoch, so `every(…, 86_400, …)` is always
-  00:00 UTC — and it is the standard five fields and nothing more: UTC
-  throughout, no seconds field, no month or day names, none of
-  `L`/`W`/`?`/`#`, and the two day fields ORed rather than ANDed when
-  both are restricted. `every_within` and `cron_within` are the same two
+  00:00 UTC — and it is the standard five fields and nothing more: no
+  seconds field, no month or day names, none of `L`/`W`/`?`/`#`, and the
+  two day fields ORed rather than ANDed when both are restricted.
+  `cron`'s fields are read in **UTC**, and `cron_at_offset(name,
+  expression, offset, wake, body)` is the one door onto a different
+  clock: it takes a **fixed offset** written `[+-]HH:MM` (`"+02:00"`,
+  `"-05:30"`, between `"-14:00"` and `"+14:00"`) and **not a timezone**.
+  That distinction is the whole of what the function costs, and it is
+  what the doc comment has to state: a zone is a function from an instant
+  to an offset, which needs a database Loom does not carry, so nothing
+  here follows a daylight-saving change and an offset written in summer
+  fires an hour out all winter. Write the offset in force now and say in
+  the body which clock the schedule was set for. The offset is refused
+  beside any timing but `cron`, which names no fields for it to shift,
+  and it moves no durable identity: the host records an occurrence under
+  the UTC second it fell on, so an offset added or changed later re-fires
+  nothing. `every_within` and `cron_within` are the same two
   recurring shapes with `Bounds(max_fires:, expires_after_s:)` stated
-  rather than defaulted; `DefaultBounds` is what the four plain
+  rather than defaulted; `DefaultBounds` is what the plain
   functions pass, and `Bounds` can only *narrow* — the host holds both
   numbers to the same ceilings it holds its own configuration to and
   denies anything above one as `invalid_schedule`.
   **A target is a request, never an instruction.** `every_on`, `at_on`,
-  `cron_on`, `after_on` and `cancel_on` are the functions that name one, and the host
+  `cron_on`, `after_on` and `cancel_on` are the functions that name one
+  (`cron_at_offset` deliberately does not: it is this strand's own
+  schedule, and the smallest addition the offset needed), and the host
   admits only the calling strand itself or a strand it spawned, decided
   from its own lineage ledger and refused as `invalid_schedule`
   otherwise — a program cannot reach a sibling's or a parent's context by

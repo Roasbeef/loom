@@ -482,7 +482,8 @@ over one session file. WP-L.
   parse, parse_policy,
   default_policy, policy_opens_the_door, wake_under, build,
   encode, decode, config_key, config_key_prefix, strand_prefixes,
-  parse_instant, render_instant, fired_key,
+  parse_instant, render_instant, parse_utc_offset, render_utc_offset,
+  max_utc_offset_s, min_utc_offset_s, fired_key,
   fired_key_prefix, fired_value, seen_key, seen_value, decode_seen,
   injection, origin_of, interval_occurrence,
   interval_late, recurring_expired, cron_occurrence, cron_late,
@@ -512,12 +513,37 @@ over one session file. WP-L.
   predicates and constants, so the two creation paths word refusals
   differently and can never disagree about what is allowed. A schedule is
   exactly one of three: `Interval(seconds, expiry)`, aligned to a fixed
-  grid (`slot = floor(now_s / seconds)`); `Cron(expression, expiry)`, a
-  five-field UTC calendar expression parsed by `client/cron`; or
+  grid (`slot = floor(now_s / seconds)`); `Cron(expression, offset_s,
+  expiry)`, a five-field calendar expression parsed by `client/cron` and
+  read against a UTC clock shifted by `offset_s`; or
   `OneShot(at)`, a single RFC3339 UTC instant. Never two, never none, and
-  still no timezones anywhere — the design note cut cron as a swamp, and
-  what changed is that the swamp is the *timezone* half rather than the
-  syntax half. `cron` buys the one thing an interval cannot say at all:
+  still **no timezones anywhere** — the design note cut cron as a swamp,
+  and what changed is that the swamp is the *timezone* half rather than
+  the syntax half.
+  **`offset_s` is a fixed offset and emphatically not a zone**, which is
+  the whole of what the addition costs and what every description a model
+  or an operator reads has to say. A zone is a function from an instant
+  to an offset — Berlin is +01:00 in January and +02:00 in July — and
+  answering which needs the IANA database this tree will not carry, so a
+  schedule written `+02:00` in summer fires an hour off its author's own
+  clock all winter. What it buys is the thing an operator actually asks
+  for: "09:00 my time", which a UTC-read expression cannot say at all.
+  Written `utc_offset = "+02:00"` in TOML (`[+-]HH:MM`, allowed **only**
+  beside `cron` and refused in words beside `every`/`at`), carried as
+  `utc_offset_s: Int` in the config cell (absent → 0, so every cell
+  written before the offset existed decodes unchanged), and parsed by the
+  one `parse_utc_offset` all three doors share. The bound is
+  `min_utc_offset_s`..`max_utc_offset_s`, ±14 hours, held by
+  `parse_utc_offset` *and* by `build`, because `decode` reaches the
+  constructor with a number that never passed through the parser.
+  **The shift is a reading of the clock, never a change to an
+  occurrence's identity**: an occurrence at UTC epoch `t` matches when
+  `cron.matches(expression, at_s: t + offset_s)`, and the three search
+  functions shift in and shift straight back out — so every occurrence id
+  they return is a **UTC** epoch second and `fired_key`, `seen_key` and
+  `config_key` are byte-identical to what they were. Storing ids in
+  shifted time instead would have made an edited offset unread the whole
+  fire history and re-fire everything. `cron` buys the one thing an interval cannot say at all:
   a **phase**. The interval grid is aligned to the epoch, so `every =
   "86400s"` is always 00:00 UTC and `0 9 * * 1-5` is the only way to ask
   for 09:00 on weekdays. It needs no `min_interval_s` check, and that is
@@ -538,6 +564,10 @@ over one session file. WP-L.
   makes a first fire on time. `cron_next_delay_ms` is the re-arm, floored
   at a second like the interval one, and `None` — no match within
   `cron.search_horizon_days` — is a schedule that will not fire again.
+  All three take `offset_s`, search in shifted time and answer in UTC;
+  `cron_next_delay_ms` in particular shifts the match back *before* it
+  meets `now_ms`, since shifting only one of the two would arm a delay
+  wrong by the whole offset.
   Both recurring shapes carry a
   mandatory `Expiry`: `max_fires` and `expires_after_s` are both always
   active, defaulted when unset, and whichever is reached first ends the
@@ -631,9 +661,17 @@ over one session file. WP-L.
   `schedule.build`, whose `checked_expiry` is the same ceiling a
   `[[schedule]]` table meets, so this door holds no second copy of a
   bound. `describe_timing` is the one rendering both `create` and `list`
-  use, and a cron reads back as `cron "0 9 * * 1-5" UTC, at most N
-  times` — `UTC` said out loud, because a caller reading `0 9 * * 1-5`
-  has no other way to know which 09:00 it got. `Wiring`
+  use, and a cron reads back as `cron "0 9 * * 1-5" UTC+02:00, at most N
+  times` — the clock said out loud, because a caller reading
+  `0 9 * * 1-5` has no other way to know which 09:00 it got. A schedule
+  with no offset still renders bare `UTC`
+  (`schedule.render_utc_offset(0)`), because most have none and spelling
+  `UTC+00:00` out every time would train a reader to skip the clause that
+  matters on the rare one that does. `requested_timing`'s cron arm parses
+  the door's `utc_offset` through `schedule.parse_utc_offset` — the same
+  parser the operator's TOML key uses, so a model and an operator cannot
+  disagree about `+05:30` — and an absent argument is plain UTC, which is
+  what every request meant before the argument existed. `Wiring`
   carries `operator_schedules` for one reason worth knowing: both stores
   feed one scanner, which derives a fired-mark from `{target, name}`
   alone, so a model name colliding with an operator's would make two
@@ -686,7 +724,11 @@ over one session file. WP-L.
   return. The one rule a reimplementation gets wrong is in here and
   documented at length: **when both day fields are restricted they are
   ORed, not ANDed**, so `0 9 1 * 1` fires on the first of the month *and*
-  on every Monday. No timezone handling, no seconds field, no names, and
+  on every Monday. This module holds **no offset and no timezone
+  handling at all**, and that stayed true when `client/schedule` grew a
+  fixed `utc_offset`: the shift is applied by the caller, which adds
+  `offset_s` to the instant it asks about and subtracts it from the
+  answer, so nothing here reads a clock or knows an offset exists. No seconds field, no names, and
   `L`/`W`/`?`/`#` refused by name. Performs no I/O and reads no clock:
   the scanner supplies the instant.
 - `client/scheduleadmin.{Admin, Row, CancelRefusal, admin}` — the
@@ -704,9 +746,38 @@ over one session file. WP-L.
   `Admin`, and `client/serve` builds it over the very
   `scheduleseam.Wiring` the model's door uses, so `None` there means no
   admin.
-- `client/schedulescan.{Options, ModelDoor, Message, default_options,
-  with_logger, with_model_door_open, poke, start, supervised}` — the
-  scheduled-heartbeat scanner. Every tick unions the operator's fixed
+- `client/schedulescan.{Options, ModelDoor, Message, max_timer_delay_ms,
+  default_options, with_logger, with_model_door_open, poke, start,
+  supervised}` — the
+  scheduled-heartbeat scanner, and a **`weft/state_machine`**
+  (loom#165). One state, `Watching`, which the machine never leaves; the
+  data is the parsed operator list plus the runtime and nothing else; and
+  the whole of its liveness is one **named** timeout under a single
+  constant name, re-armed by every scan for the soonest boundary any
+  still-active schedule needs. A scan that finds nothing active and has
+  `DoorShut` `sm.cancel_timeout`s that name instead, so every path
+  through a scan says what should be armed under it and the timer belongs
+  to the machine rather than to a phase (`docs/weft.md` rule 8). The
+  first arming is a zero-delay one made by `sm.on_enter`, which runs
+  exactly once because the machine has one state — an injected
+  `sm.continuing(Rescan)` would have scanned inside `start`'s own
+  continuation, and "the first tick is armed and has not run" is a state
+  the fixtures hold still and step through. Neither `weft/actor` nor a
+  periodic timeout: the delay is *recomputed per scan* from the store,
+  which neither a state timeout (cancelled by a transition this machine
+  never makes) nor a fixed cadence can carry. It arms through
+  `sm.with_timer_source(timer.Injected(after: runtime.effects.timers.after))`,
+  so a simulated session's heartbeats still run on logical time and
+  `schedulescan_test`'s fake wheel still drives them by hand — that
+  injectable source (weft 0.4.2) is the thing whose absence kept this
+  module hand-rolled. With it the generation tag `Message` used to carry
+  is gone: `Message` is `Tick | Rescan`, arming under one name supersedes
+  the previous arming, and a superseded wake dies in weft's own timer
+  book rather than in a guard written here. `start` and `supervised`
+  keep `gleam/otp/actor`'s `StartResult` and
+  `supervision.ChildSpecification` — weft returns upstream's own types —
+  so `client/serve` needed no change at the boundary.
+  Every tick unions the operator's fixed
   list with the model's config cells read fresh from the store, never a
   cached list: a cell can appear or be cancelled between any two ticks
   and this actor is restartable, so a cache would be a second source of
@@ -733,10 +804,10 @@ over one session file. WP-L.
   predating `since_s` was never asked for. And a cron expression with no
   next match inside `cron.search_horizon_days` is `Expired` for the
   tick, with a `schedule.cron_never_matches` warning: `0 0 30 2 *` is
-  legal, will never fire, and must not leave the actor waking up over it
-  forever. Unlike
-  `client/rulescan` it is driven by its own injected
-  `runtime/effects.Timers.after` deadline, never by a writer hint, and it
+  legal, will never fire, and must not leave the machine waking up over
+  it forever. Unlike
+  `client/rulescan` it is driven by its own named timeout on the injected
+  `runtime/effects.Timers` clock, never by a writer hint, and it
   holds no progress state across ticks: every tick re-derives which
   schedules are due or expired from a bounded scan of the write-once
   fired-marks already in the store, read straight off `storage`
