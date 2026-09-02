@@ -239,8 +239,17 @@ written by whoever calls `render`, not here.
 - **Repository guidance is project-authored data, framed as such,
   capped at `max_repository_guidance_bytes` on a line boundary, and the
   cut is announced by the pack's own fragment.** Framing does not make a
-  hostile `CLAUDE.md` safe; it stops one speaking with the operator's
-  voice, and the residual risk is accepted and named.
+  hostile `AGENTS.md` or `CLAUDE.md` safe; it stops one speaking with the
+  operator's voice, and the residual risk is accepted and named.
+- **The `repository_guidance` binding may carry more than one file, and
+  the fences around them are `client/system_prompt`'s.** This package
+  still sees one opaque string and still never parses it. What
+  `_repository_guidance` promises about that string is the contract the
+  client keeps: each file arrives inside an `<instructions>` block naming
+  its path and an origin of `workspace` or `user-default`, at most one
+  block is `user-default`, and when there is one it is first. Reword the
+  fragment and those two words move with it — they are the only thing
+  telling a model which instructions are its operator's.
 - **`decode` accepts more than `problems` approves.** Keep it that way:
   syntax is the decoder's business, completeness is the harness's
   decision. `severity` refines the *report* and must never reach back

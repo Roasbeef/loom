@@ -16,8 +16,9 @@
 //// written at 2× base input and read on every turn of every strand for
 //// the rest of the session. Its economics rest entirely on the head not
 //// moving. Every input to `render` is fixed at session open, but the
-//// *sources* of those inputs are not: the agent may edit `CLAUDE.md`, the
-//// host's kernel may change under a restart, a flag may differ. So the
+//// *sources* of those inputs are not: the agent may edit an
+//// instruction file, the host's kernel may change under a restart, a
+//// flag may differ. So the
 //// assembled string is written once and read thereafter — re-deriving it
 //// on resume is what would move the bytes. The enforcement demand is the
 //// one exception because it changes whether those bytes tell the truth: its
@@ -101,8 +102,10 @@ pub const summary_pack_variable = "LOOM_SUMMARY_PACK"
 /// bypasses the pack entirely.
 pub const override_variable = "LOOM_SYSTEM_PROMPT"
 
-/// The largest `CLAUDE.md` this module will read. Well above any real
-/// guidance file and well below what would trouble the boot process;
+/// The largest single instruction file this module will read, applied
+/// to each of `AGENTS.md` and `CLAUDE.md` on its own. Well above any
+/// real guidance file and well below what would trouble the boot
+/// process;
 /// `render` caps what actually reaches the prompt at
 /// `pack.max_repository_guidance_bytes` on a line boundary and announces
 /// the cut. A file above *this* bound is not a guidance file, and is
@@ -118,7 +121,7 @@ pub const max_guidance_file_bytes = 1_048_576
 /// run under (`exec.SpawnConfig.shell_path`); the tool registry's sorted
 /// names; `serve`'s `--best-effort` demand paired with the `degraded`
 /// feature from a helper's hello; the composed session base policy; and
-/// the root `CLAUDE.md` if there is one.
+/// the session's instruction files, from `guidance`.
 ///
 /// Constructor invariant, and the only one that matters: **every field is
 /// fixed for the life of the session.** Nothing here may be re-read per
@@ -140,7 +143,8 @@ pub type Host {
     degraded: Bool,
     /// The session's composed base sandbox policy.
     base_policy: SandboxPolicy,
-    /// The root `CLAUDE.md`, verbatim, if it exists and is readable.
+    /// The session's instruction files as one fenced document, from
+    /// `guidance`, or `None` when the session carries none.
     guidance: Option(String),
   )
 }
@@ -434,8 +438,8 @@ pub type Assembled {
 /// inputs is what moves the bytes.
 ///
 /// `render` is a thunk so that a resumed session pays nothing for it: no
-/// pack file is read, no `CLAUDE.md` is read, and no helper is spawned to
-/// ask whether this host is degraded.
+/// pack file is read, no instruction file is read, and no helper is
+/// spawned to ask whether this host is degraded.
 ///
 /// ## Examples
 ///
@@ -759,40 +763,273 @@ fn refuse_corrupt(report: CorruptionReport) -> String {
   "the pinned system prompt is corrupt: " <> corruption.describe(report)
 }
 
-// --- reading the repository's guidance ------------------------------------
+// --- reading the session's instruction files ------------------------------
 
-/// The root `CLAUDE.md` of a workspace, verbatim, with a warning instead
-/// of a value when there is a file but it cannot be used. What reaches
-/// the prompt is capped by `render` at
-/// `pack.max_repository_guidance_bytes` on a line boundary, framed as
-/// project-authored data, and its truncation announced — all by the
-/// pack's own fragments. This function's only judgment is
-/// `max_guidance_file_bytes`.
+/// The cross-tool instruction file documented at <https://agents.md/>:
+/// plain Markdown, no required structure, read by every agent harness
+/// that follows the convention. Loom treats it as the canonical file and
+/// carries it first.
+pub const agents_file = "AGENTS.md"
+
+/// Loom's older, Claude-specific instruction file. It is carried after
+/// `agents_file` because a repository that has both usually keeps the
+/// cross-tool instructions in `AGENTS.md` and the additions here.
+pub const claude_file = "CLAUDE.md"
+
+/// The directories under the operator's home that may hold a global
+/// `AGENTS.md`, in the order they are tried. `.agents` is the
+/// tool-neutral location the convention suggests; `.loom` is the
+/// launcher's own state root, the `~/.loom` that `tui/bootstrap`
+/// resolves for sessions, tokens and logs.
+pub const user_default_directories = [".agents", ".loom"]
+
+/// Where one instruction file came from. This is the only thing about a
+/// file the prompt says beyond its bytes, and it is what lets the model
+/// tell a project's instructions from the operator's standing ones.
+pub type GuidanceOrigin {
+  /// A file in the workspace root, written by whoever wrote the
+  /// repository. Project-authored data, framed as such.
+  WorkspaceFile
+
+  /// The operator's own global `AGENTS.md`, read only when the
+  /// workspace has none of its own. Trusted the way an explicit
+  /// `--config` is trusted: it is the operator's file, not the
+  /// workspace's.
+  UserDefaultFile
+}
+
+/// One instruction file that will reach the prompt.
 ///
-/// An absent file is the ordinary case and says nothing.
+/// Constructor invariants: `path` is the file the bytes came from, named
+/// in the prompt so a reader can go and check it; `text` is the file's
+/// contents with surrounding whitespace trimmed and nothing else
+/// changed; `origin` decides which of the two framings the block carries.
+pub type GuidanceFile {
+  GuidanceFile(path: String, origin: GuidanceOrigin, text: String)
+}
+
+/// The instruction files this session will carry, in the order the
+/// prompt renders them, paired with a warning for every file that
+/// existed but could not be used.
+///
+/// Two slots, and the first is the interesting one. Slot one is the
+/// `AGENTS.md` instructions: the workspace's own if it has one,
+/// otherwise the operator's global default, looked up under
+/// `user_default_directories` in order. Slot two is the workspace's
+/// `CLAUDE.md`. A workspace file therefore always beats a global one,
+/// and a session can carry at most one `UserDefaultFile`.
+///
+/// Only a path with *no file at all* lets the search move on. A file
+/// that exists but is oversize or unreadable has spoken for its slot and
+/// earns a warning; substituting the operator's defaults for a project
+/// file that happens to be unreadable would swap one set of instructions
+/// for another behind the operator's back.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // system_prompt.guidance("/work") == #(Some("# project\n..."), [])
+/// // system_prompt.discover(workspace: "/work", home: option.Some("/home/me"))
+/// // -> #([GuidanceFile("/work/AGENTS.md", WorkspaceFile, "# project")], [])
 /// ```
 ///
-pub fn guidance(workspace: String) -> #(Option(String), List(String)) {
-  let path = workspace <> "/CLAUDE.md"
-  case simplifile.file_info(path) {
-    Error(_absent) -> #(None, [])
-    Ok(info) -> guidance_from(path, info)
+pub fn discover(
+  workspace workspace: String,
+  home home: Option(String),
+) -> #(List(GuidanceFile), List(String)) {
+  let #(instructions, instruction_notes) = agents_slot(workspace, home)
+  let #(claude, claude_notes) = claude_slot(workspace)
+
+  #(
+    option.values([instructions, claude]),
+    list.append(instruction_notes, claude_notes),
+  )
+}
+
+/// The instruction files of a workspace as one document, with a warning
+/// instead of a value when a file exists but cannot be used. What
+/// reaches the prompt is capped by `render` at
+/// `pack.max_repository_guidance_bytes` on a line boundary, framed by
+/// the pack's own fragments, and its truncation announced. This
+/// function's only judgment is `max_guidance_file_bytes`, applied per
+/// file.
+///
+/// No file at all is the ordinary case and says nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.guidance(workspace: "/work", home: option.None)
+/// // -> #(Some("<instructions origin=workspace path=/work/AGENTS.md>..."), [])
+/// ```
+///
+pub fn guidance(
+  workspace workspace: String,
+  home home: Option(String),
+) -> #(Option(String), List(String)) {
+  let #(files, notes) = discover(workspace:, home:)
+  case files {
+    [] -> #(None, notes)
+    [_, ..] -> #(Some(render_files(files)), notes)
   }
 }
 
-fn guidance_from(
-  path: String,
-  info: simplifile.FileInfo,
-) -> #(Option(String), List(String)) {
-  case info.size > max_guidance_file_bytes {
-    True -> #(None, [oversize_warning(path)])
-    False -> read_guidance(path)
+/// The prompt block one instruction file renders as: the harness's own
+/// fence, naming the file's origin and then its path, wrapped around the
+/// file's bytes. The fence is written here rather than in the pack
+/// because only this side knows which file it read, and it carries no
+/// quotation marks so that a prompt compared or logged line by line
+/// needs no unescaping to read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.render_file(
+/// //   system_prompt.GuidanceFile("/work/AGENTS.md", WorkspaceFile, "hi"),
+/// // )
+/// // -> "<instructions origin=workspace path=/work/AGENTS.md>\nhi\n</instructions>"
+/// ```
+///
+pub fn render_file(file: GuidanceFile) -> String {
+  "<instructions origin="
+  <> origin_name(file.origin)
+  <> " path="
+  <> file.path
+  <> ">\n"
+  <> file.text
+  <> "\n</instructions>"
+}
+
+/// How an origin reads in the fence the model sees. The pack's framing
+/// prose is written against exactly these two words, so they are part of
+/// the prompt's contract rather than a label anyone may reword.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert system_prompt.origin_name(system_prompt.UserDefaultFile)
+///   == "user-default"
+/// ```
+///
+pub fn origin_name(origin: GuidanceOrigin) -> String {
+  case origin {
+    WorkspaceFile -> "workspace"
+    UserDefaultFile -> "user-default"
   }
+}
+
+// A candidate path is one of three things, and only the first of them
+// lets the lookup move on to the next location.
+type Candidate {
+  Absent
+  Unusable(note: String)
+  Present(text: String)
+}
+
+// Slot one: the workspace's `AGENTS.md`, or the operator's global one
+// when the workspace has no such file.
+fn agents_slot(
+  workspace: String,
+  home: Option(String),
+) -> #(Option(GuidanceFile), List(String)) {
+  let path = workspace <> "/" <> agents_file
+  case candidate(path) {
+    Present(text:) -> #(
+      Some(GuidanceFile(path:, origin: WorkspaceFile, text:)),
+      [],
+    )
+    Unusable(note:) -> #(None, [note])
+    Absent -> user_default(home)
+  }
+}
+
+// Slot two: the workspace's `CLAUDE.md`, which has no global fallback.
+// The operator's standing instructions are looked for once, under the
+// name the cross-tool convention settled on, and a second global file
+// under a second name would only make the precedence harder to predict.
+fn claude_slot(workspace: String) -> #(Option(GuidanceFile), List(String)) {
+  let path = workspace <> "/" <> claude_file
+  case candidate(path) {
+    Present(text:) -> #(
+      Some(GuidanceFile(path:, origin: WorkspaceFile, text:)),
+      [],
+    )
+    Unusable(note:) -> #(None, [note])
+    Absent -> #(None, [])
+  }
+}
+
+// The home directory is resolved the way the launcher resolves its state
+// root, from `HOME`, and an unset `HOME` is reported rather than guessed
+// at: the launcher refuses outright there, and this path only warns
+// because a missing instruction file must never stop a session.
+fn user_default(home: Option(String)) -> #(Option(GuidanceFile), List(String)) {
+  case home {
+    None -> #(None, [home_unset_warning()])
+    Some(home) -> user_default_under(home, user_default_directories)
+  }
+}
+
+fn user_default_under(
+  home: String,
+  directories: List(String),
+) -> #(Option(GuidanceFile), List(String)) {
+  case directories {
+    [] -> #(None, [])
+    [directory, ..rest] ->
+      user_default_at(
+        home,
+        home <> "/" <> directory <> "/" <> agents_file,
+        rest,
+      )
+  }
+}
+
+fn user_default_at(
+  home: String,
+  path: String,
+  rest: List(String),
+) -> #(Option(GuidanceFile), List(String)) {
+  case candidate(path) {
+    Present(text:) -> #(
+      Some(GuidanceFile(path:, origin: UserDefaultFile, text:)),
+      [],
+    )
+    Unusable(note:) -> #(None, [note])
+    Absent -> user_default_under(home, rest)
+  }
+}
+
+fn candidate(path: String) -> Candidate {
+  case simplifile.file_info(path) {
+    Error(_absent) -> Absent
+    Ok(info) -> sized_candidate(path, info)
+  }
+}
+
+fn sized_candidate(path: String, info: simplifile.FileInfo) -> Candidate {
+  case info.size > max_guidance_file_bytes {
+    True -> Unusable(note: oversize_warning(path))
+    False -> read_candidate(path)
+  }
+}
+
+fn read_candidate(path: String) -> Candidate {
+  case simplifile.read(path) {
+    Ok(text) -> Present(text: string.trim(text))
+    Error(error) -> Unusable(note: unreadable_warning(path, error))
+  }
+}
+
+fn render_files(files: List(GuidanceFile)) -> String {
+  files
+  |> list.map(render_file)
+  |> string.join("\n\n")
+}
+
+fn home_unset_warning() -> String {
+  "HOME is not set, so no user-level "
+  <> agents_file
+  <> " could be looked up for this session"
 }
 
 fn oversize_warning(path: String) -> String {
@@ -800,13 +1037,6 @@ fn oversize_warning(path: String) -> String {
   <> " is larger than "
   <> int.to_string(max_guidance_file_bytes)
   <> " bytes and was not read as repository guidance"
-}
-
-fn read_guidance(path: String) -> #(Option(String), List(String)) {
-  case simplifile.read(path) {
-    Ok(text) -> #(Some(text), [])
-    Error(error) -> #(None, [unreadable_warning(path, error)])
-  }
 }
 
 fn unreadable_warning(path: String, error: simplifile.FileError) -> String {

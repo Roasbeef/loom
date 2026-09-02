@@ -41,6 +41,12 @@ import simplifile
 import support/internal/ffi_ws
 import support/provider as provider_test
 
+// A home directory that does not exist, so a server booted here never
+// picks up the developer's own `~/.agents/AGENTS.md`. A home with no
+// global default is silent, which is what keeps these assertions about
+// the prompt pack and the workspace alone.
+const empty_home = Some("build/no-operator-home")
+
 const root = "build/serve-test"
 
 // A one-entry catalogue whose gateway rides a transport that never
@@ -110,6 +116,7 @@ fn settings_under(root: String) -> serve.Settings {
     gateway: scripted_gateway(),
     catalog: scripted_catalog(),
     system: None,
+    home: empty_home,
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     context_window: 100_000,
     max_output_tokens: 4096,

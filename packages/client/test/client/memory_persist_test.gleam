@@ -47,6 +47,12 @@ import support/provider as provider_test
 import tools/remember
 import tools/tool
 
+// A home directory that does not exist, so a server booted here never
+// picks up the developer's own `~/.agents/AGENTS.md`. A home with no
+// global default is silent, which is what keeps these assertions about
+// the prompt pack and the workspace alone.
+const empty_home = Some("build/no-operator-home")
+
 // The preference the user states in session A and the second session
 // must know about without being told.
 const preference = "the user prefers tabs over spaces in this repository"
@@ -220,6 +226,7 @@ fn settings(
     gateway:,
     catalog: scripted_catalog(),
     system: None,
+    home: empty_home,
     model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
     context_window: 100_000,
     max_output_tokens: 4096,
