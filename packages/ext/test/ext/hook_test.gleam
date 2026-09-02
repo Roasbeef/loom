@@ -110,6 +110,36 @@ pub fn a_notification_answers_an_empty_document_test() {
   assert hook.answer(settled, "{\"op_id\":\"op-1\"}") == Ok("{}")
 }
 
+pub fn a_message_re_renders_unchanged_test() {
+  let keep =
+    hook.OnContext(fn(context) { list.map(context.messages, rerendered) })
+
+  // Every JSON shape at once, so the re-render is exercised on nesting,
+  // on each scalar and on null rather than only on the flat fixtures the
+  // other tests use.
+  let message =
+    "{\"role\":\"user\",\"n\":1,\"f\":1.5,\"b\":true,\"z\":null,"
+    <> "\"c\":[{\"text\":\"hi\"}]}"
+  let args = "{\"op_id\":\"op-1\",\"messages\":[" <> message <> "]}"
+  let assert Ok(answered) = hook.answer(keep, args)
+    as "a context hook re-rendering its input answers"
+
+  // Field order is JSON object order, which `gleam/dict` does not keep,
+  // so the answer is compared as a parsed document rather than as text.
+  assert json.parse(from: answered, using: decode.dynamic)
+    == json.parse(
+      from: "{\"messages\":[" <> message <> "]}",
+      using: decode.dynamic,
+    )
+}
+
+pub fn a_value_that_is_not_a_json_document_does_not_render_test() {
+  // Raw bytes that are not text: nothing a JSON parser could have
+  // produced, so the render says so instead of inventing a shape.
+  assert hook.rendered(dynamic.bit_array(<<0xFF, 0xFE>>))
+    == Error("the value is not a JSON document")
+}
+
 pub fn args_that_do_not_hold_the_event_are_an_error_test() {
   let gate = hook.OnToolCall(fn(_call) { hook.Allow })
   let assert Error(reason) = hook.answer(gate, "{\"op_id\":\"op-1\"}")
@@ -121,14 +151,10 @@ pub fn args_that_do_not_hold_the_event_are_an_error_test() {
   assert malformed == "the hook arguments were not JSON"
 }
 
-// A message read as `Dynamic` and written back as `Json`. The fixture
-// messages carry one field, so re-rendering it is the whole document;
-// a real hook decodes what it cares about and rebuilds the rest the
-// same way. There is no `Dynamic -> Json` in the stdlib, which is the
-// honest shape of the seam: an extension that wants to change a message
-// has to say what it is making.
+// A message kept exactly as it arrived, which is what a hook does with
+// every message it did not come for. `hook.rendered` is the whole of it.
 fn rerendered(message: Dynamic) -> json.Json {
-  let assert Ok(role) = decode.run(message, decode.at(["role"], decode.string))
-    as "the fixture messages carry a role"
-  json.object([#("role", json.string(role))])
+  let assert Ok(kept) = hook.rendered(message)
+    as "a message the harness sent is a JSON document"
+  kept
 }

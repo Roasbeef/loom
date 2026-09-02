@@ -57,7 +57,13 @@ program's is.
   conversation message arrives as `Dynamic` and leaves as `Json`: `core`
   is not on the seam, so this package cannot hold the message type, and
   the harness re-decodes what comes back with `core/codec`'s own total
-  decoder.
+  decoder. `rendered(Dynamic) -> Result(Json, String)` closes the gap
+  the stdlib leaves — there is no `Dynamic -> Json` — so a hook that
+  keeps most of what it was handed re-renders those messages instead of
+  rebuilding them. It is total, and its `Error` is real: a `Dynamic`
+  that no JSON parser produced has no rendering, and the null arm is
+  written as an optional *string* precisely so an unknown shape fails
+  rather than being silently rendered `null`.
 - `ext/runtime.{serve, answer, dispatch}` — `serve` is the generated
   entry's one call; `answer` is the program `serve` hands to
   `cap/runtime.run`, separated so the round trip is drivable over an
