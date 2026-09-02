@@ -1482,7 +1482,7 @@ fn outcome_body(payload: BitArray) -> Result(MsgPackValue, String) {
 /// | `kv.get`/`set`/`delete` | `codemode/workspace`, over the host's ephemeral scratch store | `ServedHere` |
 /// | `report.emit` | `codemode/artifact`, over the session's blob store | `ServedHere` |
 /// | `git.*` | **nothing here, and nothing is owed**: `cap/git` composes `proc.run` inside the satellite | the row above |
-/// | `net.request` | nobody yet — gated on the egress proxy | would be `clear_call` |
+/// | `net.request` | `client/extension/seam`, for an extension only, under the policy its manifest declared | `ServedHere` |
 /// | `lsp.*` | nobody yet — gated on the long-lived stdio client (#25) | not `clear_call`: a protocol, not a one-shot exec |
 /// | `mcp.<server>` | `client/mcp`, per configured server (#106) | `ServedHere` |
 /// | `strand.*` | `codemode/orchestration` — the *other* seam, never this one | `ServedHere` |
