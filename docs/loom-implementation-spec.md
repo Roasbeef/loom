@@ -505,7 +505,7 @@ demonstrated.
 | M3 | +C-full,K,L,H(macOS) | multi-strand demo: parent + 2 subagents collaborating via durable messaging; TUI thin client drives everything via protocol; fork + compact live | partial (compaction live as of Stage C0; the real TUI drives the real server; `H(macOS)` now runs under Seatbelt) |
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
 | M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | partial (three of the four demonstrated end to end; the sample's fan-out reaches a scripted Agency rather than live child strands) |
-| M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | not started |
+| M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | partial (routing, TTSR and memory landed and the 429-storm criterion is demonstrated; LSP and DAP are unbuilt and moved to phase 5) |
 | M6 | +M | promotion-ladder integration test; rollback live | not started |
 | M7 | follow-ups below | per-feature | not started |
 
@@ -524,16 +524,17 @@ and the table above is what happened: the gateway and TUI landed with M3,
 and Seatbelt subsequently completed its macOS half.
 
 **One caveat over every row.** §0.3 says a WP is done when its exit
-criteria pass in CI on Linux and macOS. There is now a CI configuration in
-the tree — `.github/workflows/ci.yml` carries a Linux gate, a macOS gate,
-a `jail-linux` job that installs bubblewrap, lifts the runner's
-unprivileged-user-namespace restriction and delegates a cgroup v2 base
-before running the self-test and both end-to-ends, and a short soak;
-`nightly.yml` carries the long soak and a cold, cacheless gate. **No run
-of it has ever completed.** Every run to date fails at job startup with no
-job logs, so nothing in the table has been demonstrated by CI, on either
-platform. Every status above still means green under `make check` on one
-Linux development container.
+criteria pass in CI on Linux and macOS. `.github/workflows/ci.yml` carries
+a Linux gate, a macOS gate, a `jail-linux` job that installs bubblewrap,
+lifts the runner's unprivileged-user-namespace restriction and delegates a
+cgroup v2 base before running the self-test and both end-to-ends, and a
+short soak; `nightly.yml` carries the long soak and a cold, cacheless
+gate. That configuration **now runs and passes**: the recent merge runs on
+`main` are green across `gate (linux)`, `gate (macos)`, `jail (linux)` and
+`soak (200 seeds)`, which is the evidence the rows above were previously
+missing. Two things it is not yet: `gate-linux` is not the required check
+on `main` (issue #1), and the nightly long soak still fails in two of its
+seed bands.
 
 ### What the rows still owe
 
@@ -561,15 +562,15 @@ Linux development container.
   AppArmor restriction on unprivileged user namespaces, and delegates a
   cgroup v2 base, and `.github/enforcement-expectations` declares probe by
   probe which layers that run must actually have applied, failing the job
-  in either direction. That job has never completed a run (see the caveat
-  above), so what it declares is a reviewed intention rather than an
-  observation. One layer is unobserved even in intention: **Landlock has
-  never executed in any environment this repository has run in** (issue
-  #62) — every container and runner so far answers ENOSYS, so the branch
-  that applies a ruleset has never been taken, and every claim about what
-  Landlock does here is read from its documentation. That is most
-  uncomfortable in degraded mode, where Landlock is promoted from second
-  filesystem layer to the only one. One probe WP-H's exit list names
+  in either direction. That job now runs and passes: it reports nine of
+  nine probes ENFORCED with none skipped, and the applied-layer list its
+  end-to-ends print carries `landlock:abi=7` beside bubblewrap, cgroup v2,
+  the rlimits, `no_new_privs` and the seccomp network filter, with
+  `degraded=False`. **Landlock has therefore executed** (issue #62), which
+  matters most for degraded mode, where it is promoted from second
+  filesystem layer to the only one. A development container without those
+  layers still reports every kernel-dependent probe SKIPPED, and a skip is
+  not a pass. One probe WP-H's exit list names
   still has no implementation at all: a non-allowlisted host under `Proxy`,
   because the egress sidecar is unbuilt and proxy mode fails closed as
   network-off. The setsid escape probe and the hostile-`.beam` probe, which
@@ -633,11 +634,19 @@ Linux development container.
   and every `Execution` now carries both stages' reports whatever the
   outcome; and an approved escalation, which widened nothing here, now
   composes onto the run phase and only the run phase (issue #24).
-  Outstanding: of the nine cap modules vetting admits, the shipped router
-  services exactly one, `proc.run` — the rest vet, compile, and refuse in
-  band with `unsupported_cap` (issue #16), which is a routing table still
-  being filled in rather than a security property; and nothing mints the
-  escalation code mode can now spend (issue #97).
+  Outstanding: the routing table issue #16 tracks is now largely filled
+  in. `proc.run` routes through the jailed executor, `fs.read`, `fs.list`,
+  `fs.write`, `fs.edit`, `kv.get`/`set`/`delete` and `report.emit` are
+  served by `codemode/workspace` and `codemode/artifact`, and
+  `mcp.<server>` by `client/mcp`. Two names still vet, compile and refuse
+  in band with `unsupported_cap`: `net.request`, which waits on the egress
+  story, and `lsp.*`, which waits on the long-lived stdio client (issue
+  #25). `cap/git` needs no arm, since every function in it builds a
+  `cap/proc` command. Issue #97's half of the escalation loop has since
+  closed too: `client/codemode.execute` reports what composition refused
+  at the satellite launch as a `PolicyRefusal` beside the outcome, and
+  `tools/codemode` raises it and re-executes once under the widened
+  policy.
 
 - **M4.5** — three of the four criteria are demonstrated end to end, and
   the fourth is demonstrated with the children substituted.
@@ -668,12 +677,14 @@ Linux development container.
   where a real Agency refuses a spawn and a send outside the program's own
   lineage.
 
-  One dependency of the seam is also still half open, and no row names it.
-  Grants thread onto a code-mode run phase and only the run phase, proved
-  by `make e2e-codemode`, but code mode clears through the broker directly
-  rather than through `Ctx.clear_call`, so a policy refusal inside it
-  raises no escalation record and nothing can mint the approval it is now
-  able to spend (issue #97).
+  One dependency of the seam that no row names has since closed. Grants
+  thread onto a code-mode run phase and only the run phase, proved by
+  `make e2e-codemode`. Code mode still clears through the broker directly
+  rather than through `Ctx.clear_call`, so rather than raising per
+  clearance it watches the one stage an approval could widen and reports
+  the refusal outward as a `PolicyRefusal`; `tools/codemode` raises that
+  once, about the whole submission, and re-executes under the widened
+  policy if it is approved (issue #97).
 
 ### Delivered outside the table
 
