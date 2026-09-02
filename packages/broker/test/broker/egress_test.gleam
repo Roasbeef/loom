@@ -165,6 +165,72 @@ pub fn refuses_a_caller_header_the_client_owns_test() {
     == Error(egress.HeaderReserved("Host"))
 }
 
+pub fn refuses_a_line_break_in_a_header_name_test() {
+  let call =
+    egress.Request(
+      method: egress.Get,
+      url: "https://api.example.com/search",
+      headers: [#("X-Trace\r\nX-Loom-Key", "mine")],
+      body: <<>>,
+    )
+
+  assert egress.request(offline_policy(), call, secrets: no_secrets)
+    == Error(egress.HeaderMalformed("X-Trace\\r\\nX-Loom-Key"))
+}
+
+pub fn refuses_a_line_break_in_a_header_value_test() {
+  let call =
+    egress.Request(
+      method: egress.Get,
+      url: "https://api.example.com/search",
+      headers: [#("X-Trace", "ok\r\nHost: elsewhere.example")],
+      body: <<>>,
+    )
+
+  assert egress.request(offline_policy(), call, secrets: no_secrets)
+    == Error(egress.HeaderMalformed("X-Trace"))
+}
+
+/// A smuggled name must be refused for its shape, not merely fail to
+/// match the reserved name it was hiding behind.
+pub fn refuses_a_smuggled_credential_header_test() {
+  let call =
+    egress.Request(
+      method: egress.Get,
+      url: "https://api.example.com/search",
+      headers: [#("X-Trace", "ok\r\n" <> secret_header <> ": mine")],
+      body: <<>>,
+    )
+  let secrets = fn(_name) { Ok(canary) }
+
+  assert egress.request(bound_policy("api.example.com"), call, secrets:)
+    == Error(egress.HeaderMalformed("X-Trace"))
+}
+
+pub fn refuses_a_nul_byte_in_a_header_test() {
+  let call =
+    egress.Request(
+      method: egress.Get,
+      url: "https://api.example.com/search",
+      headers: [#("X-Trace", "ok\u{0}more")],
+      body: <<>>,
+    )
+
+  assert egress.request(offline_policy(), call, secrets: no_secrets)
+    == Error(egress.HeaderMalformed("X-Trace"))
+}
+
+/// A credential value is operator-supplied, so this is a configuration
+/// error rather than an attack — but it is refused for the same reason,
+/// and the refusal names the header and never the value.
+pub fn refuses_a_credential_value_that_would_end_a_header_test() {
+  let policy = bound_policy("api.example.com")
+  let secrets = fn(_name) { Ok("good\r\nx-injected: bad") }
+
+  assert egress.request(policy, get("https://api.example.com/search"), secrets:)
+    == Error(egress.HeaderMalformed(secret_header))
+}
+
 pub fn reports_an_unset_credential_before_connecting_test() {
   let policy = bound_policy("api.example.com")
 
@@ -204,6 +270,7 @@ fn every_refusal() -> List(egress.Refusal) {
     egress.HostNotAllowed("evil.example.com", ["api.example.com"]),
     egress.MethodNotAllowed(egress.Patch),
     egress.HeaderReserved(secret_header),
+    egress.HeaderMalformed("x-trace\\r\\n" <> secret_header),
     egress.SecretMissing(secret_env),
     egress.RedirectRefused("https://elsewhere.example/x", "off origin"),
     egress.ResponseTooLarge(1024),
@@ -461,14 +528,76 @@ pub fn refuses_a_chain_it_has_no_root_for_test() {
     egress.Policy(
       ..live_policy(port, <<>>),
       trust: egress.PinnedRoots(ders: [origin.foreign_root()]),
+      secrets: [
+        egress.Secret(
+          env: secret_env,
+          host: authority(port),
+          header: secret_header,
+        ),
+      ],
     )
   let outcome =
-    egress.request(policy, get(url(port, "/echo")), secrets: no_secrets)
+    egress.request(policy, get(url(port, "/echo")), secrets: fn(_name) {
+      Ok(canary)
+    })
   origin.stop(server)
 
   let assert Error(egress.TransportFailed(reason:)) = outcome
     as "an unpinned chain does not verify"
   assert !string.contains(reason, canary)
+}
+
+/// The trap this closes: `ssl`'s client session cache is node-global and
+/// keyed on host and port alone, and a resumed TLS 1.2 handshake sends
+/// no certificate at all. Without `reuse_sessions` off, a session any
+/// other policy — or the provider's own client, which shares this node —
+/// had already established to the origin would carry the second request
+/// past the roots it was supposed to be held to. So the pin has to
+/// refuse even when a good session to the same origin exists.
+pub fn does_not_resume_a_session_established_under_other_roots_test() {
+  let #(server, port, root) = origin.start()
+  let trusted = live_policy(port, root)
+  let pinned_elsewhere =
+    egress.Policy(
+      ..trusted,
+      trust: egress.PinnedRoots(ders: [origin.foreign_root()]),
+    )
+
+  let first =
+    egress.request(trusted, get(url(port, "/echo")), secrets: no_secrets)
+  let second =
+    egress.request(
+      pinned_elsewhere,
+      get(url(port, "/echo")),
+      secrets: no_secrets,
+    )
+  origin.stop(server)
+
+  let assert Ok(_established) = first
+    as "the trusted fetch establishes a session"
+  let assert Error(egress.TransportFailed(reason:)) = second
+    as "the foreign pin refuses despite the cached session"
+  assert string.contains(reason, "unknown_ca")
+}
+
+/// The certificate names `localhost` and nothing else, so the same
+/// origin reached by address must fail hostname verification even though
+/// the chain itself verifies.
+pub fn refuses_a_certificate_that_does_not_name_the_host_test() {
+  let #(server, port, root) = origin.start()
+  let address = "127.0.0.1:" <> int.to_string(port)
+  let policy = egress.Policy(..live_policy(port, root), hosts: [address])
+  let outcome =
+    egress.request(
+      policy,
+      get("https://" <> address <> "/echo"),
+      secrets: no_secrets,
+    )
+  origin.stop(server)
+
+  let assert Error(egress.TransportFailed(reason:)) = outcome
+    as "a certificate for another name does not verify"
+  assert string.contains(reason, "hostname_check_failed")
 }
 
 /// The refusal that comes back from a walk which had already injected

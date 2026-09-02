@@ -98,7 +98,10 @@ no frame on the capability channel carries it, and no `Refusal` variant
 has a field one could occupy, so a rendered refusal cannot leak it
 either. `https` only; a caller header that would shadow a bound
 credential, or that the client owns (`Host`, `Content-Length`,
-`Transfer-Encoding`, `Connection`), is refused before a socket exists.
+`Transfer-Encoding`, `Connection`), is refused before a socket exists —
+as is any header, the injected credential's included, carrying a CR, LF
+or NUL, since `httpc` type-checks a header without scanning it and those
+bytes on the wire would let the sender append headers of its own.
 
 A redirect is treated as a new request rather than as a continuation:
 scheme, origin and method are re-judged on every hop, a 3xx is followed
@@ -111,7 +114,13 @@ hostname verification, in tests included: the suite runs a real loopback
 TLS origin whose chain is generated at test time and pins its root, so
 the client's verification path runs for real and the
 untrusted-certificate case is a second, unrelated root rather than a
-disabled check.
+disabled check. TLS session resumption is off, because `ssl`'s client
+session cache is node-global and keyed on host and port alone and a
+resumed TLS 1.2 handshake carries no certificate — a session established
+under other roots, by another policy or by the provider's own client,
+would otherwise carry a request past the roots it was held to. That is
+also why "no path to `verify_none`" is a claim about every request
+rather than about the first one.
 
 What it does not do is bound *what* comes back. A permitted host can
 hand a jailed extension any bytes it likes; the allowlist is the trust

@@ -242,15 +242,20 @@ egress_declared_big(Socket) ->
     ssl:send(Socket, binary:copy(<<"x">>, 64)),
     ssl:close(Socket).
 
-%% A chunked body far larger than any test's cap, dribbled out, so that
-%% the client's cancellation lands in the middle of the body rather than
-%% after it.
+%% A chunked body that never ends, dribbled out until the client hangs
+%% up. Ending it would make the test weaker than it looks: a client that
+%% silently buffered the whole thing would still answer ResponseTooLarge
+%% once the body arrived, so only an endless body distinguishes the brake
+%% from the check. A client that buffers instead runs out of deadline.
+%%
+%% The chunk ceiling is a stop for a wedged run, not part of the
+%% behaviour: at 20ms a hop it is far past any deadline in the suite.
 egress_slow(Socket) ->
     Head = [<<"HTTP/1.1 200 OK\r\n">>,
             <<"transfer-encoding: chunked\r\n">>,
             <<"connection: close\r\n\r\n">>],
     ssl:send(Socket, Head),
-    egress_chunks(Socket, 64),
+    egress_chunks(Socket, 8192),
     ssl:close(Socket).
 
 egress_chunks(_Socket, 0) ->
