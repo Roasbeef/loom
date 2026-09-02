@@ -372,10 +372,29 @@ somebody forgot.
 - **One weft gap upstream**: a monitored, non-panicking call against a
   pre-existing pid, which is what `broker/internal/call.try_call` and its
   siblings hand-roll. The other two the census named are closed in 0.4.1.
-- **The residual `runtime` interleave flakes** that #171 does not claim to
-  close. #171 removes the `noproc` cause and makes the harness honest
-  about time; it names the rest as pre-existing, none of them yet seen in
-  CI.
+- **The residual `runtime` interleave flakes.** #171 removed the `noproc`
+  cause and made the harness honest about time. #174 removed the second
+  cause: the interleave harness admits its own prompt through the writer
+  the strand driver commits through, and `after_commit` sees commits, not
+  committers, so arming the crash bomb ahead of the admissions and
+  skipping a count could not tell them apart. A poll tick that drove
+  between acceptance and steer ate a skip, the steer became boundary one,
+  and the bomb went off inside the call admitting it (the "projection
+  diverged (killed after commit 3)" red on the #168 merge and the "steer
+  admission must succeed" flake beside it). The bomb is now armed behind
+  the admissions and the recorder subtracts them from its own running
+  total inside one turn; a run that drifted, or whose steer the runtime
+  rightly refused because the turn had moved on, is thrown away and
+  started over on a fresh session. `recorder_arming_test` pins the
+  contract; under an injected 300 ms stall in the admission window, 120
+  stressed iterations went from 96 failures to two. What remains is the
+  `tools` scenario's boundary count: 800 uninterrupted runs reported 14
+  boundaries 797 times and 13 three times, so `assert base.commits == 14`
+  and the "bomb never fired" it implies at `k = 14` still flake at about
+  four in a thousand. Two parallel tool calls whose results arrive
+  together look like the cause; whether one transaction may carry both is
+  a question for the runtime, and relaxing the pinned count is the
+  owner's call, not the harness's.
 - **Playbooks** (#139). Loom has no prompt-level skill mechanism, and the
   word "skill" appears once in `packages/*/src`, unrelated. The extension
   design note proposes that an extension may ship `skills/<name>/SKILL.md`
