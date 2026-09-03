@@ -2881,6 +2881,27 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
           )
         None -> model
       }
+
+    // Enter takes the highlighted row. A row that still wants an argument
+    // is completed into the editor, as Tab would; a complete one is
+    // submitted at once, so `/effort` plus a highlighted level is one
+    // keystroke, not Tab then Enter.
+    [_, ..], False, keys.Enter ->
+      case command.selected(suggestions, model.command_selected) {
+        Some(value) -> {
+          let completed =
+            Model(
+              ..model,
+              input: text_area.state_from_string(value),
+              command_selected: 0,
+            )
+          case string.ends_with(value, " ") {
+            True -> completed
+            False -> submit(completed)
+          }
+        }
+        None -> submit(model)
+      }
     _, _, _ -> update_main_key_without_palette(key, model)
   }
 }
