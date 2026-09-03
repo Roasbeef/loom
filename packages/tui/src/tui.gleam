@@ -168,6 +168,13 @@ type Model {
     session_switch: sessions.SwitchStatus,
     next_id: Int,
     usage: message.Usage,
+    /// When the generation now streaming produced its first fragment, on
+    /// the monotonic clock; `None` between generations. Paired with the
+    /// output count the settlement's usage reports, it yields the rate.
+    generation_started_ms: Option(Int),
+    /// Output tokens per second of the last settled generation, for the
+    /// footer. `None` until one generation has both streamed and settled.
+    output_rate_tps: Option(Int),
     agent_rail_visible: Bool,
     details_expanded: Bool,
     repaint_phase: Bool,
@@ -348,6 +355,8 @@ fn interactive(launch: Launch) -> Nil {
       session_switch: sessions.Idle,
       next_id: 1,
       usage: zero_usage(),
+      generation_started_ms: None,
+      output_rate_tps: None,
       agent_rail_visible: False,
       details_expanded: False,
       repaint_phase: False,
@@ -973,7 +982,10 @@ fn footer_sections(
   let usage =
     span.line_new([
       span.span_styled(
-        " " <> usage_summary(model.usage) <> " ",
+        " "
+          <> usage_summary(model.usage)
+          <> output_rate_label(model.output_rate_tps)
+          <> " ",
         theme.quiet_text(),
       ),
     ])
@@ -1965,10 +1977,17 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       }
     }
     protocol.StreamDelta(strand:, kind:, text:) -> {
+      // The first fragment of a generation starts its clock; later
+      // fragments leave it where it was.
+      let generation_started_ms = case model.generation_started_ms {
+        Some(started) -> Some(started)
+        None -> Some(ffi_bootstrap.monotonic_time_ms())
+      }
       let updated =
         Model(
           ..model,
           streams: append_stream(model.streams, strand, kind, text),
+          generation_started_ms:,
           notice: "streaming " <> kind,
         )
       case strand == model.active_strand {
@@ -2000,9 +2019,27 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> settled
       }
     }
-    protocol.UsageChanged(usage:) -> {
-      let usage = add_usage(model.usage, usage)
-      Model(..model, usage:, notice: tokens(usage.total_tokens) <> " tokens")
+    protocol.UsageChanged(usage: settled) -> {
+      // Usage arrives once per settled generation, so this is the moment
+      // the rate is known: the settlement's own output count over the
+      // time since its first fragment. A settlement that never streamed
+      // (a refusal, an empty turn) leaves the last rate standing.
+      let output_rate_tps = case model.generation_started_ms {
+        Some(started) ->
+          output_rate(
+            settled.output,
+            ffi_bootstrap.monotonic_time_ms() - started,
+          )
+        None -> model.output_rate_tps
+      }
+      let usage = add_usage(model.usage, settled)
+      Model(
+        ..model,
+        usage:,
+        generation_started_ms: None,
+        output_rate_tps:,
+        notice: tokens(usage.total_tokens) <> " tokens",
+      )
     }
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
@@ -2628,7 +2665,47 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 }
 
 /// Formats the server-reported session usage for the terminal footer.
+/// Output tokens per second from a settled generation's output count and
+/// the milliseconds it streamed for. A generation shorter than the clock
+/// can resolve reports `None` rather than a rate divided by nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.output_rate(300, 2000) == option.Some(150)
+/// ```
+///
+/// ```gleam
+/// assert tui.output_rate(300, 0) == option.None
+/// ```
+///
 @internal
+pub fn output_rate(output_tokens: Int, elapsed_ms: Int) -> Option(Int) {
+  case elapsed_ms > 0 {
+    True -> Some(output_tokens * 1000 / elapsed_ms)
+    False -> None
+  }
+}
+
+/// The footer's rate suffix: empty until a generation has been timed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.output_rate_label(option.Some(87)) == " · 87 tok/s"
+/// ```
+///
+/// ```gleam
+/// assert tui.output_rate_label(option.None) == ""
+/// ```
+///
+pub fn output_rate_label(rate: Option(Int)) -> String {
+  case rate {
+    Some(rate) -> " · " <> int.to_string(rate) <> " tok/s"
+    None -> ""
+  }
+}
+
 pub fn usage_summary(usage: message.Usage) -> String {
   "in "
   <> tokens(usage.input)
