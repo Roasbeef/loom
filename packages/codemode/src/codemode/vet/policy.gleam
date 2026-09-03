@@ -422,6 +422,13 @@ pub fn extension() -> VetPolicy {
 /// decode an event, build an answer, and return it, and it may reach
 /// nothing. Everything else stays in the jail, where it already works.
 ///
+/// Pure is not the same as bounded, and a loader has to supply the
+/// second: this seam bounds the names a body may write, never the time
+/// or the memory it may spend, so a `json.parse` over a hostile payload
+/// or a runaway recursion inside the harness VM has no jail, no rlimit
+/// and no deadline behind it. Whoever builds the loader owes the call a
+/// bound of its own.
+///
 /// Written as the extension seam filtered rather than as a literal list,
 /// so "no capability" is a fact about the code and not a promise two
 /// lists have to keep. Widen the extension seam and this one does not
