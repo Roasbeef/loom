@@ -79,8 +79,10 @@ import codemode/launch
 import codemode/satellite
 import codemode/workspace
 import core/clock
+import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{Some}
@@ -465,8 +467,8 @@ fn host_config(
   Ok(satellite.HostConfig(
     broker: config.host.broker,
     identity: identity.run_phase(identity.for_execution(
-      op_id: at.op_id,
-      step_id: at.step_id,
+      op_id: node_operation(config),
+      step_id: host_step_id,
       budget: codemode.pooled_budget(config.host, now + host_lifetime_ms),
     )),
     base_policy: session_lived(codemode.execution_policy(at.base_policy)),
@@ -485,6 +487,57 @@ fn host_config(
     unlink_token_file: satellite.unlink_token_file,
     call_timeout_ms: config.host.call_timeout_ms,
   ))
+}
+
+/// The step a satellite node is dispatched under. One name, because a
+/// node is one long-running dispatch rather than a sequence of them.
+pub const host_step_id = "extension-host"
+
+/// A fresh operation for one satellite node, minted here rather than
+/// borrowed from whichever call happened to launch it.
+///
+/// This is the difference between an abort that means "tear down this
+/// node" and one that means "tear down everything this run is doing", and
+/// it is load-bearing rather than tidy. `broker.abort(op_id)` cancels
+/// every active execution under that operation, and it is issued
+/// *routinely*: `codemode/satellite.cleanup` runs it at the end of every
+/// code-mode execution, successful ones included, and
+/// `codemode/launch.destroy` runs it for every node it tears down. Under
+/// the launching call's operation that makes two ordinary sequences
+/// fatal.
+///
+/// A tool call launches an extension's satellite, and a `code_mode` call
+/// in the same run then finishes and aborts the operation they share:
+/// the satellite dies, its host reads the closed socket as
+/// `SatelliteGone`, and the extension is `Departed` for the rest of the
+/// session. Worse, every hook-launched host shares the single operation
+/// `client/serve.hook_coordinates` mints for the session's hooks, so one
+/// oversleeping extension's teardown would abort that operation and take
+/// every other extension's satellite down with it.
+///
+/// Its own operation scopes `destroy`'s abort to the node being
+/// destroyed, which is the only thing it ever meant.
+///
+/// The cost is one sentence, and it is a cost rather than a wash: a
+/// launching call's own `cap_call`s no longer draw on the node's ledger,
+/// because the node's ledger is not theirs. Nothing about what an
+/// invocation may spend changes, because every invocation clears under
+/// `Invoking.identity`, which stays the caller's.
+fn node_operation(config: Config) -> OpId {
+  let #(operation, _generator) =
+    ids.mint_op(ids.generator(config.host.clock, seed: node_seed(config)))
+  operation
+}
+
+// Eight bytes of the host's own entropy as a generator seed. The seed
+// only has to be unrepeatable within a session — two hosts sharing an
+// operation is the very thing above — and the host's entropy is the same
+// source every cap token is minted from.
+fn node_seed(config: Config) -> Int {
+  config.host.entropy(8)
+  |> bit_array.base16_encode
+  |> int.base_parse(16)
+  |> result.unwrap(0)
 }
 
 /// How long a satellite may live before its own jail's wall deadline kills
@@ -545,10 +598,7 @@ fn invoking(
     identity: identity.run_phase(identity.for_execution(
       op_id: at.op_id,
       step_id: at.step_id,
-      budget: codemode.pooled_budget(
-        config.host,
-        invocation_deadline(config, at),
-      ),
+      budget: codemode.pooled_budget(config.host, invocation_deadline(config)),
     )),
     base_policy: codemode.execution_policy(at.base_policy),
     demand: at.demand,
@@ -565,8 +615,7 @@ fn invoking(
 // of the same ceiling and is deliberately the operator's maximum rather
 // than the manifest's, because a router refusing on a bound the host has
 // not reached yet would refuse the wrong thing.
-fn invocation_deadline(config: Config, at: hosts.Coordinates) -> Int {
-  let _ = at
+fn invocation_deadline(config: Config) -> Int {
   let #(now, _clock) = clock.read(config.host.clock)
   now + config.host.max_within_ms
 }

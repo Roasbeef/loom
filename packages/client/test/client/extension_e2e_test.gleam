@@ -66,6 +66,7 @@ import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
 import client/serve
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import core/clock
@@ -91,6 +92,11 @@ import tools/tool
 /// Distinctive enough that a substring search over a few thousand frame
 /// bytes means what it says.
 const secret_value = "loom-fixture-secret-2f9c41ab"
+
+/// The step every call in this module is dispatched under. Named so the
+/// node's own step can be asserted against it: a node dispatched under
+/// the caller's coordinates is the bug, not a detail.
+const caller_step_id = "turn-1:tools"
 
 /// How many requests one call of the fixture may make. Two, so a call
 /// that asks for three proves the third is refused *and* that the first
@@ -153,7 +159,7 @@ fn drive(ready: Ready) -> Nil {
       let config =
         dispatch.Config(
           host: installed_at.host,
-          hosts: hosts.seam(hosts_name, margin_ms: 30_000),
+          hosts: hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
           // Only the fixture's own binding resolves. A lookup for
           // anything else answers `Error(Nil)`, which is what makes this
           // function's whole reach one variable.
@@ -174,7 +180,7 @@ fn drive(ready: Ready) -> Nil {
       // registry it would build beside it, from one configuration.
       let registry = contributed(config, installed_at)
       let assert Ok(_started) =
-        hosts.start(hosts_name, [
+        hosts.start(hosts_name, wall_clock(), [
           dispatch.hosting(
             config,
             installed_at.record,
@@ -209,6 +215,18 @@ fn drive(ready: Ready) -> Nil {
       // the launcher sets, and what the kernel will pass through at all.
       let assert Ok(spec) = process.receive(specs, within: 0)
         as "the launcher must have been handed a spec"
+
+      // The node runs under an operation of its own, and not under the
+      // one of whichever call launched it. `broker.abort(op_id)` is
+      // issued at the end of every code-mode execution and by every node
+      // teardown, so a node sharing an operation with a run would be
+      // killed by the next ordinary thing that run finished — and every
+      // hook-launched host shares one operation, so one teardown would
+      // take them all. Read off the real spec, because this is the one
+      // place the launch's own coordinates are visible.
+      assert identity.step_id(spec.identity) == dispatch.host_step_id
+      assert identity.step_id(spec.identity) != caller_step_id
+
       let node_env = launch.node_env(spec)
       assert !list.any(node_env, fn(pair) {
         pair.0 == extensions.fetcher_env
@@ -247,7 +265,7 @@ fn drive(ready: Ready) -> Nil {
       // is dispatched to the handler the manifest's [[hook]] named.
       let greeted =
         hosts.invoke_event(
-          hosts.seam(hosts_name, margin_ms: 30_000),
+          hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
           extension: "fetcher",
           event: "session_start",
           args: msgpack.StringValue("{}"),
@@ -324,7 +342,7 @@ fn hooks_fire(installed_at: Installed) -> Nil {
     Error(reason) -> io.println("SKIP the gatekeeper extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
       let hosts_name = process.new_name(prefix: "loom_e2e_gate")
-      let seam = hosts.seam(hosts_name, margin_ms: 30_000)
+      let seam = hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000)
       let config =
         dispatch.Config(
           host: installed_at.host,
@@ -334,7 +352,7 @@ fn hooks_fire(installed_at: Installed) -> Nil {
           launch: dispatch.jailed_node,
         )
       let assert Ok(_started) =
-        hosts.start(hosts_name, [
+        hosts.start(hosts_name, wall_clock(), [
           dispatch.hosting(config, written, decoded, artifact:),
         ])
         as "the gatekeeper's registry must start"
@@ -420,18 +438,22 @@ fn oversleeps(
       let config =
         dispatch.Config(
           host: installed_at.host,
-          hosts: hosts.seam(hosts_name, margin_ms: 30_000),
+          hosts: hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
           secrets: fn(_name) { Error(Nil) },
           trust: egress.SystemRoots,
           launch: dispatch.jailed_node,
         )
       let sleeper_hosts_name = process.new_name(prefix: "loom_e2e_sleeper")
       let assert Ok(_started) =
-        hosts.start(sleeper_hosts_name, [
+        hosts.start(sleeper_hosts_name, wall_clock(), [
           dispatch.hosting(
             dispatch.Config(
               ..config,
-              hosts: hosts.seam(sleeper_hosts_name, margin_ms: 30_000),
+              hosts: hosts.seam(
+                sleeper_hosts_name,
+                clock: wall_clock(),
+                margin_ms: 20_000,
+              ),
             ),
             written,
             decoded,
@@ -440,7 +462,8 @@ fn oversleeps(
         ])
         as "the sleeper's registry must start"
 
-      let seam = hosts.seam(sleeper_hosts_name, margin_ms: 30_000)
+      let seam =
+        hosts.seam(sleeper_hosts_name, clock: wall_clock(), margin_ms: 20_000)
       let at =
         dispatch.coordinates(live_ctx(
           installed_at.workspace,
@@ -792,7 +815,7 @@ fn live_ctx(workspace: String, base: policy.SandboxPolicy) -> tool.Ctx {
     workspace:,
     strand: "main",
     op_id: op,
-    step_id: "turn-1:tools",
+    step_id: caller_step_id,
     source_index: 0,
     base_policy: base,
     grants: [],

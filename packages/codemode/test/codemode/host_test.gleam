@@ -187,6 +187,50 @@ pub fn an_event_invocation_carries_its_kind_test() {
   let _report = satellite.stop(host)
 }
 
+// --- the node's operation is its own ---------------------------------------
+
+/// `broker.abort(op_id)` cancels every active execution under that
+/// operation, and it is issued *routinely* rather than exceptionally:
+/// `cleanup` runs it at the end of every code-mode execution, successful
+/// ones included, and `codemode/launch.destroy` runs it for every node it
+/// tears down. So a node dispatched under the operation of whichever call
+/// launched it dies the next time anything in that operation finishes.
+///
+/// The node therefore runs under an operation of its own — `HostConfig`
+/// and `Invoking` carry separate identities, and
+/// `client/extension/dispatch.node_operation` mints the first — and this
+/// pins the consequence: a session may abort the operation an invocation
+/// cleared under, and the satellite is still there for the next one.
+pub fn aborting_the_callers_operation_leaves_the_node_alive_test() {
+  let dir = fresh_dir("abort")
+  let broker_actor = start_broker()
+  let assert Ok(host) =
+    satellite.start(artifact(), config(dir, broker_actor), echo_peer_launcher())
+    as "the host must start"
+
+  let caller = invoking(71)
+  assert satellite.invoke(
+      host,
+      satellite.Tool("search"),
+      args("{}"),
+      caller,
+      soon,
+    )
+    == Ok(framing.CapOk(msgpack.StringValue("search")))
+
+  broker.abort(broker_actor, identity.op_id(caller.identity))
+
+  assert satellite.invoke(
+      host,
+      satellite.Tool("search"),
+      args("{}"),
+      invoking(72),
+      soon,
+    )
+    == Ok(framing.CapOk(msgpack.StringValue("search")))
+  let _report = satellite.stop(host)
+}
+
 // --- one at a time -------------------------------------------------------
 
 /// The protocol allows one outstanding `hook_call`, so the host refuses a
@@ -195,8 +239,9 @@ pub fn an_event_invocation_carries_its_kind_test() {
 pub fn a_second_invocation_is_busy_test() {
   let dir = fresh_dir("busy")
   let broker = start_broker()
+  let heard = process.new_subject()
   let assert Ok(host) =
-    satellite.start(artifact(), config(dir, broker), silent_peer())
+    satellite.start(artifact(), config(dir, broker), noting_peer(heard))
     as "the host must start"
 
   // The peer never answers, so the first invocation is still open when
@@ -214,7 +259,12 @@ pub fn a_second_invocation_is_busy_test() {
       ),
     )
   })
-  process.sleep(300)
+
+  // Waited for rather than slept past: the second invocation is only
+  // `Busy` once the first has actually reached the node, and a sleep
+  // long enough today is a flake on a loaded runner.
+  let assert Ok(Nil) = process.receive(heard, soon)
+    as "the peer must receive the first invocation"
   let second =
     satellite.invoke(
       host,
@@ -303,14 +353,21 @@ pub fn a_deadline_destroys_the_node_test() {
 pub fn a_stray_hook_result_destroys_the_node_test() {
   let dir = fresh_dir("stray")
   let broker = start_broker()
+  let written = process.new_subject()
   let assert Ok(host) =
-    satellite.start(artifact(), config(dir, broker), stray_peer())
+    satellite.start(artifact(), config(dir, broker), stray_peer(written))
     as "the host must start"
 
-  // The peer sends its stray answer as soon as it starts, before any
-  // invocation exists.
-  process.sleep(300)
-  let assert Error(satellite.HostGone(reason:)) =
+  // Waited for rather than slept past, so the frame is on the wire
+  // before the invocation is made.
+  let assert Ok(Nil) = process.receive(written, soon)
+    as "the peer must write its stray answer"
+
+  // Either ending is the same fault seen a moment apart: the host may
+  // read the stray frame while idle, or while answering the invocation
+  // below if that one opened first. Both destroy the node, both carry
+  // the same reason, and pinning one of them would be pinning a race.
+  let gone = case
     satellite.invoke(
       host,
       satellite.Tool("anything"),
@@ -318,8 +375,13 @@ pub fn a_stray_hook_result_destroys_the_node_test() {
       invoking(51),
       soon,
     )
-    as "a host that saw a stray hook_result must be gone"
-  assert string.contains(reason, "hook_result")
+  {
+    Error(satellite.HostGone(reason:)) -> reason
+    Error(satellite.HostFaulted(reason:)) -> reason
+    other ->
+      panic as { "the node must be destroyed, not " <> string.inspect(other) }
+  }
+  assert string.contains(gone, "hook_result")
 }
 
 // --- peers ----------------------------------------------------------------
@@ -391,6 +453,26 @@ fn silent_peer() -> satellite.Launcher {
   satellite_peer.launcher(fn(ctx) { satellite_peer.wait_for_close(ctx) })
 }
 
+// The same, but says when the first invocation reached it, so a test can
+// wait on the event rather than on a sleep long enough to cover it.
+fn noting_peer(heard: Subject(Nil)) -> satellite.Launcher {
+  satellite_peer.launcher(fn(ctx) {
+    case satellite_peer.next_hook_call(ctx, satellite_peer.reading(), 60_000) {
+      Error(Nil) -> Nil
+      Ok(#(_cursor, _frame)) -> {
+        process.send(heard, Nil)
+        satellite_peer.wait_for_close(ctx)
+      }
+    }
+  })
+}
+
+// The echoing peer as a launcher of its own, for the cases that do not
+// count launches.
+fn echo_peer_launcher() -> satellite.Launcher {
+  satellite_peer.launcher(echo_peer)
+}
+
 // Answers, then re-uses the invocation's token after it has closed.
 fn stale_token_peer(
   verdicts: Subject(#(String, String)),
@@ -444,14 +526,15 @@ fn verdict(
   }
 }
 
-// Answers an invocation nobody made.
-fn stray_peer() -> satellite.Launcher {
+// Answers an invocation nobody made, and says when it has.
+fn stray_peer(written: Subject(Nil)) -> satellite.Launcher {
   satellite_peer.launcher(fn(ctx) {
     satellite_peer.send_hook_result(
       ctx,
       99,
       framing.CapOk(msgpack.StringValue("unasked")),
     )
+    process.send(written, Nil)
     satellite_peer.wait_for_close(ctx)
   })
 }
