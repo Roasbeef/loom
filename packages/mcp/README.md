@@ -35,6 +35,168 @@ current revision, 2026-07-28, is stateless and has no `initialize` at
 all; servers in the field speak the older lifecycle, so that is what v1
 speaks.
 
+## Where it sits
+
+`mcp` sits on `core` and the BEAM and nothing else. One package in the
+harness consumes it — `client`, in two places: `client/catalog` decodes the
+`[mcp.<name>]` tables and `client/mcp` starts a client per configured
+server, generates its module, widens the workspace seam and answers its
+capability calls.
+
+```mermaid
+graph TD
+  subgraph pkg["packages/mcp"]
+    CL["mcp/client<br/>the actor: handshake, list_tools,<br/>call_tool, stop, the death latch"]
+    TR["mcp/transport<br/>Transport, Spawn, Connection, utf8_prefix"]
+    ST["mcp/stdio<br/>Buffer, push, frame"]
+    JR["mcp/jsonrpc<br/>Id, Inbound, request, notification, decode"]
+    PR["mcp/protocol<br/>the five methods, version negotiation,<br/>ToolDescriptor, CallToolResult"]
+    SC["mcp/schema<br/>the three-tier parameter plan"]
+    NM["mcp/name<br/>mangling plus the digest rule"]
+    CG["mcp/codegen<br/>generate, sanitize, truncate,<br/>escape, scan_for_at"]
+    IX["mcp/interchange<br/>msgpack &lt;-&gt; JSON, total both ways"]
+    FFI["mcp/internal/ffi_port<br/>over mcp_ffi.erl"]
+  end
+
+  subgraph up["what depends on it"]
+    CAT["client/catalog<br/>the [mcp.&lt;name&gt;] tables"]
+    CMCP["client/mcp<br/>Layer, start, routing, tool_result"]
+  end
+
+  CORE["core/json, core/msgpack, core/corruption"]
+  OTP["gleam_erlang, gleam_otp"]
+
+  CL --> TR
+  CL --> ST
+  CL --> JR
+  CL --> PR
+  CG --> SC
+  CG --> NM
+  CG --> PR
+  TR --> FFI
+  CL --> OTP
+  TR --> OTP
+  JR --> CORE
+  PR --> CORE
+  ST --> CORE
+  IX --> CORE
+
+  CAT --> CMCP
+  CMCP --> CL
+  CMCP --> CG
+  CMCP --> IX
+```
+
+`mcp/interchange` hangs off nothing inside the package on purpose: it is
+the translation `client/mcp` performs at the capability boundary, between
+the msgpack a `cap_call` carries and the JSON a server is sent, and no
+module here calls it.
+
+## Boot side and call side
+
+The generator runs once per server at boot and the client stays up for the
+session. Those are two different paths through the same actor, and the
+picture is easier to hold than the prose.
+
+```mermaid
+graph TD
+  subgraph bootside["boot, in the harness VM"]
+    TOML["loom.toml [mcp.github]"]
+    CAT2["client/catalog"]
+    LAYER["client/mcp.start"]
+    START["mcp/client.start<br/>spawn, initialize, initialized"]
+    LIST["mcp/client.list_tools<br/>nextCursor to exhaustion, max_tool_pages"]
+    GEN["mcp/codegen.generate"]
+    SRC["cap/mcp/github source text<br/>+ the rendered surface, held in memory"]
+    ALLOW["the vetting allowlist and the model's prompt"]
+  end
+
+  subgraph callside["one call, per execution"]
+    PROG["the vetted program<br/>import cap/mcp/github"]
+    FACADE["the generated facade<br/>cap/internal/mcp.invoke"]
+    CAPC["cap_call mcp.github<br/>{tool, arguments}"]
+    HOST["codemode/satellite host"]
+    ROUTE["client/mcp.routing<br/>ServedHere, no jail entered"]
+    IX2["mcp/interchange.to_json"]
+    CALL["mcp/client.call_tool"]
+  end
+
+  SERVER[["the server child process<br/>stdin/stdout, newline-delimited JSON-RPC"]]
+
+  TOML --> CAT2 --> LAYER --> START --> LIST --> GEN --> SRC --> ALLOW
+  START --> SERVER
+  LIST --> SERVER
+
+  PROG --> FACADE --> CAPC --> HOST --> ROUTE --> IX2 --> CALL --> SERVER
+```
+
+The two halves meet at one actor: `client/mcp` keeps the client it
+hand-shook at boot, so the call path spawns nothing and enters no jail.
+
+## One server, spawn to shutdown
+
+Follow one configured server through its whole life.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant H as client/mcp.start
+  participant C as mcp/client (the actor)
+  participant T as mcp/transport<br/>PortTransport
+  participant S as the server child
+  participant G as mcp/codegen
+  participant P as a jailed code-mode program
+  participant R as client/mcp.routing
+
+  Note over H,S: spawn and handshake, bounded by handshake_timeout_ms
+  H->>C: start(PortTransport(spawn), options(client_version))
+  C->>T: open(spawn)
+  T->>S: argv as a list, env, cwd, with stderr inherited rather than merged
+  T-->>C: Connection
+  C->>S: {"method":"initialize", params: {protocolVersion: "2025-06-18", ...}}
+  S-->>C: InitializeResult(protocolVersion, capabilities)
+  C->>C: negotiate against supported_versions()
+  alt the revision is outside the closed list, or tools is not declared
+    C-->>H: VersionUnsupported / ToolsNotDeclared, actor torn down
+  else accepted
+    C->>S: {"method":"notifications/initialized"} (a notification)
+  end
+
+  Note over H,G: the listing, once per connection
+  H->>C: list_tools(client, timeout_ms)
+  loop until nextCursor is absent, at most max_tool_pages
+    C->>S: {"method":"tools/list", params: {cursor}}
+    S-->>C: ToolsPage(tools, next_cursor)
+  end
+  C-->>H: List(ToolDescriptor)
+  H->>G: generate(server, descriptors)
+  G->>G: mcp/schema tiers each parameter, mcp/name mangles,<br/>sanitize + truncate every server string, then scan_for_at
+  G-->>H: Generated(source, surface) or a refusal that drops this server
+
+  Note over P,S: one call, once per execution, on the same client
+  P->>R: cap_call mcp.github {tool, arguments}
+  R->>R: interchange.to_json(arguments) — refused here, before any round trip
+  R->>C: call_tool(client, name, arguments, timeout_ms)
+  C->>C: mint the id, arm Expire(id), record the in-flight entry
+  C->>S: {"method":"tools/call", id, params}
+  S-->>C: a response line, deframed by mcp/stdio
+  C-->>R: CallToolResult(content, is_error, structured_content)
+  R-->>P: cap_result — client/mcp.tool_result's pinned shape
+
+  Note over H,S: shutdown, at session end
+  H->>C: stop(client)
+  C->>T: close — the child's stdin closes, then the child is killed
+  C->>C: settle every in-flight call as Unavailable, latch dead
+```
+
+Three details in that trace are load-bearing. The handshake failing tears
+the actor down before `start` returns, so there is no half-started client
+to reason about. `Expire(id)` is armed per call inside the actor, so a late
+response for a forgotten id is dropped silently rather than answering a
+caller that has moved on. And `stop` is fire-and-forget and idempotent:
+calls made after it answer `Unavailable` in band, because a caller holding
+a tool-call verdict must not die of a wedged client.
+
 ## MCP tools are modules, not tools
 
 The obvious design is to register each MCP tool as a harness tool, so
