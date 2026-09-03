@@ -391,11 +391,12 @@ pub type Note {
   Note(extension: String, text: String)
 }
 
-/// What the manager fans out.
+/// What the two managers fan out.
 ///
-/// The two events carrying a `reply` subject are delivered with
-/// `sync_notify`; the caller drains the subject once it returns, when
-/// every handler that was going to answer has answered.
+/// The three events carrying a `reply` subject are delivered with
+/// `sync_notify` on the answering manager; the caller drains the subject
+/// once it returns, when every handler that was going to answer has
+/// answered. The other four are cast onto the notice manager.
 pub type Event {
   /// The session's extension hosts are wired. Fires once, at boot.
   SessionStart
@@ -1491,7 +1492,7 @@ fn fan_out_ms(bus: Bus) -> Int {
 
 // --- wiring the bus into a session's effects ------------------------------
 
-/// Composes a bus into a built `Effects` record: the four runtime slots
+/// Composes a bus into a built `Effects` record: the seven runtime slots
 /// a hook event lands in, wrapped rather than replaced.
 ///
 /// Wrapping is the house pattern for hook composition
