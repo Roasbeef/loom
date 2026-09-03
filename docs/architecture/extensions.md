@@ -38,7 +38,7 @@ repository,
 | 1 | `packages/ext`, the extension seam, the manifest, the install pipeline, install records, discovery, `loom ext` | **Built** (#177, #178, #179, #182) |
 | 2 | Boot registration, jailed dispatch of an extension tool, `net.request` served by the broker under the manifest's policy | **Built** (#196) |
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
-| 4 | Tier H: the harness-resident loader, the artifact import check, rollback | **Planned** (#32, #33) |
+| 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven; loader deferred (#32) — #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`; the loader is deferred because no surveyed extension needs in-VM residency |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
 
 Everything below is marked against that table. Where a section describes
@@ -1115,13 +1115,33 @@ provider hooks, because provider ownership is TCB, and none of pi's UI
 moments, because those belong to the client and the client is a separate
 process over a frozen gateway.
 
-**Phase 4, planned: tier H.** The loader compiles a harness-resident body
-from vetted source under a harness-controlled module name, checks the
-compiled artifact's *import table* against the tier-H allowlist before
-loading it — the runtime half of #33's two freeze mechanisms, where the
-vetting lint is the compile-time half — runs it under a supervised,
-time-boxed wrapper, and rolls back to the previous artifact when a load
-or a first call fails.
+**Phase 4, split: the freeze is proven, the loader is deferred.** The
+loader (#32) would compile a harness-resident body from vetted source
+under a harness-controlled module name, check the compiled artifact's
+*import table* before loading it, run it under a supervised, time-boxed
+wrapper, and roll back to the previous artifact when a load or a first
+call fails. It is **deferred**: a survey of the pi extension corpus found
+none that needs in-VM residency, so building the one code path §7's hard
+rule was written against would buy nothing.
+
+The freeze (#33) is not deferred. Both mechanisms it asks for are gated
+tests in `client/test/client/extension/freeze_test.gleam`. The
+compile-time half walks the package graph — `packages/ext` names only
+`cap`, `cap` names only `core`, `core` names none, the resolved manifest
+and `codemode/seed.default_vendored` agree — and then walks both prelude
+source trees, so an import added to `packages/ext` or `packages/cap` that
+reaches a TCB module fails. The runtime half is the seam a body is
+admitted under: `policy.extension()` and the new `policy.resident()` are
+both disjoint from the module names the TCB packages ship, checked
+against the trees rather than a snapshot, and both allowlists are pinned
+as exact sets. `ResidentSeam` is the seam a resident body *would* be
+judged under — `ext`, `ext/hook`, and the jailed seam's standard library
+with every `cap/*` module removed — declared before a loader exists so
+that #32 starts from a frozen allowlist. `docs/review/extension-zone.md`
+is the review record, and it carries the measurement a loader would rest
+on: the beam import table admits `erlang`, `maps` and `lists`, which no
+Gleam allowlist names, so the artifact check has to be per-MFA rather
+than per-module.
 
 **Phase 5, named but not commissioned: LSP and DAP as extensions.** A
 language server is a long-lived JSON-RPC process over stdio plus a small

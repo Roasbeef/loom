@@ -456,6 +456,34 @@ and the deadline bounds that.
 All four phases are commissioned; phase 2 is the milestone the user
 named and phase 4 exists so that the design does not say "never".
 
+**Addendum, 2026-09-03: phase 4 splits, and the loader is deferred.**
+Phase 4 as written above is two things bolted together — a loader (#32)
+and a freeze (#33) — and only one of them is wanted. A survey of roughly
+490 pi extensions found none that needs in-VM residency: what real
+extensions ask for is vocabulary the jail already has or does not yet
+speak, never synchronous access to harness state. Tier H was always the
+rung that exists so the design does not say "never", and building a
+loader nobody needs would put the one code path §7's hard rule was
+written against into the tree in exchange for nothing. So **#32 is
+deferred**, with the reason posted on the issue.
+
+The freeze is not deferred with it. #33 asks for two mechanisms, both,
+and both are now standing gated properties of the tree rather than
+properties of a loader: the package graph and both prelude source trees
+are walked at test time and shown to reach no TCB package, and both
+vetting seams are shown disjoint from the module names the TCB packages
+actually ship. A new module under `storage/`, an import added to
+`packages/ext`, a `path` dependency, or a widened allowlist each fail a
+test rather than passing unnoticed. `policy.ResidentSeam` is the seam a
+resident body *would* be judged under — `ext`, `ext/hook` and the jailed
+seam's standard library, with every capability removed — declared now and
+wired to nothing, so that #32, if it is ever built, starts from a frozen
+allowlist instead of inventing one under deadline. The review record is
+`docs/review/extension-zone.md`, and it carries one finding a loader
+would inherit: the beam import table admits native Erlang modules
+(`erlang`, `maps`, `lists`) that no Gleam allowlist names, so the
+artifact check has to be per-MFA rather than per-module.
+
 **Status, and one divergence this note did not anticipate.** Phases 1
 and 2 are built and merged — #175, #177, #178, #179 and #182 for the
 install pipeline, the manifest, the seam and `loom ext`, and #196 for
