@@ -27,6 +27,30 @@
 //// A collision is therefore a boot refusal naming both origins, never a
 //// warning and never a silent last-wins.
 ////
+//// ## An extension never overrides a built-in; an operator may
+////
+//// pi extensions like `hashline-edit` register a tool over a built-in
+//// name and expect to replace it. Loom refuses that, and the refusal is
+//// the collision above: an install that silently redefined what the
+//// model's `fs_edit` call does would make every sandbox argument in the
+//// tree an argument about the wrong function, and nothing in the
+//// manifest an operator reads would say which one they got.
+////
+//// What an operator may do is *deactivate* the built-in. `deactivate`
+//// drops named tools from the built-in contribution before the registry
+//// is built, so the name is genuinely free and an extension's tool of
+//// that name is admitted with no collision to refuse. The two directions
+//// are the whole ruling: an active built-in still collides, and a
+//// deactivated one yields. The decision stays the operator's, it is made
+//// in the server's own configuration rather than in the extension's
+//// manifest, and it is visible in `server.tools` at boot.
+////
+//// Deactivation reaches built-ins only. Deactivating an *extension's*
+//// tool would be a way to hand one extension's name to another by
+//// configuration, which is the shadowing this module refuses at one
+//// remove; the way to stop an extension's tool is to uninstall the
+//// extension.
+////
 //// ## Why the origin is not just decoration
 ////
 //// The registry itself is a name → tool table and has no memory of
@@ -173,6 +197,41 @@ pub fn built_in(
       ]),
     ),
   ]
+}
+
+/// Drops the named tools from every built-in contribution, leaving
+/// contributions from extensions untouched.
+///
+/// This is what makes an extension's tool of a built-in name installable:
+/// with the built-in gone the name is unclaimed, so `registry` finds no
+/// collision and the extension's tool is the only one registered under
+/// it. A name nothing offers is not an error — an operator naming a tool
+/// this host never built is stating a posture, and refusing the boot over
+/// it would make a shared configuration unusable across hosts whose
+/// planes differ.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert contributions.deactivate([], ["fs_edit"]) == []
+/// ```
+///
+pub fn deactivate(
+  contributions: List(Contribution),
+  names: List(String),
+) -> List(Contribution) {
+  use contribution <- list.map(contributions)
+  case contribution.origin {
+    Extension(..) -> contribution
+
+    BuiltIn ->
+      Contribution(
+        ..contribution,
+        tools: list.filter(contribution.tools, fn(each) {
+          !list.contains(names, each.name)
+        }),
+      )
+  }
 }
 
 /// Builds the registry from an ordered list of contributions, refusing a

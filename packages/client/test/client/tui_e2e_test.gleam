@@ -637,5 +637,6 @@ fn settings() -> serve.Settings {
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
+    deactivated_tools: [],
   )
 }

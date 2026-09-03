@@ -242,6 +242,7 @@ fn settings(
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
+    deactivated_tools: [],
   )
 }
 
