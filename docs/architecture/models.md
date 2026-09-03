@@ -306,7 +306,12 @@ not touch `thinking_level`, even though the entry declares one. The
 entry's level seeds a strand at creation; the per-turn level afterwards
 belongs to whoever is having the conversation, and changing model mid-run
 is not a request to un-raise a reasoning budget somebody deliberately
-raised. A client that wants both sends both keys. What a *newly seeded*
+raised. A client that wants both sends both keys. The TUI exposes the
+level on its own as `/effort <level>`, which sends `set_config` with
+`thinking_level` for the active strand and lets the server validate the
+word (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); the
+adapters map that seven-step vocabulary onto whatever their dialect
+offers, so `xhigh` on a Gemini entry reaches the wire as `HIGH`. What a *newly seeded*
 strand gets is the other half of the same rule: `fork` and `create_strand`
 copy the source strand's configuration but re-seed its thinking level from
 the catalogue entry the copied identity names, because a fresh strand has

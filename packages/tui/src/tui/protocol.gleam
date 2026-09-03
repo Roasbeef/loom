@@ -253,6 +253,24 @@ pub fn set_model(id: Int, strand: String, name: String) -> String {
   ])
 }
 
+/// Encodes a reasoning-level switch for one strand: `set_config` with a
+/// `thinking_level` word, which the server validates and echoes back in
+/// the effective configuration. The level alone moves; the model stays.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.set_thinking(8, "main", "high")
+/// // -> a set_config frame whose config is {"thinking_level": "high"}
+/// ```
+///
+pub fn set_thinking(id: Int, strand: String, level: String) -> String {
+  command(id, "set_config", [
+    #("strand", json.String(strand)),
+    #("config", json.Object([#("thinking_level", json.String(level))])),
+  ])
+}
+
 /// Encodes an abort for one strand.
 ///
 /// ## Examples

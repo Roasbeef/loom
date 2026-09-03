@@ -49,6 +49,14 @@ pub type Command {
     name: String,
   )
 
+  /// Set the active strand's reasoning level for its next turns.
+  Effort(
+    /// The level word the server accepts: `off`, `minimal`, `low`,
+    /// `medium`, `high`, `xhigh` or `max`. Validated server-side, so an
+    /// unknown word comes back as a worded error rather than a guess.
+    level: String,
+  )
+
   /// Compact the active strand.
   Compact
 
@@ -156,6 +164,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/sessions", "switch local sessions", False),
     Suggestion("/notes", "browse agent notes", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
+    Suggestion("/effort", "set the active strand's reasoning level", True),
     Suggestion("/strands", "list session strands", False),
     Suggestion("/strand", "switch the active strand", True),
     Suggestion("/fork", "fork the active strand", True),
@@ -209,6 +218,7 @@ pub fn parse(input: String) -> Command {
     "/sessions" -> Sessions
     "/notes" -> Notes
     "/details" -> Details
+    "/effort" -> MissingArgument("effort")
     "/compact" -> Compact
     "/abort" -> Abort
     "/steer" -> MissingArgument("steer")
@@ -220,6 +230,7 @@ pub fn parse(input: String) -> Command {
     "/model " <> rest -> required_argument("model", rest, Model)
     "/strand " <> rest -> required_argument("strand", rest, Strand)
     "/fork " <> rest -> required_argument("fork", rest, Fork)
+    "/effort " <> rest -> required_argument("effort", rest, Effort)
     "/steer " <> rest -> required_argument("steer", rest, Steer)
     "/queue " <> rest -> required_argument("queue", rest, Queue)
     "/" <> rest -> Unknown(command_name(rest))
@@ -267,6 +278,7 @@ pub fn help_text() -> String {
   <> "/sessions         switch locally managed sessions\n"
   <> "/notes            browse the active strand's agent notes\n"
   <> "/details          toggle reasoning and tool detail\n"
+  <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
   <> "/strands          list session strands\n"
   <> "/strand <name>    switch the active strand\n"
   <> "/fork <name>      fork the active strand\n"

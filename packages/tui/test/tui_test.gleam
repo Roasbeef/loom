@@ -590,6 +590,9 @@ pub fn model_argument_test() {
 
 pub fn missing_argument_test() {
   assert command.parse("/fork") == command.MissingArgument("fork")
+  assert command.parse("/effort") == command.MissingArgument("effort")
+  assert command.parse("/effort high") == command.Effort("high")
+  assert command.help_text() |> string.contains("/effort <level>")
 }
 
 pub fn unknown_command_test() {

@@ -3213,6 +3213,14 @@ fn submit_text(model: Model) -> Model {
         append_system(cleared, "fork queued: " <> name),
         protocol.fork(cleared.next_id, cleared.active_strand, name),
       )
+    command.Effort(level) ->
+      send_frame(
+        append_system(
+          cleared,
+          "reasoning level for " <> cleared.active_strand <> ": " <> level,
+        ),
+        protocol.set_thinking(cleared.next_id, cleared.active_strand, level),
+      )
     command.Compact ->
       send_frame(
         append_system(
@@ -3260,6 +3268,7 @@ fn submit_with_images(model: Model) -> Model {
         | command.Details
         | command.Strand(_)
         | command.Fork(_)
+        | command.Effort(_)
         | command.Compact
         | command.Abort
         | command.Steer(_)
