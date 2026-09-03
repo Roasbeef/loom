@@ -195,9 +195,13 @@ Three things follow.
   reason.
 - **An archive that carries a beam.** Extraction is total and a
   non-`.gleam` file under `src/` refuses the whole package rather than
-  being pruned, because Gleam would compile and link it. Nothing but
-  source crosses the install boundary, and the harness compiles that
-  source itself.
+  being pruned, because Gleam would compile and link it. The installed
+  tree is `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`
+  and the docs, so source is not the only thing that crosses: `schema/`
+  and `skills/` cross as data. They are checked to be UTF-8 and they
+  never reach the compiler or the build root — only `src/**/*.gleam` does
+  — so nothing crossing the boundary is executable, and the harness
+  compiles the source itself.
 - **A `gleam.toml` naming a dependency.** Refused against a closed set of
   four. The seed backs that up only for loom packages — it vendors `cap`,
   `core` and `ext` and no fourth loom package — but not in general:
