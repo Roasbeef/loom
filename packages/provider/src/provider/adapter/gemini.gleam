@@ -267,19 +267,25 @@ fn text_parts(text: String) -> JsonValue {
 // user turn that holds only tool results, because parallel tool results
 // must land in a single turn ("number of function response parts is not
 // equal to number of function call parts" otherwise) while every other
-// turn boundary is kept as the conversation had it.
+// turn boundary is kept as the conversation had it. Images a tool
+// returned cannot ride inside a `functionResponse` on every generation,
+// so they wait on the turn as `pending_images` and follow it as a user
+// turn of their own once the batch is closed — flushing them as each
+// result arrived would put an image turn between two results of one
+// batch, which is the refusal above by another route.
 type Turn {
   Turn(role: String, parts: List(JsonValue), kind: TurnKind)
 }
 
 type TurnKind {
-  FunctionResponses
+  FunctionResponses(pending_images: List(JsonValue))
   Ordinary
 }
 
 fn encode_contents(messages: List(AgentMessage)) -> List(JsonValue) {
   messages
   |> list.fold([], fn(turns, message) { push_message(turns, message) })
+  |> flush_images
   |> list.reverse
   |> list.map(fn(turn) {
     json.Object([
@@ -317,7 +323,8 @@ fn push_message(turns: List(Turn), message: AgentMessage) -> List(Turn) {
 
 // A turn with no parts is not sent: the API rejects an empty `parts`
 // array, and an assistant turn that was all unsigned thinking has
-// nothing the model needs back.
+// nothing the model needs back. Any turn closes the function-response
+// batch in progress, so its images are flushed first.
 fn push_turn(
   turns: List(Turn),
   role: String,
@@ -326,7 +333,35 @@ fn push_turn(
 ) -> List(Turn) {
   case parts {
     [] -> turns
-    _ -> [Turn(role:, parts:, kind:), ..turns]
+    _ -> [Turn(role:, parts:, kind:), ..flush_images(turns)]
+  }
+}
+
+// Closes a function-response batch: the images its results carried go
+// out as one user turn after it, as pi sends them. Anything else at the
+// head is left alone.
+fn flush_images(turns: List(Turn)) -> List(Turn) {
+  case turns {
+    [
+      Turn(
+        role:,
+        parts:,
+        kind: FunctionResponses(pending_images: [_, ..] as images),
+      ),
+      ..earlier
+    ] -> [
+      Turn(
+        role: "user",
+        parts: [
+          json.Object([#("text", json.String("Tool result image:"))]),
+          ..images
+        ],
+        kind: Ordinary,
+      ),
+      Turn(role:, parts:, kind: FunctionResponses(pending_images: [])),
+      ..earlier
+    ]
+    _ -> turns
   }
 }
 
@@ -338,9 +373,8 @@ type ToolOutcome {
 }
 
 // A tool result joins the function-response turn in progress when there
-// is one, so parallel results stay in one turn. Images cannot ride
-// inside a `functionResponse` on every generation, so they follow in a
-// separate user turn, as pi sends them.
+// is one, so parallel results stay in one turn, and its images join that
+// turn's pending list to be flushed when the batch closes.
 fn push_tool_result(
   turns: List(Turn),
   call_id: String,
@@ -369,30 +403,26 @@ fn push_tool_result(
       ),
     ])
 
-  let turns = case turns {
-    [Turn(role: "user", parts:, kind: FunctionResponses), ..earlier] -> [
+  case turns {
+    [
+      Turn(role: "user", parts:, kind: FunctionResponses(pending_images:)),
+      ..earlier
+    ] -> [
       Turn(
         role: "user",
         parts: list.append(parts, [response]),
-        kind: FunctionResponses,
+        kind: FunctionResponses(pending_images: list.append(
+          pending_images,
+          images,
+        )),
       ),
       ..earlier
     ]
     _ -> [
-      Turn(role: "user", parts: [response], kind: FunctionResponses),
-      ..turns
-    ]
-  }
-  case images {
-    [] -> turns
-    _ -> [
       Turn(
         role: "user",
-        parts: [
-          json.Object([#("text", json.String("Tool result image:"))]),
-          ..images
-        ],
-        kind: Ordinary,
+        parts: [response],
+        kind: FunctionResponses(pending_images: images),
       ),
       ..turns
     ]

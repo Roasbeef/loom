@@ -739,6 +739,35 @@ pub fn a_result_image_follows_in_its_own_user_turn_test() {
   assert wire.string_field(inline, "mimeType") == Ok("image/png")
 }
 
+pub fn an_image_in_a_parallel_batch_waits_for_the_batch_to_close_test() {
+  // Two calls answered in parallel, the first with an image: both
+  // responses must share one turn, so the image turn follows the batch
+  // rather than splitting it — split, the API refuses the request as a
+  // function-response count mismatch.
+  let with_image =
+    tool_result_with(
+      "call_1",
+      [
+        message.ToolResultText(text: "shot", text_signature: None),
+        message.ToolResultImage(data: "AAAA", mime_type: "image/png"),
+      ],
+      is_error: False,
+    )
+  let assert [results, images, next_model] =
+    contents_of([
+      with_image,
+      tool_result("call_2", "Rainy"),
+      assistant_turn([
+        message.AssistantText(text: "Done.", text_signature: None),
+      ]),
+    ])
+  let assert Ok([first, second]) = wire.array_field(results, "parts")
+  let assert Ok(_) = wire.field(first, "functionResponse")
+  let assert Ok(_) = wire.field(second, "functionResponse")
+  let assert Ok([_caption, _image]) = wire.array_field(images, "parts")
+  assert wire.string_field(next_model, "role") == Ok("model")
+}
+
 pub fn empty_assistant_turns_are_not_sent_test() {
   // An assistant turn that was all unsigned thinking renders to no parts,
   // and an empty `parts` array is a 400.
