@@ -189,6 +189,16 @@ fn drive(ready: Ready) -> Nil {
 
       // The registry a booting server would build, and the satellite
       // registry it would build beside it, from one configuration.
+      //
+      // This one is deliberately *not* reaped where the other cases reap
+      // theirs (see `registry_stop_ms`): `oversleeps` is handed
+      // `hosts_name` and builds the sleeper's config from this same
+      // registry, so stopping it here would take the last case's plane
+      // with it. The fetcher's node therefore holds one of the plane's
+      // four helpers for the whole run, and peak hold is three of four —
+      // this one, plus the two a case of its own launches. A case
+      // inserted before `oversleeps` has to reap its own hosts or the
+      // fourth helper is the one the next install is refused.
       let registry = contributed(config, installed_at)
       let assert Ok(_started) =
         hosts.start(hosts_name, wall_clock(), [
