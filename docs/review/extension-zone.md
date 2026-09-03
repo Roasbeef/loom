@@ -86,6 +86,13 @@ is taken against the module names the TCB packages actually ship, walked
 from the tree rather than written out, so a new module under `storage/`
 or `broker/` is covered the day it is committed.
 
+The base for this purpose is every package that ships Gleam into the
+harness VM — `events`, `telemetry`, `mcp` and `tui` included, not only
+the subsystems §7 names. The walk's whole value is covering the module
+nobody has written yet, and a module added under `mcp/` would otherwise
+land outside it. `sandbox` is the fourteenth entry and ships no Gleam,
+which the test itself pins.
+
 The second seam is new in this change. **`ResidentSeam`** is the seam a
 harness-resident hook body *would* be judged under if a loader were ever
 built: `ext`, `ext/hook`, and the same standard-library subset the jailed
@@ -117,7 +124,7 @@ in the jail, where it already works.
 | `an_extension_may_not_declare_a_trusted_dependency` | `vet/package.allowed_dependencies` widened to a TCB package. |
 | `no_prelude_module_imports_the_trusted_computing_base` | An import added to any module of either prelude. Walks both trees. |
 | `the_preludes_ship_one_foreign_source` | A second `.erl` added under `packages/{cap,ext}/src`. The import walk reads only `.gleam`, so an Erlang source can name any module by atom with no import line to find; `cap_ffi.erl` is the one that exists and it names no loom module. |
-| `no_seam_admits_a_module_of_the_base` | Either allowlist widened to a base module, including one that does not exist yet. Walks all ten packages. |
+| `no_seam_admits_a_module_of_the_base` | Either allowlist widened to a base module, including one that does not exist yet. Walks the thirteen base packages that ship Gleam. |
 | `a_body_reaching_into_the_base_is_refused` | The lint failing to refuse, or refusing without naming the module the author must delete. |
 | `a_body_declaring_foreign_code_is_refused` | `@external` admitted, which would make every import check moot. |
 | `the_resident_allowlist_is_pinned` / `the_extension_allowlist_is_pinned` | Either seam changing at all. Exact set, difference taken both ways. |

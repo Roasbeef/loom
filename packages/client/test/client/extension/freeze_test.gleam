@@ -97,16 +97,27 @@ import tom
 
 /// The packages that make up the trusted computing base: the durability
 /// plane, the state machine, the broker and its sandbox drivers, the
-/// session tree, and the harness-side halves of code mode and the client.
+/// session tree, the event bus and its telemetry, the MCP client, the
+/// terminal client, and the harness-side halves of code mode and the
+/// client.
+///
+/// The list is every package that ships Gleam into the harness VM, and
+/// it is written that way on purpose. The narrower reading — the
+/// subsystems §7 names — would leave `events`, `telemetry`, `mcp` and
+/// `tui` outside a walk whose entire value is covering the module
+/// somebody adds next year. A base module has to be refused wherever it
+/// lands, not only where the design doc thought to look.
 ///
 /// `core` is deliberately absent. It is the pure shared vocabulary —
 /// msgpack, corruption reports, the domain types — with no I/O and no
 /// process machinery, and `cap` depends on it precisely because a
 /// satellite and the harness have to agree on the wire. A package that
 /// can be linked into the jail is not part of the base being frozen.
+/// `conformance`, `lint` and `prompt` are absent for a different reason:
+/// none of them is loaded by a running harness.
 const trusted_computing_base = [
   "storage", "broker", "runtime", "machine", "sandbox", "session", "codemode",
-  "client", "provider", "tools",
+  "client", "provider", "tools", "events", "telemetry", "mcp", "tui",
 ]
 
 /// The base's packages that ship Gleam, and so contribute module names an
@@ -117,7 +128,7 @@ const trusted_computing_base = [
 /// the walk.
 const gleam_trusted_packages = [
   "storage", "broker", "runtime", "machine", "session", "codemode", "client",
-  "provider", "tools",
+  "provider", "tools", "events", "telemetry", "mcp", "tui",
 ]
 
 /// The loom packages an extension's build root may contain: the
