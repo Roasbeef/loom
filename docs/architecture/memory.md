@@ -66,11 +66,11 @@ directory, extract per source on a cheap model, consolidate the
 candidates and the outstanding `remember` notes against the current head
 in one more turn, then re-render the sidecar.
 
-**The lifecycle worker** is `client/distillpass.gleam:314` (`start`),
+**The lifecycle worker** is `client/distillpass.gleam:380` (`start`),
 new in #149: a supervised child that runs exactly one pass per boot and
 then idles.
 
-**The injection** is `client/memory.gleam:1432` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1522` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
@@ -128,7 +128,7 @@ Three things about it are load-bearing:
   since early in `assemble`, so the live session is guaranteed to be
   skipped.
 - **The pass runs on its own weft scope, bounded by a wall deadline**
-  (`client/distillpass.gleam:461`, `begin`). The machine relays the
+  (`client/distillpass.gleam:511`, `begin`). The machine relays the
   outcome onto its own subject rather than blocking on it, which is what
   lets `settled` answer while a pass is still running. All seven
   `weft.Outcome` variants are matched (`client/distillpass.gleam:540`,
@@ -198,7 +198,7 @@ still contributes nothing to any later extraction.
 The digest body is rendered from the head (`client/memory.gleam:1282`,
 `render_digest`) — scrubbed, byte-capped, truncation marked — and the
 fence and attribution are built at injection time
-(`client/memory.gleam:1457`, `wrapped`) so that the file cannot forge
+(`client/memory.gleam:1567`, `wrapped`) so that the file cannot forge
 its own provenance.
 
 The read is bounded before it happens, because it is a read of an
@@ -213,7 +213,7 @@ could plausibly have produced.
 ## Configuration, cost and cadence
 
 The `[memory]` table in the same `loom.toml` the catalogue comes from,
-decoded by `client/distillpass.gleam:177` (`parse`):
+decoded by `client/distillpass.gleam:188` (`parse`):
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
@@ -229,7 +229,7 @@ this document's table names are checked.
 source session plus one consolidation turn — unchanged by #149, and
 routed exactly as the hand-run command routes it: the `summarize` role
 when the catalogue declares one, and the resolved main model when it
-does not (`client/distill.gleam:1241`, `target`). Both turns' usage rows
+does not (`client/distill.gleam:1268`, `target`). Both turns' usage rows
 land in the memory session's own ledger, so memory's cost is visible
 rather than folded into a session's. A pass with nothing to read
 dispatches **no** turn at all: extraction runs over zero harvests and
