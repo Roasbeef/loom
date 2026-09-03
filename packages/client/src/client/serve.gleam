@@ -2165,19 +2165,20 @@ fn assemble(
         // two compose instead of one silently dropping the other.
         hooks: agency.reaping_hooks(built.hooks, agency_config)
         |> notes.digest_hooks(opened, clock)
-        // The memory digest is read once, here, as bytes — this server
-        // never opens the memory session and never takes its lease. A
-        // consolidation that lands while this one runs therefore reaches
-        // the next boot, which is the "memory updates land at session
-        // boundaries" rule obtained by construction rather than by a
-        // check. Absent file, nothing injected, no tokens spent.
-        // Read at every run start rather than once here, because this
-        // server now runs the producer as well: `client/distillpass`
-        // writes the sidecar under this same boot, and a digest captured
-        // at boot would hold every session one pass behind its own
-        // pipeline. Absent file, nothing injected, no tokens spent.
+        // The memory digest is read at every run start rather than once
+        // here, because this server runs the producer as well: the pass
+        // `client/distillpass` starts writes the sidecar under this same
+        // boot, and a digest captured here would hold every session one
+        // pass behind its own pipeline. It is still a read of bytes and
+        // never an open — this server takes no memory lease outside that
+        // pass — so a consolidation landing mid-session costs the next
+        // run one file read and nothing else. The reader carries the
+        // logger because a sidecar too large to be a digest is refused,
+        // and a silent refusal looks exactly like a repository that has
+        // never distilled. Absent file, nothing injected, no tokens
+        // spent.
         |> memory.digest_hooks(
-          fn() { memory.read_digest(memory_digest) },
+          memory.digest_reader(memory_digest, logger),
           clock,
         ),
     )

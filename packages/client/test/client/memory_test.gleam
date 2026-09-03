@@ -18,6 +18,7 @@ import core/json
 import core/message
 import core/register
 import core/tx.{Expect, SetRegister, Tx}
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -25,6 +26,8 @@ import runtime/effects
 import simplifile
 import storage/storage
 import support/tool_registry
+import telemetry/level
+import telemetry/log
 import tools/remember
 import tools/tool
 
@@ -197,6 +200,64 @@ pub fn the_sidecar_is_capped_when_it_is_read_too_test() {
     as "the oversized sidecar must be writable"
   let assert Some(read) = memory.read_digest(root <> "/loom-memory.digest")
     as "a present sidecar must read"
+  assert byte_size(read) <= memory.max_digest_bytes
+}
+
+/// A sidecar too large to be a digest is refused at the door rather
+/// than read and clipped, and the run start it feeds injects nothing.
+///
+/// The distinction is the whole point of the bound. A file whose first
+/// twenty kilobytes are a perfectly good digest would *clip* to
+/// something injectable if the read happened first; refusing on the
+/// file's size means it is never read at all — which is what keeps an
+/// absurd sidecar from stalling every run of every session, since this
+/// read is on the strand driver's own process now.
+pub fn an_oversized_sidecar_is_refused_before_it_is_read_test() {
+  let root = fresh_root("oversize")
+  let path = root <> "/loom-memory.digest"
+  let assert Ok(Nil) =
+    simplifile.write(
+      to: path,
+      contents: "- (fact) the readable head\n"
+        <> string.repeat("z", memory.max_sidecar_bytes + 1),
+    )
+    as "the absurd sidecar must be writable"
+
+  // Not clipped to its readable prefix: refused whole.
+  assert memory.read_digest(path) == None
+
+  let #(op, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
+  let hooked =
+    memory.digest_hooks(
+      bare_hooks(),
+      memory.digest_reader(path, log.discard()),
+      clock.fixed(at: 5),
+    )
+  assert hooked.run_start(op) == []
+
+  // And the refusal is said out loud, once for the run that met it.
+  let records = process.new_subject()
+  let reader =
+    memory.digest_reader(
+      path,
+      log.new(sink: log.to_subject(records), threshold: level.Debug),
+    )
+  assert reader() == None
+  let assert Ok(record) = process.receive(records, within: 100)
+    as "an oversized sidecar must log its refusal"
+  assert record.event == "memory.digest_oversize"
+
+  // A file merely over the render cap is still clipped and injected,
+  // which is the case the pipeline itself can produce.
+  let assert Ok(Nil) =
+    simplifile.write(
+      to: path,
+      contents: string.repeat("z", memory.max_digest_bytes * 2),
+    )
+    as "the merely oversized sidecar must be writable"
+  let assert Some(read) = memory.read_digest(path)
+    as "a plausible sidecar must still read"
   assert byte_size(read) <= memory.max_digest_bytes
 }
 
