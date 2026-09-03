@@ -121,8 +121,8 @@ pub type EunitTest {
   Timeout(seconds: Int, body: fn() -> Nil)
 }
 
-/// The ceiling on the one test here. It spends a hermetic build (up to
-/// 180 s of its own) and then three satellite launches, so a smaller
+/// The ceiling on the one test here. It spends five hermetic builds (up
+/// to 180 s each of their own) and five satellite launches, so a smaller
 /// ceiling would substitute an anonymous eunit timeout for this suite's
 /// own account of what happened.
 const e2e_timeout_seconds = 1200
@@ -460,9 +460,28 @@ fn hooks_fire(installed_at: Installed) -> Nil {
         <> "before_compact hook returned an attributed note and a jailed "
         <> "usage hook took a committed ledger row",
       )
+
+      // The gatekeeper's node goes now that its two claims are made.
+      // See `registry_stop_ms`: a satellite left running holds one of
+      // the plane's four helpers for the rest of the suite.
+      hosts.stop(hosts_name, timeout_ms: registry_stop_ms)
     }
   }
 }
+
+/// How long a case waits for its own satellites to be reaped before it
+/// moves on.
+///
+/// Every case here runs against **one** build plane, and a plane lends
+/// its jails from a pool of `exec.min_pool_size` — four. A satellite
+/// holds one of those for as long as it lives, and a hermetic build
+/// needs one of its own, so a case that leaves its nodes running spends
+/// the budget of every case after it: with four satellites up, the next
+/// install is refused for want of a helper and its claim is printed as
+/// a skip instead. Each case therefore reaps what it launched, and the
+/// wait is generous because the alternative to waiting is moving on
+/// while the helper is still lent.
+const registry_stop_ms = 20_000
 
 // A cue whose every number is distinctive, so the echoed note is
 // asserting on the field it means rather than on a zero that would
@@ -583,68 +602,87 @@ fn keepers_remember(
           // arrangement in which "it survived the reopen" is a claim
           // about the disk rather than about the node.
           let holder = start_holder(runtime)
+          let hosts_name = process.new_name(prefix: "loom_e2e_keepers")
           let registry =
-            keeper_registry(installed_at, [one, two], borrowing(holder))
-
-          let stored =
-            keeper_call(
-              registry,
+            keeper_registry(
               installed_at,
-              first_keeper,
-              Some("the origin was slow"),
+              hosts_name,
+              [one, two],
+              borrowing(holder),
             )
-          assert string.contains(rendered(stored), "stored the origin was slow")
 
-          let recalled = keeper_call(registry, installed_at, first_keeper, None)
+          keepers_prove(installed_at, registry, holder, path, first, runtime)
+
+          // Two satellites' worth of helper back to the pool, before
+          // the next case asks the plane for one. See
+          // `registry_stop_ms`.
+          hosts.stop(hosts_name, timeout_ms: registry_stop_ms)
+        }
+      }
+  }
+}
+
+// The three claims themselves, once the session, the holder and the two
+// satellites are up. Split out so that every way this can end — a
+// reopen that fails as much as the one that succeeds — returns to the
+// one place the satellites are reaped.
+fn keepers_prove(
+  installed_at: Installed,
+  registry: tool.Registry,
+  holder: Subject(Holding),
+  path: String,
+  first: session.Session,
+  runtime: api.Runtime,
+) -> Nil {
+  let stored =
+    keeper_call(
+      registry,
+      installed_at,
+      first_keeper,
+      Some("the origin was slow"),
+    )
+  assert string.contains(rendered(stored), "stored the origin was slow")
+
+  let recalled = keeper_call(registry, installed_at, first_keeper, None)
+  assert string.contains(rendered(recalled), "recalled the origin was slow")
+  io.println(
+    "extension memory e2e: a jailed tool remembered on one call and "
+    <> "recalled on the next",
+  )
+
+  // The session goes; the satellites stay.
+  process.kill(runtime.tree.supervisor)
+  let _sealed = session.close(first)
+
+  case open_session(path) {
+    Error(reason) -> io.println("SKIP the keeper reopen: " <> reason)
+    Ok(second) ->
+      case open_runtime(second) {
+        Error(reason) -> {
+          let _closed = session.close(second)
+          io.println("SKIP the reopened keeper runtime: " <> reason)
+        }
+
+        Ok(reopened) -> {
+          process.send(holder, Held(runtime: reopened))
+          let after = keeper_call(registry, installed_at, first_keeper, None)
           assert string.contains(
-            rendered(recalled),
+            rendered(after),
             "recalled the origin was slow",
           )
+
+          // And the other extension's own satellite, asking for
+          // the same key, finds nothing.
+          let elsewhere =
+            keeper_call(registry, installed_at, second_keeper, None)
+          assert string.contains(rendered(elsewhere), "recalled nothing")
           io.println(
-            "extension memory e2e: a jailed tool remembered on one call and "
-            <> "recalled on the next",
+            "extension memory e2e: the note survived the session "
+            <> "being reopened, and the second extension cannot see it",
           )
-
-          // The session goes; the satellites stay.
-          process.kill(runtime.tree.supervisor)
-          let _sealed = session.close(first)
-
-          case open_session(path) {
-            Error(reason) -> io.println("SKIP the keeper reopen: " <> reason)
-            Ok(second) ->
-              case open_runtime(second) {
-                Error(reason) -> {
-                  let _closed = session.close(second)
-                  io.println("SKIP the reopened keeper runtime: " <> reason)
-                }
-
-                Ok(reopened) -> {
-                  process.send(holder, Held(runtime: reopened))
-                  let after =
-                    keeper_call(registry, installed_at, first_keeper, None)
-                  assert string.contains(
-                    rendered(after),
-                    "recalled the origin was slow",
-                  )
-
-                  // And the other extension's own satellite, asking for
-                  // the same key, finds nothing.
-                  let elsewhere =
-                    keeper_call(registry, installed_at, second_keeper, None)
-                  assert string.contains(
-                    rendered(elsewhere),
-                    "recalled nothing",
-                  )
-                  io.println(
-                    "extension memory e2e: the note survived the session "
-                    <> "being reopened, and the second extension cannot see it",
-                  )
-                  process.kill(reopened.tree.supervisor)
-                  let _closed = session.close(second)
-                  Nil
-                }
-              }
-          }
+          process.kill(reopened.tree.supervisor)
+          let _closed = session.close(second)
+          Nil
         }
       }
   }
@@ -675,10 +713,10 @@ fn keeper_call(
 // through, over one memory door.
 fn keeper_registry(
   installed_at: Installed,
+  hosts_name: process.Name(hosts.Message),
   keepers: List(#(record.Record, extension_manifest.Manifest, String)),
   memory: extension_memory.Door,
 ) -> tool.Registry {
-  let hosts_name = process.new_name(prefix: "loom_e2e_keepers")
   let config =
     dispatch.Config(
       host: installed_at.host,
