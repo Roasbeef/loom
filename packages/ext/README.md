@@ -37,8 +37,8 @@ pub fn run(arguments: Dynamic, ctx: Ctx) -> Result(Outcome, Refusal) {
 ```
 
 [Roasbeef/loom-web-search](https://github.com/Roasbeef/loom-web-search) is
-the worked example: a manifest, a schema, a tool, and a `tool_call` hook,
-installed with `loom ext install`.
+the worked example: a manifest, a schema and one tool, installed with
+`loom ext install`. It declares no hooks.
 
 ## Where it sits
 
@@ -286,7 +286,7 @@ extension rather than a shape mismatch on the wire.
 | `OnToolCall` | `tool_call` | `Call(op_id, tool, arguments, source_index)` | `{"verdict": "allow"}` or `{"verdict":"block","reason":…}` |
 | `OnToolResult` | `tool_result` | the reply as `Dynamic` | `{"message": …}` |
 | `OnAgentEnd` | `agent_end` | `op_id` | `{}` |
-| `OnAgentSettled` | `agent_settled` | `op_id` | `{}` |
+| `OnAgentSettled` | `agent_settled` | `op_id` | `{}` (accepted, but nothing in the harness fires it yet) |
 
 `context` and `tool_result` are **chained transforms**: the harness folds
 them over the installed extensions in load order and hands each one its
