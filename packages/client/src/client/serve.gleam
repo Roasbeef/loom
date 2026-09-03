@@ -1938,7 +1938,11 @@ fn assemble(
   // further down, after the effects record exists to compose it into.
   let hosts_name = process.new_name(prefix: "loom_ext_hosts")
   let hosts_seam =
-    extension_hosts.seam(hosts_name, margin_ms: extension_host_margin_ms)
+    extension_hosts.seam(
+      hosts_name,
+      clock:,
+      margin_ms: extension_host_margin_ms,
+    )
   let extensions =
     extension_registrations(
       settings,
@@ -2176,6 +2180,7 @@ fn assemble(
     // launcher's own janitor when the registry that owned it dies.
     |> sup.add(extension_hosts.supervised(
       hosts_name,
+      clock,
       list.map(extensions, fn(registration) { registration.hosting }),
     ))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
@@ -2468,12 +2473,20 @@ fn session_environment() -> List(#(String, String)) {
 /// Slack over an invocation's own deadline before a caller gives up on the
 /// satellite registry.
 ///
-/// The registry performs the invocation on its own timeline, so a caller's
-/// wait has to outlast the deadline the satellite host is enforcing —
-/// otherwise the caller would report a wedged registry for an invocation
-/// that was merely being timed out properly, and the registry's own answer
-/// would arrive to nobody.
-const extension_host_margin_ms = 30_000
+/// Derived rather than picked. The registry performs the invocation on
+/// its own timeline and `codemode/satellite.invoke` waits fifteen seconds
+/// past the invocation's deadline before it gives up on a wedged host, so
+/// a caller that gave up sooner would report a wedged registry for an
+/// invocation that was merely being timed out properly. Five seconds on
+/// top is this actor's own answer travelling.
+///
+/// It is deliberately *not* large enough to hide an extension's first
+/// use, which launches a jailed node before the invocation begins:
+/// `hosts.seam` states that bound as `deadline + margin + one launch`
+/// rather than absorbing it, because a margin that hid a launch would
+/// also hide a wedged registry for the same number of seconds on every
+/// later call.
+const extension_host_margin_ms = 20_000
 
 /// How many restarts the service supervisor allows within
 /// `service_restart_period` seconds before it gives up and the host

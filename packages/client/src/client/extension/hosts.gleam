@@ -42,6 +42,13 @@
 //// the actor performs the invocation itself, so its mailbox *is* the
 //// queue and a second caller waits rather than reading `Busy`.
 ////
+//// A caller that gives up while its message is still queued does
+//// not leave work behind it: every `Invoke` carries the wall time its
+//// caller stops waiting at, and one that has passed is answered rather
+//// than performed — so a tool call the model was told failed is never
+//// made a minute later, and a `context` transform never arrives for a
+//// request that has settled.
+////
 //// That makes the actor a session-wide serialiser rather than a
 //// per-extension one, which is a deliberate simplification and worth
 //// naming. An extension tool is `tool.Exclusive`, so the model cannot have
@@ -58,6 +65,7 @@ import broker/policy.{type SandboxPolicy}
 import client/extension/hooks
 import codemode/enforcement
 import codemode/satellite
+import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/msgpack.{type MsgPackValue}
 import gleam/dict.{type Dict}
@@ -178,6 +186,19 @@ pub opaque type Message {
     args: MsgPackValue,
     at: Coordinates,
     deadline_ms: Int,
+    /// The wall time past which this caller has stopped waiting,
+    /// computed by the caller before the message was sent.
+    ///
+    /// A queue is only a queue while the things in it are still wanted.
+    /// The registry performs each invocation on its own timeline, so a
+    /// caller that gave up leaves its message behind it — and without
+    /// this the actor would go on to make the call for real: a
+    /// model-made tool call, possibly a POST, executed after the model
+    /// was told the extension could not be reached, or a `context`
+    /// transform delivered minutes into a request that has long since
+    /// settled. Absolute rather than a duration because the wait that
+    /// matters is the one already spent in the mailbox.
+    expires_at: Int,
     reply_with: Subject(Result(MsgPackValue, HookFailure)),
   )
 
@@ -200,7 +221,7 @@ type Held {
 }
 
 type State {
-  State(known: List(Extension), held: Dict(String, Held))
+  State(known: List(Extension), clock: Clock, held: Dict(String, Held))
 }
 
 /// Starts the session's host registry under `name`.
@@ -217,9 +238,10 @@ type State {
 ///
 pub fn start(
   name: Name(Message),
+  clock: Clock,
   extensions: List(Extension),
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
-  actor.new(State(known: extensions, held: dict.new()))
+  actor.new(State(known: extensions, clock:, held: dict.new()))
   |> actor.on_message(handle)
   |> actor.named(name)
   |> actor.start
@@ -233,9 +255,10 @@ pub fn start(
 /// tools go on being registered and go on refusing in band.
 pub fn supervised(
   name: Name(Message),
+  clock: Clock,
   extensions: List(Extension),
 ) -> supervision.ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(name, extensions) })
+  supervision.worker(fn() { start(name, clock, extensions) })
 }
 
 /// Stops every host the registry holds, reaping their nodes and handing
@@ -267,21 +290,45 @@ pub fn stop(name: Name(Message), timeout_ms timeout_ms: Int) -> Nil {
 
 /// The invocation seam over the registry named `name`.
 ///
+/// A caller waits `deadline_ms + margin_ms`, and that is the whole of the
+/// bound in the steady state. `margin_ms` covers the slack
+/// `codemode/satellite.invoke` adds over an invocation's own deadline
+/// before it gives up on a wedged host, plus the moment this actor needs
+/// to answer; it is not there to absorb a slow extension, which the
+/// invocation's deadline already ends.
+///
+/// The exception is an extension's **first** use in a session, which
+/// launches a jailed node before the invocation begins, so the real bound
+/// there is `deadline_ms + margin_ms + one node launch`. That is stated
+/// rather than absorbed, because a margin large enough to hide a launch
+/// would also hide a wedged registry for the same number of seconds on
+/// every later call.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // hosts.seam(name, timeout_ms: 5000).invoke("web_search", ...)
+/// // hosts.seam(name, clock: clock, margin_ms: 20_000)
 /// ```
 ///
-pub fn seam(name: Name(Message), margin_ms margin_ms: Int) -> Hosts {
+pub fn seam(
+  name: Name(Message),
+  clock clock: Clock,
+  margin_ms margin_ms: Int,
+) -> Hosts {
   Hosts(invoke: fn(extension, invocation, args, at, deadline_ms) {
-    ask(name, margin_ms + deadline_ms, fn(reply) {
+    let #(now, _advanced) = clock.read(clock)
+    let waiting = margin_ms + deadline_ms
+    ask(name, waiting, fn(reply) {
       Invoke(
         extension:,
         invocation:,
         args:,
         at:,
         deadline_ms:,
+        // The same bound the caller is about to wait on, as a wall
+        // time: whatever the caller stops waiting for, the actor stops
+        // performing.
+        expires_at: now + waiting,
         reply_with: reply,
       )
     })
@@ -332,7 +379,7 @@ pub fn invoke(
 /// `tool_result` folds call it directly on the strand driver with nothing
 /// between.
 ///
-/// **It returns inside `deadline_ms`.** The satellite host arms the
+/// **It returns, and inside a stated bound.** The satellite host arms the
 /// invocation's deadline as the state timeout of the `Answering` state it
 /// belongs to, so a satellite that does not answer is cut off by weft
 /// rather than waited on; `ask` here adds its own bounded wait over that,
@@ -340,6 +387,11 @@ pub fn invoke(
 /// satellite destroyed by a deadline is `Departed` for the session, so
 /// every later call on it answers `Gone` from memory without a round trip
 /// at all.
+///
+/// The bound is `deadline_ms + margin_ms`, and on an extension's **first**
+/// use in a session a jailed node launch as well, because the launch
+/// happens on the way to the invocation. `seam` says why the margin is
+/// not made large enough to hide that launch.
 ///
 /// **It never raises.** Every step is a `Result`: `ask` degrades an
 /// absent, dead or silent registry to `Gone` rather than exiting its
@@ -413,22 +465,56 @@ pub fn invoke_event(
 
 fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
-    Invoke(extension:, invocation:, args:, at:, deadline_ms:, reply_with:) ->
-      serve_invoke(
-        state,
-        extension,
-        invocation,
-        args,
-        at,
-        deadline_ms,
-        reply_with,
-      )
+    Invoke(
+      extension:,
+      invocation:,
+      args:,
+      at:,
+      deadline_ms:,
+      expires_at:,
+      reply_with:,
+    ) ->
+      case abandoned(state, expires_at) {
+        // The caller stopped waiting while this sat in the mailbox.
+        // Answering rather than dropping silently costs nothing — the
+        // send to a dead subject is a no-op — and keeps every path out
+        // of this actor an answer.
+        True -> {
+          process.send(
+            reply_with,
+            Error(Gone(
+              "the caller gave up waiting before this invocation started",
+            )),
+          )
+          actor.continue(state)
+        }
+        False ->
+          serve_invoke(
+            state,
+            extension,
+            invocation,
+            args,
+            at,
+            deadline_ms,
+            reply_with,
+          )
+      }
 
     StopAll(reply_with:) -> {
       process.send(reply_with, reap(state))
       actor.continue(State(..state, held: dict.new()))
     }
   }
+}
+
+// Whether the caller of a queued invocation has already stopped waiting.
+//
+// The clock is the session's, so a simulated session decides this on its
+// own logical time rather than on the wall — the same reason every other
+// deadline in this tree is read through one.
+fn abandoned(state: State, expires_at: Int) -> Bool {
+  let #(now, _advanced) = clock.read(state.clock)
+  now > expires_at
 }
 
 // One invocation, performed on the actor's own timeline.
