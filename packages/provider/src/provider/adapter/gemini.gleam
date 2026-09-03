@@ -1049,8 +1049,10 @@ fn settle_with_stop(
   let usage = build_usage(acc)
 
   // Gemini ends a tool-calling turn with plain `STOP`; the presence of a
-  // function call is what makes it a tool-use turn.
-  let stop = case stop, list.any(content, is_tool_call) {
+  // function call is what makes it a tool-use turn, and by the same token
+  // a turn that asked for tools has not ended, whatever the raw word says.
+  let called_tools = list.any(content, is_tool_call)
+  let stop = case stop, called_tools {
     Stop, True -> ToolUse
     _, _ -> stop
   }
@@ -1085,7 +1087,9 @@ fn settle_with_stop(
       deferred: None,
       error_message:,
       raw_stop_reason: acc.raw_stop,
-      end_turn: option.map(acc.raw_stop, fn(raw) { raw == "STOP" }),
+      end_turn: option.map(acc.raw_stop, fn(raw) {
+        raw == "STOP" && !called_tools
+      }),
       timestamp: acc.now,
     )
 

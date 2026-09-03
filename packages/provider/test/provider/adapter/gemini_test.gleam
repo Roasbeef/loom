@@ -207,7 +207,8 @@ pub fn tool_call_arrives_whole_and_stop_becomes_tool_use_test() {
   let assert message.AssistantMessage(content:, stop_reason:, end_turn:, ..) =
     stream.message(settled)
   assert stop_reason == message.ToolUse
-  assert end_turn == Some(True)
+  // A turn that asked for tools has not ended, whatever the raw word says.
+  assert end_turn == Some(False)
   assert content
     == [
       message.AssistantToolCall(call: message.ToolCall(
