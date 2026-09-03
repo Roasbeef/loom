@@ -1185,11 +1185,10 @@ interpretation. Recorded here because the spec supplies none.
    the sidecar without them. It is the pipeline's ordinary head
    replacement — rows if any, the head CAS, then the sidecar — so it
    inherits the crash semantics unchanged, and it needs no catalogue
-   because it dispatches no model turn. **It moves no cursor**: the
-   erased source's cursor is voided by the rewrite generation the erase
-   bumped, which is already what makes the next run re-extract it from
-   zero, and resetting cursors here would additionally re-read every
-   other source for nothing.
+   because it dispatches no model turn. **A cascade that drops rows
+   rewinds every cursor in the same CAS** (issue #124), so the next
+   ordinary pass re-extracts every readable source and folds the notes
+   in again; a cascade that drops nothing writes nothing at all.
    What provenance cannot buy is stated here, in four parts. A
    consolidation of a consolidation
    carries its predecessor's id and not its predecessor's whole source
@@ -1223,20 +1222,21 @@ interpretation. Recorded here because the spec supplies none.
    exactly one batch, every row in it shares one provenance value, so a
    cascade over a session that fed the current head empties the head
    outright. That is over-deletion, in the direction an erasure
-   guarantee has to fail in — but **the emptied memory does not come
-   back**, and that part is a defect rather than a consequence. Only the
-   erased source's cursor is voided, by the rewrite generation; every
-   surviving source keeps its high-water cursor and the notes cursor
-   sits past every note already consumed, so the next run consolidates
-   the erased source alone over an empty head. The surviving sources'
-   contribution and every hand-written note are permanently
-   unrecoverable by the pipeline. Re-reading the other sources is the
-   only rebuild there could be, so declining to is the gap and not a
-   saving. **Issue #124** carries the mechanism — a cursor rewind on
-   drop, a `--rebuild` companion, or a `--dry-run` preview so an
-   operator sees the wipe coming — and `client/distill_test`'s
-   `an_emptying_cascade_loses_the_surviving_sources` pins the loss until
-   one of them lands.
+   guarantee has to fail in — and **the emptied memory is rebuilt
+   rather than lost**, which is what issue #124 bought. The head CAS
+   that empties the head also winds every recorded cursor back to zero
+   and resets the notes cursor (`client/memory.cursor_rewind`,
+   committed through `replace_head`), because re-reading the surviving
+   sources is the only rebuild there could be. One transaction, since a
+   crash between an emptied head and a separate cursor write would
+   recreate exactly the unrecoverable state #124 described. The rebuild
+   is not free and is not hidden: one extraction request per readable
+   source plus one consolidation, at the next boot's lifecycle pass or
+   the operator's next manual one, and `--cascade <session> --dry-run`
+   reports the whole of it — dropped, kept, rewound — while writing
+   nothing. `client/distill_test`'s
+   `an_emptying_cascade_rewinds_so_the_next_pass_rebuilds` drives the
+   loop end to end.
    **The two failure directions run opposite ways**, which is worth
    stating together because no single call site shows both.
    `names_source` matches at session grain, so a cascade *over*-deletes
