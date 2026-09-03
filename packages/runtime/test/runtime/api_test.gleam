@@ -204,6 +204,42 @@ pub fn put_fact_is_last_write_wins_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// The extension memory namespace is closed to the model's own door.
+//
+// `ext/<name>/<key>` cells are an installed extension's durable memory,
+// written by the seam under a prefix the harness composes. The model
+// reaches `put_fact` through the blackboard tool — which additionally
+// pins every key under `agent/` — and `facts` through its listing, so
+// both halves of the reservation are asserted here: a write is refused
+// by name, and a listing does not carry a cell the harness wrote.
+pub fn put_fact_refuses_the_extension_memory_prefix_test() {
+  let rt = fact_runtime()
+  let assert Error(api.ReservedFactKey(key: "ext/web-search/last")) =
+    api.put_fact(rt, "ext/web-search/last", json.String("forged"))
+    as "an extension's memory cell is not the model's to write"
+
+  // Nor by the compare-and-set door, which is the same reservation read
+  // from the other side.
+  let assert Error(api.ReservedFactKey(key: "ext/web-search/last")) =
+    api.put_fact_expecting(
+      rt,
+      "ext/web-search/last",
+      json.String("forged"),
+      expected: None,
+    )
+    as "the compare-and-set door is not a way into the namespace either"
+
+  // And what the harness wrote there is not listed to a reader of the
+  // ordinary blackboard.
+  let assert Ok(Nil) =
+    api.put_reserved_fact(rt, "ext/web-search/last", json.String("kept"))
+    as "the harness door writes the same key"
+  let assert Ok(listed) = api.facts(rt, prefix: None)
+    as "the blackboard must list"
+  assert !list.any(listed, fn(cell) { cell.0 == "ext/web-search/last" })
+  process.kill(rt.tree.supervisor)
+}
+
 // And the door that makes the concurrent case expressible: the same
 // write with the seq it was read at asserted, so the loser is told it
 // lost instead of never finding out.
