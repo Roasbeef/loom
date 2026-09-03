@@ -142,14 +142,16 @@ because it is asked before the terminal transaction commits; the host
 registry serialises the whole session's invocations rather than one
 extension's; and Linux never ran the phase 3 e2e locally, only in CI.
 
-### Memory: the consumer is live, the producer is inert
+### Memory: the producer now runs
 
-Unchanged. `import client/distill` appears in exactly two files and both
-are tests; `client/serve` imports `client/memory` and never
-`client/distill`; `client/distill.main` exists and no Makefile target,
-`bin/` shim or release entry point reaches it. That is **#149**, a
-release blocker. **#124** is the unrecoverable cascade underneath it.
-Memory is still the only subsystem with no `docs/architecture/` page.
+The previous edition said the producer was inert: `client/distill` was
+imported only by tests and no release entry point reached it. That was
+true when written and is false since #208 (2026-09-03). `client/serve`
+now starts `client/distillpass` at every ordinary boot, the release
+smoke proves the pass ran with no toolchain on `PATH`, and **#149** is
+closed. **#124**, the unrecoverable cascade, is still open and is the one
+memory item left. Memory now has its architecture page,
+`docs/architecture/memory.md`.
 
 ---
 
@@ -160,7 +162,7 @@ can be interleaved by whoever is not on it.
 
 ### 1. Memory: the producer runs; the cascade is still owed
 
-**#149 is built** (branch `memory/producer`). Distillation now runs in
+**#149 is built and merged** (#208). Distillation now runs in
 the shipped session lifecycle: `client/distillpass` is a supervised
 worker every ordinary boot starts, which runs one pass on a weft scope
 bounded by a wall deadline and then idles. The cadence, the opt-out
