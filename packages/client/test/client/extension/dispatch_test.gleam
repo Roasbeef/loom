@@ -421,6 +421,30 @@ pub fn a_key_that_could_leave_the_subtree_is_refused_test() {
     as "a key at the bound is not"
 }
 
+pub fn the_leaf_check_answers_on_its_own_test() {
+  // What `checked_key` is public for: the confinement's near half asked
+  // directly, with no router, no plan and no door in the way.
+  assert seam.checked_key("last") == Ok("last")
+
+  // Every way a leaf stops being one — empty, a separator anywhere in
+  // it, and one past the bound — under the code an author reads as
+  // "your bug" rather than "the host's".
+  list.each(
+    ["", "/", "a/b", "../x", string.repeat("k", seam.max_key_length + 1)],
+    fn(key) {
+      let assert Error(denial) = seam.checked_key(key)
+        as "a key that is not a leaf within the bound is refused"
+      assert denial.code == seam.invalid_argument_code
+    },
+  )
+
+  // And the bound is graphemes rather than bytes, which is what the
+  // refusal says it is: a key of exactly the bound in two-byte
+  // characters is twice the bytes and still a name.
+  let wide = string.repeat("é", seam.max_key_length)
+  assert seam.checked_key(wide) == Ok(wide)
+}
+
 pub fn a_value_past_the_cell_bound_is_refused_test() {
   let #(router, written, _read) = memory_recording(Ok(None))
   let big = string.repeat("v", seam.max_value_bytes + 1)
