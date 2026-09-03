@@ -617,7 +617,52 @@ pub fn run(arguments: dynamic.Dynamic, _ctx: ext.Ctx) {
   assert has_rule(vet.vet(source, policy.orchestration()), ImportNotAllowed)
 }
 
-/// `for_seam` is the selector, and it selects the two allowlists above.
+/// The resident seam reaches no capability at all.
+///
+/// This is the seam a harness-resident hook body would be judged
+/// against, and the whole of its claim is subtractive: a body running
+/// inside the harness VM gets the vocabulary and the pure standard
+/// library, and not one `cap/*` module. Asserted over the allowlist
+/// rather than over the prelude list, because the standard-library half
+/// is shared with the jailed seam and a capability added there would
+/// reach this seam without ever appearing in `resident_prelude_modules`.
+pub fn the_resident_seam_reaches_no_capability_test() {
+  assert list.all(policy.allowed_imports(policy.resident()), fn(name) {
+    !string.starts_with(name, "cap/")
+  })
+  assert list.all(policy.default_cap_modules(), fn(name) {
+    !policy.contains(policy.resident(), name)
+  })
+  assert !policy.contains(policy.resident(), "cap/strand")
+}
+
+/// The resident seam is the extension seam with the capabilities taken
+/// away, and nothing else changed.
+///
+/// Stated as a difference in both directions so the relation is a fact
+/// about the code: everything the resident seam admits, the extension
+/// seam admits too, and everything the extension seam admits and this
+/// one does not is a `cap/*` module. A future widening of either that
+/// broke the relation fails here rather than passing quietly.
+pub fn the_resident_seam_is_the_extension_seam_disarmed_test() {
+  let resident = policy.allowed_imports(policy.resident())
+  let extension = policy.allowed_imports(policy.extension())
+  assert list.all(resident, fn(name) { list.contains(extension, name) })
+  let removed =
+    list.filter(extension, fn(name) { !list.contains(resident, name) })
+  assert list.all(removed, fn(name) { string.starts_with(name, "cap/") })
+
+  // And the removal is real rather than an equality dressed up as one.
+  assert removed != []
+}
+
+/// The resident seam's prelude half is exactly the two vocabulary
+/// modules, neither of which carries authority.
+pub fn the_resident_prelude_is_the_two_vocabulary_modules_test() {
+  assert policy.resident_prelude_modules() == ["ext", "ext/hook"]
+}
+
+/// `for_seam` is the selector, and it selects the allowlists above.
 pub fn for_seam_selects_the_allowlist_test() {
   assert policy.allowed_imports(policy.for_seam(policy.WorkspaceSeam))
     == policy.allowed_imports(policy.default())
@@ -625,6 +670,8 @@ pub fn for_seam_selects_the_allowlist_test() {
     == policy.allowed_imports(policy.orchestration())
   assert policy.allowed_imports(policy.for_seam(policy.ExtensionSeam))
     == policy.allowed_imports(policy.extension())
+  assert policy.allowed_imports(policy.for_seam(policy.ResidentSeam))
+    == policy.allowed_imports(policy.resident())
 }
 
 /// An orchestration program that stays inside its seam passes, and the
