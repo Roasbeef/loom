@@ -15,6 +15,7 @@ import cap/runtime as cap_runtime
 import core/msgpack
 import ext.{type Ctx, type Refusal, ContinueRun, Refusal, TerminateRun, Text}
 import ext/hook
+import ext/memory
 import ext/runtime
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -233,6 +234,46 @@ pub fn a_cap_call_presents_the_invocation_token_test() {
   assert cap_call_token(frame) == <<42, 42>>
 }
 
+/// `ext/memory` composes the frame the extension seam decodes.
+///
+/// The other half of this wire — `client/extension/seam`'s two arms —
+/// reads `key` and `value` off the args map and nothing else, so this
+/// asserts the frame that arm was written against, one field at a time.
+/// Nothing answers the call, which is the point: the subject is the
+/// request, and the round trip belongs to the end-to-end suite that
+/// boots a real satellite.
+pub fn a_remember_carries_the_key_and_the_rendered_value_test() {
+  let served = start_serving([#("keeper", keeper)], [])
+
+  push(served, hook_call(41, "tool", "keeper", "{}"))
+  let assert Ok(frame) = process.receive(served.sent, within: 5000)
+    as "the tool must reach the memory capability"
+  let assert Ok(#(_id, body)) = frame_parts(frame)
+    as "an outbound frame must be a well-formed envelope"
+  assert text_of(body, "cap") == "ext.remember"
+  let assert Ok(args) = report.field(body, "args")
+    as "a cap_call carries its arguments"
+  assert text_of(args, "key") == "state"
+  assert text_of(args, "value") == "{\"seen\":7}"
+}
+
+/// And a recall names the key alone: there is no extension argument on
+/// this wire, which is what makes the subtree the harness's to decide.
+pub fn a_recall_carries_the_key_alone_test() {
+  let served = start_serving([#("reader", reader)], [])
+
+  push(served, hook_call(42, "tool", "reader", "{}"))
+  let assert Ok(frame) = process.receive(served.sent, within: 5000)
+    as "the tool must reach the memory capability"
+  let assert Ok(#(_id, body)) = frame_parts(frame)
+    as "an outbound frame must be a well-formed envelope"
+  assert text_of(body, "cap") == "ext.recall"
+  let assert Ok(msgpack.MapValue(entries)) = report.field(body, "args")
+    as "a cap_call carries its arguments"
+  assert entries
+    == [#(msgpack.StringValue("key"), msgpack.StringValue("state"))]
+}
+
 // --- tool fixtures --------------------------------------------------------
 
 fn echo_tool(arguments: Dynamic, _ctx: Ctx) -> Result(ext.Outcome, Refusal) {
@@ -254,6 +295,20 @@ fn refuser(_arguments: Dynamic, _ctx: Ctx) -> Result(ext.Outcome, Refusal) {
 
 fn crasher(_arguments: Dynamic, _ctx: Ctx) -> Result(ext.Outcome, Refusal) {
   panic as "this tool is written badly on purpose"
+}
+
+// Two tools that reach the memory capability, so the frames they compose
+// can be read off the wire. Neither call is answered — nothing on this
+// fake channel answers a `cap_call` — so both refuse, which is fine: the
+// frame is what is under test.
+fn keeper(_arguments: Dynamic, _ctx: Ctx) -> Result(ext.Outcome, Refusal) {
+  let _ = memory.remember("state", json.object([#("seen", json.int(7))]))
+  Ok(ext.text("done"))
+}
+
+fn reader(_arguments: Dynamic, _ctx: Ctx) -> Result(ext.Outcome, Refusal) {
+  let _ = memory.recall("state")
+  Ok(ext.text("done"))
 }
 
 // A tool that reaches a capability, so the token it presents can be read

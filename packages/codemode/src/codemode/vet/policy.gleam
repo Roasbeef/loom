@@ -371,8 +371,13 @@ pub fn orchestration() -> VetPolicy {
 /// Decision 2 of the extension ruling) makes brokered HTTP requests — so
 /// carving it a fourth, narrower capability set would buy nothing and
 /// would have to be kept in step by hand. What it additionally needs is
-/// the vocabulary its tools and hooks are typed against (`ext`), and
-/// enough of the standard library to decode arguments and encode a reply.
+/// the vocabulary its tools and hooks are typed against (`ext`,
+/// `ext/hook`), and the one capability that is an extension's alone:
+/// `ext/memory`, the durable cells under the reserved prefix the
+/// extension owns. A code-mode program has no such subtree — its name
+/// is the second segment of the key and it does not have one — so this
+/// is a capability that could not be on the workspace seam rather than
+/// one held back from it.
 ///
 /// ## Examples
 ///
@@ -549,7 +554,7 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// ```
 ///
 pub fn extension_cap_modules() -> List(String) {
-  list.append(default_cap_modules(), ["ext", "ext/hook"])
+  list.append(default_cap_modules(), ["ext", "ext/hook", "ext/memory"])
 }
 
 /// The standard-library modules on the extension seam: the shared pure

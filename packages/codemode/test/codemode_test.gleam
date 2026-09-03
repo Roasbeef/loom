@@ -565,7 +565,7 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
   // And the widening is real rather than an equality dressed up as one.
   assert list.length(extension) > list.length(workspace)
   assert list.contains(extension, "ext")
-  assert list.contains(extension, "ext")
+  assert list.contains(extension, "ext/memory")
 }
 
 /// The extension seam reaches no capability the workspace seam does not.
@@ -574,15 +574,18 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
 /// had picked up `cap/strand` on the way, which would put agent
 /// orchestration and effects in one program — the exact pairing the
 /// workspace/orchestration split exists to prevent. So the widening is
-/// pinned to the two names it adds: `ext` and `ext/hook`, the vocabulary
-/// an extension's tools and hooks are typed against, neither of which
-/// carries any authority at all.
-pub fn the_extension_seam_widens_by_exactly_two_names_test() {
+/// pinned to the three names it adds: `ext` and `ext/hook`, the
+/// vocabulary an extension's tools and hooks are typed against, neither
+/// of which carries any authority at all; and `ext/memory`, which
+/// carries the only authority on the list — durable cells under the
+/// reserved `ext/<name>/` prefix, on no other seam because no other
+/// seam's programs have an installed name to key a subtree by.
+pub fn the_extension_seam_widens_by_exactly_three_names_test() {
   let extra =
     list.filter(policy.extension_cap_modules(), fn(name) {
       !list.contains(policy.default_cap_modules(), name)
     })
-  assert extra == ["ext", "ext/hook"]
+  assert extra == ["ext", "ext/hook", "ext/memory"]
   assert !policy.contains(policy.extension(), "cap/strand")
 }
 
