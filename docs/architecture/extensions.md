@@ -101,10 +101,10 @@ seam.
 **Built.** The extension seam is the third of code mode's three, and
 unlike the first two it is deliberately *not* disjoint from its
 siblings. `extension_cap_modules` is `default_cap_modules()` widened by
-exactly one name, `ext` (`vet/policy.gleam:455`), and
+exactly one name, `ext` (`vet/policy.gleam:544`), and
 `extension_stdlib_modules` is the shared pure subset widened by
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json` (`vet/policy.gleam:482`).
+and `gleam/json` (`vet/policy.gleam:571`).
 
 Disjointness exists between the workspace and orchestration seams because
 an orchestrator and an effect program are different kinds of thing, and
@@ -1163,7 +1163,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1907`) with `start`, `invoke` (`codemode/satellite.gleam:2094`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:294`), `invoke_event` (`extension/hosts.gleam:411`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The three seams. `extension_cap_modules` (`vet/policy.gleam:455`) and `extension_stdlib_modules` (`vet/policy.gleam:482`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:440`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:544`) and `extension_stdlib_modules` (`vet/policy.gleam:571`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
