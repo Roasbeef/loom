@@ -43,6 +43,8 @@ import core/message
 import core/msgpack
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import tools/tool
 
@@ -298,6 +300,7 @@ pub fn an_extension_with_no_net_is_refused_before_anything_is_decoded_test() {
     seam.routing(
       seam.Extension(
         egress: seam.ReachesNothing(refusal: ext_policy.network_off("hello")),
+        memory: shut_memory(),
       ),
       over: refusing_router,
     )
@@ -346,6 +349,104 @@ pub fn a_header_map_that_is_not_text_is_refused_test() {
     ))
     as "a header value that is not text is refused"
   assert denial.code == seam.invalid_argument_code
+}
+
+// --- the memory arms --------------------------------------------------------
+
+pub fn remember_carries_the_key_and_the_value_to_the_door_test() {
+  let #(router, written, _read) = memory_recording(Ok(None))
+  let assert Ok(satellite.ServedHere(serve:)) =
+    router(a_request("ext.remember", memory_args("last", "{\"n\":1}")))
+    as "a well-formed remember is served here"
+  assert serve() == framing.CapOk(value: msgpack.MapValue([]))
+  assert written() == Ok(#("last", "{\"n\":1}"))
+}
+
+pub fn recall_answers_the_two_field_shape_test() {
+  // `found` first and `value` only when it is `True`, the shape
+  // `kv.get` set: a cell holding the document `null` is still a cell
+  // that was written, and one flag is what keeps the two apart.
+  let #(router, _written, _read) = memory_recording(Ok(Some("{\"n\":1}")))
+  let assert Ok(satellite.ServedHere(serve:)) =
+    router(a_request("ext.recall", key_args("last")))
+    as "a well-formed recall is served here"
+  assert serve()
+    == framing.CapOk(
+      value: msgpack.MapValue([
+        #(msgpack.StringValue("found"), msgpack.BoolValue(True)),
+        #(msgpack.StringValue("value"), msgpack.StringValue("{\"n\":1}")),
+      ]),
+    )
+
+  let #(empty, _wrote, _asked) = memory_recording(Ok(None))
+  let assert Ok(satellite.ServedHere(serve:)) =
+    empty(a_request("ext.recall", key_args("never")))
+    as "a recall of an unwritten cell is served here too"
+  assert serve()
+    == framing.CapOk(
+      value: msgpack.MapValue([
+        #(msgpack.StringValue("found"), msgpack.BoolValue(False)),
+      ]),
+    )
+}
+
+pub fn a_key_that_could_leave_the_subtree_is_refused_test() {
+  // The near half of the confinement. The far half — that the subtree
+  // is composed from the install record and never from the frame — is
+  // `client/extension/memory`'s, since that is where the key is built.
+  //
+  // Refused by the *plan*, so a malformed key costs no ordinal and no
+  // admission, and the door is never called at all.
+  let #(router, written, read) = memory_recording(Ok(None))
+  list.each(["../x", "a/b", "/", ""], fn(key) {
+    let assert Error(denial) = router(a_request("ext.recall", key_args(key)))
+      as "a key outside the shape of a leaf is refused"
+    assert denial.code == seam.invalid_argument_code
+    let assert Error(denial) =
+      router(a_request("ext.remember", memory_args(key, "{}")))
+      as "and refused on the write arm for the same reason"
+    assert denial.code == seam.invalid_argument_code
+  })
+  assert written() == Error(Nil)
+  assert read() == Error(Nil)
+
+  // A key past the bound, and one exactly at it, so the comparison is
+  // pinned rather than merely present.
+  let over = string.repeat("k", seam.max_key_length + 1)
+  let assert Error(denial) = router(a_request("ext.recall", key_args(over)))
+    as "a key past the bound is refused"
+  assert denial.code == seam.invalid_argument_code
+  let at = string.repeat("k", seam.max_key_length)
+  let assert Ok(_plan) = router(a_request("ext.recall", key_args(at)))
+    as "a key at the bound is not"
+}
+
+pub fn a_value_past_the_cell_bound_is_refused_test() {
+  let #(router, written, _read) = memory_recording(Ok(None))
+  let big = string.repeat("v", seam.max_value_bytes + 1)
+  let assert Error(denial) =
+    router(a_request("ext.remember", memory_args("last", big)))
+    as "a value larger than one cell may hold is refused"
+  assert denial.code == seam.invalid_argument_code
+  assert written() == Error(Nil)
+}
+
+pub fn a_door_refusal_reaches_the_extension_in_band_test() {
+  let #(router, _written, _read) =
+    memory_recording(
+      Error(satellite.CapDenial(
+        code: seam.memory_unavailable_code,
+        message: "the store is not up",
+      )),
+    )
+  let assert Ok(satellite.ServedHere(serve:)) =
+    router(a_request("ext.recall", key_args("last")))
+    as "the plan is claimed before the door is asked"
+  assert serve()
+    == framing.CapErr(
+      code: seam.memory_unavailable_code,
+      message: "the store is not up",
+    )
 }
 
 pub fn every_serviced_cap_routes_and_nothing_else_does_test() {
@@ -529,6 +630,21 @@ fn refusing_router(
   Error(satellite.CapDenial(code: "beneath", message: "the router beneath"))
 }
 
+// A memory arm that answers nothing, for the tests whose subject is the
+// egress: an arm that could answer would make those tests depend on a
+// store they never mention.
+fn shut_memory() -> seam.Memory {
+  let unavailable =
+    satellite.CapDenial(
+      code: seam.memory_unavailable_code,
+      message: "no store in this test",
+    )
+  seam.Memory(
+    remember: fn(_key, _value) { Error(unavailable) },
+    recall: fn(_key) { Error(unavailable) },
+  )
+}
+
 // An extension router over a fake egress, plus a way to read back the one
 // `Ask` it was handed. A process-free recorder: the served closure runs
 // on this process in these tests, so a mutable cell would be the only
@@ -544,10 +660,56 @@ fn recording(
           process.send(seen, ask)
           answer(ask)
         }),
+        memory: shut_memory(),
       ),
       over: refusing_router,
     )
   #(router, fn() { process.receive(seen, within: 0) })
+}
+
+// An extension router over a fake memory door, plus a way to read back
+// what the door was asked to do. The same process-free recorder shape
+// `recording` uses, for the same reason.
+fn memory_recording(
+  answer: Result(Option(String), satellite.CapDenial),
+) -> #(
+  satellite.CapRouter,
+  fn() -> Result(#(String, String), Nil),
+  fn() -> Result(String, Nil),
+) {
+  let wrote = process.new_subject()
+  let read = process.new_subject()
+  let router =
+    seam.routing(
+      seam.Extension(
+        egress: seam.ReachesNothing(refusal: ext_policy.network_off("m")),
+        memory: seam.Memory(
+          remember: fn(key, value) {
+            process.send(wrote, #(key, value))
+            result.replace(answer, Nil)
+          },
+          recall: fn(key) {
+            process.send(read, key)
+            answer
+          },
+        ),
+      ),
+      over: refusing_router,
+    )
+  #(router, fn() { process.receive(wrote, within: 0) }, fn() {
+    process.receive(read, within: 0)
+  })
+}
+
+fn key_args(key: String) -> msgpack.MsgPackValue {
+  msgpack.MapValue([#(msgpack.StringValue("key"), msgpack.StringValue(key))])
+}
+
+fn memory_args(key: String, value: String) -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("key"), msgpack.StringValue(key)),
+    #(msgpack.StringValue("value"), msgpack.StringValue(value)),
+  ])
 }
 
 fn a_request(cap: String, args: msgpack.MsgPackValue) -> satellite.CapRequest {

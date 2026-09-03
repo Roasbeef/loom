@@ -70,6 +70,7 @@ import broker/policy.{type SandboxPolicy}
 import client/codemode
 import client/extension/hosts.{type Hosts}
 import client/extension/manifest.{type Manifest}
+import client/extension/memory.{type Door}
 import client/extension/policy as ext_policy
 import client/extension/record.{type Record}
 import client/extension/seam
@@ -114,6 +115,16 @@ pub type Config {
     /// session's supervisor, after this configuration is assembled, and a
     /// captured subject would go stale the first time it restarted.
     hosts: Hosts,
+    /// The session's durable memory door: how `ext.remember` and
+    /// `ext.recall` reach this session's own store.
+    ///
+    /// A door rather than a runtime, on the reason
+    /// `client/extension/memory.Wiring` states — the runtime does not
+    /// exist until `api.open` has returned the registry these tools are
+    /// built for — and a `Door` rather than an `Option(Door)` because a
+    /// host with no session hands over `memory.shut`, which refuses in
+    /// band with a sentence instead of leaving the capability unrouted.
+    memory: Door,
     /// Reads an environment variable by name, for the secret bindings.
     ///
     /// Injected rather than read here so that this module holds no
@@ -670,7 +681,10 @@ fn router(
   at: hosts.Coordinates,
 ) -> satellite.CapRouter {
   seam.routing(
-    seam.Extension(egress: reaching(config, written, decoded, egress)),
+    seam.Extension(
+      egress: reaching(config, written, decoded, egress),
+      memory: remembering(config.memory, written),
+    ),
     over: workspace.routing(bridge(config, at), over: satellite.default_router),
   )
 }
@@ -722,6 +736,40 @@ fn reaching(
         |> result.map(answered)
         |> result.map_error(ext_policy.denial)
       })
+  }
+}
+
+// How `ext.remember` and `ext.recall` are answered, with this
+// extension's own name closed over.
+//
+// The name is the record's — what an operator installed — and it is
+// bound here, once, for both arms. Nothing on the capability channel
+// contributes to it, so the subtree an extension reaches is a fact about
+// the install rather than about the frame, and `a` cannot read `ext/b/…`
+// however it words the request.
+fn remembering(door: Door, written: Record) -> seam.Memory {
+  let owner = written.name
+  seam.Memory(
+    remember: fn(key, value) {
+      door.remember(memory.Cell(extension: owner, key:), value)
+      |> result.map_error(memory_denial)
+    },
+    recall: fn(key) {
+      door.recall(memory.Cell(extension: owner, key:))
+      |> result.map_error(memory_denial)
+    },
+  )
+}
+
+// A memory refusal as the in-band denial the extension reads. Both arms
+// are named rather than caught, so a new refusal fails to compile here
+// rather than becoming a store outage the author is told to retry.
+fn memory_denial(refusal: memory.Refusal) -> satellite.CapDenial {
+  case refusal {
+    memory.NotJson(reason:) ->
+      satellite.CapDenial(code: seam.invalid_argument_code, message: reason)
+    memory.Unavailable(reason:) ->
+      satellite.CapDenial(code: seam.memory_unavailable_code, message: reason)
   }
 }
 
