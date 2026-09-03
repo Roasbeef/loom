@@ -307,10 +307,7 @@ pub fn an_opted_out_host_runs_no_pass_test() {
   let configured =
     serve.Settings(
       ..settings(root, "a.db", quiet_gateway()),
-      memory: distillpass.Options(
-        cadence: distillpass.DistillsOff,
-        wall_ms: distillpass.default_wall_ms,
-      ),
+      memory: distillpass.no_pass(),
     )
   let assert Ok(booted) = serve.boot(configured) as "the server must boot"
   assert booted.memory_pass == None
@@ -328,6 +325,8 @@ pub fn the_memory_table_decodes_test() {
   assert distillpass.parse("") == Ok(distillpass.default_options())
   assert distillpass.parse("[memory]\ndistill = \"on-boot\"\n")
     == Ok(distillpass.default_options())
+  assert distillpass.parse("[memory]\ndistill = \"off\"\n")
+    == Ok(distillpass.no_pass())
   assert distillpass.parse("[memory]\ndistill = \"off\"\ndistill_wall_ms = 5\n")
     == Ok(distillpass.Options(cadence: distillpass.DistillsOff, wall_ms: 5))
 

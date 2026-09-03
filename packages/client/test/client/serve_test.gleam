@@ -139,10 +139,7 @@ fn settings_under(root: String) -> serve.Settings {
     // memory store this test asserts about and spend the scripted
     // provider's turns. `memory_lifecycle_test` is where the shipped
     // producer is exercised.
-    memory: distillpass.Options(
-      cadence: distillpass.DistillsOff,
-      wall_ms: distillpass.default_wall_ms,
-    ),
+    memory: distillpass.no_pass(),
   )
 }
 

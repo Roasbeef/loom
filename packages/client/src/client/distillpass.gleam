@@ -143,6 +143,23 @@ pub fn default_options() -> Options {
   Options(cadence: DistillsOnBoot, wall_ms: default_wall_ms)
 }
 
+/// The opted-out posture: no worker, no pass, no model turn.
+///
+/// A named constructor rather than the record written out, because a
+/// host that wants no distillation says one thing — the deadline it
+/// carries is meaningless and every site that spelled it out had to
+/// pick a number anyway.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distillpass.no_pass().cadence == distillpass.DistillsOff
+/// ```
+///
+pub fn no_pass() -> Options {
+  Options(cadence: DistillsOff, wall_ms: default_wall_ms)
+}
+
 /// Decodes the `[memory]` table out of a `loom.toml` document.
 ///
 /// Total, and strict about what it will accept: an unknown key in the
