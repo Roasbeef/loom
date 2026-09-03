@@ -102,7 +102,7 @@ seam.
 unlike the first two it is deliberately *not* disjoint from its
 siblings. `extension_cap_modules` is `default_cap_modules()` widened by
 exactly three names — `ext`, `ext/hook` and `ext/memory`
-(`vet/policy.gleam:458`) — and
+(`vet/policy.gleam:463`) — and
 `extension_stdlib_modules` is the shared pure subset widened by
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
 and `gleam/json` (`vet/policy.gleam:571`).
@@ -135,7 +135,7 @@ orchestration, putting the disk and the lineage in one program after all.
 The five extra standard-library names live on a list of their own so that
 widening them widens exactly one seam, and
 `the_extension_stdlib_list_admits_no_capability_test`
-(`codemode/test/codemode_test.gleam:591`) holds that list to carrying no
+(`codemode/test/codemode_test.gleam:596`) holds that list to carrying no
 authority.
 
 Two consequences are worth stating. **The extension seam sees no
@@ -533,7 +533,7 @@ satellite to boot and a tool definition that can only fail still costs a
 place in the provider's cached prefix on every request.
 
 **Everything else becomes a contribution.** `dispatch.tools`
-(`extension/dispatch.gleam:171`) turns the record and the manifest into
+(`extension/dispatch.gleam:185`) turns the record and the manifest into
 `tools.Tool` values, and the boot appends one
 `Contribution(Extension(name), tools)` after the built-ins. From there
 the registry knows nothing special: an extension tool is dispatched by
@@ -546,10 +546,10 @@ Phase 2 launched a jailed `erl` per call and destroyed it on the way out;
 phase 3 keeps one host per installed extension, started lazily on that
 extension's first use (`hosts.invoke` at
 `client/extension/hosts.gleam:294`, over `dispatch.hosting` at
-`extension/dispatch.gleam:391`). No build happens — that was the
+`extension/dispatch.gleam:394`). No build happens — that was the
 install's job — and now no node launch happens either, except the first
 time. The declared tool timeout is still clamped: `within`
-(`extension/dispatch.gleam:667`) takes the minimum of the manifest's
+(`extension/dispatch.gleam:670`) takes the minimum of the manifest's
 `timeout_ms` and the operator's `max_within_ms`, because an install is
 not a way to raise how long this host will hold a strand.
 
@@ -579,7 +579,7 @@ node is not. A manifest with no `[net]` table is `ReachesNothing`, refused
 `network_off` rather than refused against an allowlist nobody wrote.
 
 **The answer is settled into a `ToolOutcome`.** `settle`
-(`extension/dispatch.gleam:807`) reads what the `hook_result` carried —
+(`extension/dispatch.gleam:832`) reads what the `hook_result` carried —
 content blocks and an optional `terminate` — or, when there is no answer
 at all, turns a `hosts.HookFailure` into a sentence the model can act on:
 a refusal is text the extension wrote, a crash is the extension's bug,
@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2194`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2200`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -863,7 +863,7 @@ value in unnoticed —
 this document listed it as owed: `policy.egress_for`
 (`extension/policy.gleam:142`) turns a `manifest.Net` into an
 `egress.Policy`, the extension seam's `net.request` arm serves it
-(`routing` at `extension/seam.gleam:209` — `cap/net.gleam:71` marshals
+(`routing` at `extension/seam.gleam:217` — `cap/net.gleam:71` marshals
 and labels, and this is what answers), and `policy.ceilings`
 (`extension/policy.gleam:184`) is the `requests_per_call` ledger, now
 tallied per invocation rather than per node. Egress has two production
@@ -1324,7 +1324,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` — the one composition of `ext/<name>/<key>` — `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
-| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:171`), `hosting` (`extension/dispatch.gleam:391`), the timeout clamp `within` (`extension/dispatch.gleam:667`), the jail's `requirements` (`extension/dispatch.gleam:298`), and `settle` (`extension/dispatch.gleam:807`). |
+| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:670`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:832`). |
 | `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1372`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:191`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
