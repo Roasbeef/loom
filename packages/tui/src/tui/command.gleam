@@ -117,7 +117,17 @@ pub type Suggestion {
 
 /// Returns prefix-matched slash commands for an incomplete command word.
 pub fn suggestions(input: String) -> List(Suggestion) {
-  let input = string.trim(input)
+  let input = string.trim_start(input)
+  case input {
+    // A command with a closed argument vocabulary keeps the palette open
+    // past the space and offers the words themselves, so the operator
+    // never has to remember them; Tab completes one and Enter submits.
+    "/effort " <> partial -> level_suggestions(string.trim(partial))
+    _ -> word_suggestions(string.trim(input))
+  }
+}
+
+fn word_suggestions(input: String) -> List(Suggestion) {
   case string.starts_with(input, "/"), string.contains(input, " ") {
     True, False ->
       all_suggestions()
@@ -126,6 +136,25 @@ pub fn suggestions(input: String) -> List(Suggestion) {
       })
     _, _ -> []
   }
+}
+
+/// The reasoning levels `/effort` completes, with what each one means.
+/// The vocabulary is the server's (`set_config` validates it); the
+/// adapters fold its seven steps onto whatever their dialect offers.
+pub const effort_levels = [
+  #("off", "no reasoning requested"),
+  #("minimal", "the smallest budget the model offers"),
+  #("low", "a small reasoning budget"),
+  #("medium", "a medium reasoning budget"),
+  #("high", "a large reasoning budget"),
+  #("xhigh", "beyond high where the model offers it"),
+  #("max", "the largest budget the model offers"),
+]
+
+fn level_suggestions(partial: String) -> List(Suggestion) {
+  effort_levels
+  |> list.filter(fn(level) { string.starts_with(level.0, partial) })
+  |> list.map(fn(level) { Suggestion("/effort " <> level.0, level.1, False) })
 }
 
 /// Moves a slash palette selection and wraps at either edge.

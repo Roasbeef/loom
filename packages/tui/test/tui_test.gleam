@@ -344,6 +344,15 @@ pub fn slash_command_palette_filters_and_completes_test() {
   assert command.selected(suggestions, 1) == Some("/strand ")
   assert command.suggestions("ordinary prompt") == []
   assert command.suggestions("/strand main") == []
+  // A closed argument vocabulary keeps the palette open past the space.
+  assert list.map(command.suggestions("/effort "), fn(s) { s.command })
+    == [
+      "/effort off", "/effort minimal", "/effort low", "/effort medium",
+      "/effort high", "/effort xhigh", "/effort max",
+    ]
+  assert list.map(command.suggestions("/effort hi"), fn(s) { s.command })
+    == ["/effort high"]
+  assert command.suggestions("/effort nope") == []
   assert tui.command_palette_escape(keys.Escape)
   assert !tui.command_palette_escape(keys.Char("x"))
 }
