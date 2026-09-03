@@ -114,6 +114,11 @@ pub const memory_unavailable_code = "memory_unavailable"
 /// durable register key, and a store whose key size is whatever an
 /// extension felt like is a store with no shape. Generous enough that no
 /// honest name reaches it: this is a name an author types, not a digest.
+///
+/// The unit differs from `max_value_bytes`'s deliberately. A key is a
+/// name an author writes down and reads back, so what they count is
+/// characters they can see; a value is opaque text whose whole cost to
+/// the store is its bytes.
 pub const max_key_length = 128
 
 /// The largest value one cell may hold, in bytes of JSON text.
@@ -375,7 +380,7 @@ pub fn checked_key(key: String) -> Result(String, CapDenial) {
       Error(invalid(
         "`key` is longer than the "
         <> int.to_string(max_key_length)
-        <> " characters a cell name may have",
+        <> " graphemes a cell name may have",
       ))
     },
   )
