@@ -49,6 +49,7 @@
 import broker/exec
 import client/catalog
 import client/codemode
+import client/distillpass
 import client/gateway as hub
 import client/protocol
 import client/schedule
@@ -638,5 +639,13 @@ fn settings() -> serve.Settings {
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     deactivated_tools: [],
+    // No lifecycle distillation in this rig: the pass would open the
+    // memory store this test asserts about and spend the scripted
+    // provider's turns. `memory_lifecycle_test` is where the shipped
+    // producer is exercised.
+    memory: distillpass.Options(
+      cadence: distillpass.DistillsOff,
+      wall_ms: distillpass.default_wall_ms,
+    ),
   )
 }

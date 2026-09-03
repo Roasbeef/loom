@@ -211,10 +211,12 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // different tables, not a typo for each other: the repeated
   // `[[schedule]]` an operator writes one of per heartbeat, and the
   // singular `[schedules]` policy table saying whether the model may
-  // write any of its own.
+  // write any of its own. `memory` is `client/distillpass`'s: whether
+  // this host runs the distillation pass on boot, and how long one pass
+  // may take.
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["models", "roles", "mcp", "rule", "schedule", "schedules"],
+    ["models", "roles", "mcp", "rule", "schedule", "schedules", "memory"],
     "the top level",
   ))
   use model_tables <- result.try(
