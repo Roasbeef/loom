@@ -149,9 +149,11 @@ imported only by tests and no release entry point reached it. That was
 true when written and is false since #208 (2026-09-03). `client/serve`
 now starts `client/distillpass` at every ordinary boot, the release
 smoke proves the pass ran with no toolchain on `PATH`, and **#149** is
-closed. **#124**, the unrecoverable cascade, is still open and is the one
-memory item left. Memory now has its architecture page,
-`docs/architecture/memory.md`.
+closed. **#124**, the unrecoverable cascade, closed the same day (#212):
+a cascade that drops rows now rewinds every recorded source cursor and
+the notes cursor in the head-replacing transaction, so the next pass
+rebuilds. Memory is complete against its plan and has its architecture
+page, `docs/architecture/memory.md`.
 
 ---
 
@@ -160,7 +162,7 @@ memory item left. Memory now has its architecture page,
 In this order. The first item is a body of work; the rest are smaller and
 can be interleaved by whoever is not on it.
 
-### 1. Memory: the producer runs; the cascade is still owed
+### 1. Memory is done; what is left is bookkeeping and two decisions
 
 **#149 is built and merged** (#208). Distillation now runs in
 the shipped session lifecycle: `client/distillpass` is a supervised
@@ -183,12 +185,14 @@ the memory session's ten-minute lease, so a boot inside that window
 logs `memory.distill.failed` and distils nothing; the store is
 consistent, and the cost is freshness in minutes rather than a lost row.
 
-**#124 is what remains**, and it is now the only thing between memory
-and "done": an emptying cascade over a live head must leave the pipeline
-able to rebuild, which today it cannot — the surviving sources keep
-their high-water cursors and their contribution becomes unrecoverable.
-`distill_test`'s `an_emptying_cascade_loses_the_surviving_sources` pins
-the loss, and the memory page names it as open.
+**#124 is closed too** (#212). When a cascade drops rows, the same
+compare-and-set that replaces the head rewinds every source cursor the
+pipeline has recorded and the notes cursor, so the next pass re-extracts
+everything still readable; a cascade over a session nothing names stays
+a no-op, and `--dry-run` previews the counts without writing.
+`distill_test`'s `an_emptying_cascade_rewinds_so_the_next_pass_rebuilds`
+pins the rebuild. Nothing in memory is owed; the items below are what
+the tree waits on, and the first two are the owner's.
 
 Note what this does *not* do: it does not touch extension memory
 (`ext.remember`/`ext.recall` are cells an extension owns, not the
@@ -197,9 +201,10 @@ distillation pipeline) and it does not build memory stage M3.
 ### 2. Close the phase-1 gate
 
 Small, and it is what the milestone's closing criterion actually asks for.
-Post the CI and Landlock measurements on **#99** and **#62** and close
-them, re-scope **#155** onto the nightly `seeds 1001..` band, and set
-`gate-linux` as the required check (**#1**). The macOS reds worth a look
+**#99** and **#62** are closed with their measurements and **#155** is
+re-scoped onto the nightly `seeds 1001..` band (2026-09-03). What is left
+is the one owner action: set `gate-linux` as the required check
+(**#1**), which needs repository admin. The macOS reds worth a look
 first are the two flakes this week's PRs hit: `writer_publish_test`
 sending to an unregistered name, and the TUI `bootstrap_test` launch
 lock; neither is the interleave stall.
