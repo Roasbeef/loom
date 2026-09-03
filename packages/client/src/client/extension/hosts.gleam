@@ -474,11 +474,12 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
       expires_at:,
       reply_with:,
     ) ->
-      case abandoned(state, expires_at) {
-        // The caller stopped waiting while this sat in the mailbox.
-        // Answering rather than dropping silently costs nothing — the
-        // send to a dead subject is a no-op — and keeps every path out
-        // of this actor an answer.
+      case abandoned(state, expires_at, deadline_ms) {
+        // The caller stopped waiting while this sat in the mailbox, or
+        // will have stopped before an invocation started now could
+        // answer. Answering rather than dropping silently costs
+        // nothing — the send to a dead subject is a no-op — and keeps
+        // every path out of this actor an answer.
         True -> {
           process.send(
             reply_with,
@@ -507,14 +508,21 @@ fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
   }
 }
 
-// Whether the caller of a queued invocation has already stopped waiting.
+// Whether the caller of a queued invocation has stopped waiting, or will
+// have by the time an invocation started now could answer. Starting one
+// that cannot finish inside the caller's window is the ghost run this
+// check exists to prevent, so the test is on the answer's earliest
+// arrival rather than on the start; a first-use launch is not counted,
+// which is the slack the seam's documented bound already grants. The
+// comparison is inclusive because the caller's timer fires on the same
+// tick, and answering `Gone` a millisecond early is the safe direction.
 //
 // The clock is the session's, so a simulated session decides this on its
 // own logical time rather than on the wall — the same reason every other
 // deadline in this tree is read through one.
-fn abandoned(state: State, expires_at: Int) -> Bool {
+fn abandoned(state: State, expires_at: Int, deadline_ms: Int) -> Bool {
   let #(now, _advanced) = clock.read(state.clock)
-  now > expires_at
+  now + deadline_ms >= expires_at
 }
 
 // One invocation, performed on the actor's own timeline.
