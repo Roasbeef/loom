@@ -173,8 +173,9 @@ Three things follow.
    modules the emitted native MFAs are `erlang:element/2`,
    `erlang:get_module_info/1`, `erlang:get_module_info/2` and
    `maps:to_list/1` — a small, boring set a loader can allowlist by
-   triple. This is the finding #32 inherits, and it is the reason the
-   loader's cost is not `code:load_binary`.
+   triple. This is the first of the two findings #32 inherits, and it is
+   the reason the loader's cost is not `code:load_binary`. The second is
+   module-name shadowing, under "Attack surface considered" below.
 
 ## Attack surface considered
 
@@ -215,6 +216,19 @@ Three things follow.
   decoded totally, and cannot name a module, a capability, or a seam. The
   hook bus drops a host that dies and logs the reason rather than
   treating silence as assent.
+- **An extension module named after a harness module.** `vet/package`'s
+  `shadow_refusals` refuses a package's own module name only when that
+  name is already on the seam's allowlist — the case it was written for,
+  where `src/cap/fs.gleam` would become the `cap/fs` a sibling's import
+  resolves to. `runtime/writer` is not on any seam, so an extension may
+  legally ship `src/runtime/writer.gleam`, and `widen` then admits its
+  siblings importing it. That is inert while every body is jailed: the
+  satellite is a separate VM holding no harness beams, so the name
+  collides with nothing. A resident loader would be putting a beam named
+  `runtime@writer` into the harness code server, where a collision is a
+  *swap* rather than a refused import. Handed to #32 alongside the
+  per-MFA finding; no machinery now, because `codemode` is pure and
+  cannot walk the tree to learn which names the harness ships.
 - **A future refactor.** The one attack the tree cannot be inspected
   against, and the reason every check above walks the source tree instead
   of comparing against a written list.
