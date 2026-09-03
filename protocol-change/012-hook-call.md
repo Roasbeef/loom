@@ -1,6 +1,6 @@
 # protocol-change/012 — `hook_call` and `hook_result`: the harness calls into a satellite
 
-**Status**: PROPOSED 2026-09-02 · **Affects**: Part 1.4 frame kinds ·
+**Status**: ACCEPTED 2026-09-02 · **Affects**: Part 1.4 frame kinds ·
 **Raised by**: ADR-007, `docs/design-notes/extension-architecture.md`
 Decision 3 · **Implements**: extension phase 3 (persistent satellite,
 tier-J hooks)
@@ -123,5 +123,22 @@ hook_result.body := { ok: true, value: msgpack }
 
 ## Decision
 
-Pending. Phase 3 starts when this is accepted; phases 1 and 2 do not
-depend on it.
+**Accepted 2026-09-02, and implemented in the same change.** Both kinds
+are on `broker/framing.Body` as `HookCall(token, kind, name, args,
+deadline_ms)` and `HookResult(outcome)`, decoded strictly — exact key
+set, every field required, no `usage` on a hook result — and round-
+tripped beside every other kind in `broker/framing_test`. Spec §1.4's
+frozen `kinds` list carries both and points here.
+
+Phase 3 wave A built the harness end (`codemode/satellite`'s `Host`,
+with the one-slot pending rule, the per-invocation token and the
+deadline-then-destroy behaviour) and the satellite end
+(`cap/runtime.serve` plus `ext/runtime.serve`'s loop), and replaced
+phase 1's `ext.call` pull outright: `cap/ext` is deleted rather than
+kept behind a flag, because two ways for a satellite to learn its work
+is two token stories. The per-event `args`/`value` shapes named as open
+above are fixed by wave B, which owns the hook bus; wave A carries one
+event end to end (`session_start`) and answers an event with no handler
+`CapErr("unhandled", …)`.
+
+Phases 1 and 2 did not depend on this and did not change.

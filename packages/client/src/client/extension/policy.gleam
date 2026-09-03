@@ -52,9 +52,6 @@ import gleam/string
 /// The capability a jailed extension reaches the network through.
 pub const net_cap = "net.request"
 
-/// The capability a satellite asks for its call with, once.
-pub const call_cap = "ext.call"
-
 /// The most a single response may occupy in the harness, whatever the
 /// manifest asks for.
 ///
@@ -99,18 +96,6 @@ pub const failed_code = "net_failed"
 /// ceiling message says exactly that. Sorting it into `NetDenied` is what
 /// stops a retry loop — a `NetFailed` reads as "try again".
 pub const ceiling_code = "policy"
-
-/// The code a second `ext.call` in one execution travels under.
-///
-/// `cap/ext` maps every denial to `CallDenied(code, message)` and has no
-/// code vocabulary of its own, so this one is diagnostic rather than
-/// load-bearing. The bound it names is real: a satellite is launched to
-/// serve one call, and a second request would be a second admission
-/// against the same token.
-pub const call_ceiling_code = "ext_call_ceiling"
-
-/// How many times one execution may ask which call it is serving.
-pub const call_admissions = 1
 
 /// How long one brokered request may take, end to end: connect, TLS,
 /// every hop and the body.
@@ -193,7 +178,7 @@ pub fn egress_for(net: Net, trust trust: egress.Trust) -> Egress {
 /// ## Examples
 ///
 /// ```gleam
-/// assert list.length(policy.ceilings(manifest.no_net())) == 2
+/// assert list.length(policy.ceilings(manifest.no_net())) == 1
 /// ```
 ///
 pub fn ceilings(net: Net) -> List(CapCeiling) {
@@ -202,11 +187,6 @@ pub fn ceilings(net: Net) -> List(CapCeiling) {
       cap: net_cap,
       admissions: net.requests_per_call,
       code: ceiling_code,
-    ),
-    CapCeiling(
-      cap: call_cap,
-      admissions: call_admissions,
-      code: call_ceiling_code,
     ),
   ]
 }

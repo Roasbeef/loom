@@ -148,6 +148,7 @@ import gleam/string
 import simplifile
 import tools/tool.{type Collected}
 import weft
+import weft/state_machine as sm
 
 /// The frame kind the satellite uses for the terminal outcome (J3a).
 pub const outcome_kind = "outcome"
@@ -575,7 +576,7 @@ fn dispatch_launch(
   token_path: String,
   config: SatelliteConfig,
   launch: Launcher,
-  host: Host,
+  host: RunHost,
   now: Int,
   result_subject: Subject(Run),
 ) -> Run {
@@ -606,7 +607,7 @@ fn dispatch_launch(
 // gone before it could take the connection (CH-F3).
 fn await_result(
   phase: PhaseIdentity,
-  host: Host,
+  host: RunHost,
   connection: CapConnection,
   now: Int,
   result_subject: Subject(Run),
@@ -640,10 +641,11 @@ fn await_result(
   }
 }
 
-// Whether the host took ownership of the connection before it stopped.
+// Whether the single-shot host took ownership of the connection before it
+// stopped.
 type HandOver {
-  HostTook
-  HostGone
+  RunHostTook
+  RunHostGone
 }
 
 // Hands the launched node's connection to the host, and destroys it here if
@@ -658,13 +660,13 @@ type HandOver {
 // host's death are ordered signals from the same process, so exactly one of
 // them arrives first, and a death that beats the acknowledgement means the
 // host never took the connection (CH-F3).
-fn hand_over(host: Host, connection: CapConnection) -> Option(Report) {
+fn hand_over(host: RunHost, connection: CapConnection) -> Option(Report) {
   let ack = process.new_subject()
   let monitor = process.monitor(host.pid)
   let outcome =
     process.new_selector()
-    |> process.select_map(ack, fn(_nil) { HostTook })
-    |> process.select_specific_monitor(monitor, fn(_down) { HostGone })
+    |> process.select_map(ack, fn(_nil) { RunHostTook })
+    |> process.select_specific_monitor(monitor, fn(_down) { RunHostGone })
   process.send(
     host.commands,
     Connected(send: connection.send, destroy: connection.destroy, ack:),
@@ -672,11 +674,11 @@ fn hand_over(host: Host, connection: CapConnection) -> Option(Report) {
   let handed = case process.selector_receive(outcome, hand_over_timeout_ms) {
     // The host is gone, so it will never destroy the node — nor report
     // what confined it. Both fall to the caller here.
-    Ok(HostGone) -> Some(connection.destroy())
+    Ok(RunHostGone) -> Some(connection.destroy())
 
     // Taken, or the host is alive but wedged; either way it owns `destroy`
     // and destroying here as well would reap the node twice.
-    Ok(HostTook) | Error(Nil) -> None
+    Ok(RunHostTook) | Error(Nil) -> None
   }
   process.demonitor_process(monitor)
   handed
@@ -684,12 +686,16 @@ fn hand_over(host: Host, connection: CapConnection) -> Option(Report) {
 
 // --- the host actor -------------------------------------------------------
 
-// The started host: `commands` for internal messages, `wire` for the
-// launcher's inbound bytes, and the actor's pid, which `run_launched`
-// monitors so a host that stopped before taking the connection does not
-// leave the node unreaped.
-type Host {
-  Host(pid: Pid, commands: Subject(Msg), wire: Subject(WireIn))
+// The started single-shot host: `commands` for internal messages, `wire`
+// for the launcher's inbound bytes, and the actor's pid, which
+// `run_launched` monitors so a host that stopped before taking the
+// connection does not leave the node unreaped.
+//
+// `RunHost` rather than `Host` because `Host` is the *persistent* one
+// further down, which a session keeps for many invocations. The two are
+// different objects with different lifetimes and the names say so.
+type RunHost {
+  RunHost(pid: Pid, commands: Subject(Msg), wire: Subject(WireIn))
 }
 
 /// The host actor's message set. Opaque: only this module constructs it,
@@ -765,7 +771,7 @@ fn start_host(
   vault: token.Vault,
   token_path: String,
   result_subject: Subject(Run),
-) -> Result(Host, actor.StartError) {
+) -> Result(RunHost, actor.StartError) {
   let #(_now, clock) = clock.read(config.clock)
   actor.new_with_initialiser(host_init_timeout_ms, fn(commands) {
     let wire = process.new_subject()
@@ -811,7 +817,7 @@ fn start_host(
   |> actor.start
   |> result.map(fn(started) {
     let #(commands, wire) = started.data
-    Host(pid: started.pid, commands:, wire:)
+    RunHost(pid: started.pid, commands:, wire:)
   })
 }
 
@@ -1089,7 +1095,17 @@ fn dispatch_cap_call(
   let inflight =
     dict.insert(state.inflight, id, InFlight(handle: None, cancelled: False))
   let admitted = dict.insert(state.admitted, cap, already + 1)
-  spawn_worker(state.commands, state.broker, plan, id, state.call_timeout_ms)
+  spawn_worker(
+    Settling(
+      started: fn(handle) {
+        process.send(state.commands, CapStarted(id:, handle:))
+      },
+      done: fn(outcome) { process.send(state.commands, CapDone(id:, outcome:)) },
+    ),
+    state.broker,
+    plan,
+    state.call_timeout_ms,
+  )
   State(..state, inflight:, admitted:)
 }
 
@@ -1149,42 +1165,46 @@ fn budget_denial(max_outstanding: Int) -> CapOutcome {
 // executor process group to revoke — it runs to its own end and its
 // answer is emitted, which a program that cancelled has already stopped
 // listening for.
+// How one worker reports back. Two callbacks rather than a subject and a
+// frame id, because there are two hosts now — the single-shot one above
+// and the persistent one below — whose message types are different and
+// whose bookkeeping is not this function's business.
+type Settling {
+  Settling(started: fn(broker.CallHandle) -> Nil, done: fn(CapOutcome) -> Nil)
+}
+
 fn spawn_worker(
-  host: Subject(Msg),
+  settling: Settling,
   broker: Broker,
   plan: CapPlan,
-  id: Int,
   call_timeout_ms: Int,
 ) -> Nil {
   process.spawn_unlinked(fn() {
     case plan {
       ClearedCall(spec:, render:) ->
-        run_collector(host, broker, spec, render, id, call_timeout_ms)
-      ServedHere(serve:) -> run_service(host, serve, id, call_timeout_ms)
+        run_collector(settling, broker, spec, render, call_timeout_ms)
+      ServedHere(serve:) -> run_service(settling, serve, call_timeout_ms)
     }
   })
   Nil
 }
 
 fn run_collector(
-  host: Subject(Msg),
+  settling: Settling,
   broker: Broker,
   spec: CallSpec,
   render: fn(Collected) -> CapOutcome,
-  id: Int,
   call_timeout_ms: Int,
 ) -> Nil {
   let events = process.new_subject()
   case broker.clear_call(broker, spec, events:, waiting: clear_timeout_ms) {
-    Error(refusal) ->
-      process.send(host, CapDone(id:, outcome: refusal_outcome(refusal)))
+    Error(refusal) -> settling.done(refusal_outcome(refusal))
     Ok(handle) -> {
-      process.send(host, CapStarted(id:, handle:))
+      settling.started(handle)
       report_collected(
-        host,
+        settling,
         broker,
         handle,
-        id,
         render,
         events,
         call_timeout_ms,
@@ -1214,20 +1234,18 @@ fn run_collector(
 // consulting the host's `cancelled` bookkeeping, which lives on a
 // process this one is not.
 fn report_collected(
-  host: Subject(Msg),
+  settling: Settling,
   broker: Broker,
   handle: broker.CallHandle,
-  id: Int,
   render: fn(Collected) -> CapOutcome,
   events: Subject(broker.CallEvent),
   call_timeout_ms: Int,
 ) -> Nil {
   case tool.collect_events(events, waiting: call_timeout_ms) {
-    Ok(collected) ->
-      process.send(host, CapDone(id:, outcome: render(collected)))
+    Ok(collected) -> settling.done(render(collected))
     Error(Nil) -> {
       broker.cancel(broker, handle)
-      process.send(host, CapDone(id:, outcome: unsettled_outcome()))
+      settling.done(unsettled_outcome())
     }
   }
 }
@@ -1254,9 +1272,8 @@ fn report_collected(
 // the time this function reads `Abandoned` off the account there is
 // nothing left from the run that could still answer late.
 fn run_service(
-  host: Subject(Msg),
+  settling: Settling,
   serve: fn() -> CapOutcome,
-  id: Int,
   call_timeout_ms: Int,
 ) -> Nil {
   let served = fn() -> Result(CapOutcome, Nil) { Ok(serve()) }
@@ -1278,7 +1295,7 @@ fn run_service(
     | [weft.CancellationUnconfirmed(..)] -> unsettled_outcome()
     [] | [_, _, ..] -> unsettled_outcome()
   }
-  process.send(host, CapDone(id:, outcome:))
+  settling.done(outcome)
 }
 
 fn served_died_outcome() -> CapOutcome {
@@ -1814,5 +1831,1265 @@ fn budget_text(refusal: budget.Refusal) -> String {
       <> " is reached"
     budget.DeadlinePassed(deadline_ms:) ->
       "the pooled wall deadline " <> int.to_string(deadline_ms) <> " has passed"
+  }
+}
+
+// --- the persistent host --------------------------------------------------
+//
+// Everything above serves one execution: a node is launched, a program
+// runs, an `outcome` frame ends it, and the node is destroyed. An
+// installed extension is the other shape (ADR-007 Decision 3,
+// `protocol-change/012`). Its artifact is compiled once, at install, and
+// then invoked many times over a session, so paying a node boot per tool
+// call is pure waste and keeping actors alive between calls is impossible.
+//
+// A `Host` is that node held open. It launches through the same
+// `Launcher`, answers `cap_call`s through the same routers, and is
+// destroyed through the same `destroy`; what it adds is the reverse
+// direction — a `hook_call` out, a `hook_result` back — and the rules
+// that make a long-lived node no more powerful than a disposable one.
+//
+// # The invocation is the unit of authority
+//
+// A token is minted for one `{op_id, step_id}` and checked on every
+// `cap_call`, so a node that outlives an execution has no token of its
+// own. `invoke` mints one for *this* invocation, sends it on the
+// `hook_call`, and revokes it when the answer comes back. Between
+// invocations the host holds none, and a `cap_call` arriving then is
+// refused `unauthorized` before any router sees it. That is the property
+// the fresh-node-per-execution design had for free and this one has to
+// state: **an extension may compute between invocations, and may not
+// act**.
+//
+// The token file the node read at boot is not an exception. It holds
+// bytes this host minted nothing for, so a satellite presenting them is
+// refused like any other stranger; it exists because `cap/runtime`'s boot
+// sequence reads one.
+//
+// # One invocation at a time, and what a breach costs
+//
+// The protocol allows one outstanding `hook_call` per satellite, so the
+// host serialises: a second `invoke` while one is open is `Busy`, and two
+// strands calling one extension queue at whatever actor owns the host
+// (`client/extension/hosts`), not here. The two ways the satellite can
+// break that rule are answered by destroying the node, because both mean
+// the far side is not the protocol this host is speaking:
+//
+// - a `hook_result` with no invocation open, which correlates to nothing;
+// - a deadline that passes with no answer, which is a satellite this host
+//   cannot go on trusting with a session's worth of state.
+//
+// A destroyed host stays destroyed for the rest of the session. Restarting
+// one silently would hand an extension a fresh set of the actors it just
+// lost without telling anybody it had lost them; the session's next
+// `session_start` is where a restart belongs.
+//
+// # The reaping invariant, restated
+//
+// `docs/architecture/code-mode.md` states it for the disposable node: the
+// executor reaps every process a program spawned before the next execution
+// installs its channel. For a persistent satellite it becomes: **a host
+// reaps its node before the session's next host for that extension
+// starts.** Two things uphold that, and only one of them is a mechanism.
+// The mechanism is ownership: a host owns its node's `destroy`, the
+// launcher's janitor runs the same teardown when the host machine dies,
+// and a destroyed host is never relaunched inside a session — so no path
+// here starts a second node while the first lives.
+// `cap/internal/dispatch.install_exclusive` would catch a breach and
+// cannot see one from here: each satellite is its own OS process, so the
+// VM-global channel slot it guards is per node and a second node's boot
+// finds it empty. It is the guard for a design that reuses a node's VM,
+// which this one does not.
+
+/// A satellite held open across invocations. Opaque: it is a pid, a
+/// command subject and a node, and nothing outside this module may reach
+/// past `invoke` and `stop` to any of them.
+pub opaque type Host {
+  Host(pid: Pid, commands: Subject(HostMsg))
+}
+
+/// What the harness is asking the satellite for.
+///
+/// The `kind` field of a `hook_call` is `"tool"` or `"event"` on the wire
+/// (Part 1.4); this is that string as a closed set on the harness side, so
+/// nothing above this module composes the wire vocabulary by hand.
+pub type Invocation {
+  /// A model-made tool call, by the manifest's tool name.
+  Tool(name: String)
+
+  /// A hook event on the harness's own timeline, by the event's name.
+  Event(name: String)
+}
+
+/// Why an invocation produced no answer. Every variant is a value.
+///
+/// There is no malformed-answer variant, and the absence is deliberate:
+/// `broker/framing` decodes a `hook_result` body totally, so an answer
+/// that will not decode is a malformed *frame*, which faults the channel
+/// and arrives here as `HostFaulted`. A satellite cannot send a
+/// well-formed answer this host fails to understand.
+pub type InvokeError {
+  /// An invocation is already open on this host. The protocol allows one,
+  /// so the caller serialises rather than the host queueing.
+  Busy
+
+  /// The invocation's deadline passed with no answer. The node has been
+  /// destroyed; every later `invoke` is `HostGone`.
+  InvocationDeadline
+
+  /// The satellite is not there any more, with the reason it went. Once
+  /// this is the answer it is the answer for the rest of the session.
+  HostGone(reason: String)
+
+  /// The capability channel broke the framing protocol and was closed.
+  HostFaulted(reason: String)
+}
+
+/// The host's configuration: everything that belongs to the *node* rather
+/// than to any one invocation.
+///
+/// `SatelliteConfig` minus what a single execution owned. The router, the
+/// ceilings and the base policy a `cap_call` is judged against are
+/// arguments to `invoke` instead, because they genuinely vary per
+/// invocation: `net.request`'s policy is the extension's, but its
+/// `requests_per_call` ceiling is a per-call number, and the clearance
+/// coordinates are the calling tool's.
+pub type HostConfig {
+  HostConfig(
+    /// The broker every jailed effect of every invocation goes through,
+    /// and the one the node itself was dispatched under.
+    broker: Broker,
+    /// The node's own identity: the `{op_id, step_id}` it is dispatched
+    /// under and the pooled budget bounding its whole life. Distinct from
+    /// any invocation's, and never used to judge a `cap_call`.
+    identity: PhaseIdentity,
+    /// The session base policy the node's jail is composed from.
+    base_policy: SandboxPolicy,
+    /// Enforcement strictness demanded of the node.
+    demand: EnforcementDemand,
+    /// The allowlist-constructed node environment.
+    env: List(#(String, String)),
+    /// The node's working directory inside the jail.
+    cwd: String,
+    /// Where the cap socket lives.
+    cap_socket_path: String,
+    /// Entropy for the token vault and the node's boot-token bytes.
+    entropy: fn(Int) -> BitArray,
+    /// The wall clock, read for every token check.
+    clock: Clock,
+    /// Writes the node's boot token to a private file, returning its path.
+    write_token_file: fn(BitArray) -> Result(String, String),
+    /// Unlinks the token file on teardown (idempotent).
+    unlink_token_file: fn(String) -> Nil,
+    /// How long to wait for one cap call's settlement.
+    call_timeout_ms: Int,
+  )
+}
+
+/// Everything one invocation is judged under: its clearance coordinates,
+/// its policy, and the two seams that decide what its `cap_call`s may do.
+///
+/// A record rather than five parameters because four of the five are the
+/// kind of value a caller can get the wrong way round with every type
+/// still agreeing.
+pub type Invoking {
+  Invoking(
+    /// This invocation's `{op_id, step_id}` and pooled budget: the tool
+    /// call's, not the node's. The token is minted against it and every
+    /// clearance the invocation makes runs under it.
+    identity: PhaseIdentity,
+    /// The base policy this invocation's effects compose onto.
+    base_policy: SandboxPolicy,
+    /// Enforcement strictness for this invocation's jailed effects.
+    demand: EnforcementDemand,
+    /// Maps this invocation's capability calls to plans.
+    router: CapRouter,
+    /// Lifetime admission ceilings **for this invocation**. The tally is
+    /// reset per invocation, which is what makes a manifest's
+    /// `requests_per_call` mean per call rather than per session.
+    ceilings: List(CapCeiling),
+  )
+}
+
+/// Launches a satellite and holds it open.
+///
+/// Mints nothing: the node boots on a token this host never minted, and
+/// every token that works arrives on a `hook_call`. On success the node is
+/// running and idle; on failure nothing is left behind, including the
+/// token file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(host) = satellite.start(artifact, config, launch)
+/// ```
+///
+pub fn start(
+  artifact: Artifact,
+  config: HostConfig,
+  launch: Launcher,
+) -> Result(Host, RunError) {
+  case config.write_token_file(config.entropy(token_bytes)) {
+    Error(reason) -> Error(TokenFileFailed(reason))
+    Ok(token_path) -> start_hosting(artifact, config, launch, token_path)
+  }
+}
+
+fn start_hosting(
+  artifact: Artifact,
+  config: HostConfig,
+  launch: Launcher,
+  token_path: String,
+) -> Result(Host, RunError) {
+  case start_machine(config, token_path) {
+    Error(reason) -> {
+      config.unlink_token_file(token_path)
+      Error(HostUnavailable(reason))
+    }
+    Ok(#(host, wire)) ->
+      case
+        launch(LaunchSpec(
+          artifact:,
+          token_path:,
+          cap_socket_path: config.cap_socket_path,
+          identity: config.identity,
+          base_policy: config.base_policy,
+          env: config.env,
+          cwd: config.cwd,
+          wire:,
+        ))
+      {
+        Error(reason) -> {
+          let _report = stop(host)
+          Error(LaunchRejected(reason))
+        }
+
+        // The same acknowledged handover `run` uses, and for the same
+        // race: a machine that stopped before taking the connection would
+        // leave the node unreaped, so the node is destroyed here instead.
+        Ok(connection) ->
+          case hand_over_to(host, connection) {
+            None -> Ok(host)
+            Some(_report) ->
+              Error(HostUnavailable(
+                "the satellite host stopped before it could take the node",
+              ))
+          }
+      }
+  }
+}
+
+/// Asks the satellite to answer one invocation, and waits for the answer.
+///
+/// Mints a token bound to `invoking.identity`, sends it on the
+/// `hook_call`, serves every `cap_call` that presents it — and refuses
+/// every `cap_call` that does not — then revokes it and returns what the
+/// satellite answered. A `CapErr` here is the extension's own in-band
+/// refusal; an `InvokeError` is the host's account of why there is no
+/// answer at all.
+///
+/// Blocks the caller for at most the invocation's deadline plus the slack
+/// the host's own teardown needs. Never exits its caller: a host that died
+/// mid-invocation is `HostGone`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // satellite.invoke(host, satellite.Tool("search"), args, invoking, 30_000)
+/// ```
+///
+pub fn invoke(
+  host: Host,
+  invocation: Invocation,
+  args: MsgPackValue,
+  invoking: Invoking,
+  deadline_ms: Int,
+) -> Result(CapOutcome, InvokeError) {
+  let reply = process.new_subject()
+  let monitor = process.monitor(host.pid)
+  let selector =
+    process.new_selector()
+    |> process.select_map(reply, Replied)
+    |> process.select_specific_monitor(monitor, AnswerLost)
+  process.send(
+    host.commands,
+    Ask(invocation:, args:, invoking:, deadline_ms:, reply:),
+  )
+
+  // The host arms the real deadline and answers on it, so this wait only
+  // guards against a host that is wedged or gone — the same relationship
+  // `await_result` has to the wall deadline.
+  let answer = case
+    process.selector_receive(selector, deadline_ms + result_margin_ms)
+  {
+    Ok(Replied(answer)) -> answer
+    Ok(AnswerLost(_down)) ->
+      Error(HostGone("the satellite host died mid-invocation"))
+    Error(Nil) ->
+      Error(HostGone(
+        "the satellite host did not answer within the invocation's deadline",
+      ))
+  }
+  process.demonitor_process(monitor)
+  answer
+}
+
+/// Destroys the node and returns what the kernel enforced on it.
+///
+/// Idempotent: a host already destroyed by a deadline or a protocol fault
+/// hands back the report it kept from that teardown, because the node's
+/// story ended then and there is no second one to tell.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let report = satellite.stop(host)
+/// ```
+///
+pub fn stop(host: Host) -> Report {
+  let reply = process.new_subject()
+  let monitor = process.monitor(host.pid)
+  let selector =
+    process.new_selector()
+    |> process.select_map(reply, Reported)
+    |> process.select_specific_monitor(monitor, ReportLost)
+  process.send(host.commands, Halt(reply:))
+  let report = case process.selector_receive(selector, halt_timeout_ms) {
+    Ok(Reported(report)) -> report
+
+    // A host that died before answering took its node's report with it;
+    // the launcher's janitor is what reaps the node in that case.
+    Ok(ReportLost(_down)) ->
+      enforcement.Unreported("the satellite host died before it reported")
+    Error(Nil) ->
+      enforcement.Unreported("the satellite host did not report in time")
+  }
+  process.demonitor_process(monitor)
+  report
+}
+
+// What a caller of `invoke` is selecting on: the host's answer, or the
+// host's death. Two of them arrive from the same process, so exactly one
+// is first and there is nothing to arbitrate.
+type Answered {
+  Replied(answer: Result(CapOutcome, InvokeError))
+  AnswerLost(down: process.Down)
+}
+
+// The same shape for `stop`, separately, because a report and an answer
+// are different values and one type carrying both would be a type
+// parameter nobody reads.
+type Halted {
+  Reported(report: Report)
+  ReportLost(down: process.Down)
+}
+
+// --- the host machine -----------------------------------------------------
+
+// How long the host machine's initialiser may take.
+const host_machine_init_ms = 1000
+
+// How long `stop` waits for the machine's report before answering
+// `Unreported`. It has to outlast the launcher's own bounded wait for the
+// node's settlement, for the reason that wait is bounded at all: whichever
+// timer expires first decides what the report *says*, and the truthful
+// answer comes from the launcher.
+const halt_timeout_ms = 10_000
+
+// The boot token's length, matching `broker/token`'s. The bytes are never
+// minted, so this is a shape rather than a secret; writing a file of the
+// right length is what keeps the node's boot sequence unchanged between
+// the two host shapes.
+const token_bytes = 32
+
+/// The host machine's message set. Opaque: only this module constructs
+/// one, so nothing outside can forge an invocation, a settlement or a
+/// deadline.
+pub opaque type HostMsg {
+  /// Inbound bytes, or the channel closing, from the launcher.
+  FromNode(event: WireIn)
+
+  /// The launcher has connected; the machine now owns the node.
+  NodeConnected(
+    send: fn(BitArray) -> Nil,
+    destroy: fn() -> Report,
+    ack: Subject(Nil),
+  )
+
+  /// A caller wants one invocation answered.
+  Ask(
+    invocation: Invocation,
+    args: MsgPackValue,
+    invoking: Invoking,
+    deadline_ms: Int,
+    reply: Subject(Result(CapOutcome, InvokeError)),
+  )
+
+  /// A routed capability call reached the broker under this handle.
+  ServeStarted(id: Int, handle: broker.CallHandle)
+
+  /// A routed capability call settled.
+  Served(id: Int, outcome: CapOutcome)
+
+  /// The open invocation's deadline passed. Armed as a state timeout on
+  /// `Answering`, so leaving that state cancels it and a fire that raced
+  /// its own cancellation is dropped by weft rather than delivered.
+  Expired
+
+  /// Somebody wants the node destroyed and its report.
+  Halt(reply: Subject(Report))
+}
+
+// Where the host is. The deadline belongs to `Answering` and dies with it,
+// which is the whole reason these are states rather than a field.
+type Phase {
+  /// The node is up and nothing is open.
+  Idle
+
+  /// One invocation is open, under this frame id. The id does not move
+  /// while the machine is in this state; everything that does move lives
+  /// in `Hosting.open`.
+  Answering(id: Int)
+
+  /// The node is gone, with the reason it went. Terminal for the session.
+  Destroyed(reason: String)
+}
+
+// What the machine carries across its states.
+type Hosting {
+  Hosting(
+    config: HostConfig,
+    // The machine's own subject, so a worker spawned off the machine's
+    // timeline can report back into it.
+    commands: Subject(HostMsg),
+    token_path: String,
+    // The vault holds at most one minted token: this invocation's. Between
+    // invocations it holds none, which is what refuses a `cap_call` made
+    // by an actor the extension kept alive.
+    vault: token.Vault,
+    clock: Clock,
+    // The outbound writer, once the launcher has connected. Frames emitted
+    // before then buffer and flush on `Connected`.
+    send: Option(fn(BitArray) -> Nil),
+    destroy: Option(fn() -> Report),
+    pending_out: List(BitArray),
+    // Raw carry for the length-prefix deframer over the cap socket.
+    buffer: BitArray,
+    // The next `hook_call` frame id. Ids climb and are never reused, so a
+    // late `hook_result` from a destroyed invocation matches nothing.
+    next_frame: Int,
+    open: Option(Open),
+    // The report kept from the teardown that destroyed this host, so a
+    // later `stop` is answered from memory rather than from a node that no
+    // longer exists.
+    node: Option(Report),
+  )
+}
+
+// The one open invocation's bookkeeping.
+type Open {
+  Open(
+    invoking: Invoking,
+    reply: Subject(Result(CapOutcome, InvokeError)),
+    inflight: Dict(Int, InFlight),
+    // Admissions **this invocation** has spent, per capability. Reset with
+    // every invocation, which is what makes a manifest's
+    // `requests_per_call` a per-call number.
+    admitted: Dict(String, Int),
+  )
+}
+
+fn start_machine(
+  config: HostConfig,
+  token_path: String,
+) -> Result(#(Host, Subject(WireIn)), String) {
+  let #(_now, clock) = clock.read(config.clock)
+  let started =
+    sm.new_with_initialiser(host_machine_init_ms, fn(commands) {
+      let wire = process.new_subject()
+      let selector =
+        process.new_selector()
+        |> process.select(commands)
+        |> process.select_map(wire, FromNode)
+      sm.initialised(
+        Idle,
+        Hosting(
+          config:,
+          commands:,
+          token_path:,
+          vault: token.new(config.entropy),
+          clock:,
+          send: None,
+          destroy: None,
+          pending_out: [],
+          buffer: <<>>,
+          next_frame: 1,
+          open: None,
+          node: None,
+        ),
+      )
+      |> sm.selecting(selector)
+      |> sm.returning(#(commands, wire))
+      |> Ok
+    })
+    |> sm.on_event(host_step)
+    |> sm.start
+  case started {
+    Error(error) -> Error(start_error_text(error))
+    Ok(machine) -> {
+      let #(commands, wire) = machine.data
+      Ok(#(Host(pid: machine.pid, commands:), wire))
+    }
+  }
+}
+
+// Hands the launched node's connection to the machine, destroying it here
+// if the machine stopped before it could take it — the same race
+// `hand_over` closes for the single-shot host, closed the same way.
+fn hand_over_to(host: Host, connection: CapConnection) -> Option(Report) {
+  let ack = process.new_subject()
+  let monitor = process.monitor(host.pid)
+  let outcome =
+    process.new_selector()
+    |> process.select_map(ack, fn(_nil) { HostTook })
+    |> process.select_specific_monitor(monitor, fn(_down) { HostGoneAway })
+  process.send(
+    host.commands,
+    NodeConnected(send: connection.send, destroy: connection.destroy, ack:),
+  )
+  let handed = case process.selector_receive(outcome, hand_over_timeout_ms) {
+    Ok(HostGoneAway) -> Some(connection.destroy())
+    Ok(HostTook) | Error(Nil) -> None
+  }
+  process.demonitor_process(monitor)
+  handed
+}
+
+// Whether the machine took ownership of the connection before it stopped.
+type Handed {
+  HostTook
+  HostGoneAway
+}
+
+// One event, in one phase. Every pair is written: a new message or a
+// fourth phase is a compile error here rather than an event the host
+// silently drops.
+fn host_step(
+  phase: Phase,
+  hosting: Hosting,
+  msg: HostMsg,
+) -> sm.Next(Phase, Hosting, HostMsg) {
+  case phase, msg {
+    // The launcher connected. The node exists from here; nothing is armed,
+    // because a host with no invocation open has no deadline to keep.
+    Idle, NodeConnected(send:, destroy:, ack:)
+    | Answering(..), NodeConnected(send:, destroy:, ack:)
+    -> {
+      list.each(list.reverse(hosting.pending_out), send)
+      process.send(ack, Nil)
+      sm.keep(
+        Hosting(
+          ..hosting,
+          send: Some(send),
+          destroy: Some(destroy),
+          pending_out: [],
+        ),
+      )
+    }
+
+    // A connection arriving at a destroyed host: the node it names is one
+    // nothing will ever reap, so it is destroyed here and its report is
+    // kept, which is the only account of that node there will ever be.
+    //
+    // The acknowledgement still goes out. Withholding it would leave
+    // `hand_over_to` waiting out its whole timeout and then reading the
+    // silence as "the host took the connection", so `start` would stall
+    // and hand back a host that is already dead — where acknowledging
+    // makes the *first* `invoke` say `HostGone` with the reason at once.
+    Destroyed(..), NodeConnected(send: _, destroy:, ack:) -> {
+      let report = destroy()
+      process.send(ack, Nil)
+      sm.keep(Hosting(..hosting, node: Some(report)))
+    }
+
+    // A fresh invocation with nothing open: mint its token, send the
+    // `hook_call`, and arm the deadline as this state's own timeout.
+    Idle, Ask(invocation:, args:, invoking:, deadline_ms:, reply:) ->
+      begin(hosting, invocation, args, invoking, deadline_ms, reply)
+
+    // One at a time is the protocol. The caller serialises; the host says
+    // so rather than queueing, because a queue would hold a second token
+    // under the first invocation's answer.
+    Answering(..), Ask(reply:, ..) -> {
+      process.send(reply, Error(Busy))
+      sm.keep(hosting)
+    }
+
+    Destroyed(reason:), Ask(reply:, ..) -> {
+      process.send(reply, Error(HostGone(reason)))
+      sm.keep(hosting)
+    }
+
+    Idle, FromNode(WireBytes(data:))
+    | Answering(..), FromNode(WireBytes(data:))
+    -> read_bytes(phase, hosting, data)
+
+    Idle, FromNode(WireClosed(reason:))
+    | Answering(..), FromNode(WireClosed(reason:))
+    -> perish(hosting, HostGone("the satellite exited: " <> reason))
+
+    // Bytes and a close after the node is gone. Both are the tail of a
+    // socket already torn down, and there is nothing left to read them
+    // for.
+    Destroyed(..), FromNode(..) -> sm.keep(hosting)
+
+    Answering(id: _), ServeStarted(id:, handle:) ->
+      sm.keep(track_started(hosting, id, handle))
+
+    Answering(id: _), Served(id:, outcome:) ->
+      sm.keep(settle_served(hosting, id, outcome))
+
+    // A clearance that reached the broker after its invocation closed.
+    // `release` cancelled everything it had a handle for, and this is the
+    // one it could not: the worker was still inside `clear_call`. Cancel
+    // it now, or the jailed executor runs on to its own timeout for an
+    // invocation nobody is waiting for. Frame ids climb per node, so an
+    // id arriving with no invocation open always belongs to a closed one.
+    Idle, ServeStarted(id: _, handle:)
+    | Destroyed(..), ServeStarted(id: _, handle:)
+    -> {
+      broker.cancel(hosting.config.broker, handle)
+      sm.keep(hosting)
+    }
+
+    // A capability settling into a host with no invocation open. Its
+    // answer has nowhere to go, which is exactly what `release` intended
+    // when it stopped waiting for it.
+    Idle, Served(..) | Destroyed(..), Served(..) -> sm.keep(hosting)
+
+    // The invocation's deadline. A satellite that ignores its deadline is
+    // not one this host can keep trusting with a session's worth of state,
+    // so the node dies with the invocation (012).
+    Answering(..), Expired -> perish(hosting, InvocationDeadline)
+
+    // The deadline is armed only on `Answering`, and weft drops a fire
+    // that raced its own cancellation, so neither of these is reachable.
+    Idle, Expired | Destroyed(..), Expired -> sm.keep(hosting)
+
+    Idle, Halt(reply:) | Answering(..), Halt(reply:) -> {
+      let report = teardown(hosting)
+
+      // The stop path owes the same two things every other way out of
+      // `Answering` does, and in the same order: the invocation's token
+      // revoked and whatever it left in flight cancelled, before its
+      // caller is told. Skipping them here left a stopped host's last
+      // invocation able to clear an effect for a node that no longer
+      // exists.
+      let _released = release(hosting)
+      answer_open(hosting, Error(HostGone("this host was stopped")))
+      process.send(reply, report)
+      sm.stop()
+    }
+
+    // Already destroyed: the report is the one kept from that teardown, so
+    // a second `stop` is answered from memory rather than from a node that
+    // is not there.
+    Destroyed(..), Halt(reply:) -> {
+      process.send(reply, kept_report(hosting))
+      sm.stop()
+    }
+  }
+}
+
+// Opens an invocation: mint, send, arm.
+//
+// The token is minted before the frame is composed, because the frame
+// carries it; and the deadline is this state's own timeout, so answering
+// cancels it by leaving the state rather than by a handler remembering to.
+fn begin(
+  hosting: Hosting,
+  invocation: Invocation,
+  args: MsgPackValue,
+  invoking: Invoking,
+  deadline_ms: Int,
+  reply: Subject(Result(CapOutcome, InvokeError)),
+) -> sm.Next(Phase, Hosting, HostMsg) {
+  let #(now, clock) = clock.read(hosting.clock)
+  let binding =
+    token.Binding(
+      op_id: identity.op_id(invoking.identity),
+      step_id: identity.step_id(invoking.identity),
+      policy: invoking.base_policy,
+      deadline_ms: now + deadline_ms,
+    )
+  case token.mint(hosting.vault, binding) {
+    Error(mint_error) -> {
+      process.send(
+        reply,
+        Error(HostGone(
+          "the invocation's capability token could not be minted: "
+          <> mint_error_text(mint_error),
+        )),
+      )
+      sm.keep(Hosting(..hosting, clock:))
+    }
+    Ok(#(vault, minted)) -> {
+      let id = hosting.next_frame
+      let hosting =
+        Hosting(
+          ..hosting,
+          clock:,
+          vault:,
+          next_frame: id + 1,
+          open: Some(Open(
+            invoking:,
+            reply:,
+            inflight: dict.new(),
+            admitted: dict.new(),
+          )),
+        )
+      let hosting =
+        emit_frame(
+          hosting,
+          framing.Frame(
+            id:,
+            body: framing.HookCall(
+              token: token.to_bytes(minted),
+              kind: invocation_kind(invocation),
+              name: invocation_name(invocation),
+              args:,
+              deadline_ms:,
+            ),
+          ),
+        )
+      sm.transition(to: Answering(id:), data: hosting)
+      |> sm.with_state_timeout(after: deadline_ms, sending: Expired)
+    }
+  }
+}
+
+fn invocation_kind(invocation: Invocation) -> String {
+  case invocation {
+    Tool(..) -> "tool"
+    Event(..) -> "event"
+  }
+}
+
+fn invocation_name(invocation: Invocation) -> String {
+  case invocation {
+    Tool(name:) -> name
+    Event(name:) -> name
+  }
+}
+
+// --- inbound frames -------------------------------------------------------
+
+// Where reading a chunk left the machine.
+//
+// The phase travels with the data because the frame that matters most —
+// the answer to the open invocation — is a *state* change: leaving
+// `Answering` is what cancels the deadline weft armed with it, and a fold
+// that could only return data would leave the machine answering an
+// invocation it has already answered.
+type Reading {
+  Reading(phase: Phase, hosting: Hosting)
+}
+
+// The step one chunk of inbound bytes produces.
+fn read_bytes(
+  phase: Phase,
+  hosting: Hosting,
+  data: BitArray,
+) -> sm.Next(Phase, Hosting, HostMsg) {
+  let buffer = bit_array.append(hosting.buffer, data)
+  let Deframed(payloads:, buffer:, fault:) = deframe(buffer)
+  let reading = Reading(phase:, hosting: Hosting(..hosting, buffer:))
+  case read_payloads(reading, payloads), fault {
+    Error(step), _ -> step
+    Ok(Reading(phase:, hosting:)), None ->
+      sm.transition(to: phase, data: hosting)
+    Ok(Reading(hosting:, ..)), Some(reason) ->
+      perish(hosting, HostFaulted(reason))
+  }
+}
+
+// Folds the payloads of one chunk, short-circuiting on the one that ends
+// the host.
+fn read_payloads(
+  reading: Reading,
+  payloads: List(BitArray),
+) -> Result(Reading, sm.Next(Phase, Hosting, HostMsg)) {
+  case payloads {
+    [] -> Ok(reading)
+    [payload, ..rest] ->
+      case read_payload(reading, payload) {
+        Ok(reading) -> read_payloads(reading, rest)
+        Error(step) -> Error(step)
+      }
+  }
+}
+
+fn read_payload(
+  reading: Reading,
+  payload: BitArray,
+) -> Result(Reading, sm.Next(Phase, Hosting, HostMsg)) {
+  case framing.decode_payload(payload) {
+    Ok(frame) -> read_frame(reading, frame)
+
+    // A well-formed frame of a kind this host does not act on, the
+    // single-shot `outcome` among them: dropped, channel kept (forward
+    // compatibility). A genuinely malformed frame closes the channel.
+    Error(framing.UnknownKind(..)) -> Ok(reading)
+    Error(_) ->
+      Error(perish(reading.hosting, HostFaulted("a cap frame was malformed")))
+  }
+}
+
+fn read_frame(
+  reading: Reading,
+  frame: framing.Frame,
+) -> Result(Reading, sm.Next(Phase, Hosting, HostMsg)) {
+  let Reading(phase:, hosting:) = reading
+  case frame.body, phase {
+    framing.CapCall(token: presented, cap:, args:, deadline_ms: _), _ ->
+      Ok(carrying(
+        reading,
+        serve_cap_call(hosting, frame.id, presented, cap, args),
+      ))
+
+    framing.Cancel, _ ->
+      Ok(carrying(reading, cancel_inflight(hosting, frame.id)))
+
+    framing.Heartbeat, _ ->
+      Ok(carrying(
+        reading,
+        emit_frame(
+          hosting,
+          framing.Frame(id: frame.id, body: framing.Heartbeat),
+        ),
+      ))
+
+    // The answer to the open invocation. Matching the frame id is the
+    // correlation the protocol specifies, and ids climb, so a late answer
+    // from an invocation that already ended matches nothing.
+    // Returning to `Idle` is what cancels the deadline.
+    framing.HookResult(outcome:), Answering(id:) if id == frame.id ->
+      Ok(Reading(phase: Idle, hosting: close_invocation(hosting, Ok(outcome))))
+
+    // A `hook_result` correlating to nothing. That is a satellite not
+    // speaking this protocol, and the node dies for it (012): a peer whose
+    // frames the host cannot match is one whose next frame it cannot trust
+    // either.
+    framing.HookResult(..), Idle
+    | framing.HookResult(..), Answering(..)
+    | framing.HookResult(..), Destroyed(..)
+    ->
+      Error(perish(
+        hosting,
+        HostFaulted("a hook_result arrived with no invocation open for it"),
+      ))
+
+    // No other kind flows satellite-to-host. A stray well-formed frame is
+    // ignored; only a malformed one closes the channel.
+    framing.Hello(..), _
+    | framing.ExecStart(..), _
+    | framing.ExecStdin(..), _
+    | framing.ExecOut(..), _
+    | framing.ExecExit(..), _
+    | framing.CapResult(..), _
+    | framing.HookCall(..), _
+    | framing.ErrorBody(..), _
+    -> Ok(reading)
+  }
+}
+
+fn carrying(reading: Reading, hosting: Hosting) -> Reading {
+  Reading(..reading, hosting:)
+}
+
+// --- capability calls, under the open invocation's authority --------------
+
+// A `cap_call` is judged against the *invocation's* token binding, so one
+// made when no invocation is open has nothing to check against and is
+// refused before any router sees it. That refusal is the persistent
+// satellite's whole confinement story stated once.
+fn serve_cap_call(
+  hosting: Hosting,
+  id: Int,
+  presented: BitArray,
+  cap: String,
+  args: MsgPackValue,
+) -> Hosting {
+  case hosting.open {
+    None ->
+      emit_cap_result(
+        hosting,
+        id,
+        framing.CapErr(
+          code: "unauthorized",
+          message: "this satellite has no invocation open, so it holds no "
+            <> "token any capability call could be judged under",
+        ),
+      )
+    Some(open) -> check_cap_call(hosting, open, id, presented, cap, args)
+  }
+}
+
+fn check_cap_call(
+  hosting: Hosting,
+  open: Open,
+  id: Int,
+  presented: BitArray,
+  cap: String,
+  args: MsgPackValue,
+) -> Hosting {
+  let #(now, clock) = clock.read(hosting.clock)
+  let hosting = Hosting(..hosting, clock:)
+  case
+    token.check_for(
+      hosting.vault,
+      presented,
+      identity.op_id(open.invoking.identity),
+      identity.step_id(open.invoking.identity),
+      now,
+    )
+  {
+    Error(refusal) ->
+      emit_cap_result(
+        hosting,
+        id,
+        framing.CapErr(code: "unauthorized", message: refusal_text(refusal)),
+      )
+    Ok(_binding) -> route_invocation_call(hosting, open, id, cap, args)
+  }
+}
+
+fn route_invocation_call(
+  hosting: Hosting,
+  open: Open,
+  id: Int,
+  cap: String,
+  args: MsgPackValue,
+) -> Hosting {
+  let already = spent(open, cap)
+  let request =
+    CapRequest(
+      cap:,
+      args:,
+      identity: open.invoking.identity,
+      base_policy: open.invoking.base_policy,
+      demand: open.invoking.demand,
+      env: hosting.config.env,
+      cwd: hosting.config.cwd,
+      ordinal: already,
+    )
+  case open.invoking.router(request) {
+    Error(denial) ->
+      emit_cap_result(
+        hosting,
+        id,
+        framing.CapErr(code: denial.code, message: denial.message),
+      )
+    Ok(plan) -> admit_invocation_call(hosting, open, id, cap, already, plan)
+  }
+}
+
+// The same two ceilings the single-shot host checks, in the same order and
+// for the same reasons — a program at its lifetime ceiling should read the
+// refusal that will still be true a moment later — with the tally scoped
+// to this invocation rather than to the node's whole life.
+fn admit_invocation_call(
+  hosting: Hosting,
+  open: Open,
+  id: Int,
+  cap: String,
+  already: Int,
+  plan: CapPlan,
+) -> Hosting {
+  let outstanding =
+    identity.pooled_budget(open.invoking.identity).max_outstanding
+  case reached(open.invoking.ceilings, cap, already), dict.size(open.inflight) {
+    Some(ceiling), _ -> emit_cap_result(hosting, id, ceiling_denial(ceiling))
+    None, live if live >= outstanding ->
+      emit_cap_result(hosting, id, budget_denial(outstanding))
+    None, _ -> dispatch_invocation_call(hosting, open, id, cap, already, plan)
+  }
+}
+
+fn dispatch_invocation_call(
+  hosting: Hosting,
+  open: Open,
+  id: Int,
+  cap: String,
+  already: Int,
+  plan: CapPlan,
+) -> Hosting {
+  spawn_worker(
+    host_settling(hosting, id),
+    hosting.config.broker,
+    plan,
+    hosting.config.call_timeout_ms,
+  )
+  Hosting(
+    ..hosting,
+    open: Some(
+      Open(
+        ..open,
+        inflight: dict.insert(
+          open.inflight,
+          id,
+          InFlight(handle: None, cancelled: False),
+        ),
+        admitted: dict.insert(open.admitted, cap, already + 1),
+      ),
+    ),
+  )
+}
+
+fn spent(open: Open, cap: String) -> Int {
+  dict.get(open.admitted, cap) |> result.unwrap(0)
+}
+
+fn reached(
+  ceilings: List(CapCeiling),
+  cap: String,
+  already: Int,
+) -> Option(CapCeiling) {
+  list.find(ceilings, fn(ceiling) {
+    ceiling.cap == cap && already >= ceiling.admissions
+  })
+  |> option.from_result
+}
+
+fn track_started(
+  hosting: Hosting,
+  id: Int,
+  handle: broker.CallHandle,
+) -> Hosting {
+  case hosting.open {
+    // The invocation closed while this clearance was still being made.
+    // Cancel rather than track: nobody is listening for its answer.
+    None -> {
+      broker.cancel(hosting.config.broker, handle)
+      hosting
+    }
+    Some(open) ->
+      case dict.get(open.inflight, id) {
+        Error(Nil) -> {
+          broker.cancel(hosting.config.broker, handle)
+          hosting
+        }
+        Ok(entry) -> {
+          case entry.cancelled {
+            True -> broker.cancel(hosting.config.broker, handle)
+            False -> Nil
+          }
+          with_inflight(
+            hosting,
+            open,
+            dict.insert(
+              open.inflight,
+              id,
+              InFlight(..entry, handle: Some(handle)),
+            ),
+          )
+        }
+      }
+  }
+}
+
+fn settle_served(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
+  case hosting.open {
+    None -> hosting
+    Some(open) ->
+      case dict.get(open.inflight, id) {
+        Error(Nil) -> hosting
+
+        // `emit_cap_result` writes a frame and never touches `open`, so
+        // the entry read above is still the one to drop.
+        Ok(_entry) ->
+          with_inflight(
+            emit_cap_result(hosting, id, outcome),
+            open,
+            dict.delete(open.inflight, id),
+          )
+      }
+  }
+}
+
+fn cancel_inflight(hosting: Hosting, id: Int) -> Hosting {
+  case hosting.open {
+    None -> hosting
+    Some(open) ->
+      case dict.get(open.inflight, id) {
+        Error(Nil) -> hosting
+        Ok(entry) -> {
+          case entry.handle {
+            Some(handle) -> broker.cancel(hosting.config.broker, handle)
+            None -> Nil
+          }
+          with_inflight(
+            hosting,
+            open,
+            dict.insert(open.inflight, id, InFlight(..entry, cancelled: True)),
+          )
+        }
+      }
+  }
+}
+
+fn with_inflight(
+  hosting: Hosting,
+  open: Open,
+  inflight: Dict(Int, InFlight),
+) -> Hosting {
+  Hosting(..hosting, open: Some(Open(..open, inflight:)))
+}
+
+// The two callbacks one routed call reports through. They send into the
+// machine's own subject, which the worker holds as a plain `Subject`.
+fn host_settling(hosting: Hosting, id: Int) -> Settling {
+  let commands = hosting.commands
+  Settling(
+    started: fn(handle) { process.send(commands, ServeStarted(id:, handle:)) },
+    done: fn(outcome) { process.send(commands, Served(id:, outcome:)) },
+  )
+}
+
+// --- closing an invocation ------------------------------------------------
+
+// Answers the open invocation and returns to `Idle`: revoke its token,
+// cancel anything it left in flight, and clear the slot. Revocation is the
+// harness's half of the token rule, and it happens here rather than in the
+// caller so that no path out of `Answering` can skip it.
+fn close_invocation(
+  hosting: Hosting,
+  answer: Result(CapOutcome, InvokeError),
+) -> Hosting {
+  // Released before the caller is answered, so that by the time `invoke`
+  // returns the token is already revoked — which is what makes the
+  // module doc's "revokes it when the answer comes back" literally true
+  // rather than true a scheduling moment later.
+  let released = release(hosting)
+  answer_open(hosting, answer)
+  released
+}
+
+fn answer_open(
+  hosting: Hosting,
+  answer: Result(CapOutcome, InvokeError),
+) -> Nil {
+  case hosting.open {
+    None -> Nil
+    Some(open) -> process.send(open.reply, answer)
+  }
+}
+
+fn release(hosting: Hosting) -> Hosting {
+  case hosting.open {
+    None -> hosting
+    Some(open) -> {
+      list.each(dict.to_list(open.inflight), fn(entry) {
+        case { entry.1 }.handle {
+          Some(handle) -> broker.cancel(hosting.config.broker, handle)
+          None -> Nil
+        }
+      })
+
+      // `revoke_all` marks rather than removes, so the vault keeps one
+      // dead entry per invocation for the life of the host and
+      // `check_for` pays a constant-time compare against each. That is
+      // the cost of the constant-time check rather than an oversight —
+      // `drop_expired` prunes on the deadline, not on revocation, so it
+      // would drop nothing here — and it is linear in a session's
+      // invocations rather than in anything an extension controls.
+      Hosting(
+        ..hosting,
+        vault: token.revoke_all(
+          hosting.vault,
+          identity.op_id(open.invoking.identity),
+        ),
+        open: None,
+      )
+    }
+  }
+}
+
+// Destroys the node, answers whatever invocation was open, and moves to
+// `Destroyed` for the rest of the session.
+//
+// Both callers are protocol breaches rather than ordinary endings: a
+// deadline the satellite ignored, or a frame it sent that correlates to
+// nothing. A restart here would hand the extension a fresh set of the
+// actors it just lost without telling anybody it had lost them; the
+// session's next `session_start` is where a restart belongs.
+fn perish(
+  hosting: Hosting,
+  answer: InvokeError,
+) -> sm.Next(Phase, Hosting, HostMsg) {
+  let report = teardown(hosting)
+  answer_open(hosting, Error(answer))
+  let hosting = release(hosting)
+  sm.transition(
+    to: Destroyed(reason: perish_reason(answer)),
+    data: Hosting(..hosting, node: Some(report), send: None, destroy: None),
+  )
+}
+
+fn perish_reason(answer: InvokeError) -> String {
+  case answer {
+    Busy -> "the host was destroyed while an invocation was open"
+    InvocationDeadline ->
+      "an invocation passed its deadline with no answer, so the satellite "
+      <> "was destroyed; a restart is a session_start away"
+    HostGone(reason:) -> reason
+    HostFaulted(reason:) -> "the capability channel faulted: " <> reason
+  }
+}
+
+// Destroys the node as a unit and unlinks its token file, returning what
+// the kernel enforced on it. Idempotent: a host whose node is already gone
+// hands back the report it kept.
+fn teardown(hosting: Hosting) -> Report {
+  case hosting.destroy {
+    Some(destroy) -> {
+      let report = destroy()
+      hosting.config.unlink_token_file(hosting.token_path)
+      report
+    }
+    None -> kept_report(hosting)
+  }
+}
+
+fn kept_report(hosting: Hosting) -> Report {
+  case hosting.node {
+    Some(report) -> report
+    None -> enforcement.Unreported("no node was launched")
+  }
+}
+
+// --- outbound frames ------------------------------------------------------
+
+fn emit_cap_result(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
+  emit_frame(
+    hosting,
+    framing.Frame(id:, body: framing.CapResult(outcome:, usage: None)),
+  )
+}
+
+// Encodes and writes one frame, buffering until the launcher connects. An
+// unencodable frame would be a host bug (ids are positive, bodies typed);
+// dropping it costs the invocation its deadline rather than the VM.
+fn emit_frame(hosting: Hosting, frame: framing.Frame) -> Hosting {
+  case framing.encode(frame) {
+    Error(_) -> hosting
+    Ok(bytes) ->
+      case hosting.send {
+        Some(send) -> {
+          send(bytes)
+          hosting
+        }
+        None -> Hosting(..hosting, pending_out: [bytes, ..hosting.pending_out])
+      }
   }
 }

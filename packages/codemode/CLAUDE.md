@@ -25,15 +25,21 @@ strand roots, and can reach neither the disk, the network, nor a process.
 
 The *extension* seam is the third, and its relation to the other two is
 deliberately not disjointness: it is `extension_cap_modules` — the
-workspace seam's capabilities plus `cap/ext` and `ext` — over
-`extension_stdlib_modules`, the shared pure subset plus `gleam/dynamic`,
-`gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri` and `gleam/json`.
-An installed extension's tool *is* a workspace program with a different
-entry point, so carving it something narrower would buy nothing and
-would have to be kept in step by hand. The property test is therefore a
-superset claim, and the widening is pinned to exactly its two names so a
-`cap/strand` cannot arrive on the way. No router services it yet:
-phase 1 installs and compiles an extension, and phase 2 dispatches one.
+workspace seam's capabilities plus `ext`, and no capability of its own —
+over `extension_stdlib_modules`, the shared pure subset plus
+`gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
+and `gleam/json`. An installed extension's tool *is* a workspace program
+with a different entry point, so carving it something narrower would buy
+nothing and would have to be kept in step by hand. The property test is
+therefore a superset claim, and the widening is pinned to exactly its one
+name so a `cap/strand` cannot arrive on the way. There is deliberately no
+capability for "which call am I serving?": phase 1 had `cap/ext.call`, a
+pull the node made once at boot, and `protocol-change/012` deleted it —
+a session-lived satellite is *told* what to answer, on a `hook_call`.
+
+Phase 1 installs and compiles an extension; phase 2 dispatched one per
+node; phase 3 (`satellite.Host`, below) holds the node open for the
+session and sends it many invocations.
 
 ## Key Types
 
@@ -206,6 +212,31 @@ phase 1 installs and compiles an extension, and phase 2 dispatches one.
   admissions, code)` is a lifetime cap on one capability's admissions
   within one execution, carrying the in-band code its refusal travels
   under so the host stays generic over capability names.
+- `codemode/satellite.{Host, HostConfig, Invoking, Invocation,
+  InvokeError}` with `start`/`invoke`/`stop` — the *other* shape of the
+  same host: a node launched once and asked many times, which is what an
+  installed extension runs on (`protocol-change/012`, ADR-007 Decision 3).
+  `start` launches through the same `Launcher` and answers `cap_call`s
+  through the same routers; what it adds is the reverse direction, a
+  `hook_call` out and a `hook_result` back on the same frame id. The
+  configuration is split along the node/invocation line: `HostConfig` is
+  everything belonging to the *node* (broker, the node's own identity and
+  pooled budget, base policy, environment, cwd, socket path, entropy,
+  clock, token file writer and unlinker, `call_timeout_ms`), and
+  `Invoking` is everything one invocation is judged under (its own
+  `{op_id, step_id}` identity and budget, base policy, demand, router and
+  ceilings) — the ceilings' tally is reset per invocation, which is what
+  makes a manifest's `requests_per_call` mean per call rather than per
+  session. `Invocation` is `Tool(name) | Event(name)`, the wire's `kind`
+  string as a closed set. `InvokeError` is `Busy | InvocationDeadline |
+  HostGone(reason) | HostFaulted(reason)`, with no malformed-answer
+  variant on purpose: `broker/framing` decodes a `hook_result` totally, so
+  an answer that will not decode is a malformed *frame* and arrives as
+  `HostFaulted`. `HostMsg` is opaque for the reason `Msg` is. The machine
+  is a `weft/state_machine` over `Idle | Answering(id) | Destroyed(reason)`
+  — the invocation's deadline is a state timeout on `Answering`, so
+  leaving that state cancels it and a fire that raced its own cancellation
+  is dropped by weft rather than delivered.
 
 ## Relationships
 
@@ -219,7 +250,9 @@ phase 1 installs and compiles an extension, and phase 2 dispatches one.
   `vet/package` decodes to decide what it may depend on),
   `simplifile` + `filepath`, `gleam_erlang`,
   `gleam_otp`, `weft` — `weft/state_machine` for the launcher's
-  node-report holder, `weft` itself for the served-call deadline
+  node-report holder *and* for the persistent host's phase machine
+  (`satellite.Host`: `Idle`/`Answering`/`Destroyed`, with the invocation
+  deadline as a state timeout), `weft` itself for the served-call deadline
   (`satellite.run_service`: one plain task, `weft.deadline`, kill-then-
   join on the way out), and `weft/poll` for the launcher's accept retry
   (`launch.accept_loop`: `poll.until` over a blocking, sliced
@@ -244,12 +277,19 @@ phase 1 installs and compiles an extension, and phase 2 dispatches one.
 
 - **Actor messages** — `satellite.Msg` (opaque): `FromWire(event)`,
   `Connected(send, destroy, ack)`, `CapStarted(id, handle)`,
-  `CapDone(id, outcome)`, `Deadline`, `Stop`. `satellite.WireIn`
-  (`WireBytes`, `WireClosed`) is what a launcher delivers.
+  `CapDone(id, outcome)`, `Deadline`, `Stop`. `satellite.HostMsg` is the
+  persistent host's own set, also opaque: `FromNode(event)`,
+  `NodeConnected(send, destroy, ack)`, `Ask(invocation, args, invoking,
+  deadline_ms, reply)`, `ServeStarted(id, handle)`, `Served(id, outcome)`,
+  `Expired`, `Halt(reply)`. `satellite.WireIn` (`WireBytes`, `WireClosed`)
+  is what a launcher delivers to either.
 - **Wire (cap channel)** — the frozen Part 1.4 framing over one AF_UNIX
   stream: `cap_call`/`cancel`/`heartbeat` in, `cap_result` out, plus the
   one terminal `outcome` frame (`{v:1, id:0, kind:"outcome", body}`) that
-  `broker/framing` does not know and the host decodes itself.
+  `broker/framing` does not know and the host decodes itself. A persistent
+  host adds `hook_call` out and `hook_result` in, correlated by a frame id
+  that climbs and is never reused, and reads no `outcome` frame at all —
+  a serving satellite ends no execution and writes none.
 - **Broker** — on the workspace seam every `cap_call` becomes a
   `broker.clear_call` under one pooled `{op_id, step_id}`; so do the
   jailed build and the node itself, on both seams. Every one of those keys
@@ -510,6 +550,37 @@ phase 1 installs and compiles an extension, and phase 2 dispatches one.
   the budget across the whole execution — fan-out buys parallelism, not
   extra resources. The node itself holds one outstanding effect, so a
   pooled cap below two is refused.
+- **On a persistent host the invocation is the unit of authority.** A
+  token is minted for one `{op_id, step_id}` and checked on every
+  `cap_call`, so a node that outlives an execution has no token of its
+  own. `invoke` mints one for *this* invocation, sends it on the
+  `hook_call`, and revokes it when the answer comes back; between
+  invocations the vault holds none and a `cap_call` is refused
+  `unauthorized` before any router sees it. **An extension may compute
+  between invocations and may not act.** The token file the node read at
+  boot is not an exception: it holds bytes this host minted nothing for,
+  so a satellite presenting them is refused like any other stranger.
+- **A persistent host answers one invocation at a time, and a breach of
+  that destroys the node.** A second `invoke` while one is open is `Busy`;
+  callers queue at whatever actor owns the host
+  (`client/extension/hosts`), never here. The two ways the satellite can
+  break the rule are both answered by destroying the node, because both
+  mean the far side is not speaking this protocol: a `hook_result` with no
+  invocation open, which correlates to nothing, and a deadline that passes
+  with no answer, which is a satellite that cannot be trusted with a
+  session's worth of state. A destroyed host stays destroyed for the
+  session — every later `invoke` is `HostGone` and `stop` answers from the
+  report it kept — because restarting one silently would hand an extension
+  a fresh set of the actors it just lost without telling anybody it had
+  lost them.
+- **The reaping obligation, restated for a node that lives.** For the
+  disposable node it is "the executor reaps every process a program
+  spawned before the next execution installs its channel". For a
+  persistent satellite it becomes **a host reaps its node before the
+  session's next host for that extension starts**, and
+  `cap/internal/dispatch.install_exclusive` on the far side is what makes
+  a breach loud rather than silent: the second node's boot refuses to
+  claim the VM-global channel slot while the first's channel actor lives.
 - **The cap token authenticates the channel; it does not confine an
   escaped `.beam`.** The token file is readable inside the jail by
   necessity. What confines a hostile `.beam` is the kernel jail and the

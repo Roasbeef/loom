@@ -340,6 +340,7 @@ fn contents(text: String) -> msgpack.MsgPackValue {
 fn inbound_id(frame: inbound.Inbound) -> Int {
   case frame {
     inbound.CapResult(id:, ..) -> id
+    inbound.HookCall(id:, ..) -> id
     inbound.IgnoredKind(id:, ..) -> id
   }
 }

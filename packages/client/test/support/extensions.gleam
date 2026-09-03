@@ -353,6 +353,7 @@ fn fetcher_manifest(origin: String, per_call: Int) -> String {
   <> "prompt_snippet = \"fetcher: fetch a url through the broker\"\n"
   <> "parameters = \"schema/fetcher.json\"\nentry = \"fetcher/tool\"\n"
   <> "timeout_ms = 60000\n\n"
+  <> "[[hook]]\nevent = \"session_start\"\nentry = \"fetcher/tool\"\n\n"
   <> "[net]\nhosts = [\""
   <> origin
   <> "\"]\nmethods = [\"GET\"]\nmax_response_bytes = 65536\n"
@@ -387,6 +388,7 @@ fn fetcher_schema() -> String {
 fn fetcher_tool() -> String {
   "import cap/net
 import ext
+import ext/hook
 import gleam/bit_array
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -440,6 +442,193 @@ fn text(bytes: BitArray) -> String {
     Ok(body) -> body
     Error(Nil) -> \"<not text>\"
   }
+}
+
+/// The one hook this fixture registers: `session_start`, which has
+/// nothing to answer, so the moment reaching the node at all is the whole
+/// of what it proves.
+pub fn on_event() -> hook.Hook {
+  hook.OnSessionStart(fn() { Nil })
+}
+"
+}
+
+/// The phase 3 integration fixture: an extension whose whole purpose is
+/// its hooks.
+///
+/// It declares one trivial tool (a manifest must), a `tool_call` hook
+/// that blocks exactly one tool name, and a `context` hook that appends a
+/// copy of the last message it was handed. Both are the shapes the ruling
+/// gives a hook the most authority over — a verdict on a call the model
+/// made, and the request's own message list — so proving them end to end
+/// over a real jailed satellite is proving the reverse direction carries
+/// what it was built for.
+///
+/// Two modules rather than one, because a `[[hook]]`'s entry module
+/// exposes `on_event` and a module has one of those.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let files = extensions.gatekeeper()
+/// ```
+///
+pub fn gatekeeper() -> List(#(String, String)) {
+  [
+    #("extension.toml", gatekeeper_manifest()),
+    #("gleam.toml", gatekeeper_project()),
+    #("schema/gatekeeper.json", gatekeeper_schema()),
+    #("src/gatekeeper/tool.gleam", gatekeeper_tool()),
+    #("src/gatekeeper/context.gleam", gatekeeper_context()),
+  ]
+}
+
+/// The one tool name the `gatekeeper` fixture's `tool_call` hook blocks.
+pub const gatekeeper_blocks = "forbidden"
+
+fn gatekeeper_manifest() -> String {
+  "[extension]\nname = \"gatekeeper\"\nversion = \"0.1.0\"\n"
+  <> "description = \"Block one tool and append one message.\"\n"
+  <> "license = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \"gatekeeper\"\n"
+  <> "description = \"Say nothing; this extension is here for its hooks.\"\n"
+  <> "prompt_snippet = \"gatekeeper: hooks only\"\n"
+  <> "parameters = \"schema/gatekeeper.json\"\nentry = \"gatekeeper/tool\"\n"
+  <> "timeout_ms = 30000\n\n"
+  <> "[[hook]]\nevent = \"tool_call\"\nentry = \"gatekeeper/tool\"\n\n"
+  <> "[[hook]]\nevent = \"context\"\nentry = \"gatekeeper/context\"\n"
+}
+
+fn gatekeeper_project() -> String {
+  "name = \"gatekeeper\"\nversion = \"0.1.0\"\ngleam = \">= 1.18.0\"\n\n"
+  <> "[dependencies]\ngleam_stdlib = \">= 1.0.0 and < 2.0.0\"\n"
+  <> "cap = { path = \"../cap\" }\next = { path = \"../ext\" }\n"
+}
+
+fn gatekeeper_schema() -> String {
+  "{\n  \"type\": \"object\",\n  \"properties\": {},\n"
+  <> "  \"required\": []\n}\n"
+}
+
+// The verdict names the tool it refused, so the assertion can tell a
+// block from a crash that happened to answer.
+fn gatekeeper_tool() -> String {
+  "import ext
+import ext/hook
+import gleam/dynamic
+
+pub fn run(
+  _arguments: dynamic.Dynamic,
+  _ctx: ext.Ctx,
+) -> Result(ext.Outcome, ext.Refusal) {
+  Ok(ext.text(\"nothing to say\"))
+}
+
+pub fn on_event() -> hook.Hook {
+  hook.OnToolCall(fn(call: hook.Call) {
+    case call.tool == \"" <> gatekeeper_blocks <> "\" {
+      True -> hook.Block(\"the gatekeeper refuses \" <> call.tool)
+      False -> hook.Allow
+    }
+  })
+}
+"
+}
+
+// Appending a *copy* rather than a message built from scratch: what is
+// under test is that a transform crossed the channel and came back, and
+// re-rendering what was handed in is the shape `hook.rendered` exists
+// for. A message built here would be testing this fixture's grasp of the
+// durable format instead.
+fn gatekeeper_context() -> String {
+  "import ext/hook
+import gleam/json
+import gleam/list
+
+pub fn on_event() -> hook.Hook {
+  hook.OnContext(fn(context: hook.Context) { echoed(kept(context)) })
+}
+
+fn kept(context: hook.Context) -> List(json.Json) {
+  list.filter_map(context.messages, hook.rendered)
+}
+
+fn echoed(messages: List(json.Json)) -> List(json.Json) {
+  case list.last(messages) {
+    Ok(final) -> list.append(messages, [final])
+    Error(Nil) -> messages
+  }
+}
+"
+}
+
+/// The oversleep fixture: one tool that runs `sleep` for far longer than
+/// its own manifest timeout, so the satellite host's invocation deadline
+/// fires and the node is destroyed.
+///
+/// Its whole purpose is the failure path, so it declares no `[net]` and
+/// asks for nothing: what is under test is what the harness does when an
+/// extension does not answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let files = extensions.sleeper()
+/// ```
+///
+pub fn sleeper() -> List(#(String, String)) {
+  [
+    #("extension.toml", sleeper_manifest()),
+    #("gleam.toml", sleeper_project()),
+    #("schema/sleeper.json", sleeper_schema()),
+    #("src/sleeper/tool.gleam", sleeper_tool()),
+  ]
+}
+
+/// How long the `sleeper` fixture is given before its invocation is over.
+/// Short, because the test waits it out; the sleep below is far longer, so
+/// which of the two fires is not a race.
+pub const sleeper_timeout_ms = 2000
+
+fn sleeper_manifest() -> String {
+  "[extension]\nname = \"sleeper\"\nversion = \"0.1.0\"\n"
+  <> "description = \"Sleep past its own deadline.\"\n"
+  <> "license = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \"sleeper\"\n"
+  <> "description = \"Sleep for longer than this tool is allowed.\"\n"
+  <> "prompt_snippet = \"sleeper: oversleep on purpose\"\n"
+  <> "parameters = \"schema/sleeper.json\"\nentry = \"sleeper/tool\"\n"
+  <> "timeout_ms = "
+  <> int.to_string(sleeper_timeout_ms)
+  <> "\n"
+}
+
+fn sleeper_project() -> String {
+  "name = \"sleeper\"\nversion = \"0.1.0\"\ngleam = \">= 1.18.0\"\n\n"
+  <> "[dependencies]\ngleam_stdlib = \">= 1.0.0 and < 2.0.0\"\n"
+  <> "cap = { path = \"../cap\" }\next = { path = \"../ext\" }\n"
+}
+
+fn sleeper_schema() -> String {
+  "{\n  \"type\": \"object\",\n  \"properties\": {},\n"
+  <> "  \"required\": []\n}\n"
+}
+
+// `cap/proc.run` rather than a busy loop: a jailed `sleep` blocks in the
+// kernel, so the node is genuinely unresponsive to the hook_call it is
+// answering rather than merely slow, which is the case the deadline is
+// for.
+fn sleeper_tool() -> String {
+  "import cap/proc
+import ext
+import gleam/dynamic
+
+pub fn run(
+  _arguments: dynamic.Dynamic,
+  _ctx: ext.Ctx,
+) -> Result(ext.Outcome, ext.Refusal) {
+  let _slept = proc.run(proc.command([\"/bin/sleep\", \"120\"]))
+  Ok(ext.text(\"awake\"))
 }
 "
 }

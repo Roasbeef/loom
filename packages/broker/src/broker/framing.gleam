@@ -5,8 +5,17 @@
 //// frame    := u32_be length ++ msgpack(map)
 //// map keys := "v":1, "id":u64, "kind":str, "body":map
 //// kinds    : hello, exec_start, exec_stdin, exec_out, exec_exit,
-////            cap_call, cap_result, cancel, heartbeat, error
+////            cap_call, cap_result, hook_call, hook_result, cancel,
+////            heartbeat, error
 //// ```
+////
+//// `hook_call` and `hook_result` are the one pair that flows the other
+//// way: the harness asks and the satellite answers
+//// (`protocol-change/012-hook-call.md`). They exist because a satellite
+//// that lives for a session has nothing to pull against after its first
+//// answer, and because a hook fires on the harness's timeline rather than
+//// the program's. They never cross the exec channel, so the Go helper
+//// neither sends nor parses them.
 ////
 //// Every inbound frame is parsed and validated as data (two-channel
 //// doctrine, design §5.6). Decoding is total: a malformed frame is a
@@ -108,6 +117,35 @@ pub type Body {
   /// The answer to a `cap_call`.
   CapResult(outcome: CapOutcome, usage: Option(MsgPackValue))
 
+  /// The harness asking a persistent satellite to answer one invocation
+  /// (`protocol-change/012`). Harness → satellite, and the only frame
+  /// that travels in that direction.
+  ///
+  /// `token` is the token minted for *this* invocation: the satellite
+  /// presents it on every `cap_call` it makes while answering, and a
+  /// `cap_call` made outside an open invocation therefore carries a
+  /// revoked token and is refused. That is what keeps a satellite which
+  /// outlives one execution from acting between them.
+  ///
+  /// `kind` is `"tool"` or `"event"` on the wire and becomes a
+  /// two-variant type at each edge; `name` is the tool or event name;
+  /// `args` is that row's payload; `deadline_ms` has the semantics of
+  /// `cap_call.deadline_ms`, and letting it pass costs the satellite its
+  /// node.
+  HookCall(
+    token: BitArray,
+    kind: String,
+    name: String,
+    args: MsgPackValue,
+    deadline_ms: Int,
+  )
+
+  /// The answer to a `hook_call`, correlated by the same frame `id`.
+  /// Satellite → harness. At most one is outstanding per satellite: a
+  /// `hook_result` with no pending call is a protocol fault the harness
+  /// destroys the node over, never a frame it tries to match up.
+  HookResult(outcome: CapOutcome)
+
   /// Cancels the running execution. Idempotent; the receiver must kill
   /// its pgroup within 2s or the broker escalates to SIGKILL of the
   /// whole helper.
@@ -194,6 +232,8 @@ fn kind_name(body: Body) -> String {
     ExecExit(..) -> "exec_exit"
     CapCall(..) -> "cap_call"
     CapResult(..) -> "cap_result"
+    HookCall(..) -> "hook_call"
+    HookResult(..) -> "hook_result"
     Cancel -> "cancel"
     Heartbeat -> "heartbeat"
     ErrorBody(..) -> "error"
@@ -294,22 +334,7 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
         #(msgpack.StringValue("deadline_ms"), msgpack.IntValue(deadline_ms)),
       ])
     CapResult(outcome:, usage:) -> {
-      let base = case outcome {
-        CapOk(value:) -> [
-          #(msgpack.StringValue("ok"), msgpack.BoolValue(True)),
-          #(msgpack.StringValue("value"), value),
-        ]
-        CapErr(code:, message:) -> [
-          #(msgpack.StringValue("ok"), msgpack.BoolValue(False)),
-          #(
-            msgpack.StringValue("error"),
-            msgpack.MapValue([
-              #(msgpack.StringValue("code"), msgpack.StringValue(code)),
-              #(msgpack.StringValue("msg"), msgpack.StringValue(message)),
-            ]),
-          ),
-        ]
-      }
+      let base = outcome_entries(outcome)
       case usage {
         None -> msgpack.MapValue(base)
         Some(value) ->
@@ -318,6 +343,15 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
           )
       }
     }
+    HookCall(token:, kind:, name:, args:, deadline_ms:) ->
+      msgpack.MapValue([
+        #(msgpack.StringValue("token"), msgpack.BinaryValue(token)),
+        #(msgpack.StringValue("kind"), msgpack.StringValue(kind)),
+        #(msgpack.StringValue("name"), msgpack.StringValue(name)),
+        #(msgpack.StringValue("args"), args),
+        #(msgpack.StringValue("deadline_ms"), msgpack.IntValue(deadline_ms)),
+      ])
+    HookResult(outcome:) -> outcome_to_msgpack(outcome)
     Cancel -> msgpack.MapValue([])
     Heartbeat -> msgpack.MapValue([])
     ErrorBody(code:, message:) ->
@@ -326,6 +360,32 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
         #(msgpack.StringValue("msg"), msgpack.StringValue(message)),
       ])
   }
+}
+
+// The `{ok, value}` / `{ok, error}` pair both result kinds carry. Shared
+// so `cap_result` and `hook_result` cannot drift into two spellings of
+// one shape — 012 specifies the second as mirroring the first.
+fn outcome_entries(outcome: CapOutcome) -> List(#(MsgPackValue, MsgPackValue)) {
+  case outcome {
+    CapOk(value:) -> [
+      #(msgpack.StringValue("ok"), msgpack.BoolValue(True)),
+      #(msgpack.StringValue("value"), value),
+    ]
+    CapErr(code:, message:) -> [
+      #(msgpack.StringValue("ok"), msgpack.BoolValue(False)),
+      #(
+        msgpack.StringValue("error"),
+        msgpack.MapValue([
+          #(msgpack.StringValue("code"), msgpack.StringValue(code)),
+          #(msgpack.StringValue("msg"), msgpack.StringValue(message)),
+        ]),
+      ),
+    ]
+  }
+}
+
+fn outcome_to_msgpack(outcome: CapOutcome) -> MsgPackValue {
+  msgpack.MapValue(outcome_entries(outcome))
 }
 
 fn limits_to_msgpack(limits: Limits) -> MsgPackValue {
@@ -404,6 +464,8 @@ fn decode_body(
     "exec_exit" -> decode_exec_exit(entries)
     "cap_call" -> decode_cap_call(entries)
     "cap_result" -> decode_cap_result(entries)
+    "hook_call" -> decode_hook_call(entries)
+    "hook_result" -> decode_hook_result(entries)
     "cancel" -> Ok(Cancel)
     "heartbeat" -> Ok(Heartbeat)
     "error" -> decode_error_body(entries)
@@ -574,6 +636,45 @@ fn decode_cap_call(entries: Entries) -> Result(Body, FrameError) {
   Ok(CapCall(token:, cap:, args:, deadline_ms:))
 }
 
+// Every field is required and there are no defaults, for the reason 006
+// gave: both ends of this wire ship from one tree, so an omitted field is
+// a bug to name rather than a shape to guess at. `kind` stays a string
+// here and becomes a two-variant type at each edge, because the frozen
+// wire vocabulary is what this module encodes.
+fn decode_hook_call(entries: Entries) -> Result(Body, FrameError) {
+  use Nil <- result.try(
+    check_keys(entries, ["token", "kind", "name", "args", "deadline_ms"]),
+  )
+  use token <- result.try(body_binary(entries, "hook_call", "token"))
+  use kind <- result.try(body_string(entries, "hook_call", "kind"))
+  use name <- result.try(body_string(entries, "hook_call", "name"))
+  use args <- result.try(body_field(entries, "hook_call", "args"))
+  use deadline_ms <- result.try(body_int(entries, "hook_call", "deadline_ms"))
+  Ok(HookCall(token:, kind:, name:, args:, deadline_ms:))
+}
+
+// The mirror of `cap_result` minus `usage`: a hook answer reserves no
+// budget of its own, because everything an invocation spent it spent
+// through the `cap_call`s it made under the invocation's token.
+fn decode_hook_result(entries: Entries) -> Result(Body, FrameError) {
+  use Nil <- result.try(check_keys(entries, ["ok", "value", "error"]))
+  use ok <- result.try(body_bool(entries, "hook_result", "ok"))
+  case ok {
+    True -> {
+      use value <- result.try(body_field(entries, "hook_result", "value"))
+      Ok(HookResult(outcome: CapOk(value:)))
+    }
+    False -> {
+      use error_value <- result.try(body_field(entries, "hook_result", "error"))
+      use outcome <- result.try(decode_outcome_error(
+        error_value,
+        "hook_result.error",
+      ))
+      Ok(HookResult(outcome:))
+    }
+  }
+}
+
 fn decode_cap_result(entries: Entries) -> Result(Body, FrameError) {
   use Nil <- result.try(check_keys(entries, ["ok", "value", "error", "usage"]))
   use ok <- result.try(body_bool(entries, "cap_result", "ok"))
@@ -601,22 +702,35 @@ fn decode_cap_err(
   usage: Option(MsgPackValue),
 ) -> Result(Body, FrameError) {
   use error_value <- result.try(body_field(entries, "cap_result", "error"))
-  case error_value {
+  use outcome <- result.try(decode_outcome_error(
+    error_value,
+    "cap_result.error",
+  ))
+  Ok(CapResult(outcome:, usage:))
+}
+
+// The `{code, msg}` map both result kinds carry their failure in. Shared
+// with the encoder's `outcome_entries` so the two result kinds cannot
+// disagree about what a failure looks like.
+fn decode_outcome_error(
+  value: MsgPackValue,
+  place: String,
+) -> Result(CapOutcome, FrameError) {
+  case value {
     msgpack.MapValue(error_entries) -> {
       use Nil <- result.try(check_keys(error_entries, ["code", "msg"]))
-      use code <- result.try(body_string(
-        error_entries,
-        "cap_result.error",
-        "code",
-      ))
-      use message <- result.try(body_string(
-        error_entries,
-        "cap_result.error",
-        "msg",
-      ))
-      Ok(CapResult(outcome: CapErr(code:, message:), usage:))
+      use code <- result.try(body_string(error_entries, place, "code"))
+      use message <- result.try(body_string(error_entries, place, "msg"))
+      Ok(CapErr(code:, message:))
     }
-    _ -> Error(malformed("cap_result.error", "a map", ""))
+
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..) -> Error(malformed(place, "a map", ""))
   }
 }
 

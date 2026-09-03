@@ -30,11 +30,11 @@ import broker/exec
 import broker/framing
 import broker/policy
 import client/extension/dispatch
+import client/extension/hosts
 import client/extension/manifest
 import client/extension/policy as ext_policy
 import client/extension/record
 import client/extension/seam
-import codemode/enforcement
 import codemode/identity
 import codemode/satellite
 import core/clock
@@ -140,24 +140,19 @@ pub fn a_test_trust_pins_only_what_it_was_given_test() {
   assert translated.trust == pinned
 }
 
-pub fn the_ceilings_are_the_manifests_request_count_and_one_call_test() {
-  let ceilings = ext_policy.ceilings(brave_net())
-  assert list.contains(
-    ceilings,
-    satellite.CapCeiling(
-      cap: ext_policy.net_cap,
-      admissions: 4,
-      code: ext_policy.ceiling_code,
-    ),
-  )
-  assert list.contains(
-    ceilings,
-    satellite.CapCeiling(
-      cap: ext_policy.call_cap,
-      admissions: 1,
-      code: ext_policy.call_ceiling_code,
-    ),
-  )
+/// The manifest's `requests_per_call` is the whole ceiling table now.
+/// Phase 1 had a second one, bounding how many times a node could ask
+/// which call it was serving; `protocol-change/012` removed the question
+/// along with the pull it belonged to.
+pub fn the_ceiling_is_the_manifests_request_count_test() {
+  assert ext_policy.ceilings(brave_net())
+    == [
+      satellite.CapCeiling(
+        cap: ext_policy.net_cap,
+        admissions: 4,
+        code: ext_policy.ceiling_code,
+      ),
+    ]
 }
 
 pub fn an_extension_with_no_net_has_a_zero_request_ceiling_test() {
@@ -222,48 +217,6 @@ pub fn the_boot_summary_counts_bindings_and_names_no_value_test() {
   assert string.contains(line, "1 secret bindings")
   assert !string.contains(line, "BRAVE_API_KEY")
   assert ext_policy.summary(manifest.no_net()) == "no network"
-}
-
-// --- the ext.call arm ------------------------------------------------------
-
-pub fn ext_call_answers_the_shape_cap_ext_decodes_test() {
-  // The four fields `cap/ext`'s module doc pins, at the msgpack types it
-  // reads them at. `args` is text and not a msgpack value, which is the
-  // one that would silently break: `gleam_json`'s parser is the only
-  // route to a `Dynamic` the extension seam admits.
-  let value =
-    seam.call_value(seam.Call(
-      tool: "web_search",
-      args: "{\"query\":\"gleam\"}",
-      strand: "main",
-      deadline_ms: 19_000,
-    ))
-  assert field(value, "tool") == Ok(msgpack.StringValue("web_search"))
-  assert field(value, "args")
-    == Ok(msgpack.StringValue("{\"query\":\"gleam\"}"))
-  assert field(value, "strand") == Ok(msgpack.StringValue("main"))
-  assert field(value, "deadline_ms") == Ok(msgpack.IntValue(19_000))
-}
-
-pub fn ext_call_is_read_when_the_satellite_asks_test() {
-  // The deadline is what is *left*, so the thunk has to be evaluated at
-  // serve time. A value computed when the router was built would hand
-  // every extension the whole timeout however long the launch took.
-  let counted =
-    seam.routing(
-      seam.Extension(
-        call: fn() {
-          seam.Call(tool: "t", args: "{}", strand: "main", deadline_ms: 5)
-        },
-        egress: seam.ReachesNothing(refusal: ext_policy.network_off("x")),
-      ),
-      over: refusing_router,
-    )
-  let assert Ok(satellite.ServedHere(serve:)) =
-    counted(a_request("ext.call", msgpack.MapValue([])))
-    as "ext.call routes"
-  let assert framing.CapOk(value:) = serve() as "ext.call is always answered"
-  assert field(value, "deadline_ms") == Ok(msgpack.IntValue(5))
 }
 
 // --- the net.request arm ---------------------------------------------------
@@ -344,9 +297,6 @@ pub fn an_extension_with_no_net_is_refused_before_anything_is_decoded_test() {
   let router =
     seam.routing(
       seam.Extension(
-        call: fn() {
-          seam.Call(tool: "t", args: "{}", strand: "main", deadline_ms: 1)
-        },
         egress: seam.ReachesNothing(refusal: ext_policy.network_off("hello")),
       ),
       over: refusing_router,
@@ -427,15 +377,7 @@ pub fn a_completed_outcome_is_the_extensions_content_blocks_test() {
       a_ctx(),
       a_record(),
       a_tool(),
-      satellite.Run(
-        outcome: Ok(
-          satellite.Completed(value: reply_value(
-            [#("text", "the answer"), #("json", "{\"n\":1}")],
-            False,
-          )),
-        ),
-        node: enforcement.Unreported("a fixture run"),
-      ),
+      Ok(reply_value([#("text", "the answer"), #("json", "{\"n\":1}")], False)),
     )
   assert outcome.is_error == False
   assert outcome.terminate == tool.ContinueRun
@@ -454,12 +396,7 @@ pub fn a_terminating_outcome_ends_the_run_test() {
       a_ctx(),
       a_record(),
       a_tool(),
-      satellite.Run(
-        outcome: Ok(
-          satellite.Completed(value: reply_value([#("text", "done")], True)),
-        ),
-        node: enforcement.Unreported("a fixture run"),
-      ),
+      Ok(reply_value([#("text", "done")], True)),
     )
   assert outcome.terminate == tool.TerminateRun
   assert outcome.is_error == False
@@ -473,15 +410,7 @@ pub fn an_errored_outcome_is_in_band_and_never_terminates_test() {
       a_ctx(),
       a_record(),
       a_tool(),
-      satellite.Run(
-        outcome: Ok(satellite.Errored(
-          message: "no such city",
-          details: msgpack.MapValue([
-            #(msgpack.StringValue("tool"), msgpack.StringValue("hello")),
-          ]),
-        )),
-        node: enforcement.Unreported("a fixture run"),
-      ),
+      Error(hosts.Refused(message: "no such city")),
     )
   assert outcome.is_error == True
   assert outcome.terminate == tool.ContinueRun
@@ -492,26 +421,55 @@ pub fn an_errored_outcome_is_in_band_and_never_terminates_test() {
   assert string.contains(text, "hello")
 }
 
-pub fn a_run_that_produced_no_outcome_says_what_confined_the_node_test() {
-  // A failure that says nothing about what confined the node invites the
-  // reader to assume the strongest thing.
+/// An event nobody registered for is an ordinary answer: the bus offers
+/// every installed extension every moment, and most care about none.
+pub fn an_unhandled_event_reads_as_such_test() {
+  let outcome =
+    dispatch.settle(a_ctx(), a_record(), a_tool(), Error(hosts.Unhandled))
+  assert outcome.is_error == True
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
+    as "one text block carries the failure"
+  assert string.contains(text, "no handler")
+}
+
+/// A departed host says it will stay departed, so a model that reads it
+/// stops trying rather than burning the run on retries.
+/// `Gone` carries its own reason rather than a fixed sentence, and the
+/// reply repeats it. Whether the extension is out for good is a fact
+/// about *why* it could not be reached — a destroyed satellite is, a
+/// registry that did not answer in time is not — and a model told
+/// "unavailable for the rest of this session" about a busy moment would
+/// stop trying for no reason.
+pub fn a_gone_host_repeats_the_reason_it_was_given_test() {
   let outcome =
     dispatch.settle(
       a_ctx(),
       a_record(),
       a_tool(),
-      satellite.Run(
-        outcome: Error(satellite.DeadlineExceeded),
-        node: enforcement.Unreported("the node was reaped"),
-      ),
+      Error(hosts.Gone(reason: "another invocation is still holding it")),
     )
+  assert outcome.is_error == True
+  let assert [message.ToolResultText(text:, text_signature: _)] =
+    outcome.content
+    as "one text block carries the failure"
+  assert string.contains(text, "another invocation is still holding it")
+  assert !string.contains(text, "rest of this session")
+}
+
+pub fn an_invocation_that_outran_its_deadline_says_so_test() {
+  // The deadline costs the extension its satellite, and the reply says
+  // both halves: this call did not finish, and the extension is out for
+  // the rest of the session, so a model that reads it stops trying.
+  let outcome =
+    dispatch.settle(a_ctx(), a_record(), a_tool(), Error(hosts.Deadline))
   assert outcome.is_error == True
   assert outcome.terminate == tool.ContinueRun
   let assert [message.ToolResultText(text:, text_signature: _)] =
     outcome.content
     as "one text block carries the failure"
   assert string.contains(text, "timeout")
-  assert string.contains(text, "no enforcement report")
+  assert string.contains(text, "rest of this session")
 }
 
 pub fn a_malformed_outcome_renders_rather_than_vanishing_test() {
@@ -523,10 +481,7 @@ pub fn a_malformed_outcome_renders_rather_than_vanishing_test() {
       a_ctx(),
       a_record(),
       a_tool(),
-      satellite.Run(
-        outcome: Ok(satellite.Completed(value: msgpack.StringValue("bare"))),
-        node: enforcement.Unreported("a fixture run"),
-      ),
+      Ok(msgpack.StringValue("bare")),
     )
   assert outcome.is_error == False
   let assert [message.ToolResultText(text:, text_signature: _)] =
@@ -585,9 +540,6 @@ fn recording(
   let router =
     seam.routing(
       seam.Extension(
-        call: fn() {
-          seam.Call(tool: "t", args: "{}", strand: "main", deadline_ms: 1)
-        },
         egress: seam.Reaches(perform: fn(ask) {
           process.send(seen, ask)
           answer(ask)

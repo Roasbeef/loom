@@ -177,6 +177,7 @@ import client/contributions
 import client/escalate
 import client/extension/dispatch as extension_dispatch
 import client/extension/hooks as extension_hooks
+import client/extension/hosts as extension_hosts
 import client/extension/installed
 import client/extension/manifest as extension_manifest
 import client/extension/record as extension_record
@@ -199,6 +200,7 @@ import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock.{type Clock}
+import core/ids
 import gleam/bool
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/int
@@ -1353,20 +1355,25 @@ fn code_mode_seam(
 // refuses the boot in `contributions.registry`.
 
 // One installed extension, registered: the tools it contributes to the
-// registry, and its subscription on the hook bus. The two travel
+// registry, its subscription on the hook bus, and the recipe the
+// session's satellite registry launches its node from. All three travel
 // together because discovery is the expensive half — it re-derives four
-// content addresses per extension — and doing it twice would let the
-// tool side and the hook side disagree about what is installed.
+// content addresses per extension — and doing it three times would let
+// the tool side, the hook side and the host disagree about what is
+// installed.
 type Registration {
   Registration(
     contribution: contributions.Contribution,
     subscription: Option(extension_hooks.Extension),
+    hosting: extension_hosts.Extension,
   )
 }
 
 fn extension_registrations(
   settings: Settings,
   logger: Logger,
+  hosts: extension_hosts.Hosts,
+  hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
 ) -> List(Registration) {
   case settings.home {
@@ -1378,7 +1385,7 @@ fn extension_registrations(
     Some(home) -> {
       let root = extension_record.root_for(home)
       list.filter_map(installed.discover(root), fn(found) {
-        extension_contribution(root, found, logger, host)
+        extension_contribution(root, found, logger, hosts, hooking, host)
       })
     }
   }
@@ -1388,6 +1395,8 @@ fn extension_contribution(
   root: extension_record.Root,
   found: installed.Discovered,
   logger: Logger,
+  hosts: extension_hosts.Hosts,
+  hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
 ) -> Result(Registration, Nil) {
   case found {
@@ -1400,7 +1409,16 @@ fn extension_contribution(
     }
 
     installed.Ready(record: written, manifest: decoded, artifact:) ->
-      extension_registered(root, written, decoded, artifact, logger, host)
+      extension_registered(
+        root,
+        written,
+        decoded,
+        artifact,
+        logger,
+        hosts,
+        hooking,
+        host,
+      )
   }
 }
 
@@ -1410,6 +1428,8 @@ fn extension_registered(
   decoded: extension_manifest.Manifest,
   artifact: String,
   logger: Logger,
+  hosts: extension_hosts.Hosts,
+  hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
 ) -> Result(Registration, Nil) {
   case host {
@@ -1425,22 +1445,28 @@ fn extension_registered(
       Error(Nil)
     }
 
-    Some(config) ->
+    Some(config) -> {
+      let dispatch_config =
+        extension_dispatch.Config(
+          host: config,
+          // The session's satellite registry, reached by name: it starts
+          // under the service supervisor further down, after this
+          // registry is assembled.
+          hosts:,
+          // The process environment, the same store `api_key_env`
+          // reads. The value never reaches a `Tool`, a frame or a log:
+          // this function is handed to `broker/egress`, which reads it
+          // after the origin and method are judged and puts the result
+          // straight on the wire.
+          secrets: env_text,
+          // The platform trust store. A pinned root is a test-only
+          // shape, and there is no operator surface for one.
+          trust: egress.SystemRoots,
+          launch: extension_dispatch.jailed_node,
+        )
       case
         extension_dispatch.tools(
-          extension_dispatch.Config(
-            host: config,
-            // The process environment, the same store `api_key_env`
-            // reads. The value never reaches a `Tool`, a frame or a log:
-            // this function is handed to `broker/egress`, which reads it
-            // after the origin and method are judged and puts the result
-            // straight on the wire.
-            secrets: env_text,
-            // The platform trust store. A pinned root is a test-only
-            // shape, and there is no operator surface for one.
-            trust: egress.SystemRoots,
-            launch: extension_dispatch.jailed_node,
-          ),
+          dispatch_config,
           written,
           decoded,
           sources: extension_record.sources(root, written.name),
@@ -1471,10 +1497,17 @@ fn extension_registered(
               origin: contributions.Extension(name: written.name),
               tools:,
             ),
-            subscription: extension_subscription(written, logger),
+            subscription: extension_subscription(written, logger, hooking),
+            hosting: extension_dispatch.hosting(
+              dispatch_config,
+              written,
+              decoded,
+              artifact:,
+            ),
           ))
         }
       }
+    }
   }
 }
 
@@ -1496,20 +1529,23 @@ fn extension_registered(
 fn extension_subscription(
   written: extension_record.Record,
   logger: Logger,
+  hooking: extension_hooks.Invoker,
 ) -> Option(extension_hooks.Extension) {
   case list.map(written.hooks, fn(hook) { hook.0 }) {
     [] -> None
     events -> {
       inert_hooks(written.name, events, logger)
 
-      // The invoker is `unwired` until the persistent satellite host
-      // lands beside this: the subscription is real, and the first event
-      // it receives drops it saying the satellite is not there. That is
-      // the honest failure, and the join is one call.
+      // Every subscription shares one invoker, and it is the session's
+      // satellite registry: `hosts.invoker` closes over the registry's
+      // name and the coordinates a hook's effects clear under, and takes
+      // the extension's name per call. So the bus asks the same door a
+      // tool call asks, and an extension whose satellite is gone answers
+      // `Gone` here for the same reason it does there.
       Some(extension_hooks.Extension(
         name: written.name,
         events:,
-        invoke: extension_hooks.unwired(),
+        invoke: hooking,
       ))
     }
   }
@@ -1891,11 +1927,33 @@ fn assemble(
   // every resolution silently changes what one of the two names means;
   // no built-in host can produce one, and an extension that would is
   // exactly the install an operator has to be told about.
-  // Discovery happens once, here, and answers two questions: which tools
-  // each installed extension contributes, and which hook events it
-  // subscribed to. The hook half is used further down, after the effects
-  // record exists to compose it into.
-  let extensions = extension_registrations(settings, logger, code_mode_host)
+  // The session's satellite registry, on the same two-name pattern as the
+  // scratch store: the seam closes over the name now, and the actor that
+  // answers it starts under the service supervisor below, because the
+  // registry has to exist before the tools that reach it are built.
+  //
+  // Discovery then happens once and answers three questions: which tools
+  // each installed extension contributes, which hook events it
+  // subscribed to, and how its node is launched. The hook half is used
+  // further down, after the effects record exists to compose it into.
+  let hosts_name = process.new_name(prefix: "loom_ext_hosts")
+  let hosts_seam =
+    extension_hosts.seam(
+      hosts_name,
+      clock:,
+      margin_ms: extension_host_margin_ms,
+    )
+  let extensions =
+    extension_registrations(
+      settings,
+      logger,
+      hosts_seam,
+      extension_hosts.invoker(
+        hosts_seam,
+        at: hook_coordinates(settings, entropy(), clock),
+      ),
+      code_mode_host,
+    )
 
   use tool_registry <- result.try(
     list.append(
@@ -2002,7 +2060,7 @@ fn assemble(
       base_policy:,
       escalations: escalate.seam(escalate_config),
       demand: settings.demand,
-      env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
+      env: session_environment(),
       clock:,
       entropy:,
     ))
@@ -2115,6 +2173,16 @@ fn assemble(
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
     |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    // The satellite registry is in this tier because a restart costs
+    // exactly what a satellite crash costs, which extensions are already
+    // written to meet: every host it held is `Gone` to its next caller,
+    // the tools stay registered, and each lost node is reaped by the
+    // launcher's own janitor when the registry that owned it dies.
+    |> sup.add(extension_hosts.supervised(
+      hosts_name,
+      clock,
+      list.map(extensions, fn(registration) { registration.hosting }),
+    ))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     |> sup.add(
@@ -2356,6 +2424,69 @@ fn policy_label(policy: schedule.Policy) -> String {
     schedule.ModelSchedulesWake -> "wake"
   }
 }
+
+// The coordinates every hook invocation in this session runs under.
+//
+// The bus's `Invoker` carries none, which is right: a hook fires on the
+// harness's own timeline rather than inside a model-made tool call, so
+// there is no run whose `{op_id, step_id}` it could borrow. One operation
+// is minted here for the session's hooks instead, and it is what a hook's
+// capability token is bound to and what its effects clear against — so a
+// hook's reads are attributable to "the extension hooks", never to
+// whichever run happened to be in flight.
+fn hook_coordinates(
+  settings: Settings,
+  seed: Int,
+  clock: Clock,
+) -> extension_hosts.Coordinates {
+  let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+  extension_hosts.Coordinates(
+    op_id:,
+    step_id: hook_step_id,
+    // Attribution only: `hosts.Coordinates.strand` names the workspace
+    // seam's reads, and a hook's are the session's rather than any one
+    // strand's. The session's root strand is the honest name for that.
+    strand: root_strand,
+    workspace: settings.workspace,
+    base_policy: settings.base_policy,
+    demand: settings.demand,
+    env: session_environment(),
+  )
+}
+
+/// The strand a hook's harness-side reads are attributed to.
+const root_strand = "main"
+
+/// The step every hook invocation clears under. One name, because the
+/// hooks of a session are one long-running step rather than a sequence of
+/// them, and the pooled budget follows the pair.
+const hook_step_id = "extension-hooks"
+
+/// The environment a satellite's children inherit.
+///
+/// Allowlist-constructed and shared by the tool path and the hook path,
+/// so a host launched by whichever came first is the same host.
+fn session_environment() -> List(#(String, String)) {
+  [#("PATH", "/usr/local/bin:/usr/bin:/bin")]
+}
+
+/// Slack over an invocation's own deadline before a caller gives up on the
+/// satellite registry.
+///
+/// Derived rather than picked. The registry performs the invocation on
+/// its own timeline and `codemode/satellite.invoke` waits fifteen seconds
+/// past the invocation's deadline before it gives up on a wedged host, so
+/// a caller that gave up sooner would report a wedged registry for an
+/// invocation that was merely being timed out properly. Five seconds on
+/// top is this actor's own answer travelling.
+///
+/// It is deliberately *not* large enough to hide an extension's first
+/// use, which launches a jailed node before the invocation begins:
+/// `hosts.seam` states that bound as `deadline + margin + one launch`
+/// rather than absorbing it, because a margin that hid a launch would
+/// also hide a wedged registry for the same number of seconds on every
+/// later call.
+const extension_host_margin_ms = 20_000
 
 /// How many restarts the service supervisor allows within
 /// `service_restart_period` seconds before it gives up and the host

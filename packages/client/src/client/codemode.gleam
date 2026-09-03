@@ -1469,6 +1469,25 @@ pub fn work_root(
   )
 }
 
+/// The work root a session-lived extension host runs under.
+///
+/// Keyed on the extension's name rather than on `{op_id, step_id,
+/// source_index}`, because a host outlives every one of those: it is
+/// launched on an extension's first use and reaped at session end, and its
+/// socket and token file have to stay where they were put for the whole of
+/// that. Two extensions get two roots; one extension gets one, whichever
+/// call happened to start it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.host_root(config, "web_search") != codemode.work_root(...)
+/// ```
+///
+pub fn host_root(config: Config, extension extension: String) -> String {
+  config.work_root <> "/" <> digest("host\n" <> extension)
+}
+
 /// The cap-channel socket for an execution rooted at `root`. One
 /// character, for the same reason `exec_root` is a digest.
 ///

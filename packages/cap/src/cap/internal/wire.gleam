@@ -67,6 +67,61 @@ pub fn encode_cancel(id: Int) -> Result(BitArray, msgpack.EncodeError) {
   encode_frame(id, "cancel", msgpack.MapValue([]))
 }
 
+/// The answer half of a `hook_result` body (spec Part 1.4,
+/// `protocol-change/012`): the satellite's reply to one invocation the
+/// harness asked for.
+///
+/// Its own type rather than `channel.CapOutcome` because `channel`
+/// imports this module and not the other way round, and because the two
+/// mean opposite things: a `CapOutcome` is something the harness said to
+/// the satellite, and this is the one thing the satellite says back.
+pub type Answer {
+  /// The invocation produced this value.
+  Answered(value: MsgPackValue)
+
+  /// The invocation did not produce a value, under this in-band code.
+  Refused(code: String, message: String)
+}
+
+/// Encodes a `hook_result` frame correlated to the `hook_call` `id` it
+/// answers: `{ok: true, value}` or `{ok: false, error: {code, msg}}`.
+///
+/// No `usage` key, unlike `cap_result`: an invocation reserves no budget
+/// of its own, because everything it spent it spent through the
+/// `cap_call`s it made under the invocation's token.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(_bytes) =
+///   wire.encode_hook_result(3, wire.Answered(wire.string("done")))
+/// ```
+///
+pub fn encode_hook_result(
+  id: Int,
+  answer: Answer,
+) -> Result(BitArray, msgpack.EncodeError) {
+  let body = case answer {
+    Answered(value:) ->
+      msgpack.MapValue([
+        #(msgpack.StringValue("ok"), msgpack.BoolValue(True)),
+        #(msgpack.StringValue("value"), value),
+      ])
+    Refused(code:, message:) ->
+      msgpack.MapValue([
+        #(msgpack.StringValue("ok"), msgpack.BoolValue(False)),
+        #(
+          msgpack.StringValue("error"),
+          msgpack.MapValue([
+            #(msgpack.StringValue("code"), msgpack.StringValue(code)),
+            #(msgpack.StringValue("msg"), msgpack.StringValue(message)),
+          ]),
+        ),
+      ])
+  }
+  encode_frame(id, "hook_result", body)
+}
+
 fn encode_frame(
   id: Int,
   kind: String,

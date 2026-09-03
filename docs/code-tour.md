@@ -781,7 +781,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1921`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:1930`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1431,7 +1431,7 @@ rather than re-running the prune and hoping it lands the same way twice.
 
 What survives is vetted the way a code-mode program is, against a third
 allowlist: `extension_cap_modules` is the workspace seam widened by
-exactly `cap/ext` and `ext` (`vet/policy.gleam:453`). Then it is compiled
+exactly one name, `ext` (`vet/policy.gleam:455`). Then it is compiled
 by the same jailed, network-off `gleam build` code mode uses, against the
 same offline seed, and the install record is written last and the tree
 renamed into place after it — so a directory under `~/.loom/extensions`
@@ -1440,14 +1440,17 @@ is either a complete install or absent. `check`
 every read: the tree digest, the manifest, the vetting, the recorded
 allowlist, and the compiled artifact's own content address.
 
-Inside the jail the extension is an ordinary satellite with one extra
-question to ask. A code-mode program is submitted source with a `main`,
+Inside the jail the extension is an ordinary satellite that waits to be
+told what to do. A code-mode program is submitted source with a `main`,
 so the harness knows its arguments at launch; an extension is compiled
-once and run many times, so *the call* is what varies. `serve`
-(`ext/runtime.gleam:84`) is the single line the generated entry module
-contains: it asks the harness which tool this execution is for through
-`call` (`cap/ext.gleam:77`), dispatches on the name, and returns one
-outcome frame. One satellite serves exactly one call.
+once and invoked many times, so *the call* is what varies. `serving`
+(`ext/runtime.gleam:161`) is the single call the generated entry module
+contains: it hands a tool table and an event table to `cap/runtime`'s
+serving loop, which answers each `hook_call` the harness sends and writes
+back one `hook_result`. One satellite serves a session's worth of
+invocations, one at a time, each under a token minted for that invocation
+and revoked when it answers — so a node that outlives an execution
+outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
 lets it is `registry` (`client/contributions.gleam:191`): the tool table

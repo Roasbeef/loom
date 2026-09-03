@@ -1467,6 +1467,15 @@ fn handle_frame(machine: Machine, frame: Frame) -> Machine {
       mark_dead(machine, ProtocolViolation(kind: "cap_call"))
     framing.CapResult(..) ->
       mark_dead(machine, ProtocolViolation(kind: "cap_result"))
+
+    // The hook pair belongs to the capability channel between a harness
+    // and a persistent satellite (protocol-change/012); it never crosses
+    // the exec channel in either direction, so a helper that sends one
+    // is as broken as one that sends a `cap_call`.
+    framing.HookCall(..) ->
+      mark_dead(machine, ProtocolViolation(kind: "hook_call"))
+    framing.HookResult(..) ->
+      mark_dead(machine, ProtocolViolation(kind: "hook_result"))
     framing.Cancel -> mark_dead(machine, ProtocolViolation(kind: "cancel"))
   }
 }

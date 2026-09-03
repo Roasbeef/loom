@@ -607,7 +607,9 @@ starting another.
 
 `docs/architecture/extensions.md` is the whole of it from the extension's
 side: the two tiers, the seam, the manifest, brokered egress and the
-secret bindings, and what stands built against what is still planned.
+secret bindings, and what stands built against what is still planned —
+including phase 3's persistent satellite, which is what the section below
+dispatches onto.
 
 ## Dispatching an extension
 
@@ -625,22 +627,33 @@ provider's cached byte prefix on every request. Everything else becomes
 one `contributions.Contribution(Extension(name), tools)`, appended after
 the built-ins, and a repeated name refuses the boot.
 
-A call to one of those tools is **one satellite execution of the
-artifact the install compiled**. `client/extension/dispatch` prepares a
-work directory keyed on `{op_id, step_id, source_index}` — the same
-digest `code_mode` uses, so an extension call and a `code_mode` call in
-one assistant message cannot share a socket or a token file — runs
-`satellite.run` on the install's `artifact/` beam set, removes the
-directory, and settles the `outcome` frame into an ordinary
-`ToolOutcome`. Latency is a node launch per call and no build, because
-the build happened at install; a persistent per-extension satellite
-(phase 3) removes even that.
+A call to one of those tools is **one invocation of a satellite the
+session already holds open**. `client/extension/hosts` is a supervised
+per-session actor keeping at most one `satellite.Host` per installed
+extension, launched lazily on that extension's first use, and
+`client/extension/dispatch` asks it rather than starting a node itself.
+The host's work directory is keyed on the extension's *name*
+(`client/codemode.host_root`) rather than on the `{op_id, step_id,
+source_index}` a `code_mode` execution uses, because a host outlives all
+three — and the two key spaces stay disjoint, so an extension call and a
+`code_mode` call in one assistant message still cannot share a socket or
+a token file. Latency is one node launch per extension per session and no
+build, because the build happened at install.
 
-The router the execution runs behind is
+Authority does not follow the node. The host mints a token bound to the
+invocation's `{op_id, step_id}`, sends it on the `hook_call`, and revokes
+it when the `hook_result` comes back, so an actor an extension kept alive
+between calls is refused `unauthorized` if it reaches for a capability.
+The registry serialises invocations on its own mailbox — deliberately
+session-wide rather than per-extension, since an extension tool is
+`tool.Exclusive` anyway — and a host the satellite lost is `Gone` for the
+rest of the session rather than quietly restarted.
+
+The router an invocation runs behind is
 `docs/architecture/code-mode.md`'s "Dispatching an extension": the
-extension arm answering `ext.call` and `net.request` over the workspace
-bridge over `satellite.default_router`. Two things about it belong here
-rather than there. The `Ctx.grants` an escalation approval attributed to
+extension arm answering `net.request` over the workspace bridge over
+`satellite.default_router`. Two things about it belong here rather than
+there. The `Ctx.grants` an escalation approval attributed to
 *this call* are deliberately **not** composed onto the run phase: an
 operator approved an extension once, at install, having read a manifest,
 and a grant approved mid-run would widen the jail past the terms of that
@@ -692,9 +705,10 @@ real websocket `subscribe` returning a snapshot.
 | `client/extension/install.gleam` | The pipeline and its six named layers, the prune that runs first, the staging discipline, and the generated satellite entry. |
 | `client/extension/installed.gleam` | Discovery: the five re-derivations that decide whether an install is still what was approved — the tree digest, the manifest, the vetting, the recorded allowlist and the artifact's own content address. |
 | `client/extension/cli.gleam` | `loom ext install|list|remove|verify`, and the build seam over a started plane. |
-| `client/extension/policy.gleam` | The manifest's `[net]` table as an `egress.Policy`, the per-execution ceilings, and the refusal vocabulary. |
-| `client/extension/seam.gleam` | The `ext.call` and `net.request` router arms: msgpack in, msgpack out, no policy. |
-| `client/extension/dispatch.gleam` | An install record as `tool.Tool`s, and one jailed satellite per call. |
+| `client/extension/policy.gleam` | The manifest's `[net]` table as an `egress.Policy`, the per-invocation ceilings, and the refusal vocabulary. |
+| `client/extension/seam.gleam` | The `net.request` router arm: msgpack in, msgpack out, no policy. |
+| `client/extension/hosts.gleam` | The session's satellite registry: one host per installed extension, started lazily, serialising invocations, reaped on the way out. |
+| `client/extension/dispatch.gleam` | An install record as `tool.Tool`s, and the invocation of the session's host for that extension. |
 | `client/demo.gleam` | The M3 acceptance flow, driven through the protocol only. |
 | `client/internal/ffi_crypto.gleam`, `.../ffi_file.gleam`, `.../ffi_os.gleam`, `client_ffi.erl` | Every external the package has, confined: constant-time compare, exclusive private file creation, clock, entropy, `PATH` lookup, the `SIGTERM` relay, and the documented halt. |
 | `packages/client/protocol.md` | The normative ClientGateway body document. |

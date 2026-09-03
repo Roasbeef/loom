@@ -1,14 +1,17 @@
 //// An installed extension, dispatched for real: a jailed build at
-//// install, a jailed satellite per call, a brokered `net.request` to a
-//// real TLS origin, and a credential that reaches the origin without ever
-//// reaching the jail.
+//// install, one jailed satellite held open for the session, a brokered
+//// `net.request` to a real TLS origin, and a credential that reaches the
+//// origin without ever reaching the jail.
 ////
-//// This is phase 2's exit criterion minus the model. The orchestrator's
-//// real drive is what proves a provider calls `web_search`; what is
-//// proved here is everything under that: the registry contribution, the
-//// `ext.call` hand-over, the `net.request` arm, the egress policy the
-//// manifest translated to, the per-execution request ceiling, and the two
-//// absence claims the whole design rests on —
+//// This is phases 2 and 3 minus the model. The orchestrator's real drive
+//// is what proves a provider calls `web_search`; what is proved here is
+//// everything under that: the registry contribution, the `net.request`
+//// arm, the egress policy the manifest translated to, the per-invocation
+//// request ceiling, the persistent host's own three claims — two tool
+//// calls reach one node launch, an `Event` invocation reaches the
+//// handler a `[[hook]]` named, and an extension that ignores its
+//// deadline loses its satellite for the session — and the two absence
+//// claims the whole design rests on —
 ////
 //// - **the key is not in the jail's environment.** The satellite's
 ////   `LaunchSpec` is captured on the way past and both halves are read:
@@ -54,6 +57,8 @@ import client/contributions
 import client/extension/archive
 import client/extension/cli
 import client/extension/dispatch
+import client/extension/hooks
+import client/extension/hosts
 import client/extension/install
 import client/extension/installed
 import client/extension/manifest as extension_manifest
@@ -61,12 +66,14 @@ import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
 import client/serve
+import codemode/identity
 import codemode/launch
 import codemode/satellite
 import core/clock
 import core/ids
 import core/json
 import core/message
+import core/msgpack
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -78,12 +85,18 @@ import gleam/string
 import simplifile
 import support/extensions
 import support/origin
+import telemetry/log
 import tools/tool
 
 /// The value the operator's environment holds and nothing else may see.
 /// Distinctive enough that a substring search over a few thousand frame
 /// bytes means what it says.
 const secret_value = "loom-fixture-secret-2f9c41ab"
+
+/// The step every call in this module is dispatched under. Named so the
+/// node's own step can be asserted against it: a node dispatched under
+/// the caller's coordinates is the bug, not a detail.
+const caller_step_id = "turn-1:tools"
 
 /// How many requests one call of the fixture may make. Two, so a call
 /// that asks for three proves the third is refused *and* that the first
@@ -104,7 +117,7 @@ pub type EunitTest {
 /// 180 s of its own) and then three satellite launches, so a smaller
 /// ceiling would substitute an anonymous eunit timeout for this suite's
 /// own account of what happened.
-const e2e_timeout_seconds = 600
+const e2e_timeout_seconds = 1200
 
 const gleeunit_timeout_scale = 10
 
@@ -142,9 +155,11 @@ fn drive(ready: Ready) -> Nil {
     Ok(installed_at) -> {
       let taps = process.new_subject()
       let specs = process.new_subject()
+      let hosts_name = process.new_name(prefix: "loom_e2e_hosts")
       let config =
         dispatch.Config(
           host: installed_at.host,
+          hosts: hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
           // Only the fixture's own binding resolves. A lookup for
           // anything else answers `Error(Nil)`, which is what makes this
           // function's whole reach one variable.
@@ -161,7 +176,19 @@ fn drive(ready: Ready) -> Nil {
           launch: tapping(taps, specs),
         )
 
+      // The registry a booting server would build, and the satellite
+      // registry it would build beside it, from one configuration.
       let registry = contributed(config, installed_at)
+      let assert Ok(_started) =
+        hosts.start(hosts_name, wall_clock(), [
+          dispatch.hosting(
+            config,
+            installed_at.record,
+            installed_at.manifest,
+            artifact: installed_at.artifact,
+          ),
+        ])
+        as "the session's satellite registry must start"
       assert list.contains(tool.names(registry), "fetcher")
 
       // Every tool the registry offers is offered to the model, so the
@@ -188,6 +215,18 @@ fn drive(ready: Ready) -> Nil {
       // the launcher sets, and what the kernel will pass through at all.
       let assert Ok(spec) = process.receive(specs, within: 0)
         as "the launcher must have been handed a spec"
+
+      // The node runs under an operation of its own, and not under the
+      // one of whichever call launched it. `broker.abort(op_id)` is
+      // issued at the end of every code-mode execution and by every node
+      // teardown, so a node sharing an operation with a run would be
+      // killed by the next ordinary thing that run finished — and every
+      // hook-launched host shares one operation, so one teardown would
+      // take them all. Read off the real spec, because this is the one
+      // place the launch's own coordinates are visible.
+      assert identity.step_id(spec.identity) == dispatch.host_step_id
+      assert identity.step_id(spec.identity) != caller_step_id
+
       let node_env = launch.node_env(spec)
       assert !list.any(node_env, fn(pair) {
         pair.0 == extensions.fetcher_env
@@ -210,6 +249,36 @@ fn drive(ready: Ready) -> Nil {
         <> int.to_string(list.length(frames))
         <> " frames on the channel, none carrying the credential",
       )
+
+      // The persistent shape's own claim: a second call reaches the same
+      // node. Counted from the launcher's specs rather than inferred from
+      // how quick it felt.
+      let second = call(registry, installed_at, url, times: 1)
+      assert !second.is_error
+      assert string.contains(rendered(second), "1 ok 200 the origin answered")
+      assert process.receive(specs, within: 250) == Error(Nil)
+      io.println("extension host e2e: two invocations, one node launch")
+
+      // And an event reaches the same node over the same channel. The
+      // payload is empty because wave B is what fixes the per-event
+      // shapes; what is proved here is that a hook_call of kind `event`
+      // is dispatched to the handler the manifest's [[hook]] named.
+      let greeted =
+        hosts.invoke_event(
+          hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
+          extension: "fetcher",
+          event: "session_start",
+          args: msgpack.StringValue("{}"),
+          at: dispatch.coordinates(live_ctx(
+            installed_at.workspace,
+            installed_at.base_policy,
+          )),
+          within: 20_000,
+        )
+      // `session_start` has nothing to answer, so `ext/hook` renders the
+      // empty document; what is proved is that a `hook_call` of kind
+      // `event` reached the handler the manifest's `[[hook]]` named.
+      assert greeted == Ok(msgpack.StringValue("{}"))
 
       // A host the manifest does not name is refused in band, as a
       // `NetDenied` the extension read and turned into a sentence.
@@ -239,9 +308,235 @@ fn drive(ready: Ready) -> Nil {
         carries(bytes, secret_value)
       })
 
+      // The reverse direction carrying what it was built for: a
+      // `tool_call` verdict and a `context` transform, over a real jailed
+      // satellite of their own.
+      hooks_fire(installed_at)
+
+      // The last claim, and the one only a real node can make: an
+      // extension that does not answer inside its own deadline loses its
+      // satellite, and says so on the call after.
+      oversleeps(installed_at, hosts_name)
+
       origin.stop(server)
       stop(installed_at)
     }
+  }
+}
+
+// The hook bus over a real satellite: install the `gatekeeper` fixture,
+// give the bus this session's registry as its invoker, and drive the two
+// planes the ruling gives a hook the most authority over.
+//
+// `hooks.gate` is what `client/extension/hooks.wire` calls from the
+// clearance door, and its `Block` is what the driver turns into the
+// `ClearanceRefused` the model reads; the attribution asserted here is
+// the field that refusal carries. `hooks.fold_context` is the other
+// plane, run on the caller's own process, and the transform asserted here
+// is the one a provider request would be built from. Wave B's own tests
+// pin the two wirings from those functions onward; what only a real node
+// can prove — and what is proved here — is that a verdict and a message
+// list crossed the capability channel and came back.
+fn hooks_fire(installed_at: Installed) -> Nil {
+  case install_beside(installed_at, extensions.gatekeeper(), "gatekeeper-src") {
+    Error(reason) -> io.println("SKIP the gatekeeper extension: " <> reason)
+    Ok(#(written, decoded, artifact)) -> {
+      let hosts_name = process.new_name(prefix: "loom_e2e_gate")
+      let seam = hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000)
+      let config =
+        dispatch.Config(
+          host: installed_at.host,
+          hosts: seam,
+          secrets: fn(_name) { Error(Nil) },
+          trust: egress.SystemRoots,
+          launch: dispatch.jailed_node,
+        )
+      let assert Ok(_started) =
+        hosts.start(hosts_name, wall_clock(), [
+          dispatch.hosting(config, written, decoded, artifact:),
+        ])
+        as "the gatekeeper's registry must start"
+
+      let at =
+        dispatch.coordinates(live_ctx(
+          installed_at.workspace,
+          installed_at.base_policy,
+        ))
+      let assert Ok(bus) =
+        hooks.start(
+          [
+            hooks.Extension(
+              name: written.name,
+              events: list.map(decoded.hooks, fn(hook) { hook.event }),
+              invoke: hosts.invoker(seam, at:),
+            ),
+          ],
+          log.discard(),
+        )
+        as "the hook bus must start"
+
+      let #(operation, _generator) =
+        ids.mint_op(ids.generator(wall_clock(), seed: 20_260_903))
+
+      // A call the extension refuses, refused with the extension named:
+      // a block nobody is attributed for is one nobody can act on.
+      let assert hooks.Block(extension:, reason:) =
+        hooks.gate(
+          bus,
+          operation,
+          extensions.gatekeeper_blocks,
+          json.Object([]),
+          0,
+        )
+        as "the gatekeeper must block the tool it names"
+      assert extension == "gatekeeper"
+      assert string.contains(reason, extensions.gatekeeper_blocks)
+
+      // And a call it does not: a hook that blocked everything would
+      // satisfy the assertion above and be useless.
+      assert hooks.gate(bus, operation, "harmless", json.Object([]), 0)
+        == hooks.Allow
+
+      // The other plane. The transform ran inside the jail, over the
+      // durable message format, and its answer is what a request would
+      // be built from.
+      let messages = [a_user_message("first"), a_user_message("second")]
+      let folded = hooks.fold_context(bus, operation, messages)
+      assert list.length(folded) == 3
+      assert list.last(folded) == list.last(messages)
+
+      io.println(
+        "extension host e2e: a jailed tool_call hook blocked a call and a "
+        <> "jailed context hook appended a message",
+      )
+    }
+  }
+}
+
+fn a_user_message(text: String) -> message.AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+  )
+}
+
+// A second extension, installed for real beside the first, whose one tool
+// sleeps in the kernel for far longer than its manifest allows.
+//
+// The deadline is the satellite host's, armed as the state timeout on the
+// invocation it belongs to; when it fires the node is destroyed and the
+// extension is out for the rest of the session. Both halves are asserted,
+// because a deadline that ended the call without ending the node would
+// leave a satellite the harness had stopped trusting still running.
+fn oversleeps(
+  installed_at: Installed,
+  hosts_name: process.Name(hosts.Message),
+) -> Nil {
+  case install_beside(installed_at, extensions.sleeper(), "sleeper-src") {
+    Error(reason) -> io.println("SKIP the oversleeping extension: " <> reason)
+    Ok(#(written, decoded, artifact)) -> {
+      let config =
+        dispatch.Config(
+          host: installed_at.host,
+          hosts: hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
+          secrets: fn(_name) { Error(Nil) },
+          trust: egress.SystemRoots,
+          launch: dispatch.jailed_node,
+        )
+      let sleeper_hosts_name = process.new_name(prefix: "loom_e2e_sleeper")
+      let assert Ok(_started) =
+        hosts.start(sleeper_hosts_name, wall_clock(), [
+          dispatch.hosting(
+            dispatch.Config(
+              ..config,
+              hosts: hosts.seam(
+                sleeper_hosts_name,
+                clock: wall_clock(),
+                margin_ms: 20_000,
+              ),
+            ),
+            written,
+            decoded,
+            artifact:,
+          ),
+        ])
+        as "the sleeper's registry must start"
+
+      let seam =
+        hosts.seam(sleeper_hosts_name, clock: wall_clock(), margin_ms: 20_000)
+      let at =
+        dispatch.coordinates(live_ctx(
+          installed_at.workspace,
+          installed_at.base_policy,
+        ))
+      let overslept =
+        hosts.invoke(
+          seam,
+          extension: "sleeper",
+          invocation: satellite.Tool(name: "sleeper"),
+          args: tool_args("{}"),
+          at:,
+          within: extensions.sleeper_timeout_ms,
+        )
+      assert overslept == Error(hosts.Deadline)
+
+      // And the node is gone rather than merely unanswered: the next
+      // call never reaches a satellite at all.
+      let assert Error(hosts.Gone(reason:)) =
+        hosts.invoke(
+          seam,
+          extension: "sleeper",
+          invocation: satellite.Tool(name: "sleeper"),
+          args: tool_args("{}"),
+          at:,
+          within: extensions.sleeper_timeout_ms,
+        )
+        as "a destroyed satellite must stay destroyed for the session"
+      io.println("extension host e2e: the oversleeper was reaped: " <> reason)
+    }
+  }
+}
+
+// The invocation envelope `ext/runtime` reads for a tool.
+fn tool_args(args: String) -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("args"), msgpack.StringValue(args)),
+    #(msgpack.StringValue("strand"), msgpack.StringValue("main")),
+  ])
+}
+
+fn install_beside(
+  installed_at: Installed,
+  files: List(#(String, String)),
+  directory: String,
+) -> Result(#(record.Record, extension_manifest.Manifest, String), String) {
+  let tree =
+    extensions.materialise(files, installed_at.live_root <> "/" <> directory)
+  case
+    install.run(
+      install.Config(
+        root: installed_at.root,
+        caps: archive.default_caps(),
+        fetch: fn(_url, _max) {
+          Error("an install from a local path fetches nothing")
+        },
+        build: cli.build_for(installed_at.plane, exec.BestEffort),
+        clock: wall_clock(),
+        entropy: fn() { 11 },
+        approved_by: "operator",
+      ),
+      source.LocalPath(path: tree),
+      rev: None,
+    )
+  {
+    Error(failure) -> Error("it did not install: " <> install.describe(failure))
+    Ok(done) ->
+      case installed.one(installed_at.root, done.record.name) {
+        installed.Refused(name: _, reason:) ->
+          Error("the install did not discover: " <> reason)
+        installed.Ready(record: written, manifest: decoded, artifact:) ->
+          Ok(#(written, decoded, artifact))
+      }
   }
 }
 
@@ -520,7 +815,7 @@ fn live_ctx(workspace: String, base: policy.SandboxPolicy) -> tool.Ctx {
     workspace:,
     strand: "main",
     op_id: op,
-    step_id: "turn-1:tools",
+    step_id: caller_step_id,
     source_index: 0,
     base_policy: base,
     grants: [],

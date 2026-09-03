@@ -60,7 +60,7 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2102`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2111`)
 takes a `spawn` closure and hands helpers out through `checkout`
 (`packages/broker/src/broker/exec.gleam:1533`) and `checkin`
 (`packages/broker/src/broker/exec.gleam:1542`). "One microVM per helper"
@@ -403,7 +403,7 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2048`), wired
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2057`), wired
 through `LOOM_HELPER_POOL` (`start_pool`,
 `packages/client/src/client/serve.gleam:894`), which means there are
 several cold slots to fill rather than one, and a wide first batch pays
@@ -420,7 +420,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:1802`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:1811`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

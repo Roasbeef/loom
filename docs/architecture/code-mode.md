@@ -223,8 +223,8 @@ caller stacks the harness-side bridges over it, since the host is
 generic over the table: `codemode/workspace.routing` serves `fs.*`,
 `kv.*`, `schedule.*` and `report.emit` against the session's own tools,
 `client/mcp.routing` serves the generated per-server modules, and for an
-installed extension `client/extension/seam.routing` serves `ext.call`
-and `net.request`. What no layer in a given stack answers comes back
+installed extension `client/extension/seam.routing` serves `net.request`
+and nothing else. What no layer in a given stack answers comes back
 refused in band as `unsupported_cap` — `lsp.*` is the one still owed
 (#25). None of that refusal is a security property; it is a routing
 table still being filled in.
@@ -346,8 +346,8 @@ caller may mint, so the tally is keyed to that identity by construction.
 
 The **extension seam** is the workspace seam widened, and its relation to
 the other two is deliberately not disjointness. It is
-`extension_cap_modules` — the ten workspace capabilities plus `cap/ext`
-and `ext` — over `extension_stdlib_modules`, the shared pure subset plus
+`extension_cap_modules` — the ten workspace capabilities plus `ext` —
+over `extension_stdlib_modules`, the shared pure subset plus
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
 and `gleam/json`.
 
@@ -360,15 +360,19 @@ a compromise buys. An installed extension's tool is not a different kind
 of thing from a workspace program — it reads files, runs processes and,
 under ADR-007, makes brokered HTTP requests. It differs in its *entry
 point*: the harness knows a code-mode program's arguments when it
-launches the node, and an extension is compiled once at install and run
-many times, so the call is what varies and something has to fetch it.
-That something is `cap/ext`, and the vocabulary it is typed against is
-`ext` (`packages/ext`).
+launches the node, and an extension is compiled once at install and
+invoked many times, so the call is what varies. Phase 1 answered that
+with a capability the node pulled on, `cap/ext.call`; phase 3 deleted it
+(`protocol-change/012`), because a satellite that lives for the session
+is *told* what to answer over a `hook_call` and has nothing left to pull
+against. What remains of the widening is `ext` (`packages/ext`), the
+vocabulary an extension's tools are typed against, which carries no
+authority at all.
 
 So the seam is written as `default_cap_modules()` widened rather than as
 a list of its own, and the property test is a superset claim where the
-other two have an intersection. The widening is pinned to exactly its two
-names, which is what stops a `cap/strand` arriving on the way and
+other two have an intersection. The widening is pinned to exactly that
+one name, which is what stops a `cap/strand` arriving on the way and
 quietly putting the disk and the lineage in one program after all. The
 five extra standard-library modules are on a list of their own rather
 than in `default_stdlib_modules`, so widening them widens exactly one
@@ -386,12 +390,13 @@ from an install record and never named by a model in a `code_mode` call.
 ### Dispatching an extension: the router and the launch
 
 An extension seam is not only an allowlist. A call to an installed
-extension's tool is **one satellite execution of the artifact the install
-compiled**, driven from `client/extension/dispatch`, and the router that
-execution runs behind has one layer the code-mode path does not.
+extension's tool is **one invocation of a satellite the session already
+holds open**, driven from `client/extension/dispatch` through
+`client/extension/hosts`, and the router that invocation runs behind has
+one layer the code-mode path does not.
 
 ```
-client/extension/seam.routing        ext.call, net.request
+client/extension/seam.routing        net.request
   codemode/workspace.routing         fs.*, kv.*, schedule.*, report.emit
     codemode/satellite.default_router  proc.run, then unsupported_cap
 ```
@@ -404,15 +409,18 @@ construction: `cap/mcp` is a harness-only capability on no seam, so an
 extension cannot name it and an arm for it would be a claim about reach
 the allowlist has already denied.
 
-**`ext.call` is how a node learns what it is for.** The artifact is
-compiled once and run many times, so the call is what varies. It is
-handed over on the capability channel rather than through the node's
-environment — where it would be untyped, size-limited and readable by
-every process in the jail — and the shape is pinned in `cap/ext`'s module
-doc: `{tool, args, strand, deadline_ms}`, `args` as JSON *text*, because
-`gleam_json`'s parser is the only route from bytes to a `Dynamic` the
-extension seam admits. `deadline_ms` is what is *left* when the node
-asks, which is why the harness side holds a thunk rather than a value.
+**The harness tells the node what it is for.** The artifact is compiled
+once and invoked many times, so the call is what varies, and it arrives
+on a `hook_call` frame rather than through the node's environment — where
+it would be untyped, size-limited and readable by every process in the
+jail. The frame carries a per-invocation token, the kind (`tool` or
+`event`), the name, the arguments and the deadline; the satellite answers
+with one `hook_result`. A tool's arguments are `{args, strand}` with
+`args` as JSON *text*, because `gleam_json`'s parser is the only route
+from bytes to a `Dynamic` the extension seam admits. The router table
+above is `Invoking`'s rather than the node's, which is what lets
+`requests_per_call` stay a per-*call* number on a node that is not
+per-call.
 
 **`net.request` is finally served.** `cap/net` has declared it since the
 beginning and nothing has ever answered it: `broker/policy` narrows
@@ -1089,21 +1097,64 @@ becomes a supervised citizen of the harness when it is promoted, without
 being rewritten into a different thing. Code mode is not only the fast path
 for a single execution; it is the first draft of a durable capability.
 
+### A satellite kept alive across calls
+
 The design carries this further with a satellite kept alive across calls
-within a session. Its actors would persist between executions — the model
-spawns an indexer in one call and queries it across the next several —
-which nothing MCP-shaped can express. That mode is not built: every
-execution today gets a fresh node and destroys it. What *is* built is the
-guard that makes it safe when it arrives. The capability channel lives in a
-node-global slot, and each execution installs its own, so a process that
-outlived execution *N* would read execution *N+1*'s channel on its next
-capability call and act under *N+1*'s token and policy. The invariant that
-rules this out is external to the prelude: **the executor reaps every
-process a program spawned before the next execution installs its channel.**
-The boot runtime refuses to install over a channel whose actor is still
-alive, so an unreaped predecessor fails the next boot outright instead of
-silently lending it authority. A fresh node per execution never reaches the
-case at all.
+within a session, so its actors persist between invocations — an
+extension starts an HTTP client or an index in one call and queries it
+across the next several, which nothing MCP-shaped can express. **That
+mode is built**, for installed extensions:
+`codemode/satellite.start`/`invoke`/`stop` hold a node open, and
+`client/extension/hosts` keeps one per installed extension for the life
+of a session. A submitted `code_mode` program still gets a fresh node per
+execution and always will, because a program submitted in one turn has
+nothing to be persistent *about*.
+
+Holding a node open does not widen it, and three rules are what make that
+true.
+
+**The token is the invocation's, never the node's.** A token is minted
+for one `{op_id, step_id}` and checked on every `cap_call`, so a node that
+outlives an execution has no token of its own to fall back on. `invoke`
+mints one, sends it on the `hook_call`, and revokes it when the answer
+comes back; a `cap_call` arriving between invocations is refused
+`unauthorized` before any router sees it. The node's boot-token file
+holds bytes the host minted nothing for — it exists only because
+`cap/runtime`'s boot sequence reads one — so a satellite presenting them
+is refused like any other stranger. The property the fresh-node design
+had for free, this one has to state: **an extension may compute between
+invocations, and may not act.**
+
+**One invocation at a time.** The protocol allows one outstanding
+`hook_call` per satellite, so the host is a `weft/state_machine` over
+`Idle | Answering(id) | Destroyed(reason)` and a second `invoke` while one
+is open is `Busy`; callers queue at the session's host registry rather
+than the host growing a queue of its own, since a queue here would mean a
+second token installed under the first invocation's worker. The
+invocation's deadline is `Answering`'s own state timeout, which is why
+these are states rather than a field: leaving the state cancels the
+timer, and a fire that raced its own cancellation is dropped by weft
+rather than delivered.
+
+**A satellite that breaks the protocol loses its node.** A deadline that
+passes with no answer, and a `hook_result` that correlates to no open
+invocation, both destroy the node — the far side is not speaking this
+protocol, and a peer whose frames the host cannot match is one whose next
+frame it cannot trust either. A destroyed host stays destroyed for the
+rest of the session; restarting one silently would hand an extension a
+fresh set of the actors it just lost without telling anybody it had lost
+them.
+
+The reaping guard was built before the mode was, and it still carries the
+weight. The capability channel lives in a node-global slot, and each boot
+installs its own, so a process that outlived one node would read the
+next node's channel on its next capability call and act under that node's
+token and policy. The invariant is external to the prelude, and for a
+persistent satellite it reads: **a host reaps its node before the
+session's next host for that extension starts.** The boot runtime refuses
+to install over a channel whose actor is still alive, so an unreaped
+predecessor fails the next boot outright instead of silently lending it
+authority.
 
 ## What the end-to-end proves
 

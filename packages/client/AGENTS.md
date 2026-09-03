@@ -771,8 +771,19 @@ extension design (`docs/design-notes/extension-architecture.md`,
 rulings shape it: an install fetches a **tree, not a git session**, so
 there is no git client anywhere in the path; the tree it fetches is
 **untrusted input read outside any jail**, so every reader here is
-total; and a tool call is **one jailed satellite execution**, so nothing
-an extension ships ever runs in the harness VM.
+total; and every tool call is answered by a **jailed satellite**, so
+nothing an extension ships ever runs in the harness VM.
+
+Phase 3 changed the third of those from "one jailed execution per call"
+to "one jailed satellite per session" (`protocol-change/012`, ADR-007
+Decision 3). An extension's artifact is compiled once at install, so a
+node boot per call was paying for nothing, and an extension could keep no
+state at all between calls. `client/extension/hosts` now holds one
+`codemode/satellite.Host` per installed extension for the life of the
+session and sends each call to it as a `hook_call`. Holding a node open
+widens nothing: the satellite host mints a token per invocation and
+revokes it on the answer, so an extension may keep actors between calls
+and may not reach a capability between them.
 
 - `client/extension/source` — the grammar of what an operator may type.
   `Source` is `LocalPath | ArchiveUrl | GitHub`; `parse` refuses
@@ -848,11 +859,18 @@ The rest of the path is phase 1's own, and each module is one question:
   manifest, the vetting, the digest and `write_tree`. That ordering is
   what makes the recorded digest a claim about the *installed* tree, and
   it is why the UTF-8 refusal reaches only installed files: a screenshot
-  under `docs/` is pruned, and one under `schema/` is refused. `entry_source` generates the `loom_satellite` module
-  that imports each tool's entry module and calls `ext/runtime.serve`;
-  its aliases are positional and per distinct module, because two tools
-  may share an entry module and importing one twice is a compile error
-  in generated code.
+  under `docs/` is pruned, and one under `schema/` is refused.
+  `entry_source(tools, hooks)` generates the `loom_satellite` module that
+  imports each registration's entry module and calls
+  `ext/runtime.serving(tools:, hooks:)` — a call that runs for the life
+  of the satellite rather than serving once. A `[[tool]]`'s entry module
+  must expose `pub fn run` (`entry_function`) and a `[[hook]]`'s must
+  expose `pub fn on_event` (`hook_function`): two names rather than one
+  because a module may serve both, and generated code that named them the
+  same would not compile — in the worst place for a compile error, since
+  nobody wrote the file. The aliases are positional and per distinct
+  module, because two tools may share an entry module, a tool and a hook
+  may too, and importing one twice is a compile error in generated code.
 - `client/extension/installed` — `discover(root)` and `one(root, name)`,
   each returning `Ready` or `Refused`. Five things are re-derived from
   disk and compared with the record: the tree digest, the artifact's
@@ -871,7 +889,8 @@ The rest of the path is phase 1's own, and each module is one question:
   and the rest is the flat-recursion flag parse `client/serve` uses.
   `build_for` is the install's build seam over a started `BuildPlane`.
 
-Phase 3 adds the hook bus:
+Phase 3 added the hook bus, and it hangs off the same satellites the
+tools reach:
 
 - `client/extension/hooks` — one `weft/event_manager` per session, one
   handler per installed extension that declares a `[[hook]]`, the
@@ -881,14 +900,18 @@ Phase 3 adds the hook bus:
   so the bus is drivable with functions and so the host lands in one
   place; `HookFailure` is `Unhandled | Refused(reason) | Crashed(reason)
   | Deadline | Gone`, of which the last three cost a handler its place
-  and the first two do not. Five events fan out (`session_start`,
+  and the first two do not. The one implementation a session builds is
+  `hosts.invoker(hosts, at:)`, so a hook event and a tool call reach the
+  same node; `unwired()` — every call `Gone` — is now only what a test
+  drives the bus with. Five events fan out (`session_start`,
   `before_agent_start`, `tool_call`, `agent_end`, `agent_settled`), the
   two that need an answer through `sync_notify` plus a drained reply
   subject — on a weft-bounded worker, never on the caller, because
   `sync_notify` is a `call` and a `call` that is not answered in time
   panics its caller, and the callers are strand drivers sharing one
   manager. An unanswered fan-out is an empty list: no injection, and no
-  block on a call the built-in clearance already cleared. `context` and `tool_result` are chained transforms and so are
+  block on a call the built-in clearance already cleared. `context` and
+  `tool_result` are chained transforms and so are
   `fold_context`/`fold_tool_result` over the same ordered list, not bus
   events. `wire(effects, bus, session, clock)` composes the bus into a
   built `Effects` by *wrapping* five slots, the pattern
@@ -899,7 +922,9 @@ Phase 3 adds the hook bus:
   documentation is the normative table of all seven wire shapes; the
   extension's side of the same wire is `ext/hook`.
 
-Phase 2 adds the dispatch half, as three modules with no shared state:
+Phase 2 added the dispatch half and phase 3 the session's hosts, as
+four modules — three pure or stateless, plus the one actor that owns
+the nodes:
 
 - `client/extension/policy` — pure. `egress_for(net, trust:)` turns the
   manifest's `[net]` table into `Egress`: `Reaches(egress.Policy)` or
@@ -908,8 +933,11 @@ Phase 2 adds the dispatch half, as three modules with no shared state:
   the manifest's verbatim; `redirects` (`SameHost(2)`), `timeout_ms` and
   `trust` are this module's, because none of the three is something an
   extension author should be able to state about themselves.
-  `ceilings(net)` is `requests_per_call` on `net.request` plus one
-  `ext.call`. `denial(refusal)` sorts every `egress.Refusal` onto the
+  `ceilings(net)` is `requests_per_call` on `net.request` and nothing
+  else — the `ext.call` ceiling went with the capability
+  (`protocol-change/012`), and the tally is now reset per *invocation* by
+  `satellite.Invoking`, which is what makes `requests_per_call` mean per
+  call on a node that outlives the call. `denial(refusal)` sorts every `egress.Refusal` onto the
   side of `cap/net.map_error`'s split it belongs on — a request the
   policy would never have permitted carries a `NetDenied` code
   (`not_allowed`, or `network_off` for no `[net]` at all, or `policy`
@@ -917,37 +945,90 @@ Phase 2 adds the dispatch half, as three modules with no shared state:
   carries `net_failed`, which is `NetFailed`. Filing one on the wrong
   side is the difference between an author retrying and an author
   reinstalling.
-- `client/extension/seam` — the router arms, msgpack in and msgpack out,
+- `client/extension/seam` — the router arm, msgpack in and msgpack out,
   holding no policy at all. `routing(extension, over: inner)` answers
-  `ext.call` (`Extension.call` is a *thunk*: `deadline_ms` is what is
-  left, which is not known until the node has booted and asked) and
   `net.request` (through `Egress.perform`, an injected function with the
-  policy, the credential lookup and the refusal mapping closed over), and
-  hands every other name down. `Ask`/`Answer` restate `cap/net`'s
+  policy, the credential lookup and the refusal mapping closed over) and
+  hands every other name down. One arm, not two: `serviced_caps` is
+  `[net_cap]`, `Extension` carries only `egress:`, and the `ext.call` arm
+  with its `Call`/`call_value` shapes went with the capability. `Ask`/`Answer` restate `cap/net`'s
   `Request`/`Response` rather than naming `broker/egress`'s, so a test
   drives the whole arm with a function and no socket. Every inbound field
   is decoded totally; a malformed request is refused by the *plan*, so it
   consumes no ordinal and no admission.
+- `client/extension/hosts` — the session's satellites, held open and
+  handed out. One supervised actor per session keeps at most one
+  `satellite.Host` per installed extension, starts it lazily on that
+  extension's first use, and stops every one of them when the session
+  ends. `invoke` and `invoke_event` are the two entry points, over a
+  `Hosts` seam closed over the actor's registered *name* rather than a
+  subject (the `client/scratch.seam` pattern: the seam is built while the
+  registry is assembled and the actor starts later, under a supervisor);
+  `none()` is the seam a session with no registry hands out, refusing
+  every invocation in band. `Coordinates` is where an invocation sits —
+  `{op_id, step_id, strand, workspace, base_policy, demand, env}` — one
+  record because a tool dispatch fills it from `tool.Ctx` and a hook fills
+  it from the strand the event fired on, and a positional signature they
+  both have to get right is one either can get wrong silently.
+  `Extension` is the recipe: a name plus `start`/`invoking` *functions*,
+  because a host is launched under the coordinates of whichever call was
+  first and an invocation is judged under its own. `HookFailure`
+  (`Unhandled | Refused | Crashed | Deadline | Gone`) is deliberately
+  smaller than `satellite.InvokeError`: what a caller does depends on
+  whether the extension answered, died mid-answer, ran out of time, or is
+  not there any more. **The actor performs each invocation on its own
+  timeline, so its mailbox is the queue** and a second caller waits rather
+  than reading `Busy` — which makes it a session-wide serialiser rather
+  than a per-extension one, a deliberate simplification whose only cost is
+  two *different* extensions invoked from two strands at the same moment.
+  A host the satellite lost is `Departed` for the rest of the session, and
+  every later call on that extension is `Gone`.
+  `invoker(hosts, at:)` is `invoke_event` curried into a
+  `hooks.Invoker`, with `bus_failure` restating this module's
+  `HookFailure` in the bus's; it is what makes a hook and a tool call
+  land on the same node. It satisfies the bus's contract by
+  construction rather than by care: the host arms the invocation's
+  deadline as the state timeout of the `Answering` state it belongs to,
+  and every step of `invoke` is a `Result`, so a wedged registry
+  degrades to `Gone` where a `process.call` would have exited the strand
+  driver. `client/serve` builds one such invoker per session, under
+  coordinates it mints an operation for: the bus's `Invoker` carries
+  none, because a hook fires on the harness's own timeline rather than
+  inside a run whose `{op_id, step_id}` it could borrow, so a hook's
+  reads are attributable to the session's hooks and never to whichever
+  run was in flight.
 - `client/extension/dispatch` — `tools(config, record, manifest,
   sources:, artifact:)` turns one `installed.Ready` into `tool.Tool`
   values (`prompt_snippet` from the manifest, schema read from the
   installed `schema/` file, `replay: tool.Never`, `execution_mode:
   tool.Exclusive` — neither declared by the manifest, because both are
-  judgements about what the harness may do with a call). Each `run`
-  prepares a work directory keyed by `codemode.work_root`, runs
-  `satellite.run` on the install's `artifact/` beam set under the
-  three-layer router — `seam.routing` over
-  `codemode.workspace_seam_for`'s bridge over `satellite.default_router`
-  — and settles the `outcome` frame with `settle`, which is public
-  because it is the one part of a dispatch a test can hold still. A
-  call's wall budget is `within`, the manifest's `timeout_ms` clamped to
-  the operator's `max_within_ms` — an extension tool is `Exclusive`, so
-  the call holds the strand's exclusive slot for the whole of it, and an
-  install is not a way to raise a host's ceiling. There
-  is no MCP arm: `cap/mcp` is on no seam, so an extension cannot name it.
-  `Ctx.grants` are **not** composed onto the run phase — an extension
-  runs at exactly what its install approved, where a `code_mode` call is
-  the model's own program in this turn and does compose them.
+  judgements about what the harness may do with a call), and `hosting`
+  turns the *same* record and the *same* configuration into the
+  `hosts.Extension` the registry launches from, in the same call, so a
+  host and a tool cannot end up describing different extensions.
+  `Config.hosts` is the registry seam. Each `run` builds this
+  invocation's `coordinates(ctx)` and hands them to `hosts.invoke` with
+  the model's arguments as JSON text in the `{args, strand}` envelope
+  `ext/runtime` reads; the answer goes through `settle`, which now takes a
+  `Result(MsgPackValue, hosts.HookFailure)` and is still public because it
+  is the one part of a dispatch a test can hold still. **No work directory
+  is prepared or removed per call**: a host's socket and token file live
+  under `codemode.host_root(config, extension:)`, keyed on the extension
+  because they outlive every call. The router is two layers now rather
+  than three — `seam.routing` over `codemode.workspace_seam_for`'s bridge
+  over `satellite.default_router` — and it, the ceilings and the clearance
+  identity are all built per invocation. A call's wall budget is `within`,
+  the manifest's `timeout_ms` clamped to the operator's `max_within_ms` —
+  an extension tool is `Exclusive`, so the call holds the strand's
+  exclusive slot for the whole of it, and an install is not a way to raise
+  a host's ceiling. The *node's* own budget deadline is
+  `host_lifetime_ms` (twelve hours): the backstop a runaway satellite dies
+  against, far longer than a session and far shorter than forever, and
+  nothing anybody tunes. There is no MCP arm: `cap/mcp` is on no seam, so
+  an extension cannot name it. `Ctx.grants` are **not** composed onto an
+  invocation — an extension runs at exactly what its install approved,
+  where a `code_mode` call is the model's own program in this turn and
+  does compose them.
 
 **The credential path, stated once.** A `[[net.secret]]` names an
 environment variable, a host and a header. The *name* travels into
@@ -966,9 +1047,24 @@ reads `installed.discover(record.root_for(Settings.home))`, logs each
 tell "broken" from "I imagined it"), logs `extension.unavailable` for a
 `Ready` on a host with no toolchain — no `erl` means no satellite, and
 registering tools that can only fail would put them in the provider's
-cached byte prefix — and appends one `contributions.Contribution` per
-extension after the built-ins. A repeated name refuses the boot in
-`contributions.registry`.
+cached byte prefix — and returns *both* halves of one discovery: the
+`contributions.Contribution` per extension, appended after the built-ins,
+and the `hosts.Extension` recipe the satellite registry launches from.
+One pass rather than two, because deriving them separately is how a host
+and a tool come to describe different extensions. A repeated name refuses
+the boot in `contributions.registry`.
+
+**The satellite registry follows the scratch store's two-name pattern.**
+`assemble` mints `loom_ext_hosts` before the tool registry is built, hands
+`extension_hosts.seam(name, margin_ms:)` to the dispatch configuration,
+and adds `extension_hosts.supervised(name, extensions.hosting)` to the
+*services* supervisor — that tier because a registry restart costs exactly
+what a satellite crash costs, which extensions are already written to
+meet: every host it held is `Gone` to its next caller, the tools stay
+registered, and each lost node is reaped by the launcher's own janitor.
+`extension_host_margin_ms` (30 s) is the slack a caller's wait has over
+the invocation's own deadline, so a caller never reports a wedged registry
+for an invocation that was merely being timed out properly.
 
 **The verb split lives in `client.gleam`, not `serve.main`.** The
 installer needs the boot's own effect plane, so `extension/cli` imports

@@ -404,6 +404,12 @@ pub fn a_refused_install_leaves_no_staging_test() {
   assert !exists(record.directory(root, "hostile_ffi"))
 }
 
+/// A `[[hook]]` used to be decoded and then refused: the harness had no
+/// way to call into a satellite, so an extension carrying one would have
+/// installed and never fired. `protocol-change/012` is that reverse frame,
+/// and this is the refusal's removal made falsifiable — the install goes
+/// all the way through, the record carries the approval, and the hook's
+/// handler is in the entry the build compiled.
 pub fn a_hook_installs_and_is_recorded_test() {
   let root = fresh_root("hooked")
   let tree =
@@ -413,7 +419,7 @@ pub fn a_hook_installs_and_is_recorded_test() {
       }),
       extensions.scratch("hooked-src"),
     )
-  let assert Ok(_done) =
+  let assert Ok(done) =
     install.run(
       config(root, never_fetch),
       source.LocalPath(path: tree),
@@ -432,6 +438,13 @@ pub fn a_hook_installs_and_is_recorded_test() {
   let assert installed.Ready(manifest: decoded, ..) =
     installed.one(root, "hello")
   assert list.map(decoded.hooks, fn(hook) { hook.event }) == ["tool_call"]
+
+  // The satellite side of the same approval: the entry the build
+  // compiled carries the handler, not merely the manifest that named it.
+  assert string.contains(
+    install.entry_source(done.manifest.tools, done.manifest.hooks),
+    "#(\"tool_call\", ext_entry_0." <> install.hook_function <> "())",
+  )
 }
 
 pub fn a_second_install_of_the_same_name_is_refused_test() {
@@ -747,15 +760,32 @@ pub fn verify_refuses_a_tampered_install_test() {
 /// compile error inside generated code.
 pub fn the_generated_entry_aliases_positionally_test() {
   let source =
-    install.entry_source([
-      tool("first", "a/tool"),
-      tool("second", "b/tool"),
-    ])
+    install.entry_source(
+      [tool("first", "a/tool"), tool("second", "b/tool")],
+      [],
+    )
   assert string.contains(source, "import a/tool as ext_entry_0")
   assert string.contains(source, "import b/tool as ext_entry_1")
   assert string.contains(source, "#(\"first\", ext_entry_0.run)")
   assert string.contains(source, "#(\"second\", ext_entry_1.run)")
-  assert string.contains(source, "runtime.serve([")
+  assert string.contains(source, "runtime.serving(")
+}
+
+/// A hook shares the tool's alias table, so a module that serves both is
+/// imported once — and its two registrations name two different
+/// functions, which is why the hook entry point is not also `run`.
+pub fn the_generated_entry_serves_hooks_beside_tools_test() {
+  let source =
+    install.entry_source([tool("first", "a/tool")], [
+      manifest.Hook(event: "session_start", entry: "a/tool"),
+    ])
+  assert string.contains(source, "import a/tool as ext_entry_0")
+  assert !string.contains(source, "ext_entry_1")
+  assert string.contains(source, "#(\"first\", ext_entry_0.run)")
+  assert string.contains(
+    source,
+    "#(\"session_start\", ext_entry_0." <> install.hook_function <> "())",
+  )
 }
 
 // --- the real jailed build, feature-detected ------------------------------

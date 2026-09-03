@@ -227,6 +227,16 @@ pub type HookFailure {
 /// *value*, and the host is the thing that turns a dead process and an
 /// expired timer into one. `client/extension/hosts.invoke_event` is
 /// held to this contract.
+///
+/// "Inside `deadline_ms`" is the bound in the steady state and is exact
+/// about neither end by a small margin. The satellite registry answers
+/// within the invocation's own deadline plus the slack its host adds
+/// before giving up on a wedged node, and an extension's **first** use in
+/// a session launches a jailed node before the invocation begins — so the
+/// real bound there is `deadline_ms + margin + one node launch`.
+/// `hosts.seam` states the same thing from its own side. What the
+/// contract does guarantee, and what the folds actually depend on, is
+/// that an invoker returns *at all*.
 pub type Invoker =
   fn(String, String, MsgPackValue, Int) -> Result(MsgPackValue, HookFailure)
 
