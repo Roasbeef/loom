@@ -404,7 +404,7 @@ pub fn a_refused_install_leaves_no_staging_test() {
   assert !exists(record.directory(root, "hostile_ffi"))
 }
 
-pub fn a_hook_is_refused_until_phase_three_test() {
+pub fn a_hook_installs_and_is_recorded_test() {
   let root = fresh_root("hooked")
   let tree =
     extensions.materialise(
@@ -413,14 +413,25 @@ pub fn a_hook_is_refused_until_phase_three_test() {
       }),
       extensions.scratch("hooked-src"),
     )
-  let assert Error(failure) =
+  let assert Ok(_done) =
     install.run(
       config(root, never_fetch),
       source.LocalPath(path: tree),
       rev: None,
     )
-    as "an extension with a hook installs in phase 3, not phase 1"
-  assert string.contains(install.describe(failure), "phase 3")
+    as "phase 3 installs an extension that registers a hook"
+
+  // The record is the approval, so the events an operator approved are
+  // in it rather than only in a manifest that may change underneath.
+  let assert Ok(text) = simplifile.read(from: record.file(root, "hello"))
+  let assert Ok(written) = record.decode(text)
+  assert written.hooks == [#("tool_call", "hello/tool")]
+
+  // And discovery hands the same declaration back, which is what boot
+  // builds the bus from.
+  let assert installed.Ready(manifest: decoded, ..) =
+    installed.one(root, "hello")
+  assert list.map(decoded.hooks, fn(hook) { hook.event }) == ["tool_call"]
 }
 
 pub fn a_second_install_of_the_same_name_is_refused_test() {
@@ -920,6 +931,7 @@ fn sample_record() -> record.Record {
     allowlist: install.allowlist(),
     net: record.terms(manifest.no_net()),
     tools: ["hello"],
+    hooks: [],
     approved_at: record.instant(at_ms),
     approved_by: "operator",
     artifact: record.artifact_directory,

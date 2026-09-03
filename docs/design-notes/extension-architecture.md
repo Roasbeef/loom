@@ -161,8 +161,8 @@ openly where they do not. The table is the whole vocabulary of phase 3.
 | `context` | `context` | before each provider request | a transform of the message list, applied in load order, bounded by the token cap, over a *copy* |
 | `tool_call` | `tool_call` | a tool call was planned, before dispatch | `Block(reason)`, which lands as the in-band refusal the model reads, or nothing. **Arguments are not mutable**: pi mutates `event.input` in place and re-validates nothing; Loom refuses that on purpose, since a hook that rewrites a call's arguments after vetting is the one thing the vetting cannot see |
 | `tool_result` | `tool_result` | a tool settled, before the reply is committed | a transform of the reply content, chained; `is_error` cannot be cleared by a hook |
-| `agent_end` | `agent_end` | a run reached a terminal state | nothing |
-| `agent_settled` | `agent_settled` | the run and every follow-up it queued are done | nothing |
+| `agent_end` | `agent_end` | a run reached a terminal state | nothing. **Diverges in phase 3**: the event carries the operation and no outcome word. It rides on `effects.Hooks.run_end`, which is handed an `OpId` and asked *before* the terminal transaction commits, so the harness does not yet know how the run ended; a word invented there would be one an author could not tell from a real one |
+| `agent_settled` | `agent_settled` | the run and every follow-up it queued are done | nothing. **Not produced in phase 3**: the harness has no signal for it. `api.await_strand_result` answers for one run, and the follow-up queue is planner-internal with no terminal edge to hang the event on. The bus carries the event and the manifest accepts the name, so a later producer costs one call; until then a declaration is logged `extension.hook.inert` at boot rather than left to look like it fired |
 
 Divergences stated once: no `before_provider_headers`, `before_provider_request`
 or `after_provider_response` (provider ownership is TCB); no `input`,

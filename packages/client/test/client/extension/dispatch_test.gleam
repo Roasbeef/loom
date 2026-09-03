@@ -709,6 +709,7 @@ fn a_record() -> record.Record {
       secret_env: [],
     ),
     tools: ["hello"],
+    hooks: [],
     approved_at: "1970-01-01T00:00:00Z",
     approved_by: "nobody",
     artifact: "/nowhere/artifact",

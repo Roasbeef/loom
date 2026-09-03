@@ -380,22 +380,13 @@ fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
       Manifest("the tree holds no " <> manifest_file)
     }),
   )
-  use decoded <- result.try(
-    manifest.decode(text, surroundings(files)) |> result.map_error(Manifest),
-  )
-  case decoded.hooks {
-    [] -> Ok(decoded)
 
-    // Decoded, then refused. The vocabulary is fixed by the ruling and an
-    // author's event name is worth checking, but the harness cannot call
-    // into a satellite until phase 3 adds the reverse frame — so an
-    // extension carrying a hook would install and never fire it.
-    [_, ..] ->
-      Error(Manifest(
-        "this extension registers a [[hook]]; hooks arrive in phase 3, when "
-        <> "the harness can call into a satellite",
-      ))
-  }
+  // `[[hook]]` no longer refuses the install. Phase 3 gave the harness a
+  // way to call into a satellite (`protocol-change/012`), so a declared
+  // hook is a subscription the boot honours rather than a promise nothing
+  // could keep. The event name and the entry module were both checked by
+  // the decoder above.
+  manifest.decode(text, surroundings(files)) |> result.map_error(Manifest)
 }
 
 const manifest_file = "extension.toml"

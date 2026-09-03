@@ -112,6 +112,14 @@ extended by the M3 runtime wave.
   consumed — the far end of the channel `ClearanceQuery.grants` opens,
   and the reason an approval can change a policy decision at all. A
   replayed call carries none.
+- `effects.Hooks.context` — the phase-3 slot: `fn(OpId,
+  List(AgentMessage)) -> List(AgentMessage)`, applied in
+  `strand_runtime` to a generation attempt's projection just before the
+  request goes out. The list is transient, never a durable entry, which
+  is what keeps the slot inside the replay rule the rest of the record
+  is held to: a crash before the consuming commit re-projects and
+  re-transforms. `default_hooks` supplies identity; the only producer is
+  `client/extension/hooks`, the extension hook bus.
 - `runtime/hooks.Registry` — the one seam production wiring, tests, and the
   simulation runner all build their `effects.Hooks` through: safe defaults,
   a pipeable setter per slot, `build` at the end.

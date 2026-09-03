@@ -117,7 +117,7 @@ and process-local state would not survive to be re-taken. A strand with
 no leaf, or a read that fails, projects as empty, which reads downstream
 as "nothing to compact" — the safe direction, since no strand should be
 halted because a token count could not be taken
-(`project`, `runtime/hooks.gleam:323`).
+(`project`, `runtime/hooks.gleam:343`).
 
 ## Counting the context the way the provider counts it
 
@@ -133,12 +133,12 @@ messages committed after it (`context_tokens`,
 toward the estimate — text, thinking, serialized tool-call arguments,
 tool-result text — and an image counts as a flat 6,000 characters,
 because its base64 payload is an order of magnitude larger than what a
-provider bills for it (`estimate_message`, `runtime/hooks.gleam:375`).
+provider bills for it (`estimate_message`, `runtime/hooks.gleam:397`).
 
 Synthetic settlements report zero and are skipped: an abort or a
 transport failure never described a real request, and an errored
 response is dropped from the projection anyway
-(`newest_reported`, `runtime/hooks.gleam:439`).
+(`newest_reported`, `runtime/hooks.gleam:463`).
 
 **The fold must skip what a compaction carried.** A `CompactionEntry`
 holds a *copy* of its retained tail, so after a compaction the assistant
@@ -151,7 +151,7 @@ that compacts once compacts on every operation for the rest of its life.
 So the projection is handed to the hook together with a count of how
 many leading messages the compaction contributed — its summary,
 projected as one user message, plus every message of its retained tail —
-and the fold starts after them (`Projected`, `runtime/hooks.gleam:269`).
+and the fold starts after them (`Projected`, `runtime/hooks.gleam:292`).
 That is pi's "reject usage older than the latest compaction" in the
 shape Loom's projection makes available. When nothing after the carried
 messages has a reported number yet, the whole projection is estimated
@@ -184,7 +184,7 @@ write-once. That memo is not built.
 ## Where the cut lands
 
 Once the threshold is crossed, the same function that answered it builds
-the split (`preparation`, `runtime/hooks.gleam:478`). It walks the
+the split (`preparation`, `runtime/hooks.gleam:491`). It walks the
 projection newest-first spending the keep-recent budget, and stops at the
 first message that does not fit rather than skipping it, because a
 retained tail has to be a contiguous suffix of the projection
@@ -193,7 +193,7 @@ resulting boundary is what the summarizer is sent; everything newer
 survives verbatim.
 
 Then the boundary moves. **A cut point moves later off a tool result,
-never earlier** (`cut`, `runtime/hooks.gleam:553`). A tool result at the
+never earlier** (`cut`, `runtime/hooks.gleam:535`). A tool result at the
 head of a retained tail is an answer to a call the model can no longer
 see, so it belongs on the summarized side with the assistant turn that
 made it, and moving the boundary later is what puts it there. The
@@ -495,7 +495,7 @@ a preparation before deciding anything (`settle_overflow`,
 builder the threshold uses, asked unconditionally: a provider that says
 the context does not fit has already evaluated the inequality, so the
 only question left is whether there is anything to compact
-(`overflow`, `runtime/hooks.gleam:613`). A preparation with something in
+(`overflow`, `runtime/hooks.gleam:625`). A preparation with something in
 it diverts the run into a compaction task, committing the overflowing
 response, its leaf move, its usage row, the preparation and the new state
 as one transaction — so the compaction task can never exist without the
