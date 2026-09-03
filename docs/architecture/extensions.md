@@ -924,7 +924,7 @@ attached.
 **Two contributions may not claim one tool name.** Within a contribution
 a repeated name is the author overriding themselves and the later one
 wins; *between* contributions it takes the boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:206`). An
+(`contributions.registry` at `client/contributions.gleam:213`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
@@ -1209,7 +1209,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/seam.gleam` | The one router arm a jailed extension has that a code-mode program does not, now that `ext.call` is gone: `routing` (`extension/seam.gleam:131`) over `serviced_caps` (`extension/seam.gleam:64`). Msgpack in, msgpack out, and no policy at all. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:171`), `hosting` (`extension/dispatch.gleam:379`), the timeout clamp `within` (`extension/dispatch.gleam:656`), the jail's `requirements` (`extension/dispatch.gleam:298`), and `settle` (`extension/dispatch.gleam:759`). |
 | `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1397`), the two refusals it logs, and the contribution it appends. |
-| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:206`) and the collision that refuses a boot. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:213`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:348`. |

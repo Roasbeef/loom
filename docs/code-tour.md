@@ -473,7 +473,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1299`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1285`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -700,7 +700,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1352`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1338`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1425`). That is the
@@ -1453,7 +1453,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:206`): the tool table
+lets it is `registry` (`client/contributions.gleam:213`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could
