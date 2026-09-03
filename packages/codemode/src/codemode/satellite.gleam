@@ -2478,6 +2478,14 @@ fn host_step(
 
     Idle, Halt(reply:) | Answering(..), Halt(reply:) -> {
       let report = teardown(hosting)
+
+      // The stop path owes the same two things every other way out of
+      // `Answering` does, and in the same order: the invocation's token
+      // revoked and whatever it left in flight cancelled, before its
+      // caller is told. Skipping them here left a stopped host's last
+      // invocation able to clear an effect for a node that no longer
+      // exists.
+      let _released = release(hosting)
       answer_open(hosting, Error(HostGone("this host was stopped")))
       process.send(reply, report)
       sm.stop()
@@ -2958,8 +2966,13 @@ fn close_invocation(
   hosting: Hosting,
   answer: Result(CapOutcome, InvokeError),
 ) -> Hosting {
+  // Released before the caller is answered, so that by the time `invoke`
+  // returns the token is already revoked — which is what makes the
+  // module doc's "revokes it when the answer comes back" literally true
+  // rather than true a scheduling moment later.
+  let released = release(hosting)
   answer_open(hosting, answer)
-  release(hosting)
+  released
 }
 
 fn answer_open(
