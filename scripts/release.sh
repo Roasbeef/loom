@@ -194,8 +194,11 @@ if [ "$SMOKE" = 1 ]; then
     echo "  The lines it did log about memory were:" >&2
     grep 'memory.distill' "$LOG" | sed 's/^/    /' >&2 || true
     exit 1; }
+  # The comma matters: without it the pattern also accepts "skipped":10
+  # and "skipped":12. `announce` always emits `candidates` next, so it is
+  # guaranteed to be there.
   case "$PASS" in
-    *'"skipped":1'*) ;;
+    *'"skipped":1,'*) ;;
     *) echo "release.sh: the pass did not skip the live session it runs" >&2
        echo "  inside: $PASS" >&2
        exit 1 ;;
