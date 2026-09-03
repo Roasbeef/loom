@@ -66,11 +66,11 @@ directory, extract per source on a cheap model, consolidate the
 candidates and the outstanding `remember` notes against the current head
 in one more turn, then re-render the sidecar.
 
-**The lifecycle worker** is `client/distillpass.gleam:330` (`start`),
+**The lifecycle worker** is `client/distillpass.gleam:314` (`start`),
 new in #149: a supervised child that runs exactly one pass per boot and
 then idles.
 
-**The injection** is `client/memory.gleam:1412` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1432` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
@@ -103,8 +103,8 @@ rule, and it is a rule about types so that no string can defeat it.
 | Lease | TTL | Who takes it | Why that length |
 |---|---|---|---|
 | The source session's | the server's own | `loomd`, for its whole life | It is what makes "skip the live session" exact. |
-| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:240`) | `remember_seam` (`client/memory.gleam:1132`) | One open per call, one commit; nothing slow between. |
-| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:263`) | `client/distill.gleam:495` (`run`) | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
+| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:253`) | `remember_seam` (`client/memory.gleam:1142`) | One open per call, one commit; nothing slow between. |
+| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:276`) | `client/distill.gleam:495` (`run`) | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
 
 There is deliberately **no new lease type** for the lifecycle worker.
 The pass takes the memory session's ordinary writer lease, which is what
@@ -131,7 +131,7 @@ Three things about it are load-bearing:
   (`client/distillpass.gleam:461`, `begin`). The machine relays the
   outcome onto its own subject rather than blocking on it, which is what
   lets `settled` answer while a pass is still running. All seven
-  `weft.Outcome` variants are matched (`client/distillpass.gleam:494`,
+  `weft.Outcome` variants are matched (`client/distillpass.gleam:540`,
   `reported`).
 - **It never re-arms itself.** One pass per boot is the whole cadence:
   there is no timer and no per-turn hook, because the material a pass
@@ -145,7 +145,7 @@ Three things about it are load-bearing:
 
 A question asked while the pass is in flight is *postponed* by the state
 machine and answered on the transition, which is what makes
-`client/distillpass.gleam:386` (`settled`) a wait rather than a poll,
+`client/distillpass.gleam:433` (`settled`) a wait rather than a poll,
 and what lets a black-box test drive the whole lifecycle deterministically.
 
 ## Retry, stated in full
@@ -154,9 +154,9 @@ and what lets a black-box test drive the whole lifecycle deterministically.
 same material again.** That is the entire policy, and it is safe because
 nothing moves until the pass succeeds: the write order is rows first,
 then the head-and-cursors CAS, then the sidecar
-— `client/memory.gleam:680` (`append_distillates`), then
-`client/memory.gleam:864` (`advance_head`), then
-`client/memory.gleam:1019` (`reconcile_digest`) — so a pass that dies
+— `client/memory.gleam:690` (`append_distillates`), then
+`client/memory.gleam:874` (`advance_head`), then
+`client/memory.gleam:1029` (`reconcile_digest`) — so a pass that dies
 anywhere leaves every cursor where it was and the previous head
 standing.
 
@@ -213,7 +213,7 @@ could plausibly have produced.
 ## Configuration, cost and cadence
 
 The `[memory]` table in the same `loom.toml` the catalogue comes from,
-decoded by `client/distillpass.gleam:158` (`parse`):
+decoded by `client/distillpass.gleam:177` (`parse`):
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
@@ -266,7 +266,7 @@ cursor") and, already at `warn`, `distill.source_unreadable` and
 ## The `remember` door
 
 The one model-initiated write path, and the reason the store exists
-before any pass has run. `client/memory.gleam:1132` (`remember_seam`)
+before any pass has run. `client/memory.gleam:1142` (`remember_seam`)
 opens the store per call under the short lease, scrubs and caps the
 note, and refuses in band when a pass holds the run-scale lease, naming
 the owner. Notes are a separate entry type from the pipeline's three, so
