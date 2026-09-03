@@ -420,9 +420,11 @@ fn hooks_fire(installed_at: Installed) -> Nil {
       // And the notify-only one. The bus tells the satellite and reads
       // nothing back, so the observable half here is that the extension
       // still holds its subscription: a crash, a deadline or an answer
-      // the harness could not read would all have dropped it.
+      // the harness could not read would all have dropped it. The count
+      // asked for is the notice manager's, because that is the one the
+      // event was cast onto.
       hooks.usage(bus, operation, a_usage_row())
-      assert hooks.subscribers(bus) == 1
+      assert hooks.subscribers(bus, on: hooks.Notifying) == 1
 
       // What the bus deliberately cannot see: a notification cannot
       // distinguish "answered the empty document" from "declined in

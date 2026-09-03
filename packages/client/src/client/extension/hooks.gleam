@@ -1,5 +1,7 @@
-//// The extension hook bus: one `weft/event_manager` per session, one
-//// handler per installed extension that declares a `[[hook]]`.
+//// The extension hook bus: two `weft/event_manager`s per session — one
+//// for the events whose answer the harness waits on and one for the
+//// notifications — each holding one handler per installed extension
+//// that declares a `[[hook]]`.
 ////
 //// Phase 1 gave an extension tools. A tool is something the *model*
 //// asked for, and the harness answers it by launching a satellite. A
@@ -26,11 +28,47 @@
 //// the bus for as long as its round trip takes, and the per-call
 //// deadline is what bounds that.
 ////
+//// ## Two managers, so that a cast cannot spend an answer's budget
+////
+//// A manager is an actor, so its mailbox is a queue and a handler that
+//// takes its whole deadline delays everything behind it. For a fan-out
+//// somebody is *waiting* on that is the bargain: the caller asked, and
+//// the wait is what `fan_out_ms` is computed to cover. For a
+//// notification it is not, because the caller has already walked away
+//// and the queue it left behind is somebody else's to pay for.
+////
+//// On one manager that reads as follows. A turn commits its ledger row,
+//// `usage` is cast, and the driver's very next act is the `tool_call`
+//// gate. The gate's `sync_notify` queues behind the notification, two
+//// slow `usage` handlers spend the gathering worker's whole budget, the
+//// worker is reaped, `fan_out` answers `[]` and `first_block([])` is
+//// `Allow`. One extension's slow tracer would have quietly neutralised
+//// another extension's block. No budget fixes that; a larger one only
+//// moves the chain length at which it starts.
+////
+//// So there are two managers over the same ordered extension list.
+//// `session_start`, `agent_end`, `agent_settled` and `usage` are cast
+//// onto the notice manager; `before_agent_start`, `tool_call` and
+//// `before_compact` are `sync_notify`ed on the answering one. An
+//// answering event now queues only behind other answering events, which
+//// is exactly the wait `fan_out_ms` was sized for.
+////
+//// The cost is that being dropped is per manager. `event_manager`
+//// removes a handler from the inside, on the answer it has just given,
+//// and offers no handle to remove that handler's twin — so an extension
+//// whose `usage` handler crashes loses its place among the notices and
+//// keeps it among the answers until it mishandles an event there too.
+//// That is the divergence the folds already have (below) one manager
+//// further out, and it settles in the same way: a satellite that is
+//// gone answers `Gone` to the next event on either manager, so the
+//// second drop is one event away rather than a session away.
+////
 //// ## Seven events fan out; two transforms do not
 ////
 //// `session_start`, `before_agent_start`, `tool_call`, `agent_end`,
 //// `agent_settled`, `before_compact` and `usage` are bus events. The
-//// notifications go through `notify`. The three that need an answer —
+//// four notifications go through `notify`, on the notice manager. The
+//// three that need an answer —
 //// `before_agent_start`, whose answer is an injection, `tool_call`,
 //// whose answer is a verdict, and `before_compact`, whose answer is a
 //// note — go through `sync_notify` carrying a reply subject, and the
@@ -54,7 +92,8 @@
 //// where that contract is written down.
 ////
 //// A fold that fails an extension cannot remove that extension's
-//// handler from the manager (the list lives in another process), so it
+//// handler from either manager (both lists live in another process,
+//// and neither is reachable from the outside by handle), so it
 //// discards that one transform and logs; the next bus event the
 //// extension mishandles drops it for good. Two planes, one ordering,
 //// and the divergence is written down here rather than discovered.
@@ -395,14 +434,34 @@ pub type Event {
   Usage(op_id: OpId, row: UsageRow)
 }
 
+/// Which of a bus's two managers a question is about.
+///
+/// A public type rather than a flag, because the two are not
+/// interchangeable and a caller asking after "the handlers" has to say
+/// which set it means: an extension dropped for a bad verdict has lost
+/// its place among the answers and still holds one among the notices.
+pub type Delivery {
+  /// The manager the three answering events fan out on, and the one a
+  /// caller waits for: `before_agent_start`, `tool_call`,
+  /// `before_compact`.
+  Answering
+
+  /// The manager the four notify-only events are cast onto:
+  /// `session_start`, `agent_end`, `agent_settled`, `usage`.
+  Notifying
+}
+
 /// A running hook bus.
 ///
-/// Holds two views of the same ordered extension list: the manager, for
-/// the five fan-out events, and the list itself, for the two chained
-/// transforms that are folds rather than a fan-out.
+/// Holds three views of the same ordered extension list: the answering
+/// manager, for the three events a caller waits on; the notice manager,
+/// for the four it does not, kept apart so a cast cannot queue in front
+/// of an answer; and the list itself, for the two chained transforms
+/// that are folds rather than a fan-out.
 pub opaque type Bus {
   Bus(
-    manager: Subject(event_manager.Message(Event)),
+    answers: Subject(event_manager.Message(Event)),
+    notices: Subject(event_manager.Message(Event)),
     chain: List(Extension),
     logger: Logger,
   )
@@ -410,11 +469,17 @@ pub opaque type Bus {
 
 /// Starts a bus over `extensions`, in load order.
 ///
-/// One handler per extension, whatever events it declared: the declared
-/// list is checked inside the handler rather than by registering an
-/// extension several times, so an extension is one subscriber with one
-/// failure story rather than several that can disagree about whether it
-/// is still alive.
+/// One handler per extension per manager, whatever events it declared:
+/// the declared list is checked inside the handler rather than by
+/// registering an extension several times, so an extension is one
+/// subscriber with one failure story rather than several that can
+/// disagree about whether it is still alive.
+///
+/// Both managers are described from the same list, so load order is one
+/// order rather than two. The handlers are separate closures over the
+/// same `Extension` value, which is what makes a drop local to the
+/// manager that saw the failure — the module doc says why that is the
+/// honest cost of keeping a cast out of an answer's way.
 ///
 /// ## Examples
 ///
@@ -426,28 +491,51 @@ pub fn start(
   extensions: List(Extension),
   logger: Logger,
 ) -> Result(Bus, actor.StartError) {
-  let described =
-    list.fold(extensions, event_manager.new(), fn(builder, extension) {
-      event_manager.add(builder, handler_for(extension, logger))
-    })
-  use started <- result.try(event_manager.start(described))
-  Ok(Bus(manager: started.data, chain: extensions, logger:))
+  use answers <- result.try(event_manager.start(described(extensions, logger)))
+  use notices <- result.try(event_manager.start(described(extensions, logger)))
+  Ok(Bus(
+    answers: answers.data,
+    notices: notices.data,
+    chain: extensions,
+    logger:,
+  ))
 }
 
-/// How many handlers the manager still holds. Falls as broken
-/// extensions are dropped, which is the observable side of a `Gone`.
+// One manager's worth of description: the extensions in load order, one
+// handler each. Called twice, once per manager, because a `Handler` is a
+// closure and the two managers must not share one.
+fn described(
+  extensions: List(Extension),
+  logger: Logger,
+) -> event_manager.Builder(Event) {
+  list.fold(extensions, event_manager.new(), fn(builder, extension) {
+    event_manager.add(builder, handler_for(extension, logger))
+  })
+}
+
+/// How many handlers one of the two managers still holds. Falls as
+/// broken extensions are dropped, which is the observable side of a
+/// `Gone`.
+///
+/// The two counts move independently: an extension is dropped by the
+/// manager whose event it mishandled, and keeps its place on the other
+/// until it mishandles one there too.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // hooks.subscribers(bus) == 1
+/// // hooks.subscribers(bus, on: hooks.Answering) == 1
 /// ```
 ///
-pub fn subscribers(bus: Bus) -> Int {
-  event_manager.count_handlers(bus.manager, waiting: deadline_ms)
+pub fn subscribers(bus: Bus, on delivery: Delivery) -> Int {
+  let manager = case delivery {
+    Answering -> bus.answers
+    Notifying -> bus.notices
+  }
+  event_manager.count_handlers(manager, waiting: deadline_ms)
 }
 
-// --- the five fan-out events ----------------------------------------------
+// --- the seven fan-out events ---------------------------------------------
 
 /// Notifies `session_start`. Called once, when the session's extension
 /// hosts are wired.
@@ -459,7 +547,7 @@ pub fn subscribers(bus: Bus) -> Int {
 /// ```
 ///
 pub fn session_start(bus: Bus) -> Nil {
-  event_manager.notify(bus.manager, SessionStart)
+  event_manager.notify(bus.notices, SessionStart)
 }
 
 /// Fires `before_agent_start` and renders every returned injection as a
@@ -523,7 +611,7 @@ pub fn gate(
 /// ```
 ///
 pub fn agent_end(bus: Bus, operation: OpId) -> Nil {
-  event_manager.notify(bus.manager, AgentEnd(op_id: operation))
+  event_manager.notify(bus.notices, AgentEnd(op_id: operation))
 }
 
 /// Notifies `agent_settled`. Nothing in the harness calls this yet; see
@@ -536,7 +624,7 @@ pub fn agent_end(bus: Bus, operation: OpId) -> Nil {
 /// ```
 ///
 pub fn agent_settled(bus: Bus, operation: OpId) -> Nil {
-  event_manager.notify(bus.manager, AgentSettled(op_id: operation))
+  event_manager.notify(bus.notices, AgentSettled(op_id: operation))
 }
 
 /// Fires `before_compact` and gathers every returned note, in load
@@ -577,7 +665,7 @@ pub fn compaction_notes(
 /// ```
 ///
 pub fn usage(bus: Bus, operation: OpId, row: UsageRow) -> Nil {
-  event_manager.notify(bus.manager, Usage(op_id: operation, row:))
+  event_manager.notify(bus.notices, Usage(op_id: operation, row:))
 }
 
 // The notes that fit, in load order, and a warn line for each one that
@@ -1337,7 +1425,7 @@ fn fan_out(
   let collect = fn() {
     let reply = process.new_subject()
     event_manager.sync_notify(
-      bus.manager,
+      bus.answers,
       build(reply),
       waiting: fan_out_ms(bus),
     )

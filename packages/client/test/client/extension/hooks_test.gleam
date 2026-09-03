@@ -89,7 +89,7 @@ pub fn a_gone_extension_is_dropped_and_the_rest_still_fire_test() {
   // The first fan-out reaches both: the dead one answers `Gone` and is
   // dropped, its sibling answers normally.
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 
   // The second reaches only the survivor, and the run carries on.
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
@@ -106,7 +106,7 @@ pub fn a_declining_extension_keeps_its_place_test() {
       ),
     ])
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
 pub fn a_run_start_injection_is_collected_and_rendered_test() {
@@ -292,7 +292,7 @@ pub fn a_malformed_verdict_allows_the_call_and_drops_the_handler_test() {
 
   // And the extension has lost its place, so the next call is not gated
   // on an answer nobody can read.
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
 // --- wiring ---------------------------------------------------------------
@@ -453,7 +453,7 @@ pub fn a_usage_row_is_delivered_notify_only_test() {
 
   // The answer was a verdict, which is not a thing a `usage` hook may
   // say. Nothing reads it, so the extension keeps its place.
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
 pub fn a_usage_hook_is_never_sent_request_or_response_content_test() {
@@ -495,7 +495,30 @@ pub fn an_oversleeping_usage_handler_is_dropped_test() {
       ),
     ])
   hooks.usage(bus, operation(), usage_row())
-  assert hooks.subscribers(bus) == 0
+  assert hooks.subscribers(bus, on: hooks.Notifying) == 0
+}
+
+pub fn a_wedged_notification_cannot_neutralise_a_block_test() {
+  let bus =
+    started([
+      hooks.Extension(name: "tracer", events: ["usage"], invoke: wedged()),
+      hooks.Extension(
+        name: "guard",
+        events: ["tool_call"],
+        invoke: blocking("the workspace is frozen"),
+      ),
+    ])
+
+  // The notification is cast onto the notice manager and the gate is
+  // called on the answering one, so the gate's fan-out never queues
+  // behind a handler that is still asleep. On one manager this was a
+  // silent failure of the whole gate: the notification held the mailbox,
+  // the gathering worker's deadline passed, the fan-out answered `[]`,
+  // and one extension's slow tracer turned another's block into an
+  // `Allow`.
+  hooks.usage(bus, operation(), usage_row())
+  assert hooks.gate(bus, operation(), "bash", json.Object([]), 0)
+    == hooks.Block(extension: "guard", reason: "the workspace is frozen")
 }
 
 // --- fixtures -------------------------------------------------------------
@@ -589,6 +612,18 @@ fn allow() -> hooks.Invoker {
 
 fn blocking(reason: String) -> hooks.Invoker {
   answering("{\"verdict\":\"block\",\"reason\":\"" <> reason <> "\"}")
+}
+
+// An invoker that never answers at all. Oversleeping the deadline is
+// what the property needs and sleeping forever is the sharpest form of
+// it: the handler holding the notice manager is wedged for the rest of
+// the suite and costs the test no wall-clock time, because nothing the
+// test waits on is behind it.
+fn wedged() -> hooks.Invoker {
+  fn(_extension, _event, _args, _deadline) {
+    process.sleep_forever()
+    Error(hooks.Deadline)
+  }
 }
 
 fn gone() -> hooks.Invoker {

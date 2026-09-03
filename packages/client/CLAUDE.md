@@ -897,9 +897,17 @@ The rest of the path is phase 1's own, and each module is one question:
 Phase 3 added the hook bus, and it hangs off the same satellites the
 tools reach:
 
-- `client/extension/hooks` — one `weft/event_manager` per session, one
-  handler per installed extension that declares a `[[hook]]`, the
+- `client/extension/hooks` — two `weft/event_manager`s per session, one
+  handler per installed extension that declares a `[[hook]]` on each, the
   handler's state its name, the events it declared and its `Invoker`.
+  Two managers because a manager's mailbox is a queue: the four
+  notify-only events are cast onto the notice manager and the three
+  answering ones are `sync_notify`ed on the other, so a slow `usage`
+  handler cannot spend the `tool_call` gate's fan-out budget and turn a
+  second extension's block into an `Allow`. `subscribers(bus, on:
+  Answering | Notifying)` is per manager for the same reason a drop is:
+  `event_manager` removes a handler from the inside and offers no handle
+  onto its twin.
   `Invoker = fn(String, String, MsgPackValue, Int) -> Result(MsgPackValue,
   HookFailure)` is the seam onto the persistent satellite host, injected
   so the bus is drivable with functions and so the host lands in one
@@ -914,7 +922,7 @@ tools reach:
   `sync_notify` plus a drained reply subject — on a weft-bounded worker, never on the caller, because
   `sync_notify` is a `call` and a `call` that is not answered in time
   panics its caller, and the callers are strand drivers sharing one
-  manager. An unanswered fan-out is an empty list: no injection, and no
+  answering manager. An unanswered fan-out is an empty list: no injection, and no
   block on a call the built-in clearance already cleared. `context` and
   `tool_result` are chained transforms and so are
   `fold_context`/`fold_tool_result` over the same ordered list, not bus

@@ -1037,10 +1037,17 @@ together: a `hook_call` carrying a tool invocation and a `hook_call`
 carrying an event are the same frame down the same channel to the same
 node, so an extension's hooks cost no second process and no second boot.
 
-The harness side is one `weft/event_manager` per session with a handler
-per installed extension: an ordered list, each holding private state (its
-name, the events it declared, its invoker), a broken one dropped and
-logged while its siblings carry on. An extension is broken when its
+The harness side is two `weft/event_manager`s per session, each with a
+handler per installed extension: an ordered list, each handler holding
+private state (its name, the events it declared, its invoker), a broken
+one dropped and logged while its siblings carry on. Two rather than one
+because a manager's mailbox is a queue, so a notification cast onto it
+delays the next event asked *on* it — a slow `usage` handler would
+otherwise spend the `tool_call` gate's whole budget and turn one
+extension's block into an `Allow`. The notifications have a manager of
+their own, and being dropped is per manager: the handler that mishandled
+the event loses its place, its twin loses its at the next event it
+mishandles. An extension is broken when its
 satellite is gone, has crashed or has overslept — and also when its
 answer cannot be read at all, because a verdict nobody can parse is not a
 policy the harness can apply. Notifications (`session_start`,
@@ -1051,8 +1058,8 @@ whose answer is a note — are a `sync_notify` whose event carries a reply
 subject, drained after the fan-out returns, so any `Block` wins and
 notes concatenate in load order. That `sync_notify` runs on a weft-bounded worker rather
 than on the caller: it is a `call`, a `call` that goes unanswered panics
-its caller, and the callers are strand drivers sharing one manager across
-every strand of the session. A fan-out that does not answer is an empty
+its caller, and the callers are strand drivers sharing one answering
+manager across every strand of the session. A fan-out that does not answer is an empty
 list, which costs a hook and never a strand.
 The two chained transforms (`context`, `tool_result`) are a fold rather
 than a fan-out, because each handler must see its predecessor's output;
