@@ -60,12 +60,13 @@ harness minted for that invocation.
   author can exercise a tool in their own tests with no channel; in the
   satellite it is `cap/report.emit`, best-effort, so a partial that could
   not be emitted never fails the call it was narrating.
-- `ext/hook.{Hook, Verdict, Call, Context, RunStart, event, answer,
-  rendered}` — the typed hook vocabulary. `Hook` is one variant per event
-  (`OnSessionStart`, `OnBeforeAgentStart`, `OnContext`, `OnToolCall`,
-  `OnToolResult`, `OnAgentEnd`, `OnAgentSettled`), so an entry that
-  answers the wrong event is a compile error rather than a shape mismatch
-  on the wire. `event` is the manifest name a hook answers; `answer` runs
+- `ext/hook.{Hook, Verdict, Call, Context, RunStart, Compaction, Usage,
+  UsageOrigin, event, answer, rendered}` — the typed hook vocabulary.
+  `Hook` is one variant per event (`OnSessionStart`,
+  `OnBeforeAgentStart`, `OnContext`, `OnToolCall`, `OnToolResult`,
+  `OnAgentEnd`, `OnAgentSettled`, `OnBeforeCompact`, `OnUsage`), so an
+  entry that answers the wrong event is a compile error rather than a
+  shape mismatch on the wire. `event` is the manifest name a hook answers; `answer` runs
   one against the harness's `args` document and renders the `hook_result`
   value. Both documents are JSON text, because the extension seam admits
   `gleam/json` and no msgpack decoder. A conversation message arrives as
@@ -78,6 +79,24 @@ harness minted for that invocation.
   its `Error` is real: a `Dynamic` that no JSON parser produced has no
   rendering, and the null arm is written as an optional *string* precisely
   so an unknown shape fails rather than being silently rendered `null`.
+- `ext/hook.{OnBeforeCompact, Compaction}` — phase 4c. Fires once the
+  runtime has decided to compact and before the summary generation
+  starts; an answered `Some(text)` is fenced, attributed and appended to
+  the summarizer's input by the harness, bounded there by the same token
+  allowance a `context` transform gets. **It cannot veto**: there is no
+  answer that stops the compaction, which is what let it be built when
+  the `session_before_*` cancellation hooks could not.
+  `Compaction.reason` is a `String` — `"threshold"`, `"overflow"`,
+  `"requested"` today — rather than a variant, so a fourth word from a
+  later harness does not turn every old extension into a decode failure.
+- `ext/hook.{OnUsage, Usage, UsageOrigin}` — phase 4c, notify-only. The
+  committed cost-ledger row's numbers and coordinates and nothing else:
+  no request, no response, no model text, and not the row's opaque
+  `details`. `UsageOrigin` is the named form of the harness's
+  `adjustment` flag (`ProviderReported | Reconciliation`), because a
+  `Bool` field would make every reader carry its polarity. The `seq` is
+  the one storage assigned, because the harness fires this after the
+  commit rather than before it.
 - `ext/runtime.{serve, serving, answer, Declared}` — `serving(tools:,
   hooks:)` is what a generated entry calls and it does not return until
   the harness cancels the satellite or the channel closes; `serve(tools)`

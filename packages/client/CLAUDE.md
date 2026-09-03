@@ -652,7 +652,12 @@ over one session file. WP-L.
   contribution; a name two contributions both claim is refused, so an
   extension can shadow neither a built-in nor a peer. `serve.boot`
   turns a `Collision` into a boot refusal through
-  `contributions.collision_message`, which names both origins. What a
+  `contributions.collision_message`, which names both origins.
+  `contributions.deactivate(contributions, names)` runs first and drops
+  those names from the **built-in** contribution only, which is the whole
+  of how an extension's tool comes to stand in for a built-in one: an
+  active built-in still collides, a deactivated one leaves its name free.
+  `serve.Settings.deactivated_tools` fills it from `LOOM_DISABLE_TOOLS`. What a
   registry produces reaches a session once: the prompt index and
   `active_tool_names` are both fixed at session creation, so an
   extension installed later is seen by the next session, not this one.
@@ -903,10 +908,10 @@ tools reach:
   and the first two do not. The one implementation a session builds is
   `hosts.invoker(hosts, at:)`, so a hook event and a tool call reach the
   same node; `unwired()` — every call `Gone` — is now only what a test
-  drives the bus with. Five events fan out (`session_start`,
-  `before_agent_start`, `tool_call`, `agent_end`, `agent_settled`), the
-  two that need an answer through `sync_notify` plus a drained reply
-  subject — on a weft-bounded worker, never on the caller, because
+  drives the bus with. Seven events fan out (`session_start`,
+  `before_agent_start`, `tool_call`, `agent_end`, `agent_settled`,
+  `before_compact`, `usage`), the three that need an answer through
+  `sync_notify` plus a drained reply subject — on a weft-bounded worker, never on the caller, because
   `sync_notify` is a `call` and a `call` that is not answered in time
   panics its caller, and the callers are strand drivers sharing one
   manager. An unanswered fan-out is an empty list: no injection, and no
@@ -914,13 +919,26 @@ tools reach:
   `tool_result` are chained transforms and so are
   `fold_context`/`fold_tool_result` over the same ordered list, not bus
   events. `wire(effects, bus, session, clock)` composes the bus into a
-  built `Effects` by *wrapping* five slots, the pattern
-  `notes.digest_hooks` and `agency.reaping_hooks` set. `injection` is the
-  `<extension name=…>` fence a run-start injection is rendered in — the
-  harness writes it, never the extension, for the reason
-  `system_prompt.render_file` gives about instruction files. The module
-  documentation is the normative table of all seven wire shapes; the
-  extension's side of the same wire is `ext/hook`.
+  built `Effects` by *wrapping* seven slots, the pattern
+  `notes.digest_hooks` and `agency.reaping_hooks` set. `injection` and
+  `note_block` are the `<extension name=…>` fences a run-start injection
+  and a compaction note are rendered in — the harness writes them, never
+  the extension, for the reason `system_prompt.render_file` gives about
+  instruction files. The module documentation is the normative table of
+  all nine wire shapes; the extension's side of the same wire is
+  `ext/hook`.
+- `client/extension/hooks.{compaction_notes, usage}` — phase 4c's two
+  events. `compaction_notes(bus, op, cue)` fans `before_compact` out and
+  gathers every note in load order, rendered through `note_block` and
+  bounded cumulatively by `context_growth_tokens`; a note that would
+  overrun the allowance is dropped whole rather than truncated, because
+  half a note says something its author did not. It rides on
+  `effects.Hooks.compaction_note` and it is **not a veto** — the
+  compaction is already decided when the event fires, which is the
+  non-vetoing form of the `session_before_*` hooks the design note
+  refused. `usage(bus, op, row)` is a plain `notify` on
+  `effects.Hooks.usage`, carrying the ledger row's numbers and
+  coordinates and never its `details`.
 
 Phase 2 added the dispatch half and phase 3 the session's hosts, as
 four modules — three pure or stateless, plus the one actor that owns

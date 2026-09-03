@@ -527,6 +527,10 @@ extended by the M3 runtime wave.
   it — the same rule the simulation hooks follow. A read that fails
   projects as empty, which reads downstream as "nothing to compact": a
   strand must not be halted because a token count could not be taken.
+  `compaction_note` is inside the same rule for the reason `context` is
+  — its answer is transient input to a request whose consuming commit is
+  the summary — and `usage` is deliberately outside it, because it fires
+  *after* its commit rather than before one.
   The same rule governs `run_start`, whose first production filler is
   `client/notes`'s `agent/` digest: a hook runs on the driver, so it must
   be synchronous and non-blocking, and it is built *before* `api.open`

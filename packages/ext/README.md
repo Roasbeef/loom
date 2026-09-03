@@ -287,11 +287,30 @@ extension rather than a shape mismatch on the wire.
 | `OnToolResult` | `tool_result` | the reply as `Dynamic` | `{"message": …}` |
 | `OnAgentEnd` | `agent_end` | `op_id` | `{}` |
 | `OnAgentSettled` | `agent_settled` | `op_id` | `{}` (accepted, but nothing in the harness fires it yet) |
+| `OnBeforeCompact` | `before_compact` | `Compaction(op_id, reason, tokens_before, summarized_messages, retained_messages)` | `{"note": String \| null}` |
+| `OnUsage` | `usage` | `Usage(op_id, usage_id, seq, entry_id, origin, …tokens, cost)` | `{}` |
 
 `context` and `tool_result` are **chained transforms**: the harness folds
 them over the installed extensions in load order and hands each one its
 predecessor's output rather than the original, so an author writing one
-should assume somebody else has already been here. The other five fan out.
+should assume somebody else has already been here. The other seven fan
+out.
+
+Two of them are worth a sentence each. `OnBeforeCompact` fires once the
+runtime has decided to compact and before the summary generation starts;
+a returned note is fenced, attributed to this extension by the harness
+and appended to the summarizer's input, bounded in total by the same
+token allowance a `context` transform gets. **It is not a veto** — there
+is no answer that stops the compaction. `Compaction.reason` is a
+`String` rather than a variant on purpose: `"threshold"`, `"overflow"`
+and `"requested"` are today's words, and a hook that turned a fourth one
+into a decode failure would be an extension that stops working the day
+the harness grows another door. `OnUsage` is notify-only and is handed
+the committed ledger row's numbers and coordinates only — no request, no
+response, no model text, and not the row's opaque `details`. It fires
+after the transaction that wrote the row returned, so the `seq` is the
+one storage assigned; it fires at most once, and it is lost outright if
+the harness dies between that commit and the call.
 
 Both documents cross as JSON text held in a msgpack string. The extension
 seam admits `gleam/json`, `gleam/dynamic` and no msgpack decoder, so text

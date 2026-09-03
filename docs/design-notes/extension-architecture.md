@@ -153,7 +153,10 @@ tool reply.
 ### Hooks
 
 Adopt pi's names where the moment and the handler's power match; diverge
-openly where they do not. The table is the whole vocabulary of phase 3.
+openly where they do not. The table is the whole vocabulary: the seven
+of phase 3, plus the two phase 4c added for the extension classes that
+were otherwise unserveable — a compaction note and a usage
+notification.
 
 | Loom event | pi event | Fires | Handler may return |
 |---|---|---|---|
@@ -163,6 +166,8 @@ openly where they do not. The table is the whole vocabulary of phase 3.
 | `tool_call` | `tool_call` | a tool call was planned, before dispatch | `Block(reason)`, which lands as the in-band refusal the model reads, or nothing. **Arguments are not mutable**: pi mutates `event.input` in place and re-validates nothing; Loom refuses that on purpose, since a hook that rewrites a call's arguments after vetting is the one thing the vetting cannot see |
 | `tool_result` | `tool_result` | a tool settled, before the reply is committed | a transform of the reply content, chained; `is_error` cannot be cleared by a hook |
 | `agent_end` | `agent_end` | a run reached a terminal state | nothing. **Diverges in phase 3**: the event carries the operation and no outcome word. It rides on `effects.Hooks.run_end`, which is handed an `OpId` and asked *before* the terminal transaction commits, so the harness does not yet know how the run ended; a word invented there would be one an author could not tell from a real one |
+| `before_compact` | (none; pi has no compaction event) | the runtime decided to compact, before the summary generation starts | an optional note, appended to the summarizer's input fenced and attributed to the extension, bounded by the same token cap a `context` transform gets. **Never a veto**: the compaction is already decided and no answer stops it — see the divergence paragraph below |
+| `usage` | (none; pi's tracing extensions read the provider) | one cost-ledger row was committed | nothing. Notify-only, carrying the row's numbers and coordinates and nothing else — no request, no response, no model text, and not the row's opaque `details`. Loom has no provider hooks by ruling, and this is what the tracing extensions (Braintrust, LangSmith, OTel, Langfuse) actually need from one |
 | `agent_settled` | `agent_settled` | the run and every follow-up it queued are done | nothing. **Not produced in phase 3**: the harness has no signal for it. `api.await_strand_result` answers for one run, and the follow-up queue is planner-internal with no terminal edge to hang the event on. The bus carries the event and the manifest accepts the name, so a later producer costs one call; until then a declaration is logged `extension.hook.inert` at boot rather than left to look like it fired |
 
 Divergences stated once: no `before_provider_headers`, `before_provider_request`
@@ -170,9 +175,17 @@ or `after_provider_response` (provider ownership is TCB); no `input`,
 `user_bash`, `ui_prompt_*` or any `ctx.ui` **in the harness vocabulary**,
 because those are the client's moments and the client is a separate
 process over a frozen gateway (the client surface has its own ruling,
-below); no `session_before_*` cancellation hooks in phase 3 (navigation
-and compaction are durable-plane decisions; a veto from the jail on a
-commit boundary needs an argument this note does not make); no
+below); no `session_before_*` **cancellation** hooks (navigation and
+compaction are durable-plane decisions; a veto from the jail on a commit
+boundary needs an argument this note does not make). Phase 4c built the
+non-vetoing half of that shape instead: `before_compact` fires once the
+runtime has decided to compact, and the most an extension can do is add
+an attributed note to the summarizer's input. That needs no veto
+argument, and it is safe under the durable-state rule for the same
+reason `context` is — the note is transient input to a request whose
+consuming commit is the summary. There is deliberately no
+`before_navigate` sibling: nothing has asked for one, and a hook with no
+caller is a wire shape that rots. Also no
 `registerProvider`, `setModel`, `setActiveTools` (routing and the tool
 set are the operator's, through `loom.toml` and `set_config`).
 
@@ -182,6 +195,19 @@ set are the operator's, through `loom.toml` and `set_config`).
   extension owns: durable, latest-wins cells the extension writes through
   `ext.remember`/`ext.recall`, never sent to the model unless the
   extension injects them. Same door as `schedule/config/…`.
+- `registerTool` over a **built-in** name is refused, and the refusal is
+  the boot-time collision `client/contributions` raises. pi extensions
+  such as `hashline-edit` replace a built-in outright; here an install
+  that silently redefined what the model's `fs_edit` call does would make
+  every sandbox argument in this tree an argument about the wrong
+  function, and nothing in the manifest an operator reads would say which
+  one they got. The operator keeps the decision instead: a built-in named
+  in `LOOM_DISABLE_TOOLS` is not registered at all, so its name is free
+  and an extension's tool of that name is admitted with no collision to
+  refuse. An active built-in still collides; a deactivated one yields.
+  Deactivation reaches built-ins only, because deactivating a *peer*
+  extension's tool would hand one extension's name to another by
+  configuration.
 - `sendMessage` maps onto a fenced, attributed injection through the
   session's own admission doors (`api.steer_marking`-shaped), which is
   how scheduled heartbeats already speak.

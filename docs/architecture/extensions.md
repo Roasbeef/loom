@@ -177,7 +177,7 @@ host = "api.search.brave.com"
 header = "X-Subscription-Token"
 ```
 
-`manifest.decode` (`extension/manifest.gleam:230`) is a total decoder in
+`manifest.decode` (`extension/manifest.gleam:239`) is a total decoder in
 the strong sense the durability boundaries use: **an unknown key is an
 error in every table.** That is not fussiness, it is how the `[client]`
 table the design note reserves for a later ruling gets refused without a
@@ -190,7 +190,7 @@ codepoint (`manifest.is_legal_name` at
 lookalike in a tool name is not a normalization variant of anything.
 
 Three rules need the tree beside the manifest, so `decode` takes a
-`Surroundings` (`extension/manifest.gleam:191`): a tool's `parameters`
+`Surroundings` (`extension/manifest.gleam:200`): a tool's `parameters`
 must be a path under `schema/` that exists and *parses as JSON*; its
 `entry` must name a module `src/` actually ships; and a secret's `host`
 must be one of `[net].hosts`. The last is a contradiction check rather
@@ -521,7 +521,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1372`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:1397`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -657,7 +657,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2171`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2205`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -703,7 +703,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1372`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:1397`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -924,7 +924,7 @@ attached.
 **Two contributions may not claim one tool name.** Within a contribution
 a repeated name is the author overriding themselves and the later one
 wins; *between* contributions it takes the boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:191`). An
+(`contributions.registry` at `client/contributions.gleam:206`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
@@ -1044,11 +1044,12 @@ logged while its siblings carry on. An extension is broken when its
 satellite is gone, has crashed or has overslept — and also when its
 answer cannot be read at all, because a verdict nobody can parse is not a
 policy the harness can apply. Notifications (`session_start`,
-`agent_end`, `agent_settled`) are `notify`; the two events that need an
-answer — `before_agent_start`, whose answer is an injection, and
-`tool_call`, whose answer is a verdict — are a `sync_notify` whose event
-carries a reply subject, drained after the fan-out returns, so any
-`Block` wins. That `sync_notify` runs on a weft-bounded worker rather
+`agent_end`, `agent_settled`, `usage`) are `notify`; the three events
+that need an answer — `before_agent_start`, whose answer is an
+injection, `tool_call`, whose answer is a verdict, and `before_compact`,
+whose answer is a note — are a `sync_notify` whose event carries a reply
+subject, drained after the fan-out returns, so any `Block` wins and
+notes concatenate in load order. That `sync_notify` runs on a weft-bounded worker rather
 than on the caller: it is a `call`, a `call` that goes unanswered panics
 its caller, and the callers are strand drivers sharing one manager across
 every strand of the session. A fan-out that does not answer is an empty
@@ -1090,6 +1091,8 @@ Where each event lands in the harness:
 | `tool_result` | `effects.ToolSurface.run`, over the settled reply before the driver commits it. The transform is applied by rebuilding the original reply with the hook's content, so `is_error`, `usage`, the timestamp and the call's coordinates stay the harness's — a hook may rewrite what the model reads and may not write the session's accounting |
 | `agent_end` | `effects.Hooks.run_end`, beside the follow-up the harness was already placing |
 | `agent_settled` | nowhere yet. The event and its fan-out exist, and a manifest may declare it; nothing in the harness produces it, and `serve` logs the declaration rather than pretending otherwise. See the design note's table for why it is not faked |
+| `before_compact` | `effects.Hooks.compaction_note`, asked in `runtime/strand_runtime` at the moment a structural summary request is dispatched — after the compaction is decided, before the generation starts. Every returned note is fenced `<extension name=…>` and attributed by the harness, bounded in total by the same `context_growth_tokens` a `context` transform gets, and appended to the summarizer's single user message *after* the pack's instruction. A branch summary is not a compaction and never fires it |
+| `usage` | `effects.Hooks.usage`, called from the driver's own `commit_then` once `writer.commit` has returned, for every `InsertUsage` in the transaction, paired with the seq storage assigned it. Notify-only: nothing reads the answer |
 
 Every payload crosses as a msgpack string holding JSON, the shape a tool
 invocation's arguments already use and the only one the extension seam
@@ -1097,12 +1100,53 @@ can read: it admits `gleam/json` and no msgpack decoder. A conversation
 message is `core/codec`'s durable JSON, decoded back through the same
 total decoder, so a transform that no longer decodes is discarded rather
 than half-applied. `client/extension/hooks.gleam`'s module documentation
-is the normative table of the seven shapes, and
+is the normative table of the nine shapes, and
 `packages/ext/src/ext/hook.gleam` is the extension's side of the same
 wire: one `Hook` variant per event, so an entry module that answers the
 wrong event is a compile error in the extension rather than a shape
 mismatch on the wire, and `ext/runtime` refuses `mismatched_hook` when
 the manifest's declared event and the module's answer disagree.
+
+**`before_compact` is the non-vetoing form, and `usage` carries no
+content.** The design note refused `session_before_*` cancellation hooks
+because a veto from the jail on a commit boundary needs an argument it
+did not make. `before_compact` is the half of that shape which needs no
+such argument: it fires once the runtime has already decided to compact,
+and there is nothing an answer can say that stops the compaction. That
+also makes it safe under the rule that hooks decide from durable state,
+for exactly the reason `context` is — the note is transient input to a
+request whose consuming commit is the summary, so a crash before that
+commit re-dispatches, re-asks, and the second answer is as good as the
+first because neither was written down. `usage` is the notify-only event
+the tracing and observability extensions want (Braintrust, LangSmith,
+OTel, Langfuse on pi), and it carries the ledger row's numbers and
+coordinates only: no request, no response, no model text, and not the
+row's `details` field, whose opaque application JSON is exactly where
+somebody would later put a prompt. Loom still has no provider hooks, by
+ruling. `usage` is also the one hook on the surface that is not
+replayable and does not need to be: the row is durable before the call,
+the transaction that wrote it is never re-planned, so the notification
+fires at most once and is lost outright if the driver dies between the
+commit and the call — the correct trade against double-counting a
+session's cost.
+
+**An extension never overrides a built-in tool; an operator may
+deactivate one.** pi extensions such as `hashline-edit` register a tool
+over a built-in name and expect to replace it. Loom refuses that: a
+repeated name across contributions is a boot refusal
+(`contributions.Collision`), because an install that silently redefined
+what the model's `fs_edit` call does would make every sandbox argument in
+the tree an argument about the wrong function. What an operator may do is
+take the built-in out of the active set — `LOOM_DISABLE_TOOLS` names
+built-ins that this server does not register, and
+`contributions.deactivate` drops them before the names are claimed. The
+name is then genuinely free, and the extension's tool of that name is
+admitted with nothing to refuse. The two directions are the whole ruling:
+an active built-in still collides, and a deactivated one yields.
+Deactivation reaches built-ins only — deactivating an *extension's* tool
+would be a way to hand one extension's name to another by configuration,
+which is the peer shadowing the same module refuses at one remove, and
+the way to stop an extension's tool is to uninstall the extension.
 
 The vocabulary is pi's where the moment and the handler's power match,
 and diverges openly where they do not. The sharpest divergence:
@@ -1157,8 +1201,8 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:142`), the per-invocation `ceilings` (`extension/policy.gleam:184`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
 | `client/extension/seam.gleam` | The one router arm a jailed extension has that a code-mode program does not, now that `ext.call` is gone: `routing` (`extension/seam.gleam:131`) over `serviced_caps` (`extension/seam.gleam:64`). Msgpack in, msgpack out, and no policy at all. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:171`), `hosting` (`extension/dispatch.gleam:379`), the timeout clamp `within` (`extension/dispatch.gleam:656`), the jail's `requirements` (`extension/dispatch.gleam:298`), and `settle` (`extension/dispatch.gleam:759`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1372`), the two refusals it logs, and the contribution it appends. |
-| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:191`) and the collision that refuses a boot. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1397`), the two refusals it logs, and the contribution it appends. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:206`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:348`. |
