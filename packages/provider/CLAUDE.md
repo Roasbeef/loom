@@ -3,8 +3,9 @@
 ## Purpose
 
 The provider SDK: a typed registry of provider configurations and role
-routes, a pure incremental server-sent-events parser, two wire adapters
-(Anthropic Messages, OpenAI chat-completions), retry and overflow
+routes, a pure incremental server-sent-events parser, three wire adapters
+(Anthropic Messages, OpenAI chat-completions, Gemini generateContent), retry
+and overflow
 classification, and the secret-injection seam. SSE parsing and adapter folds
 are pure Gleam; the gateway custodian and native transport owner are the small
 processful shell around that sans-io core. WP-F.
@@ -148,8 +149,17 @@ processful shell around that sans-io core. WP-F.
     on the last tool definition and on the system block, five-minute on
     the last block of each of the final two user turns. The system prompt
     therefore goes out as a one-element block array, not a bare string.
-  - `api_name` constants pin the two dialects: `"anthropic-messages"`,
-    `"openai-completions"`.
+  - Gemini generateContent SSE — unnamed events whose `data:` is a whole
+    `GenerateContentResponse`, with no terminator sentinel; parts arrive
+    complete (`text`, `text` with `thought: true`, `functionCall` with
+    parsed `args`), and any part may carry a `thoughtSignature` that must
+    be replayed with its block. Requests carry `systemInstruction`,
+    `functionDeclarations` with `parametersJsonSchema`, and a
+    `thinkingConfig` whose knob follows the model generation
+    (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5). The key
+    travels in `x-goog-api-key`.
+  - `api_name` constants pin the three dialects: `"anthropic-messages"`,
+    `"openai-completions"`, `"gemini-generate-content"`.
 
 ## Invariants
 
@@ -203,7 +213,16 @@ processful shell around that sans-io core. WP-F.
   reports `noproc`; critical callers retain a `DrainWitness` across `begin`.
 - **Stop reasons map totally.** A stop or finish reason an adapter does not
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
-  crash.
+  crash. Gemini has no tool-use finish reason — a calling turn ends with
+  `STOP` — so its settlement promotes `STOP` to `ToolUse` when the
+  response carried a function call.
+- **Gemini thought signatures are replayed or substituted, never dropped.**
+  The signature stays on the block it arrived with (`text_signature`,
+  `thought_signature`), an empty signed text part signs the block in
+  progress, and a replayed function call with no signature carries the
+  `skip_thought_signature_validator` sentinel, because the API refuses an
+  unsigned call outright. An unsigned thought summary is not replayed; a
+  signed one goes back as a `thought` part with its signature.
 - **The fallback chain walks only on retryable failures.** A terminal
   error, or an exhausted chain, delivers the failure in-band as `Failed`
   preserving retryability. A *settled* response never falls back, and

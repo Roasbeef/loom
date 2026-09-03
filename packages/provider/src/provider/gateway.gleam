@@ -33,6 +33,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import provider/adapter/anthropic
+import provider/adapter/gemini
 import provider/adapter/openai
 import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
@@ -104,7 +105,9 @@ type AttemptPermit {
 /// provider` refers to, unique among registered providers; `base_url`
 /// has no trailing slash (Anthropic: the host root, e.g.
 /// `"https://api.anthropic.com"`; OpenAI-compatible: the API root, e.g.
-/// `"https://api.openai.com/v1"`); `api_key_secret` is a secret *name*,
+/// `"https://api.openai.com/v1"`; Gemini: the API version root, e.g.
+/// `"https://generativelanguage.googleapis.com/v1beta"`); `api_key_secret`
+/// is a secret *name*,
 /// never a value.
 pub type ProviderConfig {
   /// An Anthropic Messages API endpoint.
@@ -116,6 +119,10 @@ pub type ProviderConfig {
     base_url: String,
     api_key_secret: String,
   )
+
+  /// A Gemini `generateContent` endpoint (the Gemini Developer API, or
+  /// any host speaking that dialect).
+  GeminiProvider(name: String, base_url: String, api_key_secret: String)
 }
 
 /// The gateway registry. Built with `new` and the pipeable setters;
@@ -1612,6 +1619,17 @@ fn attempt_one(
         gateway.transport,
         openai.build_request(base_url:, api_key:, resolved: target, request:),
         openai.response_machine(target, now:),
+        deliver,
+        fn(running) { register_attempt(attempts, running, consumer) },
+        control:,
+        consumer:,
+        within: gateway.attempt_timeout_ms,
+      )
+    GeminiProvider(name: _, base_url:, api_key_secret: _) ->
+      stream.run_tracked(
+        gateway.transport,
+        gemini.build_request(base_url:, api_key:, resolved: target, request:),
+        gemini.response_machine(target, now:),
         deliver,
         fn(running) { register_attempt(attempts, running, consumer) },
         control:,

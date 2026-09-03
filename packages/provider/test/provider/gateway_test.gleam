@@ -165,6 +165,46 @@ pub fn happy_dispatch_settles_test() {
   assert usage.output == 4
 }
 
+pub fn gemini_provider_dispatches_through_its_adapter_test() {
+  // The third dialect reaches its own adapter: the request goes to the
+  // generateContent path with the key in `x-goog-api-key`, and the
+  // response folds through the Gemini machine.
+  let requests = process.new_subject()
+  let transport =
+    fixture.routing_transport(fn(request) {
+      process.send(requests, request)
+      fixture.ok_response(
+        "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14}}\n\n",
+      )
+    })
+  let gw =
+    gateway.new(
+      transport:,
+      secrets: secrets(),
+      clock: clock.fixed(at: 1_700_000_000_000),
+    )
+    |> gateway.add_provider(gateway.GeminiProvider(
+      name: "google",
+      base_url: "https://gemini.test/v1beta",
+      api_key_secret: "PRIMARY_KEY",
+    ))
+    |> gateway.route(model.Main, [target("google", "gemini-3.5-flash")])
+    |> gateway.with_attempt_timeout(2000)
+  let handle = gateway.request(gw, main_request())
+  let assert Ok(#(deltas, stream.Settled(message: settled, usage:))) =
+    stream.await_terminal(handle, within: 2000)
+  assert deltas == [stream.TextDelta(index: 0, text: "Hello")]
+  let assert message.AssistantMessage(api:, provider:, ..) =
+    stream.message(settled)
+  assert api == "gemini-generate-content"
+  assert provider == "google"
+  assert usage.output == 4
+  let assert Ok(sent) = process.receive(requests, within: 1000)
+  assert sent.url
+    == "https://gemini.test/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+  assert list.key_find(sent.headers, "x-goog-api-key") == Ok(secret_value)
+}
+
 pub fn retryable_failure_walks_the_chain_test() {
   // Primary answers 529 overloaded; the pump falls to backup, which
   // settles. The resolved identity in the settled message is backup's.
