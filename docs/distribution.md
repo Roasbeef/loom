@@ -496,10 +496,15 @@ change while this server runs.
 ```toml
 [memory]
 distill = "on-boot"      # or "off"; the default is "on-boot"
-distill_wall_ms = 600000 # how long one whole pass may take
+distill_wall_ms = 600000 # how long one whole pass may take; also the ceiling
 ```
 
-`distill = "off"` starts no worker at all, logs `memory.distill.off`,
+`distill_wall_ms` cannot be raised above its default, because that is
+how long the memory session's writer lease lasts and nothing renews a
+lease but a commit — a pass that outlived it would fail at its next
+commit instead of being cut cleanly, so a larger value is refused at
+boot with that sentence. `distill = "off"` starts no worker at all, logs
+`memory.distill.off`,
 and leaves remembered notes accumulating for a `loom-distill` run by
 hand. An unknown key in the table refuses the boot rather than being
 ignored, because an opt-out that distilled anyway is the one failure

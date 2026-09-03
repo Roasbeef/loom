@@ -345,6 +345,13 @@ pub fn the_memory_table_decodes_test() {
     as "a non-positive deadline must be refused"
   assert string.contains(bad_wall, "positive")
 
+  // And a deadline above the memory session's own lease, which a pass
+  // cannot outlive because nothing renews a lease but a commit.
+  let assert Error(too_long) =
+    distillpass.parse("[memory]\ndistill_wall_ms = 3600000\n")
+    as "a deadline past the lease TTL must be refused"
+  assert string.contains(too_long, "lease")
+
   // And the top-level check has to know the table exists, or a document
   // carrying it would be refused by the catalogue before this parser
   // ever saw it.

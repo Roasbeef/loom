@@ -64,6 +64,7 @@
 //// prevent.
 
 import client/distill
+import client/memory
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
@@ -108,14 +109,26 @@ pub type Options {
   Options(cadence: Cadence, wall_ms: Int)
 }
 
-/// How long one pass may take before the deadline reaps it.
+/// How long one pass may take before the deadline reaps it, and the
+/// ceiling a configured one is held to.
 ///
-/// Generous on purpose. A pass costs one extraction turn per eligible
-/// session plus one consolidation, each bounded by the pipeline's own
-/// five-minute provider timeout, and the price of cutting a pass off is
-/// that everything it had already paid for is thrown away. Ten minutes
-/// is long enough that only a wedged provider reaches it.
-pub const default_wall_ms = 600_000
+/// It is the memory session's own run lease
+/// (`client/memory.run_lease_ttl_ms`) rather than a number that happens
+/// to equal it, and that is the whole argument for the value. **Nothing
+/// renews that lease but a commit**, so a pass cannot usefully outlive
+/// it: one running past the TTL has already had its lease stolen by
+/// whatever opened the store next, and its next commit fails. Cutting
+/// it cleanly at the deadline costs the same work and reports it
+/// honestly, so raising the wall past the lease buys nothing and hides
+/// a failure behind a different one — which is why `parse` refuses a
+/// larger value rather than accepting it.
+///
+/// Generous within that bound, on purpose: a pass costs one extraction
+/// turn per eligible session plus one consolidation, each bounded by
+/// the pipeline's own five-minute provider timeout, and the price of
+/// cutting a pass off is that everything it had already paid for is
+/// thrown away.
+pub const default_wall_ms = memory.run_lease_ttl_ms
 
 /// The posture of a host whose configuration says nothing: one pass per
 /// boot, ten minutes.
@@ -209,7 +222,24 @@ fn cadence_of(fields: Dict(String, tom.Toml)) -> Result(Cadence, String) {
 fn wall_of(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   case dict.get(fields, "distill_wall_ms") {
     Error(Nil) -> Ok(default_wall_ms)
-    Ok(tom.Int(ms)) if ms > 0 -> Ok(ms)
+    Ok(tom.Int(ms)) if ms > 0 && ms <= default_wall_ms -> Ok(ms)
+
+    // Refused rather than clamped. A clamp would make the file say one
+    // thing and the server do another, and the operator who wrote the
+    // larger number is at a terminal reading this message — which is
+    // exactly the moment to explain that the ceiling is the memory
+    // lease and not a taste.
+    Ok(tom.Int(ms)) if ms > default_wall_ms ->
+      Error(
+        "memory.distill_wall_ms is "
+        <> int.to_string(ms)
+        <> ", above the "
+        <> int.to_string(default_wall_ms)
+        <> "ms the memory session's writer lease lasts. Nothing renews "
+        <> "that lease but a commit, so a pass cannot outlive it: past "
+        <> "the TTL its lease is stealable and its next commit fails. "
+        <> "Lower the wall, or leave the key out for the ceiling itself",
+      )
     Ok(_other) ->
       Error(
         "memory.distill_wall_ms must be a positive integer: it is how many "

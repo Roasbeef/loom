@@ -204,7 +204,7 @@ decoded by `client/distillpass.gleam:158` (`parse`):
 | Key | Values | Default | Meaning |
 |---|---|---|---|
 | `distill` | `"on-boot"`, `"off"` | `"on-boot"` | Whether a pass runs at all. `"off"` starts no worker, logs `memory.distill.off`, and leaves notes accumulating for a hand-run `loom-distill`. |
-| `distill_wall_ms` | a positive integer | `600000` | How long one whole pass may take before the deadline reaps it. |
+| `distill_wall_ms` | a positive integer, at most `600000` | `600000` | How long one whole pass may take before the deadline reaps it. The ceiling is the memory session's run lease: nothing renews that lease but a commit, so a pass cannot outlive it, and a larger value is refused rather than clamped. |
 
 An unknown key in the table is refused, because an opt-out that distils
 anyway is the one failure an operator cannot see. `memory` also has to
