@@ -133,10 +133,15 @@ Three things about it are load-bearing:
   lets `settled` answer while a pass is still running. All seven
   `weft.Outcome` variants are matched (`client/distillpass.gleam:494`,
   `reported`).
-- **It never re-arms.** One pass per boot is the whole cadence. There is
-  no timer and no per-turn hook, because the material a pass can read —
-  the sessions closed since the last boot, and the notes the `remember`
-  door wrote — does not change while this server runs.
+- **It never re-arms itself.** One pass per boot is the whole cadence:
+  there is no timer and no per-turn hook, because the material a pass
+  can read — the sessions closed since the last boot, and the notes the
+  `remember` door wrote — does not change while this server runs. The
+  one way a boot sees two passes is a *supervisor restart* of the worker,
+  which re-runs `Begin` in the replacement; that costs one more pass,
+  which the pipeline is idempotent about, and it takes a crash in the
+  worker itself to happen, since the pass runs on a weft scope whose
+  death is an outcome rather than an exit.
 
 A question asked while the pass is in flight is *postponed* by the state
 machine and answered on the transition, which is what makes
@@ -230,7 +235,7 @@ Every pass logs through the session's own logger, under stable names:
 |---|---|---|
 | `memory.distill.started` | info | The pass begins; carries the directory and the wall deadline. |
 | `memory.distill.completed` | info | The pass ran; carries `sources`, `skipped`, `candidates`, `rows`, and `digest` as `written:<bytes>`, `emptied` or `unchanged`. |
-| `memory.distill.failed` | warn | The pipeline refused — a held lease, a provider failure, a dead worker — with the reason and the retry note. Also logged at boot when the catalogue routes nothing the pipeline could ask. |
+| `memory.distill.failed` | warn | The pipeline refused — a held lease, a provider failure, a dead worker — with the reason and the retry note. Also logged at boot when the catalogue routes nothing the pipeline could ask. A restarted worker whose predecessor's scope was killed before `memory.close` finds the run lease still held and logs this naming `loom-distill` — itself, one incarnation ago — as the holder. |
 | `memory.distill.expired` | warn | The wall deadline reaped the pass. |
 | `memory.distill.off` | info | This host is configured not to distil. |
 
