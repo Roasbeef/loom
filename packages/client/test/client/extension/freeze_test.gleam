@@ -404,6 +404,55 @@ pub fn the_extension_allowlist_is_pinned_test() {
     == #([], [])
 }
 
+/// Which `ext/*` modules carry authority, derived from the tree rather
+/// than from the list that names them.
+///
+/// `policy.extension_authority_modules` is the seam machinery's answer to
+/// a capability that does not wear the `cap/` prefix, and as written it
+/// is a list somebody has to remember to extend. This is the test that
+/// makes forgetting fail. Authority is asked of the source: an `ext`
+/// module that imports anything under `cap/` opens a channel to the
+/// broker, and one that does not cannot. The set of names that answer yes
+/// is compared with the list in both directions, so a broker-reaching
+/// module added to the vocabulary without being named here fails *here*,
+/// naming the module and the list it is missing from.
+///
+/// The pinned-set tests above would also go red, and that is why this one
+/// exists: they would report the extension seam's literal as out of date,
+/// which invites the fix of adding the name to the literal — leaving the
+/// module admissible on the resident seam, which is the actual bug. This
+/// test says which list is wrong.
+///
+/// Today the answer is `ext/memory`, which reaches
+/// `cap/internal/{channel, dispatch, wire}`; `ext` and `ext/hook` are the
+/// typed vocabulary and import no capability at all.
+pub fn the_authority_list_is_what_the_tree_says_test() {
+  let source_root = repository_root() <> "/packages/ext/src/"
+  let vocabulary =
+    list.filter(policy.extension_cap_modules(), string.starts_with(_, "ext"))
+
+  // `imports_in_file` reads the file or crashes naming it, so a module
+  // on the seam with no source of that name is a failure here rather
+  // than a silent "imports nothing".
+  let reaches_the_broker =
+    list.filter(vocabulary, fn(module) {
+      let path = source_root <> module <> ".gleam"
+      list.any(imports_in_file(path), string.starts_with(_, "cap/"))
+    })
+
+  assert both_differences(
+      reaches_the_broker,
+      policy.extension_authority_modules(),
+    )
+    == #([], [])
+
+  // And the derivation separates the vocabulary rather than agreeing
+  // with an empty list: something answered yes, and something answered
+  // no.
+  assert reaches_the_broker != []
+  assert list.length(vocabulary) > list.length(reaches_the_broker)
+}
+
 // --- Reading the tree ------------------------------------------------------
 
 /// The repository root, from the `packages/client` directory the test
