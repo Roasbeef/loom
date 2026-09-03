@@ -394,6 +394,19 @@ pub type Hooks {
     /// lost outright if the driver dies between the commit and the
     /// call. Losing a trace line is the correct trade against
     /// double-counting a session's cost.
+    ///
+    /// It is called **on the strand driver's own process**, inside
+    /// `drive_loop` and after the commit returned, so whoever fills it
+    /// must return promptly and must never block: a slot that waited
+    /// would stop the driver serving `Nudge`, `RequestAbort` and
+    /// `PollTick`, which is the same rule `run_start` and `run_end` are
+    /// held to.
+    ///
+    /// What it covers is the conversation session's ledger and nothing
+    /// else. Memory distillation commits its usage rows through
+    /// `storage` directly, against the memory session's own ledger, so
+    /// those turns never reach this slot — by design, since they belong
+    /// to a command rather than to a run.
     usage: fn(OpId, UsageRow) -> Nil,
   )
 }
