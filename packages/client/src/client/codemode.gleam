@@ -540,7 +540,11 @@ fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
     // fixed at install and recorded, and a per-host widening applied
     // afterwards would make an installed extension's reach depend on
     // configuration the record never saw.
-    vet_policy.ExtensionSeam | vet_policy.OrchestrationSeam -> mcp_wiring.none()
+    // The resident seam has no loader and therefore no host to widen
+    // from; it reaches nothing at all, MCP included.
+    vet_policy.ExtensionSeam
+    | vet_policy.OrchestrationSeam
+    | vet_policy.ResidentSeam -> mcp_wiring.none()
   }
 }
 
@@ -609,6 +613,11 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
     // arm rather than folded into the workspace one, so phase 2 has to
     // change it deliberately.
     vet_policy.ExtensionSeam -> []
+
+    // The resident seam services nothing by construction: a body admitted
+    // under it reaches no capability at all, which is the whole of what
+    // makes a harness-resident body safe to consider (#33).
+    vet_policy.ResidentSeam -> []
   }
 }
 
@@ -963,7 +972,9 @@ pub fn tool_seam(seam: vet_policy.Seam) -> Result(codemode_tool.Seam, Nil) {
     // `code_mode` call, so there is no seam here for a model to select.
     // A `Result` rather than a third mirrored variant keeps that fact in
     // the type, where a caller has to answer it.
-    vet_policy.ExtensionSeam -> Error(Nil)
+    // The resident seam is not a `code_mode` seam either, and for a
+    // stronger reason: nothing loads a resident body at all (#32).
+    vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> Error(Nil)
   }
 }
 

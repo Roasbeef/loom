@@ -38,7 +38,7 @@ repository,
 | 1 | `packages/ext`, the extension seam, the manifest, the install pipeline, install records, discovery, `loom ext` | **Built** (#177, #178, #179, #182) |
 | 2 | Boot registration, jailed dispatch of an extension tool, `net.request` served by the broker under the manifest's policy | **Built** (#196) |
 | 3 | A persistent satellite, `hook_call`/`hook_result`, the hook bus | **Built**: the satellite host, the frame pair (`protocol-change/012-hook-call.md`, ACCEPTED), the typed hook vocabulary, the bus, the runtime slots and the manifest and record halves, with the bus's invoker wired onto the session's hosts |
-| 4 | Tier H: the harness-resident loader, the artifact import check, rollback | **Planned** (#32, #33) |
+| 4 | Tier H: the harness-resident loader, the artifact import check, rollback | Freeze proven (#204); loader deferred (#32) — #33's two mechanisms are gated tests over the package graph, both prelude source trees and both vetting seams, recorded in `docs/review/extension-zone.md`; the loader is deferred because no surveyed extension needs in-VM residency |
 | 5 | LSP and DAP as extensions | Named, not commissioned (#26) |
 
 Everything below is marked against that table. Where a section describes
@@ -101,10 +101,10 @@ seam.
 **Built.** The extension seam is the third of code mode's three, and
 unlike the first two it is deliberately *not* disjoint from its
 siblings. `extension_cap_modules` is `default_cap_modules()` widened by
-exactly one name, `ext` (`vet/policy.gleam:455`), and
+exactly one name, `ext` (`vet/policy.gleam:544`), and
 `extension_stdlib_modules` is the shared pure subset widened by
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json` (`vet/policy.gleam:482`).
+and `gleam/json` (`vet/policy.gleam:571`).
 
 Disjointness exists between the workspace and orchestration seams because
 an orchestrator and an effect program are different kinds of thing, and
@@ -1115,13 +1115,33 @@ provider hooks, because provider ownership is TCB, and none of pi's UI
 moments, because those belong to the client and the client is a separate
 process over a frozen gateway.
 
-**Phase 4, planned: tier H.** The loader compiles a harness-resident body
-from vetted source under a harness-controlled module name, checks the
-compiled artifact's *import table* against the tier-H allowlist before
-loading it — the runtime half of #33's two freeze mechanisms, where the
-vetting lint is the compile-time half — runs it under a supervised,
-time-boxed wrapper, and rolls back to the previous artifact when a load
-or a first call fails.
+**Phase 4, split: the freeze is proven, the loader is deferred.** The
+loader (#32) would compile a harness-resident body from vetted source
+under a harness-controlled module name, check the compiled artifact's
+*import table* before loading it, run it under a supervised, time-boxed
+wrapper, and roll back to the previous artifact when a load or a first
+call fails. It is **deferred**: a survey of the pi extension corpus found
+none that needs in-VM residency, so building the one code path §7's hard
+rule was written against would buy nothing.
+
+The freeze (#33) is not deferred. Both mechanisms it asks for are gated
+tests in `client/test/client/extension/freeze_test.gleam`. The
+compile-time half walks the package graph — `packages/ext` names only
+`cap`, `cap` names only `core`, `core` names none, the resolved manifest
+and `codemode/seed.default_vendored` agree — and then walks both prelude
+source trees, so an import added to `packages/ext` or `packages/cap` that
+reaches a TCB module fails. The runtime half is the seam a body is
+admitted under: `policy.extension()` and the new `policy.resident()` are
+both disjoint from the module names the TCB packages ship, checked
+against the trees rather than a snapshot, and both allowlists are pinned
+as exact sets. `ResidentSeam` is the seam a resident body *would* be
+judged under — `ext`, `ext/hook`, and the jailed seam's standard library
+with every `cap/*` module removed — declared before a loader exists so
+that #32 starts from a frozen allowlist. `docs/review/extension-zone.md`
+is the review record, and it carries the measurement a loader would rest
+on: the beam import table admits `erlang`, `maps` and `lists`, which no
+Gleam allowlist names, so the artifact check has to be per-MFA rather
+than per-module.
 
 **Phase 5, named but not commissioned: LSP and DAP as extensions.** A
 language server is a long-lived JSON-RPC process over stdio plus a small
@@ -1143,7 +1163,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1907`) with `start`, `invoke` (`codemode/satellite.gleam:2094`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:294`), `invoke_event` (`extension/hosts.gleam:411`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The three seams. `extension_cap_modules` (`vet/policy.gleam:455`) and `extension_stdlib_modules` (`vet/policy.gleam:482`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:440`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:544`) and `extension_stdlib_modules` (`vet/policy.gleam:571`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |

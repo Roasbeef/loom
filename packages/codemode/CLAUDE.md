@@ -9,8 +9,10 @@ side of that — vet, compile, launch, host — and it never runs
 model-influenced code itself (Rule Zero). WP-J, and WP-N for the
 orchestration seam.
 
-There are **three seams over one pipeline**, and a submission is vetted
-against exactly one of them (`vet/policy.Seam`). The *workspace* seam is
+There are **four seams over one pipeline**, and a submission is vetted
+against exactly one of them (`vet/policy.Seam`). Three of them admit
+source that runs today; the fourth is frozen for a tier that does not
+exist. The *workspace* seam is
 `cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
 `satellite.default_router` for the jailed `proc.run` and by
 `codemode/workspace` for the harness-side `fs.read`, `fs.list` and
@@ -32,7 +34,22 @@ and `gleam/json`. An installed extension's tool *is* a workspace program
 with a different entry point, so carving it something narrower would buy
 nothing and would have to be kept in step by hand. The property test is
 therefore a superset claim, and the widening is pinned to exactly its one
-name so a `cap/strand` cannot arrive on the way. There is deliberately no
+name so a `cap/strand` cannot arrive on the way.
+
+The *resident* seam is the fourth, and nothing selects it. It is the seam
+a harness-resident hook body would be judged under if a loader were ever
+built: `resident_prelude_modules` — the extension seam's prelude list with
+every `cap/*` name filtered out, so `ext` and `ext/hook` — over
+`extension_stdlib_modules`, and **no capability at all**. A jailed body
+may reach the broker because the jail is what makes that safe; a resident
+body runs inside the harness VM, where a capability stub is a direct call
+in the process that holds the durability plane. So a resident hook is a
+pure transform over its payload and everything else stays in the jail.
+The seam exists so the allowlist is frozen *before* #32 could invent one
+(#33's runtime half); the loader is deferred and the freeze is not.
+`client/test/client/extension/freeze_test.gleam` pins both this seam and
+the extension seam as exact sets and shows both disjoint from every
+module the TCB packages ship, walked from the tree. There is deliberately no
 capability for "which call am I serving?": phase 1 had `cap/ext.call`, a
 pull the node made once at boot, and `protocol-change/012` deleted it —
 a session-lived satellite is *told* what to answer, on a `hook_call`.
@@ -81,14 +98,15 @@ session and sends it many invocations.
   `NotWidened(reason)` for both of the ways that does not happen.
   `grant_label` renders one grant as a diff line an operator can read.
 - `codemode/vet.{VetResult, Vetted, Rule, Rejection}` + `vet/policy.{VetPolicy,
-  Seam, for_seam, default, orchestration, default_cap_modules,
-  orchestration_cap_modules, harness_only_cap_modules,
-  default_stdlib_modules}` — the pure import/`@external`
+  Seam, for_seam, default, orchestration, extension, resident,
+  default_cap_modules, orchestration_cap_modules, extension_cap_modules,
+  resident_prelude_modules, harness_only_cap_modules,
+  default_stdlib_modules, extension_stdlib_modules}` — the pure import/`@external`
   lint and the two allowlists it is parameterized by. The four list
   functions are public so the confinement can be asserted as a property
   rather than as a snapshot, and so `scripts/gen-prelude.sh --check` can
   read them with no toolchain. `Vetted` is opaque,
-  so only linted source can reach a build. `Seam` is closed at two
+  so only linted source can reach a build. `Seam` is closed at four
   variants, so "which capabilities travel together" is a decision this
   package owns and a host selects from rather than assembles.
 - `codemode/vet/package.{VettedPackage, Rejection, vet_package}` —

@@ -1066,6 +1066,20 @@ registered, and each lost node is reaped by the launcher's own janitor.
 the invocation's own deadline, so a caller never reports a wedged registry
 for an invocation that was merely being timed out properly.
 
+**The TCB freeze is a test in this package.**
+`client/test/client/extension/freeze_test.gleam` is #33's record in code:
+the compile-time half walks the package graph (`packages/ext` names only
+`cap`, `cap` only `core`, `core` none), the resolved `manifest.toml`,
+`codemode/seed.default_vendored`, and every import in `packages/ext/src`
+and `packages/cap/src`; the runtime half pins `policy.extension()` and
+`policy.resident()` as exact sets and shows both disjoint from every
+module the TCB packages ship, walked from the tree so a new module under
+`storage/` is covered the day it lands. It lives here rather than in
+`codemode` because only this package can see both the seams and the tree
+without a new dependency. The loader (#32) is deferred;
+`docs/review/extension-zone.md` says why and carries the measurement a
+loader would inherit.
+
 **The verb split lives in `client.gleam`, not `serve.main`.** The
 installer needs the boot's own effect plane, so `extension/cli` imports
 `client/serve`; putting the dispatch in `serve` would be an import cycle.

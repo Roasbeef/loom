@@ -199,6 +199,17 @@ harness minted for that invocation.
   past it. A missing `strand`, by contrast, is the empty string rather
   than a refusal: attribution is what it is for, and an invocation with no
   strand is still one a tool can serve.
+- **This package's dependency graph is frozen and gated.** `[dependencies]`
+  names exactly one loom package, `cap`; `cap` names exactly one, `core`;
+  `core` names none. That chain is #33's compile-time half — the package
+  an extension compiles against exposes no path to `StorageWriter`, the
+  broker, or any other TCB module — and it is checked, together with the
+  resolved `manifest.toml`, `codemode/seed.default_vendored`, and a walk
+  of every import in this package's and `cap`'s `src/`, by
+  `client/test/client/extension/freeze_test.gleam`. Adding a `path`
+  dependency here, or an import that reaches a TCB module, fails that
+  test. `docs/review/extension-zone.md` is the review record.
+
 - **`decode_args` names the field.** Every decode failure `decode.run`
   found is rendered, because the model reads the refusal and retries, and
   "expected String at .city" is a repair instruction while "bad arguments"

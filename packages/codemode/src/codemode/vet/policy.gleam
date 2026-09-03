@@ -43,8 +43,10 @@
 ////
 //// # Three seams over one mechanism
 ////
-//// There are three allowlists, not one, and a submission is judged against
-//// exactly one of them (`Seam`, `for_seam`):
+//// There are four allowlists, not one, and a submission is judged against
+//// exactly one of them (`Seam`, `for_seam`). Three of them admit source
+//// that runs today; the fourth is declared for a tier that does not
+//// exist yet, so that it is frozen before a loader can invent it:
 ////
 //// - the **workspace** seam — `cap/{fs, proc, net, git, lsp, report, task,
 ////   actor, kv}` — a program that orchestrates *effects*;
@@ -52,7 +54,11 @@
 ////   nothing else — a program that orchestrates *agents*;
 //// - the **extension** seam — the workspace seam plus `ext`
 ////   and the decoding half of the standard library — an installed
-////   extension's tool, compiled once and run per call.
+////   extension's tool, compiled once and run per call;
+//// - the **resident** seam — `ext`, `ext/hook` and the extension seam's
+////   standard library, with every `cap/*` module removed — the seam a
+////   harness-resident hook body would be judged against if one were ever
+////   loaded (`resident`).
 ////
 //// The first two are disjoint by construction and the third is
 //// deliberately *not*: an extension is a workspace program with a
@@ -92,8 +98,8 @@ import gleam/list
 import gleam/set.{type Set}
 import gleam/string
 
-/// Which seam a submission is judged against. Three variants and no
-/// fourth: the set of seams is closed here rather than left to whoever
+/// Which seam a submission is judged against. Four variants and no
+/// fifth: the set of seams is closed here rather than left to whoever
 /// builds a policy, so "which capabilities travel together" is a
 /// decision this module owns and a caller selects from.
 pub type Seam {
@@ -106,6 +112,11 @@ pub type Seam {
   /// The extension seam: an installed extension's own source, judged at
   /// install and again at every load.
   ExtensionSeam
+
+  /// The resident seam: the seam a harness-resident hook body would be
+  /// judged against if one were ever loaded. No loader exists, and the
+  /// seam is deliberately declared before one does — see `resident`.
+  ResidentSeam
 }
 
 /// The allowlist a seam judges a submission against.
@@ -127,6 +138,7 @@ pub fn for_seam(seam: Seam) -> VetPolicy {
     WorkspaceSeam -> default()
     OrchestrationSeam -> orchestration()
     ExtensionSeam -> extension()
+    ResidentSeam -> resident()
   }
 }
 
@@ -374,6 +386,87 @@ pub fn orchestration() -> VetPolicy {
 ///
 pub fn extension() -> VetPolicy {
   new(list.append(extension_cap_modules(), extension_stdlib_modules()))
+}
+
+/// The resident seam's allowlist: the extension seam with every
+/// capability module removed. `ext`, `ext/hook`, and the same
+/// standard-library subset the jailed seam admits — nothing under
+/// `cap/`, and nothing else.
+///
+/// # Why an allowlist exists for a tier that does not
+///
+/// Design §7's hard rule is that the trusted computing base is not
+/// runtime-extensible. Every extension body in the tree today runs in a
+/// jail, so nothing crosses into the harness VM and the rule holds by
+/// construction. Tier H — a hook body hot-loaded into the harness itself
+/// — is the one design the rule was written against, and it is
+/// deliberately unbuilt (#32): the survey behind the extension note found
+/// no real extension that needs in-VM residency, and what the vocabulary
+/// is missing is not a tier.
+///
+/// So this list is the freeze rather than a feature. A loader written
+/// later starts from a seam that already exists and that a test already
+/// pins, instead of inventing an allowlist at the moment somebody most
+/// wants to be permissive. Nothing selects `ResidentSeam` today, and
+/// that is the intended state.
+///
+/// # Why no capability at all
+///
+/// A jailed body reaches the broker through `cap/*` because the jail is
+/// what makes that safe: the token is scoped to one execution, the
+/// broker judges every call, and a kernel stands behind both. A resident
+/// body has none of that — it runs in the harness VM, where a capability
+/// stub is no longer a request to somebody else but a direct call inside
+/// the process that holds the durability plane. A resident hook is
+/// therefore a *pure transform over the payload it is handed*: it may
+/// decode an event, build an answer, and return it, and it may reach
+/// nothing. Everything else stays in the jail, where it already works.
+///
+/// Pure is not the same as bounded, and a loader has to supply the
+/// second: this seam bounds the names a body may write, never the time
+/// or the memory it may spend, so a `json.parse` over a hostile payload
+/// or a runaway recursion inside the harness VM has no jail, no rlimit
+/// and no deadline behind it. Whoever builds the loader owes the call a
+/// bound of its own.
+///
+/// Written as the extension seam filtered rather than as a literal list,
+/// so "no capability" is a fact about the code and not a promise two
+/// lists have to keep. Widen the extension seam and this one does not
+/// widen with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.contains(policy.resident(), "ext/hook")
+/// ```
+///
+/// ```gleam
+/// assert !policy.contains(policy.resident(), "cap/fs")
+/// ```
+///
+pub fn resident() -> VetPolicy {
+  new(list.append(resident_prelude_modules(), extension_stdlib_modules()))
+}
+
+/// The prelude modules on the resident seam: the extension seam's
+/// prelude list with every `cap/*` name filtered out, which is `ext` and
+/// `ext/hook`.
+///
+/// Public for the freeze test, which pins this list against the module
+/// names the trusted computing base's packages actually ship and needs to
+/// name the prelude half apart from the standard-library half it shares
+/// with the jailed seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert policy.resident_prelude_modules() == ["ext", "ext/hook"]
+/// ```
+///
+pub fn resident_prelude_modules() -> List(String) {
+  list.filter(extension_cap_modules(), fn(name) {
+    !string.starts_with(name, "cap/")
+  })
 }
 
 /// The capability-prelude modules in the default allowlist. The union of the

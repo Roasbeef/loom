@@ -585,6 +585,17 @@ pub fn the_seam_publishes_the_policy_the_program_is_judged_against_test() {
   broker.stop(broker_actor)
 }
 
+pub fn the_resident_seam_is_offered_to_no_program_test() {
+  // The resident seam is the seam a harness-resident hook body would be
+  // judged under if #32 ever built a loader, and the freeze rests on it
+  // reaching nothing at all. Both halves of "nothing" live here rather
+  // than in `codemode.gleam`'s `case` arms alone, where either could be
+  // made permissive with a green suite: no capability is serviced for
+  // it, and no `code_mode` tool is offered under it.
+  assert codemode.seam_caps(vet_policy.ResidentSeam) == []
+  assert codemode.tool_seam(vet_policy.ResidentSeam) == Error(Nil)
+}
+
 pub fn code_mode_is_registered_only_where_a_pipeline_is_wired_test() {
   // Same arithmetic as the agent family: the wire tool array is the byte
   // prefix of the provider's cached region, so a permanently-refusing

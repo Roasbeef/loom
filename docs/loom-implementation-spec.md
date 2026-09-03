@@ -508,7 +508,7 @@ demonstrated.
 | M4 | +J | code-mode migration sample runs; concurrency suite green; hostile-satellite tabletop passes | partial |
 | M4.5 | +N | orchestration sample fans out over the fixture repo and joins on one deadline, returning one structured result; seam-confinement suite green in both directions; a loop past the spawn-admission ceiling refused in band; every code-mode outcome carries the enforcement report | partial (three of the four demonstrated end to end; the sample's fan-out reaches a scripted Agency rather than live child strands) |
 | M5 | +I(lsp,dap), routing, TTSR, memory | semantic rename across fixture repo via LSP; DAP breakpoint session; fallback chain survives injected 429 storm | partial (routing, TTSR and memory landed and the 429-storm criterion is demonstrated; LSP and DAP are unbuilt and moved to phase 5) |
-| M6 | +M | promotion-ladder integration test; rollback live | not started |
+| M6 | +M | promotion-ladder integration test; rollback live | partial (the TCB freeze test exists and gates — the package graph, both prelude source trees and both vetting seams are walked and shown disjoint from the base, with the review record in `docs/review/extension-zone.md`; the ladder and rollback criteria are deferred with the tier-H loader, #32, because no surveyed extension needs in-VM residency) |
 | M7 | follow-ups below | per-feature | not started |
 
 **Why M4.5 and not M8.** The orchestration seam depends on M4 and on the
