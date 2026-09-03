@@ -45,6 +45,13 @@
 //// in the server's own configuration rather than in the extension's
 //// manifest, and it is visible in `server.tools` at boot.
 ////
+//// Deactivation frees a name and is not a capability control. Dropping
+//// `fs_edit` stops the model calling that tool by that name; it does not
+//// narrow what the session may do, because `code_mode`'s prelude still
+//// reaches `cap/proc.run`, `cap/fs.write` and `cap/fs.edit` through the
+//// broker. An operator who wants the *ability* gone narrows the base
+//// policy, which is the layer that is actually enforced.
+////
 //// Deactivation reaches built-ins only. Deactivating an *extension's*
 //// tool would be a way to hand one extension's name to another by
 //// configuration, which is the shadowing this module refuses at one

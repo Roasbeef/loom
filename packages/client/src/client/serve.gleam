@@ -93,7 +93,11 @@
 //// - `LOOM_DISABLE_TOOLS` — a comma-separated list of built-in tools
 ////   this server does not register. The way an extension's tool comes
 ////   to stand in for a built-in of the same name; see
-////   `client/contributions`.
+////   `client/contributions`. It frees a *name* and is not a capability
+////   control: `code_mode`'s prelude still reaches `cap/proc.run`,
+////   `cap/fs.write` and `cap/fs.edit` through the broker whatever this
+////   list says, so narrowing what a session may do is the base policy's
+////   job and never this variable's.
 //// - `LOOM_PROMPT_PACK` — a pack file to render instead of the one
 ////   shipped in `prompt/default`. A file that cannot be read, or does not
 ////   decode, or renders to nothing, refuses the boot with a worded
