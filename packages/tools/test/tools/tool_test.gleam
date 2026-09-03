@@ -268,7 +268,7 @@ fn unused_schedules() -> schedule.Schedules {
       Error(schedule.Unavailable(reason: unused_refusal()))
     },
     list: fn(_ctx) { Error(schedule.Unavailable(reason: unused_refusal())) },
-    cancel: fn(_ctx, _name) {
+    cancel: fn(_ctx, _name, _target) {
       Error(schedule.Unavailable(reason: unused_refusal()))
     },
   )
@@ -279,5 +279,8 @@ fn unused_limits() -> schedule.Limits {
     min_interval_seconds: 60,
     default_max_fires: 10,
     max_schedules: 10,
+    max_in_seconds: 604_800,
+    max_max_fires: 1000,
+    max_expires_after_s: 604_800,
   )
 }
