@@ -805,7 +805,7 @@ Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 | `tools/blob.gleam` | Content-addressed overflow past 64 KiB. |
 | `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
-| `provider/adapter/anthropic.gleam`, `.../openai.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
+| `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
 | `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one. Its module doc is the list of mapping decisions. |
 | `client/escalate.gleam` | Parking: raise on every policy refusal, hold the call while a human decides, consume the approval and re-clear once. |
 | `conformance` test suites `wiring_test.gleam`, `e2e_test.gleam` | The adapter's mappings against fakes, and the M2 jailed acceptance that proves the record end to end. Both live under `packages/conformance/test/conformance/`. |

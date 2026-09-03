@@ -536,7 +536,8 @@ is released rather than left to expire. Its flags:
 **Models.** `--config` points at a catalogue: named entries (`dialect`,
 `base_url`, `api_key_env`, `model_id`, context and output limits, thinking
 level) plus role → fallback-chain routing. `docs/examples/loom.toml` is the
-commented example and `docs/examples/loom-baseten.toml` wires four
+commented example — it carries all three dialects, `anthropic`, `openai`
+and `gemini` — and `docs/examples/loom-baseten.toml` wires four
 OpenAI-dialect models with per-role chains. Precedence is flags > config
 file > environment > defaults: with `--config` the catalogue is the whole
 model surface; without it `LOOM_MODEL` (default `claude-opus-5`),
