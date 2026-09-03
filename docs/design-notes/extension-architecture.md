@@ -194,7 +194,10 @@ set are the operator's, through `loom.toml` and `set_config`).
 - `appendEntry` maps onto a reserved fact prefix, `ext/<name>/`, that the
   extension owns: durable, latest-wins cells the extension writes through
   `ext.remember`/`ext.recall`, never sent to the model unless the
-  extension injects them. Same door as `schedule/config/…`.
+  extension injects them. Same door as `schedule/config/…`. **Built**:
+  the prefix is reserved in `runtime/api`, the two arms are served on
+  the extension seam over `client/extension/memory`'s door, and
+  `ext/memory` is what an author writes against.
 - `registerTool` over a **built-in** name is refused, and the refusal is
   the boot-time collision `client/contributions` raises. pi extensions
   such as `hashline-edit` replace a built-in outright; here an install
@@ -524,6 +527,10 @@ and the `[[hook]]` half of the manifest, and #200 for the persistent
 satellite, the `hook_call` frame pair and the host registry, with the
 e2e in `packages/client/test/client/extension_e2e_test.gleam` meeting
 the phase's exit criteria over real jailed satellites.
+Phase 4b followed: `ext.remember` and `ext.recall`, the mapping of pi's
+`appendEntry` above, are built — the `ext/` prefix reserved in
+`runtime/api`, the two arms on the extension seam over a door in
+`client/extension/memory`, and `ext/memory` for the author.
 `docs/architecture/extensions.md` is what the tree holds, section by
 section. The divergence: this note adopted pi's rule that a tool without
 a `prompt_snippet` is silently omitted from the available-tools section,

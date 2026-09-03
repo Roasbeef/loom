@@ -55,32 +55,41 @@
 //// measured rather than assumed: `packages/ext` was built with the
 //// toolchain and each `.beam` read with `beam_lib:chunks/2`.
 ////
-//// - `ext@runtime.beam` imports `cap@report`, `cap@runtime`, `ext@hook`,
-////   `gleam@json`, `gleam@list`, `gleam@result`, `gleam@string`, and
-////   `erlang`.
 //// - `ext.beam` imports `gleam@dynamic@decode`, `gleam@list`,
 ////   `gleam@result`, `gleam@string`, and `erlang`.
 //// - `ext@hook.beam` imports `gleam@dynamic@decode`, `gleam@json`,
 ////   `gleam@result`, `erlang`, and `maps`.
+//// - `ext@memory.beam` imports `cap@internal@dispatch`,
+////   `cap@internal@wire`, `gleam@json`, `gleam@result`, and `erlang`.
+//// - `ext@runtime.beam` imports `cap@report`, `cap@runtime`, `ext@hook`,
+////   `gleam@json`, `gleam@list`, `gleam@result`, `gleam@string`, and
+////   `erlang`.
 ////
 //// Three things follow, and the third is the one a loader has to answer.
-//// First, the table is a *subset* of the source imports: `ext@runtime`
-//// imports `ext` in source and not in the table, because it uses only
-//// that module's constructors and never calls into it. So an
-//// import-table check can never over-report, and with FFI refused by
-//// vetting and no dynamic module dispatch in Gleam — no `apply/3`, no
-//// `Module:f()` — the table is the complete set of modules a body can
-//// reach. Second, module names are the Gleam names with `/` rewritten to
-//// `@`, so the check is over the same namespace vetting already reasons
-//// about. Third, the compiler emits native Erlang modules that no
-//// allowlist names: `erlang` and `maps` here, and `lists` in other
-//// modules. A module-level check would therefore have to admit `erlang`,
-//// which is `erlang:open_port/2` and every other escape hatch in one
-//// name. **The check has to be per-MFA, not per-module.** The MFAs
-//// actually emitted across `packages/ext`'s three source modules are
-//// `erlang:element/2`, `erlang:get_module_info/1`,
-//// `erlang:get_module_info/2` and `maps:to_list/1` — a small, boring set
-//// that a loader can allowlist by triple. Recorded here because the
+//// First, the table is a *subset* of the source imports, and both
+//// capability-holding modules show it: `ext@runtime` imports `ext` in
+//// source and not in the table, and `ext@memory` imports
+//// `cap/internal/channel` in source and not in the table, because each
+//// uses only the other module's constructors and types and never calls
+//// into it. So an import-table check can never over-report, and with FFI
+//// refused by vetting and no dynamic module dispatch in Gleam — no
+//// `apply/3`, no `Module:f()` — the table is the complete set of modules
+//// a body can reach. It is also why the table is no substitute for the
+//// *source* walk `the_authority_list_is_what_the_tree_says` does:
+//// `ext@memory` reaches the broker through modules its own table happens
+//// to name, but a module that only held a channel's types would look
+//// authority-free from the beam alone. Second, module names are the
+//// Gleam names with `/` rewritten to `@`, so the check is over the same
+//// namespace vetting already reasons about. Third, the compiler emits
+//// native Erlang modules that no allowlist names: `erlang` and `maps`
+//// here, and `lists` in other modules. A module-level check would
+//// therefore have to admit `erlang`, which is `erlang:open_port/2` and
+//// every other escape hatch in one name. **The check has to be per-MFA,
+//// not per-module.** The MFAs actually emitted across `packages/ext`'s
+//// four source modules are `erlang:element/2`,
+//// `erlang:get_module_info/1`, `erlang:get_module_info/2` and
+//// `maps:to_list/1` — a small, boring set that a loader can allowlist by
+//// triple, and one `ext/memory` did not grow. Recorded here because the
 //// argument, not the number, is what #32 would inherit.
 
 import codemode/seed
@@ -355,7 +364,8 @@ pub fn a_body_declaring_foreign_code_is_refused_test() {
   })
 }
 
-/// The resident seam's allowlist, pinned as an exact set.
+/// The resident seam's allowlist, pinned as an exact set. No `cap/*`
+/// module and no `ext/memory`: nothing here reaches the broker.
 ///
 /// A containment test would pass while the seam grew, which is the whole
 /// failure this file exists to catch, so the difference is taken in both
@@ -381,10 +391,18 @@ pub fn the_resident_allowlist_is_pinned_test() {
 /// resident list by the capability modules and nothing else, which the
 /// policy module's own tests assert as a relation; here the names are
 /// simply written down.
+///
+/// `ext/memory` is on this list and not on the resident one above, and
+/// the asymmetry is the whole reason both are written out. It is a
+/// capability — a broker client over `ext.remember` and `ext.recall`,
+/// spelled like the two authority-free `ext` modules beside it — and a
+/// resident body has no capability channel to serve it on. Pinning both
+/// sets is what catches a future `ext/…` capability landing on the
+/// resident seam because the filter matched on the `cap/` prefix.
 pub fn the_extension_allowlist_is_pinned_test() {
   let expected = [
     "cap/actor", "cap/fs", "cap/git", "cap/kv", "cap/lsp", "cap/net", "cap/proc",
-    "cap/report", "cap/schedule", "cap/task", "ext", "ext/hook",
+    "cap/report", "cap/schedule", "cap/task", "ext", "ext/hook", "ext/memory",
     "gleam/bit_array", "gleam/bool", "gleam/dict", "gleam/dynamic",
     "gleam/dynamic/decode", "gleam/float", "gleam/function", "gleam/int",
     "gleam/json", "gleam/list", "gleam/option", "gleam/order", "gleam/pair",
@@ -393,6 +411,55 @@ pub fn the_extension_allowlist_is_pinned_test() {
   ]
   assert both_differences(policy.allowed_imports(policy.extension()), expected)
     == #([], [])
+}
+
+/// Which `ext/*` modules carry authority, derived from the tree rather
+/// than from the list that names them.
+///
+/// `policy.extension_authority_modules` is the seam machinery's answer to
+/// a capability that does not wear the `cap/` prefix, and as written it
+/// is a list somebody has to remember to extend. This is the test that
+/// makes forgetting fail. Authority is asked of the source: an `ext`
+/// module that imports anything under `cap/` opens a channel to the
+/// broker, and one that does not cannot. The set of names that answer yes
+/// is compared with the list in both directions, so a broker-reaching
+/// module added to the vocabulary without being named here fails *here*,
+/// naming the module and the list it is missing from.
+///
+/// The pinned-set tests above would also go red, and that is why this one
+/// exists: they would report the extension seam's literal as out of date,
+/// which invites the fix of adding the name to the literal — leaving the
+/// module admissible on the resident seam, which is the actual bug. This
+/// test says which list is wrong.
+///
+/// Today the answer is `ext/memory`, which reaches
+/// `cap/internal/{channel, dispatch, wire}`; `ext` and `ext/hook` are the
+/// typed vocabulary and import no capability at all.
+pub fn the_authority_list_is_what_the_tree_says_test() {
+  let source_root = repository_root() <> "/packages/ext/src/"
+  let vocabulary =
+    list.filter(policy.extension_cap_modules(), string.starts_with(_, "ext"))
+
+  // `imports_in_file` reads the file or crashes naming it, so a module
+  // on the seam with no source of that name is a failure here rather
+  // than a silent "imports nothing".
+  let reaches_the_broker =
+    list.filter(vocabulary, fn(module) {
+      let path = source_root <> module <> ".gleam"
+      list.any(imports_in_file(path), string.starts_with(_, "cap/"))
+    })
+
+  assert both_differences(
+      reaches_the_broker,
+      policy.extension_authority_modules(),
+    )
+    == #([], [])
+
+  // And the derivation separates the vocabulary rather than agreeing
+  // with an empty list: something answered yes, and something answered
+  // no.
+  assert reaches_the_broker != []
+  assert list.length(vocabulary) > list.length(reaches_the_broker)
 }
 
 // --- Reading the tree ------------------------------------------------------

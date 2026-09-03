@@ -52,13 +52,13 @@
 ////   actor, kv}` — a program that orchestrates *effects*;
 //// - the **orchestration** seam — `cap/strand` and `cap/report`, and
 ////   nothing else — a program that orchestrates *agents*;
-//// - the **extension** seam — the workspace seam plus `ext`
-////   and the decoding half of the standard library — an installed
-////   extension's tool, compiled once and run per call;
+//// - the **extension** seam — the workspace seam plus `ext`, `ext/hook`,
+////   `ext/memory` and the decoding half of the standard library — an
+////   installed extension's tool, compiled once and run per call;
 //// - the **resident** seam — `ext`, `ext/hook` and the extension seam's
-////   standard library, with every `cap/*` module removed — the seam a
-////   harness-resident hook body would be judged against if one were ever
-////   loaded (`resident`).
+////   standard library, with every module that reaches the broker
+////   removed — the seam a harness-resident hook body would be judged
+////   against if one were ever loaded (`resident`).
 ////
 //// The first two are disjoint by construction and the third is
 //// deliberately *not*: an extension is a workspace program with a
@@ -371,8 +371,13 @@ pub fn orchestration() -> VetPolicy {
 /// Decision 2 of the extension ruling) makes brokered HTTP requests — so
 /// carving it a fourth, narrower capability set would buy nothing and
 /// would have to be kept in step by hand. What it additionally needs is
-/// the vocabulary its tools and hooks are typed against (`ext`), and
-/// enough of the standard library to decode arguments and encode a reply.
+/// the vocabulary its tools and hooks are typed against (`ext`,
+/// `ext/hook`), and the one capability that is an extension's alone:
+/// `ext/memory`, the durable cells under the reserved prefix the
+/// extension owns. A code-mode program has no such subtree — its name
+/// is the second segment of the key and it does not have one — so this
+/// is a capability that could not be on the workspace seam rather than
+/// one held back from it.
 ///
 /// ## Examples
 ///
@@ -390,8 +395,8 @@ pub fn extension() -> VetPolicy {
 
 /// The resident seam's allowlist: the extension seam with every
 /// capability module removed. `ext`, `ext/hook`, and the same
-/// standard-library subset the jailed seam admits — nothing under
-/// `cap/`, and nothing else.
+/// standard-library subset the jailed seam admits — nothing that opens
+/// a channel to the broker, `ext/memory` included, and nothing else.
 ///
 /// # Why an allowlist exists for a tier that does not
 ///
@@ -422,6 +427,13 @@ pub fn extension() -> VetPolicy {
 /// decode an event, build an answer, and return it, and it may reach
 /// nothing. Everything else stays in the jail, where it already works.
 ///
+/// `ext/memory` is the sharpest case of that, which is why it is out
+/// rather than in: its cells are rows in the very store the harness VM
+/// owns, so a resident body holding it would be writing the durability
+/// plane from inside the process that serves it, with no broker between
+/// them to judge the call. An extension that wants to remember has the
+/// jail, where the write is a brokered request like any other.
+///
 /// Pure is not the same as bounded, and a loader has to supply the
 /// second: this seam bounds the names a body may write, never the time
 /// or the memory it may spend, so a `json.parse` over a hostile payload
@@ -449,8 +461,18 @@ pub fn resident() -> VetPolicy {
 }
 
 /// The prelude modules on the resident seam: the extension seam's
-/// prelude list with every `cap/*` name filtered out, which is `ext` and
-/// `ext/hook`.
+/// prelude list with every module that reaches the broker filtered out,
+/// which is `ext` and `ext/hook`.
+///
+/// The filter is a prefix match *and* a membership test, because the
+/// `cap/` prefix stopped being the whole answer when `ext/memory`
+/// arrived. A capability is a module that opens a channel to the broker,
+/// and `ext/memory` opens one under a name that says which vocabulary it
+/// belongs to rather than which door it is. Matching on the prefix alone
+/// would have handed a resident body the durable store — the one thing
+/// on this seam that writes to the plane the harness VM holds — so
+/// `extension_authority_modules` names the exceptions and this filter
+/// asks about authority rather than about spelling.
 ///
 /// Public for the freeze test, which pins this list against the module
 /// names the trusted computing base's packages actually ship and needs to
@@ -466,7 +488,30 @@ pub fn resident() -> VetPolicy {
 pub fn resident_prelude_modules() -> List(String) {
   list.filter(extension_cap_modules(), fn(name) {
     !string.starts_with(name, "cap/")
+    && !list.contains(extension_authority_modules(), name)
   })
+}
+
+/// The extension seam's capability modules that do not wear the `cap/`
+/// prefix: `ext/memory`, and nothing else today.
+///
+/// A list rather than a naming convention because the convention is the
+/// thing that failed. `ext/memory` sits in the `ext` vocabulary an
+/// author writes against, so it is spelled like `ext/hook`, which carries
+/// no authority at all; underneath it is a `cap/internal/channel` client
+/// like every `cap/*` module. Whoever adds the next one has to add it
+/// here too, and `resident_prelude_modules` is what makes forgetting
+/// visible: a capability missing from this list would silently become
+/// admissible inside the harness VM.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.contains(policy.extension_authority_modules(), "ext/memory")
+/// ```
+///
+pub fn extension_authority_modules() -> List(String) {
+  ["ext/memory"]
 }
 
 /// The capability-prelude modules in the default allowlist. The union of the
@@ -520,7 +565,8 @@ pub fn orchestration_cap_modules() -> List(String) {
 }
 
 /// The capability-prelude and prelude-package modules on the extension
-/// seam: every workspace capability, plus `ext`.
+/// seam: every workspace capability, plus `ext`, `ext/hook` and
+/// `ext/memory`.
 ///
 /// Written as `default_cap_modules()` widened rather than as a list of
 /// its own, so the superset relation is a fact about the code and not a
@@ -536,6 +582,14 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// `ext` — types, a name-to-event mapping, and the JSON marshalling of
 /// the hook payloads — so it is admitted on the same argument.
 ///
+/// `ext/memory` is spelled like those two and is not one of them: it is
+/// a broker client, and the one capability an extension has that a
+/// workspace program could not, because the key its cells live under is
+/// composed from the name an operator installed this extension under.
+/// It is appended through `extension_authority_modules` so the seams
+/// that must not have it can ask about authority rather than about the
+/// `cap/` prefix it does not wear.
+///
 /// There is no capability here for "which call am I serving?", and the
 /// absence is the point. Phase 1 had one — `cap/ext.call`, a pull the
 /// node made once at boot — and phase 3 deleted it: a satellite that
@@ -550,6 +604,7 @@ pub fn orchestration_cap_modules() -> List(String) {
 ///
 pub fn extension_cap_modules() -> List(String) {
   list.append(default_cap_modules(), ["ext", "ext/hook"])
+  |> list.append(extension_authority_modules())
 }
 
 /// The standard-library modules on the extension seam: the shared pure

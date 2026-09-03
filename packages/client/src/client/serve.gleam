@@ -188,6 +188,7 @@ import client/extension/hooks as extension_hooks
 import client/extension/hosts as extension_hosts
 import client/extension/installed
 import client/extension/manifest as extension_manifest
+import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/history
@@ -1404,6 +1405,7 @@ fn extension_registrations(
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
+  memory: extension_memory.Door,
 ) -> List(Registration) {
   case settings.home {
     // No home is no extensions root, which is the same fact to a booting
@@ -1414,7 +1416,15 @@ fn extension_registrations(
     Some(home) -> {
       let root = extension_record.root_for(home)
       list.filter_map(installed.discover(root), fn(found) {
-        extension_contribution(root, found, logger, hosts, hooking, host)
+        extension_contribution(
+          root,
+          found,
+          logger,
+          hosts,
+          hooking,
+          host,
+          memory,
+        )
       })
     }
   }
@@ -1427,6 +1437,7 @@ fn extension_contribution(
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
+  memory: extension_memory.Door,
 ) -> Result(Registration, Nil) {
   case found {
     installed.Refused(name:, reason:) -> {
@@ -1447,6 +1458,7 @@ fn extension_contribution(
         hosts,
         hooking,
         host,
+        memory,
       )
   }
 }
@@ -1460,6 +1472,7 @@ fn extension_registered(
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
+  memory: extension_memory.Door,
 ) -> Result(Registration, Nil) {
   case host {
     None -> {
@@ -1482,6 +1495,11 @@ fn extension_registered(
           // under the service supervisor further down, after this
           // registry is assembled.
           hosts:,
+          // The session's durable memory, borrowed through the Agency's
+          // holder for the reason the scheduling plane is: the runtime
+          // does not exist until `api.open` has returned the registry
+          // being assembled here.
+          memory:,
           // The process environment, the same store `api_key_env`
           // reads. The value never reaches a `Tool`, a frame or a log:
           // this function is handed to `broker/egress`, which reads it
@@ -1982,6 +2000,7 @@ fn assemble(
         at: hook_coordinates(settings, entropy(), clock),
       ),
       code_mode_host,
+      extension_memory.for_session(agency_config),
     )
 
   use tool_registry <- result.try(

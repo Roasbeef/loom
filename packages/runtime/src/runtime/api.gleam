@@ -1448,12 +1448,35 @@ pub const rule_fact_prefix = "rule/"
 /// never wakes the strand it was meant to check on).
 pub const schedule_fact_prefix = "schedule/"
 
+/// The reserved `fact.custom` key prefix an installed extension's durable
+/// memory lives under: one latest-wins cell per `ext/<extension>/<key>`,
+/// written and read through the `ext.remember` and `ext.recall` arms of
+/// the extension seam (`client/extension/memory`).
+///
+/// The whole prefix is reserved rather than one corner of it, and the
+/// extension's own name is the second segment, so the seam — which binds
+/// that segment from the install record and never from the request — is
+/// the only thing that can say which subtree a call touches. Two
+/// properties follow, and neither survives leaving the namespace
+/// model-writable. A model that could `put_fact` here could **forge** an
+/// extension's memory: an extension that remembers "this operator
+/// approved the wide policy" and reads it back next turn would read what
+/// the model wrote. And a model that could `facts` here could **read**
+/// one: an extension's memory is deliberately never sent to the model
+/// unless the extension injects it, which a listing that included these
+/// cells would quietly undo.
+///
+/// One extension cannot reach another's subtree for the same reason the
+/// model cannot reach either: the key a cell is written under is composed
+/// on the harness side from the installed record's name.
+pub const ext_fact_prefix = "ext/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The seven corners, and what each would let a forged write do:
+/// The eight corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -1462,7 +1485,9 @@ pub const schedule_fact_prefix = "schedule/"
 /// identity, and with it every stream keyed by it; `rule/` — mark an
 /// operator's project rule as already fired, so it never fires;
 /// `schedule/` — mark a scheduled heartbeat's occurrence as already
-/// fired, so it never fires either.
+/// fired, so it never fires either; `ext/` — forge or read an installed
+/// extension's durable memory, which is the one durable thing an
+/// out-of-tree extension owns.
 ///
 /// ## Examples
 ///
@@ -1482,6 +1507,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, session_fact_prefix)
   || string.starts_with(key, rule_fact_prefix)
   || string.starts_with(key, schedule_fact_prefix)
+  || string.starts_with(key, ext_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

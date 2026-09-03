@@ -62,6 +62,7 @@ import client/extension/hosts
 import client/extension/install
 import client/extension/installed
 import client/extension/manifest as extension_manifest
+import client/extension/memory as extension_memory
 import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
@@ -80,10 +81,15 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
 import gleam/result
 import gleam/string
+import machine/strand as machine_strand
+import provider/stream
+import runtime/api
 import runtime/effects
+import session/session
 import simplifile
 import support/extensions
 import support/origin
@@ -115,8 +121,8 @@ pub type EunitTest {
   Timeout(seconds: Int, body: fn() -> Nil)
 }
 
-/// The ceiling on the one test here. It spends a hermetic build (up to
-/// 180 s of its own) and then three satellite launches, so a smaller
+/// The ceiling on the one test here. It spends five hermetic builds (up
+/// to 180 s each of their own) and five satellite launches, so a smaller
 /// ceiling would substitute an anonymous eunit timeout for this suite's
 /// own account of what happened.
 const e2e_timeout_seconds = 1200
@@ -176,10 +182,23 @@ fn drive(ready: Ready) -> Nil {
           // `SystemRoots` and nothing else in the tree is not.
           trust: egress.PinnedRoots(ders: [root_der]),
           launch: tapping(taps, specs),
+          // The fetcher remembers nothing, and a door onto no session
+          // says so in band rather than leaving `ext.remember` unrouted.
+          memory: extension_memory.shut("this fixture has no session"),
         )
 
       // The registry a booting server would build, and the satellite
       // registry it would build beside it, from one configuration.
+      //
+      // This one is deliberately *not* reaped where the other cases reap
+      // theirs (see `registry_stop_ms`): `oversleeps` is handed
+      // `hosts_name` and builds the sleeper's config from this same
+      // registry, so stopping it here would take the last case's plane
+      // with it. The fetcher's node therefore holds one of the plane's
+      // four helpers for the whole run, and peak hold is three of four —
+      // this one, plus the two a case of its own launches. A case
+      // inserted before `oversleeps` has to reap its own hosts or the
+      // fourth helper is the one the next install is refused.
       let registry = contributed(config, installed_at)
       let assert Ok(_started) =
         hosts.start(hosts_name, wall_clock(), [
@@ -315,6 +334,9 @@ fn drive(ready: Ready) -> Nil {
       // satellite of their own.
       hooks_fire(installed_at)
 
+      // Durable memory over two real satellites and two real sessions.
+      memory_persists(installed_at)
+
       // The last claim, and the one only a real node can make: an
       // extension that does not answer inside its own deadline loses its
       // satellite, and says so on the call after.
@@ -352,6 +374,7 @@ fn hooks_fire(installed_at: Installed) -> Nil {
           secrets: fn(_name) { Error(Nil) },
           trust: egress.SystemRoots,
           launch: dispatch.jailed_node,
+          memory: extension_memory.shut("this fixture has no session"),
         )
       let assert Ok(_started) =
         hosts.start(hosts_name, wall_clock(), [
@@ -447,9 +470,28 @@ fn hooks_fire(installed_at: Installed) -> Nil {
         <> "before_compact hook returned an attributed note and a jailed "
         <> "usage hook took a committed ledger row",
       )
+
+      // The gatekeeper's node goes now that its two claims are made.
+      // See `registry_stop_ms`: a satellite left running holds one of
+      // the plane's four helpers for the rest of the suite.
+      hosts.stop(hosts_name, timeout_ms: registry_stop_ms)
     }
   }
 }
+
+/// How long a case waits for its own satellites to be reaped before it
+/// moves on.
+///
+/// Every case here runs against **one** build plane, and a plane lends
+/// its jails from a pool of `exec.min_pool_size` — four. A satellite
+/// holds one of those for as long as it lives, and a hermetic build
+/// needs one of its own, so a case that leaves its nodes running spends
+/// the budget of every case after it: with four satellites up, the next
+/// install is refused for want of a helper and its claim is printed as
+/// a skip instead. Each case therefore reaps what it launched, and the
+/// wait is generous because the alternative to waiting is moving on
+/// while the helper is still lent.
+const registry_stop_ms = 20_000
 
 // A cue whose every number is distinctive, so the echoed note is
 // asserting on the field it means rather than on a zero that would
@@ -513,6 +555,328 @@ fn a_user_message(text: String) -> message.AgentMessage {
   )
 }
 
+// --- durable memory ---------------------------------------------------------
+
+// Two installs of the `keeper` fixture under two names, one satellite
+// each, and one session file underneath them — reopened halfway through.
+//
+// Three claims, and the first two are the ones only a real node can
+// make. A tool remembers on one call and recalls on the next, over the
+// same satellite. The session is then **closed and reopened** while the
+// satellites go on running, and the same recall still answers — so the
+// value came off the disk rather than out of the node's memory, which is
+// the whole difference between this and `cap/kv`. And `keeper-two`,
+// asking for the same key over its own satellite, finds nothing: the
+// subtree is the extension's name, bound by the harness from the install
+// record, and no argument on the channel contributes to it.
+fn memory_persists(installed_at: Installed) -> Nil {
+  case install_beside(installed_at, extensions.keeper(first_keeper), "k1-src") {
+    Error(reason) -> io.println("SKIP the keeper extensions: " <> reason)
+    Ok(one) ->
+      case
+        install_beside(installed_at, extensions.keeper(second_keeper), "k2-src")
+      {
+        Error(reason) ->
+          io.println("SKIP the second keeper extension: " <> reason)
+        Ok(two) -> keepers_remember(installed_at, one, two)
+      }
+  }
+}
+
+/// The two names the memory fixture is installed under. Two installs of
+/// one source, because what is under test is whose subtree a cell lands
+/// in — and the name is the only thing that differs.
+const first_keeper = "keeper_one"
+
+const second_keeper = "keeper_two"
+
+fn keepers_remember(
+  installed_at: Installed,
+  one: #(record.Record, extension_manifest.Manifest, String),
+  two: #(record.Record, extension_manifest.Manifest, String),
+) -> Nil {
+  let path = installed_at.live_root <> "/keeper-session.db"
+  case open_session(path) {
+    Error(reason) -> io.println("SKIP the keeper session: " <> reason)
+    Ok(first) ->
+      case open_runtime(first) {
+        Error(reason) -> {
+          let _sealed = session.close(first)
+          io.println("SKIP the keeper runtime: " <> reason)
+        }
+
+        Ok(runtime) -> {
+          // The door reads the runtime through a holder rather than
+          // closing over one, which is what lets the session underneath
+          // be replaced while the satellites stay up — the only
+          // arrangement in which "it survived the reopen" is a claim
+          // about the disk rather than about the node.
+          let holder = start_holder(runtime)
+          let hosts_name = process.new_name(prefix: "loom_e2e_keepers")
+          let registry =
+            keeper_registry(
+              installed_at,
+              hosts_name,
+              [one, two],
+              borrowing(holder),
+            )
+
+          keepers_prove(installed_at, registry, holder, path, first, runtime)
+
+          // Two satellites' worth of helper back to the pool, before
+          // the next case asks the plane for one. See
+          // `registry_stop_ms`.
+          hosts.stop(hosts_name, timeout_ms: registry_stop_ms)
+        }
+      }
+  }
+}
+
+// The three claims themselves, once the session, the holder and the two
+// satellites are up. Split out so that every way this can end — a
+// reopen that fails as much as the one that succeeds — returns to the
+// one place the satellites are reaped.
+fn keepers_prove(
+  installed_at: Installed,
+  registry: tool.Registry,
+  holder: Subject(Holding),
+  path: String,
+  first: session.Session,
+  runtime: api.Runtime,
+) -> Nil {
+  let stored =
+    keeper_call(
+      registry,
+      installed_at,
+      first_keeper,
+      Some("the origin was slow"),
+    )
+  assert string.contains(rendered(stored), "stored the origin was slow")
+
+  let recalled = keeper_call(registry, installed_at, first_keeper, None)
+  assert string.contains(rendered(recalled), "recalled the origin was slow")
+  io.println(
+    "extension memory e2e: a jailed tool remembered on one call and "
+    <> "recalled on the next",
+  )
+
+  // The session goes; the satellites stay.
+  process.kill(runtime.tree.supervisor)
+  let _sealed = session.close(first)
+
+  case open_session(path) {
+    Error(reason) -> io.println("SKIP the keeper reopen: " <> reason)
+    Ok(second) ->
+      case open_runtime(second) {
+        Error(reason) -> {
+          let _closed = session.close(second)
+          io.println("SKIP the reopened keeper runtime: " <> reason)
+        }
+
+        Ok(reopened) -> {
+          process.send(holder, Held(runtime: reopened))
+          let after = keeper_call(registry, installed_at, first_keeper, None)
+          assert string.contains(
+            rendered(after),
+            "recalled the origin was slow",
+          )
+
+          // And the other extension's own satellite, asking for
+          // the same key, finds nothing.
+          let elsewhere =
+            keeper_call(registry, installed_at, second_keeper, None)
+          assert string.contains(rendered(elsewhere), "recalled nothing")
+          io.println(
+            "extension memory e2e: the note survived the session "
+            <> "being reopened, and the second extension cannot see it",
+          )
+          process.kill(reopened.tree.supervisor)
+          let _closed = session.close(second)
+          Nil
+        }
+      }
+  }
+}
+
+// One keeper call through the registry, exactly as a strand's driver
+// makes one. A `note` is a write and no `note` is a read, which is the
+// fixture's whole argument schema.
+fn keeper_call(
+  registry: tool.Registry,
+  installed_at: Installed,
+  name: String,
+  note: Option(String),
+) -> tool.ToolOutcome {
+  let arguments = case note {
+    None -> json.Object([])
+    Some(text) -> json.Object([#("note", json.String(text))])
+  }
+  tool.dispatch(
+    registry,
+    live_ctx(installed_at.workspace, installed_at.base_policy),
+    name,
+    arguments,
+  )
+}
+
+// The registry and the satellite registry both keepers are reached
+// through, over one memory door.
+fn keeper_registry(
+  installed_at: Installed,
+  hosts_name: process.Name(hosts.Message),
+  keepers: List(#(record.Record, extension_manifest.Manifest, String)),
+  memory: extension_memory.Door,
+) -> tool.Registry {
+  let config =
+    dispatch.Config(
+      host: installed_at.host,
+      hosts: hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000),
+      secrets: fn(_name) { Error(Nil) },
+      trust: egress.SystemRoots,
+      launch: dispatch.jailed_node,
+      memory:,
+    )
+  let assert Ok(_started) =
+    hosts.start(
+      hosts_name,
+      wall_clock(),
+      list.map(keepers, fn(keeper) {
+        let #(written, decoded, artifact) = keeper
+        dispatch.hosting(config, written, decoded, artifact:)
+      }),
+    )
+    as "the keepers' registry must start"
+  let assert Ok(registry) =
+    contributions.registry(
+      list.map(keepers, fn(keeper) {
+        let #(written, decoded, artifact) = keeper
+        let assert Ok(tools) =
+          dispatch.tools(
+            config,
+            written,
+            decoded,
+            sources: record.sources(installed_at.root, written.name),
+            artifact:,
+          )
+          as "a really-installed keeper contributes its tool"
+        contributions.Contribution(
+          origin: contributions.Extension(name: written.name),
+          tools:,
+        )
+      }),
+    )
+    as "two keepers of different names cannot collide"
+  registry
+}
+
+// --- the session under the keepers ------------------------------------------
+
+// A real session file, because "survives a reopen" is not a question an
+// in-memory store can be asked.
+fn open_session(path: String) -> Result(session.Session, String) {
+  session.open_sqlite(
+    path:,
+    owner: "extension-memory-e2e",
+    lease_ttl_ms: 60_000,
+    clock: wall_clock(),
+  )
+  |> result.map_error(string.inspect)
+}
+
+fn open_runtime(opened: session.Session) -> Result(api.Runtime, String) {
+  use entropy <- result.try(start_entropy())
+  api.open(
+    opened,
+    effects.Effects(
+      clock: wall_clock(),
+      entropy:,
+      timers: effects.real_timers(),
+      provider: hanging_provider(),
+      tools: refusing_tools(),
+      hooks: effects.default_hooks(),
+    ),
+    api.default_options(
+      machine_strand.StrandConfiguration(
+        model: machine_strand.ModelIdentity(
+          provider: "acme",
+          model_id: "loom-1",
+        ),
+        thinking_level: machine_strand.ThinkingOff,
+        active_tool_names: [],
+      ),
+    ),
+  )
+  |> result.map_error(string.inspect)
+}
+
+/// What the runtime holder is told when the session underneath it is
+/// replaced.
+type Holding {
+  Held(runtime: api.Runtime)
+  Borrow(reply: Subject(api.Runtime))
+}
+
+// The live runtime, in one actor, so the door can be built once and the
+// session under it swapped. Production borrows through the Agency's
+// holder for the same reason: the runtime is not a value the seam can
+// close over.
+fn start_holder(runtime: api.Runtime) -> Subject(Holding) {
+  let assert Ok(started) =
+    actor.new(runtime)
+    |> actor.on_message(fn(held, message) {
+      case message {
+        Held(runtime:) -> actor.continue(runtime)
+        Borrow(reply:) -> {
+          process.send(reply, held)
+          actor.continue(held)
+        }
+      }
+    })
+    |> actor.start
+    as "the runtime holder must start"
+  started.data
+}
+
+fn borrowing(holder: Subject(Holding)) -> extension_memory.Door {
+  extension_memory.door(
+    extension_memory.Wiring(runtime: fn() {
+      Ok(process.call(holder, waiting: 5000, sending: Borrow))
+    }),
+  )
+}
+
+fn hanging_provider() -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 30_000, request: fn(_spec) {
+    stream.immediate(events: process.new_subject(), cancel: fn() { Nil })
+  })
+}
+
+fn refusing_tools() -> effects.ToolSurface {
+  effects.ToolSurface(
+    clear: fn(_query) {
+      effects.ClearanceRefused(reason: "the keeper session runs no tools")
+    },
+    run: fn(_run) {
+      effects.ToolFailed(reason: "the keeper session runs no tools")
+    },
+    replay_still_safe: fn(_name) { False },
+    execution_mode: fn(_name) { effects.ExclusiveExecution },
+  )
+}
+
+fn start_entropy() -> Result(fn() -> Int, String) {
+  actor.new(1)
+  |> actor.on_message(fn(next, reply) {
+    process.send(reply, next)
+    actor.continue(next + 1)
+  })
+  |> actor.start
+  |> result.map(fn(counter) {
+    fn() { process.call(counter.data, waiting: 1000, sending: fn(r) { r }) }
+  })
+  |> result.replace_error("the entropy counter did not start")
+}
+
 // A second extension, installed for real beside the first, whose one tool
 // sleeps in the kernel for far longer than its manifest allows.
 //
@@ -535,6 +899,7 @@ fn oversleeps(
           secrets: fn(_name) { Error(Nil) },
           trust: egress.SystemRoots,
           launch: dispatch.jailed_node,
+          memory: extension_memory.shut("this fixture has no session"),
         )
       let sleeper_hosts_name = process.new_name(prefix: "loom_e2e_sleeper")
       let assert Ok(_started) =

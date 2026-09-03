@@ -3,13 +3,40 @@
 ////
 //// An extension satellite is `codemode/workspace`'s seam plus
 //// `net.request` — the one capability `cap/net` has always declared and
-//// nothing has ever served. It is a `satellite.ServedHere`: the harness
-//// answers it itself, no jail is entered, and the node's network
-//// namespace stays empty, which is the property ADR-007 turns on.
-//// Everything this router does not answer is handed to the router
-//// beneath, exactly as `codemode/workspace.routing` and
-//// `client/mcp.routing` do, so nothing about `fs.read` or `proc.run`
+//// nothing has ever served — and the two memory arms an extension owns,
+//// `ext.remember` and `ext.recall`. All three are
+//// `satellite.ServedHere`: the harness answers them itself, no jail is
+//// entered, and the node's network namespace stays empty, which is the
+//// property ADR-007 turns on. Everything this router does not answer is
+//// handed to the router beneath, exactly as `codemode/workspace.routing`
+//// and `client/mcp.routing` do, so nothing about `fs.read` or `proc.run`
 //// changes shape because an extension is what is running.
+////
+//// # The memory arms, and what they are not
+////
+//// `ext.remember` and `ext.recall` are the design note's mapping of pi's
+//// `appendEntry`: durable, latest-wins cells under a reserved fact
+//// prefix the extension owns. They are not `kv.*`, which the router
+//// beneath already serves — that store is ephemeral scratch, evicted
+//// between calls and gone with the session, and an extension that wants
+//// something to survive a restart wants these two.
+////
+//// The key an extension sends is a **leaf**, and this module checks it:
+//// non-empty, no `/`, and bounded. The subtree it lands in is composed
+//// on the far side of the `Memory` closures from the installed record's
+//// name (`client/extension/memory.key`), so no argument on the wire can
+//// name another extension's cell — which is why the check here is about
+//// the shape of a leaf and not about escaping a path. A key of `..`
+//// means nothing to a cell name, and a key of `../x` is refused for the
+//// slash rather than for the dots.
+////
+//// The arms are per *extension*, not per invocation kind. A `hook_call`
+//// of kind `event` — a phase 3 hook — reaches the same satellite under
+//// the same router, so a hook may remember and recall exactly as a tool
+//// may. That is deliberate: the natural use is a hook that records what
+//// it saw for a tool to read on the next call, and a seam that served
+//// one kind and not the other would be a distinction with nothing
+//// behind it.
 ////
 //// There used to be a second arm. `ext.call` was how a phase 1 node
 //// learned which tool its one execution was for, and phase 3 deleted it
@@ -54,14 +81,53 @@ import codemode/satellite.{
   ServedHere,
 }
 import core/msgpack.{type MsgPackValue}
+import gleam/bool
+import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 
 /// The names this router answers. `extension/dispatch_test` walks it and
 /// asserts each one routes, which is what keeps it the same list as the
 /// `case` arms below — Gleam patterns cannot name a constant, so the two
 /// could otherwise drift.
-pub const serviced_caps = [net_cap]
+pub const serviced_caps = [net_cap, remember_cap, recall_cap]
+
+/// The capability an extension writes one durable cell with.
+pub const remember_cap = "ext.remember"
+
+/// The capability an extension reads one durable cell with.
+pub const recall_cap = "ext.recall"
+
+/// The code a memory call travels under when the session's own store
+/// could not answer it.
+///
+/// Outside `invalid_argument_code` on purpose: a malformed key is the
+/// extension's bug and a store that will not answer is the host's, and an
+/// author who cannot tell them apart cannot decide whether to retry.
+pub const memory_unavailable_code = "memory_unavailable"
+
+/// The longest leaf key an extension may name, in graphemes.
+///
+/// A bound rather than no bound because the key becomes part of a
+/// durable register key, and a store whose key size is whatever an
+/// extension felt like is a store with no shape. Generous enough that no
+/// honest name reaches it: this is a name an author types, not a digest.
+///
+/// The unit differs from `max_value_bytes`'s deliberately. A key is a
+/// name an author writes down and reads back, so what they count is
+/// characters they can see; a value is opaque text whose whole cost to
+/// the store is its bytes.
+pub const max_key_length = 128
+
+/// The largest value one cell may hold, in bytes of JSON text.
+///
+/// The per-cell half of the bound on what an extension's memory can grow
+/// to; the other half is that a key is overwritten rather than appended
+/// (`client/extension/memory`). An extension with more than this to keep
+/// has a file, and `fs.write` to put it in.
+pub const max_value_bytes = 65_536
 
 /// The code a structurally invalid argument travels under.
 ///
@@ -108,11 +174,30 @@ pub type Egress {
   ReachesNothing(refusal: CapDenial)
 }
 
+/// How this extension's durable cells are read and written.
+///
+/// Two closures rather than a store, for the reason `Egress` is a
+/// closure: this module is the wire and holds no durability at all. The
+/// key each takes is the *leaf* an extension named and this router
+/// checked; the subtree it lands in is bound on the far side, by
+/// `client/extension/dispatch`, from the installed record's name.
+pub type Memory {
+  Memory(
+    /// Writes one cell, overwriting whatever it held. The value is the
+    /// JSON document the extension sent, as text.
+    remember: fn(String, String) -> Result(Nil, CapDenial),
+    /// Reads one cell, or `None` when nothing was ever written under it.
+    recall: fn(String) -> Result(Option(String), CapDenial),
+  )
+}
+
 /// The harness-side closures one extension invocation's router calls.
 pub type Extension {
   Extension(
     /// How outbound requests are answered.
     egress: Egress,
+    /// How durable cells are read and written.
+    memory: Memory,
   )
 }
 
@@ -120,7 +205,8 @@ pub type Extension {
 ///
 /// Composed rather than total: an extension satellite reaches `fs.*`,
 /// `kv.*`, `report.emit` and `proc.run` through the routers beneath, so
-/// this one answers its two names and hands everything else down.
+/// this one answers the three names in `serviced_caps` and hands
+/// everything else down.
 ///
 /// ## Examples
 ///
@@ -132,6 +218,8 @@ pub fn routing(extension: Extension, over inner: CapRouter) -> CapRouter {
   fn(request: CapRequest) {
     case request.cap {
       "net.request" -> net_plan(extension.egress, request)
+      "ext.remember" -> remember_plan(extension.memory, request)
+      "ext.recall" -> recall_plan(extension.memory, request)
       _other -> inner(request)
     }
   }
@@ -201,6 +289,120 @@ fn decode_ask(args: MsgPackValue) -> Result(Ask, CapDenial) {
   use headers <- result.try(header_field(args, "headers"))
   use body <- result.try(binary_field(args, "body"))
   Ok(Ask(method:, url:, headers:, body:))
+}
+
+// --- ext.remember and ext.recall -------------------------------------------
+
+// Both arms check the key before they claim a plan, for the reason the
+// egress refusals are returned by the plan: a refused plan costs no
+// ordinal and no admission, so an extension that sent a malformed key
+// pays nothing for the mistake it is about to be told to fix.
+
+fn remember_plan(
+  memory: Memory,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use key <- result.try(leaf_key(request.args))
+  use value <- result.try(remembered_value(request.args))
+  Ok(
+    ServedHere(fn() {
+      case memory.remember(key, value) {
+        Ok(Nil) -> framing.CapOk(value: fields([]))
+        Error(denial) -> refused(denial)
+      }
+    }),
+  )
+}
+
+fn recall_plan(
+  memory: Memory,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use key <- result.try(leaf_key(request.args))
+  Ok(
+    ServedHere(fn() {
+      case memory.recall(key) {
+        Error(denial) -> refused(denial)
+
+        // `found` and `value` as two fields rather than one nullable
+        // field, the shape `kv.get` set and for the same reason: the
+        // reader takes the flag first, so a cell holding the document
+        // `null` is distinguishable from a cell that was never written.
+        Ok(None) ->
+          framing.CapOk(value: fields([#("found", msgpack.BoolValue(False))]))
+        Ok(Some(value)) ->
+          framing.CapOk(
+            value: fields([
+              #("found", msgpack.BoolValue(True)),
+              #("value", msgpack.StringValue(value)),
+            ]),
+          )
+      }
+    }),
+  )
+}
+
+/// One leaf key, checked.
+///
+/// Public because the check *is* the confinement's near half — the far
+/// half being that the subtree is composed from the install record — and
+/// a property this narrow deserves a test that does not have to stand up
+/// a router to ask it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // seam.checked_key("last") == Ok("last")
+/// ```
+///
+/// ```gleam
+/// // seam.checked_key("../x") is an `invalid_argument` denial
+/// ```
+///
+pub fn checked_key(key: String) -> Result(String, CapDenial) {
+  use <- bool.lazy_guard(when: key == "", return: fn() {
+    Error(invalid("`key` must not be empty"))
+  })
+  use <- bool.lazy_guard(when: string.contains(key, "/"), return: fn() {
+    Error(invalid(
+      "`key` names one cell in this extension's own memory, so it may not "
+      <> "contain `/`",
+    ))
+  })
+
+  // Asked with `drop_start`, which stops at the bound, rather than with
+  // `string.length`, which walks the whole key to answer a question
+  // settled long before its end — and the key is whatever came off the
+  // channel.
+  use <- bool.lazy_guard(
+    when: string.drop_start(key, max_key_length) != "",
+    return: fn() {
+      Error(invalid(
+        "`key` is longer than the "
+        <> int.to_string(max_key_length)
+        <> " graphemes a cell name may have",
+      ))
+    },
+  )
+  Ok(key)
+}
+
+fn leaf_key(args: MsgPackValue) -> Result(String, CapDenial) {
+  use key <- result.try(string_field(args, "key"))
+  checked_key(key)
+}
+
+fn remembered_value(args: MsgPackValue) -> Result(String, CapDenial) {
+  use value <- result.try(string_field(args, "value"))
+  case string.byte_size(value) > max_value_bytes {
+    True ->
+      Error(invalid(
+        "`value` is larger than the "
+        <> int.to_string(max_value_bytes)
+        <> " bytes one cell may hold",
+      ))
+    False -> Ok(value)
+  }
 }
 
 // --- total field extraction ------------------------------------------------

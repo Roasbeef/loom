@@ -101,10 +101,11 @@ seam.
 **Built.** The extension seam is the third of code mode's three, and
 unlike the first two it is deliberately *not* disjoint from its
 siblings. `extension_cap_modules` is `default_cap_modules()` widened by
-exactly one name, `ext` (`vet/policy.gleam:544`), and
+exactly three names — `ext`, `ext/hook` and `ext/memory`
+(`vet/policy.gleam:605`) — and
 `extension_stdlib_modules` is the shared pure subset widened by
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
-and `gleam/json` (`vet/policy.gleam:571`).
+and `gleam/json` (`vet/policy.gleam:633`).
 
 Disjointness exists between the workspace and orchestration seams because
 an orchestrator and an effect program are different kinds of thing, and
@@ -120,17 +121,21 @@ over a `hook_call` frame (`protocol-change/012`), so the question has no
 caller left and the widening is one name shorter.
 
 The widening is pinned rather than trusted:
-`the_extension_seam_widens_by_exactly_two_names_test`
-(`codemode/test/codemode_test.gleam:580`) asserts the set difference is
-exactly `ext` and `ext/hook` — the two vocabulary modules `packages/ext`
-ships, neither of which carries authority — and that `cap/strand` is not
+`the_extension_seam_widens_by_exactly_three_names_test`
+(`codemode/test/codemode_test.gleam:583`) asserts the set difference is
+exactly `ext`, `ext/hook` and `ext/memory` — the two vocabulary modules
+`packages/ext` ships, neither of which carries authority, plus the one
+module on the list that does: the durable cells under the reserved
+`ext/<name>/` prefix, which no other seam can reach because no other
+seam's programs have an installed name to key a subtree by — and that
+`cap/strand` is not
 among them, because the superset test
 alone would pass if the extension seam had quietly picked up agent
 orchestration, putting the disk and the lineage in one program after all.
 The five extra standard-library names live on a list of their own so that
 widening them widens exactly one seam, and
 `the_extension_stdlib_list_admits_no_capability_test`
-(`codemode/test/codemode_test.gleam:591`) holds that list to carrying no
+(`codemode/test/codemode_test.gleam:596`) holds that list to carrying no
 authority.
 
 Two consequences are worth stating. **The extension seam sees no
@@ -521,14 +526,14 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1397`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:1402`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
 place in the provider's cached prefix on every request.
 
 **Everything else becomes a contribution.** `dispatch.tools`
-(`extension/dispatch.gleam:171`) turns the record and the manifest into
+(`extension/dispatch.gleam:185`) turns the record and the manifest into
 `tools.Tool` values, and the boot appends one
 `Contribution(Extension(name), tools)` after the built-ins. From there
 the registry knows nothing special: an extension tool is dispatched by
@@ -541,10 +546,10 @@ Phase 2 launched a jailed `erl` per call and destroyed it on the way out;
 phase 3 keeps one host per installed extension, started lazily on that
 extension's first use (`hosts.invoke` at
 `client/extension/hosts.gleam:294`, over `dispatch.hosting` at
-`extension/dispatch.gleam:379`). No build happens — that was the
+`extension/dispatch.gleam:394`). No build happens — that was the
 install's job — and now no node launch happens either, except the first
 time. The declared tool timeout is still clamped: `within`
-(`extension/dispatch.gleam:656`) takes the minimum of the manifest's
+(`extension/dispatch.gleam:670`) takes the minimum of the manifest's
 `timeout_ms` and the operator's `max_within_ms`, because an install is
 not a way to raise how long this host will hold a strand.
 
@@ -574,7 +579,7 @@ node is not. A manifest with no `[net]` table is `ReachesNothing`, refused
 `network_off` rather than refused against an allowlist nobody wrote.
 
 **The answer is settled into a `ToolOutcome`.** `settle`
-(`extension/dispatch.gleam:759`) reads what the `hook_result` carried —
+(`extension/dispatch.gleam:832`) reads what the `hook_result` carried —
 content blocks and an optional `terminate` — or, when there is no answer
 at all, turns a `hosts.HookFailure` into a sentence the model can act on:
 a refusal is text the extension wrote, a crash is the extension's bug,
@@ -657,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2205`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2234`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -703,7 +708,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1397`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:1402`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -721,7 +726,7 @@ rule that guards `bash`.
 **A call is one satellite execution of the artifact the install
 compiled.** No build happens — that was the install's job — so the call
 pays a node launch and nothing else. The declared tool timeout is
-clamped: `within` (`extension/dispatch.gleam:334`) takes the minimum of
+clamped: `within` (`extension/dispatch.gleam:670`) takes the minimum of
 the manifest's `timeout_ms` and the operator's `max_within_ms`, because
 an install is not a way to raise how long this host will hold a strand.
 
@@ -858,7 +863,7 @@ value in unnoticed —
 this document listed it as owed: `policy.egress_for`
 (`extension/policy.gleam:142`) turns a `manifest.Net` into an
 `egress.Policy`, the extension seam's `net.request` arm serves it
-(`routing` at `extension/seam.gleam:131` — `cap/net.gleam:71` marshals
+(`routing` at `extension/seam.gleam:217` — `cap/net.gleam:71` marshals
 and labels, and this is what answers), and `policy.ceilings`
 (`extension/policy.gleam:184`) is the `requests_per_call` ledger, now
 tallied per invocation rather than per node. Egress has two production
@@ -872,6 +877,82 @@ in posture and it is #109's open question, not an oversight;
 `docs/architecture/mcp.md` owns it. Making a secret's *source* pluggable —
 a vault, a keychain, a command — is #181, and lands behind the one
 `secrets` function egress already takes.
+
+## Extension memory
+
+**Built.** pi's `appendEntry` maps onto a reserved fact prefix the
+extension owns (`docs/design-notes/extension-architecture.md`, "The rest
+of pi's surface, mapped"): durable, latest-wins cells under
+`ext/<name>/<key>`, reached from the jail through `ext.remember` and
+`ext.recall`.
+
+**It is the same door `schedule/config/…` goes through.**
+`runtime/api.ext_fact_prefix` is reserved
+(`runtime/api.gleam:reserved_fact_key`), so `put_fact` refuses these keys
+and `facts` hides them, and the harness writes them with
+`put_reserved_fact` — a blind latest-wins overwrite of one cell, exactly
+as a model-created schedule's config cell is written. Nothing here is
+compare-and-set: an extension is the only writer of its own subtree, and
+two concurrent writes to one key leave the later one's value.
+
+**The subtree is bound on the harness side and named nowhere else.** The
+capability frame carries a *leaf* key and nothing more.
+`client/extension/seam` checks the leaf — non-empty, no `/`, at most
+`max_key_length` characters, and a value at most `max_value_bytes` — and
+`client/extension/dispatch` closes the door's two closures over the
+installed record's `name`, which `client/extension/memory.key` turns into
+`ext/<name>/<key>`. So an extension called `a` cannot read `ext/b/…`
+however it words the request: there is no argument in which it could name
+one, and the check on the leaf is about the shape of a cell name rather
+than about escaping a path. `../x` is refused for the slash, and `..`
+means nothing to a cell name.
+
+**Why the layering is a door rather than a store on the seam.**
+`client/extension/seam` is the wire — msgpack in, msgpack out, every
+field decoded totally — and holds no durability at all, exactly as it
+holds no egress policy. `Memory` is two closures on the `Extension`
+record beside `Egress`, and the module that reaches `runtime/api` is
+`client/extension/memory`, whose `Door` is built from a runtime borrowed
+through the Agency's holder (`memory.for_session`) — the same knot
+`client/scheduleseam` ties, and for the same reason: the runtime does not
+exist until `api.open` has returned the registry these tools are
+registered in. A host with no session hands the dispatch `memory.shut`,
+so the capability is routed and refuses with a sentence rather than being
+an unrouted name.
+
+**Both arms are per extension, not per invocation kind.** A `hook_call`
+of kind `event` reaches the same satellite under the same router, so a
+phase 3 hook may remember and recall exactly as a tool may. That is
+deliberate: a hook that records what it saw for a tool to read on the
+next call is the natural use, and a seam that served one kind and not the
+other would be a distinction with nothing behind it.
+
+**What it is not.** Not `cap/kv`, which the router beneath already serves
+— that store is ephemeral scratch, evicted between calls and gone with
+the session. Not a listing: there is no `ext.forget`, no scan, and no
+cross-extension read, so the only key an extension can name is one it
+already knows. And not a channel to the model: a remembered cell is
+rendered into no prompt, and an extension that wants the model to see one
+injects it itself from `before_agent_start`.
+
+**What bounds it.** A value is capped per cell, and a key is overwritten
+rather than appended, so one cell cannot grow. The number of *distinct*
+keys is not capped, deliberately — though not because `fs.write` would
+let an extension fill the disk anyway. It reaches inside the workspace,
+while these cells land in the session file under the operator's home: a
+different path, on a volume that need not be the same one, and on the
+durability plane rather than in scratch. The reason is that an install is
+an operator's trust decision over code they were meant to read, and the
+durability plane holds no per-writer quota for any of its writers — not
+the model's facts, not a strand's entries, not a schedule's config cells
+— so a ceiling here would be the only one in the plane, bounding the
+newest and smallest of the ways a session file grows. The growth worth
+weighing before that is revisited is a hook rather than a tool: a
+`before_agent_start` handler writing a fresh 64 KiB key on every provider
+request adds that much every turn, for the life of the repository. There
+is no admission ceiling either, on the reading
+`codemode/workspace.ceilings` states and the precedent `schedule.create`
+set.
 
 ## The invariants
 
@@ -920,6 +1001,14 @@ and the extension's own source could not read it — the extension seam has
 no module that reads the environment. Without this, an extension system
 would be a credential-exfiltration mechanism with a tool registry
 attached.
+
+**An extension's memory is its own, and the model has no door onto
+it.** The subtree is `ext/<the name an operator installed it under>/`,
+composed by the harness from the install record; the prefix is reserved,
+so `put_fact` refuses it and `facts` hides it. Without the first half an
+extension could read or overwrite another's state by wording a key;
+without the second, a model could forge what an extension "remembered"
+approving, and read back what it was never shown.
 
 **Two contributions may not claim one tool name.** Within a contribution
 a repeated name is the author overriding themselves and the later one
@@ -998,6 +1087,12 @@ things:
 - a **second call reaches the same node** — counted from the launcher's
   specs rather than inferred from how quick it felt, which is the whole
   claim phase 3 makes;
+- a jailed tool **remembers on one call and recalls on the next**, and
+  still recalls after the session file underneath it has been closed and
+  reopened while the satellites stayed up — which is what makes the
+  answer a fact about the disk rather than about the node — and a second
+  extension asking for the same key over its own satellite finds
+  nothing;
 - a `hook_call` of kind `event` is dispatched to the handler the
   manifest's `[[hook]]` named, with an empty payload because wave B is
   what fixes the per-event shapes;
@@ -1214,7 +1309,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
 | `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:1907`) with `start`, `invoke` (`codemode/satellite.gleam:2094`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:294`), `invoke_event` (`extension/hosts.gleam:411`), and the reaping on the way out. |
-| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:440`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:544`) and `extension_stdlib_modules` (`vet/policy.gleam:571`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
+| `codemode/vet/policy.gleam` | The four seams — the fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:605`) and `extension_stdlib_modules` (`vet/policy.gleam:633`) are the widening, written as the workspace list widened so the superset is a fact about the code. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
 | `client/extension/source.gleam` | The grammar of what an operator may type: `parse` (`extension/source.gleam:84`), the refused schemes, and the codeload archive URL. |
 | `client/extension/archive.gleam` | The total tar.gz reader, the directory walker, and the tree digest: `extract` (`extension/archive.gleam:249`), `from_directory`, `digest` (`extension/archive.gleam:336`). |
@@ -1226,9 +1321,11 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/installed.gleam` | Discovery and the five re-derivations: `check` (`extension/installed.gleam:197`), `artifact_matches`, `summarise`. |
 | `client/extension/cli.gleam` | `loom ext install\|list\|remove\|verify`: `dispatch` (`extension/cli.gleam:106`), the one-host fetch, and `build_for` over a started build plane. |
 | `client/extension/policy.gleam` | The manifest's `[net]` table as a policy: `egress_for` (`extension/policy.gleam:142`), the per-invocation `ceilings` (`extension/policy.gleam:184`), the harness's own `max_response_bytes` ceiling, and the refusal vocabulary `cap/net` can branch on. Pure; no transport. |
-| `client/extension/seam.gleam` | The one router arm a jailed extension has that a code-mode program does not, now that `ext.call` is gone: `routing` (`extension/seam.gleam:131`) over `serviced_caps` (`extension/seam.gleam:64`). Msgpack in, msgpack out, and no policy at all. |
-| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:171`), `hosting` (`extension/dispatch.gleam:379`), the timeout clamp `within` (`extension/dispatch.gleam:656`), the jail's `requirements` (`extension/dispatch.gleam:298`), and `settle` (`extension/dispatch.gleam:759`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1397`), the two refusals it logs, and the contribution it appends. |
+| `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
+| `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` — the one composition of `ext/<name>/<key>` — `door` over a borrowed runtime, and `shut` for a host with no session. |
+| `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
+| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:670`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:832`). |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1402`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:213`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
@@ -1241,9 +1338,11 @@ exists today as an allowlisted stub, and this route retires it.
 Each Gleam path is relative to its package's source root —
 `extension/install.gleam` is
 `packages/client/src/client/extension/install.gleam` — except
-`packages/ext/src/ext.gleam` and `packages/ext/src/ext/hook.gleam`,
-written out in full because a bare `ext.gleam` would read as the
-`cap/ext` module phase 3 deleted, and the last four rows, which are under
+`packages/ext/src/ext.gleam`, `packages/ext/src/ext/hook.gleam` and
+`packages/ext/src/ext/memory.gleam`, written out in full because a bare
+`ext.gleam` would read as the `cap/ext` module phase 3 deleted, and a
+bare `memory.gleam` would read as `client/extension/memory.gleam` on the
+row above, and the last four rows, which are under
 their packages' `test/`.
 
 `docs/architecture/code-mode.md` is the depth on the pipeline an

@@ -87,6 +87,121 @@ pub const fetcher_env = "LOOM_FIXTURE_TOKEN"
 /// The header the broker injects the bound value into.
 pub const fetcher_header = "X-Fixture-Token"
 
+/// The memory fixture: one tool that remembers what it is told and
+/// recalls it when it is told nothing.
+///
+/// Parameterised by the extension's name, because the whole claim the
+/// end-to-end makes with it is about *whose* subtree a cell lands in:
+/// two installs of the same source under two names must not see each
+/// other's cells. The tool name follows the extension's name, since two
+/// tools of one name cannot both be in one registry, and the name is
+/// also the Gleam project's, so it has to be a bare `[a-z][a-z0-9_]*`
+/// the manifest and `gleam.toml` both accept.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let files = extensions.keeper("keeper-one")
+/// ```
+///
+pub fn keeper(name: String) -> List(#(String, String)) {
+  [
+    #("extension.toml", keeper_manifest(name)),
+    #("gleam.toml", keeper_project(name)),
+    #("schema/keeper.json", keeper_schema()),
+    #("src/keeper/tool.gleam", keeper_tool()),
+  ]
+}
+
+/// The cell the `keeper` fixture writes and reads. One key, because the
+/// confinement under test is between extensions rather than between
+/// keys.
+pub const keeper_key = "note"
+
+fn keeper_manifest(name: String) -> String {
+  "[extension]\nname = \""
+  <> name
+  <> "\"\nversion = \"0.1.0\"\n"
+  <> "description = \"Remember one note and recall it.\"\n"
+  <> "license = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \""
+  <> name
+  <> "\"\n"
+  <> "description = \"Remember a note, or recall the one remembered.\"\n"
+  <> "prompt_snippet = \""
+  <> name
+  <> ": remember a note\"\n"
+  <> "parameters = \"schema/keeper.json\"\nentry = \"keeper/tool\"\n"
+  <> "timeout_ms = 60000\n"
+}
+
+fn keeper_project(name: String) -> String {
+  "name = \""
+  <> name
+  <> "\"\nversion = \"0.1.0\"\ngleam = \">= 1.18.0\"\n\n"
+  <> "[dependencies]\ngleam_stdlib = \">= 1.0.0 and < 2.0.0\"\n"
+  <> "gleam_json = \">= 3.0.0 and < 4.0.0\"\n"
+  <> "cap = { path = \"../cap\" }\next = { path = \"../ext\" }\n"
+}
+
+fn keeper_schema() -> String {
+  "{\n  \"type\": \"object\",\n  \"properties\": {\n"
+  <> "    \"note\": { \"type\": \"string\" }\n  },\n"
+  <> "  \"required\": []\n}\n"
+}
+
+// A `note` argument is a write; no argument is a read. Both answers are
+// text rather than refusals, because the end-to-end asserts on the
+// sentence: "recalled nothing" and "recalled <text>" have to be
+// distinguishable, and a refusal would make one of them a failure.
+fn keeper_tool() -> String {
+  "import ext
+import ext/memory
+import gleam/dynamic
+import gleam/dynamic/decode
+import gleam/json
+import gleam/option
+
+pub fn run(
+  arguments: dynamic.Dynamic,
+  _ctx: ext.Ctx,
+) -> Result(ext.Outcome, ext.Refusal) {
+  let decoder = {
+    use note <- decode.optional_field(
+      \"note\",
+      option.None,
+      decode.optional(decode.string),
+    )
+    decode.success(note)
+  }
+  case ext.decode_args(arguments, decoder) {
+    Error(refusal) -> Error(refusal)
+    Ok(option.Some(note)) -> store(note)
+    Ok(option.None) -> read()
+  }
+}
+
+fn store(note: String) -> Result(ext.Outcome, ext.Refusal) {
+  case memory.remember(\"" <> keeper_key <> "\", json.string(note)) {
+    Ok(Nil) -> Ok(ext.text(\"stored \" <> note))
+    Error(refusal) -> Error(refusal)
+  }
+}
+
+fn read() -> Result(ext.Outcome, ext.Refusal) {
+  case memory.recall(\"" <> keeper_key <> "\") {
+    Error(refusal) -> Error(refusal)
+    Ok(option.None) -> Ok(ext.text(\"recalled nothing\"))
+    Ok(option.Some(value)) ->
+      case ext.decode_args(value, decode.string) {
+        Ok(note) -> Ok(ext.text(\"recalled \" <> note))
+        Error(refusal) -> Error(refusal)
+      }
+  }
+}
+"
+}
+
 /// An extension whose source declares an `@external`.
 pub fn hostile_ffi() -> List(#(String, String)) {
   replace(

@@ -449,14 +449,15 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Seven corners of `fact.custom` are reserved, and reserving hides as
+- **Eight corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
-  `prompt/`, `session/`, `rule/` and `schedule/` are refused to
+  `prompt/`, `session/`, `rule/`, `schedule/` and `ext/` are refused to
   `put_fact` and filtered out of `facts`, so no blackboard write can
   forge an approval, shadow a terminal result, rewrite a parent edge,
   overwrite the pinned system prompt, re-point the session's own
-  identity, or mark an operator's triggered project rule or scheduled
-  heartbeat as already fired so that it never fires. Because
+  identity, mark an operator's triggered project rule or scheduled
+  heartbeat as already fired so that it never fires, or forge and read
+  an installed extension's durable memory. Because
   the reservation also hides a namespace from its own owner, harness code
   reads and writes it through `reserved_facts` / `put_reserved_fact`,
   which refuse everything *outside* the reserved set — the two doors are
@@ -464,6 +465,13 @@ extended by the M3 runtime wave.
   ledger prefix is `lineage/` rather than anything near the
   model-writable `agent/`: an integrity-critical namespace two letters
   from a model-writable one is one typo away from lineage forgery.
+  `ext/` is the newest and the widest: the whole prefix is reserved
+  rather than a corner of it, because the extension's own name is the
+  second segment and `client/extension/memory` is what binds it — an
+  extension writes `ext/<its installed name>/<key>` through
+  `put_reserved_fact` and reads it back with the plain `fact`, and a
+  model-writable namespace there would let a model forge what an
+  extension remembers and read what it was never shown.
   `rule/` and `schedule/` are held to the same rule for the same reason
   — a fired-mark a model could write is a project rule or a scheduled
   heartbeat it could silence in advance — and to each other's, kept

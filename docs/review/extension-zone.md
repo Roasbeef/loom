@@ -101,7 +101,8 @@ which the test itself pins.
 The second seam is new in this change. **`ResidentSeam`** is the seam a
 harness-resident hook body *would* be judged under if a loader were ever
 built: `ext`, `ext/hook`, and the same standard-library subset the jailed
-seam admits, with every `cap/*` module removed. It is wired to nothing,
+seam admits, with every module that reaches the broker removed. It is
+wired to nothing,
 because there is nothing to wire it to. It exists so that the allowlist
 is frozen *before* a loader can invent one — the moment at which somebody
 is most tempted to be permissive — and so that the freeze test has a
@@ -115,6 +116,19 @@ stub there is not a request to somebody else — it is a direct call inside
 the process that holds the durability plane. A resident hook is therefore
 a pure transform over the payload it is handed, and everything else stays
 in the jail, where it already works.
+
+`ext/memory` is the case that made "every `cap/*` module removed" too
+narrow a rule to state it that way. It is a capability — a broker client
+over `ext.remember` and `ext.recall` — carrying the durable cells an
+extension owns, and it is spelled like `ext/hook`, which carries no
+authority at all. A filter matching on the `cap/` prefix would therefore
+have admitted it to the resident seam, where its cells are rows in the
+very store the harness VM holds and there is no broker between the body
+and the write. So it is **on the extension seam's pinned set and not on
+the resident one**, `policy.extension_authority_modules` names the
+non-`cap/` capabilities the filter also drops, and the freeze test writes
+both sets out so the next `ext/…` capability cannot slip across by
+spelling.
 
 ## What each test pins
 
@@ -152,33 +166,40 @@ was built with the toolchain and each `.beam` read with
 `beam_lib:chunks/2`:
 
 ```
-ext@runtime.beam  cap@report cap@runtime ext@hook gleam@json
-                  gleam@list gleam@result gleam@string erlang
 ext.beam          gleam@dynamic@decode gleam@list gleam@result
                   gleam@string erlang
 ext@hook.beam     gleam@dynamic@decode gleam@json gleam@result
                   erlang maps
+ext@memory.beam   cap@internal@dispatch cap@internal@wire gleam@json
+                  gleam@result erlang
+ext@runtime.beam  cap@report cap@runtime ext@hook gleam@json
+                  gleam@list gleam@result gleam@string erlang
 ```
 
 Three things follow.
 
 1. **The table is a subset of the source imports.** `ext@runtime` imports
-   `ext` in source and not in the table, because it uses only that
-   module's constructors and never calls into it. So an import-table
-   check cannot over-report; and with `@external` refused by vetting and
-   no dynamic module dispatch in Gleam — no `apply/3`, no `Module:f()` —
-   the table is the complete set of modules a body can reach.
+   `ext` in source and not in the table, and `ext@memory` imports
+   `cap/internal/channel` in source and not in the table, because each
+   uses only the other module's constructors and types and never calls
+   into it. So an import-table check cannot over-report; and with
+   `@external` refused by vetting and no dynamic module dispatch in
+   Gleam — no `apply/3`, no `Module:f()` — the table is the complete set
+   of modules a body can reach. The same subsetting is why authority is
+   derived from the *source* walk rather than from these tables: a module
+   holding only a channel's types would read as authority-free here.
 2. **The namespace is the same one vetting reasons about**, with `/`
    rewritten to `@`.
 3. **The compiler emits native Erlang modules no allowlist names**:
    `erlang` and `maps` above, `lists` elsewhere. A module-level check
    would therefore have to admit `erlang`, which is `erlang:open_port/2`
    and every other escape hatch under one name. **The check has to be
-   per-MFA, not per-module.** Across `packages/ext`'s three source
+   per-MFA, not per-module.** Across `packages/ext`'s four source
    modules the emitted native MFAs are `erlang:element/2`,
    `erlang:get_module_info/1`, `erlang:get_module_info/2` and
    `maps:to_list/1` — a small, boring set a loader can allowlist by
-   triple. This is the first of the two findings #32 inherits, and it is
+   triple, and one `ext/memory` did not grow: the fourth module adds a
+   table row and no new native call. This is the first of the two findings #32 inherits, and it is
    the reason the loader's cost is not `code:load_binary`. The second is
    module-name shadowing, under "Attack surface considered" below.
 
@@ -278,7 +299,7 @@ exploitable today.
 | Z-I7 | INFO | The resident seam bounds names, not time or memory: an in-VM body has no jail, rlimit or deadline behind a `json.parse` or a recursion. "Pure transform" is not "bounded". | **Fixed in this PR**: a sentence in `policy.resident()`'s doc saying a loader owes the call a bound of its own. |
 | Z-I8 | INFO | "Walks all ten packages" — it walked nine; `sandbox` ships no Gleam, as the test itself pins. | **Wording**, corrected with Z-I4: it now walks the fourteen base packages that ship Gleam. |
 | Z-I9 | INFO | "Nothing but source crosses the install boundary" — `schema/**` and `skills/**` cross as installed data. Neither is compiled, so the property holds; the sentence overstated it. | **Wording**, corrected in this PR. |
-| Z-I10 | INFO | The beam import tables recorded in the test's `////` and above reproduce exactly against a fresh build, and the four native MFAs with them. Z-F5 confirmed independently. | No action. |
+| Z-I10 | INFO | The beam import tables recorded in the test's `////` and above reproduce exactly against a fresh build, and the four native MFAs with them. Z-F5 confirmed independently. Re-measured when `ext/memory` made the package four modules: one new table row, no new native MFA. | No action. |
 
 The pass also attacked and could not break: the no-dynamic-dispatch claim
 (none of the twenty allowlisted stdlib modules exposes a way out of

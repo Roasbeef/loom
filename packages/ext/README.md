@@ -224,7 +224,7 @@ session-lived node no more powerful than the disposable one it replaced.
 
 ## What an extension cannot do
 
-Four absences, each of them a design ruling rather than a gap waiting to be
+Five absences, each of them a design ruling rather than a gap waiting to be
 filled.
 
 **It cannot act between invocations.** Keeping an actor, a client or a
@@ -249,6 +249,13 @@ counterpart here, because there is no execution to end.
 that rewrote arguments after vetting is the one thing vetting cannot see,
 so the type does not admit it.
 
+**It cannot see another extension's memory.** `ext/memory`'s cells live
+under `ext/<name>/`, and the name is bound by the harness from the
+install record — it is not an argument on the wire and there is no
+request in which one could be named. There is no listing and no delete
+either, so an extension knows exactly the keys it wrote and nothing about
+anyone else's.
+
 To that list add the ordinary one: **nothing here refuses a capability**.
 Like `cap/net`, this package marshals and labels. Deny-by-default is the
 broker's property, and an extension's network policy is composed from its
@@ -270,6 +277,27 @@ shape agreed in prose and discovered at the first call.
 | `ext.Outcome` | `content: List(Content)` and `terminate: Terminate`. `ext.text` and `ext.json` build the one-block common case. |
 | `ext.Refusal` | Text the *model* reads and repairs. A refusal is a value; a crash is a fault the harness reports and the model can do nothing with. |
 | `ext.decode_args` | Runs a decoder and turns every failure `decode.run` found into a `Refusal` that names the field. "expected String at .city" is a repair instruction; "bad arguments" is a dead end. |
+
+`ext` itself is pure vocabulary and holds no capability. The one module
+here that does is `ext/memory`, the durable cells an extension owns:
+
+| Function | What it is |
+|---|---|
+| `memory.remember(key, value: Json)` | Writes one durable, latest-wins cell. The harness composes the key as `ext/<the name this extension was installed under>/<key>`, so a cell is always this extension's own. `key` is a leaf: non-empty, no `/`, at most 128 characters; a value is at most 64 KiB of JSON text. |
+| `memory.recall(key)` | Reads it back as `Result(Option(Dynamic), Refusal)`. `Ok(None)` is a cell never written — the first-call case, never an error — and `ext.decode_args` turns the `Dynamic` into a typed value with the same decoder vocabulary a tool's arguments use. |
+
+Both are served per *extension* rather than per invocation kind, so a
+`[[hook]]` handler may remember and recall exactly as a tool may;
+recording what a hook saw for a later tool call to read is the intended
+use. A remembered cell reaches the model only if the extension puts it
+there itself, from a `before_agent_start` injection: the prefix is
+reserved in `runtime/api`, so the blackboard tool can neither write it
+nor list it.
+
+This is not `cap/kv`, which is also on the seam. That store is ephemeral
+scratch — evicted between calls, gone with the session — and the choice
+between them is the choice between a cache and a memory. It is also not a
+database: latest-wins over one cell, no listing, no delete.
 
 ## The hook vocabulary and its wire
 
@@ -420,6 +448,7 @@ Run them with `make check-ext`.
 |---|---|
 | `src/ext.gleam` | The author-facing vocabulary: `Ctx`, `Content`, `Terminate`, `Outcome`, `Refusal`, `Tool`, and the `text` / `json` / `refuse` / `decode_args` helpers. |
 | `src/ext/hook.gleam` | `Hook`, `Verdict`, `Call`, `Context`, `RunStart`; `event`, `answer`, `rendered`, and the JSON marshalling of every hook wire shape. |
+| `src/ext/memory.gleam` | `remember` and `recall`: the durable cells under the reserved `ext/<name>/` prefix this extension owns. |
 | `src/ext/runtime.gleam` | `serve`, `serving`, `answer`, `Declared`, and the five in-band codes. |
 
 ## Reading further
