@@ -61,7 +61,11 @@
 //// That is the divergence the folds already have (below) one manager
 //// further out, and it settles in the same way: a satellite that is
 //// gone answers `Gone` to the next event on either manager, so the
-//// second drop is one event away rather than a session away.
+//// second drop is one event away rather than a session away. The one
+//// case that does not converge is a live satellite whose verdict this
+//// module cannot read: only `forward_verdict` drops on an unreadable
+//// answer, so that extension keeps its notices for the session, which
+//// is the right outcome for a body that is healthy everywhere else.
 ////
 //// ## Seven events fan out; two transforms do not
 ////
@@ -493,6 +497,12 @@ pub fn start(
   logger: Logger,
 ) -> Result(Bus, actor.StartError) {
   use answers <- result.try(event_manager.start(described(extensions, logger)))
+
+  // A second start that fails leaves the first manager linked to the boot
+  // process and idle. The leak is accepted: an actor failing to start is
+  // a fault the boot reports and exits on, not a state the server runs
+  // in, so stopping the first manager here would only add a path nothing
+  // reaches.
   use notices <- result.try(event_manager.start(described(extensions, logger)))
   Ok(Bus(
     answers: answers.data,

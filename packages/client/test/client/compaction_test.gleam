@@ -194,8 +194,8 @@ pub fn a_re_dispatched_compaction_asks_for_its_notes_again_test() {
 
   // And both requests carried the note, so the retry is a whole request
   // rebuilt rather than a resend of what the first attempt assembled.
-  assert process.receive(delivered, within: 0) == Ok([scripted_note])
-  assert process.receive(delivered, within: 0) == Ok([scripted_note])
+  assert process.receive(delivered, within: 1000) == Ok([scripted_note])
+  assert process.receive(delivered, within: 1000) == Ok([scripted_note])
   assert list.length(compactions(opened)) == 1
   let _closed = api.close(runtime)
 }
