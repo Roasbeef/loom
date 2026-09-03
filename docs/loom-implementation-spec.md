@@ -743,11 +743,13 @@ named here so no row above implies otherwise:
   and `FileOperations` on a preparation is always empty — Stage C1.
 - **The chaos runner.** WP-T's chaos tier and WP-E's ten-minute soak
   (spec-gaps WP-E 8), which M1 was accepted without.
-- **A kernel that runs Landlock.** Issue #62: the second filesystem layer
-  is unit-tested as data and has never executed. Closing it needs a runner
-  on Landlock ABI ≥ 3 with `bwrap` absent from `PATH`, so the mount layer
-  cannot mask the answer — which is a CI machine nobody has, not a piece of
-  code nobody has written.
+- **Landlock observed alone.** Issue #62: the second filesystem layer
+  has now executed, with `landlock:abi=7` in the applied-layer line of
+  CI's `jail (linux)` job (Part 4, M2). What that run does not show is
+  Landlock enforcing on its own: `bwrap` is present there, so the mount
+  layer could still mask a Landlock gap. Showing that needs a runner on
+  Landlock ABI ≥ 3 with `bwrap` absent from `PATH`, which is a CI machine
+  nobody has, not a piece of code nobody has written.
 
 ## Part 6 — Bootstrap order (do these before spawning parallel agents)
 

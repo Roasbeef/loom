@@ -86,9 +86,13 @@ rollback.
 
 ### Be honest about the size
 
-M6 is at 0%. There is no `packages/ext`; nothing in the tree crosses the
-line the design draws. Its hard part is not `code:load_binary`, which is
-one call. The hard part is the **TCB freeze**: proving that the extension
+M6 has changed shape since this was written. The extension architecture
+(`docs/design-notes/extension-architecture.md`, ADR-007) is built through
+its own phase 3: `packages/ext` exists, an extension installs from a
+remote archive, runs jailed, reaches the network through the broker, and
+answers hooks from a session-lived satellite. What the ladder still owes
+is the tier-H loader with rollback and the TCB freeze (#32, #33). That
+remaining part's hard part is not `code:load_binary`, which is one call. The hard part is the **TCB freeze**: proving that the extension
 API cannot reach `StorageWriter` or broker internals, by compile-time
 visibility *and* runtime name checks — both, because either alone fails a
 different attack. Below L3 every defense is a kernel; at L3 the extension
