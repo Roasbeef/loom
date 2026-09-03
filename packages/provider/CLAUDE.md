@@ -215,7 +215,10 @@ processful shell around that sans-io core. WP-F.
   know settles the stream as `Failed(UnmappedStopReason)` in-band, never a
   crash. Gemini has no tool-use finish reason — a calling turn ends with
   `STOP` — so its settlement promotes `STOP` to `ToolUse` when the
-  response carried a function call.
+  response carried a function call. A prompt the API refuses outright
+  arrives with no candidates and a `promptFeedback.blockReason`; that
+  settles as an errored turn (raw stop `BLOCKED_<reason>`), never as the
+  retryable disconnect a candidate-less close would otherwise read as.
 - **Gemini thought signatures are replayed or substituted, never dropped.**
   The signature stays on the block it arrived with (`text_signature`,
   `thought_signature`), an empty signed text part signs the block in

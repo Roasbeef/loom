@@ -168,9 +168,13 @@ type Model {
     session_switch: sessions.SwitchStatus,
     next_id: Int,
     usage: message.Usage,
-    /// When the generation now streaming produced its first fragment, on
-    /// the monotonic clock; `None` between generations. Paired with the
-    /// output count the settlement's usage reports, it yields the rate.
+    /// When the active strand's streaming generation produced its first
+    /// fragment, on the monotonic clock; `None` between generations.
+    /// Paired with the output count the settlement's usage reports, it
+    /// yields the rate. Usage reports carry no strand, so the figure is
+    /// exact only while one strand streams at a time; a child settling
+    /// under a streaming parent skews one reading, which a footer can
+    /// bear.
     generation_started_ms: Option(Int),
     /// Output tokens per second of the last settled generation, for the
     /// footer. `None` until one generation has both streamed and settled.
@@ -1977,11 +1981,14 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       }
     }
     protocol.StreamDelta(strand:, kind:, text:) -> {
-      // The first fragment of a generation starts its clock; later
-      // fragments leave it where it was.
-      let generation_started_ms = case model.generation_started_ms {
-        Some(started) -> Some(started)
-        None -> Some(ffi_bootstrap.monotonic_time_ms())
+      // The first fragment of the active strand's generation starts its
+      // clock; later fragments, and other strands, leave it where it was.
+      let generation_started_ms = case
+        model.generation_started_ms,
+        strand == model.active_strand
+      {
+        None, True -> Some(ffi_bootstrap.monotonic_time_ms())
+        started, _ -> started
       }
       let updated =
         Model(
@@ -2699,6 +2706,7 @@ pub fn output_rate(output_tokens: Int, elapsed_ms: Int) -> Option(Int) {
 /// assert tui.output_rate_label(option.None) == ""
 /// ```
 ///
+@internal
 pub fn output_rate_label(rate: Option(Int)) -> String {
   case rate {
     Some(rate) -> " · " <> int.to_string(rate) <> " tok/s"

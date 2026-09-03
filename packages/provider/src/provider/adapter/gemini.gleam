@@ -138,8 +138,10 @@ pub fn build_request(
     json.Object(
       list.flatten([
         case request.system {
+          // The API rejects an empty text part, so an empty system prompt
+          // is the same as none.
+          Some("") | None -> []
           Some(system) -> [#("systemInstruction", text_parts(system))]
-          None -> []
         },
         [#("contents", json.Array(encode_contents(request.messages)))],
         case request.tools {
@@ -748,10 +750,13 @@ fn excerpt(text: String) -> String {
   }
 }
 
+// One TCP chunk may carry several documents; once one of them has failed
+// the stream, the rest must not emit deltas after the terminal.
 fn handle_sse(
   acc: Accumulator,
   event: SseEvent,
 ) -> #(Accumulator, List(StreamEvent)) {
+  use <- bool.guard(when: acc.done, return: #(acc, []))
   case event {
     SseMalformed(reason:) ->
       fail(acc, MalformedStream(corruption_report("a utf-8 sse line", reason)))
@@ -810,10 +815,30 @@ fn handle_response_document(
     Ok(usage) -> extract_usage(acc, usage)
     Error(Nil) -> acc
   }
-  case wire.array_field(document, "candidates") {
-    Ok([candidate, ..]) -> handle_candidate(acc, candidate)
-    _ -> #(acc, [])
+  case wire.array_field(document, "candidates"), blocked_prompt(document) {
+    Ok([candidate, ..]), _ -> handle_candidate(acc, candidate)
+
+    // A prompt the API refuses outright comes back with no candidates and
+    // a `promptFeedback.blockReason`, and then the body closes. Without
+    // this arm that close would read as a disconnect, which is retryable,
+    // and the gateway would walk every fallback on a prompt that will be
+    // refused each time. It is a settled, errored turn instead.
+    _, Ok(reason) -> #(
+      Accumulator(
+        ..acc,
+        stop: Some(Errored),
+        raw_stop: Some("BLOCKED_" <> reason),
+        error_message: Some("provider blockReason: " <> reason),
+      ),
+      [],
+    )
+    _, Error(Nil) -> #(acc, [])
   }
+}
+
+fn blocked_prompt(document: JsonValue) -> Result(String, Nil) {
+  wire.field(document, "promptFeedback")
+  |> result.try(wire.string_field(_, "blockReason"))
 }
 
 // Every count defaults to the accumulator's current value, never to zero,

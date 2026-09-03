@@ -277,6 +277,54 @@ pub fn safety_finish_settles_as_error_test() {
   assert string.contains(error_message, "SAFETY")
 }
 
+pub fn a_blocked_prompt_settles_as_error_not_disconnect_test() {
+  // A refused prompt: no candidates, a promptFeedback.blockReason, and
+  // the body closes. Read as a disconnect it would be retried and walked
+  // down every fallback; it is a settled, errored turn.
+  let transcript =
+    sse_data(
+      "{\"promptFeedback\":{\"blockReason\":\"PROHIBITED_CONTENT\"},\"usageMetadata\":{\"promptTokenCount\":9,\"totalTokenCount\":9}}",
+    )
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Settled(message: settled, usage:)] = events
+  let assert message.AssistantMessage(
+    stop_reason:,
+    raw_stop_reason:,
+    error_message: Some(error_message),
+    ..,
+  ) = stream.message(settled)
+  assert stop_reason == message.Errored
+  assert raw_stop_reason == Some("BLOCKED_PROHIBITED_CONTENT")
+  assert string.contains(error_message, "PROHIBITED_CONTENT")
+  assert usage.input == 9
+}
+
+pub fn documents_after_an_in_chunk_failure_emit_nothing_test() {
+  // Two documents in one chunk, the first an error: nothing may follow
+  // the terminal, not even a delta.
+  let transcript =
+    sse_data(
+      "{\"error\":{\"code\":500,\"message\":\"boom\",\"status\":\"INTERNAL\"}}",
+    )
+    <> chunk(text_part("late"), "STOP", usage_json(1, 1, 0, 0))
+  let assert [stream.Failed(stream.StreamError(..))] =
+    fixture.drive_ok(machine(), transcript)
+}
+
+pub fn an_empty_system_prompt_sends_no_system_instruction_test() {
+  let built =
+    gemini.build_request(
+      base_url: "https://generativelanguage.googleapis.com/v1beta",
+      api_key: "k",
+      resolved: resolved(),
+      request: model.ProviderRequest(
+        ..fixture.request_for(resolved()),
+        system: Some(""),
+      ),
+    )
+  assert !string.contains(built.body, "systemInstruction")
+}
+
 pub fn malformed_chunk_fails_in_band_test() {
   let events = fixture.drive_ok(machine(), sse_data("{broken"))
   let assert [stream.Failed(stream.MalformedStream(report: _))] = events
