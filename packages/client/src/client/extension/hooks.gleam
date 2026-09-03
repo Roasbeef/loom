@@ -669,11 +669,18 @@ pub fn usage(bus: Bus, operation: OpId, row: UsageRow) -> Nil {
 }
 
 // The notes that fit, in load order, and a warn line for each one that
-// does not. The allowance is the same `context_growth_tokens` a
-// `context` transform gets, counted with the same estimate, because
-// both are an extension spending the session's window on the harness's
-// behalf and there is no reason for the two to disagree about the
-// price.
+// does not. The number is `context_growth_tokens` and the estimate is
+// the one `within_cap` uses, because both are an extension spending the
+// session's window on the harness's behalf and there is no reason for
+// the two to disagree about the price of a message.
+//
+// The *allowance* is stricter here, and deliberately. `within_cap`
+// judges each link of the fold on its own, so a chain of extensions may
+// grow a context by the cap once per extension; this bound is
+// cumulative over the whole gather, so every note a compaction collects
+// shares one allowance. A gather has no predecessor to charge the
+// growth against, and notes nobody chained cannot each claim the price
+// of a transform.
 fn within_note_cap(notes: List(String), bus: Bus) -> List(String) {
   let #(kept, _spent) =
     list.fold(notes, #([], 0), fn(carried, block) {
