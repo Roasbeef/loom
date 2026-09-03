@@ -985,8 +985,27 @@ fn harvest_all(config: Config, opened: Opened) -> #(List(Harvest), Int) {
         let #(found, skipped) = carried
         case harvest_one(config, opened, path) {
           Ready(harvest:) -> #([harvest, ..found], skipped)
-          Leased -> #(found, skipped + 1)
-          Quiet -> #(found, skipped)
+
+          // Per-source visibility, at a level nobody has to read: a
+          // machine somebody is using has a live session in every walk
+          // and a quiet one in most, so these belong under `debug`
+          // while the counts stay on the one `info` line the run ends
+          // with. An operator asking "why did it skip mine" has the
+          // answer either way.
+          Leased -> {
+            log.debug(config.logger, "distill.source_live", [
+              field.text(key: "session", value: path),
+              field.text(key: "reason", value: "its writer lease is held"),
+            ])
+            #(found, skipped + 1)
+          }
+          Quiet -> {
+            log.debug(config.logger, "distill.source_quiet", [
+              field.text(key: "session", value: path),
+              field.text(key: "reason", value: "nothing above its cursor"),
+            ])
+            #(found, skipped)
+          }
           Unreadable(reason:) -> {
             log.warn(config.logger, "distill.source_unreadable", [
               field.text(key: "session", value: path),
@@ -1129,7 +1148,14 @@ fn extract_all(
             ])
             carried
           }
-          Ok(answer) ->
+          Ok(answer) -> {
+            log.debug(config.logger, "distill.source_read", [
+              field.text(key: "session", value: harvest.session),
+              field.count(
+                key: "entries",
+                value: list.length(harvest.extract.entries),
+              ),
+            ])
             Extracted(
               candidates: list.append(
                 carried.candidates,
@@ -1144,6 +1170,7 @@ fn extract_all(
                 config,
               ),
             )
+          }
         }
       },
     )
