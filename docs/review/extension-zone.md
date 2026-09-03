@@ -129,7 +129,7 @@ in the jail, where it already works.
 | `an_extension_may_not_declare_a_trusted_dependency` | `vet/package.allowed_dependencies` widened to a TCB package. |
 | `no_prelude_module_imports_the_trusted_computing_base` | An import added to any module of either prelude. Walks both trees. |
 | `the_preludes_ship_one_foreign_source` | A second `.erl` added under `packages/{cap,ext}/src`. The import walk reads only `.gleam`, so an Erlang source can name any module by atom with no import line to find; `cap_ffi.erl` is the one that exists and it names no loom module. |
-| `no_seam_admits_a_module_of_the_base` | Either allowlist widened to a base module, including one that does not exist yet. Walks the thirteen base packages that ship Gleam. |
+| `no_seam_admits_a_module_of_the_base` | Either allowlist widened to a base module, including one that does not exist yet. Walks the fourteen base packages that ship Gleam. |
 | `a_body_reaching_into_the_base_is_refused` | The lint failing to refuse, or refusing without naming the module the author must delete. |
 | `a_body_declaring_foreign_code_is_refused` | `@external` admitted, which would make every import check moot. |
 | `the_resident_allowlist_is_pinned` / `the_extension_allowlist_is_pinned` | Either seam changing at all. Exact set, difference taken both ways. |
@@ -276,7 +276,7 @@ exploitable today.
 | Z-I5 | LOW | The three new `ResidentSeam` arms in `client/codemode.gleam` were asserted nowhere; "reaches nothing at all" rested on them and any of the three could be widened with a green suite. | **Fixed in this PR**: `seam_caps(ResidentSeam) == []` and `tool_seam(ResidentSeam) == Error(Nil)` beside the seam assertions. |
 | Z-I6 | LOW | `shadow_refusals` refuses a package's own module name only when it is already on the seam, so an extension may ship `src/runtime/writer.gleam`. Inert in the jail; a resident loader would be loading `runtime@writer` into the harness code server, where a collision is a swap. | **Recorded for #32**, under "Attack surface considered". No code change: `codemode` is pure and cannot walk the tree, and a written list of harness names is the failure this review is about. |
 | Z-I7 | INFO | The resident seam bounds names, not time or memory: an in-VM body has no jail, rlimit or deadline behind a `json.parse` or a recursion. "Pure transform" is not "bounded". | **Fixed in this PR**: a sentence in `policy.resident()`'s doc saying a loader owes the call a bound of its own. |
-| Z-I8 | INFO | "Walks all ten packages" — it walked nine; `sandbox` ships no Gleam, as the test itself pins. | **Wording**, corrected with Z-I4: it now walks the thirteen base packages that ship Gleam. |
+| Z-I8 | INFO | "Walks all ten packages" — it walked nine; `sandbox` ships no Gleam, as the test itself pins. | **Wording**, corrected with Z-I4: it now walks the fourteen base packages that ship Gleam. |
 | Z-I9 | INFO | "Nothing but source crosses the install boundary" — `schema/**` and `skills/**` cross as installed data. Neither is compiled, so the property holds; the sentence overstated it. | **Wording**, corrected in this PR. |
 | Z-I10 | INFO | The beam import tables recorded in the test's `////` and above reproduce exactly against a fresh build, and the four native MFAs with them. Z-F5 confirmed independently. | No action. |
 

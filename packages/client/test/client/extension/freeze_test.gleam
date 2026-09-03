@@ -112,12 +112,16 @@ import tom
 /// msgpack, corruption reports, the domain types — with no I/O and no
 /// process machinery, and `cap` depends on it precisely because a
 /// satellite and the harness have to agree on the wire. A package that
-/// can be linked into the jail is not part of the base being frozen.
-/// `conformance`, `lint` and `prompt` are absent for a different reason:
-/// none of them is loaded by a running harness.
+/// can be linked into the jail is not part of the base being frozen, and
+/// lint R6 gates `core` at error level against ever holding one: no
+/// `@external`, no `gleam_erlang`, no `gleam_otp`. `conformance` and
+/// `lint` are absent for a different reason: no harness package depends
+/// on either, so a running harness never loads them. `prompt` is in the
+/// list because `client` depends on it and so it is loaded, R6-pure or
+/// not, exactly as `machine` is.
 const trusted_computing_base = [
   "storage", "broker", "runtime", "machine", "sandbox", "session", "codemode",
-  "client", "provider", "tools", "events", "telemetry", "mcp", "tui",
+  "client", "provider", "tools", "events", "telemetry", "mcp", "tui", "prompt",
 ]
 
 /// The base's packages that ship Gleam, and so contribute module names an
@@ -128,7 +132,7 @@ const trusted_computing_base = [
 /// the walk.
 const gleam_trusted_packages = [
   "storage", "broker", "runtime", "machine", "session", "codemode", "client",
-  "provider", "tools", "events", "telemetry", "mcp", "tui",
+  "provider", "tools", "events", "telemetry", "mcp", "tui", "prompt",
 ]
 
 /// The loom packages an extension's build root may contain: the
@@ -314,9 +318,10 @@ pub fn no_seam_admits_a_module_of_the_base_test() {
 /// The last two fixtures are the ones that would compile if the seam
 /// let them through: `gleam_erlang` and `gleam_otp` arrive in the build
 /// root as `cap`'s own runtime dependencies, so `gleam/erlang/process`
-/// and `gleam/otp/actor` resolve there. Nothing but the allowlist stops
-/// a body from spawning a process, which is why they are pinned here
-/// rather than left to the package graph.
+/// and `gleam/otp/actor` resolve there. Vetting stops them twice: the
+/// denylist refuses both names before the allowlist is consulted, and
+/// the closed allowlist would refuse them anyway. Nothing in the package
+/// graph does, which is why they are pinned here rather than left to it.
 pub fn a_body_reaching_into_the_base_is_refused_test() {
   let reaching = [
     #("runtime/writer", "import runtime/writer\npub fn run() { 1 }\n"),
