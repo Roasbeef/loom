@@ -245,6 +245,29 @@ pub fn no_prelude_module_imports_the_trusted_computing_base_test() {
   assert list.contains(modules, "storage/storage")
 }
 
+/// One file in the extension-facing packages is not Gleam, and it is
+/// `cap`'s FFI shim.
+///
+/// The import walk above reads `.gleam` files, because a Gleam import is
+/// the only thing it can read. That leaves a hole exactly the width of
+/// the tree's Erlang sources: `packages/cap/src/cap_ffi.erl` may name any
+/// module in the VM by atom, with no import line to find and no seam to
+/// pass. Today it names `gen_tcp`, `file`, `os` and `persistent_term` —
+/// the satellite side of the capability channel, which is what it is for
+/// — and no loom module at all.
+///
+/// The property worth gating is not that file's contents but its
+/// uniqueness. One known shim can be read by eye and was; a second one
+/// appearing is a decision somebody has to make on purpose, and this is
+/// where they are made to make it. So the set of non-Gleam sources under
+/// both trees is pinned exactly, and a new `.erl` fails here rather than
+/// passing through a walk that cannot see it.
+pub fn the_preludes_ship_one_foreign_source_test() {
+  let foreign =
+    list.append(foreign_sources_of("ext"), foreign_sources_of("cap"))
+  assert list.sort(foreign, string.compare) == ["cap_ffi.erl"]
+}
+
 // --- Mechanism two: the seam a body is admitted under ----------------------
 
 /// Neither seam admits a single module of the base.
@@ -388,6 +411,19 @@ fn modules_of(package_name: String) -> List(String) {
 /// covered without this file changing.
 fn trusted_modules() -> List(String) {
   list.flat_map(gleam_trusted_packages, modules_of)
+}
+
+/// Every file under a package's `src/` that is not a Gleam module, as a
+/// path relative to `src/`. These are the files the import walk cannot
+/// read, so they are counted rather than parsed.
+fn foreign_sources_of(package_name: String) -> List(String) {
+  let root = repository_root() <> "/packages/" <> package_name <> "/src"
+  let assert Ok(files) = simplifile.get_files(root)
+    as { "package " <> package_name <> " must have a readable src/" }
+
+  files
+  |> list.filter(fn(path) { !string.ends_with(path, ".gleam") })
+  |> list.map(string.replace(_, root <> "/", ""))
 }
 
 /// Every module name imported by any source file of a package.
