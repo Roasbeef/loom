@@ -83,7 +83,7 @@ stateDiagram-v2
     Checkpoint --> Checkpoint: step 5, drain one follow-up
     Checkpoint --> [*]: steps 6 and 7, run-end hook then Finish
 
-    Assistant --> Assistant: retryable error, RetryWait until not_before
+    Assistant --> Assistant: retryable error, GenerationRetryWait until not_before
     Assistant --> Checkpoint: stop, or a genuine length stop
     Assistant --> Tools: the response carries tool calls
     Assistant --> Compacting: overflow, one recovery per step
