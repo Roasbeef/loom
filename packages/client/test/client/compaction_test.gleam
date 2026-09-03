@@ -135,6 +135,11 @@ pub fn a_threshold_compaction_carries_its_note_to_the_summarizer_test() {
   assert cue.summarized_messages > 0
   assert cue.retained_messages > 0
 
+  // Asked once, and only once: one dispatched summary request is one
+  // ask, so a second cue here would mean the slot fired somewhere other
+  // than the dispatch.
+  assert process.receive(cues, within: 0) == Error(Nil)
+
   // And the note reached the request the summarizer was actually sent.
   assert process.receive(delivered, within: 1000) == Ok([scripted_note])
 
@@ -157,6 +162,41 @@ pub fn an_overflow_compaction_names_its_own_cause_test() {
   let assert Ok(cue) = process.receive(cues, within: 1000)
     as "the overflow compaction asked for notes"
   assert cue.cause == effects.OverflowCompaction
+  let _closed = api.close(runtime)
+}
+
+// A re-dispatched summary asks again. This is the replay rule the slot
+// is documented against, driven rather than asserted from prose: the
+// note is transient input to a request whose consuming commit is the
+// summary, so an attempt that fails before that commit re-dispatches and
+// re-asks, and the second answer is as good as the first because neither
+// was written down. The ask lives at the dispatch for exactly this
+// reason, and a cue asked once here would mean it had moved back to the
+// decision.
+pub fn a_re_dispatched_compaction_asks_for_its_notes_again_test() {
+  let cues = process.new_subject()
+  let delivered = process.new_subject()
+  let assert Ok(#(runtime, opened)) =
+    harness(SummariesFlapOnce, Noting(cues:, delivered:))
+    as "the harness must open"
+  let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
+  let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
+  let assert Ok(second) = api.prompt(runtime, [user(bulky("keep going"))])
+  let assert Ok(_settled) = api.await_result(runtime, second, within_ms: 8000)
+
+  // Two dispatches, two asks: the attempt the summarizer dropped, and
+  // the one that landed.
+  let assert Ok(_first_cue) = process.receive(cues, within: 1000)
+    as "the first attempt asked for notes"
+  let assert Ok(_second_cue) = process.receive(cues, within: 1000)
+    as "the re-dispatched attempt asked again"
+  assert process.receive(cues, within: 0) == Error(Nil)
+
+  // And both requests carried the note, so the retry is a whole request
+  // rebuilt rather than a resend of what the first attempt assembled.
+  assert process.receive(delivered, within: 0) == Ok([scripted_note])
+  assert process.receive(delivered, within: 0) == Ok([scripted_note])
+  assert list.length(compactions(opened)) == 1
   let _closed = api.close(runtime)
 }
 
