@@ -895,7 +895,7 @@ pub fn an_emptying_cascade_rewinds_so_the_next_pass_rebuilds_test() {
       clock: a_clock(),
       entropy: fn() { 99 },
     )
-  let assert Ok(Nil) = seam.remember("the user prefers tabs over spaces")
+  let assert Ok(Nil) = seam.remember("the reviewer keeps a paper notebook")
     as "the note must be written"
 
   let prompts = start_recorder()
@@ -956,7 +956,7 @@ pub fn an_emptying_cascade_rewinds_so_the_next_pass_rebuilds_test() {
   let asked = string.join(recorded(again), "\n")
   assert string.contains(asked, "msgpack")
   assert string.contains(asked, "[erased]")
-  assert string.contains(asked, "the user prefers tabs over spaces")
+  assert string.contains(asked, "the reviewer keeps a paper notebook")
 
   // And the rebuilt head names alpha again — the material issue #124
   // said was permanently unrecoverable.

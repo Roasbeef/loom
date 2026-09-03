@@ -907,7 +907,8 @@ pub type NotesRewind {
 /// replacement, with the counts the operator is told.
 ///
 /// Constructor invariants: `cursors` is exactly what the CAS writes, one
-/// entry per cell that is actually moving; `sources` counts the
+/// entry per recorded source cursor, plus the notes cursor when it has
+/// something to recover; `sources` counts the
 /// per-source cursors inside it, so `cursors` is `sources` long, plus
 /// one when `notes` is `NotesRewound`.
 pub type Rewind {
@@ -1130,14 +1131,7 @@ pub fn advance_cursors(
   cursors: List(#(String, JsonValue)),
 ) -> Result(Nil, MemoryFault) {
   use <- bool.guard(when: cursors == [], return: Ok(Nil))
-  let writes =
-    list.map(cursors, fn(cursor) {
-      SetRegister(
-        ns: register.FactCustom,
-        key: cursor.0,
-        value: register.value(cursor.1),
-      )
-    })
+  let writes = cursor_writes(cursors)
   case storage.commit(opened.session.store, Tx(writes:, expected: [])) {
     Ok(_result) -> Ok(Nil)
     Error(error) -> Error(commit_fault(error))

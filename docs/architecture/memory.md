@@ -70,7 +70,7 @@ in one more turn, then re-render the sidecar.
 new in #149: a supervised child that runs exactly one pass per boot and
 then idles.
 
-**The injection** is `client/memory.gleam:1567` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1651` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
@@ -198,7 +198,7 @@ still contributes nothing to any later extraction.
 The digest body is rendered from the head (`client/memory.gleam:1282`,
 `render_digest`) — scrubbed, byte-capped, truncation marked — and the
 fence and attribution are built at injection time
-(`client/memory.gleam:1567`, `wrapped`) so that the file cannot forge
+(`client/memory.gleam:1696`, `wrapped`) so that the file cannot forge
 its own provenance.
 
 The read is bounded before it happens, because it is a read of an
@@ -276,11 +276,11 @@ outstanding notes in and the notes cursor advances with the head CAS.
 ## Erasure, and the rebuild it schedules
 
 The erasure cascade is the second command behind the pipeline's entry
-point, `client/distill.gleam` (`cascade`): after `session/repo` has
+point, `client/distill.gleam:880` (`cascade`): after `session/repo` has
 rewritten a source session, it drops from the head every distillate
-whose provenance names that session (`client/memory.gleam`,
+whose provenance names that session (`client/memory.gleam:670`,
 `names_source`) and re-renders the sidecar without them, through a head
-CAS and no new rows (`client/memory.gleam`, `replace_head`). It needs no
+CAS and no new rows (`client/memory.gleam:1052`, `replace_head`). It needs no
 catalogue and dispatches no model turn.
 
 One limit is named rather than hidden: the cascade is **first-order**. A
