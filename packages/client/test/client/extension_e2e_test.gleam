@@ -57,6 +57,7 @@ import client/contributions
 import client/extension/archive
 import client/extension/cli
 import client/extension/dispatch
+import client/extension/hooks
 import client/extension/hosts
 import client/extension/install
 import client/extension/installed
@@ -83,6 +84,7 @@ import gleam/string
 import simplifile
 import support/extensions
 import support/origin
+import telemetry/log
 import tools/tool
 
 /// The value the operator's environment holds and nothing else may see.
@@ -248,14 +250,17 @@ fn drive(ready: Ready) -> Nil {
           hosts.seam(hosts_name, margin_ms: 30_000),
           extension: "fetcher",
           event: "session_start",
-          args: msgpack.MapValue([]),
+          args: msgpack.StringValue("{}"),
           at: dispatch.coordinates(live_ctx(
             installed_at.workspace,
             installed_at.base_policy,
           )),
           within: 20_000,
         )
-      assert greeted == Ok(msgpack.StringValue("fetcher is awake"))
+      // `session_start` has nothing to answer, so `ext/hook` renders the
+      // empty document; what is proved is that a `hook_call` of kind
+      // `event` reached the handler the manifest's `[[hook]]` named.
+      assert greeted == Ok(msgpack.StringValue("{}"))
 
       // A host the manifest does not name is refused in band, as a
       // `NetDenied` the extension read and turned into a sentence.
@@ -285,15 +290,116 @@ fn drive(ready: Ready) -> Nil {
         carries(bytes, secret_value)
       })
 
+      // The reverse direction carrying what it was built for: a
+      // `tool_call` verdict and a `context` transform, over a real jailed
+      // satellite of their own.
+      hooks_fire(installed_at)
+
       // The last claim, and the one only a real node can make: an
       // extension that does not answer inside its own deadline loses its
       // satellite, and says so on the call after.
-      oversleeps(ready, installed_at, hosts_name)
+      oversleeps(installed_at, hosts_name)
 
       origin.stop(server)
       stop(installed_at)
     }
   }
+}
+
+// The hook bus over a real satellite: install the `gatekeeper` fixture,
+// give the bus this session's registry as its invoker, and drive the two
+// planes the ruling gives a hook the most authority over.
+//
+// `hooks.gate` is what `client/extension/hooks.wire` calls from the
+// clearance door, and its `Block` is what the driver turns into the
+// `ClearanceRefused` the model reads; the attribution asserted here is
+// the field that refusal carries. `hooks.fold_context` is the other
+// plane, run on the caller's own process, and the transform asserted here
+// is the one a provider request would be built from. Wave B's own tests
+// pin the two wirings from those functions onward; what only a real node
+// can prove — and what is proved here — is that a verdict and a message
+// list crossed the capability channel and came back.
+fn hooks_fire(installed_at: Installed) -> Nil {
+  case install_beside(installed_at, extensions.gatekeeper(), "gatekeeper-src") {
+    Error(reason) -> io.println("SKIP the gatekeeper extension: " <> reason)
+    Ok(#(written, decoded, artifact)) -> {
+      let hosts_name = process.new_name(prefix: "loom_e2e_gate")
+      let seam = hosts.seam(hosts_name, margin_ms: 30_000)
+      let config =
+        dispatch.Config(
+          host: installed_at.host,
+          hosts: seam,
+          secrets: fn(_name) { Error(Nil) },
+          trust: egress.SystemRoots,
+          launch: dispatch.jailed_node,
+        )
+      let assert Ok(_started) =
+        hosts.start(hosts_name, [
+          dispatch.hosting(config, written, decoded, artifact:),
+        ])
+        as "the gatekeeper's registry must start"
+
+      let at =
+        dispatch.coordinates(live_ctx(
+          installed_at.workspace,
+          installed_at.base_policy,
+        ))
+      let assert Ok(bus) =
+        hooks.start(
+          [
+            hooks.Extension(
+              name: written.name,
+              events: list.map(decoded.hooks, fn(hook) { hook.event }),
+              invoke: hosts.invoker(seam, at:),
+            ),
+          ],
+          log.discard(),
+        )
+        as "the hook bus must start"
+
+      let #(operation, _generator) =
+        ids.mint_op(ids.generator(wall_clock(), seed: 20_260_903))
+
+      // A call the extension refuses, refused with the extension named:
+      // a block nobody is attributed for is one nobody can act on.
+      let assert hooks.Block(extension:, reason:) =
+        hooks.gate(
+          bus,
+          operation,
+          extensions.gatekeeper_blocks,
+          json.Object([]),
+          0,
+        )
+        as "the gatekeeper must block the tool it names"
+      assert extension == "gatekeeper"
+      assert string.contains(reason, extensions.gatekeeper_blocks)
+
+      // And a call it does not: a hook that blocked everything would
+      // satisfy the assertion above and be useless.
+      assert hooks.gate(bus, operation, "harmless", json.Object([]), 0)
+        == hooks.Allow
+
+      // The other plane. The transform ran inside the jail, over the
+      // durable message format, and its answer is what a request would
+      // be built from.
+      let messages = [a_user_message("first"), a_user_message("second")]
+      let folded = hooks.fold_context(bus, operation, messages)
+      assert list.length(folded) == 3
+      assert list.last(folded) == list.last(messages)
+
+      io.println(
+        "extension host e2e: a jailed tool_call hook blocked a call and a "
+        <> "jailed context hook appended a message",
+      )
+    }
+  }
+}
+
+fn a_user_message(text: String) -> message.AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+  )
 }
 
 // A second extension, installed for real beside the first, whose one tool
@@ -305,11 +411,10 @@ fn drive(ready: Ready) -> Nil {
 // because a deadline that ended the call without ending the node would
 // leave a satellite the harness had stopped trusting still running.
 fn oversleeps(
-  ready: Ready,
   installed_at: Installed,
   hosts_name: process.Name(hosts.Message),
 ) -> Nil {
-  case install_sleeper(ready, installed_at) {
+  case install_beside(installed_at, extensions.sleeper(), "sleeper-src") {
     Error(reason) -> io.println("SKIP the oversleeping extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
       let config =
@@ -377,16 +482,13 @@ fn tool_args(args: String) -> msgpack.MsgPackValue {
   ])
 }
 
-fn install_sleeper(
-  ready: Ready,
+fn install_beside(
   installed_at: Installed,
+  files: List(#(String, String)),
+  directory: String,
 ) -> Result(#(record.Record, extension_manifest.Manifest, String), String) {
-  let _unused = ready
   let tree =
-    extensions.materialise(
-      extensions.sleeper(),
-      installed_at.live_root <> "/sleeper-src",
-    )
+    extensions.materialise(files, installed_at.live_root <> "/" <> directory)
   case
     install.run(
       install.Config(
@@ -404,12 +506,11 @@ fn install_sleeper(
       rev: None,
     )
   {
-    Error(failure) ->
-      Error("the sleeper did not install: " <> install.describe(failure))
+    Error(failure) -> Error("it did not install: " <> install.describe(failure))
     Ok(done) ->
       case installed.one(installed_at.root, done.record.name) {
         installed.Refused(name: _, reason:) ->
-          Error("the sleeper install did not discover: " <> reason)
+          Error("the install did not discover: " <> reason)
         installed.Ready(record: written, manifest: decoded, artifact:) ->
           Ok(#(written, decoded, artifact))
       }

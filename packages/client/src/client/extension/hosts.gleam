@@ -55,6 +55,7 @@
 import broker/exec.{type EnforcementDemand}
 import broker/framing
 import broker/policy.{type SandboxPolicy}
+import client/extension/hooks
 import codemode/enforcement
 import codemode/satellite
 import core/ids.{type OpId}
@@ -64,6 +65,7 @@ import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
+import gleam/result
 import runtime/internal/ffi_sup
 
 /// How long the actor is given to stop every host it holds.
@@ -190,10 +192,11 @@ type Held {
   /// first to need it.
   Live(host: satellite.Host)
 
-  /// The satellite is gone for the rest of the session, with the reason.
-  /// Recorded rather than forgotten so the reason is told once and every
-  /// later call reads the same thing.
-  Departed(reason: String)
+  /// The satellite is gone, with the reason and what the kernel enforced
+  /// on the node before it went. Recorded rather than forgotten so the
+  /// reason is told the same way every time, and so the node's report
+  /// survives to be handed out at session end like a live host's.
+  Departed(reason: String, report: enforcement.Report)
 }
 
 type State {
@@ -235,11 +238,21 @@ pub fn supervised(
   supervision.worker(fn() { start(name, extensions) })
 }
 
-/// Stops every host the registry holds, reaping their nodes.
+/// Stops every host the registry holds, reaping their nodes and handing
+/// back what the kernel enforced on each.
 ///
-/// Called on the session's way out. A registry that is not running, or
-/// does not answer, leaves the nodes to the launcher's own janitor, which
-/// is the layer that exists for exactly that case.
+/// The deliberate teardown, for a host that wants the reports. It is
+/// **not** what `client/serve`'s shutdown does: the service supervisor
+/// stops this actor, the satellite host machines die with it by link,
+/// and the launcher's janitor reaps each node — so the nodes go either
+/// way and only their enforcement reports are lost on that path. Wiring
+/// this into the shutdown would buy those reports, and it is left undone
+/// rather than half-done, because a shutdown that first waited out an
+/// invocation in flight is a different decision from the one the grace
+/// currently makes.
+///
+/// A registry that is not running, or does not answer, leaves the nodes
+/// to that same janitor.
 pub fn stop(name: Name(Message), timeout_ms timeout_ms: Int) -> Nil {
   case process.named(name) {
     Error(Nil) -> Nil
@@ -302,7 +315,69 @@ pub fn invoke(
   hosts.invoke(extension, invocation, args, at, deadline_ms)
 }
 
-/// Fires one hook event at one extension. The function the hook bus calls.
+/// The bus's `Invoker` over this registry: extension, event, arguments,
+/// deadline in — the extension's answer or a `hooks.HookFailure` out.
+///
+/// The bus's type carries no coordinates, which is right: a hook fires on
+/// the harness's own timeline rather than inside a model-made tool call,
+/// so there is no run whose `{op_id, step_id}` it could borrow. `at` is
+/// therefore the session's, closed over here — one operation for every
+/// hook this session fires, which is the operation a hook's capability
+/// token is bound to and the ledger its effects clear against.
+///
+/// # The contract this satisfies, by construction
+///
+/// `hooks.Invoker` requires two things of every implementation, because
+/// the bus's manager is linked to the host and the `context` and
+/// `tool_result` folds call it directly on the strand driver with nothing
+/// between.
+///
+/// **It returns inside `deadline_ms`.** The satellite host arms the
+/// invocation's deadline as the state timeout of the `Answering` state it
+/// belongs to, so a satellite that does not answer is cut off by weft
+/// rather than waited on; `ask` here adds its own bounded wait over that,
+/// against a registry that is wedged rather than merely slow. And a
+/// satellite destroyed by a deadline is `Departed` for the session, so
+/// every later call on it answers `Gone` from memory without a round trip
+/// at all.
+///
+/// **It never raises.** Every step is a `Result`: `ask` degrades an
+/// absent, dead or silent registry to `Gone` rather than exiting its
+/// caller — `process.call` would exit, which is exactly the failure mode
+/// the strand driver must not meet — and `settle` maps every
+/// `satellite.InvokeError` and every in-band code onto one of the bus's
+/// five variants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.Extension(name:, events:, invoke: hosts.invoker(hosts, at: at))
+/// ```
+///
+pub fn invoker(hosts: Hosts, at at: Coordinates) -> hooks.Invoker {
+  fn(extension, event, args, deadline_ms) {
+    invoke_event(hosts, extension:, event:, args:, at:, within: deadline_ms)
+    |> result.map_error(bus_failure)
+  }
+}
+
+// This registry's vocabulary in the bus's five variants.
+//
+// The bus's `Gone` carries no reason and this one does, which is the
+// right way round: a model reading a tool reply needs to know *why* an
+// extension is unavailable, and the bus logs its own reason from
+// `hooks.describe` beside the extension's name.
+fn bus_failure(failure: HookFailure) -> hooks.HookFailure {
+  case failure {
+    Unhandled -> hooks.Unhandled
+    Refused(message:) -> hooks.Refused(reason: message)
+    Crashed(reason:) -> hooks.Crashed(reason:)
+    Deadline -> hooks.Deadline
+    Gone(..) -> hooks.Gone
+  }
+}
+
+/// Fires one hook event at one extension. The function `invoker` wraps.
 ///
 /// `Unhandled` is the ordinary answer for an extension that registers no
 /// handler for this event, and is not a failure to report: the bus asks
@@ -386,7 +461,7 @@ fn serve_invoke(
           deadline_ms,
         )
       process.send(reply, settle(answer))
-      actor.continue(depart_if_lost(state, extension, answer))
+      actor.continue(depart_if_lost(state, extension, host, answer))
     }
   }
 }
@@ -406,7 +481,7 @@ fn ready(
         Gone("no extension named " <> extension <> " is installed here"),
       ))
     Ok(entry), Ok(Live(host:)) -> Ok(#(state, entry, host))
-    Ok(_entry), Ok(Departed(reason:)) -> Error(#(state, Gone(reason)))
+    Ok(_entry), Ok(Departed(reason:, ..)) -> Error(#(state, Gone(reason)))
     Ok(entry), Error(Nil) -> launch(state, entry, at)
   }
 }
@@ -417,7 +492,17 @@ fn launch(
   at: Coordinates,
 ) -> Result(#(State, Extension, satellite.Host), #(State, HookFailure)) {
   case entry.start(at) {
-    Error(reason) -> Error(#(depart(state, entry.name, reason), Gone(reason)))
+    // A launch that failed left no node, so there is no report to keep.
+    Error(reason) ->
+      Error(#(
+        depart(
+          state,
+          entry.name,
+          reason,
+          enforcement.Unreported("no node was launched"),
+        ),
+        Gone(reason),
+      ))
     Ok(host) ->
       Ok(#(
         State(..state, held: dict.insert(state.held, entry.name, Live(host:))),
@@ -433,21 +518,37 @@ fn known(state: State, extension: String) -> Result(Extension, Nil) {
 
 // A host the satellite lost is gone for the session, and the reason is
 // kept so it is told the same way every time rather than re-derived.
+//
+// `satellite.stop` is called on the way out even though the host has
+// already destroyed its own node. It is idempotent — the machine hands
+// back the report it kept from that teardown — and it is what stops the
+// machine process, so a session that lost three extensions does not
+// carry three `Destroyed` machines to the end of it. The report it
+// returns is the node's own account of what confined it, and it goes in
+// the ledger rather than into the garbage.
 fn depart_if_lost(
   state: State,
   extension: String,
+  host: satellite.Host,
   answer: Result(framing.CapOutcome, satellite.InvokeError),
 ) -> State {
   case answer {
     Error(satellite.InvocationDeadline) ->
-      depart(
+      reaped(
         state,
         extension,
-        "an invocation passed its deadline, so the satellite was destroyed",
+        host,
+        "an invocation passed its deadline, so the satellite was destroyed; "
+          <> "this extension is unavailable for the rest of this session",
       )
-    Error(satellite.HostGone(reason:)) -> depart(state, extension, reason)
+    Error(satellite.HostGone(reason:)) -> reaped(state, extension, host, reason)
     Error(satellite.HostFaulted(reason:)) ->
-      depart(state, extension, "the capability channel faulted: " <> reason)
+      reaped(
+        state,
+        extension,
+        host,
+        "the capability channel faulted: " <> reason,
+      )
 
     // `Busy` cannot reach here — this actor is the queue — and an answered
     // invocation leaves the host exactly as it found it.
@@ -455,8 +556,25 @@ fn depart_if_lost(
   }
 }
 
-fn depart(state: State, extension: String, reason: String) -> State {
-  State(..state, held: dict.insert(state.held, extension, Departed(reason:)))
+fn reaped(
+  state: State,
+  extension: String,
+  host: satellite.Host,
+  reason: String,
+) -> State {
+  depart(state, extension, reason, satellite.stop(host))
+}
+
+fn depart(
+  state: State,
+  extension: String,
+  reason: String,
+  report: enforcement.Report,
+) -> State {
+  State(
+    ..state,
+    held: dict.insert(state.held, extension, Departed(reason:, report:)),
+  )
 }
 
 // What the satellite answered, in the vocabulary a hook bus reads.
@@ -485,12 +603,17 @@ fn settle(
   }
 }
 
+// Every node this session stood up, and what the kernel enforced on it:
+// the live ones stopped here, the departed ones from the report kept when
+// they went. A departed extension is in the ledger too, because "we ran a
+// node for it and here is its jail" is the same fact whether the node
+// outlived the session or not.
 fn reap(state: State) -> List(#(String, enforcement.Report)) {
   dict.to_list(state.held)
-  |> list.filter_map(fn(entry) {
+  |> list.map(fn(entry) {
     case entry.1 {
-      Live(host:) -> Ok(#(entry.0, satellite.stop(host)))
-      Departed(..) -> Error(Nil)
+      Live(host:) -> #(entry.0, satellite.stop(host))
+      Departed(report:, ..) -> #(entry.0, report)
     }
   })
 }
@@ -519,8 +642,15 @@ fn ask(
         Ok(Answered(answer:)) -> answer
         Ok(RegistryDied(..)) ->
           Error(Gone("the extension host registry died mid-invocation"))
+        // Not a departed satellite: the registry serialises, so this is
+        // most likely a caller queued behind an invocation that is still
+        // running. The reason says so rather than telling the model an
+        // extension is out for the session when it is not.
         Error(Nil) ->
-          Error(Gone("the extension host registry did not answer in time"))
+          Error(Gone(
+            "the extension host registry did not answer in time; another "
+            <> "invocation is still holding it",
+          ))
       }
       process.demonitor_process(monitor)
       answer

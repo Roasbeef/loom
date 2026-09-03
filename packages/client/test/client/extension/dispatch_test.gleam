@@ -435,19 +435,26 @@ pub fn an_unhandled_event_reads_as_such_test() {
 
 /// A departed host says it will stay departed, so a model that reads it
 /// stops trying rather than burning the run on retries.
-pub fn a_departed_host_says_it_is_gone_for_the_session_test() {
+/// `Gone` carries its own reason rather than a fixed sentence, and the
+/// reply repeats it. Whether the extension is out for good is a fact
+/// about *why* it could not be reached — a destroyed satellite is, a
+/// registry that did not answer in time is not — and a model told
+/// "unavailable for the rest of this session" about a busy moment would
+/// stop trying for no reason.
+pub fn a_gone_host_repeats_the_reason_it_was_given_test() {
   let outcome =
     dispatch.settle(
       a_ctx(),
       a_record(),
       a_tool(),
-      Error(hosts.Gone(reason: "the node was destroyed")),
+      Error(hosts.Gone(reason: "another invocation is still holding it")),
     )
   assert outcome.is_error == True
   let assert [message.ToolResultText(text:, text_signature: _)] =
     outcome.content
     as "one text block carries the failure"
-  assert string.contains(text, "rest of this session")
+  assert string.contains(text, "another invocation is still holding it")
+  assert !string.contains(text, "rest of this session")
 }
 
 pub fn an_invocation_that_outran_its_deadline_says_so_test() {
@@ -654,6 +661,7 @@ fn a_record() -> record.Record {
       secret_env: [],
     ),
     tools: ["hello"],
+    hooks: [],
     approved_at: "1970-01-01T00:00:00Z",
     approved_by: "nobody",
     artifact: "/nowhere/artifact",

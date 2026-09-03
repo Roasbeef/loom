@@ -176,6 +176,7 @@ import client/codemode as codemode_wiring
 import client/contributions
 import client/escalate
 import client/extension/dispatch as extension_dispatch
+import client/extension/hooks as extension_hooks
 import client/extension/hosts as extension_hosts
 import client/extension/installed
 import client/extension/manifest as extension_manifest
@@ -199,6 +200,7 @@ import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock.{type Clock}
+import core/ids
 import gleam/bool
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/int
@@ -1352,42 +1354,39 @@ fn code_mode_seam(
 // `Contribution` per extension, and a name two contributions both claim
 // refuses the boot in `contributions.registry`.
 
-// What the installed extensions contribute to a boot: the tools the
-// registry carries, and the recipes the session's satellite registry
-// launches nodes from.
-//
-// One value rather than two passes, because the two halves are derived
-// from one discovery and one configuration; deriving them separately is
-// how a host and a tool come to describe different extensions.
-type Extensions {
-  Extensions(
-    contributions: List(contributions.Contribution),
-    hosting: List(extension_hosts.Extension),
+// One installed extension, registered: the tools it contributes to the
+// registry, its subscription on the hook bus, and the recipe the
+// session's satellite registry launches its node from. All three travel
+// together because discovery is the expensive half — it re-derives four
+// content addresses per extension — and doing it three times would let
+// the tool side, the hook side and the host disagree about what is
+// installed.
+type Registration {
+  Registration(
+    contribution: contributions.Contribution,
+    subscription: Option(extension_hooks.Extension),
+    hosting: extension_hosts.Extension,
   )
 }
 
-fn extension_contributions(
+fn extension_registrations(
   settings: Settings,
   logger: Logger,
   hosts: extension_hosts.Hosts,
+  hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
-) -> Extensions {
+) -> List(Registration) {
   case settings.home {
     // No home is no extensions root, which is the same fact to a booting
     // server as an empty one: there is nothing installed and nothing to
     // warn about.
-    None -> Extensions(contributions: [], hosting: [])
+    None -> []
 
     Some(home) -> {
       let root = extension_record.root_for(home)
-      let registered =
-        list.filter_map(installed.discover(root), fn(found) {
-          extension_contribution(root, found, logger, hosts, host)
-        })
-      Extensions(
-        contributions: list.map(registered, fn(pair) { pair.0 }),
-        hosting: list.map(registered, fn(pair) { pair.1 }),
-      )
+      list.filter_map(installed.discover(root), fn(found) {
+        extension_contribution(root, found, logger, hosts, hooking, host)
+      })
     }
   }
 }
@@ -1397,8 +1396,9 @@ fn extension_contribution(
   found: installed.Discovered,
   logger: Logger,
   hosts: extension_hosts.Hosts,
+  hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
-) -> Result(#(contributions.Contribution, extension_hosts.Extension), Nil) {
+) -> Result(Registration, Nil) {
   case found {
     installed.Refused(name:, reason:) -> {
       log.warn(logger, "extension.refused", [
@@ -1416,6 +1416,7 @@ fn extension_contribution(
         artifact,
         logger,
         hosts,
+        hooking,
         host,
       )
   }
@@ -1428,8 +1429,9 @@ fn extension_registered(
   artifact: String,
   logger: Logger,
   hosts: extension_hosts.Hosts,
+  hooking: extension_hooks.Invoker,
   host: Option(codemode_wiring.Config),
-) -> Result(#(contributions.Contribution, extension_hosts.Extension), Nil) {
+) -> Result(Registration, Nil) {
   case host {
     None -> {
       log.warn(logger, "extension.unavailable", [
@@ -1490,12 +1492,13 @@ fn extension_registered(
               value: extension_dispatch.summary(written, decoded),
             ),
           ])
-          Ok(#(
-            contributions.Contribution(
+          Ok(Registration(
+            contribution: contributions.Contribution(
               origin: contributions.Extension(name: written.name),
               tools:,
             ),
-            extension_dispatch.hosting(
+            subscription: extension_subscription(written, logger, hooking),
+            hosting: extension_dispatch.hosting(
               dispatch_config,
               written,
               decoded,
@@ -1506,6 +1509,110 @@ fn extension_registered(
       }
     }
   }
+}
+
+// The bus subscription an extension's `[[hook]]` declarations become,
+// or nothing when it declares none. Two events are deliberately not
+// subscriptions: `context` and `tool_result` are chained transforms
+// folded over the same list rather than fanned out, and they are carried
+// on the same `Extension` value, so the declared list here is the whole
+// of what the extension asked for and the bus decides which plane each
+// name belongs to.
+//
+// The list comes from the **record** rather than from the manifest
+// beside it. Both say the same thing on a tree that has not been
+// tampered with — discovery re-derives the digest over the whole tree,
+// `extension.toml` included, and refuses the extension when it moved —
+// but the record is the operator's approval, and authority over the
+// harness's own timeline should be read from the yes rather than from
+// the file the yes was about.
+fn extension_subscription(
+  written: extension_record.Record,
+  logger: Logger,
+  hooking: extension_hooks.Invoker,
+) -> Option(extension_hooks.Extension) {
+  case list.map(written.hooks, fn(hook) { hook.0 }) {
+    [] -> None
+    events -> {
+      inert_hooks(written.name, events, logger)
+
+      // Every subscription shares one invoker, and it is the session's
+      // satellite registry: `hosts.invoker` closes over the registry's
+      // name and the coordinates a hook's effects clear under, and takes
+      // the extension's name per call. So the bus asks the same door a
+      // tool call asks, and an extension whose satellite is gone answers
+      // `Gone` here for the same reason it does there.
+      Some(extension_hooks.Extension(
+        name: written.name,
+        events:,
+        invoke: hooking,
+      ))
+    }
+  }
+}
+
+// A declared event with no producer in the harness. `agent_settled` is
+// the only one: nothing signals "the run and every follow-up it queued
+// are done", so an extension subscribing to it would wait forever
+// without being told. Said once, at boot, where an operator reads it.
+fn inert_hooks(name: String, events: List(String), logger: Logger) -> Nil {
+  case list.contains(events, extension_manifest.agent_settled_event) {
+    False -> Nil
+    True ->
+      log.warn(logger, "extension.hook.inert", [
+        field.ident(key: "name", value: name),
+        field.ident(key: "event", value: extension_manifest.agent_settled_event),
+        field.text(
+          key: "reason",
+          value: "the harness has no signal for a run and every follow-up it "
+            <> "queued being done, so this hook never fires",
+        ),
+      ])
+  }
+}
+
+// The hook bus, started over every subscribed extension and composed
+// into the session's effects. A bus that will not start is logged and
+// skipped: extensions are an addition to a session, never a
+// precondition for one, so a boot that cannot fan hooks out still
+// serves.
+fn with_extension_hooks(
+  built: effects.Effects,
+  registrations: List(Registration),
+  session: session.Session,
+  clock: Clock,
+  logger: Logger,
+) -> effects.Effects {
+  case list.filter_map(registrations, subscription_of) {
+    [] -> built
+    subscribed ->
+      case extension_hooks.start(subscribed, logger) {
+        Error(_reason) -> {
+          log.warn(logger, "extension.hooks.unavailable", [
+            field.text(
+              key: "reason",
+              value: "the hook bus would not start; extension hooks are off "
+                <> "for this session",
+            ),
+          ])
+          built
+        }
+
+        Ok(bus) -> {
+          // The first event, sent once the bus exists and before the
+          // runtime opens: `session_start` means "the session server
+          // booted the extension", and that is now.
+          extension_hooks.session_start(bus)
+          extension_hooks.wire(built, bus, session, clock)
+        }
+      }
+  }
+}
+
+fn subscription_of(
+  registration: Registration,
+) -> Result(extension_hooks.Extension, Nil) {
+  option.to_result(registration.subscription, Nil)
 }
 
 /// Whether the seams this server offers can reach an MCP server at all.
@@ -1824,12 +1931,23 @@ fn assemble(
   // scratch store: the seam closes over the name now, and the actor that
   // answers it starts under the service supervisor below, because the
   // registry has to exist before the tools that reach it are built.
+  //
+  // Discovery then happens once and answers three questions: which tools
+  // each installed extension contributes, which hook events it
+  // subscribed to, and how its node is launched. The hook half is used
+  // further down, after the effects record exists to compose it into.
   let hosts_name = process.new_name(prefix: "loom_ext_hosts")
+  let hosts_seam =
+    extension_hosts.seam(hosts_name, margin_ms: extension_host_margin_ms)
   let extensions =
-    extension_contributions(
+    extension_registrations(
       settings,
       logger,
-      extension_hosts.seam(hosts_name, margin_ms: extension_host_margin_ms),
+      hosts_seam,
+      extension_hosts.invoker(
+        hosts_seam,
+        at: hook_coordinates(settings, entropy(), clock),
+      ),
       code_mode_host,
     )
 
@@ -1847,7 +1965,7 @@ fn assemble(
       // not what makes an extension unable to shadow `bash` — but the
       // collision message names the *second* claimant as the thing to
       // remove, and the newcomer is the extension.
-      extensions.contributions,
+      list.map(extensions, fn(registration) { registration.contribution }),
     )
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
@@ -1938,7 +2056,7 @@ fn assemble(
       base_policy:,
       escalations: escalate.seam(escalate_config),
       demand: settings.demand,
-      env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
+      env: session_environment(),
       clock:,
       entropy:,
     ))
@@ -1961,6 +2079,14 @@ fn assemble(
         // check. Absent file, nothing injected, no tokens spent.
         |> memory.digest_hooks(memory.read_digest(memory_digest), clock),
     )
+
+  // The extension hook bus goes on last, over the composed record, so an
+  // extension's `before_agent_start` injection lands after the harness's
+  // own digests and its `context` fold is the final thing to touch a
+  // request's messages. Wrapping rather than replacing is what lets the
+  // two layers coexist at all.
+  let effects_record =
+    with_extension_hooks(effects_record, extensions, opened, clock, logger)
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open(
@@ -2048,7 +2174,10 @@ fn assemble(
     // written to meet: every host it held is `Gone` to its next caller,
     // the tools stay registered, and each lost node is reaped by the
     // launcher's own janitor when the registry that owned it dies.
-    |> sup.add(extension_hosts.supervised(hosts_name, extensions.hosting))
+    |> sup.add(extension_hosts.supervised(
+      hosts_name,
+      list.map(extensions, fn(registration) { registration.hosting }),
+    ))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     |> sup.add(
@@ -2289,6 +2418,51 @@ fn policy_label(policy: schedule.Policy) -> String {
     schedule.ModelSchedulesSteer -> "steer"
     schedule.ModelSchedulesWake -> "wake"
   }
+}
+
+// The coordinates every hook invocation in this session runs under.
+//
+// The bus's `Invoker` carries none, which is right: a hook fires on the
+// harness's own timeline rather than inside a model-made tool call, so
+// there is no run whose `{op_id, step_id}` it could borrow. One operation
+// is minted here for the session's hooks instead, and it is what a hook's
+// capability token is bound to and what its effects clear against — so a
+// hook's reads are attributable to "the extension hooks", never to
+// whichever run happened to be in flight.
+fn hook_coordinates(
+  settings: Settings,
+  seed: Int,
+  clock: Clock,
+) -> extension_hosts.Coordinates {
+  let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+  extension_hosts.Coordinates(
+    op_id:,
+    step_id: hook_step_id,
+    // Attribution only: `hosts.Coordinates.strand` names the workspace
+    // seam's reads, and a hook's are the session's rather than any one
+    // strand's. The session's root strand is the honest name for that.
+    strand: root_strand,
+    workspace: settings.workspace,
+    base_policy: settings.base_policy,
+    demand: settings.demand,
+    env: session_environment(),
+  )
+}
+
+/// The strand a hook's harness-side reads are attributed to.
+const root_strand = "main"
+
+/// The step every hook invocation clears under. One name, because the
+/// hooks of a session are one long-running step rather than a sequence of
+/// them, and the pooled budget follows the pair.
+const hook_step_id = "extension-hooks"
+
+/// The environment a satellite's children inherit.
+///
+/// Allowlist-constructed and shared by the tool path and the hook path,
+/// so a host launched by whichever came first is the same host.
+fn session_environment() -> List(#(String, String)) {
+  [#("PATH", "/usr/local/bin:/usr/bin:/bin")]
 }
 
 /// Slack over an invocation's own deadline before a caller gives up on the

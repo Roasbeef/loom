@@ -70,10 +70,12 @@
 //// harness hands over exactly the bytes the model's tool call carried,
 //// with no re-encoding step in between to disagree about.
 ////
-//// An event invocation's arguments are that event's own row and are
-//// handed to its handler unread. Wave B of the extension work fixes the
-//// per-event shapes; this module is deliberately generic over them, so
-//// fixing them costs no change here.
+//// An event invocation's arguments are **JSON text too**, in the row
+//// `client/extension/hooks` pins for that event, and its answer is JSON
+//// text in the same table's return column. `ext/hook` owns both
+//// marshallings — `hook.answer` takes the document and renders the
+//// reply — so this module carries the text between the channel and that
+//// one place and reads neither end.
 
 import cap/report.{type Value}
 import cap/runtime
@@ -81,6 +83,7 @@ import ext.{
   type Content, type Ctx, type Outcome, type Refusal, type Terminate, type Tool,
   ContinueRun, Ctx, Json, Refusal, TerminateRun, Text,
 }
+import ext/hook.{type Hook}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/json
@@ -102,21 +105,29 @@ pub const unknown_tool_code = "unknown_tool"
 /// The code an event with no handler travels under.
 pub const unhandled_code = "unhandled"
 
+/// The code a `[[hook]]` whose entry answers a different event travels
+/// under.
+///
+/// Its own code because it is neither a refusal nor a crash but an
+/// install that does not hold together: the manifest declared one event
+/// and the module implements another, and only the pair can see it.
+pub const mismatched_hook_code = "mismatched_hook"
+
 /// The code arguments that did not parse travel under.
 pub const bad_arguments_code = "bad_arguments"
 
-/// One hook event handler: the event's own payload in, that event's own
-/// return value out, or an in-band message.
+/// One `[[hook]]` entry as the generated entry module passes it: the
+/// event name the manifest declared, paired with the typed behaviour the
+/// extension's module returns.
 ///
-/// Deliberately untyped in the payload. Wave B of the extension work
-/// fixes what each of the seven events carries, in one place at each end;
-/// until then this module carries whatever the harness sends without
-/// claiming to know its shape, so fixing the shapes costs no change here.
-/// `Value` is `cap/report`'s, so a handler builds its answer with
-/// `report.object`, `report.string` and friends — the same vocabulary a
-/// tool builds a JSON block with.
-pub type Handler =
-  fn(Value) -> Result(Value, String)
+/// The name travels beside the hook rather than being read off it,
+/// because the two come from different places — the manifest an operator
+/// approved, and the module the build compiled — and a pair that
+/// disagrees is an install that does not hold together. `answer` checks
+/// them against each other and refuses `mismatched_hook` rather than
+/// serving whichever one it happened to read.
+pub type Declared =
+  #(String, Hook)
 
 /// Serves this artifact's tools for the life of the satellite. The
 /// generated entry module's one call.
@@ -135,17 +146,17 @@ pub type Handler =
 /// ```
 ///
 pub fn serve(tools: List(#(String, Tool))) -> Nil {
-  serving(tools:, events: [])
+  serving(tools:, hooks: [])
 }
 
-/// Serves tools and hook events both.
+/// Serves tools and hooks both.
 ///
-/// The shape a generated entry takes once an extension declares an
-/// `[[event]]`; `serve` is this with an empty event table, which is what
-/// an extension that declares none gets. Two functions rather than one
-/// with an optional argument because the generated entry writes whichever
-/// call the manifest asked for, and the common one should read as the
-/// common one.
+/// The shape a generated entry takes once an extension declares a
+/// `[[hook]]`; `serve` is this with an empty hook table, which is what an
+/// extension that declares none gets. Two functions rather than one with
+/// an optional argument because the generated entry writes whichever call
+/// the manifest asked for, and the common one should read as the common
+/// one.
 ///
 /// ## Examples
 ///
@@ -153,16 +164,16 @@ pub fn serve(tools: List(#(String, Tool))) -> Nil {
 /// pub fn main() -> Nil {
 ///   runtime.serving(
 ///     tools: [#("weather", forecast.run)],
-///     events: [#("session_start", forecast.greet)],
+///     hooks: [#("tool_call", forecast.on_event())],
 ///   )
 /// }
 /// ```
 ///
 pub fn serving(
   tools tools: List(#(String, Tool)),
-  events events: List(#(String, Handler)),
+  hooks hooks: List(Declared),
 ) -> Nil {
-  runtime.serve(fn(asked) { answer(tools, events, asked) })
+  runtime.serve(fn(asked) { answer(tools, hooks, asked) })
 }
 
 /// Answers one invocation against the served tables.
@@ -181,12 +192,12 @@ pub fn serving(
 ///
 pub fn answer(
   tools: List(#(String, Tool)),
-  events: List(#(String, Handler)),
+  hooks: List(Declared),
   asked: runtime.Asked,
 ) -> runtime.Answer {
   case asked.invocation {
     runtime.Tool(name:) -> tool_answer(tools, name, asked)
-    runtime.Event(name:) -> event_answer(events, name, asked.args)
+    runtime.Event(name:) -> event_answer(hooks, name, asked.args)
   }
 }
 
@@ -313,21 +324,52 @@ fn unknown_tool(tools: List(#(String, Tool)), name: String) -> runtime.Answer {
 // because the harness offers every installed extension every moment and
 // most extensions care about none of them; the bus reads the code and
 // moves on.
+//
+// The payload crosses as JSON text and the answer goes back as JSON
+// text, which is `client/extension/hooks`'s wire and `ext/hook`'s
+// marshalling: the extension seam admits `gleam/json` and no msgpack
+// decoder, so text is the only shape both ends can read.
 fn event_answer(
-  events: List(#(String, Handler)),
+  hooks: List(Declared),
   name: String,
   args: Value,
 ) -> runtime.Answer {
-  case list.key_find(events, name) {
+  case list.key_find(hooks, name) {
     Error(Nil) ->
       runtime.Refused(
         code: unhandled_code,
         message: "this extension registers no handler for the event " <> name,
       )
-    Ok(handler) ->
-      case handler(args) {
-        Ok(value) -> runtime.Answered(value:)
-        Error(message) -> runtime.Refused(code: refused_code, message:)
+    Ok(declared) -> fire(declared, name, args)
+  }
+}
+
+fn fire(declared: Hook, name: String, args: Value) -> runtime.Answer {
+  case hook.event(declared) == name {
+    False ->
+      runtime.Refused(
+        code: mismatched_hook_code,
+        message: "this extension's manifest declares a `"
+          <> name
+          <> "` hook, but the module it named answers `"
+          <> hook.event(declared)
+          <> "`",
+      )
+    True -> fired(declared, name, args)
+  }
+}
+
+fn fired(declared: Hook, name: String, args: Value) -> runtime.Answer {
+  case as_text(args) {
+    Error(reason) -> runtime.Refused(code: bad_arguments_code, message: reason)
+    Ok(document) ->
+      case hook.answer(declared, document) {
+        Ok(rendered) -> runtime.Answered(value: report.string(rendered))
+        Error(reason) ->
+          runtime.Refused(
+            code: refused_code,
+            message: "the `" <> name <> "` hook could not answer: " <> reason,
+          )
       }
   }
 }
@@ -342,6 +384,14 @@ fn parse_args(text: String) -> Result(Dynamic, String) {
     Ok(value) -> Ok(value)
     Error(_) -> Error("were not JSON")
   }
+}
+
+// The invocation's arguments as the JSON text both ends agreed on. A
+// value that is not text is the harness disagreeing with this module
+// about the wire, which is a message rather than a crash.
+fn as_text(args: Value) -> Result(String, String) {
+  report.as_string(args)
+  |> result.replace_error("the hook's arguments were not JSON text")
 }
 
 // One string out of the invocation's envelope, totally. A field that is

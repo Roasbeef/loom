@@ -387,8 +387,8 @@ fn fetcher_schema() -> String {
 // that fires on the third of three has to leave the first two readable.
 fn fetcher_tool() -> String {
   "import cap/net
-import cap/report
 import ext
+import ext/hook
 import gleam/bit_array
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -444,11 +444,120 @@ fn text(bytes: BitArray) -> String {
   }
 }
 
-/// The one hook this fixture registers. It answers a value the harness can
-/// recognise without knowing anything about the per-event shapes, which
-/// wave B of the extension work is what fixes.
-pub fn on_event(_payload: report.Value) -> Result(report.Value, String) {
-  Ok(report.string(\"fetcher is awake\"))
+/// The one hook this fixture registers: `session_start`, which has
+/// nothing to answer, so the moment reaching the node at all is the whole
+/// of what it proves.
+pub fn on_event() -> hook.Hook {
+  hook.OnSessionStart(fn() { Nil })
+}
+"
+}
+
+/// The phase 3 integration fixture: an extension whose whole purpose is
+/// its hooks.
+///
+/// It declares one trivial tool (a manifest must), a `tool_call` hook
+/// that blocks exactly one tool name, and a `context` hook that appends a
+/// copy of the last message it was handed. Both are the shapes the ruling
+/// gives a hook the most authority over — a verdict on a call the model
+/// made, and the request's own message list — so proving them end to end
+/// over a real jailed satellite is proving the reverse direction carries
+/// what it was built for.
+///
+/// Two modules rather than one, because a `[[hook]]`'s entry module
+/// exposes `on_event` and a module has one of those.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let files = extensions.gatekeeper()
+/// ```
+///
+pub fn gatekeeper() -> List(#(String, String)) {
+  [
+    #("extension.toml", gatekeeper_manifest()),
+    #("gleam.toml", gatekeeper_project()),
+    #("schema/gatekeeper.json", gatekeeper_schema()),
+    #("src/gatekeeper/tool.gleam", gatekeeper_tool()),
+    #("src/gatekeeper/context.gleam", gatekeeper_context()),
+  ]
+}
+
+/// The one tool name the `gatekeeper` fixture's `tool_call` hook blocks.
+pub const gatekeeper_blocks = "forbidden"
+
+fn gatekeeper_manifest() -> String {
+  "[extension]\nname = \"gatekeeper\"\nversion = \"0.1.0\"\n"
+  <> "description = \"Block one tool and append one message.\"\n"
+  <> "license = \"MIT\"\ntier = \"jailed\"\n\n"
+  <> "[[tool]]\nname = \"gatekeeper\"\n"
+  <> "description = \"Say nothing; this extension is here for its hooks.\"\n"
+  <> "prompt_snippet = \"gatekeeper: hooks only\"\n"
+  <> "parameters = \"schema/gatekeeper.json\"\nentry = \"gatekeeper/tool\"\n"
+  <> "timeout_ms = 30000\n\n"
+  <> "[[hook]]\nevent = \"tool_call\"\nentry = \"gatekeeper/tool\"\n\n"
+  <> "[[hook]]\nevent = \"context\"\nentry = \"gatekeeper/context\"\n"
+}
+
+fn gatekeeper_project() -> String {
+  "name = \"gatekeeper\"\nversion = \"0.1.0\"\ngleam = \">= 1.18.0\"\n\n"
+  <> "[dependencies]\ngleam_stdlib = \">= 1.0.0 and < 2.0.0\"\n"
+  <> "cap = { path = \"../cap\" }\next = { path = \"../ext\" }\n"
+}
+
+fn gatekeeper_schema() -> String {
+  "{\n  \"type\": \"object\",\n  \"properties\": {},\n"
+  <> "  \"required\": []\n}\n"
+}
+
+// The verdict names the tool it refused, so the assertion can tell a
+// block from a crash that happened to answer.
+fn gatekeeper_tool() -> String {
+  "import ext
+import ext/hook
+import gleam/dynamic
+
+pub fn run(
+  _arguments: dynamic.Dynamic,
+  _ctx: ext.Ctx,
+) -> Result(ext.Outcome, ext.Refusal) {
+  Ok(ext.text(\"nothing to say\"))
+}
+
+pub fn on_event() -> hook.Hook {
+  hook.OnToolCall(fn(call: hook.Call) {
+    case call.tool == \"" <> gatekeeper_blocks <> "\" {
+      True -> hook.Block(\"the gatekeeper refuses \" <> call.tool)
+      False -> hook.Allow
+    }
+  })
+}
+"
+}
+
+// Appending a *copy* rather than a message built from scratch: what is
+// under test is that a transform crossed the channel and came back, and
+// re-rendering what was handed in is the shape `hook.rendered` exists
+// for. A message built here would be testing this fixture's grasp of the
+// durable format instead.
+fn gatekeeper_context() -> String {
+  "import ext/hook
+import gleam/json
+import gleam/list
+
+pub fn on_event() -> hook.Hook {
+  hook.OnContext(fn(context: hook.Context) { echoed(kept(context)) })
+}
+
+fn kept(context: hook.Context) -> List(json.Json) {
+  list.filter_map(context.messages, hook.rendered)
+}
+
+fn echoed(messages: List(json.Json)) -> List(json.Json) {
+  case list.last(messages) {
+    Ok(final) -> list.append(messages, [final])
+    Error(Nil) -> messages
+  }
 }
 "
 }

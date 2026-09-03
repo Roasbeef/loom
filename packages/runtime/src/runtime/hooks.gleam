@@ -228,6 +228,28 @@ pub fn with_resolution(
   Registry(hooks: effects.Hooks(..registry.hooks, resolution:))
 }
 
+/// Replaces the `context` slot: the transform applied to a generation
+/// attempt's projected context before the request goes out.
+///
+/// The slot exists for the extension hook bus
+/// (`client/extension/hooks`), which folds every installed extension's
+/// `context` hook over the list in load order. Nothing in the harness
+/// itself installs one, and the default is identity, so a host that
+/// never sets this dispatches the projection it read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.with_context(registry, fn(_op, messages) { messages })
+/// ```
+///
+pub fn with_context(
+  registry: Registry,
+  context: fn(OpId, List(AgentMessage)) -> List(AgentMessage),
+) -> Registry {
+  Registry(hooks: effects.Hooks(..registry.hooks, context:))
+}
+
 /// An admission hook with fixed limits and the resolved adapter api the
 /// request will be made against. The api is captured durably into the
 /// generation intent so deferred-handle validity compares against the

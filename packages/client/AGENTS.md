@@ -834,10 +834,16 @@ The rest of the path is phase 1's own, and each module is one question:
   `root_for(home)` is `<home>/.loom/extensions`; the root is a value
   resolved from `Settings.home` (or `--home`) rather than an environment
   read inside the pipeline. The record stores the *terms* of the
-  approval — the tree digest, the manifest hash, the allowlist and the
-  net policy, with secret names only — because recomputing them at load
-  would mean an operator's yes silently followed the harness's current
-  idea of the seam.
+  approval — the tree digest, the manifest hash, the allowlist, the net
+  policy with secret names only, and (format 2) the `#(event, entry)`
+  hooks — because recomputing them at load would mean an operator's yes
+  silently followed the harness's current idea of the seam. A format-1
+  record is refused rather than read with an empty hook list: it cannot
+  say whether hooks were approved, and the honest answer is to ask.
+  `readable(text)` is the door discovery uses, and it decodes the
+  version *first* — the full decoder would otherwise reach a format-1
+  file before the version check and report a missing `hooks` field when
+  the fact an operator needs is the version skew.
 - `client/extension/install` — the pipeline, as six steps each returning
   a `Failure` naming its layer: `Fetch`, `Extract`, `Manifest`,
   `Vetting`, `Compile`, `Record`. The fetch and the jailed build are
@@ -856,7 +862,7 @@ The rest of the path is phase 1's own, and each module is one question:
   under `docs/` is pruned, and one under `schema/` is refused.
   `entry_source(tools, hooks)` generates the `loom_satellite` module that
   imports each registration's entry module and calls
-  `ext/runtime.serving(tools:, events:)` — a call that runs for the life
+  `ext/runtime.serving(tools:, hooks:)` — a call that runs for the life
   of the satellite rather than serving once. A `[[tool]]`'s entry module
   must expose `pub fn run` (`entry_function`) and a `[[hook]]`'s must
   expose `pub fn on_event` (`hook_function`): two names rather than one
@@ -882,6 +888,39 @@ The rest of the path is phase 1's own, and each module is one question:
   first subcommand surface in the tree. The verb is the first argument
   and the rest is the flat-recursion flag parse `client/serve` uses.
   `build_for` is the install's build seam over a started `BuildPlane`.
+
+Phase 3 added the hook bus, and it hangs off the same satellites the
+tools reach:
+
+- `client/extension/hooks` — one `weft/event_manager` per session, one
+  handler per installed extension that declares a `[[hook]]`, the
+  handler's state its name, the events it declared and its `Invoker`.
+  `Invoker = fn(String, String, MsgPackValue, Int) -> Result(MsgPackValue,
+  HookFailure)` is the seam onto the persistent satellite host, injected
+  so the bus is drivable with functions and so the host lands in one
+  place; `HookFailure` is `Unhandled | Refused(reason) | Crashed(reason)
+  | Deadline | Gone`, of which the last three cost a handler its place
+  and the first two do not. The one implementation a session builds is
+  `hosts.invoker(hosts, at:)`, so a hook event and a tool call reach the
+  same node; `unwired()` — every call `Gone` — is now only what a test
+  drives the bus with. Five events fan out (`session_start`,
+  `before_agent_start`, `tool_call`, `agent_end`, `agent_settled`), the
+  two that need an answer through `sync_notify` plus a drained reply
+  subject — on a weft-bounded worker, never on the caller, because
+  `sync_notify` is a `call` and a `call` that is not answered in time
+  panics its caller, and the callers are strand drivers sharing one
+  manager. An unanswered fan-out is an empty list: no injection, and no
+  block on a call the built-in clearance already cleared. `context` and
+  `tool_result` are chained transforms and so are
+  `fold_context`/`fold_tool_result` over the same ordered list, not bus
+  events. `wire(effects, bus, session, clock)` composes the bus into a
+  built `Effects` by *wrapping* five slots, the pattern
+  `notes.digest_hooks` and `agency.reaping_hooks` set. `injection` is the
+  `<extension name=…>` fence a run-start injection is rendered in — the
+  harness writes it, never the extension, for the reason
+  `system_prompt.render_file` gives about instruction files. The module
+  documentation is the normative table of all seven wire shapes; the
+  extension's side of the same wire is `ext/hook`.
 
 Phase 2 added the dispatch half and phase 3 the session's hosts, as
 four modules — three pure or stateless, plus the one actor that owns
@@ -944,6 +983,20 @@ the nodes:
   two *different* extensions invoked from two strands at the same moment.
   A host the satellite lost is `Departed` for the rest of the session, and
   every later call on that extension is `Gone`.
+  `invoker(hosts, at:)` is `invoke_event` curried into a
+  `hooks.Invoker`, with `bus_failure` restating this module's
+  `HookFailure` in the bus's; it is what makes a hook and a tool call
+  land on the same node. It satisfies the bus's contract by
+  construction rather than by care: the host arms the invocation's
+  deadline as the state timeout of the `Answering` state it belongs to,
+  and every step of `invoke` is a `Result`, so a wedged registry
+  degrades to `Gone` where a `process.call` would have exited the strand
+  driver. `client/serve` builds one such invoker per session, under
+  coordinates it mints an operation for: the bus's `Invoker` carries
+  none, because a hook fires on the harness's own timeline rather than
+  inside a run whose `{op_id, step_id}` it could borrow, so a hook's
+  reads are attributable to the session's hooks and never to whichever
+  run was in flight.
 - `client/extension/dispatch` — `tools(config, record, manifest,
   sources:, artifact:)` turns one `installed.Ready` into `tool.Tool`
   values (`prompt_snippet` from the manifest, schema read from the

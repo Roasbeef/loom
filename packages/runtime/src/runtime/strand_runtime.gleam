@@ -1262,13 +1262,21 @@ fn start_effect(
       ..,
     ) -> {
       use projected <- with_projection(state, loaded.leaf)
+
+      // The last place the request's message list is still ours to
+      // change. The `context` hook is handed the projection rather than
+      // the branch it came from, so a transform reaches exactly this
+      // request and never the store; re-planning after a crash projects
+      // again and transforms again, which is the replay rule the whole
+      // hook surface is held to.
+      let transformed = state.effects.hooks.context(operation, projected)
       let spec =
         effects.GenerationRequest(
           operation:,
           step_id:,
           attempt:,
           configuration: generation_context.configuration,
-          context: projected,
+          context: transformed,
           stream_options:,
         )
       Ok(spawn_provider(

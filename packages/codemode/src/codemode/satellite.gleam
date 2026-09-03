@@ -1890,9 +1890,16 @@ fn budget_text(refusal: budget.Refusal) -> String {
 // executor reaps every process a program spawned before the next execution
 // installs its channel. For a persistent satellite it becomes: **a host
 // reaps its node before the session's next host for that extension
-// starts.** `cap/internal/dispatch.install_exclusive` is what makes a
-// breach loud rather than silent — the second node's boot refuses to claim
-// the VM-global channel slot while the first's channel actor lives.
+// starts.** Two things uphold that, and only one of them is a mechanism.
+// The mechanism is ownership: a host owns its node's `destroy`, the
+// launcher's janitor runs the same teardown when the host machine dies,
+// and a destroyed host is never relaunched inside a session — so no path
+// here starts a second node while the first lives.
+// `cap/internal/dispatch.install_exclusive` would catch a breach and
+// cannot see one from here: each satellite is its own OS process, so the
+// VM-global channel slot it guards is per node and a second node's boot
+// finds it empty. It is the guard for a design that reuses a node's VM,
+// which this one does not.
 
 /// A satellite held open across invocations. Opaque: it is a pid, a
 /// command subject and a node, and nothing outside this module may reach
@@ -2391,12 +2398,18 @@ fn host_step(
     }
 
     // A connection arriving at a destroyed host: the node it names is one
-    // nothing will ever reap, so it is destroyed here. The acknowledgement
-    // is deliberately withheld, which is what makes `hand_over_to` treat
-    // the handover as refused.
-    Destroyed(..), NodeConnected(destroy:, ..) -> {
-      let _report = destroy()
-      sm.keep(hosting)
+    // nothing will ever reap, so it is destroyed here and its report is
+    // kept, which is the only account of that node there will ever be.
+    //
+    // The acknowledgement still goes out. Withholding it would leave
+    // `hand_over_to` waiting out its whole timeout and then reading the
+    // silence as "the host took the connection", so `start` would stall
+    // and hand back a host that is already dead — where acknowledging
+    // makes the *first* `invoke` say `HostGone` with the reason at once.
+    Destroyed(..), NodeConnected(send: _, destroy:, ack:) -> {
+      let report = destroy()
+      process.send(ack, Nil)
+      sm.keep(Hosting(..hosting, node: Some(report)))
     }
 
     // A fresh invocation with nothing open: mint its token, send the
@@ -2436,15 +2449,23 @@ fn host_step(
     Answering(id: _), Served(id:, outcome:) ->
       sm.keep(settle_served(hosting, id, outcome))
 
-    // A capability settling into a host with no invocation open. The
-    // invocation it belonged to is over — answered, expired or destroyed
-    // — and its answer has nowhere to go, which is exactly what
-    // `release` intended when it stopped waiting for it.
-    Idle, ServeStarted(..)
-    | Idle, Served(..)
-    | Destroyed(..), ServeStarted(..)
-    | Destroyed(..), Served(..)
-    -> sm.keep(hosting)
+    // A clearance that reached the broker after its invocation closed.
+    // `release` cancelled everything it had a handle for, and this is the
+    // one it could not: the worker was still inside `clear_call`. Cancel
+    // it now, or the jailed executor runs on to its own timeout for an
+    // invocation nobody is waiting for. Frame ids climb per node, so an
+    // id arriving with no invocation open always belongs to a closed one.
+    Idle, ServeStarted(id: _, handle:)
+    | Destroyed(..), ServeStarted(id: _, handle:)
+    -> {
+      broker.cancel(hosting.config.broker, handle)
+      sm.keep(hosting)
+    }
+
+    // A capability settling into a host with no invocation open. Its
+    // answer has nowhere to go, which is exactly what `release` intended
+    // when it stopped waiting for it.
+    Idle, Served(..) | Destroyed(..), Served(..) -> sm.keep(hosting)
 
     // The invocation's deadline. A satellite that ignores its deadline is
     // not one this host can keep trusting with a session's worth of state,
@@ -2838,10 +2859,18 @@ fn track_started(
   handle: broker.CallHandle,
 ) -> Hosting {
   case hosting.open {
-    None -> hosting
+    // The invocation closed while this clearance was still being made.
+    // Cancel rather than track: nobody is listening for its answer.
+    None -> {
+      broker.cancel(hosting.config.broker, handle)
+      hosting
+    }
     Some(open) ->
       case dict.get(open.inflight, id) {
-        Error(Nil) -> hosting
+        Error(Nil) -> {
+          broker.cancel(hosting.config.broker, handle)
+          hosting
+        }
         Ok(entry) -> {
           case entry.cancelled {
             True -> broker.cancel(hosting.config.broker, handle)
@@ -2867,14 +2896,14 @@ fn settle_served(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
     Some(open) ->
       case dict.get(open.inflight, id) {
         Error(Nil) -> hosting
-        Ok(_entry) -> {
-          let hosting = emit_cap_result(hosting, id, outcome)
-          case hosting.open {
-            None -> hosting
-            Some(open) ->
-              with_inflight(hosting, open, dict.delete(open.inflight, id))
-          }
-        }
+        // `emit_cap_result` writes a frame and never touches `open`, so
+        // the entry read above is still the one to drop.
+        Ok(_entry) ->
+          with_inflight(
+            emit_cap_result(hosting, id, outcome),
+            open,
+            dict.delete(open.inflight, id),
+          )
       }
   }
 }
@@ -2952,6 +2981,13 @@ fn release(hosting: Hosting) -> Hosting {
           None -> Nil
         }
       })
+      // `revoke_all` marks rather than removes, so the vault keeps one
+      // dead entry per invocation for the life of the host and
+      // `check_for` pays a constant-time compare against each. That is
+      // the cost of the constant-time check rather than an oversight —
+      // `drop_expired` prunes on the deadline, not on revocation, so it
+      // would drop nothing here — and it is linear in a session's
+      // invocations rather than in anything an extension controls.
       Hosting(
         ..hosting,
         vault: token.revoke_all(

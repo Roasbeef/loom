@@ -14,7 +14,7 @@ led here, with the per-site measurements, is
 
 ## What it gives
 
-Five modules, all Erlang-target, all interoperable with `gleam_otp` (a
+Six modules, all Erlang-target, all interoperable with `gleam_otp` (a
 weft `start` returns upstream's `StartResult`, a weft `supervised` returns
 upstream's `ChildSpecification`, and every weft process answers the OTP
 system messages, so it shows up in the observer like anything else).
@@ -26,11 +26,12 @@ system messages, so it shows up in the observer like anything else).
 | `weft/actor` | A strict superset of `gleam/otp/actor`: `continuing` (a message guaranteed to be handled before the mailbox), `then_handle`, `hibernate_after`, `idle_timeout`, `periodic` (a fixed-delay heartbeat), `on_shutdown`, `trapping_exits`, `unlinked`. | an init gate every handler checks first; a `ready` subject handshake; a `send_after` its own handler re-arms |
 | `weft/state_machine` | A typed gen_statem: a state ADT with exhaustive `case state, message` dispatch, `postpone`, state / event / named / **periodic** timeouts with generation-stamped cancel-with-flush, enter callbacks, `selecting` for monitors and ports, `unlinked`. | mutually recursive functions with ten arguments each rebuilding one selector; a timer carrying an id so its handler can detect a stale fire; a hand-kept list of waiters; a `send_after` its own handler re-arms |
 | `weft/poll` | `until(within:, every:, attempt:)`, bounded polling in the caller's own process: immediate first attempt, a last attempt at the deadline, `Fail` kept apart from `Retry`, `Expired` as its own outcome. `until_on` runs the same loop on an injected `Clock(now:, sleep:)`; `fold_until` threads a state from one attempt to the next and hands it back as `RanOut` on expiry; `Interval` is `Fixed` or `Doubling(from:, to:)`. | sleep-and-recurse until a deadline, on the wall clock or on an injected one |
+| `weft/event_manager` | A typed gen_event: an ordered handler list, each handler's state sealed in its own closure, `notify` and `sync_notify` (which returns only once every handler has finished), and `Failed(reason)` as the answer a broken handler gives — it is dropped and logged while its siblings carry on. | a fan-out written by hand over a list of subscribers with a removal policy and a per-subscriber state record |
 
-`weft/event_manager` (a typed gen_event) is also there and Loom uses none
-of it: every fan-out in this tree is a `pg` group or a homogeneous subject
-list with no per-handler state and no failure to isolate. Two surveys
-looked; that is a standing rejection, not an oversight.
+`weft/event_manager` has exactly one consumer here, and it took until
+phase 3 of the extension work to find it. Every *other* fan-out in this
+tree is a `pg` group or a homogeneous subject list with no per-handler
+state and no failure to isolate, and those stay as they are.
 
 ## When to reach for it
 
@@ -79,6 +80,19 @@ reasons, and name the primitive in the commit:
   armed once the handler for this one has returned, so a slow handler
   slows the ticks rather than queueing a backlog of them. In-tree:
   `broker/exec`'s idle heartbeat and `runtime/writer`'s lease renewal.
+- **An ordered list of subscribers each hold different state, and a
+  broken one must be dropped without taking the rest down.** That is
+  `weft/event_manager`. The test is the *state*: if every subscriber is
+  the same kind of thing and holds nothing, a subject list is simpler and
+  is what the rest of this tree uses. In-tree:
+  `client/extension/hooks`, the extension hook bus — one handler per
+  installed extension, holding its name, the events it declared and its
+  invoker; `notify` for the notifications, `sync_notify` plus a reply
+  subject for the two events that need an answer, and `Failed` for a
+  satellite that has died mid-session. The two *chained* transforms
+  (`context`, `tool_result`) are deliberately not on the bus: each must
+  see its predecessor's output, which is a fold rather than a fan-out,
+  and weft grows the shape before Loom grows a second bus.
 - **You are waiting in the foreground on a synchronous probe.** A lock, a
   server coming up, a durable row landing. `weft/poll`. In-tree:
   `tui/bootstrap`'s four waits, `runtime/api.await_result`,

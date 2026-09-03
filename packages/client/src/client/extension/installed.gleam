@@ -201,7 +201,7 @@ fn check(root: Root, name: String) -> Result(Discovered, String) {
       "no install record: " <> simplifile.describe_error(error)
     }),
   )
-  use written <- result.try(result.try(record.decode(text), record.current))
+  use written <- result.try(record.readable(text))
   use Nil <- result.try(named(written, name))
   use tree <- result.try(read_tree(root, name))
   use Nil <- result.try(digest_matches(tree, written))

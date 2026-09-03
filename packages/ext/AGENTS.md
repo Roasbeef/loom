@@ -25,12 +25,18 @@ past its first answer has nothing left to pull against and no token for a
 second call. The harness now *tells* the satellite what to answer, on a
 `hook_call`, and `cap/runtime.serve` is the loop that waits for one.
 
-Decision 1 (tier J) of `docs/design-notes/extension-architecture.md`, with
-Decision 3 of ADR-007 for the satellite's lifetime. Nothing here reaches
-the harness: an extension's whole effect surface is `cap/*`, judged per
-call by the broker exactly as a code-mode program's is — and judged only
-*while an invocation is open*, because the token every `cap_call` presents
-is the one the harness minted for that invocation.
+That is also what made hooks possible, and the two halves of phase 3 are
+one mechanism: a `hook_call` carrying a tool invocation and a `hook_call`
+carrying an event are the same frame down the same channel to the same
+node, so an extension's hooks cost no second process and no second boot.
+
+Decisions 1 (tier J) and 3 of
+`docs/design-notes/extension-architecture.md`, with Decision 3 of ADR-007
+for the satellite's lifetime. Nothing here reaches the harness: an
+extension's whole effect surface is `cap/*`, judged per call by the broker
+exactly as a code-mode program's is — and judged only *while an invocation
+is open*, because the token every `cap_call` presents is the one the
+harness minted for that invocation.
 
 ## Key Types
 
@@ -54,33 +60,52 @@ is the one the harness minted for that invocation.
   author can exercise a tool in their own tests with no channel; in the
   satellite it is `cap/report.emit`, best-effort, so a partial that could
   not be emitted never fails the call it was narrating.
-- `ext/runtime.{serve, serving, answer, Handler}` — `serving(tools:,
-  events:)` is what a generated entry calls and it does not return until
+- `ext/hook.{Hook, Verdict, Call, Context, RunStart, event, answer,
+  rendered}` — the typed hook vocabulary. `Hook` is one variant per event
+  (`OnSessionStart`, `OnBeforeAgentStart`, `OnContext`, `OnToolCall`,
+  `OnToolResult`, `OnAgentEnd`, `OnAgentSettled`), so an entry that
+  answers the wrong event is a compile error rather than a shape mismatch
+  on the wire. `event` is the manifest name a hook answers; `answer` runs
+  one against the harness's `args` document and renders the `hook_result`
+  value. Both documents are JSON text, because the extension seam admits
+  `gleam/json` and no msgpack decoder. A conversation message arrives as
+  `Dynamic` and leaves as `Json`: `core` is not on the seam, so this
+  package cannot hold the message type, and the harness re-decodes what
+  comes back with `core/codec`'s own total decoder. `rendered(Dynamic) ->
+  Result(Json, String)` closes the gap the stdlib leaves — there is no
+  `Dynamic -> Json` — so a hook that keeps most of what it was handed
+  re-renders those messages instead of rebuilding them. It is total, and
+  its `Error` is real: a `Dynamic` that no JSON parser produced has no
+  rendering, and the null arm is written as an optional *string* precisely
+  so an unknown shape fails rather than being silently rendered `null`.
+- `ext/runtime.{serve, serving, answer, Declared}` — `serving(tools:,
+  hooks:)` is what a generated entry calls and it does not return until
   the harness cancels the satellite or the channel closes; `serve(tools)`
-  is `serving` with an empty event table, which is what an extension that
+  is `serving` with an empty hook table, which is what an extension that
   declares no `[[hook]]` gets. Two functions rather than one with an
   optional argument, because the generated entry writes whichever call the
   manifest asked for and the common one should read as the common one.
-  `answer(tools, events, asked)` is the whole dispatch as a pure-but-for-
+  `answer(tools, hooks, asked)` is the whole dispatch as a pure-but-for-
   the-tool function over a `cap/runtime.Asked`, so the round trip is
   drivable with no channel and no socket — which is how this package's own
   tests run it, and how an author tests their own table.
-- `ext/runtime.Handler` — `fn(cap/report.Value) -> Result(Value, String)`,
-  one hook event handler. Deliberately untyped in the payload: wave B of
-  the extension work fixes what each event carries, in one place at each
-  end, and until then this module carries whatever the harness sends
-  without claiming to know its shape. `Value` is `cap/report`'s, so a
-  handler builds its answer with the same `report.object`/`report.string`
-  vocabulary a tool builds a JSON block with.
+- `ext/runtime.Declared` — `#(String, ext/hook.Hook)`, one `[[hook]]` row
+  as the generated entry passes it. The event name travels *beside* the
+  hook rather than being read off it, because the two come from different
+  places — the manifest an operator approved and the module the build
+  compiled — and `answer` checks them against each other rather than
+  serving whichever one it happened to read.
 - `ext/runtime.{refused_code, unknown_tool_code, unhandled_code,
-  bad_arguments_code}` — `"refused"`, `"unknown_tool"`, `"unhandled"`,
-  `"bad_arguments"`. Four codes rather than one because they are four
+  mismatched_hook_code, bad_arguments_code}` — `"refused"`,
+  `"unknown_tool"`, `"unhandled"`, `"mismatched_hook"`,
+  `"bad_arguments"`. Five codes rather than one because they are five
   different facts about an install: a refusal is the extension working as
-  written, an unknown tool is a manifest and an artifact that disagree,
-  an unhandled event is an extension that does not care about this moment,
-  and bad arguments are a harness that sent something the schema check
-  should have caught. `cap/runtime`'s own `bad_kind`, `busy` and `crashed`
-  are minted a layer below and never here.
+  written, an unknown tool is a manifest and an artifact that disagree, an
+  unhandled event is an extension that does not care about this moment, a
+  mismatched hook is a manifest that declared one event and a module that
+  answers another, and bad arguments are a harness that sent something the
+  schema check should have caught. `cap/runtime`'s own `bad_kind`, `busy`
+  and `crashed` are minted a layer below and never here.
 
 ## Relationships
 
@@ -109,12 +134,18 @@ is the one the harness minted for that invocation.
   seam's allowlist admits, and carrying text means the harness hands over
   exactly the bytes the model's tool call carried with no re-encoding in
   between to disagree about. An event invocation's arguments are that
-  event's own row, handed to its handler unread.
+  event's own row as **JSON text** too, in the shape
+  `client/extension/hooks` pins for that event; `ext/hook` owns the
+  decoding, so `ext/runtime` carries the text between the channel and that
+  one place and reads neither end.
 - **Wire, out, one per invocation** — the `hook_result` `cap/runtime`
   writes from the `Answer` this module returns:
   `{ok: true, value: {content: [block…], terminate: Bool}}`, where a block
   is `{type: "text", text}` or `{type: "json", json}`, or
-  `{ok: false, error: {code, msg}}` under one of the four codes above.
+  `{ok: false, error: {code, msg}}` under one of the five codes above. An
+  event answers with JSON text instead — `hook.answer`'s rendering,
+  carried as a msgpack string — because the seam has no msgpack decoder
+  for a hook to read a structured reply with.
   Nothing here writes a frame itself.
 - **Wire, out** — zero or more `report.emit` calls, one per `Ctx.report`,
   and whatever `cap/*` calls the tool itself makes. All of them travel

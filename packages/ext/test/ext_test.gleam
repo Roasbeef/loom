@@ -14,6 +14,7 @@ import cap/report
 import cap/runtime as cap_runtime
 import core/msgpack
 import ext.{type Ctx, type Refusal, ContinueRun, Refusal, TerminateRun, Text}
+import ext/hook
 import ext/runtime
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -127,9 +128,54 @@ pub fn answer_refuses_unparseable_arguments_test() {
 // --- events ---------------------------------------------------------------
 
 pub fn answer_runs_a_registered_event_test() {
+  let seen = process.new_subject()
   let produced =
-    runtime.answer([], [#("session_start", greeter)], event("session_start"))
-  assert produced == cap_runtime.Answered(report.string("greeted"))
+    runtime.answer(
+      [],
+      [
+        #(
+          "session_start",
+          hook.OnSessionStart(fn() { process.send(seen, Nil) }),
+        ),
+      ],
+      event("session_start", "{}"),
+    )
+  assert produced == cap_runtime.Answered(report.string("{}"))
+  assert process.receive(seen, within: 0) == Ok(Nil)
+}
+
+/// The manifest declares an event and the module implements one, and the
+/// two come from different places. A pair that disagrees is an install
+/// that does not hold together, so it is refused under its own code
+/// rather than served as whichever half was read.
+pub fn a_hook_that_answers_another_event_is_refused_test() {
+  let assert cap_runtime.Refused(code:, message:) =
+    runtime.answer(
+      [],
+      [#("session_start", hook.OnToolCall(fn(_call) { hook.Allow }))],
+      event("session_start", "{}"),
+    )
+    as "a mismatched pair must not be served"
+  assert code == runtime.mismatched_hook_code
+  assert string.contains(message, "tool_call")
+}
+
+/// A `tool_call` hook's verdict crosses as the JSON the harness's bus
+/// reads, marshalled in `ext/hook` and carried here untouched.
+pub fn a_tool_call_hook_answers_a_verdict_test() {
+  let produced =
+    runtime.answer(
+      [],
+      [#("tool_call", hook.OnToolCall(fn(_call) { hook.Block("not here") }))],
+      event(
+        "tool_call",
+        "{\"op_id\":\"op\",\"tool\":\"bash\",\"arguments\":{},\"source_index\":0}",
+      ),
+    )
+  assert produced
+    == cap_runtime.Answered(report.string(
+      "{\"verdict\":\"block\",\"reason\":\"not here\"}",
+    ))
 }
 
 /// An extension is offered every moment and cares about almost none of
@@ -137,7 +183,7 @@ pub fn answer_runs_a_registered_event_test() {
 /// the bus reads, not a fault that costs the satellite its node.
 pub fn answer_reports_an_unhandled_event_test() {
   let assert cap_runtime.Refused(code:, message:) =
-    runtime.answer([], [], event("session_start"))
+    runtime.answer([], [], event("session_start", "{}"))
     as "an event with no handler must answer rather than crash"
   assert code == runtime.unhandled_code
   assert string.contains(message, "session_start")
@@ -218,10 +264,6 @@ fn emitter(_arguments: Dynamic, ctx: Ctx) -> Result(ext.Outcome, Refusal) {
   Ok(ext.text("done"))
 }
 
-fn greeter(_args: report.Value) -> Result(report.Value, String) {
-  Ok(report.string("greeted"))
-}
-
 fn try_refusal(
   outcome: Result(a, Refusal),
   then: fn(a) -> Result(ext.Outcome, Refusal),
@@ -255,10 +297,10 @@ fn asked(tool: String, args: String) -> cap_runtime.Asked {
   )
 }
 
-fn event(name: String) -> cap_runtime.Asked {
+fn event(name: String, args: String) -> cap_runtime.Asked {
   cap_runtime.Asked(
     invocation: cap_runtime.Event(name:),
-    args: report.object([]),
+    args: report.string(args),
     deadline_ms: 5000,
   )
 }
@@ -403,7 +445,7 @@ type Served {
 // second — correctly, since the first's channel actor is still alive.
 fn start_serving(
   tools: List(#(String, ext.Tool)),
-  events: List(#(String, runtime.Handler)),
+  hooks: List(runtime.Declared),
 ) -> Served {
   cap_dispatch.reset()
   let sent = process.new_subject()
@@ -421,7 +463,7 @@ fn start_serving(
     process.spawn_unlinked(fn() {
       let _ =
         cap_runtime.serve_over(<<7, 7, 7>>, transport, fn(ask) {
-          runtime.answer(tools, events, ask)
+          runtime.answer(tools, hooks, ask)
         })
       Nil
     })

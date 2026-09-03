@@ -408,9 +408,9 @@ pub fn a_refused_install_leaves_no_staging_test() {
 /// way to call into a satellite, so an extension carrying one would have
 /// installed and never fired. `protocol-change/012` is that reverse frame,
 /// and this is the refusal's removal made falsifiable — the install goes
-/// all the way through and the hook's handler is in the entry the build
-/// compiled.
-pub fn a_hook_installs_now_that_the_harness_can_call_test() {
+/// all the way through, the record carries the approval, and the hook's
+/// handler is in the entry the build compiled.
+pub fn a_hook_installs_and_is_recorded_test() {
   let root = fresh_root("hooked")
   let tree =
     extensions.materialise(
@@ -425,14 +425,25 @@ pub fn a_hook_installs_now_that_the_harness_can_call_test() {
       source.LocalPath(path: tree),
       rev: None,
     )
-    as "an extension with a hook installs"
-  assert list.map(done.manifest.hooks, fn(hook) { hook.event }) == ["tool_call"]
+    as "phase 3 installs an extension that registers a hook"
 
-  // And it is the entry the build compiled that carries the handler, not
-  // merely the manifest that named it.
+  // The record is the approval, so the events an operator approved are
+  // in it rather than only in a manifest that may change underneath.
+  let assert Ok(text) = simplifile.read(from: record.file(root, "hello"))
+  let assert Ok(written) = record.decode(text)
+  assert written.hooks == [#("tool_call", "hello/tool")]
+
+  // And discovery hands the same declaration back, which is what boot
+  // builds the bus from.
+  let assert installed.Ready(manifest: decoded, ..) =
+    installed.one(root, "hello")
+  assert list.map(decoded.hooks, fn(hook) { hook.event }) == ["tool_call"]
+
+  // The satellite side of the same approval: the entry the build
+  // compiled carries the handler, not merely the manifest that named it.
   assert string.contains(
     install.entry_source(done.manifest.tools, done.manifest.hooks),
-    "#(\"tool_call\", ext_entry_0." <> install.hook_function <> ")",
+    "#(\"tool_call\", ext_entry_0." <> install.hook_function <> "())",
   )
 }
 
@@ -773,7 +784,7 @@ pub fn the_generated_entry_serves_hooks_beside_tools_test() {
   assert string.contains(source, "#(\"first\", ext_entry_0.run)")
   assert string.contains(
     source,
-    "#(\"session_start\", ext_entry_0." <> install.hook_function <> ")",
+    "#(\"session_start\", ext_entry_0." <> install.hook_function <> "())",
   )
 }
 
@@ -950,6 +961,7 @@ fn sample_record() -> record.Record {
     allowlist: install.allowlist(),
     net: record.terms(manifest.no_net()),
     tools: ["hello"],
+    hooks: [],
     approved_at: record.instant(at_ms),
     approved_by: "operator",
     artifact: record.artifact_directory,

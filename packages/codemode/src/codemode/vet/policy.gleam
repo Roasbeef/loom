@@ -436,9 +436,12 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// because an extension tool is a workspace program with a different
 /// entry point.
 ///
-/// `ext` is not a `cap/*` module and carries no authority: it is the
-/// vocabulary an extension's tools are typed against (`packages/ext`),
-/// vendored into the build beside the prelude.
+/// `ext` and `ext/hook` are not `cap/*` modules and carry no authority:
+/// they are the vocabulary an extension's tools and hooks are typed
+/// against (`packages/ext`), vendored into the build beside the prelude.
+/// `ext/hook` arrived with phase 3 and is the same kind of thing as
+/// `ext` — types, a name-to-event mapping, and the JSON marshalling of
+/// the hook payloads — so it is admitted on the same argument.
 ///
 /// There is no capability here for "which call am I serving?", and the
 /// absence is the point. Phase 1 had one — `cap/ext.call`, a pull the
@@ -453,7 +456,7 @@ pub fn orchestration_cap_modules() -> List(String) {
 /// ```
 ///
 pub fn extension_cap_modules() -> List(String) {
-  list.append(default_cap_modules(), ["ext"])
+  list.append(default_cap_modules(), ["ext", "ext/hook"])
 }
 
 /// The standard-library modules on the extension seam: the shared pure

@@ -56,16 +56,19 @@
 //// pub fn main() -> Nil {
 ////   runtime.serving(
 ////     tools: [#("weather", ext_entry_0.run)],
-////     events: [#("session_start", ext_entry_0.on_event)],
+////     hooks: [#("tool_call", ext_entry_0.on_event())],
 ////   )
 //// }
 //// ```
 ////
 //// Each `[[tool]]`'s `entry` module must expose `pub fn run` of type
-//// `ext.Tool` and each `[[hook]]`'s must expose `pub fn on_event` of type
-//// `ext/runtime.Handler`. Two functions rather than one because a module
-//// may serve both, and a single name would make that a compile error in
-//// generated code. The aliases are positional so two tools whose entry
+//// `ext.Tool` and each `[[hook]]`'s must expose
+//// `pub fn on_event() -> ext/hook.Hook`. Two names rather than one
+//// because a module may serve both, and a single name would make that a
+//// compile error in generated code. The declared event name travels
+//// beside the hook rather than being read off it, so `ext/runtime`
+//// can refuse a manifest and a module that name different events. The
+//// aliases are positional so two tools whose entry
 //// modules share a last segment cannot collide. A wrong signature is a
 //// compile error naming the module, which is the earliest and clearest
 //// place that mistake can be caught.
@@ -97,12 +100,16 @@ pub const max_archive_bytes = 33_554_432
 /// The function every `[[tool]]`'s entry module must expose.
 pub const entry_function = "run"
 
-/// The function every `[[hook]]`'s entry module must expose.
+/// The function every `[[hook]]`'s entry module must expose: a zero-arity
+/// `pub fn on_event() -> ext/hook.Hook`.
 ///
 /// A second name rather than `run` because one module may serve a tool
 /// and a hook, and generated code that named both `run` would not
 /// compile — in the worst place for a compile error, since nobody wrote
 /// the file.
+///
+/// A function rather than a constant because a `Hook` holds the closure
+/// that answers, and Gleam constants hold no closures.
 pub const hook_function = "on_event"
 
 /// The HTTP fetch, injected.
@@ -395,11 +402,12 @@ fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
     }),
   )
 
-  // A `[[hook]]` used to be decoded and then refused, because the harness
-  // had no way to call into a satellite and an extension carrying one
-  // would have installed and never fired. `protocol-change/012` is the
-  // reverse frame, so the refusal is gone: a hook's entry module is
-  // written into the generated entry's event table alongside the tools.
+  // `[[hook]]` no longer refuses the install. Phase 3 gave the harness a
+  // way to call into a satellite (`protocol-change/012`), so a declared
+  // hook is a subscription the boot honours rather than a promise nothing
+  // could keep, and its entry module is written into the generated
+  // entry's handler table beside the tools. The event name and the entry
+  // module were both checked by the decoder above.
   manifest.decode(text, surroundings(files)) |> result.map_error(Manifest)
 }
 
@@ -613,24 +621,33 @@ pub fn entry_source(
   <> "\n\npub fn main() -> Nil {\n"
   <> "  runtime.serving(\n    tools: [\n"
   <> string.join(served, "\n")
-  <> "\n    ],\n    events: [\n"
+  <> "\n    ],\n    hooks: [\n"
   <> string.join(observed, "\n")
   <> "\n    ],\n  )\n}\n"
 }
 
-// One `#(name, module.function)` row of a served table.
+// One `#(name, module.function…)` row of a served table.
+//
+// A tool's entry is the function itself; a hook's is *called*, because
+// `on_event` returns the `ext/hook.Hook` that holds the closure and a
+// `Hook` is not something a Gleam constant can hold.
 fn registration(
   aliases: List(#(String, String)),
   name: String,
   module: String,
   function: String,
 ) -> String {
+  let called = case function == hook_function {
+    True -> "()"
+    False -> ""
+  }
   "      #(\""
   <> name
   <> "\", "
   <> named_alias(aliases, module)
   <> "."
   <> function
+  <> called
   <> "),"
 }
 

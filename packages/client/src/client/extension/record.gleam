@@ -77,7 +77,14 @@ pub const staging_directory = ".staging"
 /// The record format's own version. Bumped when the shape changes, so a
 /// record written by an older server is refused by name rather than
 /// half-decoded.
-pub const format_version = 1
+///
+/// Version 2 added `hooks`. A version-1 record is refused rather than
+/// read with an empty hook list, because the approval a record carries
+/// is "what was approved", and a record written before hooks existed
+/// cannot say whether the operator approved any — the honest answer is
+/// to ask them again. The cost is one `loom ext install` per installed
+/// extension, and extensions have shipped in exactly one phase.
+pub const format_version = 2
 
 /// The revision a local path records: it has none, and saying so is a
 /// fact about the install rather than a missing value.
@@ -134,6 +141,12 @@ pub type Record {
     net: NetTerms,
     /// The tools the manifest registers.
     tools: List(String),
+    /// The hooks the manifest registers, as `#(event, entry)` in the
+    /// manifest's own order. Stored for the reason the allowlist is: a
+    /// hook is authority over the harness's own timeline, so the events
+    /// an operator approved are part of the approval rather than
+    /// something re-read from a file that may have changed.
+    hooks: List(#(String, String)),
     /// When the approval happened, RFC3339 UTC.
     approved_at: String,
     /// Who approved it: the `USER` environment, or `unknown`.
@@ -293,6 +306,7 @@ pub fn for_install(
     allowlist:,
     net: terms(decoded.net),
     tools: list.map(decoded.tools, fn(tool) { tool.name }),
+    hooks: list.map(decoded.hooks, fn(hook) { #(hook.event, hook.entry) }),
     approved_at: instant(approved_at),
     approved_by:,
     artifact:,
@@ -320,9 +334,17 @@ pub fn encode(written: Record) -> Json {
     #("allowlist", json.array(written.allowlist, json.string)),
     #("net", encode_terms(written.net)),
     #("tools", json.array(written.tools, json.string)),
+    #("hooks", json.array(written.hooks, encode_hook)),
     #("approved_at", json.string(written.approved_at)),
     #("approved_by", json.string(written.approved_by)),
     #("artifact", json.string(written.artifact)),
+  ])
+}
+
+fn encode_hook(hook: #(String, String)) -> Json {
+  json.object([
+    #("event", json.string(hook.0)),
+    #("entry", json.string(hook.1)),
   ])
 }
 
@@ -365,6 +387,7 @@ fn decoder() -> Decoder(Record) {
   use allowlist <- decode.field("allowlist", decode.list(decode.string))
   use net <- decode.field("net", terms_decoder())
   use tools <- decode.field("tools", decode.list(decode.string))
+  use hooks <- decode.field("hooks", decode.list(hook_decoder()))
   use approved_at <- decode.field("approved_at", decode.string)
   use approved_by <- decode.field("approved_by", decode.string)
   use artifact <- decode.field("artifact", decode.string)
@@ -379,10 +402,17 @@ fn decoder() -> Decoder(Record) {
     allowlist:,
     net:,
     tools:,
+    hooks:,
     approved_at:,
     approved_by:,
     artifact:,
   ))
+}
+
+fn hook_decoder() -> Decoder(#(String, String)) {
+  use event <- decode.field("event", decode.string)
+  use entry <- decode.field("entry", decode.string)
+  decode.success(#(event, entry))
 }
 
 fn terms_decoder() -> Decoder(NetTerms) {
@@ -400,6 +430,55 @@ fn terms_decoder() -> Decoder(NetTerms) {
   ))
 }
 
+/// Reads a record this build knows how to read, or says which of the two
+/// things went wrong.
+///
+/// The version is decoded *first*, on its own, and that ordering is the
+/// whole of this function. A record written by an older server is
+/// missing whatever fields this build added, so the full decoder
+/// reaches it before the version check does and reports the missing
+/// field — "the install record does not decode: expected List at
+/// .hooks" — when the fact an operator needs is "this record is format
+/// 1 and this server reads 2, so reinstall it". Same two failures as
+/// `decode` then `current`, in the order that names the right one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert record.readable("{\"format\": 1}")
+///   == Error("the install record is format 1; this server reads 2")
+/// ```
+///
+pub fn readable(text: String) -> Result(Record, String) {
+  use Nil <- result.try(
+    json.parse(from: text, using: version_decoder())
+    |> result.map_error(describe_decode_error)
+    |> result.try(known_format),
+  )
+  decode(text)
+}
+
+// The version and nothing else, so a record whose *other* fields this
+// build cannot read still answers the version question.
+fn version_decoder() -> Decoder(Int) {
+  use format <- decode.field("format", decode.int)
+  decode.success(format)
+}
+
+fn known_format(format: Int) -> Result(Nil, String) {
+  case format == format_version {
+    True -> Ok(Nil)
+    False -> Error(skewed(format))
+  }
+}
+
+fn skewed(format: Int) -> String {
+  "the install record is format "
+  <> int.to_string(format)
+  <> "; this server reads "
+  <> int.to_string(format_version)
+}
+
 /// Refuses a record this build does not know how to read.
 ///
 /// Separate from `decode` because the two failures are different facts:
@@ -411,19 +490,13 @@ fn terms_decoder() -> Decoder(NetTerms) {
 ///
 /// ```gleam
 /// assert record.current(Record(..written, format: 99))
-///   == Error("the install record is format 99; this server reads 1")
+///   == Error("the install record is format 99; this server reads 2")
 /// ```
 ///
 pub fn current(written: Record) -> Result(Record, String) {
   case written.format == format_version {
     True -> Ok(written)
-    False ->
-      Error(
-        "the install record is format "
-        <> int.to_string(written.format)
-        <> "; this server reads "
-        <> int.to_string(format_version),
-      )
+    False -> Error(skewed(written.format))
   }
 }
 
