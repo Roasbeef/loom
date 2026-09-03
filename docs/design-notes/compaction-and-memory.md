@@ -592,6 +592,19 @@ omp and consistent with the Manus production evidence:
    equivalent of omp's "learn does not mutate the active prompt-cache
    prefix."
 
+   **Addendum (2026-09-03, #149).** Once the producer moved *inside* the
+   server — a supervised pass per boot rather than an operator's cron
+   job — "session boundaries" became **run** boundaries: the sidecar is
+   read at every accepted run's start, so a digest this session's own
+   pass wrote is carried by this session's next run. Reading it once at
+   boot instead would hold every session one pass behind its own
+   pipeline, which is the symptom #149 was filed about. The rule this
+   one exists to serve is untouched, because it is an argument about the
+   *pinned prefix*: the digest rides messages, so a change costs one
+   rolling tail write and never a head rewrite, and nothing here can
+   touch a run already open. `docs/architecture/memory.md` has the
+   lifecycle.
+
 And one framing rule, verbatim from omp because it is a correctness
 statement: memory is heuristic context; repo state and user instruction
 win conflicts; conflicting memory is stale.

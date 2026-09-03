@@ -229,6 +229,17 @@ over one session file. WP-L.
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
+- `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
+  bounding the sidecar read, which the lifecycle producer moved onto the
+  strand driver's hot path: `max_sidecar_bytes` (four times the render
+  cap) is asked of the *file* by one `stat` before a byte is read, so a
+  file that could not have come from `render_digest` costs nothing and is
+  refused whole rather than clipped to a plausible prefix, while a file
+  merely over the render cap is still read and clipped as before.
+  `digest_reader` is the reader a server installs — the one that carries
+  a logger, so a refusal says `memory.digest_oversize` instead of looking
+  exactly like a repository that has never distilled. `read_digest` stays
+  the silent door.
 - `client/memory.{memory_file, digest_file, store_beside, digest_beside,
   directory_of, fact_type, lesson_type, preference_type, pipeline_types,
   type_named, short_name, max_digest_bytes, max_distillates,
@@ -338,6 +349,33 @@ over one session file. WP-L.
   kept because their provenance would not decode, which is the one place
   the command under-deletes. `docs/spec-gaps.md`'s M2
   item 9 carries the boundary and the over-deletion it implies.
+- `client/distillpass.{Cadence, Options, Pass, Config, Message,
+  default_wall_ms, default_options, no_pass, parse, start, supervised,
+  settled,
+  started_event, completed_event, failed_event, expired_event,
+  off_event}` — the distillation pass in the *session lifecycle* (#149):
+  the supervised worker that makes `client/distill` run without a source
+  checkout, a cron job or an operator. A `weft/state_machine` with two
+  states — `Running` while the pass is in flight, `Idle(pass)` for the
+  rest of the boot — started under the service tier by
+  `serve.with_distill_pass`, which is *after* the session's own writer
+  lease is held, so the live session is skipped by the pipeline's
+  existing lease rule rather than by a new one. The pass itself runs on
+  a `weft` scope bounded by `Options.wall_ms` and relayed back onto the
+  machine's own subject, so the machine stays able to answer while it
+  runs; `settled` is that answer, and a question asked mid-pass is
+  `postpone`d and replayed on the transition rather than polled for. It
+  **never re-arms**: one pass per boot is the whole cadence, and the whole
+  retry policy is "the next boot reads the same material again", which is
+  safe because the pipeline moves no cursor until it succeeds. `parse` is
+  the total decoder for the `[memory]` table (`distill = "on-boot" |
+  "off"`, `distill_wall_ms`), whose key must also be in `client/catalog`'s
+  allowed top-level list — the obligation `[[rule]]` and `[schedules]`
+  carry. `default_wall_ms` **is** `memory.run_lease_ttl_ms` and is also
+  the ceiling: nothing renews the memory lease but a commit, so a pass
+  cannot usefully outlive it, and a larger configured value is refused
+  rather than clamped. `Cadence` is a two-variant type rather than a flag because the
+  opt-out is a posture an operator takes deliberately.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
   reads and writes: a session-scoped actor, addressed by process name the
@@ -1252,20 +1290,26 @@ an install is under the extensions root.
   `events/search.sync`. Index rows and the advanced cursor commit in one
   transaction, so a crash mid-batch re-runs the batch into the same
   state; a lost poke costs latency and never a row.
-- **Memory**: `client/serve` never opens `loom-memory.db` and never
-  creates it — its boot probe reads the store's header lease-free
-  (`storage/sqlite.generation`), and an absent store is the ordinary
-  state of a repository that has never remembered anything. It reads
-  `loom-memory.digest` once at boot as bytes and injects them at every
-  run start through `memory.digest_hooks`, which is why an updated digest
-  lands at the next session boundary rather than mid-session. The two
-  writers are `client/distill` (a command, holding the memory session's
-  writer lease for its whole run under `run_lease_ttl_ms` — or under the
-  short one for a `--cascade` pass, which has no model turn between its
-  commits) and the
-  `remember` seam (one open per call under the short `lease_ttl_ms`,
-  refused in band while a run holds the lease). Usage rows for both model
-  turns land in the memory session's own ledger.
+- **Memory**: the boot's own probe still opens nothing — it reads the
+  store's header lease-free (`storage/sqlite.generation`), and an absent
+  store is the ordinary state of a repository that has never remembered
+  anything — but the *server* now writes the store, through the
+  supervised `client/distillpass` worker every ordinary boot starts
+  (#149). It reads `loom-memory.digest` at **every run start** through
+  `memory.digest_hooks`, which takes a thunk rather than bytes for
+  exactly that reason: this host runs the producer as well, and a digest
+  captured at boot would hold every session one pass behind its own
+  pipeline. Memory therefore lands on *run* boundaries rather than
+  session boundaries, which costs the same rolling tail write it always
+  did — the digest rides messages, never the pinned head — and nothing
+  can touch a run already open. The writers are `client/distill` (the
+  pipeline, holding the memory session's writer lease for its whole run
+  under `run_lease_ttl_ms` — or under the short one for a `--cascade`
+  pass, which has no model turn between its commits), reached either from
+  the lifecycle worker or from the command line, and the `remember` seam
+  (one open per call under the short `lease_ttl_ms`, refused in band
+  while a run holds the lease). Usage rows for both model turns land in
+  the memory session's own ledger.
 - **Wire**: JSON text frames over websocket. The envelope `seq` **is the
   storage seq** of the write that produced the event, so the durable
   stream needs no side index and `catch_up` rebuilds it with
@@ -2006,6 +2050,19 @@ an install is under the extensions root.
   cursor where it was, so the next commit's poke retries it. Nothing
   about a session's correctness depends on the index being right, which
   is what lets every one of those failures be quiet.
+- **The distillation pass runs once per boot, skips the live session by
+  its lease, and retries by being run again next boot.** Each clause is
+  load-bearing. *Once*, because the material it may read does not change
+  while this server runs — a live session's own lease is what puts it out
+  of reach — so a timer or a per-turn hook would buy re-reads and model
+  turns for nothing. *By the lease*, because the worker starts in the
+  service tier, after `assemble` has taken the session's writer lease, so
+  the skip is a property of the ordering rather than of a check. *Next
+  boot*, because the pipeline's write order (rows, head-and-cursors CAS,
+  sidecar) means a pass killed anywhere moved no cursor. The one residue
+  is the memory lease a killed pass cannot release: the store is
+  consistent, and a boot inside the ten-minute run TTL logs
+  `memory.distill.failed` naming the holder rather than distilling.
 - **A fatal death is an orderly shutdown, not a side effect.** The host
   traps exits, so a child's death is a message: it runs the whole
   teardown — listener, services, runtime (which releases the writer
@@ -2059,6 +2116,9 @@ an install is under the extensions root.
   the pipeline `client/codemode` wires, and what each layer confines.
 - [packages/codemode/CLAUDE.md](../codemode/CLAUDE.md) — the pipeline's
   own package.
+- [docs/architecture/memory.md](../../docs/architecture/memory.md) — the
+  store, the pipeline, the lease rules, the lifecycle worker, the digest
+  injection and the erasure cascade's open problem (#124).
 - [docs/design-notes/compaction-and-memory.md](../../docs/design-notes/compaction-and-memory.md)
   — Stage C0: which seams were inert, what each hook now decides from,
   and the cache arithmetic the summary request's shape follows.

@@ -475,6 +475,78 @@ of the bundled seed in a network namespace with nothing but its own `bin`
 on `PATH`. A `DIST_CODEMODE=0` release is held to the mirror image: no
 `code_mode`, and a stated reason.
 
+## Memory distils on the release's own lifecycle
+
+A release ships the memory *consumer* and, since #149, the producer with
+it. There is nothing to install and no cron job to write: every ordinary
+boot starts a supervised worker that runs one distillation pass and then
+idles, so a repository's closed sessions and its remembered notes reach
+`loom-memory.digest` without a Gleam source checkout anywhere on the
+machine. `docs/architecture/memory.md` is the whole subsystem; what an
+operator needs from a release is six facts.
+
+**The cadence is one pass per session boot.** Not per turn, and not on a
+timer. A live session holds its own writer lease, so a pass can never
+read the session it runs inside; what it can read — the sessions closed
+since the last boot, and the notes written through `remember` — does not
+change while this server runs.
+
+**The opt-out is a table in the same `loom.toml` as the catalogue:**
+
+```toml
+[memory]
+distill = "on-boot"      # or "off"; the default is "on-boot"
+distill_wall_ms = 600000 # how long one whole pass may take; also the ceiling
+```
+
+`distill_wall_ms` cannot be raised above its default, because that is
+how long the memory session's writer lease lasts and nothing renews a
+lease but a commit — a pass that outlived it would fail at its next
+commit instead of being cut cleanly, so a larger value is refused at
+boot with that sentence. `distill = "off"` starts no worker at all, logs
+`memory.distill.off`,
+and leaves remembered notes accumulating for a `loom-distill` run by
+hand. An unknown key in the table refuses the boot rather than being
+ignored, because an opt-out that distilled anyway is the one failure
+nobody would see.
+
+**The model cost is unchanged by shipping it:** one extraction request
+per eligible closed session plus one consolidation request, routed to
+the catalogue's `summarize` role when it declares one and to the
+resolved main model when it does not. Both turns' usage rows land in the
+memory session's own ledger. A pass with nothing new to read dispatches
+**no** request at all, which is why a fresh install costs nothing until
+there is something to distil.
+
+**Retry is "the next boot".** A pass that fails or overruns
+`distill_wall_ms` moves no cursor and is not retried in this session;
+the next boot reads the same material again. The one cost of an
+interruption is that the memory lease it held is released only by its
+ten-minute TTL, so a boot inside that window logs `memory.distill.failed`
+naming the holder and distils nothing — a freshness cost, never a lost
+row, because the pipeline commits rows, then the head, then the sidecar.
+
+**A new digest becomes visible at the next run start**, of any session on
+the repository, including later runs of the session whose own pass wrote
+it. It is injected as a fenced, attributed user message and never into
+the pinned system prompt, so a changed digest costs a rolling tail write
+rather than a cache-head rewrite.
+
+**What ran is in the log**, under `memory.distill.started`,
+`memory.distill.completed` (with `sources`, `skipped`, `candidates`,
+`rows` and whether the digest was written, emptied or unchanged),
+`memory.distill.failed`, `memory.distill.expired` and
+`memory.distill.off`.
+
+`make release-smoke` holds the artifact to the first of those: booted
+with `env -i PATH=/usr/bin:/bin` in a directory of its own, the release
+must log `memory.distill.completed` before it is stopped, and that line
+must report the live session skipped. The claim is deliberately about
+the lifecycle rather than about a distillate — one session file, held by
+the server itself, means the pass reads nothing and asks no provider, so
+the assertion needs no API key and still fails for a missing worker, an
+unroutable catalogue or a pass that died.
+
 ## What is still wanted from the source
 
 Nothing about the helper ladder: #101 is closed above, and the launcher

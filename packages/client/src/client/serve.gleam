@@ -182,6 +182,8 @@ import client/agency
 import client/catalog
 import client/codemode as codemode_wiring
 import client/contributions
+import client/distill
+import client/distillpass
 import client/escalate
 import client/extension/dispatch as extension_dispatch
 import client/extension/hooks as extension_hooks
@@ -357,6 +359,12 @@ pub type Settings {
     /// a collision. `client/contributions` has the ruling. Naming a tool
     /// this host does not build is not an error.
     deactivated_tools: List(String),
+    /// The `[memory]` table: whether this host distils on boot, and how
+    /// long one pass may take. Defaults to
+    /// `client/distillpass.default_options`, which is one pass per boot
+    /// — the shipped producer #149 asked for, and the reason a release
+    /// needs no cron job to fill its memory.
+    memory: distillpass.Options,
   )
 }
 
@@ -406,6 +414,12 @@ pub type Booted {
     /// by a commit hint — so its name has nothing to do with
     /// `subscribers:` the way `rulescan`'s does.
     schedulescan: Option(Name(schedulescan.Message)),
+    /// The distillation worker's name, or `None` on a boot that runs no
+    /// pass — `memory.distill = "off"`, or a catalogue that routes
+    /// nothing the pipeline could ask. A name for the reason
+    /// `rulescan`'s is one, and the door `client/distillpass.settled`
+    /// waits on.
+    memory_pass: Option(Name(distillpass.Message)),
   )
 }
 
@@ -834,7 +848,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
-  use #(catalogue, rule_list, schedule_list, schedule_policy) <- result.try(
+  use #(catalogue, rule_list, schedule_list, schedule_policy, memory) <- result.try(
     load_config(flags.config),
   )
 
@@ -881,6 +895,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     schedules: schedule_list,
     schedule_policy:,
     deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
+    memory:,
   ))
 }
 
@@ -1011,11 +1026,24 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 fn load_config(
   flag: Option(String),
 ) -> Result(
-  #(catalog.Catalog, List(rules.Rule), List(schedule.Schedule), schedule.Policy),
+  #(
+    catalog.Catalog,
+    List(rules.Rule),
+    List(schedule.Schedule),
+    schedule.Policy,
+    distillpass.Options,
+  ),
   String,
 ) {
   case flag {
-    None -> Ok(#(env_catalog(), [], [], schedule.default_policy))
+    None ->
+      Ok(#(
+        env_catalog(),
+        [],
+        [],
+        schedule.default_policy,
+        distillpass.default_options(),
+      ))
     Some(path) -> {
       use text <- result.try(
         simplifile.read(path)
@@ -1037,7 +1065,10 @@ fn load_config(
       use schedule_policy <- result.try(
         schedule.parse_policy(text) |> result.map_error(named),
       )
-      Ok(#(catalogue, rule_list, schedule_list, schedule_policy))
+      use memory <- result.try(
+        distillpass.parse(text) |> result.map_error(named),
+      )
+      Ok(#(catalogue, rule_list, schedule_list, schedule_policy, memory))
     }
   }
 }
@@ -1862,6 +1893,12 @@ fn assemble(
   // below needs an address that survives the scanner being replaced.
   let schedulescan_name = process.new_name(prefix: "loom_schedulescan")
 
+  // The distillation pass, on the same arrangement and for the same
+  // reason: it is a supervised child, and `client/distillpass.settled`
+  // asks it by name rather than holding a pid that a restart would
+  // stale.
+  let distill_name = process.new_name(prefix: "loom_distill")
+
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -2128,13 +2165,22 @@ fn assemble(
         // two compose instead of one silently dropping the other.
         hooks: agency.reaping_hooks(built.hooks, agency_config)
         |> notes.digest_hooks(opened, clock)
-        // The memory digest is read once, here, as bytes — this server
-        // never opens the memory session and never takes its lease. A
-        // consolidation that lands while this one runs therefore reaches
-        // the next boot, which is the "memory updates land at session
-        // boundaries" rule obtained by construction rather than by a
-        // check. Absent file, nothing injected, no tokens spent.
-        |> memory.digest_hooks(memory.read_digest(memory_digest), clock),
+        // The memory digest is read at every run start rather than once
+        // here, because this server runs the producer as well: the pass
+        // `client/distillpass` starts writes the sidecar under this same
+        // boot, and a digest captured here would hold every session one
+        // pass behind its own pipeline. It is still a read of bytes and
+        // never an open — this server takes no memory lease outside that
+        // pass — so a consolidation landing mid-session costs the next
+        // run one file read and nothing else. The reader carries the
+        // logger because a sidecar too large to be a digest is refused,
+        // and a silent refusal looks exactly like a repository that has
+        // never distilled. Absent file, nothing injected, no tokens
+        // spent.
+        |> memory.digest_hooks(
+          memory.digest_reader(memory_digest, logger),
+          clock,
+        ),
     )
 
   // The extension hook bus goes on last, over the composed record, so an
@@ -2238,6 +2284,18 @@ fn assemble(
     ))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
+    // Started here rather than inside the boot: the pass dispatches
+    // model turns, and this tier starts after the session's own writer
+    // lease is held — which is what makes the live session the one file
+    // the pass is guaranteed to skip.
+    |> with_distill_pass(
+      settings,
+      distill_name,
+      memory_store,
+      clock,
+      entropy,
+      logger,
+    )
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
@@ -2320,6 +2378,14 @@ fn assemble(
     {
       [], False -> None
       _configured, _door -> Some(schedulescan_name)
+    },
+    // The same question `with_distill_pass` starts one on, asked in the
+    // same order and of the same two facts, so the field cannot say
+    // `None` while a worker runs under that name.
+    memory_pass: case settings.memory.cadence, distiller(settings) {
+      distillpass.DistillsOff, _routed -> None
+      distillpass.DistillsOnBoot, Error(_unroutable) -> None
+      distillpass.DistillsOnBoot, Ok(_distiller) -> Some(distill_name)
     },
   ))
 }
@@ -2460,6 +2526,80 @@ fn with_schedule_scanner(
 // question rather than a second one. Asking the policy here rather than
 // threading the answer down as a flag keeps that decision and the
 // decision to start the scanner at all reading off one source.
+// The distillation pass, and the two decisions not to start one.
+//
+// The same posture `with_rule_scanner` takes, over a plane that is on by
+// default rather than off: a host that opted out logs one line and
+// starts nothing, and a host whose catalogue routes neither a summarize
+// nor a main model cannot ask the pipeline's two questions, so it says
+// that instead of standing up a worker that could only fail. Both lines
+// exist because memory that silently never fills is the failure #149 was
+// filed about.
+fn with_distill_pass(
+  builder: sup.Builder,
+  settings: Settings,
+  name: Name(distillpass.Message),
+  memory_store: String,
+  clock: Clock,
+  entropy: fn() -> Int,
+  logger: Logger,
+) -> sup.Builder {
+  case settings.memory.cadence, distiller(settings) {
+    distillpass.DistillsOff, _routed -> {
+      log.info(logger, distillpass.off_event, [
+        field.text(
+          key: "effect",
+          value: "no distillation pass runs; remembered notes accumulate "
+            <> "until `loom-distill` is run by hand",
+        ),
+      ])
+      builder
+    }
+
+    distillpass.DistillsOnBoot, Error(reason) -> {
+      log.warn(logger, distillpass.failed_event, [
+        field.text(key: "reason", value: reason),
+        field.text(
+          key: "effect",
+          value: "no distillation pass runs on this boot; route a summarize "
+            <> "or main model in the catalogue",
+        ),
+      ])
+      builder
+    }
+
+    distillpass.DistillsOnBoot, Ok(distiller) ->
+      sup.add(
+        builder,
+        distillpass.supervised(distillpass.Config(
+          name:,
+          // Derived from the store this boot protected rather than from
+          // the session path again, so the pass writes the very sidecar
+          // the run-start hook reads.
+          directory: memory.directory_of(memory_store),
+          distiller:,
+          clock:,
+          entropy:,
+          wall_ms: settings.memory.wall_ms,
+          logger:,
+        )),
+      )
+  }
+}
+
+// The pipeline's provider surface, over the gateway this boot already
+// routed. The same resolution `client/distill`'s own command performs
+// from `--config`, reached through the catalogue rather than by parsing
+// the file a second time.
+fn distiller(settings: Settings) -> Result(distill.Distiller, String) {
+  use dispatch <- result.map(distill.target(settings.gateway))
+  distill.gateway_distiller(
+    settings.gateway,
+    dispatch,
+    timeout_ms: distill.default_timeout_ms,
+  )
+}
+
 fn with_model_door(
   options: schedulescan.Options,
   policy: schedule.Policy,

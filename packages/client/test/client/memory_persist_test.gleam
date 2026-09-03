@@ -23,6 +23,7 @@ import broker/policy
 import client/catalog
 import client/codemode
 import client/distill
+import client/distillpass
 import client/memory
 import client/schedule
 import client/serve
@@ -243,6 +244,11 @@ fn settings(
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     deactivated_tools: [],
+    // No lifecycle distillation in this rig: the pass would open the
+    // memory store this test asserts about and spend the scripted
+    // provider's turns. `memory_lifecycle_test` is where the shipped
+    // producer is exercised.
+    memory: distillpass.no_pass(),
   )
 }
 

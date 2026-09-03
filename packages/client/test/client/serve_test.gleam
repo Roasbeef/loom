@@ -11,6 +11,7 @@ import broker/exec
 import broker/policy
 import client/catalog
 import client/codemode
+import client/distillpass
 import client/host
 import client/protocol
 import client/rules
@@ -134,6 +135,11 @@ fn settings_under(root: String) -> serve.Settings {
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
     deactivated_tools: [],
+    // No lifecycle distillation in this rig: the pass would open the
+    // memory store this test asserts about and spend the scripted
+    // provider's turns. `memory_lifecycle_test` is where the shipped
+    // producer is exercised.
+    memory: distillpass.no_pass(),
   )
 }
 

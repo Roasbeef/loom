@@ -44,19 +44,31 @@
 //// distillation run's commits are separated by whole provider turns and
 //// it takes `run_lease_ttl_ms`, which is the difference between a run
 //// that survives and one whose lease is stolen out from under it while
-//// it waits on the model. No heartbeat, no background writer inside the
-//// server — and `client/serve` never opens this file at all: its boot
-//// probe reads the file's header without the lease, and the only thing
-//// that ever creates the store is the first write to it.
+//// it waits on the model. No heartbeat and no second writer: the only
+//// process that ever writes this file inside the server is the
+//// distillation pass `client/distillpass` starts on each boot, under
+//// the run-scale lease and through exactly the pipeline an operator's
+//// `loom-distill` would run. **The boot's own probe still opens
+//// nothing** — it reads the file's header without taking a lease — but
+//// since that pass runs on every ordinary boot, a first boot in a
+//// repository with no store is now what creates one, where before the
+//// first `remember` write was.
+////
+//// A lease is not renewed by the passage of time, only by a commit, so
+//// nothing here waits one out: a second pass, a hand-run
+//// `loom-distill` and a `remember` call arriving mid-pass are each
+//// refused in band and told which owner holds it.
 ////
 //// # The digest crosses to the server as bytes, not as a read
 ////
 //// Consolidation renders the current distillate head into
-//// `loom-memory.digest` beside the store. The server reads that file
-//// once at boot and injects it at every run start; it takes no lease and
+//// `loom-memory.digest` beside the store. The server reads that file at
+//// **every run start** and injects what it finds; it takes no lease and
 //// holds no handle, so a distillation run and a live session never
-//// contend, and an updated digest lands at the next session boundary by
-//// construction.
+//// contend, and an updated digest lands at the next *run* boundary by
+//// construction. Reading it per run rather than once per boot is what
+//// the in-process producer needs: a pass that runs under this same
+//// server would otherwise be invisible to the session that ran it.
 ////
 //// **The file holds the body; the wrapper is built here at injection
 //// time.** `render_digest` writes plain lines, redacted and byte-capped;
@@ -89,6 +101,7 @@ import simplifile
 import storage/sqlite
 import storage/storage
 import telemetry/field
+import telemetry/log.{type Logger}
 import tools/remember
 
 // --- where it all lives ----------------------------------------------------
@@ -1359,14 +1372,36 @@ pub fn write_digest(path: String, body: String) -> Result(Nil, String) {
   })
 }
 
-/// Reads the digest sidecar, once, at boot. `None` for an absent, empty
-/// or unreadable file — a server with no memory injects nothing at all,
-/// which is the common case and must cost zero tokens.
+/// The most bytes the sidecar may hold on disk before it is refused
+/// outright rather than clipped.
+///
+/// Four times `max_digest_bytes`, written out because a Gleam constant
+/// is a literal rather than an expression, so an honest file that
+/// grew a little — a wider truncation marker, a multi-byte codepoint
+/// near the boundary — is still read and clipped as it always was, and
+/// only a file that could not have come from `render_digest` is turned
+/// away. The bound exists because this read is on a **hot path over an
+/// untrusted file**: it happens on the strand driver's own process at
+/// every accepted run, and the file is the one part of the memory plane
+/// an operator, a filled disk or an attacker with a write primitive the
+/// protection missed can put anything in. Reading a gigabyte and then
+/// clipping it to 20 KiB would stall every turn of every session.
+pub const max_sidecar_bytes = 81_920
+
+/// Reads the digest sidecar, once per accepted run. `None` for an
+/// absent, empty, unreadable or oversized file — a server with no
+/// memory injects nothing at all, which is the common case and must
+/// cost zero tokens.
 ///
 /// The byte cap is applied again here rather than trusted from the
 /// writer: the pipeline caps what it renders, and this caps what is
-/// actually on disk, which is what an operator (or an attacker with a
-/// write primitive the protection missed) could have changed.
+/// actually on disk. Two caps, and the order is the point —
+/// `max_sidecar_bytes` is asked of the *file* before a byte is read, so
+/// an absurd sidecar costs one `stat`, and `max_digest_bytes` clips
+/// what a plausible one actually carries.
+///
+/// This is the silent door. `digest_reader` is the one that says
+/// something when a file is refused, and is what a server wires.
 ///
 /// ## Examples
 ///
@@ -1375,12 +1410,87 @@ pub fn write_digest(path: String, body: String) -> Result(Nil, String) {
 /// ```
 ///
 pub fn read_digest(path: String) -> Option(String) {
+  case sidecar(path) {
+    Absent | Oversized(..) -> None
+    Body(text:) -> Some(text)
+  }
+}
+
+/// The per-run sidecar read a server installs, which says once per run
+/// when it refuses an oversized file.
+///
+/// A refusal that injected nothing and said nothing would look exactly
+/// like a repository that has never distilled, and the operator whose
+/// memory silently stopped arriving is the one person who needs the
+/// line. It is a per-run `warn` rather than a boot-time one because the
+/// file can be replaced while a session runs, and a run is a provider
+/// request rather than a hot loop.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.digest_hooks(hooks, memory.digest_reader(path, logger), clock)
+/// ```
+///
+pub fn digest_reader(path: String, logger: Logger) -> fn() -> Option(String) {
+  fn() {
+    case sidecar(path) {
+      Absent -> None
+      Body(text:) -> Some(text)
+      Oversized(bytes:) -> {
+        log.warn(logger, "memory.digest_oversize", [
+          field.text(key: "digest", value: path),
+          field.count(key: "bytes", value: bytes),
+          field.count(key: "limit", value: max_sidecar_bytes),
+          field.text(
+            key: "effect",
+            value: "no distilled memory is injected into this run; the "
+              <> "pipeline never writes a file this large, so remove it and "
+              <> "the next distillation pass will render a fresh one",
+          ),
+        ])
+        None
+      }
+    }
+  }
+}
+
+/// What the sidecar on disk turned out to be. Three answers rather than
+/// an `Option`, because "there is nothing there" and "there is
+/// something there that cannot be a digest" are the same absence to a
+/// run and completely different facts to an operator.
+type Sidecar {
+  /// Absent, empty, whitespace, or unreadable.
+  Absent
+
+  /// Larger than any digest this pipeline renders. Nothing was read.
+  Oversized(bytes: Int)
+
+  /// A digest, clipped to `max_digest_bytes`.
+  Body(text: String)
+}
+
+fn sidecar(path: String) -> Sidecar {
+  // The size question is asked first and answered by one `stat`, so the
+  // refusal below costs no read at all. An unstattable file is treated
+  // as absent rather than probed with a read: the read would fail too.
+  case simplifile.file_info(path) {
+    Error(_unstattable) -> Absent
+    Ok(info) ->
+      case info.size > max_sidecar_bytes {
+        True -> Oversized(bytes: info.size)
+        False -> read_within(path)
+      }
+  }
+}
+
+fn read_within(path: String) -> Sidecar {
   case simplifile.read(path) {
-    Error(_unreadable) -> None
+    Error(_unreadable) -> Absent
     Ok(body) ->
       case string.trim(body) {
-        "" -> None
-        text -> Some(notes.clip(text, max_digest_bytes))
+        "" -> Absent
+        text -> Body(text: notes.clip(text, max_digest_bytes))
       }
   }
 }
@@ -1393,19 +1503,29 @@ pub fn read_digest(path: String) -> Option(String) {
 /// slot, so a builder that set it would silently drop the notes digest
 /// installed a line earlier.
 ///
+/// `read` is a **thunk**, called once per accepted run rather than once
+/// per boot, and that is what makes the in-process producer visible at
+/// all: `client/distillpass` runs a pass under this same server, and a
+/// digest read once at boot would hold every session one boot behind its
+/// own pipeline. It stays a *run-start* read, so nothing here can touch
+/// a run already open — memory still lands on run boundaries, and the
+/// anti-feedback exclusion is structural rather than temporal
+/// (`extractable` never reads a user message, which is what an injected
+/// digest is).
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // hooks |> notes.digest_hooks(session, clock) |> memory.digest_hooks(read, clock)
+/// // hooks |> memory.digest_hooks(fn() { memory.read_digest(path) }, clock)
 /// ```
 ///
 pub fn digest_hooks(
   hooks: effects.Hooks,
-  digest: Option(String),
+  read: fn() -> Option(String),
   clock: Clock,
 ) -> effects.Hooks {
   effects.Hooks(..hooks, run_start: fn(operation) {
-    list.append(hooks.run_start(operation), injected(digest, clock))
+    list.append(hooks.run_start(operation), injected(read(), clock))
   })
 }
 

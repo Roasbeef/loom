@@ -174,6 +174,36 @@ if [ "$SMOKE" = 1 ]; then
     esac
   fi
 
+  # #149. The distillation pass is a supervised child of every ordinary
+  # boot, so a release that shipped the consumer without the producer
+  # fails here. The claim is deliberately about the *lifecycle* rather
+  # than about a distillate: this directory holds one session file and
+  # the server holds its lease, so the pass reads nothing, asks no
+  # provider and completes — which is exactly the assertion that has
+  # teeth, since a missing worker, an unroutable catalogue or a crashed
+  # pass all fail it without needing an API key on the smoke host.
+  PASS=""
+  for _ in $(seq 1 50); do
+    PASS="$(grep -m1 '"event":"memory.distill.completed"' "$LOG" || true)"
+    if [ -n "$PASS" ]; then break; fi
+    kill -0 "$SERVER_PID" 2>/dev/null || break
+    sleep 0.2
+  done
+  [ -n "$PASS" ] || {
+    echo "release.sh: the release ran no distillation pass on boot." >&2
+    echo "  The lines it did log about memory were:" >&2
+    grep 'memory.distill' "$LOG" | sed 's/^/    /' >&2 || true
+    exit 1; }
+  # The comma matters: without it the pattern also accepts "skipped":10
+  # and "skipped":12. `announce` always emits `candidates` next, so it is
+  # guaranteed to be there.
+  case "$PASS" in
+    *'"skipped":1,'*) ;;
+    *) echo "release.sh: the pass did not skip the live session it runs" >&2
+       echo "  inside: $PASS" >&2
+       exit 1 ;;
+  esac
+
   # `server.stopped` is the structured log line the shutdown path emits
   # after the listener is closed and the session lease released, so it is
   # the witness that SIGTERM took the graceful route rather than killing a
@@ -256,7 +286,8 @@ if [ "$SMOKE" = 1 ]; then
     cat "$REFUSAL" >&2; exit 1; }
 
   echo "release.sh: smoke ok — no erl on PATH, healthz 200, ws 401 without a token,"
-  echo "            session written by the bundled NIF, clean close on SIGTERM,"
+  echo "            session written by the bundled NIF, a distillation pass run on"
+  echo "            boot that skipped the live session, clean close on SIGTERM,"
   echo "            the helper found beside the binary with no --helper injected,"
   echo "            and an explicit --helper still winning"
   if [ -d "$REL/share/codemode-seed" ]; then
