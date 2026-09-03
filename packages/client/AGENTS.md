@@ -975,13 +975,33 @@ the nodes:
   holding no policy at all. `routing(extension, over: inner)` answers
   `net.request` (through `Egress.perform`, an injected function with the
   policy, the credential lookup and the refusal mapping closed over) and
-  hands every other name down. One arm, not two: `serviced_caps` is
-  `[net_cap]`, `Extension` carries only `egress:`, and the `ext.call` arm
-  with its `Call`/`call_value` shapes went with the capability. `Ask`/`Answer` restate `cap/net`'s
+  the two memory arms, `ext.remember` and `ext.recall` (through
+  `Memory`'s two closures, with the durability behind them), and hands
+  every other name down. `serviced_caps` is those three names; the
+  `ext.call` arm with its `Call`/`call_value` shapes went with the
+  capability. The memory arms check the *leaf* key they are sent —
+  `checked_key`: non-empty, no `/`, at most `max_key_length` — and the
+  value against `max_value_bytes`, and nothing more: which subtree a cell
+  lands in is bound by `client/extension/dispatch` from the install
+  record, so this module never learns an extension's name. `Ask`/`Answer` restate `cap/net`'s
   `Request`/`Response` rather than naming `broker/egress`'s, so a test
   drives the whole arm with a function and no socket. Every inbound field
   is decoded totally; a malformed request is refused by the *plan*, so it
   consumes no ordinal and no admission.
+- `client/extension/memory` — the durable half of those two arms, and
+  the same split `client/scheduleseam` fills for `tools/schedule`: the
+  seam owns the wire, this owns the store. `Cell(extension:, key:)` and
+  `key(cell)` are the one composition of `ext/<name>/<key>`, so the
+  confinement is a line rather than a convention; `door(Wiring(runtime:))`
+  borrows the live runtime through the Agency's holder
+  (`for_session(agency_config)`, because the runtime does not exist until
+  `api.open` has returned the registry these tools are in);
+  `shut(reason)` is what a host with no session hands the dispatch, so
+  the capability is routed and refuses with a sentence. A write is
+  `put_reserved_fact` — blind, latest-wins, no compare-and-set — and a
+  read is the plain `fact`, which never consulted the reservation. The
+  value is parsed with `core/json.parse` on the way in and rendered on
+  the way out, so a cell holds a document rather than a quoted string.
 - `client/extension/hosts` — the session's satellites, held open and
   handed out. One supervised actor per session keeps at most one
   `satellite.Host` per installed extension, starts it lazily on that

@@ -97,6 +97,17 @@ harness minted for that invocation.
   `Bool` field would make every reader carry its polarity. The `seq` is
   the one storage assigned, because the harness fires this after the
   commit rather than before it.
+- `ext/memory.{remember, recall}` — the one module here that carries
+  authority: durable, latest-wins cells under the reserved
+  `ext/<name>/<key>` prefix this extension owns, over the `ext.remember`
+  and `ext.recall` capabilities. `remember` takes a `json.Json` and
+  `recall` answers `Result(Option(dynamic.Dynamic), ext.Refusal)`, so a
+  cell is read back with the same `ext.decode_args` vocabulary a tool's
+  arguments are. `Ok(None)` is a cell never written — the first-call
+  case, never an error. The key an author passes is a **leaf**: the
+  subtree is composed on the harness side from the name an operator
+  installed this extension under (`client/extension/memory.key`), so no
+  argument here can name another extension's cell.
 - `ext/runtime.{serve, serving, answer, Declared}` — `serving(tools:,
   hooks:)` is what a generated entry calls and it does not return until
   the harness cancels the satellite or the channel closes; `serve(tools)`
@@ -202,6 +213,18 @@ harness minted for that invocation.
   broken install rather than a bad model call. The error outcome carries
   both sides — the name asked for and the sorted list served — because an
   operator reading it needs the disagreement, not half of it.
+- **Durable memory is not the scratch store, and both are on the seam.**
+  `cap/kv` is ephemeral — evicted between calls, gone with the session —
+  and `ext/memory` is a reserved blackboard cell in the session's own
+  store. An extension that wants something to survive a restart wants the
+  second; one that wants a cache within a call wants the first. Neither
+  is a database: `ext/memory` is latest-wins over one cell, with no
+  listing and no delete, deliberately.
+- **A remembered cell reaches the model only if the extension puts it
+  there.** The prefix is reserved in `runtime/api`, so the blackboard
+  tool can neither write nor list one. An extension that wants the model
+  to see what it remembered injects it from a `before_agent_start` hook,
+  which is also the only place the attribution is right.
 - **Nothing here refuses a capability.** Like `cap/net`, this package
   marshals and labels. Deny-by-default is the broker's property; an
   extension's net policy is composed from its manifest at dispatch (phase

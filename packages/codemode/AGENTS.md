@@ -27,24 +27,33 @@ strand roots, and can reach neither the disk, the network, nor a process.
 
 The *extension* seam is the third, and its relation to the other two is
 deliberately not disjointness: it is `extension_cap_modules` — the
-workspace seam's capabilities plus `ext`, and no capability of its own —
-over `extension_stdlib_modules`, the shared pure subset plus
+workspace seam's capabilities plus `ext` and `ext/hook`, which carry no
+authority, and `ext/memory`, which carries the one capability that is an
+extension's alone — over `extension_stdlib_modules`, the shared pure subset plus
 `gleam/dynamic`, `gleam/dynamic/decode`, `gleam/bit_array`, `gleam/uri`
 and `gleam/json`. An installed extension's tool *is* a workspace program
 with a different entry point, so carving it something narrower would buy
 nothing and would have to be kept in step by hand. The property test is
-therefore a superset claim, and the widening is pinned to exactly its one
-name so a `cap/strand` cannot arrive on the way.
+therefore a superset claim, and the widening is pinned to exactly its
+three names so a `cap/strand` cannot arrive on the way. `ext/memory` is
+on this seam and no other because no other seam's programs have an
+installed name to key a durable subtree by: its cells live under
+`ext/<name>/`, composed by the harness from the install record.
 
 The *resident* seam is the fourth, and nothing selects it. It is the seam
 a harness-resident hook body would be judged under if a loader were ever
-built: `resident_prelude_modules` — the extension seam's prelude list with
-every `cap/*` name filtered out, so `ext` and `ext/hook` — over
-`extension_stdlib_modules`, and **no capability at all**. A jailed body
-may reach the broker because the jail is what makes that safe; a resident
-body runs inside the harness VM, where a capability stub is a direct call
-in the process that holds the durability plane. So a resident hook is a
-pure transform over its payload and everything else stays in the jail.
+built: `resident_prelude_modules` — the extension seam's prelude list
+with every module that reaches the broker filtered out, so `ext` and
+`ext/hook` and *not* `ext/memory` — over `extension_stdlib_modules`, and
+**no capability at all**. A jailed body may reach the broker because the
+jail is what makes that safe; a resident body runs inside the harness VM,
+where a capability stub is a direct call in the process that holds the
+durability plane. So a resident hook is a pure transform over its payload
+and everything else stays in the jail. `ext/memory` is a capability
+module that does not wear the `cap/` prefix, so the filter names the
+authority-carrying additions instead of matching on the prefix alone; a
+prefix match would have handed a resident body the durable store.
+
 The seam exists so the allowlist is frozen *before* #32 could invent one
 (#33's runtime half); the loader is deferred and the freeze is not.
 `client/test/client/extension/freeze_test.gleam` pins both this seam and
