@@ -239,9 +239,18 @@ pub fn an_interrupted_pass_leaves_the_next_boot_a_consistent_store_test() {
 
   // A provider that never answers, so the consolidation turn is still in
   // flight when the shutdown reaps the worker.
-  let assert Ok(booted) = serve.boot(settings(root, "a.db", silent_gateway()))
+  let assert Ok(booted) = serve.boot(settings(root, "a.db", hanging_gateway()))
     as "the server must boot"
-  let assert Some(_worker) = booted.memory_pass as "the pass must be started"
+  let assert Some(worker) = booted.memory_pass as "the pass must be started"
+
+  // The interruption, pinned. Every assertion below would hold just as
+  // well if the pass had never started, so the test has to prove the
+  // machine is still in `Running` when the shutdown arrives: a question
+  // asked mid-pass is postponed, so this wait times out, and that
+  // timeout *is* the proof that nothing had settled.
+  let assert Error(_still_running) =
+    distillpass.settled(worker, timeout_ms: 200)
+    as "the pass must still be in flight when the shutdown reaps it"
   serve.shutdown(booted)
 
   // The store as the interruption left it. Opened on a clock far past
@@ -269,7 +278,14 @@ pub fn an_interrupted_pass_leaves_the_next_boot_a_consistent_store_test() {
   assert list.length(pending) == 1
   assert memory.read_digest(root <> "/loom-memory.digest") == None
 
-  // And the next boot finishes the job.
+  // And the next boot finishes the job — with the lease the killed pass
+  // could not release now gone, because closing the reader above is what
+  // released it. A *real* next boot has no such helper: inside the
+  // ten-minute run TTL it is refused with `loom-distill` named as the
+  // holder (the case `a_held_memory_lease_is_reported_and_retried_test`
+  // covers), and it is the TTL it waits out. What this leg proves is the
+  // half that is about the store: the material survived the
+  // interruption intact and consolidates when a pass can reach a model.
   let assert Ok(again) = serve.boot(settings(root, "b.db", scripted_gateway()))
     as "the next server must boot"
   let assert Some(worker) = again.memory_pass as "the next pass must start"
@@ -506,10 +522,18 @@ fn refusing_gateway() -> provider_gateway.Gateway {
   gateway_over(provider_test.transport(fn(_request, out) { refused(out) }))
 }
 
-// A provider that never answers at all, so a pass is still in flight
-// when the shutdown reaps it.
-fn silent_gateway() -> provider_gateway.Gateway {
-  gateway_over(provider_test.silent())
+// A provider that never answers *and never fails*, so a pass really is
+// still in flight when the shutdown reaps it.
+//
+// `provider_test.silent()` is not this: its owner replays nothing and
+// then exits, which the stream reads as a terminal transport failure, so
+// a pass over it settles in milliseconds. Sleeping on the owner process
+// is what holds the request open — and what the interruption test needs,
+// since a settled pass would prove nothing about an interrupted one.
+fn hanging_gateway() -> provider_gateway.Gateway {
+  gateway_over(
+    provider_test.transport(fn(_request, _out) { process.sleep_forever() }),
+  )
 }
 
 fn settled(out: Subject(http.HttpEvent), text: String) -> Nil {
