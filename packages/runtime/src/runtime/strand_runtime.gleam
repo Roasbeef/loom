@@ -1478,8 +1478,8 @@ fn with_projection(
 // The ledger claim is made by an *owner* of the scope, never by the driver.
 // The ledger installs its monitor when it handles the claim, and a scope
 // that had already drained and exited by then would be seen only as
-// `noproc` — an abnormal reason, which the ledger correctly reads as a lost
-// reaper and fails the session closed on. The old reaper claimed from inside
+// `noproc` — which the ledger reads as a departure and retires, never as a
+// lost drain proof (#171). The old reaper claimed from inside
 // itself so its pid could not exit before the monitor existed; here the
 // claimant is a leaf owner the scope must wait for, which holds the scope's
 // pid alive until the ledger has replied, whatever the driver does meanwhile.

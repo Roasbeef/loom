@@ -1,6 +1,7 @@
 # Extensions: out-of-tree capability that never touches the TCB
 
-Status: ruling, pre-code. The two decisions that outlive one change are
+Status: ruling, built through phase 3 (see the status paragraph before
+"Phase 5"). The two decisions that outlive one change are
 recorded as ADR-007; this note carries the argument, the vocabulary, the
 manifest, and the phased plan. The acceptance test for the whole of it is
 a new repository under roasbeef that implements web search as an
@@ -464,6 +465,11 @@ Phase 2's exit criteria are met, the last of them by a real drive on
 https://github.com/Roasbeef/loom-web-search` over codeload, and a Kimi K3
 session that called `web_search` and answered from Brave's results with
 `BRAVE_API_KEY` in the server's environment and nowhere else.
+Phase 3 followed on 2026-09-03: #199 for the hook bus, the runtime slots
+and the `[[hook]]` half of the manifest, and #200 for the persistent
+satellite, the `hook_call` frame pair and the host registry, with the
+e2e in `packages/client/test/client/extension_e2e_test.gleam` meeting
+the phase's exit criteria over real jailed satellites.
 `docs/architecture/extensions.md` is what the tree holds, section by
 section. The divergence: this note adopted pi's rule that a tool without
 a `prompt_snippet` is silently omitted from the available-tools section,

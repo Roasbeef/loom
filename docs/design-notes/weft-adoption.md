@@ -1,6 +1,6 @@
 # Design note: adopting weft
 
-Status: **built through phase 2; loom#159 is the plan of record and
+Status: **built through phase 3; loom#159 is the plan of record and
 checklist, and `docs/weft.md` is the standing guide.** A
 survey of where [weft](https://hex.pm/packages/weft)
 (`github.com/Roasbeef/weft`) could replace hand-rolled concurrency
