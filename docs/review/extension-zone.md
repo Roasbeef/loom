@@ -14,10 +14,15 @@ The surfaces read: `packages/ext/src/**`, `packages/cap/src/**`,
 `packages/client/src/client/extension/**`, and the freeze test itself,
 `packages/client/test/client/extension/freeze_test.gleam`.
 
-Reviewers: **author's pass** (this document as filed) and **independent
-pass (Fable 5.1)**, whose findings go in the section at the end. The
-author's pass is not the review #33 asks for on its own; it is the
-material the independent pass attacks.
+Reviewers: **author's pass** (this document as filed) and an
+**independent pass (Opus 5, 2026-09-03)**, whose findings are in the
+section at the end. Fable's credits were exhausted, so the independent
+tier is Opus 5 rather than Fable 5.1; what the pass buys is the fresh
+context and not the tier, and it earned it — it rebuilt the seed as a
+replica build root and compiled against it rather than reading the
+`gleam.toml` files, which is how the first two findings were measured
+instead of argued. The author's pass is not the review #33 asks for on
+its own; it is the material the independent pass attacks.
 
 ## The claim under review
 
@@ -132,11 +137,11 @@ in the jail, where it already works.
 `packages/codemode/test/codemode_test.gleam` additionally pins the
 resident seam's *shape*: that it reaches no capability, that it is the
 extension seam with the capabilities subtracted and nothing else changed,
-and that `for_seam` selects it. `packages/client/test/client/
-codemode_test.gleam` pins the client-side half —
-`seam_caps(ResidentSeam) == []` and `tool_seam(ResidentSeam) ==
-Error(Nil)` — so that the two `case` arms carrying "reaches nothing at
-all" cannot be made permissive with a green suite.
+and that `for_seam` selects it. The client's own `codemode_test.gleam`
+pins the client-side half — `seam_caps(ResidentSeam) == []` and
+`tool_seam(ResidentSeam) == Error(Nil)` — so that the two `case` arms
+carrying "reaches nothing at all" cannot be made permissive with a green
+suite.
 
 ## What the compiler emits
 
@@ -254,9 +259,39 @@ weight.
 
 ## Coordinator's independent review
 
-*To be filled after the independent pass (Fable 5.1). Findings are
-triaged here in the same table shape, and any HIGH is either closed in
-code or accepted in writing before #33 closes.*
+An independent pass (Opus 5, 2026-09-03) read the same surfaces with no
+sight of the author's reasoning, ran both suites with the exit codes
+captured directly, rebuilt `packages/ext` and re-read all three import
+tables with `beam_lib`, and built a replica build root from
+`compile.default_dependencies()` to compile against. **No HIGH.** The two
+MEDs are claim accuracy rather than reach: nothing in the diff is
+exploitable today.
+
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| Z-I1 | MED | The build root is not three packages. `cap` names `gleam_erlang` and `gleam_otp` under `[dependencies]`, so both resolve in every build root that vendors `cap`; a replica build compiled `gleam/erlang/process` and `gleam/otp/actor` with only a transitive-dependency warning. Mechanism one bounds the *loom* surface; the seam is the gate for the rest. | **Fixed in this PR.** The two sentences here and the one in the test's prose now say so, and both names are refusal fixtures. |
+| Z-I2 | MED | The `gleam/erlang` fixture named a module gleam_erlang has never shipped; the reachable names are `gleam/erlang/process`, `/atom`, `/port`. It was refused for the right rule but was not the adversarial name a reader would take it for. | **Fixed in this PR** by the same fixture edit. |
+| Z-I3 | LOW | The prelude source walk reads only `.gleam`, so `packages/cap/src/cap_ffi.erl` — the one file in the extension-facing packages that can name an Erlang module by atom — sits outside every test. It names no loom module today. | **Fixed in this PR**: `the_preludes_ship_one_foreign_source` pins the non-Gleam set under both trees as exactly `["cap_ffi.erl"]`, so a second shim forces a decision. |
+| Z-I4 | LOW | The base omitted `events`, `telemetry`, `mcp` and `tui`, all of which ship Gleam and run in the harness VM, so a future TCB module landing in one of them was outside the disjointness walk. | **Fixed in this PR**: both constants are now every package that ships Gleam into the harness VM, and the doc comment says why `core`, `conformance`, `lint` and `prompt` are not. |
+| Z-I5 | LOW | The three new `ResidentSeam` arms in `client/codemode.gleam` were asserted nowhere; "reaches nothing at all" rested on them and any of the three could be widened with a green suite. | **Fixed in this PR**: `seam_caps(ResidentSeam) == []` and `tool_seam(ResidentSeam) == Error(Nil)` beside the seam assertions. |
+| Z-I6 | LOW | `shadow_refusals` refuses a package's own module name only when it is already on the seam, so an extension may ship `src/runtime/writer.gleam`. Inert in the jail; a resident loader would be loading `runtime@writer` into the harness code server, where a collision is a swap. | **Recorded for #32**, under "Attack surface considered". No code change: `codemode` is pure and cannot walk the tree, and a written list of harness names is the failure this review is about. |
+| Z-I7 | INFO | The resident seam bounds names, not time or memory: an in-VM body has no jail, rlimit or deadline behind a `json.parse` or a recursion. "Pure transform" is not "bounded". | **Fixed in this PR**: a sentence in `policy.resident()`'s doc saying a loader owes the call a bound of its own. |
+| Z-I8 | INFO | "Walks all ten packages" — it walked nine; `sandbox` ships no Gleam, as the test itself pins. | **Wording**, corrected with Z-I4: it now walks the thirteen base packages that ship Gleam. |
+| Z-I9 | INFO | "Nothing but source crosses the install boundary" — `schema/**` and `skills/**` cross as installed data. Neither is compiled, so the property holds; the sentence overstated it. | **Wording**, corrected in this PR. |
+| Z-I10 | INFO | The beam import tables recorded in the test's `////` and above reproduce exactly against a fresh build, and the four native MFAs with them. Z-F5 confirmed independently. | No action. |
+
+The pass also attacked and could not break: the no-dynamic-dispatch claim
+(none of the twenty allowlisted stdlib modules exposes a way out of
+`Dynamic` into a callable, and `gleam/function` has no `@external` at
+all); a `.beam` or `.erl` in the archive (`classify` refuses a non-Gleam
+file under `src/` and the UTF-8 check catches anything that survived
+elsewhere, so a binary cannot reach the staged tree); unjudged
+`dev_dependencies` (`test/` is pruned first and the extension's
+`gleam.toml` never reaches the compiler); a vacuous walk (both walks
+assert on the directory read and every test carries a non-vacuity
+assertion); and the reload path (`installed.gleam` re-vets, re-digests
+and compares the recorded allowlist at every load, so the freeze survives
+a seam widened after install).
 
 ## Reproduction
 
