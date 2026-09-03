@@ -57,9 +57,10 @@ import machine/codec
 import machine/operation.{
   type NormalizedRetryPolicy, type Operation, type OperationState,
   type PendingEntry, type StructuralPreparation, type SummaryGeneration,
-  Assistant, AwaitingDeferred, Compacting, CompactionState,
-  DeferredEffectPending, DeferredSuspended, Generating, GenerationReady,
-  NavigationState, RunState, SummarizedNavigation, Tools,
+  Assistant, AwaitingDeferred, BranchSummaryPreparation, Compacting,
+  CompactionPreparation, CompactionState, DeferredEffectPending,
+  DeferredSuspended, Generating, GenerationReady, NavigationState,
+  OverflowReason, RunState, SummarizedNavigation, ThresholdReason, Tools,
 }
 import machine/planner.{type Observation, NoObservation}
 import machine/queue
@@ -881,14 +882,14 @@ fn plan(
     planner.AwaitEffect(key:) ->
       await_effect_action(state, loaded, key, observation, now, fuel)
     planner.Transition(next: _, tx: plan_tx) ->
-      commit_then(state, plan_tx, observation, fuel, fn(state) {
+      commit_then(state, loaded, plan_tx, observation, fuel, fn(state) {
         drive_loop(state, fuel - 1)
       })
 
     // The one durable state change worth an `info` line per operation:
     // the operation reached a terminal result.
     planner.Finish(result: _, tx: plan_tx) ->
-      commit_then(state, plan_tx, observation, fuel, fn(state) {
+      commit_then(state, loaded, plan_tx, observation, fuel, fn(state) {
         log.info(
           log.scoped(
             state.logger,
@@ -901,7 +902,7 @@ fn plan(
         drive_loop(state, fuel - 1)
       })
     planner.Dispatch(intent:, next: _, tx: plan_tx) ->
-      commit_then(state, plan_tx, observation, fuel, fn(state) {
+      commit_then(state, loaded, plan_tx, observation, fuel, fn(state) {
         case start_effect(state, loaded, intent) {
           Ok(state) -> drive_loop(state, fuel - 1)
           Error(reason) -> Halt(reason)
@@ -939,13 +940,17 @@ fn await_effect_action(
 
 fn commit_then(
   state: State,
+  loaded: Loaded,
   plan_tx: tx.Tx,
   observation: Observation,
   fuel: Int,
   continue: fn(State) -> Outcome,
 ) -> Outcome {
   case writer.commit(state.writer, plan_tx) {
-    Ok(_) -> continue(state)
+    Ok(committed) -> {
+      announce_usage(state, loaded.op.id, plan_tx, committed)
+      continue(state)
+    }
 
     // A concurrent admission won the seq race: reload and re-plan with
     // the observation preserved.
@@ -965,6 +970,37 @@ fn commit_then(
     // is the only thing that can resolve it.
     Error(tx.LeaseLost(held_by:)) -> Halt(tx.describe_lease_loss(held_by))
   }
+}
+
+// Every cost-ledger row this transaction wrote, announced once, after
+// the commit that made it durable returned.
+//
+// This is the one hook on the surface that is not replayable, and the
+// position is what buys that. `CommitResult.seqs` lists an assigned seq
+// per write in write order, so a row and its storage-assigned seq are
+// paired here and nowhere else — the machine built the row with a
+// placeholder seq and has no way to learn the real one. A crash between
+// the commit returning and this call loses the notification; a restart
+// re-plans from durable state and never re-commits a row that is
+// already there, so nothing is announced twice. Losing a trace line is
+// the correct trade against double-counting a session.
+fn announce_usage(
+  state: State,
+  operation: OpId,
+  plan_tx: tx.Tx,
+  committed: tx.CommitResult,
+) -> Nil {
+  list.zip(plan_tx.writes, committed.seqs)
+  |> list.each(fn(pair) {
+    case pair {
+      #(tx.InsertUsage(row:), seq) ->
+        state.effects.hooks.usage(operation, entry.UsageRow(..row, seq:))
+
+      #(tx.InsertEntry(..), _seq)
+      | #(tx.SetRegister(..), _seq)
+      | #(tx.DeleteRegister(..), _seq) -> Nil
+    }
+  })
 }
 
 // A message for a strand that may have died since it was arranged: a
@@ -1393,8 +1429,81 @@ fn start_effect(
           preparation: loaded.preparation,
           configuration: summary_context.configuration,
           stream_options: summary_context.stream_options,
+          // The last place a compaction's input is still ours to add
+          // to. Asked here rather than when the decision was taken so
+          // that a re-dispatched attempt asks again — the same replay
+          // rule the `context` hook above is held to, and for the same
+          // reason: nothing about a note is written down.
+          notes: compaction_notes(state, loaded, operation),
         ),
       ))
+  }
+}
+
+// The notes an extension asked to have appended to this compaction's
+// summarizer input, or none.
+//
+// A branch summary is not a compaction and never asks: the event is
+// `before_compact`, and firing it for a `loom navigate --summarize`
+// would tell a subscriber a compaction happened when none did. A
+// dispatch whose preparation register is not in hand asks nothing
+// either — `summary_provider_request` is about to refuse that request
+// anyway, and inventing a cue out of an absent preparation would put
+// numbers on the wire the harness does not have.
+fn compaction_notes(
+  state: State,
+  loaded: Loaded,
+  operation: OpId,
+) -> List(String) {
+  case loaded.preparation {
+    None | Some(BranchSummaryPreparation(..)) -> []
+
+    Some(CompactionPreparation(
+      tokens_before:,
+      messages_to_summarize:,
+      turn_prefix_messages:,
+      retained_tail:,
+      ..,
+    )) -> {
+      let cue =
+        effects.CompactionCue(
+          cause: compaction_cause(loaded.op_state),
+          tokens_before:,
+          // The prefix is summarized alongside the body — it is the
+          // head of the turn the cut landed inside — so the count a
+          // subscriber is told is the count that actually goes to the
+          // summarizer, not the body alone.
+          summarized_messages: list.length(messages_to_summarize)
+            + list.length(turn_prefix_messages),
+          retained_messages: list.length(retained_tail),
+        )
+      state.effects.hooks.compaction_note(operation, cue)
+    }
+  }
+}
+
+// Which door this compaction came through, read from the durable state
+// the planner is already in rather than from anything reconstructed.
+// `Compacting` carries the planner's own reason word; a standalone
+// `CompactionState` is an operator's `Compact` and has no reason field
+// because there is only one way to reach it. Any other state is not a
+// compaction, and the only such dispatch is a branch summary, which
+// `compaction_notes` has already turned away.
+fn compaction_cause(op_state: OperationState) -> effects.CompactionCause {
+  case op_state {
+    RunState(phase: Compacting(reason: ThresholdReason, ..), ..) ->
+      effects.ThresholdCompaction
+
+    RunState(phase: Compacting(reason: OverflowReason, ..), ..) ->
+      effects.OverflowCompaction
+
+    CompactionState(..) -> effects.RequestedCompaction
+
+    // Not a compaction state at all. Unreachable from the only caller,
+    // which has a `CompactionPreparation` in hand, and answered rather
+    // than asserted away because a wrong word on a notification is a
+    // cheaper failure than a halted strand.
+    RunState(..) | NavigationState(..) -> effects.RequestedCompaction
   }
 }
 

@@ -36,7 +36,7 @@
 //// `tier` decodes only `"jailed"`. A harness-resident body is phase 4 and
 //// there is no loader for one, so a manifest naming the tier is refused
 //// saying that rather than installed and ignored. `[[hook]]` is accepted
-//// from phase 3 on: the event must be one of the seven the ruling fixes
+//// from phase 3 on: the event must be one of the nine the ruling fixes
 //// and the entry must name a module the package ships, both checked here
 //// so that the hook bus never has to re-check either.
 
@@ -88,12 +88,21 @@ pub const agent_end_event = "agent_end"
 /// `agent_settled`: the run and every follow-up it queued are done.
 pub const agent_settled_event = "agent_settled"
 
+/// `before_compact`: the runtime decided to compact, before the summary
+/// generation starts. A notification carrying an optional note, never a
+/// veto — nothing an extension answers can stop the compaction.
+pub const before_compact_event = "before_compact"
+
+/// `usage`: one cost-ledger row was committed. Notify-only.
+pub const usage_event = "usage"
+
 /// The hook events the ruling fixes, in the table's order. The whole
 /// vocabulary: an event outside this list refuses the manifest naming
 /// what it takes, and the harness has one slot per name here.
 pub const hook_events = [
   session_start_event, before_agent_start_event, context_event, tool_call_event,
-  tool_result_event, agent_end_event, agent_settled_event,
+  tool_result_event, agent_end_event, agent_settled_event, before_compact_event,
+  usage_event,
 ]
 
 /// Where an extension's body runs.

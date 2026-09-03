@@ -54,7 +54,7 @@
 //// `CompactionPreparation.is_split_turn` is correspondingly always
 //// `False` here.
 
-import core/entry
+import core/entry.{type UsageRow}
 import core/ids.{type OpId}
 import core/json
 import core/message.{type AgentMessage}
@@ -72,7 +72,8 @@ import machine/planner.{
 }
 import machine/strand.{type StrandConfiguration}
 import runtime/effects.{
-  type AdmissionQuery, type Hooks, type OverflowQuery, type ThresholdQuery,
+  type AdmissionQuery, type CompactionCue, type Hooks, type OverflowQuery,
+  type ThresholdQuery,
 }
 import session/session.{type Session}
 import storage/storage
@@ -248,6 +249,48 @@ pub fn with_context(
   context: fn(OpId, List(AgentMessage)) -> List(AgentMessage),
 ) -> Registry {
   Registry(hooks: effects.Hooks(..registry.hooks, context:))
+}
+
+/// Replaces the `before_compact` slot: attributed blocks appended to
+/// the summarizer's input for one dispatched compaction.
+///
+/// Like `with_context`, this exists for the extension hook bus and
+/// nothing in the harness itself installs one. The default answers with
+/// no notes, so a host that never sets this summarizes exactly the
+/// preparation it froze.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.with_compaction_note(registry, fn(_op, _cue) { [] })
+/// ```
+///
+pub fn with_compaction_note(
+  registry: Registry,
+  compaction_note: fn(OpId, CompactionCue) -> List(String),
+) -> Registry {
+  Registry(hooks: effects.Hooks(..registry.hooks, compaction_note:))
+}
+
+/// Replaces the `usage` slot: one committed cost-ledger row, announced
+/// after the transaction that wrote it returned.
+///
+/// The default does nothing. A host that sets this is asking to be told
+/// what a session cost as it is spent, which is what a tracing
+/// extension subscribes for; nothing in the harness reads the answer,
+/// because there is no answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.with_usage(registry, fn(_op, _row) { Nil })
+/// ```
+///
+pub fn with_usage(
+  registry: Registry,
+  usage: fn(OpId, UsageRow) -> Nil,
+) -> Registry {
+  Registry(hooks: effects.Hooks(..registry.hooks, usage:))
 }
 
 /// An admission hook with fixed limits and the resolved adapter api the

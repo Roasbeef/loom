@@ -90,6 +90,14 @@
 //// including why every other re-derivation would be expensive. Two
 //// environment variables reach it:
 ////
+//// - `LOOM_DISABLE_TOOLS` — a comma-separated list of built-in tools
+////   this server does not register. The way an extension's tool comes
+////   to stand in for a built-in of the same name; see
+////   `client/contributions`. It frees a *name* and is not a capability
+////   control: `code_mode`'s prelude still reaches `cap/proc.run`,
+////   `cap/fs.write` and `cap/fs.edit` through the broker whatever this
+////   list says, so narrowing what a session may do is the base policy's
+////   job and never this variable's.
 //// - `LOOM_PROMPT_PACK` — a pack file to render instead of the one
 ////   shipped in `prompt/default`. A file that cannot be read, or does not
 ////   decode, or renders to nothing, refuses the boot with a worded
@@ -337,6 +345,17 @@ pub type Settings {
     /// schedule tool at all, the way an absent memory plane registers no
     /// `remember`.
     schedule_policy: schedule.Policy,
+    /// Built-in tools the operator deactivated, from
+    /// `LOOM_DISABLE_TOOLS`. Empty is the ordinary case and the whole
+    /// registry stands.
+    ///
+    /// The list exists so that an extension may stand in for a built-in
+    /// without ever overriding one: a deactivated built-in leaves its
+    /// name unclaimed, and `contributions.registry` then admits an
+    /// extension's tool of that name instead of refusing the boot over
+    /// a collision. `client/contributions` has the ruling. Naming a tool
+    /// this host does not build is not an error.
+    deactivated_tools: List(String),
   )
 }
 
@@ -860,7 +879,17 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     rules: rule_list,
     schedules: schedule_list,
     schedule_policy:,
+    deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
   ))
+}
+
+// A comma-separated tool list from the environment. Blank entries are
+// dropped so that a trailing comma, or an empty variable, names nothing
+// rather than naming the empty tool.
+fn named_tools(value: String) -> List(String) {
+  string.split(value, on: ",")
+  |> list.map(string.trim)
+  |> list.filter(fn(name) { name != "" })
 }
 
 // The `--codemode-seams` value, or the default. An unrecognised name is a
@@ -1971,6 +2000,11 @@ fn assemble(
       // remove, and the newcomer is the extension.
       list.map(extensions, fn(registration) { registration.contribution }),
     )
+    // The operator's deactivations, applied to the built-ins before the
+    // names are claimed. This is the whole of how an extension's tool
+    // comes to stand in for a built-in one: the built-in is gone, so
+    // there is no collision to refuse and no override to perform.
+    |> contributions.deactivate(settings.deactivated_tools)
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
   )

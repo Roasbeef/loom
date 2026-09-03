@@ -473,7 +473,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1252`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1285`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -700,10 +700,10 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1400`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1338`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1407`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1425`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -711,7 +711,7 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:1214`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1232`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
 `tool.dispatch` is total (`tools/tool.gleam:454`): an unknown name yields
@@ -1453,7 +1453,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:191`): the tool table
+lets it is `registry` (`client/contributions.gleam:213`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could

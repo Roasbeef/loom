@@ -275,6 +275,13 @@ pub fn clearance_refuses_an_unregistered_tool_test() {
 fn summary_spec(
   preparation: Option(operation.StructuralPreparation),
 ) -> effects.RequestSpec {
+  noted_summary_spec(preparation, [])
+}
+
+fn noted_summary_spec(
+  preparation: Option(operation.StructuralPreparation),
+  notes: List(String),
+) -> effects.RequestSpec {
   let #(operation_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
   effects.SummaryRequest(
@@ -285,6 +292,7 @@ fn summary_spec(
     preparation:,
     configuration: configuration_with(["bash"]),
     stream_options: json.Object([]),
+    notes:,
   )
 }
 
@@ -340,6 +348,47 @@ pub fn a_summary_request_pays_no_cache_write_on_the_head_test() {
   // And exactly one message, so the adapter's rolling tail breakpoints
   // have one turn to land on rather than a conversation.
   assert list.length(request.messages) == 1
+}
+
+// A `before_compact` note reaches the summarizer, last, after
+// everything the pack said. Last is the property under test: a note
+// placed before the instruction would read as though it were part of
+// the harness's own brief rather than an extension's aside about it.
+pub fn a_compaction_note_lands_at_the_end_of_the_request_test() {
+  let assert Ok(plain) =
+    wiring.summary_provider_request(
+      config(),
+      summary_spec(Some(compaction_preparation(None))),
+    )
+    as "a summary with no notes still assembles"
+  let assert Ok(noted) =
+    wiring.summary_provider_request(
+      config(),
+      noted_summary_spec(Some(compaction_preparation(None)), [
+        "<extension name=tracer>keep the migration plan</extension>",
+      ]),
+    )
+    as "a summary with a note assembles"
+
+  // Everything the pack rendered is still there, unchanged, and the
+  // note is appended rather than woven in.
+  assert summary_text_of(noted)
+    == summary_text_of(plain)
+    <> "\n\n<extension name=tracer>keep the migration plan</extension>"
+}
+
+pub fn several_notes_keep_their_order_test() {
+  let assert Ok(request) =
+    wiring.summary_provider_request(
+      config(),
+      noted_summary_spec(Some(compaction_preparation(None)), [
+        "first note",
+        "second note",
+      ]),
+    )
+    as "two notes assemble"
+  let text = summary_text_of(request)
+  assert string.contains(text, "first note\n\nsecond note")
 }
 
 // The contrast: a generation must still carry both, or every turn of

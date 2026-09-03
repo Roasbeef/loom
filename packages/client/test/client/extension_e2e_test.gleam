@@ -70,6 +70,7 @@ import codemode/identity
 import codemode/launch
 import codemode/satellite
 import core/clock
+import core/entry
 import core/ids
 import core/json
 import core/message
@@ -82,6 +83,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import runtime/effects
 import simplifile
 import support/extensions
 import support/origin
@@ -405,12 +407,103 @@ fn hooks_fire(installed_at: Installed) -> Nil {
       assert list.length(folded) == 3
       assert list.last(folded) == list.last(messages)
 
+      // The third plane, phase 4c: a compaction that has already been
+      // decided asks the jail for a note. The fixture echoes the cue
+      // back, so a note carrying the reason word and the counts is a
+      // note whose args document decoded inside the jail.
+      let assert [note] =
+        hooks.compaction_notes(bus, operation, a_compaction_cue())
+        as "the jailed before_compact hook must answer with a note"
+      assert string.contains(note, "<extension name=gatekeeper>")
+      assert string.contains(note, "overflow/4242/9/2")
+
+      // And the notify-only one. The bus tells the satellite and reads
+      // nothing back, so the observable half here is that the extension
+      // still holds its subscription: a crash, a deadline or an answer
+      // the harness could not read would all have dropped it. The count
+      // asked for is the notice manager's, because that is the one the
+      // event was cast onto.
+      hooks.usage(bus, operation, a_usage_row())
+      assert hooks.subscribers(bus, on: hooks.Notifying) == 1
+
+      // What the bus deliberately cannot see: a notification cannot
+      // distinguish "answered the empty document" from "declined in
+      // band", and the difference is exactly whether the ledger row
+      // decoded inside the jail. So the answer itself is read through
+      // the same invoker the bus uses.
+      let assert Ok(msgpack.StringValue(value: answered)) =
+        hosts.invoker(seam, at:)(
+          "gatekeeper",
+          extension_manifest.usage_event,
+          usage_args(),
+          hooks.deadline_ms,
+        )
+        as "the jailed usage hook must answer"
+      assert answered == "{}"
+
       io.println(
-        "extension host e2e: a jailed tool_call hook blocked a call and a "
-        <> "jailed context hook appended a message",
+        "extension host e2e: a jailed tool_call hook blocked a call, a "
+        <> "jailed context hook appended a message, a jailed "
+        <> "before_compact hook returned an attributed note and a jailed "
+        <> "usage hook took a committed ledger row",
       )
     }
   }
+}
+
+// A cue whose every number is distinctive, so the echoed note is
+// asserting on the field it means rather than on a zero that would
+// match any of them.
+fn a_compaction_cue() -> effects.CompactionCue {
+  effects.CompactionCue(
+    cause: effects.OverflowCompaction,
+    tokens_before: 4242,
+    summarized_messages: 9,
+    retained_messages: 2,
+  )
+}
+
+fn a_usage_row() -> entry.UsageRow {
+  let #(id, _generator) =
+    ids.mint_usage(ids.generator(wall_clock(), seed: 20_260_904))
+  entry.UsageRow(
+    id:,
+    seq: 77,
+    entry_id: None,
+    adjustment: False,
+    usage: message.Usage(
+      input: 11,
+      output: 22,
+      cache_read: 0,
+      cache_write: 0,
+      cache_write_1h: None,
+      reasoning: None,
+      total_tokens: 33,
+      cost: message.UsageCost(
+        input: 0.0,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+        total: 0.0,
+      ),
+    ),
+    details: None,
+  )
+}
+
+// The `usage` args document, written out rather than built through the
+// bus's own encoder. Both sides of a wire tested against one builder
+// would drift together, which is the reasoning `ext/hook`'s own tests
+// are written under.
+fn usage_args() -> msgpack.MsgPackValue {
+  msgpack.StringValue(
+    "{\"op_id\":\"op-1\",\"usage_id\":\"u-1\",\"seq\":77,"
+    <> "\"entry_id\":null,\"adjustment\":false,"
+    <> "\"input_tokens\":11,\"output_tokens\":22,"
+    <> "\"cache_read_tokens\":0,\"cache_write_tokens\":0,"
+    <> "\"cache_write_1h_tokens\":null,\"thinking_tokens\":null,"
+    <> "\"total_tokens\":33,\"cost\":0.0}",
+  )
 }
 
 fn a_user_message(text: String) -> message.AgentMessage {

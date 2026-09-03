@@ -104,6 +104,63 @@ pub fn an_extension_may_not_shadow_a_built_in_test() {
     ))
 }
 
+// --- deactivating a built-in ----------------------------------------------
+//
+// The ruling in two directions. An extension never overrides a built-in;
+// an operator who wants an extension's tool to stand in for one
+// deactivates the built-in first, and the name is then simply free.
+
+pub fn a_deactivated_built_in_yields_its_name_test() {
+  let attempt =
+    list.append(contributions.built_in(None, None, None, None, None), [
+      extension("hashline", [contributed("fs_edit")]),
+    ])
+
+  // Active, the built-in still wins the argument by refusing the boot.
+  assert built(attempt)
+    == Error(contributions.Collision(
+      name: "fs_edit",
+      first: contributions.BuiltIn,
+      second: contributions.Extension(name: "hashline"),
+    ))
+
+  // Deactivated, the name is unclaimed and the extension's tool is the
+  // only `fs_edit` the model can reach.
+  let assert Ok(names) = built(contributions.deactivate(attempt, ["fs_edit"]))
+    as "a deactivated built-in does not collide"
+  assert list.contains(names, "fs_edit")
+  assert list.length(list.filter(names, fn(name) { name == "fs_edit" })) == 1
+
+  // And the rest of the built-ins are untouched by it.
+  assert list.contains(names, "bash")
+}
+
+pub fn deactivation_reaches_built_ins_only_test() {
+  // Deactivating an extension's tool would be a way to hand one
+  // extension's name to another by configuration, which is the peer
+  // shadowing this module refuses. The way to stop an extension's tool
+  // is to uninstall the extension.
+  let attempt = [
+    extension("first", [contributed("web_search")]),
+    extension("second", [contributed("web_search")]),
+  ]
+  assert built(contributions.deactivate(attempt, ["web_search"]))
+    == Error(contributions.Collision(
+      name: "web_search",
+      first: contributions.Extension(name: "first"),
+      second: contributions.Extension(name: "second"),
+    ))
+}
+
+pub fn deactivating_a_tool_this_host_never_built_is_not_an_error_test() {
+  // A shared configuration is used across hosts whose planes differ, so
+  // naming a tool that is not here states a posture rather than a
+  // mistake.
+  let host = contributions.built_in(None, None, None, None, None)
+  assert built(contributions.deactivate(host, ["code_mode", "no_such_tool"]))
+    == built(host)
+}
+
 pub fn an_extension_may_not_shadow_a_peer_test() {
   // At one remove, the same argument: with last-wins between peers, the
   // install order would decide which of two tools the model reached.

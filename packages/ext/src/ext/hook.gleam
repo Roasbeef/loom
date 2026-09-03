@@ -89,6 +89,89 @@ pub type RunStart {
   )
 }
 
+/// What a `before_compact` hook is told about a compaction that has
+/// already been decided.
+///
+/// A notification with an optional answer, never a veto: the compaction
+/// runs whatever this hook returns, and returning text only adds a
+/// block to the summarizer's input. The harness's own reason is one of
+/// `"threshold"`, `"overflow"` and `"requested"`, and it arrives as a
+/// `String` rather than a variant on purpose — a word this package
+/// turned into a decode failure would be an extension that stops
+/// working the day the harness learns a fourth door.
+pub type Compaction {
+  Compaction(
+    /// The operation the compaction belongs to.
+    op_id: String,
+    /// Why the compaction started: `"threshold"`, `"overflow"` or
+    /// `"requested"` today.
+    reason: String,
+    /// What the context cost before the compaction, in tokens.
+    tokens_before: Int,
+    /// How many projected messages the summary replaces.
+    summarized_messages: Int,
+    /// How many trailing messages survive verbatim.
+    retained_messages: Int,
+  )
+}
+
+/// Whether a ledger row is a provider's report or a caller's correction.
+///
+/// The harness sends a boolean and this is what it means, named, so a
+/// tracing hook does not have to carry the polarity of an `adjustment`
+/// flag in its head.
+pub type UsageOrigin {
+  /// The provider reported these numbers for a request.
+  ProviderReported
+
+  /// A caller wrote a reconciliation row against the ledger.
+  ///
+  /// Nothing in the harness produces one today: every row a run commits
+  /// is a provider's report, and no adjustment path exists to write the
+  /// other kind. The variant is here so the wire field stays total — the
+  /// harness sends a boolean and a decoder that could only read `false`
+  /// would be one an author had to revisit the day an adjustment lands.
+  Reconciliation
+}
+
+/// One committed cost-ledger row, as a `usage` hook reads it.
+///
+/// Numbers and coordinates only. No request and no response content
+/// crosses this event, by ruling: an extension that wanted the
+/// conversation has `context` and `tool_result`, and both are gated on
+/// an install the operator read.
+pub type Usage {
+  Usage(
+    /// The operation the row belongs to.
+    op_id: String,
+    /// The row's own id.
+    usage_id: String,
+    /// The storage-assigned seq the row committed at.
+    seq: Int,
+    /// The entry this cost belongs to, when the row names one.
+    entry_id: Option(String),
+    /// Where the numbers came from.
+    origin: UsageOrigin,
+    /// Uncached input tokens.
+    input_tokens: Int,
+    /// Output tokens.
+    output_tokens: Int,
+    /// Input tokens served from the provider's cache.
+    cache_read_tokens: Int,
+    /// Input tokens written to the provider's cache.
+    cache_write_tokens: Int,
+    /// Input tokens written to a one-hour cache, when the provider
+    /// reports that separately.
+    cache_write_1h_tokens: Option(Int),
+    /// Thinking tokens, when the provider reports them.
+    thinking_tokens: Option(Int),
+    /// The provider's own total.
+    total_tokens: Int,
+    /// What the row cost, in dollars.
+    cost: Float,
+  )
+}
+
 /// What a `context` hook is handed: the request's operation, and the
 /// message list as the previous extension in the chain left it.
 ///
@@ -150,6 +233,17 @@ pub type Hook {
 
   /// `agent_settled`: the run and every follow-up it queued are done.
   OnAgentSettled(run: fn(String) -> Nil)
+
+  /// `before_compact`: the runtime decided to compact, before the
+  /// summary generation starts. Return text to have it appended to the
+  /// summarizer's input, fenced and attributed to this extension by the
+  /// harness, or `None` to add nothing. The harness discards a note
+  /// past its token allowance, and no answer stops the compaction.
+  OnBeforeCompact(run: fn(Compaction) -> Option(String))
+
+  /// `usage`: one cost-ledger row was committed. Notify-only; there is
+  /// nothing to answer, and the row is already durable when this runs.
+  OnUsage(run: fn(Usage) -> Nil)
 }
 
 /// The manifest event name a hook answers. The pairing the generated
@@ -172,6 +266,8 @@ pub fn event(hook: Hook) -> String {
     OnToolResult(..) -> "tool_result"
     OnAgentEnd(..) -> "agent_end"
     OnAgentSettled(..) -> "agent_settled"
+    OnBeforeCompact(..) -> "before_compact"
+    OnUsage(..) -> "usage"
   }
 }
 
@@ -235,6 +331,17 @@ pub fn answer(hook: Hook, args: String) -> Result(String, String) {
       run(op_id)
       Ok(nothing())
     }
+
+    OnBeforeCompact(run:) -> {
+      use compaction <- result.try(compaction_of(document))
+      Ok(json.to_string(note(run(compaction))))
+    }
+
+    OnUsage(run:) -> {
+      use usage <- result.try(usage_of(document))
+      run(usage)
+      Ok(nothing())
+    }
   }
 }
 
@@ -273,6 +380,64 @@ fn context_of(document: Dynamic) -> Result(Context, String) {
   use op_id <- result.try(field_string(document, "op_id"))
   use messages <- result.try(field_list(document, "messages"))
   Ok(Context(op_id:, messages:))
+}
+
+fn note(text: Option(String)) -> Json {
+  case text {
+    Some(text) -> json.object([#("note", json.string(text))])
+    None -> json.object([#("note", json.null())])
+  }
+}
+
+fn compaction_of(document: Dynamic) -> Result(Compaction, String) {
+  use op_id <- result.try(field_string(document, "op_id"))
+  use reason <- result.try(field_string(document, "reason"))
+  use tokens_before <- result.try(field_int(document, "tokens_before"))
+  use summarized <- result.try(field_int(document, "summarized_messages"))
+  use retained <- result.try(field_int(document, "retained_messages"))
+  Ok(Compaction(
+    op_id:,
+    reason:,
+    tokens_before:,
+    summarized_messages: summarized,
+    retained_messages: retained,
+  ))
+}
+
+// The ledger row, read field by field. The two optional counts and the
+// optional entry are optional on the wire because the harness's own
+// `Usage` and `UsageRow` have them optional; everything else is
+// required, so a document missing a count is a disagreement about the
+// wire rather than a provider that reported nothing.
+fn usage_of(document: Dynamic) -> Result(Usage, String) {
+  use op_id <- result.try(field_string(document, "op_id"))
+  use usage_id <- result.try(field_string(document, "usage_id"))
+  use seq <- result.try(field_int(document, "seq"))
+  use origin <- result.try(field_bool(document, "adjustment"))
+  use input <- result.try(field_int(document, "input_tokens"))
+  use output <- result.try(field_int(document, "output_tokens"))
+  use cache_read <- result.try(field_int(document, "cache_read_tokens"))
+  use cache_write <- result.try(field_int(document, "cache_write_tokens"))
+  use total <- result.try(field_int(document, "total_tokens"))
+  use cost <- result.try(field_float(document, "cost"))
+  Ok(Usage(
+    op_id:,
+    usage_id:,
+    seq:,
+    entry_id: optional_string(document, "entry_id"),
+    origin: case origin {
+      True -> Reconciliation
+      False -> ProviderReported
+    },
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: cache_read,
+    cache_write_tokens: cache_write,
+    cache_write_1h_tokens: optional_int(document, "cache_write_1h_tokens"),
+    thinking_tokens: optional_int(document, "thinking_tokens"),
+    total_tokens: total,
+    cost:,
+  ))
 }
 
 fn call_of(document: Dynamic) -> Result(Call, String) {
@@ -361,6 +526,34 @@ fn field_string(document: Dynamic, name: String) -> Result(String, String) {
 fn field_int(document: Dynamic, name: String) -> Result(Int, String) {
   decode.run(document, decode.at([name], decode.int))
   |> result.replace_error("the hook arguments have no integer " <> name)
+}
+
+fn field_bool(document: Dynamic, name: String) -> Result(Bool, String) {
+  decode.run(document, decode.at([name], decode.bool))
+  |> result.replace_error("the hook arguments have no boolean " <> name)
+}
+
+fn field_float(document: Dynamic, name: String) -> Result(Float, String) {
+  decode.run(document, decode.at([name], decode.float))
+  |> result.replace_error("the hook arguments have no number " <> name)
+}
+
+// A field that is absent, or present and null, or present and of the
+// wrong shape, is all one answer: nothing. These are the fields the
+// harness itself carries as `Option`, so "not reported" is the value
+// rather than a disagreement about the wire.
+fn optional_string(document: Dynamic, name: String) -> Option(String) {
+  case decode.run(document, decode.at([name], decode.string)) {
+    Ok(value) -> Some(value)
+    Error(_absent) -> None
+  }
+}
+
+fn optional_int(document: Dynamic, name: String) -> Option(Int) {
+  case decode.run(document, decode.at([name], decode.int)) {
+    Ok(value) -> Some(value)
+    Error(_absent) -> None
+  }
 }
 
 fn field_list(

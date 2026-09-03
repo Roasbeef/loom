@@ -10,6 +10,7 @@
 import client/extension/hooks
 import core/clock
 import core/codec
+import core/entry
 import core/ids
 import core/json
 import core/message
@@ -88,7 +89,7 @@ pub fn a_gone_extension_is_dropped_and_the_rest_still_fire_test() {
   // The first fan-out reaches both: the dead one answers `Gone` and is
   // dropped, its sibling answers normally.
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 
   // The second reaches only the survivor, and the run carries on.
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
@@ -105,7 +106,7 @@ pub fn a_declining_extension_keeps_its_place_test() {
       ),
     ])
   assert hooks.gate(bus, operation(), "bash", json.Object([]), 0) == hooks.Allow
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
 pub fn a_run_start_injection_is_collected_and_rendered_test() {
@@ -291,7 +292,7 @@ pub fn a_malformed_verdict_allows_the_call_and_drops_the_handler_test() {
 
   // And the extension has lost its place, so the next call is not gated
   // on an answer nobody can read.
-  assert hooks.subscribers(bus) == 1
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
 }
 
 // --- wiring ---------------------------------------------------------------
@@ -335,6 +336,189 @@ pub fn the_unwired_invoker_says_the_satellite_is_gone_test() {
   let invoke = hooks.unwired()
   assert invoke("web_search", "tool_call", msgpack.NilValue, 0)
     == Error(hooks.Gone)
+}
+
+// --- before_compact -------------------------------------------------------
+
+pub fn compaction_notes_are_gathered_in_load_order_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "first",
+        events: ["before_compact"],
+        invoke: answering("{\"note\":\"keep the migration plan\"}"),
+      ),
+      hooks.Extension(
+        name: "quiet",
+        events: ["before_compact"],
+        invoke: answering("{\"note\":null}"),
+      ),
+      hooks.Extension(
+        name: "second",
+        events: ["before_compact"],
+        invoke: answering("{\"note\":\"and the failing test\"}"),
+      ),
+    ])
+  assert hooks.compaction_notes(bus, operation(), cue())
+    == [
+      hooks.note_block("first", "keep the migration plan"),
+      hooks.note_block("second", "and the failing test"),
+    ]
+}
+
+pub fn a_compaction_note_is_fenced_and_attributed_test() {
+  let block = hooks.note_block("tracer", "keep the migration plan")
+  assert string.contains(block, "<extension name=tracer>")
+  assert string.contains(block, "keep the migration plan")
+  assert string.contains(block, "[loom] note from the extension \"tracer\"")
+}
+
+pub fn the_cue_carries_the_reason_and_the_counts_test() {
+  let captured = process.new_subject()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "tracer",
+        events: ["before_compact"],
+        invoke: capturing(captured, answering("{\"note\":null}")),
+      ),
+    ])
+  assert hooks.compaction_notes(bus, operation(), cue()) == []
+  let assert Ok(sent) = process.receive(captured, within: 0)
+    as "the extension was asked"
+  assert field_of(sent, "reason") == Ok(json.String("overflow"))
+  assert field_of(sent, "tokens_before") == Ok(json.Int(4242))
+  assert field_of(sent, "summarized_messages") == Ok(json.Int(9))
+  assert field_of(sent, "retained_messages") == Ok(json.Int(2))
+}
+
+pub fn a_note_past_the_allowance_is_dropped_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "modest",
+        events: ["before_compact"],
+        invoke: answering("{\"note\":\"short\"}"),
+      ),
+      hooks.Extension(
+        name: "greedy",
+        events: ["before_compact"],
+        invoke: answering("{\"note\":\"" <> string.repeat("x", 40_000) <> "\"}"),
+      ),
+    ])
+
+  // The cap is cumulative and the excess is dropped whole: the modest
+  // note survives, the one that would blow the allowance does not, and
+  // nothing is truncated into words its author did not write.
+  assert hooks.compaction_notes(bus, operation(), cue())
+    == [hooks.note_block("modest", "short")]
+}
+
+pub fn a_compaction_hook_cannot_veto_the_compaction_test() {
+  // There is no shape an answer can take that stops a compaction, so
+  // the property under test is that a refusal, a crash and a nonsense
+  // answer all produce the same thing: no note, and the caller carries
+  // on with the summary it was going to make.
+  let refused = started([one("no", refusing("not my business"))])
+  assert hooks.compaction_notes(refused, operation(), cue()) == []
+
+  let nonsense = started([one("odd", answering("{\"note\":{\"veto\":true}}"))])
+  assert hooks.compaction_notes(nonsense, operation(), cue()) == []
+}
+
+// --- usage ----------------------------------------------------------------
+
+pub fn a_usage_row_is_delivered_notify_only_test() {
+  let captured = process.new_subject()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "tracer",
+        events: ["usage"],
+        invoke: capturing(captured, answering("{\"verdict\":\"block\"}")),
+      ),
+    ])
+  hooks.usage(bus, operation(), usage_row())
+
+  let assert Ok(sent) = process.receive(captured, within: 100)
+    as "the extension was told"
+  assert field_of(sent, "input_tokens") == Ok(json.Int(11))
+  assert field_of(sent, "output_tokens") == Ok(json.Int(22))
+  assert field_of(sent, "cache_read_tokens") == Ok(json.Int(3))
+  assert field_of(sent, "cache_write_tokens") == Ok(json.Int(4))
+  assert field_of(sent, "thinking_tokens") == Ok(json.Int(5))
+  assert field_of(sent, "total_tokens") == Ok(json.Int(40))
+  assert field_of(sent, "seq") == Ok(json.Int(77))
+  assert field_of(sent, "adjustment") == Ok(json.Bool(False))
+
+  // The answer was a verdict, which is not a thing a `usage` hook may
+  // say. Nothing reads it, so the extension keeps its place.
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
+pub fn a_usage_hook_is_never_sent_request_or_response_content_test() {
+  let captured = process.new_subject()
+  let bus =
+    started([
+      hooks.Extension(
+        name: "tracer",
+        events: ["usage"],
+        invoke: capturing(captured, answering("{}")),
+      ),
+    ])
+  hooks.usage(bus, operation(), usage_row())
+
+  let assert Ok(json.Object(fields:)) = process.receive(captured, within: 100)
+    as "the extension was told"
+  let sent = list.map(fields, fn(pair) { pair.0 })
+
+  // The census is the ruling: every key an extension sees is a number
+  // or a coordinate, and `details` — the row's opaque application JSON,
+  // the one field that could ever carry text — is not among them.
+  assert list.sort(sent, string.compare)
+    == [
+      "adjustment", "cache_read_tokens", "cache_write_1h_tokens",
+      "cache_write_tokens", "cost", "entry_id", "input_tokens", "op_id",
+      "output_tokens", "seq", "thinking_tokens", "total_tokens", "usage_id",
+    ]
+}
+
+pub fn an_oversleeping_usage_handler_is_dropped_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "slow",
+        events: ["usage"],
+        invoke: fn(_extension, _event, _args, _deadline) {
+          Error(hooks.Deadline)
+        },
+      ),
+    ])
+  hooks.usage(bus, operation(), usage_row())
+  assert hooks.subscribers(bus, on: hooks.Notifying) == 0
+}
+
+pub fn a_wedged_notification_cannot_neutralise_a_block_test() {
+  let bus =
+    started([
+      hooks.Extension(name: "tracer", events: ["usage"], invoke: wedged()),
+      hooks.Extension(
+        name: "guard",
+        events: ["tool_call"],
+        invoke: blocking("the workspace is frozen"),
+      ),
+    ])
+
+  // The notification is cast onto the notice manager and the gate is
+  // called on the answering one, so the gate's fan-out never queues
+  // behind a handler that is still asleep. On one manager this was a
+  // silent failure of the whole gate: the notification held the mailbox,
+  // the gathering worker's deadline passed, the fan-out answered `[]`,
+  // and one extension's slow tracer turned another's block into an
+  // `Allow`.
+  hooks.usage(bus, operation(), usage_row())
+  assert hooks.gate(bus, operation(), "bash", json.Object([]), 0)
+    == hooks.Block(extension: "guard", reason: "the workspace is frozen")
 }
 
 // --- fixtures -------------------------------------------------------------
@@ -430,6 +614,18 @@ fn blocking(reason: String) -> hooks.Invoker {
   answering("{\"verdict\":\"block\",\"reason\":\"" <> reason <> "\"}")
 }
 
+// An invoker that never answers at all. Oversleeping the deadline is
+// what the property needs and sleeping forever is the sharpest form of
+// it: the handler holding the notice manager is wedged for the rest of
+// the suite and costs the test no wall-clock time, because nothing the
+// test waits on is behind it.
+fn wedged() -> hooks.Invoker {
+  fn(_extension, _event, _args, _deadline) {
+    process.sleep_forever()
+    Error(hooks.Deadline)
+  }
+}
+
 fn gone() -> hooks.Invoker {
   fn(_extension, _event, _args, _deadline) { Error(hooks.Gone) }
 }
@@ -486,6 +682,75 @@ fn recording(
     process.send(calls, #(extension, event))
     inner(extension, event, args, deadline)
   }
+}
+
+// An invoker that keeps the args document it was sent, so a test can
+// assert on the wire shape rather than on the harness's account of it.
+fn capturing(
+  sent: Subject(json.JsonValue),
+  inner: hooks.Invoker,
+) -> hooks.Invoker {
+  fn(extension, event, args, deadline) {
+    let assert msgpack.StringValue(value: text) = args
+      as "the bus sends a msgpack string"
+    let assert Ok(document) = json.parse(text) as "the args are JSON"
+    process.send(sent, document)
+    inner(extension, event, args, deadline)
+  }
+}
+
+fn field_of(
+  document: json.JsonValue,
+  name: String,
+) -> Result(json.JsonValue, Nil) {
+  case document {
+    json.Object(fields:) -> list.key_find(fields, name)
+    _other -> Error(Nil)
+  }
+}
+
+fn one(name: String, invoke: hooks.Invoker) -> hooks.Extension {
+  hooks.Extension(name:, events: ["before_compact"], invoke:)
+}
+
+// A cue whose numbers are distinctive, so a test asserting on the wire
+// is asserting on the field it means rather than on a zero that would
+// match any of them.
+fn cue() -> effects.CompactionCue {
+  effects.CompactionCue(
+    cause: effects.OverflowCompaction,
+    tokens_before: 4242,
+    summarized_messages: 9,
+    retained_messages: 2,
+  )
+}
+
+fn usage_row() -> entry.UsageRow {
+  let generator = ids.generator(clock.fixed(at: 0), seed: 11)
+  let #(id, _generator) = ids.mint_usage(generator)
+  entry.UsageRow(
+    id:,
+    seq: 77,
+    entry_id: None,
+    adjustment: False,
+    usage: message.Usage(
+      input: 11,
+      output: 22,
+      cache_read: 3,
+      cache_write: 4,
+      cache_write_1h: None,
+      reasoning: Some(5),
+      total_tokens: 40,
+      cost: message.UsageCost(
+        input: 0.1,
+        output: 0.2,
+        cache_read: 0.0,
+        cache_write: 0.0,
+        total: 0.3,
+      ),
+    ),
+    details: None,
+  )
 }
 
 fn recorder() -> Subject(#(String, String)) {

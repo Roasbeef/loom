@@ -88,8 +88,13 @@ reasons, and name the primitive in the commit:
   `client/extension/hooks`, the extension hook bus — one handler per
   installed extension, holding its name, the events it declared and its
   invoker; `notify` for the notifications, `sync_notify` plus a reply
-  subject for the two events that need an answer, and `Failed` for a
-  satellite that has died mid-session. The two *chained* transforms
+  subject for the three events that need an answer, and `Failed` for a
+  satellite that has died mid-session. It is *two* managers over one
+  extension list rather than one, because a manager's mailbox is a queue
+  and a `notify` cast onto it delays the next `sync_notify` asked on it:
+  the notifications have a manager of their own so a slow tracer cannot
+  spend the `tool_call` gate's budget and turn another extension's block
+  into an allow. The two *chained* transforms
   (`context`, `tool_result`) are deliberately not on the bus: each must
   see its predecessor's output, which is a fold rather than a fan-out,
   and weft grows the shape before Loom grows a second bus.

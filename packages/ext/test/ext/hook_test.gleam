@@ -12,6 +12,8 @@
 import ext/hook
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -33,6 +35,8 @@ pub fn every_hook_names_its_event_test() {
     #(hook.OnToolResult(rerendered), "tool_result"),
     #(hook.OnAgentEnd(fn(_op) { Nil }), "agent_end"),
     #(hook.OnAgentSettled(fn(_op) { Nil }), "agent_settled"),
+    #(hook.OnBeforeCompact(fn(_compaction) { None }), "before_compact"),
+    #(hook.OnUsage(fn(_usage) { Nil }), "usage"),
   ]
   assert list.map(named, fn(pair) { hook.event(pair.0) })
     == list.map(named, fn(pair) { pair.1 })
@@ -108,6 +112,95 @@ pub fn a_notification_answers_an_empty_document_test() {
   assert hook.answer(started, "{}") == Ok("{}")
   assert hook.answer(ended, "{\"op_id\":\"op-1\"}") == Ok("{}")
   assert hook.answer(settled, "{\"op_id\":\"op-1\"}") == Ok("{}")
+}
+
+pub fn a_compaction_note_is_a_string_or_null_test() {
+  let args =
+    "{\"op_id\":\"op-1\",\"reason\":\"threshold\",\"tokens_before\":4242,"
+    <> "\"summarized_messages\":9,\"retained_messages\":2}"
+  let noted = hook.OnBeforeCompact(fn(_compaction) { Some("keep the plan") })
+  assert hook.answer(noted, args) == Ok("{\"note\":\"keep the plan\"}")
+
+  let quiet = hook.OnBeforeCompact(fn(_compaction) { None })
+  assert hook.answer(quiet, args) == Ok("{\"note\":null}")
+}
+
+pub fn a_compaction_hook_reads_the_cue_it_was_given_test() {
+  let seen =
+    hook.OnBeforeCompact(fn(compaction) {
+      Some(
+        compaction.op_id
+        <> "/"
+        <> compaction.reason
+        <> "/"
+        <> int.to_string(compaction.tokens_before)
+        <> "/"
+        <> int.to_string(compaction.summarized_messages)
+        <> "/"
+        <> int.to_string(compaction.retained_messages),
+      )
+    })
+  let args =
+    "{\"op_id\":\"op-7\",\"reason\":\"overflow\",\"tokens_before\":4242,"
+    <> "\"summarized_messages\":9,\"retained_messages\":2}"
+  assert hook.answer(seen, args) == Ok("{\"note\":\"op-7/overflow/4242/9/2\"}")
+}
+
+// A reason word this package has never heard of still decodes. The
+// alternative — a variant, and a decode failure for anything outside it
+// — would turn an extension into one that stops working the day the
+// harness grows a fourth door into a compaction.
+pub fn an_unknown_compaction_reason_still_decodes_test() {
+  let seen = hook.OnBeforeCompact(fn(compaction) { Some(compaction.reason) })
+  let args =
+    "{\"op_id\":\"op-1\",\"reason\":\"something_new\",\"tokens_before\":1,"
+    <> "\"summarized_messages\":1,\"retained_messages\":1}"
+  assert hook.answer(seen, args) == Ok("{\"note\":\"something_new\"}")
+}
+
+pub fn a_usage_hook_reads_the_row_and_answers_nothing_test() {
+  let sent = process.new_subject()
+  let traced = hook.OnUsage(fn(usage) { process.send(sent, usage) })
+  let args =
+    "{\"op_id\":\"op-1\",\"usage_id\":\"u-1\",\"seq\":77,"
+    <> "\"entry_id\":\"e-1\",\"adjustment\":false,"
+    <> "\"input_tokens\":11,\"output_tokens\":22,"
+    <> "\"cache_read_tokens\":3,\"cache_write_tokens\":4,"
+    <> "\"cache_write_1h_tokens\":null,\"thinking_tokens\":5,"
+    <> "\"total_tokens\":40,\"cost\":0.3}"
+  assert hook.answer(traced, args) == Ok("{}")
+
+  let assert Ok(usage) = process.receive(sent, within: 0) as "the hook body ran"
+  assert usage
+    == hook.Usage(
+      op_id: "op-1",
+      usage_id: "u-1",
+      seq: 77,
+      entry_id: Some("e-1"),
+      origin: hook.ProviderReported,
+      input_tokens: 11,
+      output_tokens: 22,
+      cache_read_tokens: 3,
+      cache_write_tokens: 4,
+      cache_write_1h_tokens: None,
+      thinking_tokens: Some(5),
+      total_tokens: 40,
+      cost: 0.3,
+    )
+}
+
+pub fn an_adjustment_row_is_named_as_one_test() {
+  let sent = process.new_subject()
+  let traced = hook.OnUsage(fn(usage) { process.send(sent, usage.origin) })
+  let args =
+    "{\"op_id\":\"op-1\",\"usage_id\":\"u-1\",\"seq\":1,"
+    <> "\"entry_id\":null,\"adjustment\":true,"
+    <> "\"input_tokens\":0,\"output_tokens\":0,"
+    <> "\"cache_read_tokens\":0,\"cache_write_tokens\":0,"
+    <> "\"cache_write_1h_tokens\":null,\"thinking_tokens\":null,"
+    <> "\"total_tokens\":0,\"cost\":0.0}"
+  assert hook.answer(traced, args) == Ok("{}")
+  assert process.receive(sent, within: 0) == Ok(hook.Reconciliation)
 }
 
 pub fn a_message_re_renders_unchanged_test() {
