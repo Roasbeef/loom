@@ -563,9 +563,9 @@ pub fn the_extension_seam_is_the_workspace_seam_widened_test() {
   })
 
   // And the widening is real rather than an equality dressed up as one.
+  // *Which* names it adds is the next test's, which pins the whole set
+  // rather than sampling it.
   assert list.length(extension) > list.length(workspace)
-  assert list.contains(extension, "ext")
-  assert list.contains(extension, "ext/memory")
 }
 
 /// The extension seam reaches no capability the workspace seam does not.
