@@ -174,9 +174,18 @@ pub fn the_resolved_manifest_holds_no_trusted_package_test() {
 ///
 /// `codemode/seed` is the offline seed the jailed toolchain builds
 /// against: whatever is vendored there is what an extension's source can
-/// resolve an import to, whatever any `gleam.toml` claims. So it is the
-/// last word on the compile-time surface, and it is pinned as an exact
-/// set rather than as a containment.
+/// resolve a *loom* import to, whatever any `gleam.toml` claims, and it
+/// is pinned as an exact set rather than as a containment.
+///
+/// It is the last word on the loom surface and not on the whole of it.
+/// `cap` names `gleam_erlang` and `gleam_otp` as runtime dependencies,
+/// so both resolve into the build root beside the three, and a body
+/// importing `gleam/erlang/process` or `gleam/otp/actor` compiles. What
+/// refuses those names is the closed vetting allowlist, which is
+/// mechanism two — so on the standard-library half of the surface,
+/// mechanism two is the load-bearing gate rather than a second belt.
+/// `a_body_reaching_into_the_base_is_refused_test` carries both names
+/// for that reason.
 pub fn the_offline_build_root_vendors_three_packages_test() {
   let vendored = list.map(seed.default_vendored(), fn(pair) { pair.0 })
   assert list.sort(vendored, string.compare)
@@ -267,12 +276,23 @@ pub fn no_seam_admits_a_module_of_the_base_test() {
 /// a reader actually cares about. Naming the module is part of the
 /// contract: an author who cannot see which import was refused cannot
 /// repair it.
+///
+/// The last two fixtures are the ones that would compile if the seam
+/// let them through: `gleam_erlang` and `gleam_otp` arrive in the build
+/// root as `cap`'s own runtime dependencies, so `gleam/erlang/process`
+/// and `gleam/otp/actor` resolve there. Nothing but the allowlist stops
+/// a body from spawning a process, which is why they are pinned here
+/// rather than left to the package graph.
 pub fn a_body_reaching_into_the_base_is_refused_test() {
   let reaching = [
     #("runtime/writer", "import runtime/writer\npub fn run() { 1 }\n"),
     #("broker/broker", "import broker/broker\npub fn run() { 1 }\n"),
-    #("gleam/erlang", "import gleam/erlang\npub fn run() { 1 }\n"),
     #("session/session", "import session/session\npub fn run() { 1 }\n"),
+    #(
+      "gleam/erlang/process",
+      "import gleam/erlang/process\npub fn run() { 1 }\n",
+    ),
+    #("gleam/otp/actor", "import gleam/otp/actor\npub fn run() { 1 }\n"),
   ]
   assert list.all(reaching, fn(one) {
     list.all([policy.extension(), policy.resident()], fn(seam) {

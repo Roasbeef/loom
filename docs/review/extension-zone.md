@@ -58,8 +58,15 @@ not against the repository. Three statements, each checked:
   dependency arriving transitively rather than by declaration.
 - **The build root.** `codemode/seed.default_vendored` is what is
   actually vendored into the offline seed the jailed toolchain builds in:
-  `cap`, `core`, `ext`, and nothing else. Whatever a `gleam.toml` claims,
-  this is what an import can resolve to.
+  `cap`, `core`, `ext`, and no other *loom* package. Whatever a
+  `gleam.toml` claims, that is what a loom import can resolve to — and
+  only a loom import. `cap` names `gleam_erlang` and `gleam_otp` as
+  runtime dependencies, so both resolve into every build root that
+  vendors `cap`, and a body importing `gleam/erlang/process` or
+  `gleam/otp/actor` compiles (measured on a replica build root, which
+  emitted only Gleam's transitive-dependency warning). On the
+  standard-library half of the surface the closed vetting allowlist is
+  therefore the load-bearing gate, not a second belt behind the graph.
 
 Beneath the graph, the source: no module under `packages/ext/src` or
 `packages/cap/src` imports any module of a TCB package. That is checked
@@ -179,8 +186,12 @@ Three things follow.
   source crosses the install boundary, and the harness compiles that
   source itself.
 - **A `gleam.toml` naming a dependency.** Refused against a closed set of
-  four, and independently unreachable: the offline seed contains three
-  packages, so a dependency that slipped the check would not resolve.
+  four. The seed backs that up only for loom packages — it vendors `cap`,
+  `core` and `ext` and no fourth loom package — but not in general:
+  `cap`'s own runtime dependencies `gleam_erlang` and `gleam_otp` resolve
+  in every build root, so `gleam/erlang/process` and `gleam/otp/actor`
+  would compile if the seam admitted them. It does not, and that closed
+  allowlist is what carries the weight here.
 - **A satellite that holds a token past its invocation.** The token is
   installed per invocation by `cap/runtime` and is the broker's own
   check; a persistent host serves many calls, so the confinement is the
