@@ -7,11 +7,12 @@ and how to verify a change. Rewrite it when you finish a body of work.
 
 It is deliberately not a history; the git log and the PR bodies carry how
 each change was reviewed. Re-baselined 2026-09-03 against `main` at
-`1137d64`, with every claim below checked against the tree or against a
+`576d640`, with every claim below checked against the tree or against a
 CI run rather than carried forward, and the places where the previous
-edition was wrong named as such. The previous edition was baselined at
-`96232c2`, 117 commits ago, and most of what it called the next body of
-work is now on `main`.
+edition was wrong named as such. The previous edition, baselined at
+`1137d64` the same day, named extension phase 4 as the next body of work;
+phase 4 has since been decided and built in its narrowed form (#203,
+#204, #205), so this edition rewrites that item rather than carrying it.
 
 ---
 
@@ -32,7 +33,7 @@ intended home.
 | 1 | Claimed and true (M0–M4), #1–#13 | Code done; CI completes and is green more often than not. The gate is one owner action away (#1, and `main` has no branch protection today). #62 and #99 are answered by measurement and still open. |
 | 2 | Orchestration seam (M4.5 / WP-N), #20–#24 | Landed. M4.5's row stays `partial` because the sample's fan-out reaches a scripted Agency rather than live children. #24 and #93 are still open. |
 | 3 | Semantic tools, routing, memory (M5), #14, #15, #16, #25–#29 | Routing, session id, the capability router, triggered rules, MCP through code mode and both memory stages are on `main`. #25 and #26 moved to phase 5. #106 stays open on the jail decision (#109). |
-| 4 | Promotion ladder (M6 / WP-M), #18, #30–#33, #100 | Extension phases 1–3 built and merged (#170, #175–#182, #195, #196, #198, #199, #200): `packages/ext`, `loom ext`, brokered `net.request`, jailed dispatch, a session-lived satellite per extension, `hook_call`, and the hook bus. Tier H (#32) and the TCB freeze (#33) are not started. |
+| 4 | Promotion ladder (M6 / WP-M), #18, #30–#33, #100 | Extension phases 1–3 built (#170, #175–#182, #195, #196, #198, #199, #200). Phase 4 built in its decided form: the TCB freeze proven as gated tests with a recorded review (#204, closes #33), `before_compact` and `usage` hooks and the tool-override ruling (#203), `ext.remember`/`ext.recall` (#205). The tier-H loader (#32) is deferred with the reason on the issue; L1/L2 (#30, #31) not started. |
 | 5 | Language-service tier, #25 (LSP), #26 (DAP) | Not started. The design note names both as extensions over the persistent satellite, blocked on a `[proc]` grant for binaries. |
 
 ### Phase 1: green, with a different red than the previous edition named
@@ -110,10 +111,22 @@ Now:
   the cap, two invocations cost one node launch, and an oversleeper was
   reaped with its extension marked unavailable for the rest of the
   session.
-- `docs/issue-plan.md`'s "M6 is at 0%. There is no `packages/ext`" is
-  corrected in this change. What the plan's M6 closing criterion still
-  owes is exactly what phase 4 below names: the L0→L3 ladder test with a
-  live rollback, the TCB freeze test, and a recorded adversarial review.
+- **Phase 4 was decided on 2026-09-03 and built the same day.** The
+  previous edition planned the tier-H loader. A survey of the pi
+  ecosystem (about 490 extensions) found none that needs code loaded into
+  the harness VM: the tool, gate, context, memory and LSP classes are all
+  jailed, and what they lacked in Loom was vocabulary. So the loader
+  (**#32**) is deferred with that reason on the issue, and phase 4 became:
+  the TCB freeze proven as gated tests without a loader, with
+  `docs/review/extension-zone.md` as the record (#204; **#33** closed);
+  `before_compact` as a notify-plus-note event with no veto, `usage` as a
+  notify-only event fired after the ledger row commits, and the ruling
+  that an extension never overrides a built-in (#203); and
+  `ext.remember`/`ext.recall` over the durable blackboard under a reserved
+  `ext/` prefix (#205). Each PR had an independent review pass and a
+  re-verify; no HIGH was found. What the plan's M6 closing criterion still
+  owes is the L0→L3 ladder test with a live rollback, which cannot exist
+  without the loader, so the row stays `partial` on purpose.
 
 The previous edition's grep for `ExtensionZone`, `ExtTool`, `ExtHook`,
 `ExtProjection` and `load_binary` still returns nothing, because the
@@ -145,34 +158,21 @@ Memory is still the only subsystem with no `docs/architecture/` page.
 In this order. The first item is a body of work; the rest are smaller and
 can be interleaved by whoever is not on it.
 
-### 1. Extension phase 4: tier H, rollback, and the TCB freeze
+### 1. Memory: make the producer run, then fix the cascade
 
-**#32**, **#33**. The design note's phase 4 paragraph is the spec: the
-loader compiles a tier-H body from vetted source under a
-harness-controlled module name, checks the compiled artifact's import
-table against the tier-H allowlist before loading it (the runtime half of
-#33's two mechanisms; the vetting lint is the compile-time half), runs it
-under a supervised, time-boxed wrapper, and rolls back to the previous
-artifact when a load or a first call fails.
+**#149** first: distillation has to run in the shipped session lifecycle,
+with a release entry point rather than a source checkout. **#124** after
+it. A `docs/architecture/memory.md` belongs with the first of the two.
+This is the release blocker with the most product behind it and nothing
+in front of it.
 
-Exit: a fixture tier-H `context` hook loads, transforms, and is replaced
-without a restart; a body whose beam imports anything outside the
-allowlist is refused at load naming the module; the freeze test walks the
-TCB modules and shows none is reachable from a loaded body; a hook that
-oversleeps is killed by the wrapper and the extension is marked failed in
-its record; and an adversarial review of the loader is recorded in
-`docs/review/`, with its HIGH findings closed or explicitly accepted.
-That review is part of the rung, not something that happens if there is
-time; `docs/issue-plan.md` budgets for it and the phase 3 reviews this
-week each found real bugs the author's own pass had not.
+Exit: a session run from the release artifact distils on its lifecycle
+without a source checkout, and an emptying cascade over a live head
+leaves the pipeline able to rebuild.
 
-Note what this does *not* do: it does not widen the hook vocabulary
-(**#100** is done inside the design note's table, and a tier-H body
-answers the same events a jailed one does); it does not build the L1
-skill store or the L2 candidate pipeline (**#30**, **#31**), which are
-the agent-authored on-ramp into the same manifest and install record and
-can follow; and it does not touch `ext.remember`/`ext.recall`, which the
-design note names and no phase has commissioned.
+Note what this does *not* do: it does not touch extension memory
+(`ext.remember`/`ext.recall` are cells an extension owns, not the
+distillation pipeline) and it does not build memory stage M3.
 
 ### 2. Close the phase-1 gate
 
@@ -180,13 +180,21 @@ Small, and it is what the milestone's closing criterion actually asks for.
 Post the CI and Landlock measurements on **#99** and **#62** and close
 them, re-scope **#155** onto the nightly `seeds 1001..` band, and set
 `gate-linux` as the required check (**#1**). The macOS reds worth a look
-first are the three named above; none is the interleave stall.
+first are the two flakes this week's PRs hit: `writer_publish_test`
+sending to an unregistered name, and the TUI `bootstrap_test` launch
+lock; neither is the interleave stall.
 
-### 3. Memory: make the producer run, then fix the cascade
+### 3. The agent-authored on-ramp, if the ladder is still wanted
 
-**#149** first: distillation has to run in the shipped session lifecycle,
-with a release entry point rather than a source checkout. **#124** after
-it. A `docs/architecture/memory.md` belongs with the first of the two.
+**#30** (L1 skill store) and **#31** (L2 candidate pipeline) are the
+agent-authored path into the same manifest and install record an operator
+uses today. With the loader deferred, the ladder ends at the jail, which
+is where the design note said the on-ramp should end anyway. Decide
+whether the milestone's "self-extending" still means an agent may author
+and install a jailed extension under a recorded human decision; if yes,
+this is the body of work, and its exit is a fixture tool that goes from
+agent-written source to an installed, vetted, jailed tool serving a live
+call with the approval recorded durably.
 
 ### 4. Decide #144 against the extension route
 
@@ -204,7 +212,8 @@ JSON-RPC child the extension starts from `session_start` through
 `cap/proc`, in the jail, which needs a `[proc]` manifest table granting
 binaries and the toolchain in the jail's readable roots. **#18** (chaos
 runner and ten-minute soak) is the only test that separates a rollback
-from a leak and belongs with item 1. **#107** (async code mode) sits
+from a leak and belongs with **#32** if the loader is ever built.
+**#107** (async code mode) sits
 outside every ladder with its design dossier on the issue. **#181**
 (pluggable secret backends behind one `SecretStore`) is the follow-on to
 the process-environment secret lookup extensions use today.
@@ -269,6 +278,57 @@ has no rescue; `hosts.invoke_event` meets that by construction and a
 queued invocation that cannot answer inside its caller's window is
 refused rather than started. A malformed verdict costs the handler its
 place on the bus and is logged; it is never read as a policy.
+
+**The TCB freeze is proven without a loader, and the resident seam is
+derived from authority** (`docs/review/extension-zone.md`,
+`packages/client/test/client/extension/freeze_test.gleam`). Two
+mechanisms, both gated: `packages/ext` and `packages/cap` name no TCB
+package and no module under them imports one, walked from the tree; and
+the extension and resident vetting allowlists are pinned as exact sets and
+shown disjoint from every module name the fourteen Gleam packages in the
+harness VM ship. The resident seam is the extension seam minus every
+module that reaches the broker, and which modules those are is derived
+from the source walk (`ext/memory` today), not from a list somebody must
+remember to extend; the beam import table is a subset of the source
+imports, so authority is read from source. Two findings are handed to
+#32 for the day a loader exists: an artifact check must be per-MFA, and
+an extension may name its own module after a base module.
+
+**An extension never overrides a built-in** (the design note, "The rest
+of pi's surface, mapped"; `client/contributions.gleam`). A name collision
+with an *active* built-in refuses boot. An operator who wants an
+extension's tool to stand in for a built-in deactivates the built-in with
+`LOOM_DISABLE_TOOLS`, which frees the name and nothing else: it is not a
+capability control, and code mode's prelude still reaches `cap/proc.run`
+and `cap/fs.write` through the broker.
+
+**`before_compact` notes and never vetoes; `usage` is notify-only and
+outside the replay rule** (`client/extension/hooks.gleam` and
+`runtime/effects.gleam`). A compaction hook fires after the runtime has
+decided to compact and before the summary generation, and may return a
+note that lands fenced and attributed after the summariser's instruction,
+bounded cumulatively across the gather; the compaction happens whatever
+the hook does. `usage` fires from the one commit path after the writer
+returns, on the strand driver's process, so the slot must never block; it
+is at-most-once and covers the conversation ledger only.
+
+**Notify-only events ride a second manager** (`client/extension/hooks.gleam`,
+"Two managers"). A cast onto the same mailbox an answering event waits on
+let one extension's slow `usage` handler spend the `tool_call` gate's
+budget and turn another extension's block into a fail-open allow. The bus
+now holds an `answers` manager for `sync_notify` events and a `notices`
+manager for casts, built from the same extension list; a handler is
+dropped per manager, and the module doc names the one case that does not
+converge.
+
+**Extension memory lives under a reserved `ext/` prefix the extension
+never spells** (`client/extension/memory.gleam`, `runtime/api.gleam`).
+`ext.remember`/`ext.recall` write and read last-write-wins cells at
+`ext/<name>/<key>` on the durable blackboard; the prefix comes from the
+installed record, the model's blackboard tool refuses `ext/` on both
+write and read, keys are bounded leaves and values bounded JSON documents,
+and there is no key-count ceiling because an install is an operator's
+trust decision and the plane has no per-writer quota for anyone.
 
 **The client surface is a different surface area** (the design note,
 "The rest of pi's surface, mapped"). `user_bash`, `ui_prompt_*`, `ctx.ui`,
@@ -358,10 +418,22 @@ somebody forgot.
   backend. That is **#181**, filed after the design settled on one
   `SecretStore` seam, and it is undesigned in the sense that the seam's
   shape is the open part.
-- **`ext.remember` and `ext.recall`**, the `ext/` reserved fact prefix, and
-  a producer for `agent_settled`. All named in the design note, none
-  commissioned; an extension that declares `agent_settled` is logged inert
-  at boot rather than left to look as if it fired.
+- **The tier-H loader** (#32). Deferred, not refused: nothing in the
+  surveyed pi ecosystem needs in-VM residency, and every hook is
+  expressible in the jail. The vetting seam a resident body would start
+  from is pinned by the freeze test, and the review record hands the
+  loader two findings to build against. It reopens when a resident
+  consumer appears.
+- **A producer for `agent_settled`.** The manifest accepts it and the bus
+  carries it; nothing in the harness fires it, and a declaration is
+  logged inert at boot rather than left to look as if it fired.
+- **A local jailed e2e on macOS.** `make codemode-seed` on this host
+  produces a seed whose clone re-resolves inside the jail, so every real
+  jailed install is `BuildUnavailable` locally and the extension e2e
+  skips; CI's Linux and macOS runners build a working seed. Until the
+  seed script verifies the offline build on Darwin, the gate for a change
+  to the install or satellite path is CI, and a local green on those
+  suites is a skip, not a pass.
 - **Per-extension serialisation of invocations.** The host registry is one
   actor whose mailbox is the queue, so two different extensions invoked
   from two strands at once wait on each other. The module doc names the
