@@ -990,13 +990,6 @@ fn announce_usage(
   plan_tx: tx.Tx,
   committed: tx.CommitResult,
 ) -> Nil {
-  // The common case by far: a transaction with no ledger row at all.
-  // Zipping two lists to find that out on every commit is work the
-  // driver does not have to do.
-  use <- bool.guard(
-    when: !list.any(plan_tx.writes, is_usage_write),
-    return: Nil,
-  )
   list.zip(plan_tx.writes, committed.seqs)
   |> list.each(fn(pair) {
     case pair {
@@ -1008,13 +1001,6 @@ fn announce_usage(
       | #(tx.DeleteRegister(..), _seq) -> Nil
     }
   })
-}
-
-fn is_usage_write(write: tx.Write) -> Bool {
-  case write {
-    tx.InsertUsage(..) -> True
-    tx.InsertEntry(..) | tx.SetRegister(..) | tx.DeleteRegister(..) -> False
-  }
 }
 
 // A message for a strand that may have died since it was arranged: a
