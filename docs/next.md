@@ -158,17 +158,35 @@ Memory is still the only subsystem with no `docs/architecture/` page.
 In this order. The first item is a body of work; the rest are smaller and
 can be interleaved by whoever is not on it.
 
-### 1. Memory: make the producer run, then fix the cascade
+### 1. Memory: the producer runs; the cascade is still owed
 
-**#149** first: distillation has to run in the shipped session lifecycle,
-with a release entry point rather than a source checkout. **#124** after
-it. A `docs/architecture/memory.md` belongs with the first of the two.
-This is the release blocker with the most product behind it and nothing
-in front of it.
+**#149 is built** (branch `memory/producer`). Distillation now runs in
+the shipped session lifecycle: `client/distillpass` is a supervised
+worker every ordinary boot starts, which runs one pass on a weft scope
+bounded by a wall deadline and then idles. The cadence, the opt-out
+(`[memory] distill = "on-boot" | "off"`, `distill_wall_ms`), the model
+cost, the retry policy ("the next boot reads the same material again")
+and when a digest becomes visible are written down in three places that
+say the same thing: `docs/architecture/memory.md` (new, the whole
+subsystem), `docs/distribution.md` ("Memory distils on the release's own
+lifecycle"), and the `[memory]` table's own decoder. `make
+release-smoke` now asserts the pass ran on a release with no Gleam
+toolchain on `PATH` and skipped the live session.
 
-Exit: a session run from the release artifact distils on its lifecycle
-without a source checkout, and an emptying cascade over a live head
-leaves the pipeline able to rebuild.
+Two consequences worth knowing before touching this code. The digest is
+read at **run start** rather than once at boot — a boot-time read would
+hold every session one pass behind its own pipeline, and the design
+note carries the addendum. And a pass killed mid-flight cannot release
+the memory session's ten-minute lease, so a boot inside that window
+logs `memory.distill.failed` and distils nothing; the store is
+consistent, and the cost is freshness in minutes rather than a lost row.
+
+**#124 is what remains**, and it is now the only thing between memory
+and "done": an emptying cascade over a live head must leave the pipeline
+able to rebuild, which today it cannot — the surviving sources keep
+their high-water cursors and their contribution becomes unrecoverable.
+`distill_test`'s `an_emptying_cascade_loses_the_surviving_sources` pins
+the loss, and the memory page names it as open.
 
 Note what this does *not* do: it does not touch extension memory
 (`ext.remember`/`ext.recall` are cells an extension owns, not the

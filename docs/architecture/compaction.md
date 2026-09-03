@@ -101,12 +101,12 @@ declared figures (`compaction_hooks`, `client/wiring.gleam:303`;
 `docs/architecture/models.md` has the routing side). The inequality is pi's —
 compact once the context passes `context_window - reserve_tokens` — and
 the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:917` (`default_reserve_tokens`) and
+once in `client/serve.gleam:937` (`default_reserve_tokens`) and
 overridable from the environment. A setting that cannot describe a
 working compaction — a non-positive keep-recent, or a reserve leaving no
 room above the tail — disables compaction rather than firing a threshold
 on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:872`).
+(`compaction_settings`, `client/serve.gleam:891`).
 
 The hook reads the strand's context straight from the session store
 rather than through the writer, which is what makes it callable from a
