@@ -46,6 +46,78 @@ settlement commit means it is fully recorded; a crash inside the window
 leaves `op.state` saying `effect_pending`, which is exactly the state the
 driver reloads and reports as an orphan.
 
+## One turn, doorbell to commit
+
+The flowchart above is one pass. A turn is several of them, and what the
+passes share is that the driver never holds anything between them: every
+pass reloads the registers, and the only carry is the clearance grants
+that authorize the dispatch immediately following them.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant D as runtime/strand_runtime<br/>(the driver)
+  participant St as storage registers
+  participant M as machine/planner.next_action
+  participant W as runtime/writer<br/>(one per session)
+  participant E as the effect process<br/>(spawned, monitored, reaper-linked)
+  participant P as effects.provider<br/>(ProviderSurface)
+  participant T as effects.tools<br/>(ToolSurface)
+
+  Note over D,M: pass 1 — the planner asks for a generation
+  D->>St: load strand.config, strand.state, strand.leaf,<br/>op.meta, op.state, sibling payloads
+  D->>M: next_action(op, state, PlannerInputs)
+  M-->>D: Dispatch(ProviderRequest(..), next, tx)
+  D->>W: commit(tx) — the intent, BEFORE the effect starts
+  W-->>D: Committed
+  D->>E: spawn_effect(reaper, logger, body)
+  E->>E: telemetry/log.adopt — the same {session, strand, op, step}
+  E->>D: hooks.admission(AdmissionQuery) / hooks.context(op, projection)
+  E->>P: the prepared request, with a cancellable stream handle
+  P-->>E: deltas, then a terminal
+  E-->>D: the observation, keyed to this step
+
+  Note over D,W: pass 2 — the observation becomes a durable message
+  D->>M: next_action, with the observation in PlannerInputs
+  M-->>D: Transition(next, tx)
+  D->>W: commit(tx) — the assistant message and its usage
+  W-->>D: Committed
+
+  Note over D,T: pass 3 — the planner asks for a tool call
+  D->>M: next_action
+  M-->>D: Dispatch(ToolRequest(..), next, tx)
+  D->>T: clear(ClearanceQuery(op, step_id, source_index,<br/>call, configuration, grants))
+  alt ClearanceRefused(reason)
+    T-->>D: refused
+    D->>W: commit a synthetic error result — no effect ever starts
+  else Cleared(effective_arguments, replay)
+    T-->>D: cleared, and the grants it consumed become the carry
+    D->>W: commit(tx) — the intent, again before the effect
+    D->>E: spawn_effect
+    E->>T: run(ToolRun) — blocks for the execution
+    Note over T: broker.clear_call is under here:<br/>one door, one jail, one settlement
+    T-->>E: ToolCompleted(result, terminate) or ToolFailed(reason)
+    E-->>D: the observation
+    D->>M: next_action
+    M-->>D: Transition(next, tx)
+    D->>W: commit(tx) — the tool result
+  end
+
+  Note over D,W: the turn ends
+  D->>M: next_action
+  M-->>D: Finish(result, tx)
+  D->>W: commit(tx) — terminal, and the operation ceases to exist
+```
+
+The window between the two commits in each `Dispatch` is the effect
+sandwich, and it is the only place a crash is ambiguous: `op.state` says
+`effect_pending`, the replacement driver reloads it, and its incarnation's
+`live` list is what separates an orphan from a live replay. The clearance
+carry is scoped just as tightly — it belongs to one call, and the very next
+planning pass either turns it into the dispatch it authorized or discards
+it, so a clearance whose dispatch never happened cannot lend its grants to
+a later one.
+
 ## Crash recovery and cold start are the same code
 
 There is no separate recovery path to keep in sync with normal

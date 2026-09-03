@@ -92,6 +92,62 @@ provider key, a clearance token, and a channel token under both a
 denylisted and an innocent key and greps the rendered bytes for all of
 them.
 
+## One event, call site to line
+
+Both mechanisms above meet in one call. Follow a `tool.settled` from the
+effect process that emits it to the byte stream it lands in.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant D as the strand driver
+  participant E as the effect process
+  participant L as telemetry/log.write
+  participant R as telemetry/record.render
+  participant F as telemetry/field.scrub
+  participant FFI as telemetry/internal/ffi_logger
+  participant H as Erlang logger<br/>default handler + telemetry_ffi
+
+  D->>D: for_step(logger, op:, step:) — the context narrows, never widens
+  D->>E: spawn_effect(logger, body) — the closure captures the Logger value
+  E->>E: log.adopt(logger) — the same context into this process's metadata,<br/>so a foreign OTP crash report lands correlated too
+  E->>L: log.info(logger, "tool.settled", fields)
+  L->>L: level.permits(threshold: logger.threshold, level:)
+  alt below the threshold
+    L-->>E: Nil — the Record is never built, the sink is never called
+  else permitted
+    L->>L: Record(level:, event:, context: logger.context, fields:)
+    L->>R: the sink — log.erlang's is render-then-emit
+    R->>R: head = level, scrub_text(event)
+    R->>R: body = context.fields(context) ++ record.fields
+    loop every field
+      R->>F: scrub(field)
+      F-->>R: unchanged, span-replaced, or Redacted
+    end
+    R->>R: dedupe — first occurrence of a key wins,<br/>and the context keys were emitted first
+    R-->>L: one line of JSON, no trailing newline
+    L->>FFI: emit(level, line)
+    FFI->>H: the line, already finished
+    H-->>H: one JSON object on one line, ours and OTP's alike
+  end
+```
+
+Two properties of that trace are the reason it is shaped this way. The
+threshold is consulted **before** the record is built, so a filtered-out
+debug line costs an integer comparison and nothing else — which is why
+`Logger` is opaque, since a caller that could reach the sink directly
+could skip the check. And everything between `write` and `emit` is pure:
+`render` takes no clock, no process and no handler, so the redaction rules
+are testable by grepping plain bytes, and the formatter on the other side
+of the FFI has nothing left to decide.
+
+The sink is the seam. `log.erlang` renders and emits; `log.to_subject`
+sends the `Record` itself to a test inbox, which is how the redaction
+tests read fields back without a handler; `log.tee` runs two; and
+`log.discard` is a sink that does nothing, which is what a package handed
+no logger uses so that logging is never the reason a library test needs a
+running VM.
+
 ## What else the invariants pin down
 
 A log record carries no timestamp of its own — the handler stamps
