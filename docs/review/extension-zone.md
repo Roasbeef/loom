@@ -101,7 +101,8 @@ which the test itself pins.
 The second seam is new in this change. **`ResidentSeam`** is the seam a
 harness-resident hook body *would* be judged under if a loader were ever
 built: `ext`, `ext/hook`, and the same standard-library subset the jailed
-seam admits, with every `cap/*` module removed. It is wired to nothing,
+seam admits, with every module that reaches the broker removed. It is
+wired to nothing,
 because there is nothing to wire it to. It exists so that the allowlist
 is frozen *before* a loader can invent one — the moment at which somebody
 is most tempted to be permissive — and so that the freeze test has a
@@ -115,6 +116,19 @@ stub there is not a request to somebody else — it is a direct call inside
 the process that holds the durability plane. A resident hook is therefore
 a pure transform over the payload it is handed, and everything else stays
 in the jail, where it already works.
+
+`ext/memory` is the case that made "every `cap/*` module removed" too
+narrow a rule to state it that way. It is a capability — a broker client
+over `ext.remember` and `ext.recall` — carrying the durable cells an
+extension owns, and it is spelled like `ext/hook`, which carries no
+authority at all. A filter matching on the `cap/` prefix would therefore
+have admitted it to the resident seam, where its cells are rows in the
+very store the harness VM holds and there is no broker between the body
+and the write. So it is **on the extension seam's pinned set and not on
+the resident one**, `policy.extension_authority_modules` names the
+non-`cap/` capabilities the filter also drops, and the freeze test writes
+both sets out so the next `ext/…` capability cannot slip across by
+spelling.
 
 ## What each test pins
 

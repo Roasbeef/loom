@@ -355,7 +355,8 @@ pub fn a_body_declaring_foreign_code_is_refused_test() {
   })
 }
 
-/// The resident seam's allowlist, pinned as an exact set.
+/// The resident seam's allowlist, pinned as an exact set. No `cap/*`
+/// module and no `ext/memory`: nothing here reaches the broker.
 ///
 /// A containment test would pass while the seam grew, which is the whole
 /// failure this file exists to catch, so the difference is taken in both
@@ -381,10 +382,18 @@ pub fn the_resident_allowlist_is_pinned_test() {
 /// resident list by the capability modules and nothing else, which the
 /// policy module's own tests assert as a relation; here the names are
 /// simply written down.
+///
+/// `ext/memory` is on this list and not on the resident one above, and
+/// the asymmetry is the whole reason both are written out. It is a
+/// capability — a broker client over `ext.remember` and `ext.recall`,
+/// spelled like the two authority-free `ext` modules beside it — and a
+/// resident body has no capability channel to serve it on. Pinning both
+/// sets is what catches a future `ext/…` capability landing on the
+/// resident seam because the filter matched on the `cap/` prefix.
 pub fn the_extension_allowlist_is_pinned_test() {
   let expected = [
     "cap/actor", "cap/fs", "cap/git", "cap/kv", "cap/lsp", "cap/net", "cap/proc",
-    "cap/report", "cap/schedule", "cap/task", "ext", "ext/hook",
+    "cap/report", "cap/schedule", "cap/task", "ext", "ext/hook", "ext/memory",
     "gleam/bit_array", "gleam/bool", "gleam/dict", "gleam/dynamic",
     "gleam/dynamic/decode", "gleam/float", "gleam/function", "gleam/int",
     "gleam/json", "gleam/list", "gleam/option", "gleam/order", "gleam/pair",

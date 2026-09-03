@@ -645,22 +645,39 @@ pub fn the_resident_seam_reaches_no_capability_test() {
 /// Stated as a difference in both directions so the relation is a fact
 /// about the code: everything the resident seam admits, the extension
 /// seam admits too, and everything the extension seam admits and this
-/// one does not is a `cap/*` module. A future widening of either that
+/// one does not carries authority. A future widening of either that
 /// broke the relation fails here rather than passing quietly.
+///
+/// "Carries authority" is asked as `cap/*` or a name
+/// `extension_authority_modules` lists, rather than as the prefix alone,
+/// because `ext/memory` is a broker client spelled like the two
+/// authority-free `ext` modules beside it. The prefix stopped being the
+/// whole answer the day it landed, and a test that still asked only
+/// about the prefix would have gone green over a resident body holding
+/// the durable store.
 pub fn the_resident_seam_is_the_extension_seam_disarmed_test() {
   let resident = policy.allowed_imports(policy.resident())
   let extension = policy.allowed_imports(policy.extension())
   assert list.all(resident, fn(name) { list.contains(extension, name) })
   let removed =
     list.filter(extension, fn(name) { !list.contains(resident, name) })
-  assert list.all(removed, fn(name) { string.starts_with(name, "cap/") })
+  assert list.all(removed, fn(name) {
+    string.starts_with(name, "cap/")
+    || list.contains(policy.extension_authority_modules(), name)
+  })
 
-  // And the removal is real rather than an equality dressed up as one.
+  // And the removal is real rather than an equality dressed up as one,
+  // and it reaches the capability that does not wear the prefix.
   assert removed != []
+  assert list.contains(removed, "ext/memory")
 }
 
 /// The resident seam's prelude half is exactly the two vocabulary
 /// modules, neither of which carries authority.
+///
+/// `ext/memory` is the third `ext` module on the jailed seam and is not
+/// here: it opens a channel to the broker, and a resident body has no
+/// broker between it and the store it would be writing.
 pub fn the_resident_prelude_is_the_two_vocabulary_modules_test() {
   assert policy.resident_prelude_modules() == ["ext", "ext/hook"]
 }
