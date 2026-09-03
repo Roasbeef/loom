@@ -201,6 +201,15 @@ fence and attribution are built at injection time
 (`client/memory.gleam:1457`, `wrapped`) so that the file cannot forge
 its own provenance.
 
+The read is bounded before it happens, because it is a read of an
+untrusted file on the strand driver's own process at every run: the
+sidecar's size is asked by one `stat` and anything over
+`max_sidecar_bytes` — four times what the pipeline renders to — is
+refused whole rather than read and clipped, with one
+`memory.digest_oversize` line saying so. A file merely over the render
+cap is still read and clipped, since that is a file `render_digest`
+could plausibly have produced.
+
 ## Configuration, cost and cadence
 
 The `[memory]` table in the same `loom.toml` the catalogue comes from,
@@ -238,6 +247,7 @@ Every pass logs through the session's own logger, under stable names:
 | `memory.distill.failed` | warn | The pipeline refused — a held lease, a provider failure, a dead worker — with the reason and the retry note. Also logged at boot when the catalogue routes nothing the pipeline could ask. A restarted worker whose predecessor's scope was killed before `memory.close` finds the run lease still held and logs this naming `loom-distill` — itself, one incarnation ago — as the holder. |
 | `memory.distill.expired` | warn | The wall deadline reaped the pass. |
 | `memory.distill.off` | info | This host is configured not to distil. |
+| `memory.digest_oversize` | warn | A run met a sidecar too large to be a digest and injected nothing; carries the size, the limit and what to do about it. Not a pass event — it is the *consumer* refusing. |
 
 The pipeline's own lines keep the `distill.*` names they have always
 had: `distill.idle`, `distill.consolidated`, `distill.digest_written`,

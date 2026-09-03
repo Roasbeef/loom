@@ -229,6 +229,17 @@ over one session file. WP-L.
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
+- `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
+  bounding the sidecar read, which the lifecycle producer moved onto the
+  strand driver's hot path: `max_sidecar_bytes` (four times the render
+  cap) is asked of the *file* by one `stat` before a byte is read, so a
+  file that could not have come from `render_digest` costs nothing and is
+  refused whole rather than clipped to a plausible prefix, while a file
+  merely over the render cap is still read and clipped as before.
+  `digest_reader` is the reader a server installs — the one that carries
+  a logger, so a refusal says `memory.digest_oversize` instead of looking
+  exactly like a repository that has never distilled. `read_digest` stays
+  the silent door.
 - `client/memory.{memory_file, digest_file, store_beside, digest_beside,
   directory_of, fact_type, lesson_type, preference_type, pipeline_types,
   type_named, short_name, max_digest_bytes, max_distillates,
@@ -339,7 +350,8 @@ over one session file. WP-L.
   the command under-deletes. `docs/spec-gaps.md`'s M2
   item 9 carries the boundary and the over-deletion it implies.
 - `client/distillpass.{Cadence, Options, Pass, Config, Message,
-  default_wall_ms, default_options, parse, start, supervised, settled,
+  default_wall_ms, default_options, no_pass, parse, start, supervised,
+  settled,
   started_event, completed_event, failed_event, expired_event,
   off_event}` — the distillation pass in the *session lifecycle* (#149):
   the supervised worker that makes `client/distill` run without a source
@@ -359,7 +371,10 @@ over one session file. WP-L.
   the total decoder for the `[memory]` table (`distill = "on-boot" |
   "off"`, `distill_wall_ms`), whose key must also be in `client/catalog`'s
   allowed top-level list — the obligation `[[rule]]` and `[schedules]`
-  carry. `Cadence` is a two-variant type rather than a flag because the
+  carry. `default_wall_ms` **is** `memory.run_lease_ttl_ms` and is also
+  the ceiling: nothing renews the memory lease but a commit, so a pass
+  cannot usefully outlive it, and a larger configured value is refused
+  rather than clamped. `Cadence` is a two-variant type rather than a flag because the
   opt-out is a posture an operator takes deliberately.
 - `client/scratch.{Bounds, Message, Scratch, start, supervised, stop, seam,
   none, stat, default_bounds}` — the ephemeral scratch store `cap/kv`
