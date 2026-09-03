@@ -2896,6 +2896,7 @@ fn settle_served(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
     Some(open) ->
       case dict.get(open.inflight, id) {
         Error(Nil) -> hosting
+
         // `emit_cap_result` writes a frame and never touches `open`, so
         // the entry read above is still the one to drop.
         Ok(_entry) ->
@@ -2981,6 +2982,7 @@ fn release(hosting: Hosting) -> Hosting {
           None -> Nil
         }
       })
+
       // `revoke_all` marks rather than removes, so the vault keeps one
       // dead entry per invocation for the life of the host and
       // `check_for` pays a constant-time compare against each. That is

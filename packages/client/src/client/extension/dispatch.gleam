@@ -771,6 +771,7 @@ fn failure_text(written: Record, failure: hosts.HookFailure) -> String {
       "the call did not finish inside the extension's own timeout, so its "
       <> "satellite was destroyed and this extension is unavailable for the "
       <> "rest of this session"
+
     // The reason says whether this is permanent — a satellite destroyed
     // is out for the session, a registry that did not answer in time is
     // not — because a model told "unavailable for the rest of this

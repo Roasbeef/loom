@@ -642,6 +642,7 @@ fn ask(
         Ok(Answered(answer:)) -> answer
         Ok(RegistryDied(..)) ->
           Error(Gone("the extension host registry died mid-invocation"))
+
         // Not a departed satellite: the registry serialises, so this is
         // most likely a caller queued behind an invocation that is still
         // running. The reason says so rather than telling the model an
