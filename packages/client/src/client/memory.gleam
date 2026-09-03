@@ -44,19 +44,31 @@
 //// distillation run's commits are separated by whole provider turns and
 //// it takes `run_lease_ttl_ms`, which is the difference between a run
 //// that survives and one whose lease is stolen out from under it while
-//// it waits on the model. No heartbeat, no background writer inside the
-//// server — and `client/serve` never opens this file at all: its boot
-//// probe reads the file's header without the lease, and the only thing
-//// that ever creates the store is the first write to it.
+//// it waits on the model. No heartbeat and no second writer: the only
+//// process that ever writes this file inside the server is the
+//// distillation pass `client/distillpass` starts on each boot, under
+//// the run-scale lease and through exactly the pipeline an operator's
+//// `loom-distill` would run. **The boot's own probe still opens
+//// nothing** — it reads the file's header without taking a lease — but
+//// since that pass runs on every ordinary boot, a first boot in a
+//// repository with no store is now what creates one, where before the
+//// first `remember` write was.
+////
+//// A lease is not renewed by the passage of time, only by a commit, so
+//// nothing here waits one out: a second pass, a hand-run
+//// `loom-distill` and a `remember` call arriving mid-pass are each
+//// refused in band and told which owner holds it.
 ////
 //// # The digest crosses to the server as bytes, not as a read
 ////
 //// Consolidation renders the current distillate head into
-//// `loom-memory.digest` beside the store. The server reads that file
-//// once at boot and injects it at every run start; it takes no lease and
+//// `loom-memory.digest` beside the store. The server reads that file at
+//// **every run start** and injects what it finds; it takes no lease and
 //// holds no handle, so a distillation run and a live session never
-//// contend, and an updated digest lands at the next session boundary by
-//// construction.
+//// contend, and an updated digest lands at the next *run* boundary by
+//// construction. Reading it per run rather than once per boot is what
+//// the in-process producer needs: a pass that runs under this same
+//// server would otherwise be invisible to the session that ran it.
 ////
 //// **The file holds the body; the wrapper is built here at injection
 //// time.** `render_digest` writes plain lines, redacted and byte-capped;
@@ -1359,9 +1371,9 @@ pub fn write_digest(path: String, body: String) -> Result(Nil, String) {
   })
 }
 
-/// Reads the digest sidecar, once, at boot. `None` for an absent, empty
-/// or unreadable file — a server with no memory injects nothing at all,
-/// which is the common case and must cost zero tokens.
+/// Reads the digest sidecar, once per accepted run. `None` for an
+/// absent, empty or unreadable file — a server with no memory injects
+/// nothing at all, which is the common case and must cost zero tokens.
 ///
 /// The byte cap is applied again here rather than trusted from the
 /// writer: the pipeline caps what it renders, and this caps what is
