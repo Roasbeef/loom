@@ -134,15 +134,24 @@ fn count_runs(text: String, needle: String) -> Int {
 pub fn the_hook_injects_nothing_without_a_digest_test() {
   let #(op, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
-  let absent = memory.digest_hooks(bare_hooks(), None, clock.fixed(at: 5))
+  let absent =
+    memory.digest_hooks(bare_hooks(), fn() { None }, clock.fixed(at: 5))
   assert absent.run_start(op) == []
   // An empty or whitespace-only file is absence too.
   let empty =
-    memory.digest_hooks(bare_hooks(), Some("  \n "), clock.fixed(at: 5))
+    memory.digest_hooks(
+      bare_hooks(),
+      fn() { Some("  \n ") },
+      clock.fixed(at: 5),
+    )
   assert empty.run_start(op) == []
 
   let present =
-    memory.digest_hooks(bare_hooks(), Some("- (fact) x"), clock.fixed(at: 5))
+    memory.digest_hooks(
+      bare_hooks(),
+      fn() { Some("- (fact) x") },
+      clock.fixed(at: 5),
+    )
   let assert [message.UserMessage(content: [message.UserText(text:, ..)], ..)] =
     present.run_start(op)
     as "a non-empty digest injects exactly one user message"
@@ -167,7 +176,11 @@ pub fn the_hook_wraps_rather_than_replaces_test() {
       ]
     })
   let wrapped =
-    memory.digest_hooks(earlier, Some("- (fact) x"), clock.fixed(at: 5))
+    memory.digest_hooks(
+      earlier,
+      fn() { Some("- (fact) x") },
+      clock.fixed(at: 5),
+    )
   assert list.length(wrapped.run_start(op)) == 2
 }
 

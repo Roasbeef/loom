@@ -1393,19 +1393,29 @@ pub fn read_digest(path: String) -> Option(String) {
 /// slot, so a builder that set it would silently drop the notes digest
 /// installed a line earlier.
 ///
+/// `read` is a **thunk**, called once per accepted run rather than once
+/// per boot, and that is what makes the in-process producer visible at
+/// all: `client/distillpass` runs a pass under this same server, and a
+/// digest read once at boot would hold every session one boot behind its
+/// own pipeline. It stays a *run-start* read, so nothing here can touch
+/// a run already open — memory still lands on run boundaries, and the
+/// anti-feedback exclusion is structural rather than temporal
+/// (`extractable` never reads a user message, which is what an injected
+/// digest is).
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // hooks |> notes.digest_hooks(session, clock) |> memory.digest_hooks(read, clock)
+/// // hooks |> memory.digest_hooks(fn() { memory.read_digest(path) }, clock)
 /// ```
 ///
 pub fn digest_hooks(
   hooks: effects.Hooks,
-  digest: Option(String),
+  read: fn() -> Option(String),
   clock: Clock,
 ) -> effects.Hooks {
   effects.Hooks(..hooks, run_start: fn(operation) {
-    list.append(hooks.run_start(operation), injected(digest, clock))
+    list.append(hooks.run_start(operation), injected(read(), clock))
   })
 }
 
