@@ -55,32 +55,41 @@
 //// measured rather than assumed: `packages/ext` was built with the
 //// toolchain and each `.beam` read with `beam_lib:chunks/2`.
 ////
-//// - `ext@runtime.beam` imports `cap@report`, `cap@runtime`, `ext@hook`,
-////   `gleam@json`, `gleam@list`, `gleam@result`, `gleam@string`, and
-////   `erlang`.
 //// - `ext.beam` imports `gleam@dynamic@decode`, `gleam@list`,
 ////   `gleam@result`, `gleam@string`, and `erlang`.
 //// - `ext@hook.beam` imports `gleam@dynamic@decode`, `gleam@json`,
 ////   `gleam@result`, `erlang`, and `maps`.
+//// - `ext@memory.beam` imports `cap@internal@dispatch`,
+////   `cap@internal@wire`, `gleam@json`, `gleam@result`, and `erlang`.
+//// - `ext@runtime.beam` imports `cap@report`, `cap@runtime`, `ext@hook`,
+////   `gleam@json`, `gleam@list`, `gleam@result`, `gleam@string`, and
+////   `erlang`.
 ////
 //// Three things follow, and the third is the one a loader has to answer.
-//// First, the table is a *subset* of the source imports: `ext@runtime`
-//// imports `ext` in source and not in the table, because it uses only
-//// that module's constructors and never calls into it. So an
-//// import-table check can never over-report, and with FFI refused by
-//// vetting and no dynamic module dispatch in Gleam — no `apply/3`, no
-//// `Module:f()` — the table is the complete set of modules a body can
-//// reach. Second, module names are the Gleam names with `/` rewritten to
-//// `@`, so the check is over the same namespace vetting already reasons
-//// about. Third, the compiler emits native Erlang modules that no
-//// allowlist names: `erlang` and `maps` here, and `lists` in other
-//// modules. A module-level check would therefore have to admit `erlang`,
-//// which is `erlang:open_port/2` and every other escape hatch in one
-//// name. **The check has to be per-MFA, not per-module.** The MFAs
-//// actually emitted across `packages/ext`'s three source modules are
-//// `erlang:element/2`, `erlang:get_module_info/1`,
-//// `erlang:get_module_info/2` and `maps:to_list/1` — a small, boring set
-//// that a loader can allowlist by triple. Recorded here because the
+//// First, the table is a *subset* of the source imports, and both
+//// capability-holding modules show it: `ext@runtime` imports `ext` in
+//// source and not in the table, and `ext@memory` imports
+//// `cap/internal/channel` in source and not in the table, because each
+//// uses only the other module's constructors and types and never calls
+//// into it. So an import-table check can never over-report, and with FFI
+//// refused by vetting and no dynamic module dispatch in Gleam — no
+//// `apply/3`, no `Module:f()` — the table is the complete set of modules
+//// a body can reach. It is also why the table is no substitute for the
+//// *source* walk `the_authority_list_is_what_the_tree_says` does:
+//// `ext@memory` reaches the broker through modules its own table happens
+//// to name, but a module that only held a channel's types would look
+//// authority-free from the beam alone. Second, module names are the
+//// Gleam names with `/` rewritten to `@`, so the check is over the same
+//// namespace vetting already reasons about. Third, the compiler emits
+//// native Erlang modules that no allowlist names: `erlang` and `maps`
+//// here, and `lists` in other modules. A module-level check would
+//// therefore have to admit `erlang`, which is `erlang:open_port/2` and
+//// every other escape hatch in one name. **The check has to be per-MFA,
+//// not per-module.** The MFAs actually emitted across `packages/ext`'s
+//// four source modules are `erlang:element/2`,
+//// `erlang:get_module_info/1`, `erlang:get_module_info/2` and
+//// `maps:to_list/1` — a small, boring set that a loader can allowlist by
+//// triple, and one `ext/memory` did not grow. Recorded here because the
 //// argument, not the number, is what #32 would inherit.
 
 import codemode/seed
