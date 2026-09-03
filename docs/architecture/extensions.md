@@ -937,12 +937,22 @@ injects it itself from `before_agent_start`.
 
 **What bounds it.** A value is capped per cell, and a key is overwritten
 rather than appended, so one cell cannot grow. The number of *distinct*
-keys is not capped, deliberately: an extension is operator-installed code
-that already holds `fs.write` inside the workspace, so a key-count
-ceiling would bound the smaller of the two ways it can fill a disk while
-making the honest use awkward. There is no admission ceiling either, on
-the reading `codemode/workspace.ceilings` states and the precedent
-`schedule.create` set.
+keys is not capped, deliberately — though not because `fs.write` would
+let an extension fill the disk anyway. It reaches inside the workspace,
+while these cells land in the session file under the operator's home: a
+different path, on a volume that need not be the same one, and on the
+durability plane rather than in scratch. The reason is that an install is
+an operator's trust decision over code they were meant to read, and the
+durability plane holds no per-writer quota for any of its writers — not
+the model's facts, not a strand's entries, not a schedule's config cells
+— so a ceiling here would be the only one in the plane, bounding the
+newest and smallest of the ways a session file grows. The growth worth
+weighing before that is revisited is a hook rather than a tool: a
+`before_agent_start` handler writing a fresh 64 KiB key on every provider
+request adds that much every turn, for the life of the repository. There
+is no admission ceiling either, on the reading
+`codemode/workspace.ceilings` states and the precedent `schedule.create`
+set.
 
 ## The invariants
 

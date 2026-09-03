@@ -46,11 +46,28 @@
 //// `codemode/workspace.ceilings` states: the durable thing a remember
 //// mints is bounded per cell by `seam.max_value_bytes` and per key by
 //// the fact that a key is overwritten rather than appended. What is
-//// *not* bounded is how many distinct keys an extension may write, and
-//// that is deliberate — an extension is operator-installed code that
-//// already holds `fs.write` inside the workspace, so a key-count
-//// ceiling would bound the smaller of the two ways it can fill a disk
-//// while making the honest use awkward.
+//// *not* bounded is how many distinct keys an extension may write.
+////
+//// That is deliberate, and the reason is not that an extension could
+//// fill a disk anyway through `fs.write`. It could not fill *this* one:
+//// `fs.write` reaches inside `Settings.workspace` and these cells land
+//// in the session file under the operator's home — a different path, on
+//// a volume that need not be the same one, and on the durability plane
+//// rather than in scratch. The reason is that an install is an
+//// operator's trust decision over code they were meant to read, and the
+//// durability plane holds no per-writer quota for any of its writers:
+//// not the model's own facts, not a strand's entries, not a schedule's
+//// config cells. A ceiling here would be the only one in the plane,
+//// bounding the newest and smallest of the ways a session file grows.
+////
+//// The growth worth weighing before that is ever revisited is a hook
+//// rather than a tool: a `before_agent_start` handler writing a fresh
+//// 64 KiB key on every provider request adds that much to the session
+//// file every turn, for the life of the repository, and nothing in this
+//// module would refuse a byte of it. What catches that today is the
+//// operator reading the extension before approving it, which is the
+//// same thing that catches an extension that writes the same bytes with
+//// `fs.write` in a loop.
 
 import client/agency
 import core/corruption
