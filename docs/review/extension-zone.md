@@ -132,7 +132,11 @@ in the jail, where it already works.
 `packages/codemode/test/codemode_test.gleam` additionally pins the
 resident seam's *shape*: that it reaches no capability, that it is the
 extension seam with the capabilities subtracted and nothing else changed,
-and that `for_seam` selects it.
+and that `for_seam` selects it. `packages/client/test/client/
+codemode_test.gleam` pins the client-side half —
+`seam_caps(ResidentSeam) == []` and `tool_seam(ResidentSeam) ==
+Error(Nil)` — so that the two `case` arms carrying "reaches nothing at
+all" cannot be made permissive with a green suite.
 
 ## What the compiler emits
 
