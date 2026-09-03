@@ -172,6 +172,40 @@ pub fn a_hook_decodes_and_a_bad_event_does_not_test() {
   assert string.contains(reason, "on_vibes")
 }
 
+/// The two events phase 4c added, decoded from a manifest. They are
+/// here rather than folded into the test above because the whole point
+/// of the vocabulary being a constant is that adding a name is a
+/// deliberate edit in two places, and a test naming the new words is
+/// what makes the second place visible.
+pub fn the_compaction_and_usage_events_decode_test() {
+  let declared =
+    with(extensions.hello(), "extension.toml", fn(text) {
+      text
+      <> "\n[[hook]]\nevent = \"before_compact\"\nentry = \"hello/tool\"\n"
+      <> "\n[[hook]]\nevent = \"usage\"\nentry = \"hello/tool\"\n"
+    })
+  let assert Ok(decoded) = decode(declared)
+    as "before_compact and usage are in the vocabulary"
+  assert list.map(decoded.hooks, fn(hook) { hook.event })
+    == ["before_compact", "usage"]
+}
+
+/// A near-miss is still refused. `before_compaction` reads like the
+/// event and is not one, and an extension whose hook silently never
+/// fired would have no way to find out.
+pub fn a_near_miss_on_a_new_event_is_refused_test() {
+  let assert Error(reason) =
+    decode(
+      with(extensions.hello(), "extension.toml", fn(text) {
+        text
+        <> "\n[[hook]]\nevent = \"before_compaction\"\nentry = \"hello/tool\"\n"
+      }),
+    )
+    as "a name outside the vocabulary must be refused whatever it resembles"
+  assert string.contains(reason, "before_compaction")
+  assert string.contains(reason, "before_compact")
+}
+
 // --- package vetting ------------------------------------------------------
 
 /// Every vetting refusal names its file. That is the whole reason the

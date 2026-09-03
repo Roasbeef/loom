@@ -457,8 +457,9 @@ pub fn on_event() -> hook.Hook {
 /// its hooks.
 ///
 /// It declares one trivial tool (a manifest must), a `tool_call` hook
-/// that blocks exactly one tool name, and a `context` hook that appends a
-/// copy of the last message it was handed. Both are the shapes the ruling
+/// that blocks exactly one tool name, a `context` hook that appends a
+/// copy of the last message it was handed, a `before_compact` hook that
+/// echoes its cue back as a note, and a notify-only `usage` hook. Both are the shapes the ruling
 /// gives a hook the most authority over — a verdict on a call the model
 /// made, and the request's own message list — so proving them end to end
 /// over a real jailed satellite is proving the reverse direction carries
@@ -480,6 +481,8 @@ pub fn gatekeeper() -> List(#(String, String)) {
     #("schema/gatekeeper.json", gatekeeper_schema()),
     #("src/gatekeeper/tool.gleam", gatekeeper_tool()),
     #("src/gatekeeper/context.gleam", gatekeeper_context()),
+    #("src/gatekeeper/compaction.gleam", gatekeeper_compaction()),
+    #("src/gatekeeper/usage.gleam", gatekeeper_usage()),
   ]
 }
 
@@ -496,7 +499,10 @@ fn gatekeeper_manifest() -> String {
   <> "parameters = \"schema/gatekeeper.json\"\nentry = \"gatekeeper/tool\"\n"
   <> "timeout_ms = 30000\n\n"
   <> "[[hook]]\nevent = \"tool_call\"\nentry = \"gatekeeper/tool\"\n\n"
-  <> "[[hook]]\nevent = \"context\"\nentry = \"gatekeeper/context\"\n"
+  <> "[[hook]]\nevent = \"context\"\nentry = \"gatekeeper/context\"\n\n"
+  <> "[[hook]]\nevent = \"before_compact\"\n"
+  <> "entry = \"gatekeeper/compaction\"\n\n"
+  <> "[[hook]]\nevent = \"usage\"\nentry = \"gatekeeper/usage\"\n"
 }
 
 fn gatekeeper_project() -> String {
@@ -558,6 +564,45 @@ fn echoed(messages: List(json.Json)) -> List(json.Json) {
     Ok(final) -> list.append(messages, [final])
     Error(Nil) -> messages
   }
+}
+"
+}
+
+// The note echoes the cue back rather than saying something of its own,
+// which is what makes the args document testable from outside the jail:
+// a note carrying the reason word and the token count is a note that
+// decoded both, and a fixture with an opinion would prove only that
+// text crossed.
+fn gatekeeper_compaction() -> String {
+  "import ext/hook
+import gleam/int
+import gleam/option
+
+pub fn on_event() -> hook.Hook {
+  hook.OnBeforeCompact(fn(compaction: hook.Compaction) {
+    option.Some(
+      compaction.reason
+      <> \"/\"
+      <> int.to_string(compaction.tokens_before)
+      <> \"/\"
+      <> int.to_string(compaction.summarized_messages)
+      <> \"/\"
+      <> int.to_string(compaction.retained_messages),
+    )
+  })
+}
+"
+}
+
+// A notify-only hook has nothing to answer with, so the body is a
+// no-op and the assertion outside is about the round trip: the row
+// decoded inside the jail, and the satellite answered the empty
+// document rather than refusing.
+fn gatekeeper_usage() -> String {
+  "import ext/hook
+
+pub fn on_event() -> hook.Hook {
+  hook.OnUsage(fn(_usage: hook.Usage) { Nil })
 }
 "
 }

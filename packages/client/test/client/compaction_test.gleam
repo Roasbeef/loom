@@ -69,7 +69,7 @@ fn bulky(label: String) -> String {
 // --- the threshold ---------------------------------------------------------
 
 pub fn a_crossed_threshold_compacts_with_the_providers_summary_test() {
-  let assert Ok(#(runtime, opened)) = harness(Healthy)
+  let assert Ok(#(runtime, opened)) = harness(Healthy, NoNotes)
     as "the harness must open"
   // Turn one settles under the threshold; turn two reports usage above
   // it, so the checkpoint after it compacts.
@@ -93,7 +93,7 @@ pub fn a_crossed_threshold_compacts_with_the_providers_summary_test() {
 // the context that was *replaced*. A fold that read it would compact on
 // every checkpoint for the rest of the session.
 pub fn a_finished_compaction_does_not_re_fire_the_threshold_test() {
-  let assert Ok(#(runtime, opened)) = harness(Healthy)
+  let assert Ok(#(runtime, opened)) = harness(Healthy, NoNotes)
   let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
   let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
   let assert Ok(second) = api.prompt(runtime, [user(bulky("keep going"))])
@@ -107,6 +107,59 @@ pub fn a_finished_compaction_does_not_re_fire_the_threshold_test() {
   let _closed = api.close(runtime)
 }
 
+// --- the before_compact note -----------------------------------------------
+//
+// The non-vetoing form of the `session_before_*` hooks the design note
+// refused. The event fires once the compaction is decided and before
+// the summary generation starts; its answer is appended to the
+// summarizer's input and there is no shape it can take that stops the
+// compaction.
+
+pub fn a_threshold_compaction_carries_its_note_to_the_summarizer_test() {
+  let cues = process.new_subject()
+  let delivered = process.new_subject()
+  let assert Ok(#(runtime, opened)) =
+    harness(Healthy, Noting(cues:, delivered:))
+    as "the harness must open"
+  let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
+  let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
+  let assert Ok(second) = api.prompt(runtime, [user(bulky("keep going"))])
+  let assert Ok(_settled) = api.await_result(runtime, second, within_ms: 5000)
+
+  // Asked once, with the door this compaction came through named and
+  // the preparation's own numbers on the cue.
+  let assert Ok(cue) = process.receive(cues, within: 1000)
+    as "the compaction asked for notes"
+  assert cue.cause == effects.ThresholdCompaction
+  assert cue.tokens_before > window - reserve
+  assert cue.summarized_messages > 0
+  assert cue.retained_messages > 0
+
+  // And the note reached the request the summarizer was actually sent.
+  assert process.receive(delivered, within: 1000) == Ok([scripted_note])
+
+  // The compaction happened anyway, which is the whole ruling: a note
+  // is an aside, never a veto.
+  assert list.length(compactions(opened)) == 1
+  let _closed = api.close(runtime)
+}
+
+pub fn an_overflow_compaction_names_its_own_cause_test() {
+  let cues = process.new_subject()
+  let delivered = process.new_subject()
+  let assert Ok(#(runtime, _opened)) =
+    harness(OverflowsOnce, Noting(cues:, delivered:))
+  let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
+  let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
+  let assert Ok(op) = api.prompt(runtime, [user(bulky("keep going"))])
+  let assert Ok(_settled) = api.await_result(runtime, op, within_ms: 5000)
+
+  let assert Ok(cue) = process.receive(cues, within: 1000)
+    as "the overflow compaction asked for notes"
+  assert cue.cause == effects.OverflowCompaction
+  let _closed = api.close(runtime)
+}
+
 // --- overflow recovery -----------------------------------------------------
 
 // The provider says the context does not fit. With the overflow
@@ -114,7 +167,7 @@ pub fn a_finished_compaction_does_not_re_fire_the_threshold_test() {
 // the default `EmptyPreparation` it drained the whole run as
 // `context_overflow`.
 pub fn a_reported_overflow_compacts_and_retries_test() {
-  let assert Ok(#(runtime, opened)) = harness(OverflowsOnce)
+  let assert Ok(#(runtime, opened)) = harness(OverflowsOnce, NoNotes)
   let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
   let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
   let assert Ok(op) = api.prompt(runtime, [user(bulky("keep going"))])
@@ -132,7 +185,7 @@ pub fn a_reported_overflow_compacts_and_retries_test() {
 // here, a reaped effect or a crashed strand in the field — starts the
 // attempt over rather than publishing an empty summary.
 pub fn a_retryable_summary_failure_is_retried_test() {
-  let assert Ok(#(runtime, opened)) = harness(SummariesFlapOnce)
+  let assert Ok(#(runtime, opened)) = harness(SummariesFlapOnce, NoNotes)
   let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
   let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
   let assert Ok(second) = api.prompt(runtime, [user(bulky("keep going"))])
@@ -149,7 +202,7 @@ pub fn a_retryable_summary_failure_is_retried_test() {
 // no compaction — a `CompactionEntry` with an empty summary would have
 // replaced the conversation with nothing.
 pub fn a_terminally_failed_summary_publishes_nothing_test() {
-  let assert Ok(#(runtime, opened)) = harness(SummariesRefuse)
+  let assert Ok(#(runtime, opened)) = harness(SummariesRefuse, NoNotes)
   let assert Ok(first) = api.prompt(runtime, [user(bulky("start the work"))])
   let assert Ok(_settled) = api.await_result(runtime, first, within_ms: 5000)
   let assert Ok(second) = api.prompt(runtime, [user(bulky("keep going"))])
@@ -173,7 +226,28 @@ type Script {
   SummariesFlapOnce
 }
 
-fn harness(script: Script) -> Result(#(api.Runtime, session.Session), String) {
+/// Whether this harness watches the `before_compact` seam.
+///
+/// A variant rather than two harnesses: everything else about the setup
+/// is identical, and the tests that do not care about notes should not
+/// have to say so in more than a word.
+type Notes {
+  /// The production compaction hooks, untouched.
+  NoNotes
+
+  /// A `compaction_note` slot that records every cue it is asked about
+  /// and answers with one note, plus a sink the scripted provider
+  /// reports each summary request's notes to.
+  Noting(cues: Subject(effects.CompactionCue), delivered: Subject(List(String)))
+}
+
+/// The note a `Noting` harness answers every cue with.
+const scripted_note = "<extension name=tracer>keep the migration plan</extension>"
+
+fn harness(
+  script: Script,
+  notes: Notes,
+) -> Result(#(api.Runtime, session.Session), String) {
   use opened <- result.try(
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
     |> result.map_error(fn(_) { "the memory session did not open" }),
@@ -192,11 +266,11 @@ fn harness(script: Script) -> Result(#(api.Runtime, session.Session), String) {
       entropy:,
       timers: effects.real_timers(),
       provider: wiring.recording_summaries(
-        scripted_provider(script, turns, summaries_seen),
+        scripted_provider(script, turns, summaries_seen, notes),
         into: sink,
       ),
       tools: refusing_tools(),
-      hooks: wiring.compaction_hooks(config),
+      hooks: noting(wiring.compaction_hooks(config), notes),
     )
   let configuration =
     machine_strand.StrandConfiguration(
@@ -218,6 +292,22 @@ fn harness(script: Script) -> Result(#(api.Runtime, session.Session), String) {
     ),
   ))
   Ok(#(runtime, opened))
+}
+
+// The production compaction hooks, with the `before_compact` slot
+// replaced by a recorder when the test asked for one. Wrapping rather
+// than rebuilding is what `client/extension/hooks.wire` does in
+// production, so the test drives the same composition shape.
+fn noting(hooks: effects.Hooks, notes: Notes) -> effects.Hooks {
+  case notes {
+    NoNotes -> hooks
+
+    Noting(cues:, delivered: _) ->
+      effects.Hooks(..hooks, compaction_note: fn(_operation, cue) {
+        process.send(cues, cue)
+        [scripted_note]
+      })
+  }
 }
 
 fn compaction_settings() -> operation.CompactionSettings {
@@ -311,9 +401,11 @@ fn scripted_provider(
   script: Script,
   turns: Subject(Subject(Int)),
   summaries_seen: Subject(Subject(Int)),
+  notes: Notes,
 ) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 2000, request: fn(spec) {
     let events = process.new_subject()
+    report_notes(spec, notes)
     case spec {
       effects.SummaryRequest(..) ->
         case script, next_turn(summaries_seen) {
@@ -354,6 +446,22 @@ fn scripted_provider(
     }
     stream.immediate(events:, cancel: fn() { Nil })
   })
+}
+
+// What a dispatched summary request actually carries, reported from the
+// provider surface — the far side of the whole path, so a note that was
+// gathered but never threaded into the spec fails here rather than
+// passing on the strength of the hook having been asked.
+fn report_notes(spec: effects.RequestSpec, notes: Notes) -> Nil {
+  case spec, notes {
+    effects.SummaryRequest(notes: carried, ..), Noting(cues: _, delivered:) ->
+      process.send(delivered, carried)
+
+    effects.SummaryRequest(..), NoNotes
+    | effects.GenerationRequest(..), _
+    | effects.PollRequest(..), _
+    -> Nil
+  }
 }
 
 fn settle(events: Subject(stream.StreamEvent), reply: AgentMessage) -> Nil {

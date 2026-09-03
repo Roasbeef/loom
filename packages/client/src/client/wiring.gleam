@@ -597,6 +597,7 @@ pub fn summary_provider_request(
       preparation: Some(preparation),
       configuration:,
       operation:,
+      notes:,
       ..,
     ) ->
       Ok(ProviderRequest(
@@ -607,6 +608,7 @@ pub fn summary_provider_request(
             config,
             preparation,
             instructions_for(config, operation),
+            notes,
           ),
         ],
         tools: [],
@@ -667,6 +669,7 @@ fn summary_message(
   config: Config,
   preparation: StructuralPreparation,
   instructions: Option(String),
+  notes: List(String),
 ) -> AgentMessage {
   let input = case preparation {
     operation.CompactionPreparation(
@@ -699,10 +702,25 @@ fn summary_message(
     summary.system(config.summary_pack)
     <> "\n\n"
     <> summary.instruction(config.summary_pack, input)
+    <> noted(notes)
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
   )
+}
+
+// The extension notes, after everything the pack said, or nothing at
+// all. Last is where they belong: the pack's instruction is the request
+// and a note is an aside about it, so a note that preceded the
+// instruction would read as though it were part of the harness's own
+// brief. Each block arrives already fenced and already attributed by
+// whoever produced it (`client/extension/hooks.note_block`), so this
+// concatenates and adds nothing of its own.
+fn noted(notes: List(String)) -> String {
+  case notes {
+    [] -> ""
+    blocks -> "\n\n" <> string.join(blocks, "\n\n")
+  }
 }
 
 /// What the sink holds for one structural attempt, as the machine's

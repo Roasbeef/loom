@@ -20,6 +20,7 @@
 //// `ProviderError` into that convention using `provider/retry.classify`.
 
 import core/clock.{type Clock}
+import core/entry.{type UsageRow}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message.{
@@ -79,6 +80,12 @@ pub type RequestSpec {
     preparation: Option(StructuralPreparation),
     configuration: StrandConfiguration,
     stream_options: JsonValue,
+    /// Attributed blocks a `compaction_note` hook asked to have placed
+    /// at the end of the summarizer's input, already rendered and
+    /// already fenced by whoever produced them. The dispatching driver
+    /// fills this from `Hooks.compaction_note`; every other request
+    /// spec carries none because no other request has a note to carry.
+    notes: List(String),
   )
 }
 
@@ -280,6 +287,46 @@ pub type OverflowQuery {
   OverflowQuery(operation: OpId, strand: String)
 }
 
+/// Why a structural compaction is about to run.
+///
+/// Three words and no fourth, because these are the three doors into a
+/// compaction the planner actually has: the checkpoint size check, the
+/// one-shot overflow recovery, and an operator asking for one. A branch
+/// summary is not a compaction and never produces a cue.
+pub type CompactionCause {
+  /// The context-size check at a checkpoint crossed the threshold.
+  ThresholdCompaction
+
+  /// A provider request did not fit and recovery compacted the context.
+  OverflowCompaction
+
+  /// An operator asked for a compaction outright.
+  RequestedCompaction
+}
+
+/// What the harness can say about a compaction at the moment it
+/// dispatches the summary request, and no more.
+///
+/// The three counts are the frozen preparation's own numbers, which is
+/// the whole of the range identity the runtime holds here. There is no
+/// entry range to quote: the preparation is a list of *messages*
+/// projected from the branch, and the entries behind them were already
+/// left out of the register the decision hook froze. Quoting a seq range
+/// would be inventing one.
+pub type CompactionCue {
+  CompactionCue(
+    /// Which door this compaction came through.
+    cause: CompactionCause,
+    /// What the context cost before the compaction, in tokens, as the
+    /// preparation recorded it.
+    tokens_before: Int,
+    /// How many projected messages are being replaced by a summary.
+    summarized_messages: Int,
+    /// How many trailing messages survive the compaction verbatim.
+    retained_messages: Int,
+  )
+}
+
 /// The hook surface the driver consults for hook-shaped effect keys.
 /// Hooks are replayable and carry no effect intent (a crash before the
 /// consuming commit may rerun them), so they are plain synchronous
@@ -318,6 +365,36 @@ pub type Hooks {
     /// `default_hooks` supplies identity, so a host that installs
     /// nothing here dispatches exactly the projection it read.
     context: fn(OpId, List(AgentMessage)) -> List(AgentMessage),
+    /// `before_compact`: attributed blocks to append to the
+    /// summarizer's input, asked for once per dispatched summary
+    /// request and never asked about a branch summary.
+    ///
+    /// The answers are strings rather than messages because a summary
+    /// request is a single user message the harness composes; a note is
+    /// appended to its text, at the end, after the instruction. Whoever
+    /// fills this slot owns the attribution and the bound — the harness
+    /// concatenates what it is handed.
+    ///
+    /// This is safe under the replay rule above for the same reason
+    /// `context` is. The note is transient input to a request whose
+    /// consuming commit is the summary itself, so a crash before that
+    /// commit re-dispatches, re-asks, and the second answer is as good
+    /// as the first because neither was written down. A hook that could
+    /// *stop* a compaction would not be safe that way, and there is no
+    /// such slot.
+    compaction_note: fn(OpId, CompactionCue) -> List(String),
+    /// `usage`: one committed cost-ledger row, on the harness's
+    /// timeline, after the transaction that wrote it returned.
+    ///
+    /// A notification and nothing else — the return type is the whole
+    /// of the contract. Unlike every other slot here this one is *not*
+    /// replayable, and it does not need to be: the row is durable
+    /// before the call is made and the transaction that wrote it is
+    /// never re-planned, so the notification fires at most once and is
+    /// lost outright if the driver dies between the commit and the
+    /// call. Losing a trace line is the correct trade against
+    /// double-counting a session's cost.
+    usage: fn(OpId, UsageRow) -> Nil,
   )
 }
 
@@ -402,6 +479,8 @@ pub fn default_hooks() -> Hooks {
     summary_progress: fn(_, _, _) { SummaryProduced(summary: "", usage: None) },
     resolution: fn(_) { ModelResolved },
     context: fn(_operation, context) { context },
+    compaction_note: fn(_operation, _cue) { [] },
+    usage: fn(_operation, _row) { Nil },
   )
 }
 
