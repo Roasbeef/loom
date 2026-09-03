@@ -155,7 +155,7 @@ pub type Command {
   /// `[[schedule]]` tables and the strands' own — answered by a
   /// `schedules` snapshot. Read-only, and deliberately empty-bodied:
   /// there is nothing to scope, because an operator watching a session
-  /// is watching all of it (`protocol-change/012`).
+  /// is watching all of it (`protocol-change/013`).
   ListSchedules
 
   /// Retire one model-created schedule, named by the strand it fires
@@ -234,7 +234,7 @@ pub type Snapshot {
 /// the rule `docs/gleam-style.md` Part III ("No naked `Bool`") states.
 /// Its "frozen contract" escape would have permitted the `Bool`, since
 /// this is a Part-1 field and changing it now costs a
-/// `protocol-change/NNN.md`; `protocol-change/012` declined the escape
+/// `protocol-change/NNN.md`; `protocol-change/013` declined the escape
 /// while the field was still being minted, which is the one moment the
 /// choice is free.
 pub type ScheduleInfo {

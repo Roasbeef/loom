@@ -1,4 +1,4 @@
-# protocol-change/012 — the operator's schedule surface
+# protocol-change/013 — the operator's schedule surface
 
 **Status**: ACCEPTED 2026-09-02 · **Affects**: Part 1.6 client command
 set, `snapshot` event modes · **Raised by**: the scheduling plane review —

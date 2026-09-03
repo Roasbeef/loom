@@ -37,7 +37,7 @@ over one session file. WP-L.
   `models` command's reply).
 - `client/protocol.{ListSchedules, CancelSchedule, SchedulesSnapshot,
   ScheduleInfo, ScheduleWake}` — the operator's scheduling surface,
-  `protocol-change/012`. `schedules` `{}` lists every schedule the
+  `protocol-change/013`. `schedules` `{}` lists every schedule the
   session holds — operator `[[schedule]]` tables first, then every live
   model-created cell — as a `snapshot` mode `schedules`; `schedule_cancel`
   `{target, name}` retires one model-created schedule and replies with

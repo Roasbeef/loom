@@ -157,7 +157,7 @@ once, in seq order**.
   is a `schedules` snapshot. The body is deliberately empty: there is
   nothing to scope, because an operator watching a session watches all
   of it. A gateway with no scheduling plane answers an empty listing
-  (`protocol-change/012`).
+  (`protocol-change/013`).
 - `schedule_cancel` `{target: string, name: string}` — retire one
   **model-created** schedule. Both fields are required: `{target, name}`
   is a schedule's identity in every durable key it owns, so a cancel
