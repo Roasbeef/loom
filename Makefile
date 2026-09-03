@@ -107,8 +107,13 @@ tui-shipment: ## Package the native TUI: build/tui-erlang-shipment + bin/loom
 	@chmod +x bin/loom
 	@echo "built build/tui-erlang-shipment and bin/loom"
 
+# The seed is a prerequisite because a server booted without one registers
+# no `code_mode` tool and says so only in its log; a drive against such a
+# server reads as a model that cannot find code mode, which has misled a
+# session more than once. The seed script is the one step allowed the
+# network, and it is a no-op once the seed builds offline.
 .PHONY: server-shipment
-server-shipment: ## Package the server: build/erlang-shipment + bin/loomd (needs erl to run)
+server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bin/loomd (needs erl to run)
 	@cd packages/client && gleam export erlang-shipment
 	@mkdir -p bin build
 	@rm -f bin/loom-server
