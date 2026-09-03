@@ -125,6 +125,12 @@ pub type UsageOrigin {
   ProviderReported
 
   /// A caller wrote a reconciliation row against the ledger.
+  ///
+  /// Nothing in the harness produces one today: every row a run commits
+  /// is a provider's report, and no adjustment path exists to write the
+  /// other kind. The variant is here so the wire field stays total — the
+  /// harness sends a boolean and a decoder that could only read `false`
+  /// would be one an author had to revisit the day an adjustment lands.
   Reconciliation
 }
 
