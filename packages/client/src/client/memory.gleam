@@ -880,31 +880,149 @@ pub fn advance_head(
   expected expected: Option(Seq),
   cursors cursors: List(#(String, JsonValue)),
 ) -> Result(Nil, MemoryFault) {
-  let cursor_writes =
-    list.map(cursors, fn(cursor) {
-      SetRegister(
-        ns: register.FactCustom,
-        key: cursor.0,
-        value: register.value(cursor.1),
-      )
-    })
   head_cas(
     opened,
-    [head_cell(list.map(named, ids.entry_id_to_string)), ..cursor_writes],
+    [
+      head_cell(list.map(named, ids.entry_id_to_string)),
+      ..cursor_writes(cursors)
+    ],
     expected,
   )
 }
 
+/// Whether a cursor rewind moved the notes cursor.
+pub type NotesRewind {
+  /// The notes cursor sat past a note some consolidation had already
+  /// folded in, and the rewind resets it to zero so the next pass reads
+  /// every note again.
+  NotesRewound
+
+  /// There was no consumed note to recover: the cell is absent or
+  /// already at zero. The rewind leaves it alone rather than writing a
+  /// value it already holds.
+  NotesUnmoved
+}
+
+/// The cursor writes an emptying cascade commits beside its head
+/// replacement, with the counts the operator is told.
+///
+/// Constructor invariants: `cursors` is exactly what the CAS writes, one
+/// entry per recorded source cursor, plus the notes cursor when it has
+/// something to recover; `sources` counts the
+/// per-source cursors inside it, so `cursors` is `sources` long, plus
+/// one when `notes` is `NotesRewound`.
+pub type Rewind {
+  Rewind(cursors: List(#(String, JsonValue)), sources: Int, notes: NotesRewind)
+}
+
+/// The rewind that moves nothing: what an ordinary head replacement
+/// commits, and what a cascade that dropped no row commits.
+pub const no_rewind = Rewind(cursors: [], sources: 0, notes: NotesUnmoved)
+
+/// Every recorded cursor, rewound to the start of its source, and the
+/// notes cursor with it.
+///
+/// **This is what makes an emptying erasure cascade recoverable** (issue
+/// #124). A head is one batch with uniform provenance, so a cascade that
+/// matches anything empties it; unless the sources that fed it are read
+/// again there is nothing left to consolidate from, and their
+/// contribution is lost for good. Re-reading them is the only rebuild
+/// there is, so a cascade that drops rows commits this rewind inside the
+/// head CAS itself — see `replace_head`.
+///
+/// Two decisions are worth the ink. The cursors are **enumerated by
+/// prefix** (`cursor_prefix`) rather than derived from a directory walk:
+/// the cell is the pipeline's own record of what it has ever read, so it
+/// names sources whose file is currently leased by a live server, and
+/// sources whose file has since been moved away — neither of which a
+/// walk at cascade time could see, and both of which must be re-read if
+/// they ever come back. And a rewound cursor keeps the **generation it
+/// recorded** and zeroes only the seq, because the rewind cannot read a
+/// source's current generation without opening every file (a lease a
+/// live session holds). Keeping it is exact: `cursor_from` answers
+/// `Cursor(0, generation)` when the generation still matches and a fresh
+/// cursor when it has moved, and both re-read the source from zero.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.cursor_rewind(opened) == Ok(memory.no_rewind)
+/// ```
+///
+pub fn cursor_rewind(opened: Opened) -> Result(Rewind, MemoryFault) {
+  use recorded <- result.try(cursor_cells(opened))
+  use consumed <- result.map(cell(opened, notes_cursor_key))
+  let sources =
+    list.map(recorded, fn(found) { #(found.0, rewound_cursor(found.1)) })
+  case consumed {
+    // A notes cursor past zero is the one that has to move: every note
+    // below it was folded into the head the cascade is about to empty.
+    Some(#(json.Int(seq), _cell_seq)) if seq > 0 ->
+      Rewind(
+        cursors: [#(notes_cursor_key, json.Int(0)), ..sources],
+        sources: list.length(sources),
+        notes: NotesRewound,
+      )
+
+    Some(_unmoved) | None ->
+      Rewind(
+        cursors: sources,
+        sources: list.length(sources),
+        notes: NotesUnmoved,
+      )
+  }
+}
+
+// Every `distill/cursor/*` cell, as key and payload. The prefix scan is
+// the enumeration; nothing maintains a second index of the sources a
+// pass has read, because this cell *is* that index.
+fn cursor_cells(
+  opened: Opened,
+) -> Result(List(#(String, JsonValue)), MemoryFault) {
+  case
+    storage.list_registers(
+      opened.session.store,
+      register.FactCustom,
+      Some(cursor_prefix),
+    )
+  {
+    Error(error) -> Error(MemoryFailed(reason: string.inspect(error)))
+    Ok(found) ->
+      Ok(list.map(found, fn(pair) { #(pair.0, { pair.1 }.value.payload) }))
+  }
+}
+
+// One cursor cell, wound back to the start of its source under the
+// generation it recorded. Total: a payload this module did not write
+// reads as generation zero, which no live source can match, so the
+// source is re-read from zero either way.
+fn rewound_cursor(payload: JsonValue) -> JsonValue {
+  let generation = case payload {
+    json.Object(fields) -> option.unwrap(int_field(fields, "generation"), 0)
+    _unreadable -> 0
+  }
+  cursor_value(Cursor(seq: 0, generation:))
+}
+
 /// Replaces the head with `named` — id texts already in it, written back
-/// verbatim — expecting the cell at `expected` and touching nothing else.
+/// verbatim — expecting the cell at `expected`, and commits `rewind`'s
+/// cursor writes in the same transaction.
 ///
 /// This is an **erasure cascade's** one write, and the whole of it. The
 /// survivors of a cascade are rows that are already durable, so there is
 /// nothing to append: the write order the pipeline's crash safety rests
 /// on (rows, then the head CAS, then the sidecar) is satisfied here by
-/// having no rows to write. Cursors are deliberately absent — a cascade
-/// records no reading progress, and the erased source's own cursor is
-/// voided by the rewrite generation that erasure bumped, not by this.
+/// having no rows to write.
+///
+/// **The rewind rides in this CAS or it does not happen** (issue #124).
+/// A cascade that drops rows empties a head whose sources must now be
+/// read again, and `cursor_rewind` computes the cells that says so. A
+/// crash between this commit and a separate cursor write would leave an
+/// emptied head above high-water cursors — precisely the unrecoverable
+/// state the rewind exists to prevent — so the two move together. A
+/// cascade that drops nothing passes `no_rewind` and writes only the
+/// head cell, and the erased source's own cursor needs neither: the
+/// rewrite generation that erasure bumped already voids it.
 ///
 /// A `StaleExpectation` means a distillation run moved the head
 /// underneath the cascade, which is a lost race and not a fault: the
@@ -928,15 +1046,33 @@ pub fn advance_head(
 /// ## Examples
 ///
 /// ```gleam
-/// // memory.replace_head(opened, named: survivors, expected: Some(seq))
+/// // memory.replace_head(opened, survivors, Some(seq), memory.no_rewind)
 /// ```
 ///
 pub fn replace_head(
   opened: Opened,
   named named: List(String),
   expected expected: Option(Seq),
+  rewind rewind: Rewind,
 ) -> Result(Nil, MemoryFault) {
-  head_cas(opened, [head_cell(named)], expected)
+  head_cas(
+    opened,
+    [head_cell(named), ..cursor_writes(rewind.cursors)],
+    expected,
+  )
+}
+
+// The cursor half of either head write, in one place: both movers set
+// `fact.custom` cells from `#(key, payload)` pairs, and the difference
+// between them is which payload — a high-water seq, or a rewind to zero.
+fn cursor_writes(cursors: List(#(String, JsonValue))) -> List(tx.Write) {
+  list.map(cursors, fn(cursor) {
+    SetRegister(
+      ns: register.FactCustom,
+      key: cursor.0,
+      value: register.value(cursor.1),
+    )
+  })
 }
 
 // The head cell's write, from the id texts it will name.
@@ -995,14 +1131,7 @@ pub fn advance_cursors(
   cursors: List(#(String, JsonValue)),
 ) -> Result(Nil, MemoryFault) {
   use <- bool.guard(when: cursors == [], return: Ok(Nil))
-  let writes =
-    list.map(cursors, fn(cursor) {
-      SetRegister(
-        ns: register.FactCustom,
-        key: cursor.0,
-        value: register.value(cursor.1),
-      )
-    })
+  let writes = cursor_writes(cursors)
   case storage.commit(opened.session.store, Tx(writes:, expected: [])) {
     Ok(_result) -> Ok(Nil)
     Error(error) -> Error(commit_fault(error))

@@ -61,7 +61,7 @@ entry ids it was derived from. The head is a register naming the rows
 currently in force; per-source cursors and the notes cursor are
 registers too.
 
-**The pipeline** is `client/distill.gleam:495` (`run`): walk the session
+**The pipeline** is `client/distill.gleam:501` (`run`): walk the session
 directory, extract per source on a cheap model, consolidate the
 candidates and the outstanding `remember` notes against the current head
 in one more turn, then re-render the sidecar.
@@ -70,7 +70,7 @@ in one more turn, then re-render the sidecar.
 new in #149: a supervised child that runs exactly one pass per boot and
 then idles.
 
-**The injection** is `client/memory.gleam:1522` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1651` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
@@ -103,8 +103,8 @@ rule, and it is a rule about types so that no string can defeat it.
 | Lease | TTL | Who takes it | Why that length |
 |---|---|---|---|
 | The source session's | the server's own | `loomd`, for its whole life | It is what makes "skip the live session" exact. |
-| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:253`) | `remember_seam` (`client/memory.gleam:1142`) | One open per call, one commit; nothing slow between. |
-| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:276`) | `client/distill.gleam:495` (`run`) | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
+| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:253`) | `remember_seam` (`client/memory.gleam:1277`) | One open per call, one commit; nothing slow between. |
+| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:276`) | `client/distill.gleam:501` (`run`) | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
 
 There is deliberately **no new lease type** for the lifecycle worker.
 The pass takes the memory session's ordinary writer lease, which is what
@@ -156,7 +156,7 @@ nothing moves until the pass succeeds: the write order is rows first,
 then the head-and-cursors CAS, then the sidecar
 — `client/memory.gleam:690` (`append_distillates`), then
 `client/memory.gleam:874` (`advance_head`), then
-`client/memory.gleam:1029` (`reconcile_digest`) — so a pass that dies
+`client/memory.gleam:1164` (`reconcile_digest`) — so a pass that dies
 anywhere leaves every cursor where it was and the previous head
 standing.
 
@@ -198,7 +198,7 @@ still contributes nothing to any later extraction.
 The digest body is rendered from the head (`client/memory.gleam:1282`,
 `render_digest`) — scrubbed, byte-capped, truncation marked — and the
 fence and attribution are built at injection time
-(`client/memory.gleam:1567`, `wrapped`) so that the file cannot forge
+(`client/memory.gleam:1696`, `wrapped`) so that the file cannot forge
 its own provenance.
 
 The read is bounded before it happens, because it is a read of an
@@ -266,36 +266,61 @@ cursor") and, already at `warn`, `distill.source_unreadable` and
 ## The `remember` door
 
 The one model-initiated write path, and the reason the store exists
-before any pass has run. `client/memory.gleam:1142` (`remember_seam`)
+before any pass has run. `client/memory.gleam:1277` (`remember_seam`)
 opens the store per call under the short lease, scrubs and caps the
 note, and refuses in band when a pass holds the run-scale lease, naming
 the owner. Notes are a separate entry type from the pipeline's three, so
 a model cannot forge a consolidated fact; the consolidation turn folds
 outstanding notes in and the notes cursor advances with the head CAS.
 
-## Erasure, and the part that is still open
+## Erasure, and the rebuild it schedules
 
 The erasure cascade is the second command behind the pipeline's entry
-point, `client/distill.gleam:842` (`cascade`): after `session/repo` has
+point, `client/distill.gleam:880` (`cascade`): after `session/repo` has
 rewritten a source session, it drops from the head every distillate
-whose provenance names that session (`client/memory.gleam:657`,
+whose provenance names that session (`client/memory.gleam:670`,
 `names_source`) and re-renders the sidecar without them, through a head
-CAS alone and no new rows (`client/memory.gleam:921`, `replace_head`).
-It needs no catalogue and dispatches no model turn.
+CAS and no new rows (`client/memory.gleam:1052`, `replace_head`). It needs no
+catalogue and dispatches no model turn.
 
-Two limits are named rather than hidden. It is **first-order**: a
+One limit is named rather than hidden: the cascade is **first-order**. A
 distillate derived from a dropped one keeps its predecessor's id and not
 its predecessor's sources, so erasure guarantees stop at the first
-derivation. And it **moves no cursor**, which is the open problem
-**#124**: since a head is uniform in provenance, an effective cascade
-empties it, and the surviving sources keep their high-water cursors — so
-their contribution and every hand-written note become unrecoverable by
-the pipeline, which will next consolidate the erased source alone over
-an empty head. `distill_test`'s
-`an_emptying_cascade_loses_the_surviving_sources` pins the loss until a
-rewind, a `--rebuild` companion or a `--dry-run` preview lands. #149
-does not touch it: the lifecycle worker runs the ordinary pass, and a
-cascade stays an operator's deliberate act.
+derivation.
+
+**A cascade that drops rows rewinds the cursors** (issue #124). A head
+is one consolidation's batch and so is uniform in provenance, which
+means any effective cascade empties it.
+Reading the surviving sources again is then the only rebuild there is,
+so the CAS that replaces the head also winds every recorded cursor back
+to zero and resets the notes cursor (`client/memory.cursor_rewind`,
+committed through `replace_head`). The cursors are enumerated by a
+prefix scan of the memory session's own `distill/cursor/*` cells: that
+cell *is* the pipeline's record of what it has ever read, so it names
+sources a walk at cascade time could not see — a file a live server
+holds the lease on, a file since moved away — and both must be re-read
+if they come back. A rewound cursor keeps the generation it recorded and
+zeroes only the seq, which is exact: `cursor_from` answers `Cursor(0,
+generation)` when the generation still matches and a fresh cursor when
+it has moved, and both re-read from zero. The erased source's own cursor
+is wound back with the rest, which changes nothing for it — the rewrite
+generation had already voided it.
+
+**One transaction is the point.** A crash between an emptied head and a
+separate cursor write would leave the head empty above high-water
+cursors, which is precisely the unrecoverable state #124 described. A
+cascade over a session nothing names still writes nothing at all: the
+rewind is earned by a drop, and the no-op stays a no-op.
+
+**What the rebuild costs**, and it is the only rebuild there is: one
+extraction request per readable source plus one consolidation, at the
+next boot's lifecycle pass or at the operator's next manual one. The
+dropped rows stay in the store as orphans nothing reads again.
+`loom-distill --cascade <session> --dry-run` opens the store under the
+short lease, computes the same answer — what would be dropped, kept and
+rewound — reports it, and writes nothing: no CAS, no cursor, no sidecar.
+#149 does not touch any of this: the lifecycle worker runs the ordinary
+pass, and a cascade stays an operator's deliberate act.
 
 ## Where memory is protected
 

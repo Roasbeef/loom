@@ -555,8 +555,8 @@ pub fn provenance_pairs_with_every_head_id_including_the_missing_test() {
   memory.close(opened)
 }
 
-/// `replace_head` moves the head and nothing else — no cursor, no row —
-/// and it moves only from the seq it was read at.
+/// `replace_head` under `no_rewind` moves the head and nothing else — no
+/// cursor, no row — and it moves only from the seq it was read at.
 pub fn replace_head_moves_the_pointer_and_nothing_else_test() {
   let root = fresh_root("replace")
   let assert Ok(opened) = open_memory(root) as "the memory session must open"
@@ -579,11 +579,21 @@ pub fn replace_head_moves_the_pointer_and_nothing_else_test() {
 
   // A stale expectation loses, exactly as `advance_head`'s does.
   let assert Error(memory.MemoryFailed(..)) =
-    memory.replace_head(opened, named: [kept], expected: None)
+    memory.replace_head(
+      opened,
+      named: [kept],
+      expected: None,
+      rewind: memory.no_rewind,
+    )
     as "a replacement against `absent` must fail once a head exists"
   // The right one wins, and the surviving id is written back verbatim.
   let assert Ok(Nil) =
-    memory.replace_head(opened, named: [kept], expected: Some(seq))
+    memory.replace_head(
+      opened,
+      named: [kept],
+      expected: Some(seq),
+      rewind: memory.no_rewind,
+    )
     as "a replacement at the read seq must land"
   let assert Ok(#(now, Some(moved))) = memory.head(opened)
     as "the head must read back again"

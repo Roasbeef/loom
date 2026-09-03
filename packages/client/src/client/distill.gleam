@@ -71,24 +71,33 @@
 //// Run after `session/repo` has rewritten a source session, `--cascade`
 //// drops from the memory head every distillate whose provenance names
 //// that session and re-renders the sidecar without them (`cascade`). It
-//// dispatches no model turn, so it needs no `--config`; it writes no
-//// rows, because every survivor is already durable; and it moves no
-//// cursor, because the rewrite generation the erase bumped already
-//// forces the source to be re-extracted from zero.
+//// dispatches no model turn, so it needs no `--config`, and it writes no
+//// rows, because every survivor is already durable.
 ////
 //// It is the pipeline's ordinary head replacement, and inherits the
 //// crash semantics above unchanged — a cascade killed after the CAS is
 //// reconciled by the next run like any other. **First-order only**: the
 //// boundary is issue #115's own, recorded in `docs/spec-gaps.md`.
 ////
-//// **What it costs, which is more than it looks.** A head is one
-//// consolidation's batch and so is uniform in provenance, so a cascade
-//// that matches anything at all empties the head. Only the erased
-//// source is then re-read — every other source keeps its cursor, and
-//// the notes cursor sits past every note already consumed — so their
-//// contribution is permanently unrecoverable by this pipeline. That is
-//// a defect rather than a design: issue #124 carries the mechanism, and
-//// `cascade`'s own doc spells the sequence out.
+//// **A cascade that drops rows rewinds the cursors** (issue #124). A
+//// head is one consolidation's batch and so is uniform in provenance,
+//// so a cascade that matches anything at all empties the head. Reading
+//// the surviving sources again is then the only rebuild there is, so
+//// the head CAS that empties the head also winds every recorded cursor
+//// back to zero and resets the notes cursor
+//// (`client/memory.cursor_rewind`). One transaction, because a crash
+//// between an emptied head and a separate cursor write would recreate
+//// exactly the unrecoverable state the rewind exists to prevent. A
+//// cascade over a session nothing names stays a true no-op and moves
+//// nothing at all.
+////
+//// **What the rebuild costs, said before it is spent.** The next
+//// ordinary pass re-extracts every readable source — one extraction
+//// request each — and consolidates once, at the next boot or at the
+//// operator's next manual pass. `--cascade <session> --dry-run` reports
+//// what a cascade would drop, keep and rewind and writes nothing at
+//// all, so an operator sees the wipe and its price before paying
+//// either.
 ////
 //// # Where the model comes in
 ////
@@ -753,14 +762,37 @@ fn read_notes_cursor(opened: Opened) -> Result(Seq, String) {
 /// permanently invisible to every future cascade. That is the one place
 /// this command under-deletes, so an operator who is erasing something
 /// has to be told the count rather than left to infer it.
+///
+/// `rewound` counts the per-source cursors the drop wound back to zero
+/// and `notes` says whether the notes cursor went with them; both are
+/// zero and `NotesUnmoved` when nothing was dropped, because a cascade
+/// that matches nothing writes nothing. Under `Preview` every count is
+/// what a `Commit` *would* have done, and `digest` is always `None`,
+/// since a preview writes no sidecar to report.
 pub type Cascade {
   Cascade(
     session: String,
+    mode: CascadeMode,
     dropped: Int,
     kept: Int,
     unreadable: Int,
+    rewound: Int,
+    notes: memory.NotesRewind,
     digest: Option(Int),
   )
+}
+
+/// Whether a cascade commits what it computed, or only says what it
+/// would have committed.
+pub type CascadeMode {
+  /// The ordinary cascade: the head replacement and the cursor rewind
+  /// land in one CAS, and the sidecar is reconciled after it.
+  Commit
+
+  /// `--dry-run`: read the head, compute the same answer, and write
+  /// nothing whatever — no CAS, no cursor, no sidecar. The lease is
+  /// still taken, because reading the head means opening the store.
+  Preview
 }
 
 /// The distiller a cascade runs under: one that refuses, because a
@@ -804,23 +836,29 @@ pub fn no_distiller() -> Distiller {
 ///   sidecar. A cascade killed before the sidecar leaves a head ahead of
 ///   its digest, and the next run's reconciliation closes it, which is
 ///   what that reconciliation is for.
-/// - **Cursors are not touched, and an emptying cascade therefore loses
-///   what it emptied.** The erased source's cursor is voided by the
-///   rewrite generation `repo.rewrite_sqlite` bumped, so the next run
-///   re-extracts *that* source from zero on its own
-///   (`memory.cursor_from`). Every other source keeps its cursor at the
-///   high-water seq the last run left it at, and the notes cursor sits
-///   past every note already consumed. Since a head is uniform in
-///   provenance, an effective cascade empties it — so the next run
-///   consolidates the erased source alone, over an empty head, no notes,
-///   and no other source offering anything. **The surviving sources'
-///   contribution and every hand-written note are then permanently
-///   unrecoverable by the pipeline.** Re-reading the other sources is in
-///   fact the only rebuild there could be; not doing it is the gap, not
-///   the saving. Issue #124 carries the mechanism — a cursor rewind on
-///   drop, a `--rebuild` companion, or a `--dry-run` preview — and
-///   `distill_test`'s `an_emptying_cascade_loses_the_surviving_sources`
-///   pins the loss until one of them lands.
+/// - **A drop rewinds the cursors, in the same commit** (issue #124).
+///   Since a head is uniform in provenance, an effective cascade empties
+///   it, and re-reading the sources that fed it is the only rebuild
+///   there could be. So the CAS that replaces the head also winds every
+///   recorded cursor back to zero and resets the notes cursor
+///   (`memory.cursor_rewind`, committed through `memory.replace_head`),
+///   and the next ordinary pass re-extracts every readable source and
+///   folds in every note again. The erased source needs no help from
+///   this: its cursor is voided already by the rewrite generation
+///   `repo.rewrite_sqlite` bumped (`memory.cursor_from`). **One
+///   transaction is the point.** A crash between an emptied head and a
+///   separate cursor write would leave the head empty above high-water
+///   cursors, which is exactly the unrecoverable state #124 described —
+///   so the cursors move with the head or not at all. A cascade that
+///   drops nothing moves nothing, and the no-op stays a no-op.
+///
+/// **What the rebuild costs.** One extraction request per readable
+/// source plus one consolidation, at the next boot's lifecycle pass or
+/// at the operator's next manual one. There is no cheaper rebuild and no
+/// other one: the dropped rows are orphans nothing reads again. `mode:
+/// Preview` — `--dry-run` on the command line — computes the whole
+/// answer, reports what would be dropped, kept and rewound, and writes
+/// nothing at all, so that price can be seen before it is paid.
 ///
 /// **First-order, and the second order is vacuous rather than skipped.**
 /// A row whose `derived_from` names a dropped row is not chased. Within
@@ -836,12 +874,13 @@ pub fn no_distiller() -> Distiller {
 /// ## Examples
 ///
 /// ```gleam
-/// // distill.cascade(config, session: "01924f7e-…")
+/// // distill.cascade(config, session: "01924f7e-…", mode: distill.Commit)
 /// ```
 ///
 pub fn cascade(
   config: Config,
   session session: String,
+  mode mode: CascadeMode,
 ) -> Result(Cascade, String) {
   let generator = ids.generator(config.clock, seed: config.entropy())
   use opened <- result.try(
@@ -860,7 +899,7 @@ pub fn cascade(
     )
     |> result.map_error(describe_fault),
   )
-  let outcome = cascaded(config, opened, session)
+  let outcome = cascaded(config, opened, session, mode)
   memory.close(opened)
   outcome
 }
@@ -869,6 +908,7 @@ fn cascaded(
   config: Config,
   opened: Opened,
   session: String,
+  mode: CascadeMode,
 ) -> Result(Cascade, String) {
   use #(named, head_seq) <- result.try(
     memory.head(opened) |> result.map_error(describe_fault),
@@ -878,44 +918,89 @@ fn cascaded(
   )
   let #(dropped, kept) =
     list.partition(pairs, fn(pair) { memory.names_source(pair.1, session) })
+
+  // Computed for both modes and committed by one: what a preview exists
+  // to report is precisely what a commit would move.
+  use rewind <- result.try(rewind_for(opened, dropped))
   use Nil <- result.try(dropped_from_head(
     config,
     opened,
+    mode,
     survivors: list.map(kept, fn(pair) { pair.0 }),
     expected: head_seq,
     dropped: dropped,
+    rewind: rewind,
   ))
-  use written <- result.map(reconciled_digest(config, opened))
+  use written <- result.map(rendered(config, opened, mode))
   Cascade(
     session:,
+    mode:,
     dropped: list.length(dropped),
     kept: list.length(kept),
     unreadable: list.count(kept, fn(pair) { pair.1 == memory.no_provenance }),
+    rewound: rewind.sources,
+    notes: rewind.notes,
     digest: written,
   )
 }
 
-// The head CAS, made only when something was actually dropped.
+// The rewind a drop earns, and nothing when there is no drop.
+//
+// The enumeration is deliberately not conditional on the mode: a preview
+// that guessed at the counts would be worth less than no preview.
+fn rewind_for(
+  opened: Opened,
+  dropped: List(#(String, memory.Provenance)),
+) -> Result(memory.Rewind, String) {
+  use <- bool.guard(when: dropped == [], return: Ok(memory.no_rewind))
+  memory.cursor_rewind(opened) |> result.map_error(describe_fault)
+}
+
+// The head CAS and the cursor rewind, in one commit, made only when
+// something was actually dropped and only when the mode commits.
 //
 // A cascade over a session nothing names must be a true no-op: writing
 // the identical id list back would still bump the cell's seq, which is a
-// visible write and would lose a concurrent run's CAS for no reason.
+// visible write and would lose a concurrent run's CAS for no reason. A
+// preview is the same refusal by a different route — it has an answer to
+// report and no business writing it down.
 fn dropped_from_head(
   config: Config,
   opened: Opened,
+  mode: CascadeMode,
   survivors survivors: List(String),
   expected expected: Option(Seq),
   dropped dropped: List(#(String, memory.Provenance)),
+  rewind rewind: memory.Rewind,
 ) -> Result(Nil, String) {
+  use <- bool.guard(when: mode == Preview, return: Ok(Nil))
   use <- bool.guard(when: dropped == [], return: Ok(Nil))
   use Nil <- result.map(
-    memory.replace_head(opened, named: survivors, expected:)
+    memory.replace_head(opened, named: survivors, expected:, rewind:)
     |> result.map_error(describe_fault),
   )
   log.info(config.logger, "distill.cascaded", [
     field.count(key: "dropped", value: list.length(dropped)),
     field.count(key: "kept", value: list.length(survivors)),
+    field.count(key: "rewound", value: rewind.sources),
   ])
+}
+
+// The sidecar, for the mode that writes one.
+//
+// A preview reports `None`, and it means the literal thing: nothing was
+// written. `announce_cascade` does not print the digest clause for a
+// preview, so `None` is never read there as "the digest was already
+// right".
+fn rendered(
+  config: Config,
+  opened: Opened,
+  mode: CascadeMode,
+) -> Result(Option(Int), String) {
+  case mode {
+    Commit -> reconciled_digest(config, opened)
+    Preview -> Ok(None)
+  }
 }
 
 // --- the walk --------------------------------------------------------------
@@ -1391,6 +1476,15 @@ pub fn main() -> Nil {
     // lease for the sake of a subcommand that shares all three.
     Ok(Flags(cascade: Some(session), ..) as flags) ->
       announce_cascade(cascade_flags(flags, session, logger))
+
+    // `--dry-run` previews a cascade and has no meaning for a pass: a
+    // run's whole product is the head it commits. Refused rather than
+    // ignored, because an operator who typed it believes nothing will be
+    // written.
+    Ok(Flags(mode: Preview, ..)) ->
+      io.println_error(
+        "loom-distill: --dry-run applies only to --cascade\n" <> usage,
+      )
     Ok(flags) -> announce(run_flags(flags, logger))
   }
 }
@@ -1415,19 +1509,77 @@ fn announce(outcome: Result(Report, String)) -> Nil {
 fn announce_cascade(outcome: Result(Cascade, String)) -> Nil {
   case outcome {
     Error(reason) -> io.println_error("loom-distill: " <> reason)
-    Ok(report) ->
-      io.println(
-        "loom-distill: cascade over "
-        <> report.session
-        <> ": "
-        <> int.to_string(report.dropped)
-        <> " distillates dropped, "
-        <> int.to_string(report.kept)
-        <> " kept"
-        <> escaped_line(report)
-        <> " "
-        <> digest_line(report.digest),
-      )
+    Ok(report) -> io.println(cascade_line(report))
+  }
+}
+
+// The two lines a cascade can print, kept apart because they are two
+// different speech acts: one reports a write that has happened, the
+// other a write that has not.
+fn cascade_line(report: Cascade) -> String {
+  case report.mode {
+    Commit ->
+      "loom-distill: cascade over "
+      <> report.session
+      <> ": "
+      <> int.to_string(report.dropped)
+      <> " distillates dropped, "
+      <> int.to_string(report.kept)
+      <> " kept"
+      <> escaped_line(report)
+      <> rewind_line(report)
+      <> " "
+      <> digest_line(report.digest)
+    Preview -> preview_line(report)
+  }
+}
+
+// What `--dry-run` is for: the wipe named before it happens, and the
+// rebuild that follows it priced. An operator who reads this and stops
+// has got the whole value of the flag.
+fn preview_line(report: Cascade) -> String {
+  case report.dropped {
+    0 ->
+      "loom-distill: cascade over "
+      <> report.session
+      <> ": nothing names this session; no-op. Nothing was written."
+    dropping ->
+      "loom-distill: cascade over "
+      <> report.session
+      <> " would drop "
+      <> int.to_string(dropping)
+      <> " distillates and keep "
+      <> int.to_string(report.kept)
+      <> escaped_line(report)
+      <> ", "
+      <> rewound_counts(report)
+      <> "; the next pass re-extracts every readable source. Nothing was "
+      <> "written."
+  }
+}
+
+// The rewind, on a committed cascade's line. Empty when nothing was
+// dropped, because then nothing moved.
+fn rewind_line(report: Cascade) -> String {
+  case report.dropped {
+    0 -> ""
+    _dropping ->
+      "; "
+      <> rewound_counts(report)
+      <> ", so the next pass re-extracts every readable source"
+  }
+}
+
+fn rewound_counts(report: Cascade) -> String {
+  int.to_string(report.rewound)
+  <> " source cursors rewound"
+  <> notes_clause(report.notes)
+}
+
+fn notes_clause(notes: memory.NotesRewind) -> String {
+  case notes {
+    memory.NotesRewound -> " and the notes cursor reset"
+    memory.NotesUnmoved -> " and no consumed note to recover"
   }
 }
 
@@ -1464,13 +1616,20 @@ type Flags {
     session: Option(String),
     config: Option(String),
     cascade: Option(String),
+    mode: CascadeMode,
   )
 }
 
 fn parse(arguments: List(String)) -> Result(Flags, String) {
   parse_loop(
     arguments,
-    Flags(session_dir: None, session: None, config: None, cascade: None),
+    Flags(
+      session_dir: None,
+      session: None,
+      config: None,
+      cascade: None,
+      mode: Commit,
+    ),
   )
 }
 
@@ -1485,6 +1644,7 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
       parse_loop(rest, Flags(..flags, config: Some(value)))
     ["--cascade", value, ..rest] ->
       parse_loop(rest, Flags(..flags, cascade: Some(value)))
+    ["--dry-run", ..rest] -> parse_loop(rest, Flags(..flags, mode: Preview))
     [unknown, ..] -> Error("unknown argument `" <> unknown <> "`\n" <> usage)
   }
 }
@@ -1493,9 +1653,10 @@ const usage = "usage: loom-distill --config <loom.toml>
   [--session-dir <dir>]    the session directory to distill (default: the current directory)
   [--session <path.db>]    a session file; its directory is the one distilled
 
-   or: loom-distill --cascade <source-session-id>
+   or: loom-distill --cascade <source-session-id> [--dry-run]
   [--session-dir <dir>]    the session directory whose memory is cascaded
   [--session <path.db>]    a session file; its directory is the one cascaded
+  [--dry-run]              report what a cascade would do and write nothing
 
 `--config` is required for a distillation run, which dispatches two model
 turns, and the catalogue is where the `summarize` route (or the main model
@@ -1505,7 +1666,14 @@ it falls back to) is declared.
 erasing a source session with `session/repo`: it drops from the memory
 head every distillate whose provenance names that session and re-renders
 the digest without them. First-order only — a distillate derived from a
-dropped one keeps its predecessor's id and not its sources."
+dropped one keeps its predecessor's id and not its sources.
+
+A cascade that drops anything empties the head, because a head is one
+batch with uniform provenance — so the same commit winds every source
+cursor back to zero and resets the notes cursor, and the next ordinary
+pass re-extracts every readable source and folds the notes in again.
+That costs one extraction request per readable source and one
+consolidation. `--dry-run` reports the whole of it and writes nothing."
 
 fn run_flags(flags: Flags, logger: Logger) -> Result(Report, String) {
   use directory <- result.try(directory_of(flags))
@@ -1557,6 +1725,7 @@ fn cascade_flags(
     config_for(directory, no_distiller(), clock:, entropy: mixed_entropy())
       |> with_logger(logger),
     session:,
+    mode: flags.mode,
   )
 }
 

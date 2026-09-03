@@ -249,7 +249,7 @@ over one session file. WP-L.
   open, close, probe, SourceRef, Provenance, no_provenance, Distillate,
   distillate_of, provenance_of, provenance_by_id, names_source,
   append_distillates, head, head_rows, advance_head, replace_head,
-  advance_cursors,
+  advance_cursors, NotesRewind, Rewind, no_rewind, cursor_rewind,
   cell, notes_after, safe_text, remember_seam, fence, render_digest,
   read_digest, write_digest, reconcile_digest, digest_hooks, wrapped}` —
   the memory plane: the
@@ -280,11 +280,19 @@ over one session file. WP-L.
   records, **one pair per id including ids the store cannot resolve**, so
   an unresolvable head id survives the rewrite rather than vanishing from
   it. `names_source` is the match, at session grain because provenance is
-  batch-level. `replace_head` is the write: the head CAS alone, no rows
-  and no cursors, sharing `advance_head`'s expectation so the head only
-  ever moves under a CAS.
+  batch-level. `replace_head` is the write: the head cell and the cursor
+  rewind in one CAS, no rows, sharing `advance_head`'s expectation so the
+  head only ever moves under a CAS. `cursor_rewind` computes that rewind
+  (#124) — every `distill/cursor/*` cell wound back to seq zero under the
+  generation it recorded, plus the notes cursor when a consolidation has
+  consumed anything. Those cells *are* the pipeline's record of what it
+  has read, so the prefix scan sees sources a directory walk at cascade
+  time could not: a file a live server holds the lease on, a file since
+  moved away. `no_rewind` is the empty one, which is what an ordinary
+  head replacement passes.
 - `client/distill.{Answer, Distiller, Candidate, Extract, Harvest, Report,
-  Cascade, Config, default_scan_limit, max_extract_chars, max_notes_per_run,
+  Cascade, CascadeMode, Config, default_scan_limit, max_extract_chars,
+  max_notes_per_run,
   default_timeout_ms, distill_owner, extractable, extraction_input,
   extraction_prompt, consolidation_prompt, parse_candidates, config_for,
   with_logger, run, cascade, no_distiller, source_files, target,
@@ -317,28 +325,31 @@ over one session file. WP-L.
   entry point** (`cascade`, issue #115): the first-order erasure cascade,
   run by the operator *after* `session/repo` has rewritten that source.
   It drops from the head every distillate whose provenance names the
-  session and re-renders the sidecar without them. Four things about it
+  session and re-renders the sidecar without them. Five things about it
   are load-bearing. It **needs no `--config`** and runs under
   `no_distiller`, because it dispatches no model turn. It **writes no
   rows** — every survivor is already durable — so the pipeline's write
   order holds trivially, and it takes the *short* lease rather than
-  `run_lease_ttl_ms`, since nothing slow sits between its commits. It
-  **moves no cursor** — and that is a defect rather than a saving. The
-  erased source is re-extracted from zero by the rewrite generation the
-  erase bumped, but every *other* source keeps its high-water cursor and
-  the notes cursor sits past every note already consumed. Since a head is
-  uniform in provenance, an effective cascade empties it, so **the
-  surviving sources' contribution and every hand-written note become
-  permanently unrecoverable by the pipeline**: the next run consolidates
-  the erased source alone, over an empty head and no notes. Re-reading
-  the other sources is the only rebuild there could be, so not doing it
-  is the gap. Issue **#124** carries the mechanism (a cursor rewind on
-  drop, a `--rebuild` companion, or a `--dry-run` preview), and
-  `distill_test`'s `an_emptying_cascade_loses_the_surviving_sources`
-  pins the loss until one lands. And a cascade that
+  `run_lease_ttl_ms`, since nothing slow sits between its commits. A
+  cascade that drops rows **rewinds the cursors in the same CAS**
+  (#124): a head is uniform in provenance, so an effective cascade
+  empties it, and re-reading the surviving sources is the only rebuild
+  there is, so `memory.cursor_rewind`'s cells ride inside
+  `memory.replace_head`'s transaction. One transaction is the point — a
+  crash between an emptied head and a separate cursor write would leave
+  the head empty above high-water cursors, which is the unrecoverable
+  state the issue described. The next ordinary pass re-extracts every
+  readable source and folds the notes in again, which costs one
+  extraction request per source plus one consolidation and is the only
+  rebuild on offer; `distill_test`'s
+  `an_emptying_cascade_rewinds_so_the_next_pass_rebuilds` drives the
+  whole loop. **`CascadeMode` is the fifth**: `Preview` (`--dry-run`)
+  computes the same answer — dropped, kept, rewound, notes — reports it
+  and writes nothing at all, no CAS and no sidecar, so an operator sees
+  the wipe and its price before paying either. And a cascade that
   drops nothing **does not CAS at all**, because writing the identical id
   list back would still bump the cell's seq and lose a concurrent run's
-  expectation. First-order: a row whose `derived_from` names a dropped
+  expectation — so it rewinds nothing either. First-order: a row whose `derived_from` names a dropped
   row is not chased, and within one head that is vacuous rather than
   deferred. The induction is written out at `memory.replace_head` and
   needs **both** head writers: `advance_head` mints a fresh batch whose
@@ -2118,7 +2129,7 @@ an install is under the extensions root.
   own package.
 - [docs/architecture/memory.md](../../docs/architecture/memory.md) — the
   store, the pipeline, the lease rules, the lifecycle worker, the digest
-  injection and the erasure cascade's open problem (#124).
+  injection and the erasure cascade's rewind-on-drop (#124).
 - [docs/design-notes/compaction-and-memory.md](../../docs/design-notes/compaction-and-memory.md)
   — Stage C0: which seams were inert, what each hook now decides from,
   and the cache arithmetic the summary request's shape follows.
