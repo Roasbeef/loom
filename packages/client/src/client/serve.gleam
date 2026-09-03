@@ -225,6 +225,7 @@ import gleam/string
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
+import provider/adapter/gemini
 import provider/adapter/openai
 import provider/gateway as provider_gateway
 import provider/http
@@ -1007,6 +1008,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
   case dialect {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
+    catalog.Gemini -> gemini.api_name
   }
 }
 

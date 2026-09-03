@@ -49,6 +49,22 @@ model_id = "claude-opus-5"
 context_window = 1000000
 max_output_tokens = 32000
 
+# A Gemini endpoint. `dialect = "gemini"` speaks the generateContent API
+# with a Google AI Studio key from `api_key_env`; base_url is omitted, so
+# the dialect default (https://generativelanguage.googleapis.com/v1beta)
+# applies. Vertex AI is not reachable this way: it wants OAuth, not an
+# API key. `thinking` picks the reasoning knob by model generation —
+# Gemini 3 takes a level word, Gemini 2.5 a token budget — and "off"
+# leaves the model's own default in force rather than disabling it,
+# which Gemini 3 cannot do.
+[models.gemini-flash]
+dialect = "gemini"
+api_key_env = "GEMINI_API_KEY"
+model_id = "gemini-3.8-flash"
+context_window = 1048576
+max_output_tokens = 65536
+thinking = "low"
+
 # Role routing: which model serves which purpose, best entry first.
 # The five routable roles are main, subagent, plan, summarize, and
 # vision; only main is required. A later entry is the fallback — used
@@ -63,7 +79,7 @@ max_output_tokens = 32000
 # the harness yet to route.
 [roles]
 main = ["baseten-oss", "anthropic-opus"]
-subagent = ["baseten-oss"]
+subagent = ["baseten-oss", "gemini-flash"]
 summarize = ["anthropic-opus"]
 
 # MCP servers, one [mcp.<name>] table per server. The table key becomes
