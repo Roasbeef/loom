@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2228`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2234`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -726,7 +726,7 @@ rule that guards `bash`.
 **A call is one satellite execution of the artifact the install
 compiled.** No build happens — that was the install's job — so the call
 pays a node launch and nothing else. The declared tool timeout is
-clamped: `within` (`extension/dispatch.gleam:348`) takes the minimum of
+clamped: `within` (`extension/dispatch.gleam:670`) takes the minimum of
 the manifest's `timeout_ms` and the operator's `max_within_ms`, because
 an install is not a way to raise how long this host will hold a strand.
 
