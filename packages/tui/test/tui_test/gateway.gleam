@@ -149,11 +149,11 @@ fn message_entry(
   ])
 }
 
-// Entry ids are UUIDs and a snapshot must not move between runs, so the
-// sequence number picks one from a fixed family rather than minting a fresh
-// identifier from a clock.
+// Entry ids are version-7 UUIDs, and a snapshot must not move between runs,
+// so the sequence number picks one from a fixed family rather than minting a
+// fresh identifier from a clock.
 fn fixed_entry_id(seq: Int) -> ids.EntryId {
-  let text = "00000000-0000-4000-8000-00000000000" <> string_digit(seq % 10)
+  let text = "00000000-0000-7000-8000-00000000000" <> string_digit(seq % 10)
   case ids.parse_entry_id(text) {
     Ok(id) -> id
     Error(_) -> fallback_entry_id()
@@ -178,7 +178,7 @@ fn string_digit(value: Int) -> String {
 // Unreachable: the text above is a well-formed UUID. Answered rather than
 // asserted so a stricter parser fails a test instead of the whole suite.
 fn fallback_entry_id() -> ids.EntryId {
-  case ids.parse_entry_id("00000000-0000-4000-8000-000000000000") {
+  case ids.parse_entry_id("00000000-0000-7000-8000-000000000000") {
     Ok(id) -> id
     Error(_) -> panic as "the fixed fixture UUID stopped parsing"
   }
