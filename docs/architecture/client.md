@@ -540,6 +540,60 @@ reuses `loomd`. Manual attachment instead requires `--addr`, `--session`, and
 than part of the server archive. It does not carry a second ERTS, so the
 terminal host needs compatible Erlang/OTP 29 on `PATH`.
 
+## Recording and replaying a session
+
+`--record <path>` qualifies any interactive launch and writes one JSON line
+per event as it arrives: every key, paste, resize and wheel notch, and every
+message the websocket inbox delivered, each with its monotonic offset from
+the start of the run. Ticks and the mouse events `update` ignores are left
+out, because replaying them would change nothing. A gateway frame is stored
+as the gateway's own bytes; the three connection lifecycle messages, which
+are not wire frames, carry a tag of their own.
+
+`loom replay <path>` plays that file back through `tui/virtual_backend` — an
+etui backend whose `poll` answers a script instead of a file descriptor —
+and prints a frame as plain text. It installs no terminal state and opens no
+socket, so an agent with no terminal can see what the client would have
+drawn. `--all` prints every frame with its index, `--at <n>` picks one,
+`--width` and `--height` set the screen until the recording's own first
+resize supersedes them. An unreadable or undecodable recording exits
+non-zero naming the file and the line; so does a frame index the recording
+does not reach. The replay's footer shows a fixed `replay` workspace,
+because a recording carries none and a frame that changed with the shell it
+was replayed from would be a poor answer.
+
+**A replay reproduces inbound traffic and rendering, and never an outbound
+effect.** It writes to no socket, starts no daemon, reads no local session
+catalogue, and invents no line the live client would have been sent.
+`tui.Peer` is what makes that structural rather than remembered: `Attached`
+carries the websocket and sends, `Preview` is `--demo` and answers a prompt
+with its canned echo, and `Replaying` performs only the local half of the
+live path — the draft clears, the strand is marked submitting, the notice
+changes — while the turn the server echoed arrives from the recording as an
+ordinary entry. Every submit and command site enumerates the three. The
+footer's tokens-per-second follows the same rule: the window it reports is
+this client's own clock from a request going out to its settlement, and a
+replay spends that window reading a file, so a replay leaves it unset rather
+than reporting its own speed. The catalogue goes the same way: a connected
+client empties the demo models the launcher seeds, so a replay does too, and
+one whose recording carried no models snapshot opens the empty selector the
+live client opened.
+
+`/sessions` is the one place a replay knowingly draws what no live client
+could. The command reads the local launcher catalogue, which a replay must
+not touch and a recording does not carry, so it answers with a notice saying
+the command is not replayed — where the live client either opened the
+selector or said the command is local-only. The alternative is to invent one
+of those two answers, which is the thing `Peer` exists to prevent, so the
+divergence is deliberate and is recorded here rather than hidden.
+
+Only the last frame of a replay is reproducible across runs. The client
+renders a paced event's frame or leaves the previous one on screen depending
+on how long ago it last drew, so which of the two `--at` and `--all` show for
+a key press depends on the machine; the settling tick that ends a replay is a
+flush point, so that frame is always the current one. Making every frame
+reproducible needs an injected clock, which is separate work.
+
 Two protocol behaviors remain deliberately incomplete. Pending escalations are
 visible, but the native client does not yet send protocol-change/007's exact
 action-and-grant echo, so it cannot approve or deny. A dropped websocket ends

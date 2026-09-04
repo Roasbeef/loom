@@ -1,5 +1,6 @@
 import core/json
 import core/message
+import etui/backend
 import etui/buffer
 import etui/geometry.{Position}
 import etui/keys
@@ -12,26 +13,32 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleeunit
 import simplifile
+import snapshot_test
 import tui
 import tui/agents
 import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/connection
+import tui/frame
 import tui/image_drop
 import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
+import tui/recording
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
+import tui/virtual_backend
 import tui/workspace
 import tui_test/ffi_term
+import tui_test/gateway
 
 pub fn main() {
   gleeunit.main()
@@ -1229,4 +1236,427 @@ pub fn prompt_wrap_uses_terminal_cells_for_wide_graphemes_test() {
   assert view.lines == ["ab界", "cd"]
   assert view.cursor_y == 1
   assert view.cursor_x == 2
+}
+
+pub fn buffer_to_lines_skips_wide_continuation_cells_test() {
+  let screen = geometry.rect_new(0, 0, 6, 2)
+  let drawn =
+    buffer.buffer_new(screen)
+    |> buffer.set_string(
+      Position(0, 0),
+      "\u{4F60}\u{597D}",
+      style.default_style(),
+    )
+    |> buffer.set_string(Position(0, 1), "ok", style.default_style())
+
+  // Two wide glyphs fill four cells, and the two continuation markers must
+  // not become spaces or the row would be wider than the terminal drew it.
+  assert frame.buffer_to_lines(drawn) == ["\u{4F60}\u{597D}", "ok"]
+  assert frame.buffer_to_text(drawn) == "\u{4F60}\u{597D}\nok"
+}
+
+pub fn a_script_draws_one_frame_per_event_test() {
+  let inbox = connection.new_inbox()
+  let model = quiet_model(inbox)
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [virtual_backend.Input(backend.KeyPress("/"))],
+      inbox,
+    )
+
+  // The initial resize etui synthesizes, the scripted key, and the two
+  // settling ticks: four iterations, four frames.
+  let assert Ok(run) = tui.run_script(model, script)
+  assert list.length(run.frames) == 4
+  let assert Ok(last) = list.last(run.frames)
+  assert string.contains(frame.buffer_to_text(last), "/details")
+}
+
+pub fn a_scripted_resize_moves_the_reported_size_test() {
+  let inbox = connection.new_inbox()
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 40, height: 10),
+      [virtual_backend.Input(backend.Resize(72, 20))],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(quiet_model(inbox), script)
+  let assert Ok(last) = list.last(run.frames)
+  assert list.length(frame.buffer_to_lines(last)) == 20
+}
+
+pub fn a_delivered_message_reaches_the_model_test() {
+  let inbox = connection.new_inbox()
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 72, height: 14),
+      [
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.full_snapshot("demo")),
+        ),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(quiet_model(inbox), script)
+  let assert Ok(last) = list.last(run.frames)
+  assert string.contains(frame.buffer_to_text(last), "attached to session")
+}
+
+// A model with the demo scaffolding removed, so a frame shows only what the
+// script put there. The workspace is fixed rather than discovered: the footer
+// prints it, and the checkout path is not a property of the client.
+fn quiet_model(inbox: process.Subject(connection.Message)) -> tui.Model {
+  tui.Model(
+    ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
+    transcript: [],
+    strands: [],
+    agent_summary: agents.summary([]),
+    notice: "ready",
+  )
+}
+
+/// Every recordable shape survives the round trip, including the text that
+/// a hand-rolled encoder would break on: a quote, a backslash, a newline,
+/// and a codepoint outside the basic plane.
+pub fn a_recording_line_round_trips_test() {
+  let awkward = "a\"b\\c\nd\u{1F600}"
+  let moments = [
+    recording.Moment(0, recording.Key(text: "Enter")),
+    recording.Moment(7, recording.Key(text: awkward)),
+    recording.Moment(19, recording.Pasted(text: awkward)),
+    recording.Moment(23, recording.Resized(width: 120, height: 40)),
+    recording.Moment(
+      31,
+      recording.Scrolled(x: 4, y: 9, direction: recording.ScrollUp),
+    ),
+    recording.Moment(
+      37,
+      recording.Scrolled(x: 0, y: 0, direction: recording.ScrollDown),
+    ),
+    recording.Moment(41, recording.Arrived(connection.Connected)),
+    recording.Moment(
+      43,
+      recording.Arrived(connection.Incoming(text: gateway.full_snapshot("s"))),
+    ),
+    recording.Moment(47, recording.Arrived(connection.Closed(reason: awkward))),
+    recording.Moment(
+      53,
+      recording.Arrived(connection.NetworkFault(reason: awkward)),
+    ),
+  ]
+
+  // One line each, and no line may contain a newline of its own or the
+  // file would decode as more moments than were written.
+  list.each(moments, fn(moment) {
+    let line = recording.encode_line(moment)
+    assert !string.contains(line, "\n")
+    assert recording.decode_line(line) == Ok(moment)
+  })
+}
+
+pub fn only_events_that_move_the_model_are_recorded_test() {
+  assert recording.of_input(backend.Tick) == None
+  assert recording.of_input(backend.MouseMove(1, 2)) == None
+  assert recording.of_input(backend.MousePress(1, 2, backend.MouseLeft)) == None
+  assert recording.of_input(backend.KeyPress("q"))
+    == Some(recording.Key(text: "q"))
+  assert recording.of_input(backend.MouseScroll(3, 4, True))
+    == Some(recording.Scrolled(x: 3, y: 4, direction: recording.ScrollUp))
+}
+
+pub fn a_malformed_recording_line_is_a_worded_error_test() {
+  assert recording.decode_line("not json")
+    |> result.is_error
+  assert recording.decode_line("[1,2]")
+    == Error("a recording line must be a JSON object")
+  assert recording.decode_line("{\"t\":\"key\",\"key\":\"a\"}")
+    == Error("at must be an integer")
+  assert recording.decode_line("{\"at\":1,\"t\":\"key\"}")
+    == Error("key must be a string")
+  assert recording.decode_line("{\"at\":1,\"t\":\"scroll\",\"x\":1,\"y\":2}")
+    == Error("scroll needs a boolean \"up\"")
+  assert recording.decode_line("{\"at\":1,\"t\":\"wheel\"}")
+    == Error("unknown recording event \"wheel\"")
+}
+
+pub fn a_recording_file_decodes_in_order_test() {
+  let path = "build/tui-recording-test.jsonl"
+  let moments = [
+    recording.Moment(0, recording.Resized(width: 72, height: 14)),
+    recording.Moment(4, recording.Arrived(connection.Connected)),
+    recording.Moment(9, recording.Key(text: "h")),
+  ]
+  let text =
+    moments
+    |> list.map(recording.encode_line)
+    |> string.join("\n")
+  let assert Ok(Nil) = simplifile.write(path, text <> "\n")
+
+  // The trailing newline every appended file carries must not decode as a
+  // fourth, empty moment.
+  assert recording.decode_file(path) == Ok(moments)
+  let assert Ok(Nil) = simplifile.delete(path)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Frame snapshots
+//
+// Each of these drives the shipped loop under the virtual backend and pins
+// the last frame it drew. They are the only tests that see the client the
+// way an operator does, so they are written as scripts — keys and gateway
+// frames — rather than as models assembled field by field, except where the
+// state is one only a clock can produce.
+
+// The three widths are the row-count thresholds `footer_rows` decides
+// from: the sections' fixed caps summed, so a snapshot moves only when
+// those caps or the sections' text do, never while a turn runs.
+pub fn footer_snapshot_one_row_test() {
+  snapshot_test.assert_snapshot(
+    "footer-one-row",
+    last_frame(quiet_model(connection.new_inbox()), 210, 12, []),
+  )
+}
+
+pub fn footer_snapshot_two_rows_test() {
+  snapshot_test.assert_snapshot(
+    "footer-two-rows",
+    last_frame(quiet_model(connection.new_inbox()), 133, 12, []),
+  )
+}
+
+pub fn footer_snapshot_three_rows_test() {
+  snapshot_test.assert_snapshot(
+    "footer-three-rows",
+    last_frame(quiet_model(connection.new_inbox()), 50, 12, []),
+  )
+}
+
+pub fn usage_footer_snapshot_without_a_rate_test() {
+  // A settlement that never streamed leaves the rate unknown, so the tail
+  // of the usage row is the cost and nothing after it.
+  let inbox = connection.new_inbox()
+  snapshot_test.assert_snapshot(
+    "usage-footer-plain",
+    last_frame(quiet_model(inbox), 96, 12, [
+      virtual_backend.Deliver(
+        connection.Incoming(gateway.usage("main", 1200, 340, 0.0125)),
+      ),
+    ]),
+  )
+}
+
+pub fn usage_footer_snapshot_with_a_rate_test() {
+  // The rate is the one footer field a clock produces, so it is set on the
+  // model rather than raced for over the wire.
+  let inbox = connection.new_inbox()
+  let timed = tui.Model(..quiet_model(inbox), output_rate_tps: Some(87))
+  snapshot_test.assert_snapshot(
+    "usage-footer-with-rate",
+    last_frame(timed, 96, 12, [
+      virtual_backend.Deliver(
+        connection.Incoming(gateway.usage("main", 1200, 340, 0.0125)),
+      ),
+    ]),
+  )
+}
+
+pub fn command_palette_snapshot_test() {
+  let inbox = connection.new_inbox()
+  snapshot_test.assert_snapshot(
+    "command-palette-de",
+    last_frame(quiet_model(inbox), 76, 18, typed("/de")),
+  )
+}
+
+pub fn details_toggle_snapshot_test() {
+  // Enter on the highlighted palette row runs the command, so this pins
+  // the toggle's own label beside the agent count — the pair the status
+  // section's forty-two cells have to hold without cutting either.
+  let inbox = connection.new_inbox()
+  let script = list.append(typed("/details"), [key("enter")])
+  snapshot_test.assert_snapshot(
+    "details-toggled",
+    last_frame(quiet_model(inbox), 96, 14, script),
+  )
+}
+
+pub fn transcript_snapshot_test() {
+  let inbox = connection.new_inbox()
+  snapshot_test.assert_snapshot(
+    "transcript-turn-and-tool",
+    last_frame(quiet_model(inbox), 84, 24, conversation_steps()),
+  )
+}
+
+pub fn replay_round_trip_snapshot_test() {
+  let path = "build/tui-replay-round-trip.jsonl"
+  let text =
+    conversation_moments()
+    |> list.map(recording.encode_line)
+    |> string.join("\n")
+  let assert Ok(Nil) = simplifile.write(path, text <> "\n")
+
+  // The same decode-and-drive path `loom replay` runs, so a change that
+  // broke the command would fail here rather than in a manual check.
+  let assert Ok(moments) = recording.decode_file(path)
+  let assert Ok(frames) =
+    tui.replay_steps(
+      recording.to_steps(moments),
+      backend.TerminalSize(width: 84, height: 24),
+    )
+  let assert Ok(last) = list.last(frames)
+  let assert Ok(Nil) = simplifile.delete(path)
+
+  snapshot_test.assert_snapshot("replay-transcript", frame.buffer_to_text(last))
+}
+
+pub fn a_replay_invents_no_catalogue_test() {
+  // The demo catalogue belongs to the demo peer. `connect_remote` empties
+  // it, so a live client whose server never sent a models snapshot opens
+  // an empty selector; a replay of that session must open the same one,
+  // not the four entries `new_model` seeds for `--demo`. The same rule
+  // that stops a replay echoing a prompt.
+  //
+  // The selector is where the catalogue is visible: the footer's model
+  // label is seeded on both paths alike, so it proves nothing either way.
+  let script = list.flatten([typed("/models"), [key("enter")]])
+  let assert Ok(frames) =
+    tui.replay_steps(script, backend.TerminalSize(width: 133, height: 20))
+  let assert Ok(drawn) = list.last(frames)
+  let text = frame.buffer_to_text(drawn)
+  assert string.contains(text, "session replay")
+  assert !string.contains(text, "baseten-deepseek-v4-flash")
+}
+
+pub fn a_live_recording_replays_to_its_settled_frame_test() {
+  // `test/recordings/gemini-flash-reply.jsonl` was recorded with
+  // `loom --record` against a real server and a real Gemini turn: the
+  // attach, the catalogue snapshots, one prompt, and its stream, usage and
+  // settlement. Replaying it is the whole point of the format — a bug seen
+  // in a live pane becomes a frame a test can hold.
+  //
+  // The recording stops at the settled turn and the golden pins the *last*
+  // frame, both for the same reason. Only the last frame is reproducible:
+  // whether a key press draws a fresh frame or leaves the previous one on
+  // screen depends on how long ago the client last drew, while the settling
+  // tick that ends a replay is a flush point. Indexing into the middle
+  // would be a golden that changes with the machine.
+  let assert Ok(moments) =
+    recording.decode_file("test/recordings/gemini-flash-reply.jsonl")
+  let assert Ok(frames) =
+    tui.replay_steps(
+      recording.to_steps(moments),
+      backend.TerminalSize(width: 133, height: 40),
+    )
+  let assert Ok(settled) = list.last(frames)
+
+  // A golden that could be satisfied by an empty screen proves nothing, so
+  // the reply and the settled phase are asserted before the picture. The
+  // operator's own turn must appear exactly once: the server echoed it as
+  // an entry, and a replay that also drew a local copy would show two.
+  let text = frame.buffer_to_text(settled)
+  assert string.contains(text, "The recording works.")
+  assert string.contains(text, "main: done")
+
+  // The golden is only reproducible because the fixture ends settled. A
+  // live strand paints the elapsed seconds of the *replay* into the
+  // prompt border, so a fixture truncated mid-turn would flake under
+  // load; the idle border title is that property, asserted.
+  assert string.contains(text, "prompt · / commands")
+  assert !string.contains(text, "Design-preview echo received.")
+  assert count_occurrences(text, "Reply with exactly this sentence") == 1
+  snapshot_test.assert_snapshot("live-gemini-flash-reply", text)
+}
+
+/// A blank last row survives the golden round trip.
+///
+/// `write` appends one newline and the comparison takes one back off. An
+/// asymmetric pair — stripping every trailing newline on read — would make
+/// this frame permanently unmatchable against its own freshly written
+/// golden, which is the shape of a bug this pins.
+pub fn a_snapshot_keeps_a_blank_last_row_test() {
+  let screen = geometry.rect_new(0, 0, 6, 3)
+  snapshot_test.assert_snapshot(
+    "blank-rows",
+    frame.buffer_to_text(buffer.buffer_new(screen)),
+  )
+}
+
+fn count_occurrences(text: String, needle: String) -> Int {
+  case string.split_once(text, needle) {
+    Ok(#(_before, after)) -> 1 + count_occurrences(after, needle)
+    Error(Nil) -> 0
+  }
+}
+
+// One session's worth of traffic: an attach, a user turn, a tool call and
+// its failing result, and a stream fragment that has not settled yet. The
+// delta comes last because a settled entry clears its strand's fragments.
+//
+// Typed as inbound messages rather than as script steps, so the script and
+// the recording below are both derived from it and neither can lose a
+// field converting to the other.
+fn conversation() -> List(connection.Message) {
+  [
+    connection.Connected,
+    connection.Incoming(gateway.full_snapshot("demo")),
+    connection.Incoming(gateway.user_entry("main", "run the tests", 1)),
+    connection.Incoming(gateway.tool_call_entry(
+      "main",
+      "bash",
+      "make check-tui",
+      2,
+    )),
+    connection.Incoming(gateway.tool_result_entry(
+      "main",
+      "error: compilation failed\n  test/tui_test.gleam:12",
+      3,
+    )),
+    connection.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      "Looking at the failure now.",
+    )),
+  ]
+}
+
+fn conversation_steps() -> List(virtual_backend.Step) {
+  list.map(conversation(), fn(message) { virtual_backend.Deliver(message:) })
+}
+
+// The same traffic as a recording, so the round-trip test writes a file the
+// CLI would have written.
+fn conversation_moments() -> List(recording.Moment) {
+  conversation()
+  |> list.index_map(fn(message, index) {
+    recording.Moment(at_ms: index * 10, event: recording.Arrived(message:))
+  })
+}
+
+fn typed(text: String) -> List(virtual_backend.Step) {
+  text |> string.to_graphemes |> list.map(key)
+}
+
+fn key(name: String) -> virtual_backend.Step {
+  virtual_backend.Input(backend.KeyPress(name))
+}
+
+// Every snapshot ends the same way: run the script on a fixed screen and
+// take the frame the settling ticks flushed.
+fn last_frame(
+  model: tui.Model,
+  width: Int,
+  height: Int,
+  steps: List(virtual_backend.Step),
+) -> String {
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width:, height:),
+      steps,
+      model.inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  let assert Ok(last) = list.last(run.frames)
+  frame.buffer_to_text(last)
 }
