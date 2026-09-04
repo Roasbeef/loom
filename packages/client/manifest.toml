@@ -55,7 +55,7 @@ packages = [
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tools", version = "0.1.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_stdlib", "simplifile"], source = "local", path = "../tools" },
   { name = "tui", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "mork", "simplifile", "stratus", "weft"], source = "local", path = "../tui" },
-  { name = "weft", version = "0.4.2", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "650E39CD6EF2A0AD67E199859D6E58C03FBFA379F341AB904B81617C205246B9" },
+  { name = "weft", version = "0.4.3", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "21782197C8C94F2211FCAB5D50E05674E64B4BC1B7BE81F938EF919F23589DBC" },
 ]
 
 [requirements]
@@ -87,4 +87,4 @@ telemetry = { path = "../telemetry" }
 tom = { version = ">= 2.1.0 and < 3.0.0" }
 tools = { path = "../tools" }
 tui = { path = "../tui" }
-weft = { version = ">= 0.4.2 and < 1.0.0" }
+weft = { version = ">= 0.4.3 and < 1.0.0" }
