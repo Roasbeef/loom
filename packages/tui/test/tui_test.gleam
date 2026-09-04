@@ -102,26 +102,16 @@ pub fn output_rate_is_tokens_over_streamed_seconds_test() {
   assert tui.output_rate_label(None) == ""
 }
 
-pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
-  let project =
-    span.line_plain(
-      " ~/.codex/worktrees/loom-etui-idle-perf (client/etui-idle-loop) ",
-    )
-  let usage = span.line_plain(" in 875k · out 54k · cache 5m/0 · $0.0 ")
-  let model_name = span.line_plain(" baseten-kimi-k3 ")
-  let status = span.line_plain(" 0 live / 3 agents · connected ")
-  let needed =
-    span.line_width(project)
-    + span.line_width(usage)
-    + span.line_width(model_name)
-    + span.line_width(status)
-    + 1
-
-  assert tui.footer_rows(needed, project, model_name, usage, status) == 1
-  assert tui.footer_rows(needed - 1, project, model_name, usage, status) == 2
-  assert tui.footer_rows(133, project, model_name, usage, status) == 2
-  assert tui.footer_rows(40, project, model_name, usage, status) == 3
-  assert tui.footer_rows(180, project, model_name, usage, status) == 1
+pub fn footer_rows_depend_on_the_width_alone_test() {
+  // The thresholds are the sections' fixed caps summed, so the row count
+  // is a property of the window and cannot move while a turn runs. A
+  // 133-column pane is always two rows; a 200-column one is always one.
+  assert tui.footer_rows(201) == 1
+  assert tui.footer_rows(200) == 2
+  assert tui.footer_rows(133) == 2
+  assert tui.footer_rows(100) == 2
+  assert tui.footer_rows(99) == 3
+  assert tui.footer_rows(40) == 3
   assert tui.transcript_height(40, 3, 2) == 32
   assert tui.transcript_height(40, 3, 3) == 31
   assert tui.transcript_height(40, 3, 1) == 33
