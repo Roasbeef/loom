@@ -593,6 +593,7 @@ a sibling repository and is published to Hex.
 make check            # the full gate: format check, warning-free build, tests, lint
 make lint             # the house rules on their own (lint-<package> narrows it)
 make binaries         # bin/loom-exec plus the native TUI shipment and launcher
+make install          # seed, release and client under ~/.local; then just `loom`
 make dev              # build, start a server on a scratch session, attach the TUI
 make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
 make e2e              # the jailed end-to-end against a freshly built helper

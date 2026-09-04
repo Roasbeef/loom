@@ -274,6 +274,35 @@ Nothing is linked or bundled together: a remote
 client still carries no server runtime, a headless server still carries no
 terminal, and `--addr` remains the attachment path between machines.
 
+## Installing from a checkout
+
+`make install` is the one command for the person building from source who
+wants to type `loom` in a directory and have a session start there. It
+runs the three builds in order — the code-mode seed, the self-contained
+server release, the client shipment — and then `scripts/install.sh` lays
+them out under `PREFIX`, `~/.local` by default:
+
+| path | what |
+|---|---|
+| `$PREFIX/lib/loom/server` | the release tree, copied whole: `bin/loomd`, `bin/loom-exec`, `bin/gleam`, `share/codemode-seed`, the bundled ERTS |
+| `$PREFIX/lib/loom/tui` | the client shipment: compiled BEAM files, no runtime |
+| `$PREFIX/bin/loom` | the client launcher, generated to name the installed shipment |
+| `$PREFIX/bin/loomd` | a wrapper that execs the release's own `bin/loomd` |
+
+Two shapes are deliberate. The release tree is copied whole because the
+server finds its helper, compiler and seed through `code:root_dir()`, the
+release root, and a tree with pieces moved out of it would find nothing.
+And `loomd` on `PATH` is a wrapper rather than a symlink because the
+release's own launcher resolves the root from its own location, so a
+symlink would resolve it to `$PREFIX`. The two launchers share a
+directory because the client looks for the server beside itself before
+it asks `PATH`.
+
+The client still runs on the `erl` found on `PATH`, as the checkout's
+`bin/loom` does; only the server is self-contained. With
+`~/.loom/loom.toml` present the client passes it to the server as the
+catalogue, so an installed Loom needs no flags at all.
+
 ## Cross-compilation: there is none
 
 A release targets one platform, and `make dist` does not produce

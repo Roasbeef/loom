@@ -7,6 +7,7 @@ PACKAGES := core storage session machine prompt telemetry runtime provider \
 	broker mcp tools cap ext codemode events client conformance tui lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
+PREFIX   ?= $(HOME)/.local
 
 .DEFAULT_GOAL := help
 
@@ -162,6 +163,14 @@ release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serve
 .PHONY: dist
 dist: release release-smoke tui-shipment ## Package the server and native client tarballs
 	@scripts/dist.sh
+
+# Everything a person needs to type `loom` in a directory: the seed, the
+# self-contained server release, the client shipment, and two launchers
+# under $(PREFIX)/bin. PREFIX defaults to $$HOME/.local; scripts/install.sh
+# says what lands where and why each launcher is shaped as it is.
+.PHONY: install
+install: codemode-seed release tui-shipment ## Install loom and loomd under PREFIX (default ~/.local)
+	@PREFIX="$(PREFIX)" scripts/install.sh
 
 # ------------------------------------------------------------------- running
 
