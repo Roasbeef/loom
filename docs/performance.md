@@ -17,6 +17,25 @@ The same client can still grow its transcript projection forever, so a quiet CPU
 sample says nothing about its long-session memory bound. Those are separate
 claims and need separate evidence.
 
+Scrolling was the next layer, and it needed a different workload from the
+three below because the cost was in the event stream rather than in any one
+frame. Etui decodes one 128-byte read into a queue of events and draws a
+complete frame after each, so a wheel flick reached the client as a burst that
+was paid for one frame at a time. Measured at OTP 29.0.5 and Gleam 1.18.1 on
+a 200×50 pseudo-terminal with 8400 wrapped rows (400 five-line exchanges), a
+single write of forty SGR wheel events produced forty frames and 250 KB of
+terminal output and took about 250 ms of client CPU to settle, before the
+emulator had painted any of it. Each frame cost 3.6 ms to render and 1.4 to
+2.3 ms to diff; two of the render milliseconds were etui's `block.render`
+clearing the panel interiors cell by cell over a canvas that was already
+blank. After pacing (`frame_decision` in `packages/tui/src/tui.gleam`) and
+the border-only panel draw, the same burst produces three or four frames and
+about 20 KB, settles in about 50 ms, and an event inside the pacing interval
+costs 0.36 ms instead of a frame. The harness was a Python `pty.fork` around
+`gleam run -- --demo` with the demo transcript enlarged, counting frames by
+cursor moves to the first transcript row; the row the emulator paints is the
+measure, not the number of bytes the client was willing to write.
+
 ## Name the experiment
 
 A useful result carries enough context for another developer to reproduce it.

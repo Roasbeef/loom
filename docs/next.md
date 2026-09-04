@@ -427,6 +427,21 @@ top of a block and one between two constructor fields because
 
 ---
 
+**Frame pacing is the terminal client's job, not etui's**
+(`packages/tui/src/tui.gleam`, `frame_decision`; `docs/performance.md`).
+Etui decodes one read into a queue of events and draws a complete frame
+after each, which is the right contract for a library that does not know
+what a frame costs. The tui therefore paces: a stale frame is rendered at
+most once every 16 ms while paced events keep arriving, the rest is
+recorded as `FrameDeferred`, the tick after the drained queue flushes it,
+and the poll wait is 8 ms while a frame is owed. The view never renders on
+its own; it shows whatever the event handler last cached for the screen.
+Measured on a 200×50 pseudo-terminal, forty wheel events in one write went
+from forty frames and 250 KB to three or four frames and 20 KB. The
+panels draw their borders themselves for the same reason: etui's
+`block.render` clears its interior cell by cell over a canvas the client
+had already painted, and that was more than half of a frame.
+
 ## Deliberately open
 
 Named, with an issue where one exists. None of these is unfinished work
@@ -494,6 +509,15 @@ somebody forgot.
   by design and have no issue.
 
 ---
+
+**Two etui follow-ups the scrolling work left upstream.** `block.render`
+could skip its interior clear when a caller has already painted the area,
+and the buffered loops could coalesce the queued events of one read before
+they draw, which would make the tui's pacing unnecessary rather than
+merely effective. Etui is pinned by commit in `packages/tui/gleam.toml`,
+so either lands there first and arrives here as a pin bump; neither is
+blocking, and the tui's `render_panel_border` test pins the bytes so the
+bump can be checked mechanically.
 
 ## How to verify
 

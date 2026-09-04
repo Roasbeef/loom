@@ -207,10 +207,30 @@ that tree separately from the self-contained server.
   cursor tuple by that revision and screen rectangle, so an unchanged view
   returns the exact prior Buffer term. Transcript, input, overlay, resize,
   cursor, status, and activity-indicator changes invalidate that cache at their
-  event boundary; no complete Model comparison sits on the idle path.
+  event boundary; no complete Model comparison sits on the idle path. The view
+  never re-renders on its own: it returns whatever frame the event handler
+  last cached for this screen, so a stale frame on screen is always a
+  deliberate one.
+- **Bursts are paced, not drawn one event at a time.** Etui decodes one read
+  into a queue of events and draws a frame after each, so a wheel flick or a
+  held Page key would otherwise cost a full frame and a full-viewport write
+  per event. `frame_decision` renders a stale cache at most once every 16 ms
+  while paced events keep arriving and records the rest as `FrameDeferred`;
+  the tick that follows the drained queue flushes it, and `paced_poll_timeout`
+  shortens that tick's wait to 8 ms so the final position lands within a
+  frame of the hand stopping. Ticks and resizes always render. The pacing
+  clock is the monotonic clock, seeded at startup because a fresh node's
+  monotonic time is negative.
+- **Panels draw borders, not interiors.** `render_panel_border` puts the same
+  bytes on the wire as etui's `block.render` over a blank canvas, and the test
+  pins that, but it skips the block's cell-by-cell interior clear, which at
+  200×50 was more than half of a frame spent repainting cells the canvas had
+  already painted. Interior cells therefore keep the canvas's repaint phase,
+  which is what lets a detail-mode toggle rewrite vacated positions.
 - **Polling follows recent activity, not liveness.** Keyboard, paste, resize,
   scroll, and decoded websocket events reset the quiet timer. The loop polls at
-  40 ms until 320 ms have passed without one, then at 400 ms. A live operation
+  40 ms until 320 ms have passed without one, then at 400 ms, and at 8 ms
+  while a deferred frame is waiting for its flush. A live operation
   alone does not keep fast polling active. Because the websocket actor cannot
   wake etui's terminal poll, the first external event after quiet may wait up to
   the 400 ms quiet timeout before the client drains it and returns to 40 ms.
