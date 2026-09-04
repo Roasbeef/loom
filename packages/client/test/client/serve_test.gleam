@@ -941,7 +941,7 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
   assert environment
     == [
       #("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
-      #("HOME", "/work"),
+      #("HOME", "/work/.codemode/home"),
       #("TMPDIR", "/work/.codemode/tmp"),
       #("GH_TOKEN", "gho_secret"),
       #("GH_CONFIG_DIR", "/home/me/.config/gh"),
