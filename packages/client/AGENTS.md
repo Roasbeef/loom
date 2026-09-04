@@ -1634,6 +1634,14 @@ an install is under the extensions root.
 
 ## Invariants
 
+- **A linked git worktree widens the session base to its git directories.**
+  `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a
+  `gitdir:` file, the named directory and the main repository's `.git`
+  its `commondir` points at join `writable_roots`, because a jailed
+  `git commit` must write the index lock and objects there and both sit
+  outside the workspace. It is the trust a primary checkout's `.git`
+  already has. A primary checkout, a non-repository, or an unreadable
+  `.git` file leaves the base untouched.
 - **A jailed child's environment is three names, built once per session.**
   `serve.session_environment` gives every tool shell, satellite and hook
   host the same `PATH` (the code-mode toolchain's when one was found, so

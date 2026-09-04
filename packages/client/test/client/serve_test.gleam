@@ -167,6 +167,36 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
   assert serve.tool_home_directory("/work") == "/work/.codemode/home"
 }
 
+pub fn a_linked_worktree_widens_the_base_to_its_git_directories_test() {
+  // A worktree keeps its metadata under the main repository's .git, so
+  // a jailed git commit needs both that directory and the main .git it
+  // shares objects with; a primary checkout, whose .git is inside the
+  // workspace, gets nothing extra.
+  let root = "build/test-linked-worktree"
+  let _stale = simplifile.delete(root)
+  let assert Ok(cwd) = simplifile.current_directory()
+  let repo = cwd <> "/" <> root <> "/repo"
+  let work = cwd <> "/" <> root <> "/work"
+  let gitdir = repo <> "/.git/worktrees/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(gitdir)
+  let assert Ok(Nil) = simplifile.create_directory_all(work)
+  let assert Ok(Nil) =
+    simplifile.write(work <> "/.git", "gitdir: " <> gitdir <> "\n")
+  let assert Ok(Nil) = simplifile.write(gitdir <> "/commondir", "../..\n")
+
+  assert serve.linked_git_directories(work) == [gitdir, repo <> "/.git"]
+  let widened = serve.widening_linked_worktree(serve.base_policy(work), work)
+  assert widened.writable_roots == [work, gitdir, repo <> "/.git"]
+
+  // A primary checkout: .git is a directory, so reading it fails and
+  // nothing is widened.
+  let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/src")
+  assert serve.linked_git_directories(repo) == []
+  assert serve.widening_linked_worktree(serve.base_policy(repo), repo)
+    == serve.base_policy(repo)
+  let _cleanup = simplifile.delete(root)
+}
+
 pub fn boot_serves_healthz_and_ws_subscribe_test() {
   // A fresh root per run so the session always starts empty.
   let _stale = simplifile.delete(root)
