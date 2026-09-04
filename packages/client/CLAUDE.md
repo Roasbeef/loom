@@ -618,9 +618,9 @@ over one session file. WP-L.
   render_file, origin_name, agents_file, claude_file,
   user_default_directories, max_guidance_file_bytes}` — the session's
   instruction files and the fence they reach the model behind. `discover`
-  fills two slots: the `AGENTS.md` instructions (the workspace's own, else
-  the operator's global one under `~/.agents` then `~/.loom`) and the
-  workspace's `CLAUDE.md`. `guidance` joins them into the one string
+  fills three slots in render order: the operator's global `AGENTS.md`
+  (under `~/.agents` then `~/.loom`, first found wins), the workspace's
+  `AGENTS.md`, and the workspace's `CLAUDE.md`. `guidance` joins them into the one string
   `Host.guidance` carries, each file inside an `<instructions>` fence
   naming its path and its `origin_name` — `workspace` or `user-default` —
   which is the vocabulary the pack's framing prose is written against.
@@ -811,7 +811,8 @@ over one session file. WP-L.
   Invariants), which is what made the escalation plane unreachable from
   an end-to-end until `client/tui_e2e_test`.
 - `client/serve.Settings.home` — the operator's home directory, where the
-  global `AGENTS.md` default is looked for when the workspace has none.
+  global `AGENTS.md` is looked for and carried ahead of the workspace's
+  files.
   `resolve` fills it from `HOME` and `None` records that `HOME` was
   unset. A field for the same reason `base_policy` is one: a boot that
   reached into the process environment for it would make every test that
@@ -1434,13 +1435,14 @@ an install is under the extensions root.
   pack that merely trips `pack.problems` (a dropped section, a misspelled
   placeholder) warns on stderr and serves: `decode` accepts more than
   `problems` approves by design, and a thin prompt beats a dead server.
-- **The workspace's instruction files outrank the operator's, and only a
-  file that is not there lets the lookup move on.** Slot one is
-  `AGENTS.md` — the cross-tool convention — taken from the workspace when
-  it has one and otherwise from `~/.agents/AGENTS.md`, then
-  `~/.loom/AGENTS.md`; slot two is the workspace's `CLAUDE.md`, which has
-  no global fallback. A workspace `AGENTS.md` that exists but is oversize
-  or unreadable warns and leaves its slot empty rather than falling
+- **The operator's instructions layer under the workspace's, and only a
+  file that is not there lets the global lookup move on.** Slot one is
+  the operator's global `AGENTS.md` — `~/.agents/AGENTS.md`, then
+  `~/.loom/AGENTS.md`, first found wins — carried into every session;
+  slot two is the workspace's `AGENTS.md` and slot three its `CLAUDE.md`,
+  neither of which has a fallback. A workspace `AGENTS.md` that exists
+  but is oversize or unreadable warns and leaves its slot empty rather than
+  falling
   through to the operator's defaults: serving standing operator
   instructions in place of a project file that happened to be unreadable
   would swap one set of instructions for another behind everyone's back.
