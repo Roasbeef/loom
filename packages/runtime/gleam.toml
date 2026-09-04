@@ -12,7 +12,7 @@ provider = { path = "../provider" }
 telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = ">= 0.4.2 and < 1.0.0"
+weft = ">= 0.4.3 and < 1.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
