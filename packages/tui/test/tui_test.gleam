@@ -96,7 +96,11 @@ pub fn elapsed_label_reads_like_a_clock_test() {
 pub fn output_rate_is_tokens_over_streamed_seconds_test() {
   assert tui.output_rate(300, 2000) == Some(150)
   assert tui.output_rate(7, 1000) == Some(7)
-  // No elapsed time is no rate, never a division by zero.
+  // A window under a second is no rate: a whole-part provider can land
+  // a short reply as one burst, and 126 tokens over one millisecond
+  // once showed as 126000 tok/s.
+  assert tui.output_rate(126, 1) == None
+  assert tui.output_rate(300, tui.output_rate_min_ms - 1) == None
   assert tui.output_rate(300, 0) == None
   assert tui.output_rate_label(Some(87)) == " · 87 tok/s"
   assert tui.output_rate_label(None) == ""

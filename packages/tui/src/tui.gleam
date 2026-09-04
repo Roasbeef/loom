@@ -2060,15 +2060,11 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       }
     }
     protocol.StreamDelta(strand:, kind:, text:) -> {
-      // The first fragment of the active strand's generation starts its
-      // clock; later fragments, and other strands, leave it where it was.
-      let generation_started_ms = case
-        model.generation_started_ms,
-        strand == model.active_strand
-      {
-        None, True -> Some(ffi_bootstrap.monotonic_time_ms())
-        started, _ -> started
-      }
+      // The generation clock normally started when the strand entered
+      // its `assistant` phase (see `OperationChanged`); a fragment that
+      // finds it unset is the fallback, for a phase sequence that never
+      // said so. Later fragments, and other strands, leave it alone.
+      let generation_started_ms = generation_clock(model, strand)
       let updated =
         Model(
           ..model,
@@ -2087,11 +2083,22 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         other -> other
       }
       let strands = set_strand_phase(model.strands, strand, phase)
+
+      // The rate's clock starts when the request goes out, not when the
+      // first fragment lands. A provider that streams whole parts —
+      // Gemini does — can deliver a short reply as one burst at the end
+      // of a generation, and a clock started on that burst measured a
+      // millisecond and reported six-figure tokens per second.
+      let generation_started_ms = case phase {
+        "assistant" -> generation_clock(model, strand)
+        _other -> model.generation_started_ms
+      }
       let updated =
         Model(
           ..model,
           submitting:,
           strands:,
+          generation_started_ms:,
           agent_summary: agents.summary(strands),
           streams: case phase == "done" {
             True -> clear_streams(model.streams, strand)
@@ -2813,9 +2820,27 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 }
 
 /// Formats the server-reported session usage for the terminal footer.
+/// The generation clock after an event that may start it: started now
+/// if the event is the active strand's and no clock is running, otherwise
+/// left as it was. Two events may start it — the `assistant` phase, and
+/// the first fragment as a fallback — and whichever comes first wins.
+fn generation_clock(model: Model, strand: String) -> Option(Int) {
+  case model.generation_started_ms, strand == model.active_strand {
+    None, True -> Some(ffi_bootstrap.monotonic_time_ms())
+    started, _ -> started
+  }
+}
+
+/// The shortest generation a rate is reported for, in milliseconds. A
+/// sub-second window is dominated by request latency and by how the
+/// provider batches its stream, so the quotient says nothing about
+/// throughput; the footer shows no rate rather than a wrong one.
+pub const output_rate_min_ms = 1000
+
 /// Output tokens per second from a settled generation's output count and
-/// the milliseconds it streamed for. A generation shorter than the clock
-/// can resolve reports `None` rather than a rate divided by nothing.
+/// the milliseconds it took. A generation shorter than
+/// `output_rate_min_ms` reports `None` rather than a rate divided by a
+/// window too small to mean anything.
 ///
 /// ## Examples
 ///
@@ -2824,12 +2849,12 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 /// ```
 ///
 /// ```gleam
-/// assert tui.output_rate(300, 0) == option.None
+/// assert tui.output_rate(126, 1) == option.None
 /// ```
 ///
 @internal
 pub fn output_rate(output_tokens: Int, elapsed_ms: Int) -> Option(Int) {
-  case elapsed_ms > 0 {
+  case elapsed_ms >= output_rate_min_ms {
     True -> Some(output_tokens * 1000 / elapsed_ms)
     False -> None
   }
