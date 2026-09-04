@@ -1644,6 +1644,22 @@ an install is under the extensions root.
   session base policy grants `TMPDIR` for the same reason the code-mode
   builder grants it on its derived base: the policy meet keeps only the
   names the base allows.
+- **The `[tools]` table is the only thing that widens either.**
+  `catalog.parse_tools` reads an operator's `network = "off" | "full"`
+  (off is the default and what an absent table means) plus `env` names
+  read from the host at boot and `[tools.set]` literals;
+  `serve.tool_environment` appends them *after* the three server-owned
+  names, and `serve.under_tools_config` puts the chosen network on the
+  session base and every configured name on its `env_allow`. Both halves
+  are load-bearing and neither implies the other: the meet takes the
+  narrower network, which is why `bash` and `grep` ask for the base's
+  (`tool.asking_base_network`) rather than stating off, and the meet also
+  intersects `env_allow`, which is why a name in the environment but not
+  on the allowlist is a narrowing refusal rather than a variable. `PATH`,
+  `HOME` and `TMPDIR` are refused from both lists by the parser, so the
+  ordering in `tool_environment` is the second lock rather than the only
+  one. A configured name the host has not set is skipped with one
+  `tools.env_unset` warning, never a boot failure.
 - **Envelope decoding is strict; name decoding is tolerant.** `v` must be
   `1`, the discriminator must be present, and a command `id` must be
   present and positive. Unknown `cmd`/`event` *names* survive as

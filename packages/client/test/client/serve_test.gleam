@@ -140,6 +140,9 @@ fn settings_under(root: String) -> serve.Settings {
     // provider's turns. `memory_lifecycle_test` is where the shipped
     // producer is exercised.
     memory: distillpass.no_pass(),
+    // Offline, three names: the jail every session had before the
+    // `[tools]` table existed.
+    tools: catalog.default_tools(),
   )
 }
 
@@ -866,5 +869,123 @@ pub fn a_boot_with_schedules_runs_a_supervised_scanner_test() {
     as "a configured schedule must name a scanner"
   let assert Ok(_pid) = process.named(name)
     as "the scanner must be registered under that name"
+  serve.shutdown(booted)
+}
+
+// --- the operator's [tools] table (network egress, environment) -----------
+
+// A `[tools]` table an operator opted in with: egress on, one name read
+// from the host, one literal.
+fn networked_tools() -> catalog.ToolsConfig {
+  catalog.ToolsConfig(
+    network: catalog.ToolNetworkFull,
+    env: ["GH_TOKEN"],
+    path: ["/opt/homebrew/bin"],
+    set: [
+      #("GH_CONFIG_DIR", "/home/me/.config/gh"),
+    ],
+  )
+}
+
+// A host environment with `GH_TOKEN` set and nothing else, so the skip
+// path is exercised by a name that is genuinely absent rather than by
+// one this machine happens not to have.
+fn host_reading(name: String) -> Result(String, Nil) {
+  case name {
+    "GH_TOKEN" -> Ok("gho_secret")
+    _other -> Error(Nil)
+  }
+}
+
+pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
+  let #(environment, unset) =
+    serve.tool_environment(
+      "/work",
+      None,
+      networked_tools(),
+      reading: host_reading,
+    )
+  assert environment
+    == [
+      #("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
+      #("HOME", "/work"),
+      #("TMPDIR", "/work/.codemode/tmp"),
+      #("GH_TOKEN", "gho_secret"),
+      #("GH_CONFIG_DIR", "/home/me/.config/gh"),
+    ]
+  assert unset == []
+}
+
+pub fn configured_path_entries_follow_the_servers_own_test() {
+  // The toolchain and system directories stay in front, so the shell
+  // resolves the same gleam the compiler does; the operator's directories
+  // are where the rest of the host's tools live.
+  let #(environment, _unset) =
+    serve.tool_environment(
+      "/work",
+      Some("/tool/bin:/usr/bin:/bin"),
+      networked_tools(),
+      reading: fn(_name) { Error(Nil) },
+    )
+  let assert Ok(path) = list.key_find(environment, "PATH")
+  assert path == "/tool/bin:/usr/bin:/bin:/opt/homebrew/bin"
+}
+
+pub fn an_unset_configured_name_is_skipped_and_reported_test() {
+  // Skipped, not defaulted to the empty string: a `gh` handed
+  // `GH_TOKEN=""` reads as logged out in a way no operator asked for.
+  let tools =
+    catalog.ToolsConfig(..networked_tools(), env: ["GH_TOKEN", "NO_SUCH_VAR"])
+  let #(environment, unset) =
+    serve.tool_environment("/work", None, tools, reading: host_reading)
+  assert list.key_find(environment, "NO_SUCH_VAR") == Error(Nil)
+  assert list.key_find(environment, "GH_TOKEN") == Ok("gho_secret")
+  assert unset == ["NO_SUCH_VAR"]
+}
+
+pub fn the_default_tools_table_leaves_the_environment_alone_test() {
+  let #(environment, unset) =
+    serve.tool_environment(
+      "/work",
+      None,
+      catalog.default_tools(),
+      reading: host_reading,
+    )
+  assert environment == serve.session_environment("/work", None)
+  assert unset == []
+}
+
+pub fn a_full_network_table_opens_the_base_policy_test() {
+  // Both halves matter and neither implies the other: the network is
+  // what the meet takes from the base, and the allowlist is what stops
+  // the same meet dropping the names out of the shell's environment.
+  let base = serve.base_policy("/work")
+  assert base.network == policy.NetworkOff
+  let opened = serve.under_tools_config(base, networked_tools())
+  assert opened.network == policy.NetworkFull
+  assert list.contains(opened.env_allow, "GH_TOKEN")
+  assert list.contains(opened.env_allow, "GH_CONFIG_DIR")
+  // Nothing else about the base moved.
+  assert opened.writable_roots == base.writable_roots
+  assert opened.protected == base.protected
+}
+
+pub fn the_default_tools_table_leaves_the_base_policy_offline_test() {
+  let base = serve.base_policy("/work")
+  let unchanged = serve.under_tools_config(base, catalog.default_tools())
+  assert unchanged == base
+}
+
+const networked_root = "build/serve-test-network"
+
+// The whole boot on an egress-on catalogue: the composed base policy is
+// still one the sandbox can enforce, so the server comes up rather than
+// refusing at `base_policy_fault`.
+pub fn a_boot_with_full_network_configured_comes_up_test() {
+  let _stale = simplifile.delete(networked_root)
+  let base = settings_under(networked_root)
+  let assert Ok(booted) =
+    serve.boot(serve.Settings(..base, tools: networked_tools()))
+    as "the server must boot with network egress configured"
   serve.shutdown(booted)
 }

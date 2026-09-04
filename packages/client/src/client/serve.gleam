@@ -367,6 +367,12 @@ pub type Settings {
     /// — the shipped producer #149 asked for, and the reason a release
     /// needs no cron job to fill its memory.
     memory: distillpass.Options,
+    /// The `[tools]` table: whether jailed tool shells reach the network,
+    /// and what else their environment carries. Defaults to
+    /// `catalog.default_tools()` — offline, three names — which is the
+    /// jail every session has had until an operator writes otherwise, and
+    /// is what the environment-shaped configuration path takes.
+    tools: catalog.ToolsConfig,
   )
 }
 
@@ -850,7 +856,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
-  use #(catalogue, rule_list, schedule_list, schedule_policy, memory) <- result.try(
+  use #(catalogue, rule_list, schedule_list, schedule_policy, memory, tools) <- result.try(
     load_config(flags.config),
   )
 
@@ -898,6 +904,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     schedule_policy:,
     deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
     memory:,
+    tools:,
   ))
 }
 
@@ -1035,6 +1042,7 @@ fn load_config(
     List(schedule.Schedule),
     schedule.Policy,
     distillpass.Options,
+    catalog.ToolsConfig,
   ),
   String,
 ) {
@@ -1046,6 +1054,7 @@ fn load_config(
         [],
         schedule.default_policy,
         distillpass.default_options(),
+        catalog.default_tools(),
       ))
     Some(path) -> {
       use text <- result.try(
@@ -1071,7 +1080,10 @@ fn load_config(
       use memory <- result.try(
         distillpass.parse(text) |> result.map_error(named),
       )
-      Ok(#(catalogue, rule_list, schedule_list, schedule_policy, memory))
+      use tools <- result.try(
+        catalog.parse_tools(text) |> result.map_error(named),
+      )
+      Ok(#(catalogue, rule_list, schedule_list, schedule_policy, memory, tools))
     }
   }
 }
@@ -1836,6 +1848,7 @@ fn assemble(
     protecting_index(settings.base_policy, index_path)
     |> protecting_memory(memory_store, memory_digest)
     |> allowing_tool_tmpdir
+    |> under_tools_config(settings.tools)
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
@@ -2002,11 +2015,20 @@ fn assemble(
   // The environment every jailed child of this session inherits, tool
   // and hook alike. It is built once the code-mode decision is in so the
   // shell finds the same `gleam` and `erl` the compiler uses.
-  let environment =
-    session_environment(
+  let #(environment, unset_names) =
+    tool_environment(
       settings.workspace,
       option.map(code_mode_host, fn(config) { config.toolchain_path }),
+      settings.tools,
+      reading: env_text,
     )
+
+  // A configured name the host has not set is one warned line and not a
+  // boot failure: the operator learns it here, and the tool that wanted
+  // it says so in band when it runs.
+  list.each(unset_names, fn(name) {
+    log.warn(logger, "tools.env_unset", [field.ident(key: "name", value: name)])
+  })
 
   // Recall, on the same two-name pattern and gated the same way: the
   // holder that owns the index cannot exist until the runtime has been
@@ -2730,6 +2752,61 @@ pub fn session_environment(
   ]
 }
 
+/// The whole environment a jailed tool shell of this session runs under:
+/// the three names the server owns, then whatever the `[tools]` table
+/// added.
+///
+/// The order is the guarantee. `session_environment`'s three names come
+/// first and nothing after them may repeat one, because each is derived
+/// from the workspace or from the toolchain this boot discovered and a
+/// shell that took one from a config file would run against neither.
+/// `client/catalog.parse_tools` refuses a table that names one, so the
+/// order here is the second lock rather than the only one.
+///
+/// A configured name the host environment does not set is **skipped**,
+/// and the skipped names come back beside the environment rather than
+/// being logged from in here — this stays a decision about values, and
+/// the caller owns the warning line. Skipping rather than refusing is
+/// deliberate: an operator who lists `GH_TOKEN` on a machine that has
+/// none has a `gh` that will not authenticate, and that is a better
+/// thing to learn from one warned line and an in-band tool failure than
+/// from a server that would not start.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.tool_environment("/work", None, tools, reading: env_text)
+/// // -> #([#("PATH", ..), #("HOME", ..), #("TMPDIR", ..), #("GH_TOKEN", ..)], [])
+/// ```
+///
+@internal
+pub fn tool_environment(
+  workspace: String,
+  toolchain_path: Option(String),
+  tools: catalog.ToolsConfig,
+  reading reading: fn(String) -> Result(String, Nil),
+) -> #(List(#(String, String)), List(String)) {
+  let owned =
+    session_environment(workspace, toolchain_path)
+    |> extending_path(tools.path)
+
+  // A pass-through name settles one of two ways, so the fold carries
+  // both answers: the pairs that were found, and the names that were not.
+  let #(passed, unset) =
+    list.fold(tools.env, #([], []), fn(state, name) {
+      let #(found, missing) = state
+      case reading(name) {
+        Ok(value) -> #([#(name, value), ..found], missing)
+        Error(Nil) -> #(found, [name, ..missing])
+      }
+    })
+
+  // The literals come last, after the host reads, because a name cannot
+  // be in both lists and the file's own order is the one an operator
+  // reading it back expects.
+  #(list.flatten([owned, list.reverse(passed), tools.set]), list.reverse(unset))
+}
+
 /// Where a jailed tool's `TMPDIR` points: beneath the code-mode work
 /// directory the server already owns inside the workspace, so the
 /// workspace gains no second dot-directory for it.
@@ -2755,6 +2832,73 @@ fn allowing_tool_tmpdir(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
     ..base,
     env_allow: list.unique(list.append(base.env_allow, ["TMPDIR"])),
   )
+}
+
+// The operator's `path` entries go on the tail of the server's `PATH`:
+// the toolchain and system directories stay in front, so the shell and
+// the compiler resolve the same `gleam` and `erl`, and what follows is
+// where the rest of the host's tools are found.
+fn extending_path(
+  environment: List(#(String, String)),
+  extra: List(String),
+) -> List(#(String, String)) {
+  case extra {
+    [] -> environment
+    dirs ->
+      list.map(environment, fn(pair) {
+        case pair {
+          #("PATH", value) -> #("PATH", value <> ":" <> string.join(dirs, ":"))
+          other -> other
+        }
+      })
+  }
+}
+
+/// The operator's `[tools]` table applied to the session base: the
+/// network posture they chose, and every name their two lists mention
+/// added to the environment allowlist.
+///
+/// The second half is what makes the first half reach a shell, and it is
+/// exactly `allowing_tool_tmpdir`'s argument one table further on.
+/// `policy.meet` intersects `env_allow`, and a jailed tool asks for
+/// precisely the names in `Ctx.env` — so a variable that is in the
+/// environment and not on the base's allowlist is a narrowing refusal
+/// rather than a variable.
+///
+/// Public to this package for the reason `base_policy_fault` is: this is
+/// a decision about a value, and it should be testable as one rather than
+/// through a boot that has nowhere to hand its composed policy back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.under_tools_config(base, tools).network == policy.NetworkFull
+/// ```
+///
+@internal
+pub fn under_tools_config(
+  base: policy.SandboxPolicy,
+  tools: catalog.ToolsConfig,
+) -> policy.SandboxPolicy {
+  let configured =
+    list.append(tools.env, list.map(tools.set, fn(pair) { pair.0 }))
+  policy.SandboxPolicy(
+    ..base,
+    network: configured_network(tools.network),
+    env_allow: list.unique(list.append(base.env_allow, configured)),
+  )
+}
+
+// The catalogue's two-word posture as the policy lattice's own value.
+// `NetworkProxy` is deliberately unreachable from here: the broker
+// downgrades it to `NetworkOff` in phase 1 (`broker/policy`'s module
+// doc), so a config word for it would promise host filtering that nothing
+// on this path enforces.
+fn configured_network(network: catalog.ToolNetwork) -> policy.NetworkPolicy {
+  case network {
+    catalog.ToolNetworkOff -> policy.NetworkOff
+    catalog.ToolNetworkFull -> policy.NetworkFull
+  }
 }
 
 /// Slack over an invocation's own deadline before a caller gives up on the

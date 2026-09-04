@@ -455,6 +455,9 @@ fn settings(
     schedule_policy: schedule.ModelSchedulesOff,
     deactivated_tools: [],
     memory: distillpass.default_options(),
+    // Offline, three names: the jail every session had before the
+    // `[tools]` table existed.
+    tools: catalog.default_tools(),
   )
 }
 

@@ -546,3 +546,142 @@ main = [\"one\"]
   let assert Ok(entry) = catalog.find(parsed, "one")
   assert entry.base_url == "https://inference.baseten.example/v1"
 }
+
+// --- the [tools] table -------------------------------------------------------
+
+// The operator's egress opt-in, appended after the minimal catalogue so
+// each test exercises exactly the table body it names.
+fn with_tools(body: String) -> String {
+  minimal <> "\n[tools]\n" <> body <> "\n"
+}
+
+pub fn a_tools_table_is_allowed_at_the_top_level_test() {
+  let assert Ok(_parsed) = catalog.parse(with_tools("network = \"off\""))
+    as "a [tools] table must not be refused by the top-level key check"
+}
+
+pub fn absent_tools_table_is_offline_with_nothing_added_test() {
+  // The absence of the table and an explicit `network = "off"` are one
+  // value, which is the whole point of `default_tools`.
+  assert catalog.parse_tools(minimal) == Ok(catalog.default_tools())
+  assert catalog.parse_tools(minimal)
+    == Ok(
+      catalog.ToolsConfig(
+        network: catalog.ToolNetworkOff,
+        env: [],
+        set: [],
+        path: [],
+      ),
+    )
+}
+
+pub fn the_example_catalogue_keeps_the_jail_offline_test() {
+  let assert Ok(text) = simplifile.read(example_path)
+    as "the committed example catalogue must be readable"
+  assert catalog.parse_tools(text) == Ok(catalog.default_tools())
+}
+
+pub fn a_full_tools_table_parses_test() {
+  let text =
+    with_tools(
+      "network = \"full\"\nenv = [\"GH_TOKEN\"]
+path = [\"/opt/homebrew/bin\", \"/usr/local/go/bin\"]\n\n[tools.set]\nGH_CONFIG_DIR = \"/home/me/.config/gh\"",
+    )
+  assert catalog.parse_tools(text)
+    == Ok(
+      catalog.ToolsConfig(
+        network: catalog.ToolNetworkFull,
+        env: ["GH_TOKEN"],
+        set: [#("GH_CONFIG_DIR", "/home/me/.config/gh")],
+        path: ["/opt/homebrew/bin", "/usr/local/go/bin"],
+      ),
+    )
+}
+
+pub fn tools_set_pairs_come_back_sorted_test() {
+  // The TOML dict loses file order; the constructed environment must not
+  // depend on which order it hands its keys back.
+  let text =
+    with_tools("[tools.set]\nZ_LAST = \"z\"\nA_FIRST = \"a\"\nM_MID = \"m\"")
+  let assert Ok(parsed) = catalog.parse_tools(text)
+  assert list.map(parsed.set, fn(pair) { pair.0 })
+    == ["A_FIRST", "M_MID", "Z_LAST"]
+}
+
+pub fn a_relative_path_entry_is_refused_test() {
+  // A relative directory would resolve against the shell's working
+  // directory, which is the workspace the model writes to.
+  let text = "[tools]\npath = [\"bin\"]\n"
+  let assert Error("tools.path entries must be absolute directories" <> _) =
+    catalog.parse_tools(text)
+  let twice = "[tools]\npath = [\"/opt/x\", \"/opt/x\"]\n"
+  let assert Error("tools.path lists a directory twice") =
+    catalog.parse_tools(twice)
+}
+
+pub fn unknown_tools_key_refused_test() {
+  let assert Error("unknown key `netwrok` in [tools]" <> _rest) =
+    catalog.parse_tools(with_tools("netwrok = \"full\""))
+}
+
+pub fn unknown_tools_network_word_refused_test() {
+  let assert Error("tools.network must be \"off\" or \"full\"" <> _rest) =
+    catalog.parse_tools(with_tools("network = \"proxy\""))
+}
+
+pub fn a_non_string_network_is_refused_test() {
+  let assert Error("tools.network must be a string" <> _rest) =
+    catalog.parse_tools(with_tools("network = true"))
+}
+
+pub fn empty_env_name_refused_test() {
+  let assert Error("tools.env names must be non-empty" <> _rest) =
+    catalog.parse_tools(with_tools("env = [\"\"]"))
+}
+
+pub fn non_string_env_entry_refused_test() {
+  let assert Error(
+    "tools.env must be an array of environment variable names" <> _rest,
+  ) = catalog.parse_tools(with_tools("env = [1]"))
+}
+
+pub fn duplicate_env_name_refused_test() {
+  let assert Error("tools.env names a variable twice" <> _rest) =
+    catalog.parse_tools(with_tools("env = [\"GH_TOKEN\", \"GH_TOKEN\"]"))
+}
+
+pub fn non_string_set_value_refused_test() {
+  let assert Error("tools.set.GH_HOST must be a string" <> _rest) =
+    catalog.parse_tools(with_tools("[tools.set]\nGH_HOST = 1"))
+}
+
+pub fn a_name_in_both_env_and_set_refused_test() {
+  let text =
+    with_tools("env = [\"GH_TOKEN\"]\n\n[tools.set]\nGH_TOKEN = \"literal\"")
+  let assert Error(
+    "tools.GH_TOKEN is named by both `env` and [tools.set]" <> _rest,
+  ) = catalog.parse_tools(text)
+}
+
+pub fn a_server_owned_name_is_refused_from_env_test() {
+  let assert Error("tools.env may not name PATH" <> _rest) =
+    catalog.parse_tools(with_tools("env = [\"PATH\"]"))
+}
+
+pub fn a_server_owned_name_is_refused_from_set_test() {
+  // All three names, because each is owned for its own reason and a
+  // check that only covered `PATH` would look exactly like this one.
+  let assert Error("tools.set may not name HOME" <> _rest) =
+    catalog.parse_tools(with_tools("[tools.set]\nHOME = \"/elsewhere\""))
+  let assert Error("tools.set may not name TMPDIR" <> _rest) =
+    catalog.parse_tools(with_tools("[tools.set]\nTMPDIR = \"/tmp\""))
+  let assert Error("tools.set may not name PATH" <> _rest) =
+    catalog.parse_tools(with_tools("[tools.set]\nPATH = \"/usr/bin\""))
+}
+
+pub fn a_scalar_tools_key_is_refused_test() {
+  // Prefixed rather than appended: `minimal` ends inside its [roles]
+  // table, so a key written after it would be `roles.tools`.
+  let assert Error("tools must be a [tools] table" <> _rest) =
+    catalog.parse_tools("tools = \"full\"" <> minimal)
+}

@@ -1,6 +1,7 @@
 import broker/broker
 import broker/budget
 import broker/exec
+import broker/policy
 import core/json
 import core/message
 import gleam/erlang/process
@@ -265,4 +266,44 @@ pub fn grep_budget_admits_two_concurrent_calls_in_one_batch_test() {
       "a second, genuinely concurrent grep call in the same batch must "
       <> "not be refused OutstandingCapReached just for being second"
     }
+}
+
+// --- the network stays off whatever the session base allows ------------
+
+// A search needs no network and never asks for one: under a base an
+// operator opened with `[tools] network = "full"`, the requirement is
+// still off, and the meet keeps the call offline. `bash` is the tool that
+// follows the base; `rg` reads files.
+pub fn grep_stays_offline_under_an_opened_base_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace:,
+      filesystem:,
+      now:,
+      script: [
+        fake_broker.exited(code: 1, stdout_bytes: 0),
+      ],
+      recorded:,
+    )
+  let opened =
+    policy.SandboxPolicy(
+      ..fake_broker.base_policy(workspace),
+      network: policy.NetworkFull,
+    )
+  let _outcome =
+    grep.tool().run(tool.Ctx(..ctx, base_policy: opened), pattern_args("todo"))
+  let assert Ok(fake_broker.Spec(spec:)) = process.receive(recorded, 1000)
+    as "the tool never cleared a call"
+  assert spec.requirements.network == policy.NetworkOff
+}
+
+pub fn grep_stays_offline_under_an_offline_base_test() {
+  let #(_outcome, recorded) =
+    run_with_script(
+      [fake_broker.exited(code: 1, stdout_bytes: 0)],
+      pattern_args("todo"),
+    )
+  assert recorded_spec(recorded).requirements.network == policy.NetworkOff
 }

@@ -560,6 +560,12 @@ somebody forgot.
   last commit before merge switches them back to `>= 0.4.2 and < 1.0.0`;
   until the release is published that resolution step is red, which is
   expected.
+- **Egress for the shell tools is all-or-nothing.** `[tools] network =
+  "full"` in `loom.toml` opens the jail's network for `bash` and `grep`,
+  per catalogue and by the operator alone; there are no allow or deny
+  lists behind it, because host-level filtering needs the egress proxy
+  the spec defers and a config key that accepted hosts would promise
+  filtering nothing enforces.
 - **Compaction stages C1/C2 and memory stage M3** are out of the release
   by design and have no issue.
 

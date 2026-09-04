@@ -848,6 +848,35 @@ pub fn write_requirements(workspace: String) -> SandboxPolicy {
   policy.SandboxPolicy(..base, env_allow: [])
 }
 
+/// The same requirements, asking for whatever network the session base
+/// allows instead of stating a network of their own.
+///
+/// A jailed tool that hard-codes `NetworkOff` is not merely declaring a
+/// preference: `policy.compose` takes the *meet* of base and
+/// requirements, so an off requirement pins the call off however wide
+/// the session's own posture is, and an operator's `[tools] network =
+/// "full"` would reach nothing. The tools that run a shell have no
+/// opinion of their own about egress — the operator's base is the whole
+/// of the policy — so they ask for it rather than restating it.
+///
+/// This never widens anything. The meet still applies, so a base that is
+/// off yields requirements that are off, which is the shipped default
+/// and every session nobody configured a `[tools]` table for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.asking_base_network(tool.read_requirements("/w"), ctx.base_policy)
+/// //   .network == ctx.base_policy.network
+/// ```
+///
+pub fn asking_base_network(
+  requirements: SandboxPolicy,
+  base: SandboxPolicy,
+) -> SandboxPolicy {
+  policy.SandboxPolicy(..requirements, network: base.network)
+}
+
 // --- the broker seam -----------------------------------------------------
 
 /// The production broker seam: clears calls through a live broker and

@@ -227,6 +227,40 @@ configured timeout and the call's own budget deadline, because the
 ledger refuses a reservation past that instant. Which raised records
 interrupt a person is a client-surface decision, not a runtime one.
 
+### Egress for the shell tools: the operator's `[tools]` table
+
+The lattice's other rung is reachable, and only by an operator. A
+`[tools]` table in `loom.toml` — `network = "off" | "full"`, default off
+and what the absence of the table means — is what puts `NetworkFull` on
+the session base, and `bash` asks for whatever the base allows rather
+than stating a network of its own (`tool.asking_base_network`). `grep`
+does not follow: `rg` reads files and needs no egress, so it stays pinned
+off under any base. The same table's `env`, `set` and `path` keys widen
+the shell's environment — host variables by name, literals, and
+directories appended after the server's own `PATH` entries — which is
+what lets `gh` be found and authenticate once the network is open.
+The meet is why that indirection exists: a tool requirement of
+`NetworkOff` pins a call offline however wide the base is, so a tool that
+hard-coded it would make the setting reach nothing.
+
+The same table carries the environment those shells need with the network
+— `env` naming host variables read at boot, `[tools.set]` carrying
+literals — because `gh` with egress and no token is `gh` that does not
+work. Every name it mentions joins the base's `env_allow` too, since the
+meet intersects that list as well. `PATH`, `HOME` and `TMPDIR` are
+refused from both lists: the server derives them from the workspace and
+the discovered toolchain, and a shell that took one from a config file
+would resolve a different `gleam` than the compiler, or source the
+operator's dotfiles from inside the jail.
+
+There is no allowlist, deliberately. Host-level `allow = ["github.com"]`
+needs the egress proxy this phase does not build, and a config key that
+accepted hosts would promise filtering nothing enforces — the same
+reason `NetworkProxy` is a wire variant nothing here can select. So the
+choice is the honest one the enforcement layers can actually make: no
+egress, or all of it, per catalogue, written down by the person who
+stood the server up.
+
 ## The wire
 
 One framing protocol carries every data-plane channel: executors today,

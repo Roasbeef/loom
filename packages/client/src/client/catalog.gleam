@@ -41,6 +41,12 @@
 //// name = "schema-gate"
 //// triggers = ["ALTER TABLE"]
 //// body = "Run the schema gate first."
+////
+//// [tools]                            # optional; see `parse_tools`
+//// network = "off"                    # off (default) | full
+//// env = ["GH_TOKEN"]                 # host env var *names*
+//// [tools.set]
+//// GH_CONFIG_DIR = "/home/me/.config/gh"
 //// ```
 ////
 //// The `[[rule]]` tables are the triggered project rules and are parsed
@@ -151,6 +157,54 @@ pub type McpServer {
   )
 }
 
+/// Whether this host's jailed tool shells reach the network at all.
+///
+/// A two-variant type rather than a `Bool`: the jail is offline by
+/// design, so egress is a posture an operator takes deliberately and the
+/// name at the call site has to say which posture it is.
+pub type ToolNetwork {
+  /// No egress at all — what the jail has always built, and what an
+  /// absent `[tools]` table means.
+  ToolNetworkOff
+
+  /// Unrestricted egress for every jailed tool shell, which is what
+  /// makes `gh`, `git fetch` and `curl` work inside the jail.
+  ToolNetworkFull
+}
+
+/// The `[tools]` table: what this session's jailed tool shells may
+/// reach, and what they carry in their environment.
+///
+/// Constructor invariants (guaranteed by `parse_tools`, owed by any
+/// direct construction): every `env` name and every `set` key is
+/// non-empty and appears exactly once across both lists; neither names
+/// `PATH`, `HOME` or `TMPDIR`, which the server owns
+/// (`client/serve.session_environment`); `set` is sorted by name, since
+/// the TOML dict loses file order and everything derived from a
+/// catalogue must be deterministic; every `path` entry is a non-empty
+/// absolute directory, listed once, in file order.
+pub type ToolsConfig {
+  ToolsConfig(
+    /// Whether jailed tool shells get network egress.
+    network: ToolNetwork,
+    /// Host environment variable *names*, passed through to every jailed
+    /// tool shell. The values are read from the server's own environment
+    /// at boot and never live in this file, the same discipline
+    /// `api_key_env` follows.
+    env: List(String),
+    /// Literal `name = "value"` pairs set in every jailed tool shell,
+    /// sorted by name.
+    set: List(#(String, String)),
+    /// Directories appended to the jailed shell's `PATH`, after the
+    /// server's own entries, in file order. The server owns the front of
+    /// `PATH` so the shell resolves the same `gleam` and `erl` the compiler
+    /// does; this is how an operator adds the rest of a host's tools —
+    /// `/opt/homebrew/bin` for `gh` on a Homebrew Mac — without taking
+    /// that over.
+    path: List(String),
+  )
+}
+
 /// The parsed catalogue: entries plus the role → fallback-chain table,
 /// plus any configured MCP servers.
 ///
@@ -220,7 +274,10 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // may take.
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["models", "roles", "mcp", "rule", "schedule", "schedules", "memory"],
+    [
+      "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
+      "tools",
+    ],
     "the top level",
   ))
   use model_tables <- result.try(
@@ -686,6 +743,232 @@ fn positive_int(
       )
     Ok(_other) -> Error(place <> "." <> key <> " must be an integer")
     Error(Nil) -> Error(place <> "." <> key <> " is required")
+  }
+}
+
+// --- the [tools] table -----------------------------------------------------
+
+/// The posture a catalogue with no `[tools]` table configures: no
+/// egress, and nothing added to the environment the server builds. It is
+/// the jail this harness has always constructed, written down so that an
+/// absent table and an explicit `network = "off"` are the same value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.default_tools().network == catalog.ToolNetworkOff
+/// ```
+///
+pub fn default_tools() -> ToolsConfig {
+  ToolsConfig(network: ToolNetworkOff, env: [], set: [], path: [])
+}
+
+/// Parses the optional `[tools]` table out of the same `loom.toml` the
+/// catalogue comes from — the operator's opt-in to network egress and to
+/// an environment wider than the three names the server owns.
+///
+/// It reads the document itself rather than taking one `parse` already
+/// produced, the arrangement `client/rules` and `client/distillpass`
+/// established: each parser owns its own table and its own worded
+/// failure, and `parse`'s top-level key check is what keeps a typoed
+/// table name from being ignored by every parser at once.
+///
+/// Total and strict, for the reason the model tables are: a setting that
+/// widens what a jailed shell can reach must never be arrived at by a
+/// typo, so an unknown key, an unrecognised network word, a non-string
+/// value, a duplicate name and a name the server owns are each a worded
+/// `Error` the boot halts on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_tools("") == Ok(catalog.default_tools())
+/// ```
+///
+/// ```gleam
+/// // catalog.parse_tools("[tools]\nnetwork = \"full\"\n")
+/// // -> Ok(catalog.ToolsConfig(network: catalog.ToolNetworkFull, ..))
+/// ```
+///
+pub fn parse_tools(text: String) -> Result(ToolsConfig, String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(describe_parse_error),
+  )
+  case dict.get(document, "tools") {
+    Error(Nil) -> Ok(default_tools())
+    Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) -> tools_table(fields)
+    Ok(_other) -> Error("tools must be a [tools] table")
+  }
+}
+
+// `[tools.set]` is a sub-table of `[tools]`, so `set` arrives as an
+// ordinary key here and belongs in the allowed list beside the two
+// scalars.
+fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
+  use Nil <- result.try(known_keys(
+    dict.keys(fields),
+    ["network", "env", "set", "path"],
+    "[tools]",
+  ))
+  use network <- result.try(case optional_string(fields, "tools", "network") {
+    Ok(Ok(word)) -> parse_tool_network(word)
+    Ok(Error(Nil)) -> Ok(ToolNetworkOff)
+    Error(message) -> Error(message)
+  })
+  use env <- result.try(tool_env_names(fields))
+  use set <- result.try(tool_set_pairs(fields))
+  use path <- result.try(tool_path_entries(fields))
+
+  // The two lists are one namespace: a name in both would be read from
+  // the host and then overwritten by the literal, so whichever the
+  // operator meant, one of the two lines does nothing.
+  use Nil <- result.try(
+    list.try_each(set, fn(pair) {
+      case list.contains(env, pair.0) {
+        False -> Ok(Nil)
+        True ->
+          Error(
+            "tools."
+            <> pair.0
+            <> " is named by both `env` and [tools.set]; a name can be read"
+            <> " from the host or set to a literal, not both",
+          )
+      }
+    }),
+  )
+  Ok(ToolsConfig(network:, env:, set:, path:))
+}
+
+// Exactly two words, because the third one the wire vocabulary has —
+// proxy — needs an egress proxy this phase does not ship, and a config
+// that accepted the word would promise host filtering nothing enforces.
+fn parse_tool_network(word: String) -> Result(ToolNetwork, String) {
+  case word {
+    "off" -> Ok(ToolNetworkOff)
+    "full" -> Ok(ToolNetworkFull)
+    other ->
+      Error(
+        "tools.network must be \"off\" or \"full\", got \"" <> other <> "\"",
+      )
+  }
+}
+
+// The pass-through names, in file order: an array is ordered and the
+// environment is built in the order stated, so nothing is sorted here.
+fn tool_env_names(
+  fields: Dict(String, tom.Toml),
+) -> Result(List(String), String) {
+  use items <- result.try(case dict.get(fields, "env") {
+    Ok(tom.Array(items)) -> Ok(items)
+    Ok(_other) ->
+      Error("tools.env must be an array of environment variable names")
+    Error(Nil) -> Ok([])
+  })
+  use names <- result.try(
+    list.try_map(items, fn(item) {
+      case item {
+        tom.String("") -> Error("tools.env names must be non-empty")
+        tom.String(name) -> Ok(name)
+        _other ->
+          Error("tools.env must be an array of environment variable names")
+      }
+    }),
+  )
+  use Nil <- result.try(
+    list.try_each(names, fn(name) { not_server_owned("tools.env", name) }),
+  )
+  case list.length(list.unique(names)) == list.length(names) {
+    True -> Ok(names)
+    False -> Error("tools.env names a variable twice")
+  }
+}
+
+// The literal pairs. Sorted by name for the reason model entries are:
+// the TOML dict loses file order, and a boot's constructed environment
+// should not depend on which order a dict happened to hand its keys
+// back.
+// Directories for the tail of `PATH`, in file order because search order
+// is the whole meaning of the list. Absolute, because a relative entry
+// would resolve against whatever the shell's working directory happened
+// to be — the workspace, which the model writes to.
+fn tool_path_entries(
+  fields: Dict(String, tom.Toml),
+) -> Result(List(String), String) {
+  use items <- result.try(case dict.get(fields, "path") {
+    Ok(tom.Array(items)) -> Ok(items)
+    Ok(_other) -> Error("tools.path must be an array of absolute directories")
+    Error(Nil) -> Ok([])
+  })
+  use names <- result.try(
+    list.try_map(items, fn(item) {
+      case item {
+        tom.String(name) ->
+          case string.starts_with(name, "/") {
+            True -> Ok(name)
+            False ->
+              Error(
+                "tools.path entries must be absolute directories, got \""
+                <> name
+                <> "\"",
+              )
+          }
+        _other -> Error("tools.path must be an array of absolute directories")
+      }
+    }),
+  )
+  case list.length(list.unique(names)) == list.length(names) {
+    True -> Ok(names)
+    False -> Error("tools.path lists a directory twice")
+  }
+}
+
+fn tool_set_pairs(
+  fields: Dict(String, tom.Toml),
+) -> Result(List(#(String, String)), String) {
+  use entries <- result.try(case dict.get(fields, "set") {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
+      Ok(dict.to_list(entries))
+    Ok(_other) -> Error("tools.set must be a [tools.set] table")
+    Error(Nil) -> Ok([])
+  })
+  use pairs <- result.try(
+    entries
+    |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+    |> list.try_map(fn(entry) {
+      case entry.0, entry.1 {
+        "", _value -> Error("tools.set names must be non-empty")
+        name, tom.String(value) -> Ok(#(name, value))
+        name, _other -> Error("tools.set." <> name <> " must be a string")
+      }
+    }),
+  )
+  use Nil <- result.try(
+    list.try_each(pairs, fn(pair) { not_server_owned("tools.set", pair.0) }),
+  )
+  Ok(pairs)
+}
+
+// The three names `client/serve.session_environment` builds from the
+// workspace and the toolchain code mode discovered. They are refused
+// here rather than silently ignored downstream: a shell whose `PATH`
+// came from this file would resolve a different `gleam` than the one the
+// compiler uses, and one whose `HOME` did would source the operator's
+// own dotfiles from inside the jail.
+const server_owned_names = ["PATH", "HOME", "TMPDIR"]
+
+fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
+  case list.contains(server_owned_names, name) {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        place
+        <> " may not name "
+        <> name
+        <> ": PATH, HOME and TMPDIR are set by the server from the workspace"
+        <> " and the toolchain it found, and a jailed shell that took one"
+        <> " from this file would run against neither",
+      )
   }
 }
 

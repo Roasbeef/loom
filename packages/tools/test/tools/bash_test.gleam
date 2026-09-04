@@ -307,3 +307,62 @@ pub fn bash_schema_requires_command_test() {
   assert list.key_find(fields, "required")
     == Ok(json.Array([json.String("command")]))
 }
+
+// --- the session's network posture, followed (the operator's [tools]) -----
+
+// The same rig with a session base of the caller's choosing: what
+// `client/serve` composes from an operator's `[tools]` table is a base
+// policy, so that is the only thing a tool sees of the decision.
+fn run_under_base(
+  base: policy.SandboxPolicy,
+  script: List(broker.CallEvent),
+  args: json.JsonValue,
+) -> process.Subject(fake_broker.Recorded) {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
+  let _outcome = bash.tool().run(tool.Ctx(..ctx, base_policy: base), args)
+  recorded
+}
+
+pub fn bash_asks_for_the_session_bases_network_test() {
+  // An operator who opened the jail's network gets a call that asks for
+  // it. The requirement is not a preference: `compose` takes the meet,
+  // so a hard-coded `NetworkOff` would pin every shell offline however
+  // wide the session's own posture was, and the setting would reach
+  // nothing.
+  let opened =
+    policy.SandboxPolicy(
+      ..fake_broker.base_policy(workspace),
+      network: policy.NetworkFull,
+    )
+  let recorded =
+    run_under_base(
+      opened,
+      [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      command_args("gh pr list"),
+    )
+  let spec = recorded_spec(recorded)
+  assert spec.requirements.network == policy.NetworkFull
+  let #(final, narrowings) =
+    policy.compose(
+      base: spec.base_policy,
+      requirements: spec.requirements,
+      grants: [],
+    )
+  assert final.network == policy.NetworkFull
+  assert narrowings == []
+}
+
+pub fn bash_stays_offline_under_an_offline_base_test() {
+  // Following the base never widens anything: the shipped base is
+  // offline, so the requirement is offline with it, which is what
+  // `bash_call_spec_shape_test` asserts from the other direction.
+  let recorded =
+    run_under_base(
+      fake_broker.base_policy(workspace),
+      [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      command_args("true"),
+    )
+  assert recorded_spec(recorded).requirements.network == policy.NetworkOff
+}
