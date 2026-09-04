@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -149,6 +150,15 @@ func unsupportedPlatformReport(p jail.PlatformSupport) string {
 // and not the jail's.
 func probeDir() (string, error) {
 	base := os.TempDir()
+
+	// On macOS the default temp directory is the user temp directory,
+	// which every Seatbelt plan grants (jail.DarwinUserDirectories), so a
+	// probe's "outside" victim there would be inside the jail and the
+	// write-outside probes would report a tight jail as broken. The
+	// scratch parent is granted to no plan.
+	if runtime.GOOS == "darwin" {
+		base = jail.SeatbeltScratchParent
+	}
 	if underScratchMount(base) {
 		// /var/tmp is POSIX and is never the tmpfs scratch target.
 		if fi, err := os.Stat(alternateTempRoot); err == nil && fi.IsDir() {

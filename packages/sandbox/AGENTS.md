@@ -77,7 +77,14 @@ only Go module.
   deny-default profile, path definitions, audit digest, and enforcement
   tags. Model-influenced paths travel through `sandbox-exec -D`, never as
   interpolated SBPL. Broad grants precede the protected logical/resolved
-  path denies, and the denies are the final rules in the profile.
+  path denies, and the denies are the final rules in the profile. Two
+  roots the policy never names are granted on every plan: the user's
+  darwin temp and cache directories (`confstr(3)`, in
+  `seatbelt_userdirs_darwin.go`), because Apple's `git`/`make`/`clang`
+  shims write `xcrun`'s cache and clang's module cache there whatever
+  `TMPDIR` says — and the private per-execution scratch is made under
+  `/private/tmp`, not the helper's `TMPDIR`, precisely so that grant does
+  not make one execution's scratch writable by another.
 - `internal/jail.{Stage2Skip, Stage2SkipPrefix, BwrapUnwitnessedSkip}` —
   the entries for a stage 2 that never reported on fd 4, and for the
   bwrap layer that consequently has no witness.
