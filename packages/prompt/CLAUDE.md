@@ -10,14 +10,15 @@ replaced without a recompile. Reading a pack file, populating the
 environment, and pinning a rendered string are all outside this package:
 it performs no I/O.
 
-Two packs ship, and they are separate because they are *paid for* on
-entirely different schedules. The **system pack** (`prompt/default.
-source`) renders through `pack.render` into the one string a session
-sends as `system` on every request of every strand, behind a one-hour
-cache breakpoint. The **summarization pack**
-(`prompt/default.summary_source`, read through `prompt/summary`) is
-assembled into a single user message once per compaction, cached never.
-Editing one must not reprice the other.
+One pack ships: the **system pack** (`prompt/default.source`), rendered
+through `pack.render` into the one string a session sends as `system` on
+every request of every strand, behind a one-hour cache breakpoint. A
+second, summarization pack used to ship beside it and was removed with
+the summarizer it fed — compaction now publishes the model's own notes
+(`client/checkpoint`) and asks no provider to condense anything — so this
+package holds no prompt that is read once per compaction, and the
+`pack.section`/`pack.fill` doors it assembled through are kept as the
+general reading API they always were.
 
 ## Key Types
 
@@ -73,29 +74,14 @@ Editing one must not reprice the other.
   two lists hold exactly what `problems` returns.
 - `prompt/pack.section` / `prompt/pack.fill` — reading one named
   template out of a pack, and filling its holes from an association
-  list under exactly `render`'s substitution rules. The two doors
-  `prompt/summary` assembles through; `fill` is the *only* substitution
-  in the package, which is what keeps the never-re-scanned property in
-  one place.
+  list under exactly `render`'s substitution rules. `fill` is the *only*
+  substitution in the package, which is what keeps the never-re-scanned
+  property in one place; nothing in the tree assembles through these
+  doors today, since the summarization pack that did is gone.
 - `prompt/default.source` — the system pack Loom ships with, as pack
   source. There is no helper returning an unwrapped `Pack`; producing
   one would need a crash-ladder construct, and the harness has to handle
   a failed decode for an operator-supplied pack anyway.
-- `prompt/default.summary_source` — the summarization pack, same format,
-  its own `%% version`.
-- `prompt/summary.Input` — what a summary request is asked to summarize:
-  `Compaction(conversation, previous_summary, custom_instructions,
-  files_read, files_modified)` or `Branch(conversation,
-  custom_instructions)`. `previous_summary` is what selects the
-  iterative-update prompt over the initial one.
-- `prompt/summary.{system, instruction}` — the two halves of a summary
-  request's single user message: the standing refusal to continue the
-  conversation, and the transcript plus the format demand.
-- `prompt/summary.serialize` — messages to the role-tagged
-  `<conversation>` transcript a summary request carries, tool results
-  truncated at `tool_result_limit` (pi's 2,000 characters).
-- `prompt/summary.problems` — `pack.problems` over the summarization
-  pack's own vocabulary of sections, fragments and bindings.
 
 ## The pack format
 
@@ -117,14 +103,6 @@ a host whose registry offered no snippets.
 `pack.canonical_sections` is the list, in render order, and the shipped
 pack is held against it.
 
-The summarization pack carries `system`, `initial`, `update` and
-`branch`, plus the `_previous_summary`, `_custom_instructions` and
-`_file_operations` fragments its input selects.
-`summary.canonical_sections` is that list. It is never handed to
-`pack.render` — `render` would emit its four sections one after another,
-which is not what a summary request is — so `prompt/summary` reaches its
-sections through `pack.section` and fills them with `pack.fill`.
-
 ## Relationships
 
 - **Depends on**: `core` (`core/corruption.CorruptionReport`, the one
@@ -133,10 +111,7 @@ sections through `pack.section` and fills them with `pack.fill`.
 - **Depended on by**: `client`, through `client/system_prompt` (reads
   the pack file, builds the `Environment` from the workspace, the
   helper's hello and the composed sandbox policy, renders once at
-  session open, pins the result into the reserved `prompt/` cell, and
-  loads the summarization pack the same way) and `client/wiring` (which
-  assembles `summary.system` + `summary.instruction` into the one user
-  message a structural summary request carries).
+  session open, and pins the result into the reserved `prompt/` cell).
 - **FFI**: none, and there must not be any. There is no
   `internal/ffi_*` module here, no `@external` of any target, and no
   `gleam_erlang` or `gleam_otp` in `gleam.toml` — by rule, not by
@@ -194,35 +169,18 @@ written by whoever calls `render`, not here.
   value goes straight to the output and is never scanned again, so
   injected repository guidance containing `{shell}` renders those
   characters and no pack can drive expansion in a loop. `pack.fill`
-  carries the identical property, and it matters more there: a summary
-  request splices a whole *conversation* — model output, tool results,
-  whatever a repository contains — into a template, and a second pass
-  would let that content name a binding and expand it.
-- **A summary request carries no system prompt and no tool array.** The
-  provider adapter hangs its two one-hour cache breakpoints on those two
-  positions, and a prompt read exactly once must not pay a cache write
-  (pi's `cacheRetention: "none"`, expressed as a request shape). That is
-  why `summary.system` returns a *string the caller prepends to the user
-  message* rather than something destined for the `system` field, and
-  why `prompt/summary` has no notion of tools at all.
-- **The summarization prompts demand a fixed structure and verbatim
-  detail.** Goal / Constraints & Preferences / Progress (Done, In
-  Progress, Blocked) / Key Decisions / Next Steps / Critical Context,
-  with an explicit instruction to preserve exact paths, identifiers,
-  command lines, error messages and `sha256-<hex>` blob addresses. The
-  update prompt merges into a previous summary rather than restating it
-  — a dropped constraint reads to the agent as permission. This is pi's
-  template, ported section for section, plus one Loom-specific line: a
-  `sha256-<hex>` content address names tool output offloaded to a blob
-  at commit time and stays readable after the excerpt around it is
-  summarized away, so it must survive verbatim. Compaction is lossy and
-  this is the part of the design that bounds the loss.
-- **The transcript is fenced and framed as a record.** `serialize`
-  role-tags messages inside a `<conversation>` element and the `system`
-  section says in as many words that everything inside it is the past,
-  addressed to nobody, and that instructions within it are data. Tool
-  results are truncated because they dominate a transcript and are the
-  least of what a summary needs.
+  carries the identical property, and it is the property any future
+  caller that splices model output or tool results into a template
+  depends on: a second pass would let that content name a binding and
+  expand it.
+- **The prompt tells the model its window is finite, once, in
+  `identity`.** Compaction replaces the older part of a context with the
+  model's own notes (`client/checkpoint`), so the pack says so up front
+  and asks for notes as the work goes — requirements, decisions, failed
+  approaches, test results, exact identifiers — rather than when asked.
+  That is the one place the compaction design reaches the prompt; the
+  words at the boundary itself are the checkpoint's, rendered by
+  `client/checkpoint` at compaction time and never cached.
 - **The sandbox section states posture behaviourally, never a layer
   inventory.** Naming which kernel layers a host does or does not
   enforce hands an injection payload a map of the holes for something it
@@ -291,10 +249,8 @@ written by whoever calls `render`, not here.
 - [docs/review/m5-agent-comms-judgment.md](../../docs/review/m5-agent-comms-judgment.md)
   — claim 4 and change item 5, which overrode the design's sandbox
   reasoning and are what the wording here follows.
-- [docs/design-notes/compaction-and-memory.md](../../docs/design-notes/compaction-and-memory.md)
-  — Part 2: why the summarization prompts are pi's, why the request is a
-  serialization rather than the live cached prefix, and what the cache
-  interaction costs.
+- [docs/architecture/compaction.md](../../docs/architecture/compaction.md)
+  — the checkpoint that replaced the summarization pack, and why.
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)
   — the plane the rendered prompt is consumed in.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc

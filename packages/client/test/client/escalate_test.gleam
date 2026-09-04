@@ -27,8 +27,6 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/grants
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock.{type Clock}
 import core/ids
@@ -44,7 +42,6 @@ import machine/operation
 import machine/strand.{
   type StrandConfiguration, ModelIdentity, StrandConfiguration,
 }
-import prompt/pack
 import provider/gateway
 import provider/http
 import provider/model
@@ -147,12 +144,6 @@ fn workspace() -> String {
   workspace
 }
 
-fn summary_pack() -> pack.Pack {
-  let assert Ok(#(decoded, [])) = system_prompt.summary_pack(None)
-    as "the shipped summarization pack must load cleanly"
-  decoded
-}
-
 fn configuration() -> StrandConfiguration {
   StrandConfiguration(
     model: ModelIdentity(provider: "acme", model_id: "loom-1"),
@@ -241,9 +232,6 @@ fn start(setup: Setup) -> Harness {
       fallback_context_window: 111_000,
       fallback_max_output_tokens: 2222,
       provider_timeout_ms: 1000,
-      summary_role: model.Summarize,
-      summary_pack: summary_pack(),
-      summaries: summary_sink(),
       session: opened,
       compaction: operation.CompactionSettings(
         enabled: False,
@@ -296,11 +284,6 @@ fn start(setup: Setup) -> Harness {
     }
   }
   Harness(runtime:, config:, escalations:, rests:)
-}
-
-fn summary_sink() -> summaries.Summaries {
-  let assert Ok(sink) = summaries.start() as "the summary sink must start"
-  sink
 }
 
 // A provider that never answers; nothing in this suite generates.

@@ -4,11 +4,9 @@
 
 import broker/exec
 import client/escalate
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock
-import gleam/option.{None, Some}
+import gleam/option.{Some}
 import machine/operation
 import machine/strand.{
   type StrandConfiguration, ModelIdentity, StrandConfiguration, ThinkingOff,
@@ -81,9 +79,6 @@ pub fn scripted_gateway(turns: List(Turn)) -> Gateway {
 /// compaction seams cost a normal session nothing rather than that they
 /// fire.
 pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
-  let assert Ok(#(summary_pack, [])) = system_prompt.summary_pack(None)
-    as "the shipped summarization pack must load cleanly"
-  let assert Ok(sink) = summaries.start() as "the summary sink must start"
   wiring.Config(
     gateway: gw,
     role: model.Main,
@@ -95,9 +90,6 @@ pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
     fallback_context_window: 200_000,
     fallback_max_output_tokens: 8192,
     provider_timeout_ms: 30_000,
-    summary_role: model.Summarize,
-    summary_pack:,
-    summaries: sink,
     session: sess,
     compaction: operation.CompactionSettings(
       enabled: True,

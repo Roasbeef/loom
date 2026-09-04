@@ -3,6 +3,7 @@
 //// approval, fork, navigation, compaction, catch-up replay — entirely
 //// through the Part 1.6 protocol, and every step must land.
 
+import client/checkpoint
 import client/demo
 import client/protocol
 import core/entry
@@ -239,10 +240,11 @@ fn compaction_event() -> protocol.EventEnvelope {
         parent: None,
         seq: 12,
         ts: 0,
-        summary: demo.summary_text,
+        summary: checkpoint.header_prefix
+          <> "1 closed here: the fixture's own checkpoint",
         retained_tail: [],
         tokens_before: 10,
-        from_hook: False,
+        from_hook: True,
         usage: None,
       ),
     )),

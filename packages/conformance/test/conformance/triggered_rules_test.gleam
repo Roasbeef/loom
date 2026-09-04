@@ -33,8 +33,6 @@ import broker/token
 import client/escalate
 import client/rules
 import client/rulescan
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock
 import core/json
@@ -51,7 +49,6 @@ import machine/operation
 import machine/strand.{
   type StrandConfiguration, ModelIdentity, StrandConfiguration,
 }
-import prompt/pack
 import provider/adapter/anthropic
 import provider/gateway
 import provider/http
@@ -451,14 +448,7 @@ fn memory_session() -> Session {
   opened
 }
 
-fn summary_pack() -> pack.Pack {
-  let assert Ok(#(decoded, [])) = system_prompt.summary_pack(None)
-    as "the shipped summarization pack must load cleanly"
-  decoded
-}
-
 fn wiring_config(gw: gateway.Gateway, sess: Session) -> wiring.Config {
-  let assert Ok(sink) = summaries.start() as "the summary sink must start"
   let workspace = "/nonexistent/loom-ttsr-test"
   wiring.Config(
     gateway: gw,
@@ -469,9 +459,6 @@ fn wiring_config(gw: gateway.Gateway, sess: Session) -> wiring.Config {
     fallback_context_window: window,
     fallback_max_output_tokens: 8192,
     provider_timeout_ms: 30_000,
-    summary_role: model.Summarize,
-    summary_pack: summary_pack(),
-    summaries: sink,
     session: sess,
     // Off, so nothing can rewrite the branch under the occurrence counts.
     compaction: operation.CompactionSettings(

@@ -56,7 +56,6 @@ pub fn sources_are_all_read_test() {
   let paths = list.map(sources(), fn(source) { source.0 })
   assert list.contains(paths, "src/prompt/pack.gleam")
   assert list.contains(paths, "src/prompt/default.gleam")
-  assert list.contains(paths, "src/prompt/summary.gleam")
 }
 
 pub fn src_imports_only_stdlib_and_core_test() {

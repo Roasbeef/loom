@@ -21,8 +21,6 @@
 
 import client/rules
 import client/rulescan
-import client/summaries
-import client/wiring
 import core/clock
 import core/entry
 import core/ids
@@ -324,10 +322,6 @@ fn harness(
     |> result.replace_error("the memory session did not open"),
   )
   use entropy <- result.try(start_entropy())
-  use sink <- result.try(
-    summaries.start()
-    |> result.replace_error("the summary sink did not start"),
-  )
   use turns <- result.try(start_turns())
   let scanner = process.new_name(prefix: "loom_rulescan_test")
   let effects_record =
@@ -335,10 +329,7 @@ fn harness(
       clock: clock.stepping(from: 1_756_000_000_000, by: 3),
       entropy:,
       timers: effects.real_timers(),
-      provider: wiring.recording_summaries(
-        scripted_provider(answers, turns, opened),
-        into: sink,
-      ),
+      provider: scripted_provider(answers, turns, opened),
       tools: refusing_tools(),
       hooks: effects.default_hooks(),
     )

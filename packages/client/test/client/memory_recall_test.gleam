@@ -13,8 +13,9 @@
 //// `history_search`, dispatched through a real registry.
 ////
 //// What is scripted is the provider, and only the provider: it answers
-//// turns and summaries so a compaction happens without a network. The
-//// compaction it produces is the machine's own.
+//// turns so a compaction happens without a network. The checkpoint that
+//// compaction publishes is the harness's own, built from the strand's
+//// notes by the production hooks.
 
 import broker/broker
 import broker/exec
@@ -23,8 +24,6 @@ import broker/token
 import client/escalate
 import client/history
 import client/serve
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock
 import core/entry
@@ -67,8 +66,6 @@ const window = 10_000
 const reserve = 2000
 
 const keep_recent = 500
-
-const scripted_summary = "[from the provider] earlier work, summarized"
 
 // A message of roughly 400 estimated tokens, so the keep-recent budget
 // is a budget rather than a formality.
@@ -185,24 +182,16 @@ fn open_session(
     }),
   )
   use entropy <- result.try(start_entropy(seed))
-  use sink <- result.try(
-    summaries.start()
-    |> result.map_error(fn(_error) { "the summary sink did not start" }),
-  )
   let holder = process.new_name(prefix: "loom_recall_holder")
   let pulls = process.new_name(prefix: "loom_recall_pulls")
-  use config <- result.try(wiring_config(opened, sink, index, holder))
+  use config <- result.try(wiring_config(opened, index, holder))
   use turns <- result.try(start_turns())
-  use summaries_seen <- result.try(start_turns())
   let effects_record =
     effects.Effects(
       clock: a_clock(),
       entropy:,
       timers: effects.real_timers(),
-      provider: wiring.recording_summaries(
-        scripted_provider(turns, summaries_seen),
-        into: sink,
-      ),
+      provider: scripted_provider(turns),
       tools: refusing_tools(),
       hooks: wiring.compaction_hooks(config),
     )
@@ -258,11 +247,9 @@ fn close_session(live: Live) -> Nil {
 
 fn wiring_config(
   opened: session.Session,
-  sink: summaries.Summaries,
   index: String,
   holder: Name(history.Message),
 ) -> Result(wiring.Config, String) {
-  use loaded <- result.try(system_prompt.summary_pack(None))
   use broker_actor <- result.try(
     broker.start(
       broker.BrokerConfig(
@@ -286,9 +273,6 @@ fn wiring_config(
       fallback_context_window: window,
       fallback_max_output_tokens: 1024,
       provider_timeout_ms: 2000,
-      summary_role: model.Summarize,
-      summary_pack: loaded.0,
-      summaries: sink,
       session: opened,
       compaction: compaction_settings(),
       broker: broker_actor,
@@ -427,17 +411,14 @@ fn text_of(outcome: tool.ToolOutcome) -> String {
 
 // --- the scripted provider -------------------------------------------------
 
-fn scripted_provider(
-  turns: Subject(Subject(Int)),
-  summaries_seen: Subject(Subject(Int)),
-) -> effects.ProviderSurface {
+fn scripted_provider(turns: Subject(Subject(Int))) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 2000, request: fn(spec) {
     let events = process.new_subject()
     case spec {
-      effects.SummaryRequest(..) -> {
-        let _attempt = next_turn(summaries_seen)
-        settle(events, answer(scripted_summary, 40))
-      }
+      // Unreachable: the production hooks answer every compaction with a
+      // checkpoint. Answered rather than crashed so the surface is total.
+      effects.SummaryRequest(..) ->
+        settle(events, answer("no summarizer serves this host", 40))
       effects.PollRequest(..) -> settle(events, answer("polled", 1))
       effects.GenerationRequest(..) ->
         case next_turn(turns) {
@@ -533,7 +514,6 @@ fn routed_gateway() -> provider_gateway.Gateway {
     api_key_secret: "ACME_KEY",
   ))
   |> provider_gateway.route(model.Main, [identity])
-  |> provider_gateway.route(model.Summarize, [identity])
 }
 
 fn refusing_tools() -> effects.ToolSurface {

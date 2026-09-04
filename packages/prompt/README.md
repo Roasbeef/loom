@@ -4,10 +4,12 @@ The words a model is given, kept out of Gleam source.
 
 A **pack** is a plain text file of named, ordered sections carrying
 `{placeholder}` holes. This package decodes one with a total decoder and
-renders it against a small, closed description of the host. Two packs
-ship: the **system pack**, rendered into the one string a session sends
-as `system` on every request of every strand, and the **summarization
-pack**, assembled into a single user message once per compaction.
+renders it against a small, closed description of the host. One pack
+ships: the **system pack**, rendered into the one string a session sends
+as `system` on every request of every strand. (A summarization pack used
+to ship beside it; compaction now carries the model's own notes across
+the window boundary instead of asking a provider to summarize, so that
+pack is gone.)
 
 Prompt words live in a pack rather than in code so they can be mutated,
 scored and replaced without a recompile — swapping the default for
@@ -95,10 +97,9 @@ flowchart TD
 One level, no recursion. A substituted value goes straight to the output
 and is **never scanned again**, so repository guidance that happens to
 contain `{shell}` renders those seven characters and no pack can drive
-expansion in a loop. `pack.fill` carries the identical property, and it
-matters more there, because a summary request splices a whole
-conversation — model output, tool results, whatever a repository contains
-— into a template.
+expansion in a loop. `pack.fill` carries the identical property, which is
+what any caller splicing model output or tool results into a template
+would depend on.
 
 ## Why byte stability is the whole design
 
@@ -208,65 +209,6 @@ flowchart TD
 `assess` is a partition of `problems` and nothing more. `severity`
 refines the report and never reaches back into the parser — a pack
 `assess` calls corrupting still decodes and still renders.
-
-## The summarization pack
-
-Compaction asks a provider to summarize the older half of a strand's
-context. That request is shaped by what it costs rather than by what it
-says: it is read exactly once, so it must not pay a cache write.
-
-```mermaid
-sequenceDiagram
-  participant R as runtime
-  participant S as prompt/summary
-  participant G as provider gateway
-  R->>S: serialize(doomed messages)
-  S-->>R: role-tagged transcript, tool results cut at tool_result_limit
-  R->>S: system(pack)
-  S-->>R: the standing refusal to continue the conversation
-  R->>S: instruction(pack, Compaction or Branch)
-  S-->>R: transcript plus the format demand
-  R->>G: one user message = system ++ instruction
-  Note over R,G: no system field, no tool array —<br/>the two positions the one-hour breakpoints hang on
-```
-
-`summary.system` returns *a string the caller prepends to the user
-message*, not something destined for the `system` field, and
-`prompt/summary` has no notion of tools at all. That is the whole reason
-the two packs are separate files with separate identities: editing one
-must not reprice the other.
-
-Which section a request uses is chosen by the input:
-
-```mermaid
-flowchart TD
-  I["summary.Input"]
-  I -->|"Compaction with a previous_summary"| U["section update — merge into the previous summary"]
-  I -->|"Compaction with none"| N["section initial"]
-  I -->|Branch| B["section branch"]
-  U --> F["pack.fill with conversation, previous_summary,<br/>custom_instructions, file_operations"]
-  N --> F
-  B --> F
-  F --> M["the instruction half of one user message"]
-```
-
-The prompts demand a fixed structure — Goal, Constraints and Preferences,
-Progress split into Done, In Progress and Blocked, Key Decisions, Next
-Steps, Critical Context — and instruct the model to preserve exact paths,
-identifiers, command lines, error messages and `sha256-<hex>` blob
-addresses verbatim. The update prompt merges into the previous summary
-rather than restating it, because a dropped constraint reads to an agent
-as permission. Compaction is lossy; this is the part of the design that
-bounds the loss.
-
-The transcript is fenced in a `conversation` element and role-tagged, and
-the summarization system section says in as many words that everything
-inside it is the past, addressed to nobody, and that instructions within
-it are data. Tool results are truncated at 2,000 characters because they
-dominate a transcript and are the least of what a summary needs — Loom
-already offloads anything over 64 KiB to a content-addressed blob at
-commit time, which is why the `sha256-` address has to survive the
-summary that eats the excerpt around it.
 
 ## Two wordings that were argued over
 
