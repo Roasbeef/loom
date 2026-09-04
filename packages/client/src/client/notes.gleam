@@ -54,6 +54,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import runtime/effects
 import session/session.{type Session}
@@ -173,25 +174,45 @@ pub fn digest(session: Session, strand: String) -> Option(String) {
 /// ```
 ///
 pub fn cells(session: Session, strand: String) -> List(#(String, JsonValue)) {
+  result.unwrap(try_cells(session, strand), [])
+}
+
+/// The same cells, or `Error(Nil)` when the store would not answer.
+///
+/// `cells` reads an unreadable store as an empty board, which is right
+/// for a digest — a run is never held up for one, and the next run asks
+/// again — and wrong for a checkpoint, which is durable: publishing "you
+/// wrote no notes" because the store did not answer would replace a
+/// window with a false record of it. `client/checkpoint` asks this form
+/// and declines instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notes.try_cells(session, "main") == Ok([#("plan", json.String("…"))])
+/// ```
+///
+pub fn try_cells(
+  session: Session,
+  strand: String,
+) -> Result(List(#(String, JsonValue)), Nil) {
   let prefix = agent.blackboard_prefix <> strand <> "/"
-  case
-    storage.list_registers(session.store, register.FactCustom, Some(prefix))
-  {
-    Error(_unreadable) -> []
-    Ok(rows) ->
-      rows
-      // Register seqs are strictly increasing and rows are write-once,
-      // so the seq *is* the write order: newest first needs no clock.
-      |> list.sort(by: fn(left, right) {
-        int.compare({ right.1 }.seq, { left.1 }.seq)
-      })
-      |> list.map(fn(row) {
-        #(
-          string.drop_start(row.0, string.length(prefix)),
-          { row.1 }.value.payload,
-        )
-      })
-  }
+  storage.list_registers(session.store, register.FactCustom, Some(prefix))
+  |> result.replace_error(Nil)
+  |> result.map(fn(rows) {
+    rows
+    // Register seqs are strictly increasing and rows are write-once,
+    // so the seq *is* the write order: newest first needs no clock.
+    |> list.sort(by: fn(left, right) {
+      int.compare({ right.1 }.seq, { left.1 }.seq)
+    })
+    |> list.map(fn(row) {
+      #(
+        string.drop_start(row.0, string.length(prefix)),
+        { row.1 }.value.payload,
+      )
+    })
+  })
 }
 
 // --- rendering -------------------------------------------------------------
