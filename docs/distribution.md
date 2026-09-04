@@ -252,12 +252,24 @@ gateway protocol, and three things follow from that:
 - Fusing them implies they must match versions. The protocol being
   frozen is exactly the claim that they need not.
 
-`make tui-shipment` exports the client's compiled BEAM closure and writes a
-thin `bin/loom` launcher over it. `make dist` packages those together as
-`loom-<version>-<platform>.tar.gz`. The archive deliberately carries no
-second ERTS: the client host needs compatible Erlang/OTP 29 on `PATH`. This is
-not the server's installation contract. The server tarball remains
-self-contained and still needs no host Erlang installation.
+The client ships in two shapes, and `make dist` produces both:
+
+- **Self-contained**, `loom-<version>-<platform>.tar.gz`, built by `make
+  release-client` with the same relx treatment the server gets: the
+  client's BEAM closure with the runtime system copied in, so `loom` runs
+  on a machine with no Erlang at all. `make release-client-smoke` proves
+  it by booting the launcher with `erl` removed from `PATH`. This is the
+  download, and what `make install` installs by default. It is
+  per-platform, like the server.
+- **Slim**, `loom-slim-<version>.tar.gz`, built by `make tui-shipment`:
+  the compiled BEAM closure and a thin `bin/loom` launcher over the `erl`
+  on `PATH`, needing compatible Erlang/OTP 29 on the host. It carries no
+  ERTS and so no platform, which is the shape a package manager that
+  provides Erlang as a dependency wants; `INSTALL_CLIENT=slim make
+  install` installs it.
+
+Either way the server tarball is a separate download and remains
+self-contained.
 
 When both downloads are installed on one machine, `loom` can start a local
 server as a convenience. It finds a sibling `loomd`, an explicit `--server` or
@@ -285,8 +297,9 @@ them out under `PREFIX`, `~/.local` by default:
 | path | what |
 |---|---|
 | `$PREFIX/lib/loom/server` | the release tree, copied whole: `bin/loomd`, `bin/loom-exec`, `bin/gleam`, `share/codemode-seed`, the bundled ERTS |
-| `$PREFIX/lib/loom/tui` | the client shipment: compiled BEAM files, no runtime |
-| `$PREFIX/bin/loom` | the client launcher, generated to name the installed shipment |
+| `$PREFIX/lib/loom/client` | the client release, whole, with its own ERTS (`INSTALL_CLIENT=bundled`, the default) |
+| `$PREFIX/lib/loom/tui` | the client shipment: compiled BEAM files, no runtime (`INSTALL_CLIENT=slim`) |
+| `$PREFIX/bin/loom` | the client launcher, generated to name whichever client was installed |
 | `$PREFIX/bin/loomd` | a wrapper that execs the release's own `bin/loomd` |
 
 Two shapes are deliberate. The release tree is copied whole because the
@@ -298,8 +311,9 @@ symlink would resolve it to `$PREFIX`. The two launchers share a
 directory because the client looks for the server beside itself before
 it asks `PATH`.
 
-The client still runs on the `erl` found on `PATH`, as the checkout's
-`bin/loom` does; only the server is self-contained. With
+By default both halves are self-contained. `INSTALL_CLIENT=slim` installs
+the shipment instead, so the client runs on the host's own Erlang; that
+is the shape for a package that declares Erlang as a dependency. With
 `~/.loom/loom.toml` present the client passes it to the server as the
 catalogue, so an installed Loom needs no flags at all.
 

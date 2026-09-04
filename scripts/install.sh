@@ -3,11 +3,12 @@
 # release, the native terminal client, and two launchers on PATH, so that
 # typing `loom` in any directory starts a session there.
 #
-#   scripts/install.sh            # into $HOME/.local (bin/, lib/loom/)
+#   scripts/install.sh                   # into $HOME/.local (bin/, lib/loom/)
 #   PREFIX=/usr/local scripts/install.sh
+#   LOOM_CLIENT=slim scripts/install.sh  # the client on the host's Erlang
 #
-# `make install` runs the builds first — the code-mode seed, the release,
-# the client shipment — and then this. Nothing here reaches the network.
+# `make install` runs the builds first — the code-mode seed, the server
+# release, a client — and then this. Nothing here reaches the network.
 #
 # What lands where, and why each is where it is:
 #
@@ -17,12 +18,20 @@
 #                             its compiler and its seed through
 #                             `code:root_dir()` — the release root — so the
 #                             tree must stay whole and is copied whole.
-#   $PREFIX/lib/loom/tui      a copy of build/tui-erlang-shipment. Compiled
-#                             BEAM files, no runtime: the client runs on
-#                             the `erl` on PATH, as the checkout's does.
+#   $PREFIX/lib/loom/client   LOOM_CLIENT=bundled (the default): a copy of
+#                             build/release/loom-client, the client with
+#                             its own ERTS, so `loom` needs no Erlang on
+#                             the host.
+#   $PREFIX/lib/loom/tui      LOOM_CLIENT=slim: a copy of
+#                             build/tui-erlang-shipment. Compiled BEAM
+#                             files, no runtime: the client runs on the
+#                             `erl` on PATH. This is the shape a package
+#                             manager that provides Erlang as a dependency
+#                             wants; the two shapes never coexist.
 #   $PREFIX/bin/loom          the client launcher, generated here rather
-#                             than copied, because bin/loom in a checkout
-#                             names its shipment relative to itself.
+#                             than copied, because a checkout's bin/loom
+#                             names its shipment relative to itself and a
+#                             release's names its own tree.
 #   $PREFIX/bin/loomd         a two-line wrapper that execs the release's
 #                             own bin/loomd. Not a symlink: that script
 #                             resolves the release root from its own
@@ -34,8 +43,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 PREFIX="${PREFIX:-$HOME/.local}"
+CLIENT="${LOOM_CLIENT:-bundled}"
+case "$CLIENT" in
+  bundled|slim) ;;
+  *) echo "install.sh: LOOM_CLIENT must be bundled or slim, got $CLIENT" >&2; exit 1 ;;
+esac
 
 REL="$ROOT/build/release/loom"
+CLIENT_REL="$ROOT/build/release/loom-client"
 TUI="$ROOT/build/tui-erlang-shipment"
 [ -x "$REL/bin/loomd" ] || {
   echo "install.sh: no release at $REL — run \`make release\` first" >&2; exit 1; }
@@ -44,18 +59,24 @@ TUI="$ROOT/build/tui-erlang-shipment"
 [ -d "$REL/share/codemode-seed" ] || {
   echo "install.sh: the release at $REL carries no code-mode seed;" >&2
   echo "install.sh: build it with \`make codemode-seed release\`" >&2; exit 1; }
-[ -f "$TUI/entrypoint.sh" ] || {
-  echo "install.sh: no client shipment at $TUI — run \`make tui-shipment\` first" >&2; exit 1; }
+case "$CLIENT" in
+  bundled) [ -x "$CLIENT_REL/bin/loom" ] || {
+    echo "install.sh: no client release at $CLIENT_REL — run \`make release-client\` first" >&2
+    exit 1; } ;;
+  slim) [ -f "$TUI/entrypoint.sh" ] || {
+    echo "install.sh: no client shipment at $TUI — run \`make tui-shipment\` first" >&2
+    exit 1; } ;;
+esac
 
 LIB="$PREFIX/lib/loom"
 BIN="$PREFIX/bin"
 mkdir -p "$LIB" "$BIN"
 
 # Replace, never merge: a release tree with a stale lib/ beside a fresh
-# one would load whichever the boot script found first.
-rm -rf "$LIB/server" "$LIB/tui"
+# one would load whichever the boot script found first. Both client
+# shapes are removed so a switch between them leaves one client, not two.
+rm -rf "$LIB/server" "$LIB/client" "$LIB/tui"
 cp -R "$REL" "$LIB/server"
-cp -R "$TUI" "$LIB/tui"
 
 cat > "$BIN/loomd" <<EOF
 #!/bin/sh
@@ -64,26 +85,49 @@ exec "$LIB/server/bin/loomd" "\$@"
 EOF
 chmod +x "$BIN/loomd"
 
-# The same launcher `make tui-shipment` writes into bin/loom, anchored to
-# the installed shipment instead of a checkout-relative one. The shipment
-# carries compiled BEAM files but not ERTS, so a compatible Erlang/OTP
-# must be on PATH. LOOM_EXECUTABLE is how the client knows where it is,
-# and so where to look for loomd beside itself.
-cat > "$BIN/loom" <<EOF
+# LOOM_EXECUTABLE is how the client knows where it is, and so where to
+# look for loomd beside itself; both launchers set it to the wrapper on
+# PATH before handing off, so the sibling lookup lands in $PREFIX/bin.
+case "$CLIENT" in
+  bundled)
+    cp -R "$CLIENT_REL" "$LIB/client"
+    cat > "$BIN/loom" <<EOF
 #!/bin/sh
-# Generated by scripts/install.sh. The Loom terminal client.
+# Generated by scripts/install.sh. The Loom terminal client, self-contained.
+set -eu
+LOOM_EXECUTABLE="$BIN/loom"
+export LOOM_EXECUTABLE
+exec "$LIB/client/bin/loom" "\$@"
+EOF
+    ;;
+  slim)
+    # The same launcher `make tui-shipment` writes into bin/loom, anchored
+    # to the installed shipment. No ERTS travels with it, so a compatible
+    # Erlang/OTP must be on PATH.
+    cp -R "$TUI" "$LIB/tui"
+    cat > "$BIN/loom" <<EOF
+#!/bin/sh
+# Generated by scripts/install.sh. The Loom terminal client, on the host's Erlang.
 set -eu
 LOOM_EXECUTABLE="$BIN/loom"
 export LOOM_EXECUTABLE
 exec erl +Bd -pa "$LIB/tui"/*/ebin -eval 'tui@@main:run(tui)' -noshell -extra "\$@"
 EOF
+    ;;
+esac
 chmod +x "$BIN/loom"
 
 echo "installed:"
-echo "  $BIN/loom            the terminal client (needs erl on PATH)"
+case "$CLIENT" in
+  bundled) echo "  $BIN/loom            the terminal client (self-contained)" ;;
+  slim)    echo "  $BIN/loom            the terminal client (needs erl on PATH)" ;;
+esac
 echo "  $BIN/loomd           the session server (self-contained)"
 echo "  $LIB/server          release: helper, gleam, code-mode seed, ERTS"
-echo "  $LIB/tui             client shipment"
+case "$CLIENT" in
+  bundled) echo "  $LIB/client          client release with its own ERTS" ;;
+  slim)    echo "  $LIB/tui             client shipment" ;;
+esac
 case ":$PATH:" in
   *":$BIN:"*) ;;
   *) echo
