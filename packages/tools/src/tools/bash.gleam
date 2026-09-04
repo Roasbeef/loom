@@ -4,7 +4,9 @@
 //// Each call builds a `CallSpec` — `["bash", "-lc", command]` in the
 //// workspace, the caller's allowlist-constructed environment, and
 //// policy-shaped requirements of workspace write, system paths
-//// readable, network **off** — and clears it through the broker seam
+//// readable, and whatever network the session base allows (**off**
+//// unless an operator's `[tools]` table opened it) — and clears it
+//// through the broker seam
 //// with `RefuseNarrowed`: if the session base does not cover the
 //// requirements, the call settles in-band as a structured policy
 //// refusal carrying the exact wanted grants, ready for the escalation
@@ -82,7 +84,11 @@ pub fn tool() -> tool.Tool {
 /// The bash tool's policy-shaped needs: workspace writable, the whole
 /// filesystem readable (interpreters and system libraries live outside
 /// the workspace), network off, tmpfs scratch. The environment
-/// allowlist is added per call from the context's env.
+/// allowlist is added per call from the context's env, and so is the
+/// network — `call_spec` takes the session base's through
+/// `tool.asking_base_network`, so the `NetworkOff` stated here is the
+/// posture of a host that configured none rather than a ceiling this
+/// tool imposes.
 pub fn requirements(workspace: String) -> policy.SandboxPolicy {
   let base = policy.workspace_default(workspace)
   policy.SandboxPolicy(..base, readable_roots: ["/"], env_allow: [])
@@ -127,7 +133,13 @@ fn call_spec(
   now: Int,
   timeout: Int,
 ) -> broker.CallSpec {
-  let base_requirements = requirements(ctx.workspace)
+  // Egress is the session's decision, not this tool's. `requirements`
+  // states the offline default a host with no `[tools]` table serves;
+  // asking for the base's own network is what lets an operator who
+  // opened it reach a shell, and the meet keeps it closed otherwise.
+  let base_requirements =
+    tool.asking_base_network(requirements(ctx.workspace), ctx.base_policy)
+
   let wall_s = { timeout + 999 } / 1000
   let tool_requirements =
     policy.SandboxPolicy(

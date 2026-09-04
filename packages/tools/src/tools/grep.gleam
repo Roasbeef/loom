@@ -174,7 +174,16 @@ fn call_spec(
     op_id: ctx.op_id,
     step_id: ctx.step_id,
     base_policy: ctx.base_policy,
-    requirements: tool.read_requirements(ctx.workspace),
+    // Egress is the session's decision rather than this tool's, the same
+    // arrangement `bash` takes. A search needs no network of its own, so
+    // nothing here is asking for one: on every host that configured no
+    // `[tools]` table the base is off and the requirement is off with
+    // it. What it buys is that one jailed shell cannot hold a network
+    // posture the operator did not choose — in either direction.
+    requirements: tool.asking_base_network(
+      tool.read_requirements(ctx.workspace),
+      ctx.base_policy,
+    ),
     grants: ctx.grants,
     response: broker.RefuseNarrowed,
     demand: ctx.demand,
