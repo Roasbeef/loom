@@ -564,6 +564,116 @@ fn fresh_region(
   })
 }
 
+/// Renders a plan's hunks against the content they were applied to as
+/// a unified diff — one `@@` section per hunk, each with up to three
+/// lines of context, `-` for the lines a hunk removed and `+` for the
+/// lines it added — so a transcript can show what an edit did rather
+/// than how many hunks it had. Hunks render in file order whatever order
+/// the plan gave them; the new-side line numbers account for the hunks
+/// above. Callers hand this the *pre-image* (the content `apply` was
+/// given), since that is the side the hunks' references name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// hashline.render_diff("a\nb\nc\n", [
+///   hashline.Replace(
+///     from: hashline.Ref(2, "..."),
+///     to: hashline.Ref(2, "..."),
+///     lines: ["B"],
+///   ),
+/// ])
+/// // -> "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c"
+/// ```
+///
+pub fn render_diff(content: String, hunks: List(Hunk)) -> String {
+  let lines = split_lines(content).lines
+  let total = list.length(lines)
+  let ascending =
+    hunks
+    |> list.map(place)
+    |> list.sort(fn(a, b) { int.compare(a.start, b.start) })
+  let #(sections, _offset) =
+    list.fold(ascending, #([], 0), fn(folded, placed) {
+      let #(sections, offset) = folded
+      let section = diff_section(lines, total, placed, offset)
+      let grown = list.length(placed.replacement) - removed_count(placed)
+      #([section, ..sections], offset + grown)
+    })
+  sections |> list.reverse |> string.join("\n")
+}
+
+/// How many lines of unchanged context a rendered hunk shows on each side.
+pub const diff_context_lines = 3
+
+fn removed_count(placed: Placed) -> Int {
+  case placed.insert {
+    True -> 0
+    False -> placed.end - placed.start + 1
+  }
+}
+
+// One `@@` section. An insertion sits after `start` (or before line 1
+// when `start` is 0) and removes nothing; a replacement or deletion
+// removes `[start, end]`. Context is clipped to the file.
+fn diff_section(
+  lines: List(String),
+  total: Int,
+  placed: Placed,
+  offset: Int,
+) -> String {
+  // Where the change begins on the old side: the first removed line, or
+  // for an insertion the line the new text lands in front of.
+  let removed = removed_count(placed)
+  let first_removed = case placed.insert {
+    True -> placed.start + 1
+    False -> placed.start
+  }
+
+  // Three slices of the pre-image: the context above, the lines the hunk
+  // took out, the context below; each clipped to the file's edges.
+  let before_from = int.max(first_removed - diff_context_lines, 1)
+  let after_to =
+    int.min(first_removed + removed - 1 + diff_context_lines, total)
+  let before = slice_lines(lines, before_from, first_removed - 1)
+  let gone = slice_lines(lines, first_removed, first_removed + removed - 1)
+  let after = slice_lines(lines, first_removed + removed, after_to)
+
+  // The header counts each side's lines; the new side starts where the
+  // old did plus whatever the hunks above this one grew the file by.
+  let old_count = list.length(before) + removed + list.length(after)
+  let new_count =
+    list.length(before) + list.length(placed.replacement) + list.length(after)
+  let header =
+    "@@ -"
+    <> int.to_string(before_from)
+    <> ","
+    <> int.to_string(old_count)
+    <> " +"
+    <> int.to_string(before_from + offset)
+    <> ","
+    <> int.to_string(new_count)
+    <> " @@"
+  [
+    [header],
+    list.map(before, fn(line) { " " <> line }),
+    list.map(gone, fn(line) { "-" <> line }),
+    list.map(placed.replacement, fn(line) { "+" <> line }),
+    list.map(after, fn(line) { " " <> line }),
+  ]
+  |> list.flatten
+  |> string.join("\n")
+}
+
+// The 1-based inclusive range `[from, to]` of `lines`; empty when the
+// range is.
+fn slice_lines(lines: List(String), from: Int, to: Int) -> List(String) {
+  case to < from {
+    True -> []
+    False -> lines |> list.drop(from - 1) |> list.take(to - from + 1)
+  }
+}
+
 fn place(hunk: Hunk) -> Placed {
   case hunk {
     Replace(from:, to:, lines:) ->

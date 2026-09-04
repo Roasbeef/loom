@@ -983,14 +983,14 @@ fn footer_sections(
     span.line_new([
       span.span_styled(
         " " <> compact(project_text, 68) <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   let model_name =
     span.line_new([
       span.span_styled(
         " " <> compact(model_text, 28) <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   let usage =
@@ -1000,18 +1000,18 @@ fn footer_sections(
           <> usage_summary(model.usage)
           <> output_rate_label(model.output_rate_tps)
           <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   let status =
     span.line_new([
-      span.span_styled(" " <> status_text <> " ", theme.quiet_text()),
+      span.span_styled(" " <> status_text <> " ", theme.footer_text()),
     ])
   let combined =
     span.line_new([
       span.span_styled(
         " " <> compact(model_text, 28) <> " · " <> status_text <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   #(project, model_name, usage, status, combined)
@@ -2511,6 +2511,8 @@ fn tool_result_lines(
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
+    "fs_edit", False, Some(json.Object(fields)) ->
+      edit_result_lines(fields, result, details_expanded)
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -2523,6 +2525,31 @@ fn tool_result_lines(
         False -> tool_name <> " · " <> compact(result, 120)
       }),
     ]
+  }
+}
+
+// An edit renders as the unified diff its details carry — what changed,
+// coloured as a diff — under the tool's one-line summary. Collapsed, the
+// first stretch of the diff is enough to recognise the edit; expanded,
+// the whole of it. Details without a diff (an older record) fall back to
+// the summary alone.
+fn edit_result_lines(
+  fields: List(#(String, json.JsonValue)),
+  summary: String,
+  details_expanded: Bool,
+) -> List(Line) {
+  case string_field(fields, "diff") {
+    Some(diff) -> {
+      let shown = case details_expanded {
+        True -> diff
+        False -> program_preview(diff, 24)
+      }
+      [
+        Line(ToolResult, "fs_edit · " <> compact(summary, 120)),
+        Line(ToolDetail, "```diff\n" <> shown <> "\n```"),
+      ]
+    }
+    None -> [Line(ToolResult, "fs_edit · " <> compact(summary, 120))]
   }
 }
 

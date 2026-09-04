@@ -633,3 +633,42 @@ pub fn window_int_shapes_test() {
   assert window.lines == []
   assert int.max(window.offset, 1) == window.offset
 }
+
+// --- render_diff -------------------------------------------------------------
+
+fn ref(line: Int) -> hashline.Ref {
+  hashline.Ref(line:, anchor: "unused")
+}
+
+pub fn render_diff_shows_context_removals_and_additions_test() {
+  let content = "a\nb\nc\nd\ne\nf\ng\nh\ni\n"
+  let diff =
+    hashline.render_diff(content, [
+      hashline.Replace(from: ref(5), to: ref(5), lines: ["E", "E2"]),
+    ])
+  assert diff == "@@ -2,7 +2,8 @@\n b\n c\n d\n-e\n+E\n+E2\n f\n g\n h"
+}
+
+pub fn render_diff_orders_hunks_and_tracks_the_new_side_test() {
+  // Given out of order, the sections come back in file order, and the
+  // second section's new-side start accounts for the growth above it.
+  let content = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n"
+  let diff =
+    hashline.render_diff(content, [
+      hashline.InsertAfter(at: ref(10), lines: ["x"]),
+      hashline.Replace(from: ref(2), to: ref(3), lines: ["B", "C", "C2"]),
+    ])
+  let assert Ok(#(first, second)) = string.split_once(diff, on: "\n@@ ")
+  assert first == "@@ -1,6 +1,7 @@\n a\n-b\n-c\n+B\n+C\n+C2\n d\n e\n f"
+  assert "@@ " <> second == "@@ -8,5 +9,6 @@\n h\n i\n j\n+x\n k\n l"
+}
+
+pub fn render_diff_handles_the_file_edges_test() {
+  let content = "a\nb\n"
+  assert hashline.render_diff(content, [hashline.InsertAtStart(lines: ["z"])])
+    == "@@ -1,2 +1,3 @@\n+z\n a\n b"
+  assert hashline.render_diff(content, [
+      hashline.Delete(from: ref(1), to: ref(2)),
+    ])
+    == "@@ -1,2 +1,0 @@\n-a\n-b"
+}
