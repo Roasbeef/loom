@@ -676,6 +676,19 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
   ))
 }
 
+// The default catalogue only when the file is there. Existence is checked
+// before the path is made canonical, because on Linux `realpath` happily
+// resolves a name whose final component does not exist, and a launcher
+// that then passed the path along would boot a server that refuses a
+// catalogue nobody wrote — which is what CI's bootstrap e2e did.
+fn present_default_catalogue(state_directory: String) -> String {
+  let path = default_catalogue_path(state_directory)
+  case ffi_bootstrap.path_exists(path) {
+    True -> ffi_bootstrap.canonical_path(path) |> result.unwrap(path)
+    False -> ""
+  }
+}
+
 /// Where the launcher looks for the operator's standing catalogue when no
 /// `--config` is given: `loom.toml` in the state root, `~/.loom` by
 /// default.
@@ -1119,11 +1132,7 @@ fn resolve_config(
   state_directory: String,
 ) -> Result(String, String) {
   case config {
-    "" ->
-      Ok(
-        ffi_bootstrap.canonical_path(default_catalogue_path(state_directory))
-        |> result.unwrap(""),
-      )
+    "" -> Ok(present_default_catalogue(state_directory))
     path ->
       ffi_bootstrap.canonical_path(path)
       |> result.map_error(fn(reason) {
