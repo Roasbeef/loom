@@ -82,7 +82,10 @@ with a confusing missing-key error hours later; refusing the file is
 the cheaper failure. The `[roles]` table must route `main` — a strand
 with no main identity has nothing to run.
 
-Without `--config` the server shapes a one-entry catalogue from the
+The launcher fills in `--config` itself when the flag is absent and
+`~/.loom/loom.toml` exists, so an operator's standing catalogue serves
+every workspace without being named each time; a workspace can never
+supply one. Without either the server shapes a one-entry catalogue from the
 environment instead: an Anthropic entry named `anthropic` whose model
 id, base URL, and limits come from `LOOM_MODEL`, `LOOM_BASE_URL`,
 `LOOM_CONTEXT_WINDOW`, and `LOOM_MAX_OUTPUT_TOKENS`, routed as `main`.

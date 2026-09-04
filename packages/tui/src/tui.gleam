@@ -508,6 +508,7 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session-file <path>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
+  <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]"
 }

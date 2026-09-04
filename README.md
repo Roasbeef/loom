@@ -540,7 +540,8 @@ commented example — it carries all three dialects, `anthropic`, `openai`
 and `gemini` — and `docs/examples/loom-baseten.toml` wires four
 OpenAI-dialect models with per-role chains. Precedence is flags > config
 file > environment > defaults: with `--config` the catalogue is the whole
-model surface; without it `LOOM_MODEL` (default `claude-opus-5`),
+model surface, and the launcher supplies `~/.loom/loom.toml` when the flag
+is absent and that file exists; without either `LOOM_MODEL` (default `claude-opus-5`),
 `LOOM_BASE_URL`, `LOOM_CONTEXT_WINDOW`, `LOOM_MAX_OUTPUT_TOKENS` and
 `LOOM_SYSTEM_PROMPT` shape a one-entry catalogue. API keys never live in
 the file — each entry's `api_key_env` names the variable read at dispatch,
