@@ -52,6 +52,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
+import gleam/string
 import machine/classification
 import machine/codec
 import machine/operation.{
@@ -62,7 +63,7 @@ import machine/operation.{
   DeferredSuspended, Generating, GenerationReady, NavigationState,
   OverflowReason, RunState, SummarizedNavigation, ThresholdReason, Tools,
 }
-import machine/planner.{type Observation, NoObservation}
+import machine/planner.{type Observation, type StructuralVerdict, NoObservation}
 import machine/queue
 import machine/strand.{type StrandConfiguration, type StrandState}
 import provider/stream
@@ -1119,9 +1120,11 @@ fn resolve_key(
     }
     planner.DecisionKey(operation:, task_id:) ->
       KeyObservation(
-        planner.ObservedStructuralDecision(verdict: hooks.structural_decision(
+        planner.ObservedStructuralDecision(verdict: noted_verdict(
+          state,
+          loaded,
+          hooks.structural_decision(operation, task_id),
           operation,
-          task_id,
         )),
       )
     planner.SummaryKey(operation:, task_id:, attempt:) ->
@@ -1440,8 +1443,42 @@ fn start_effect(
   }
 }
 
+// A supplied checkpoint carries every `before_compact` note, appended
+// after the host's own text. The generate path is left alone: there the
+// notes ride the summary request at its dispatch, below. Asked at the
+// decision because it is the last place a supplied text is still ours to
+// add to, and a decision is transient until the publication commits it —
+// a crash before that re-asks, which is the replay rule every hook is
+// held to.
+fn noted_verdict(
+  state: State,
+  loaded: Loaded,
+  verdict: StructuralVerdict,
+  operation: OpId,
+) -> StructuralVerdict {
+  case verdict {
+    planner.VerdictSupplied(summary:, usage:) ->
+      planner.VerdictSupplied(
+        summary: with_notes(summary, compaction_notes(state, loaded, operation)),
+        usage:,
+      )
+    planner.VerdictGenerate -> planner.VerdictGenerate
+    planner.VerdictDeclined -> planner.VerdictDeclined
+  }
+}
+
+// Each block arrives fenced and attributed by whoever produced it
+// (`client/extension/hooks.note_block`), so this concatenates and adds
+// nothing of its own.
+fn with_notes(text: String, notes: List(String)) -> String {
+  case notes {
+    [] -> text
+    blocks -> text <> "\n\n" <> string.join(blocks, "\n\n")
+  }
+}
+
 // The notes an extension asked to have appended to this compaction's
-// summarizer input, or none.
+// checkpoint or summarizer input, or none.
 //
 // A branch summary is not a compaction and never asks: the event is
 // `before_compact`, and firing it for a `loom navigate --summarize`
