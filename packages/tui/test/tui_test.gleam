@@ -13,6 +13,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleeunit
 import simplifile
@@ -29,6 +30,7 @@ import tui/internal/workspace_file
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
+import tui/recording
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
@@ -1311,4 +1313,87 @@ fn quiet_model(inbox: process.Subject(connection.Message)) -> tui.Model {
     agent_summary: agents.summary([]),
     notice: "ready",
   )
+}
+
+/// Every recordable shape survives the round trip, including the text that
+/// a hand-rolled encoder would break on: a quote, a backslash, a newline,
+/// and a codepoint outside the basic plane.
+pub fn a_recording_line_round_trips_test() {
+  let awkward = "a\"b\\c\nd\u{1F600}"
+  let moments = [
+    recording.Moment(0, recording.Key(text: "Enter")),
+    recording.Moment(7, recording.Key(text: awkward)),
+    recording.Moment(19, recording.Pasted(text: awkward)),
+    recording.Moment(23, recording.Resized(width: 120, height: 40)),
+    recording.Moment(
+      31,
+      recording.Scrolled(x: 4, y: 9, direction: recording.ScrollUp),
+    ),
+    recording.Moment(
+      37,
+      recording.Scrolled(x: 0, y: 0, direction: recording.ScrollDown),
+    ),
+    recording.Moment(41, recording.Arrived(connection.Connected)),
+    recording.Moment(
+      43,
+      recording.Arrived(connection.Incoming(text: gateway.full_snapshot("s"))),
+    ),
+    recording.Moment(47, recording.Arrived(connection.Closed(reason: awkward))),
+    recording.Moment(
+      53,
+      recording.Arrived(connection.NetworkFault(reason: awkward)),
+    ),
+  ]
+
+  // One line each, and no line may contain a newline of its own or the
+  // file would decode as more moments than were written.
+  list.each(moments, fn(moment) {
+    let line = recording.encode_line(moment)
+    assert !string.contains(line, "\n")
+    assert recording.decode_line(line) == Ok(moment)
+  })
+}
+
+pub fn only_events_that_move_the_model_are_recorded_test() {
+  assert recording.of_input(backend.Tick) == None
+  assert recording.of_input(backend.MouseMove(1, 2)) == None
+  assert recording.of_input(backend.MousePress(1, 2, backend.MouseLeft)) == None
+  assert recording.of_input(backend.KeyPress("q"))
+    == Some(recording.Key(text: "q"))
+  assert recording.of_input(backend.MouseScroll(3, 4, True))
+    == Some(recording.Scrolled(x: 3, y: 4, direction: recording.ScrollUp))
+}
+
+pub fn a_malformed_recording_line_is_a_worded_error_test() {
+  assert recording.decode_line("not json")
+    |> result.is_error
+  assert recording.decode_line("[1,2]")
+    == Error("a recording line must be a JSON object")
+  assert recording.decode_line("{\"t\":\"key\",\"key\":\"a\"}")
+    == Error("at must be an integer")
+  assert recording.decode_line("{\"at\":1,\"t\":\"key\"}")
+    == Error("key must be a string")
+  assert recording.decode_line("{\"at\":1,\"t\":\"scroll\",\"x\":1,\"y\":2}")
+    == Error("scroll needs a boolean \"up\"")
+  assert recording.decode_line("{\"at\":1,\"t\":\"wheel\"}")
+    == Error("unknown recording event \"wheel\"")
+}
+
+pub fn a_recording_file_decodes_in_order_test() {
+  let path = "build/tui-recording-test.jsonl"
+  let moments = [
+    recording.Moment(0, recording.Resized(width: 72, height: 14)),
+    recording.Moment(4, recording.Arrived(connection.Connected)),
+    recording.Moment(9, recording.Key(text: "h")),
+  ]
+  let text =
+    moments
+    |> list.map(recording.encode_line)
+    |> string.join("\n")
+  let assert Ok(Nil) = simplifile.write(path, text <> "\n")
+
+  // The trailing newline every appended file carries must not decode as a
+  // tenth, empty moment.
+  assert recording.decode_file(path) == Ok(moments)
+  let assert Ok(Nil) = simplifile.delete(path)
 }
