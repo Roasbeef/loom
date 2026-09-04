@@ -16,14 +16,42 @@ that tree separately from the self-contained server.
   Wrapped durable rows are cached by strand, width, and detail mode; pending
   records extend that cache without reparsing older markdown.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
-  `Invalid` — and `Forward`, which is not a terminal application at all.
+  `Invalid` — and two that are not terminal applications at all, `Forward`
+  and `Replay`.
   `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. The daemon is located by
   `tui/bootstrap.server_executable`, the same ladder an implicit local
   session uses — two ladders would mean installing an extension into one
   server's world and then starting another — and the launcher exits with
-  the child's own status.
+  the child's own status. `Replay` is the same shape for a different
+  reason: `loom replay <path>` drives a recording through the virtual
+  backend and prints frames, so it installs no terminal state and opens no
+  socket either.
+- `tui.Peer` says where this client's commands go, and replaces the
+  optional socket the model used to carry. An absent socket meant two
+  opposite things — a `--demo` `Preview`, which answers a submitted prompt
+  itself so the layout can be seen, and a `Replaying` run, which must
+  invent nothing because the server's own reply is already in the
+  recording. `Attached` carries the websocket. Every submit and command
+  site enumerates the three.
+- `tui/virtual_backend.Backend` is an `etui/backend.Backend` whose `poll`
+  answers a scripted list instead of a file descriptor, and whose
+  `run_script` drives an application's own `update`/`view` under it and
+  returns every frame. It is generic over the application state and takes
+  the four loop functions as arguments, which is what lets `tui` import it:
+  the replay command lives in `tui`, and a `virtual_backend` that imported
+  `tui` would close a cycle.
+- `tui/recording.Recorded` is the closed set of events worth replaying —
+  keys, pastes, resizes, wheel notches and inbox messages — and
+  `tui/recording.Moment` pairs one with its monotonic offset. `Recorder` is
+  the open `--record` file, held in the `Model` because the inbox is drained
+  inside `update_tick` and there is no other point at which both a websocket
+  message and the recording are in scope.
+- `tui/frame` renders a `Buffer` as rows of text, folding a wide glyph's
+  continuation cell into the glyph and dropping the trailing blanks a
+  full-rectangle paint always leaves. It is what a golden file holds and what
+  `loom replay` prints, so the two cannot disagree about a frame.
 - `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
@@ -102,6 +130,13 @@ that tree separately from the self-contained server.
   entries, stream deltas, operation transitions, usage, escalation
   notices, and server errors. Unknown event names are accepted and
   ignored for forward compatibility.
+- **Launch flags**: `--record <path>` qualifies any interactive launch and
+  writes the session as a recording. `loom replay <path> [--at <frame>]
+  [--all] [--width <w>] [--height <h>]` replays one and prints frames as
+  plain text, defaulting to the last; `--width`/`--height` hold only until
+  the recording's own first resize supersedes them. It exits non-zero with a
+  worded error for an unreadable or undecodable recording, or a frame index
+  the recording does not reach.
 - **Keyboard**: ordinary text sends a prompt; slash commands own application
   actions. `/model` opens the model selector, `/agents` opens the inspector,
   `/schedules` lists every schedule the session holds and `/unschedule
@@ -308,6 +343,50 @@ that tree separately from the self-contained server.
   this client cannot approve or deny an action. The server still enforces the
   same frozen approval contract, and the client must not synthesize a weaker
   approval from the visible policy diff.
+- **A frame leaves the loop by message, not by return.** Etui owns the
+  backend state and hands a backend the *diff* between two frames rather
+  than the grid, so a rendered `Buffer` is reachable in exactly one place:
+  the render callback, which is pure. `virtual_backend.run_script` wraps
+  that callback and sends each frame to a `Subject` it creates itself. Loop,
+  callback and receive all run in one process, so the send is a mailbox
+  append rather than traffic, and a `Subject` created by anyone else would
+  deliver frames to a process that cannot receive them.
+- **A scripted run delivers one event per iteration.** A zero-timeout poll
+  is etui draining a burst, never a wait the client asked for —
+  `paced_poll_timeout` returns 8, 40 or 400 — so the virtual backend answers
+  a zero timeout with `Tick`, which ends the burst without being delivered.
+  One frame is therefore drawn per scripted event, including the frames the
+  client deliberately left stale to pace a burst. When the script runs out
+  the backend emits its settling ticks, which flush a deferred frame and
+  drain the inbox, and then reports `Interrupted`; that is how the loop ends
+  without a quit key.
+- **A replay reproduces inbound traffic and rendering, never an outbound
+  effect.** No websocket write, no daemon start, no local catalogue read,
+  and no line the live client would have been *sent*. Submitting under
+  `Replaying` does only the local half of the live path — clear the draft,
+  mark the strand submitting, set the notice — and the turn the server
+  echoed arrives from the recording as an entry, so the operator's line is
+  drawn once. The footer's tokens-per-second follows the same rule: the
+  window it reports is this client's own clock from a request going out to
+  its settlement, and a replay spends that window reading a file, so a
+  replay leaves it unset rather than reporting its own speed. A recorded
+  `Closed` leaves a replay replaying rather than falling back to the
+  preview, which would fabricate echoes for the rest of the file.
+- **Only a replay's last frame is reproducible.** Whether a paced event
+  draws a fresh frame or leaves the previous one on screen depends on how
+  long ago the client last drew, so `--at` and `--all` may differ between
+  machines; the settling tick that ends a replay is a flush point, so that
+  frame is always current. A golden pins the last frame for that reason.
+  Making every frame reproducible needs an injected clock and is separate
+  work.
+- **A recording is what the client was given, not what it made of it.**
+  `update` writes the input event before interpreting it, and
+  `handle_connection_message` writes the message before decoding it, so a
+  recording reproduces a decoding bug rather than hiding it. A gateway frame
+  is stored as the gateway's own bytes because the protocol has one wire
+  form and a second encoding of it could only ever disagree. A failed append
+  is silent: etui owns the screen, so there is nowhere to print, and a
+  recording that stops recording is not a reason to end a live session.
 - **Manual replacement is not catch-up.** `/sessions` deliberately opens a
   fresh authenticated subscription and clears the prior projection while it
   waits for the new full snapshot. A dropped websocket still ends the current
@@ -331,6 +410,36 @@ format, warning-free build, tests, and house-rule census. The separate client
 archive does not bundle ERTS; a compatible `erl` must be on the client host's
 `PATH`. The `dev/tui_dev.gleam` benchmark and its `gleamy_bench` dependency are
 development-only and do not enter that archive.
+
+## Snapshot tests
+
+`test/snapshots/*.txt` hold rendered frames as plain text, compared by
+`test/snapshot_test.gleam`. Each snapshot drives the shipped loop under the
+virtual backend with scripted keys and gateway frames and pins the last
+frame; `test/tui_test/gateway.gleam` builds the wire frames from
+`core/codec`'s own encoders, so a fixture cannot drift into an `Ignored`
+event and quietly render nothing.
+
+`test/recordings/gemini-flash-reply.jsonl` is a real `loom --record` of one
+Gemini turn against a live server — the attach, the catalogue snapshots, one
+prompt, and its stream, usage and settlement. It stops at the settled turn
+and its golden pins the *last* frame, because that is the only frame a
+replay reproduces across machines. Regenerating it means recording a fresh
+session, not editing the file.
+
+A golden is written with exactly one trailing newline and read back with
+exactly one removed. The two must stay symmetric: stripping every trailing
+newline on read would make a frame whose last row is blank permanently
+unmatchable against its own freshly written golden, which `blank-rows.txt`
+now pins.
+
+`LOOM_UPDATE_SNAPSHOTS=1 make check-tui` rewrites every golden the run
+touches instead of failing, and the resulting diff is the thing to review;
+the flag spares the typing, not the judgement. A *missing* golden is still a
+failure, because a snapshot that writes itself on first sight always passes.
+A mismatch prints a unified-diff-shaped report aligned by row index rather
+than by a longest-common-subsequence walk: two renderings of one screen have
+the same rows, and row *n* means the same thing in both.
 
 ## Deep Docs
 

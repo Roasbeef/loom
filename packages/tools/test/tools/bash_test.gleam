@@ -92,6 +92,41 @@ pub fn bash_call_spec_shape_test() {
   assert spec.budget.deadline_ms == now + bash.default_timeout_ms
 }
 
+pub fn bash_asks_for_every_root_the_base_grants_test() {
+  // A linked worktree's base grants the git directories outside the
+  // workspace; the shell must ask for them too, or the meet's
+  // intersection would leave `git commit` unable to take the index lock.
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace:,
+      filesystem:,
+      now:,
+      script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      recorded:,
+    )
+  let base = fake_broker.base_policy(workspace)
+  let widened =
+    policy.SandboxPolicy(..base, writable_roots: [
+      workspace,
+      "/repo/.git/worktrees/work",
+      "/repo/.git",
+    ])
+  let _outcome =
+    bash.tool().run(
+      tool.Ctx(..ctx, base_policy: widened),
+      command_args("git commit"),
+    )
+  let spec = recorded_spec(recorded)
+  assert spec.requirements.writable_roots
+    == [workspace, "/repo/.git/worktrees/work", "/repo/.git"]
+  let #(composed, narrowings) =
+    policy.compose(base: widened, requirements: spec.requirements, grants: [])
+  assert narrowings == []
+  assert composed.writable_roots == widened.writable_roots
+}
+
 pub fn bash_requirements_compose_without_narrowing_test() {
   // The tool's requirements against the fake session base produce no
   // narrowing: it asked for exactly what the session grants.

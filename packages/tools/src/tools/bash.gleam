@@ -141,9 +141,23 @@ fn call_spec(
     tool.asking_base_network(requirements(ctx.workspace), ctx.base_policy)
 
   let wall_s = { timeout + 999 } / 1000
+
+  // The shell asks for every root the session base already grants, not
+  // the workspace alone. The meet intersects roots, so asking for the
+  // workspace would hand the shell the workspace whatever the base
+  // said — and the base says more for a linked git worktree, whose
+  // metadata lives under the main repository's `.git`
+  // (`client/serve.widening_linked_worktree`); without those roots a
+  // `git commit` here dies on the index lock. Asking for the base's own
+  // roots can never widen past the base: the intersection of a set with
+  // itself is itself.
   let tool_requirements =
     policy.SandboxPolicy(
       ..base_requirements,
+      writable_roots: list.unique(list.append(
+        base_requirements.writable_roots,
+        ctx.base_policy.writable_roots,
+      )),
       env_allow: list.map(ctx.env, fn(pair) { pair.0 }),
       limits: policy.Limits(..base_requirements.limits, wall_s:),
     )

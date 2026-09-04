@@ -18,6 +18,210 @@ and `tui` packages, through to the scripted acceptance that drives a
 whole session — prompt, tools, a subagent, an escalation, fork,
 navigate, compact, reconnect — through the protocol and nothing else.
 
+## From a terminal to a running session
+
+`loom` is the terminal client; `loomd` is the session server. One
+`loomd` opens or creates one SQLite session database and serves any
+number of clients attached to that session. It does not load every
+database under `~/.loom/sessions` into one server. Each locally managed
+session has its own daemon, gateway, and bearer token; `/sessions`
+discovers their launcher records and switches the terminal's connection.
+
+There are two entry paths:
+
+```sh
+# Discover or start the default session for this workspace.
+loom --workspace /work/project
+
+# Select another database for the same workspace.
+loom --workspace /work/project --session-file /data/review.db
+
+# Start a server explicitly, then attach from another terminal.
+loomd --workspace /work/project --session /data/review.db \
+  --bind 127.0.0.1:8080 --token-file /data/review.token
+loom --addr ws://127.0.0.1:8080/v1/ws --session review \
+  --token-file /data/review.token
+```
+
+The distinction between the two `--session` flags matters: `loomd`
+takes a database path, while manual `loom` attachment takes the gateway's
+session name. That name is the database basename before its first dot
+(`review.db` and `review.part.db` both yield `review`). A basename that
+starts with a dot stays whole (`.review.db` yields `.review.db`).
+Local bootstrap derives the name with the same rule, so the operator
+does not have to supply it. `loom` with no flags uses its current
+directory as the workspace. Manual attachment bypasses local discovery
+and never auto-starts a server.
+
+### The database and the discovery record
+
+Local bootstrap uses `~/.loom` as its state root, overridden by
+`--state-dir`. It canonicalizes the workspace and database path before
+choosing the endpoint record and launch lock. The default database name
+combines a readable workspace basename with twelve hex characters of
+the canonical workspace's SHA-256, keeping equal basenames in different
+directories distinct. The endpoint key is the first twenty-four hex
+characters of the canonical database path's SHA-256.
+
+| Path under the state root | Role |
+|---|---|
+| `sessions/<workspace-slug>-<workspace-hash>.db` | Default durable session database; `--session-file` can place it elsewhere. |
+| `endpoints/<database-hash>.json` | Discovery hint: workspace, database, session name, address, token/log paths, process identity, start time, and `starting` or `ready` status. |
+| `tokens/<database-hash>.token` | The server-minted bearer credential, including when the database is outside the state root. |
+| `locks/<database-hash>.lock` | Cross-process launch serialization for this database under this state root. |
+| `logs/<database-hash>.log` | The launched server's stdout and stderr. |
+| `loom.toml` | The operator's default configuration for a cold start, when present. |
+
+The session database holds the conversation, strands, registers, and
+writer lease described in [durability](durability.md). The endpoint
+record holds no transcript and cannot establish that a server is ready.
+Its schema version is `2`; the gateway protocol version it records is
+`1`. Those version numbers describe different formats.
+
+The launcher prepares user-owned mode-`0700` state directories and
+publishes endpoint records atomically as private files. Endpoint and
+token reads are bounded to 16 KiB; token reads also require a private,
+user-owned regular file. Reuse checks the record against the expected
+canonical workspace, database, derived session name, token/log paths,
+versions, and local address. Only `ws://127.0.0.1:<port>/v1/ws` is
+accepted by this automatic path.
+
+### Safe auto-start
+
+`tui/bootstrap.resolve` holds a kernel launch lock while it reads the
+record, decides whether to reuse it, and, if needed, starts a daemon.
+The lock uses `flock` on Linux and `lockf` on macOS; competing launchers
+re-read the record after acquiring it. The runtime's database writer
+lease remains the authority that excludes a second writer, including
+servers started manually or through a different state root.
+
+Reuse requires a real authenticated WebSocket connection. The probe
+reads the token, sends `subscribe`, and waits for a decoded full snapshot
+naming the expected session. It then closes its probe socket and returns
+the target for the terminal's own connection. A listening port, a
+`ready` record, or `/healthz` alone is insufficient.
+
+If the probe fails, bootstrap compares the recorded PID and process
+birth identity with the operating system. A matching live process gets
+a bounded retry window; if it still cannot answer, bootstrap reports an
+error and preserves the record. Unknown identity also prevents starting
+a competitor. A dead process or a reused PID permits replacement. A
+compatible `starting` record can be adopted if its server becomes ready;
+an abandoned start is replaced only after checking process identity.
+
+For a cold start, the launcher selects an available loopback port and
+writes a `starting` record. The temporary port reservation is released
+before the daemon binds it; the authenticated snapshot is still the
+readiness check if another process takes the port. The launch ordering is:
+
+```mermaid
+sequenceDiagram
+    participant T as loom bootstrap
+    participant F as Private launcher files
+    participant W as Paused wrapper
+    participant D as loomd
+    T->>F: Acquire launch lock and re-read endpoint
+    T->>F: Publish starting record
+    T->>W: Spawn wrapper blocked on launcher port
+    T->>F: Publish wrapper PID and birth identity
+    T->>W: Release to exec loomd
+    W->>D: exec with fixed arguments
+    D->>D: Open database, acquire writer lease, start runtime and hub
+    D->>F: Publish bearer token
+    D->>D: Bind WebSocket listener
+    T->>D: Authenticated probe and subscribe
+    D-->>T: Full snapshot naming expected session
+    T->>F: Publish ready record and release lock
+    T->>D: Open terminal connection and subscribe
+```
+
+Publication before execution makes a launcher crash recoverable: a
+wrapper whose launcher dies before release exits without starting the
+server. After release, bootstrap does not kill a process by numeric PID,
+because PID reuse cannot be excluded atomically on both platforms. A
+timeout closes the launcher port and reports the current log tail; it
+does not promise that an already released daemon has been terminated.
+Its record allows a later launch to probe and adopt it.
+
+Lock acquisition and cold startup each have a 30-second budget; the
+live-server retry and snapshot probe use 10-second budgets. Polling and
+receive deadlines use monotonic time. A persisted starting timestamp
+uses wall time only to compute the remaining startup budget when another
+launcher adopts it.
+
+Repository files do not implicitly select host startup code. Daemon
+lookup tries `--server`, then `LOOM_SERVER`, then a sibling of the
+installed launcher, then absolute `PATH` entries. Relative `PATH`
+entries are excluded from implicit lookup. The daemon runs from the
+private logs directory with the workspace passed as data in
+`--workspace`; an executable sibling `loom-exec` is pinned as its helper
+when available. The wrapper and lock holder use privileged shell mode
+to prevent inherited shell functions from changing their behavior.
+
+Configuration comes from an explicit `--config`, otherwise the state
+root's `loom.toml` when present, otherwise the server's environment
+defaults. Auto-start never implicitly loads the workspace's `loom.toml`.
+The daemon inherits the launcher's environment, including provider
+credentials; a reused daemon retains the environment and configuration
+it booted with. Passing a different `--config` to an attaching client
+does not restart or reconfigure that daemon. See [models](models.md)
+for the catalogue and runtime model selection.
+
+### What the server starts, and what survives detach
+
+`client/serve` assembles the helper pool, broker, provider/tool wiring,
+and session runtime before starting the gateway hub and WebSocket
+listener. The runtime acquires the session's writer lease and restores
+its durable state. The service supervisor owns the hub and configured
+background services; memory distillation has its own lifecycle described
+in [memory](memory.md). Boot-time memory scanning of other saved
+sessions does not make those sessions gateways on this listener.
+
+`client/server` mints the bearer token at each boot and publishes its
+file before starting the listener. Direct `loomd` startup defaults to
+`<session-path>.token`; automatic startup supplies the private token
+path above. The bearer token authorizes the client to the gateway and is
+separate from the broker's per-action capability tokens.
+
+Closing a terminal detaches that connection; the daemon and session
+continue. `SIGTERM` or a fatal server child fault takes down the listener
+and closes the runtime, releasing the writer lease during normal
+teardown. If the storage actor itself dies, its lease expires instead.
+Restarting `loomd` reopens the durable database and mints a new token.
+
+### Switching sessions
+
+`/sessions` lists locally managed endpoint records under the active state
+root. Discovery rejects a directory with more than 1024 entries and
+omits malformed, incompatible, misplaced, or still-`starting` records.
+It is a list of candidates, not a liveness report or a scan of every
+SQLite database. Selecting a candidate runs the full locked resolution
+and authenticated probe, and can restart a stopped session.
+
+Resolution and connection startup run in one `weft` task with a
+90-second deadline while the old connection remains usable. Failure
+leaves the old socket and model intact. On success the terminal adopts
+the replacement socket, closes the previous one, clears its projection,
+and consumes the new subscription's full snapshot. Each attempt has a
+separate terminal-owned inbox, so late frames and close notices from
+the previous connection cannot change the selected session.
+
+Manual switching is separate from reconnecting after a dropped socket.
+The gateway supports sequence-based replay, documented below, but the
+native client does not automatically reconnect or perform `catch_up`.
+
+The implementation is in
+[`tui/bootstrap.gleam`](../../packages/tui/src/tui/bootstrap.gleam),
+[`tui/sessions.gleam`](../../packages/tui/src/tui/sessions.gleam), and
+[`client/serve.gleam`](../../packages/client/src/client/serve.gleam).
+[`bootstrap_test.gleam`](../../packages/tui/test/bootstrap_test.gleam)
+covers path derivation, record validation, launch locking, and process
+identity. `make e2e-client-bootstrap` enables its real-server lifecycle
+test, including concurrent resolution, detach/reuse, and delivery of a
+replacement snapshot to the adopting terminal. The ordinary unit-test
+run leaves that real-server case inactive unless
+`LOOM_BOOTSTRAP_E2E_SERVER` is set.
+
 ## What a client is trusted with
 
 A client is not a strand, not a process in the supervision tree, not a
@@ -167,7 +371,8 @@ leaving connections attached to a corpse.
 
 Transport is websocket, text frames, one JSON envelope per frame, at
 `/v1/ws`. The envelope is frozen by the implementation spec Part 1.6;
-the bodies under it are defined by `packages/client/protocol.md`, which both
+the bodies under it are defined by
+[`packages/client/protocol.md`](../../packages/client/protocol.md), which both
 the gateway and native client build to.
 
 ```
@@ -438,7 +643,9 @@ tokens remotely. `mist`, the Gleam ecosystem's websocket server, listens
 on TCP interfaces only and has no unix-socket listener, so peer
 credentials are not implementable there today. What ships instead moves
 the same check into the filesystem: bind loopback, mint a bearer token
-at startup, and write it to a mode-`0600` file next to the session. A
+at startup, and write it to a mode-`0600` file. Direct `loomd` startup
+defaults to a file next to the session; local auto-start places it under
+the private state root's `tokens/` directory as described above. A
 local client reads that file — which only the same user can — and
 presents `Authorization: Bearer <token>` on the upgrade, exactly as a
 remote client would. One code path, one header, and if `mist` ever grows
@@ -539,6 +746,60 @@ reuses `loomd`. Manual attachment instead requires `--addr`, `--session`, and
 `--token-file` or `--token`. The release is a separate Erlang shipment rather
 than part of the server archive. It does not carry a second ERTS, so the
 terminal host needs compatible Erlang/OTP 29 on `PATH`.
+
+## Recording and replaying a session
+
+`--record <path>` qualifies any interactive launch and writes one JSON line
+per event as it arrives: every key, paste, resize and wheel notch, and every
+message the websocket inbox delivered, each with its monotonic offset from
+the start of the run. Ticks and the mouse events `update` ignores are left
+out, because replaying them would change nothing. A gateway frame is stored
+as the gateway's own bytes; the three connection lifecycle messages, which
+are not wire frames, carry a tag of their own.
+
+`loom replay <path>` plays that file back through `tui/virtual_backend` — an
+etui backend whose `poll` answers a script instead of a file descriptor —
+and prints a frame as plain text. It installs no terminal state and opens no
+socket, so an agent with no terminal can see what the client would have
+drawn. `--all` prints every frame with its index, `--at <n>` picks one,
+`--width` and `--height` set the screen until the recording's own first
+resize supersedes them. An unreadable or undecodable recording exits
+non-zero naming the file and the line; so does a frame index the recording
+does not reach. The replay's footer shows a fixed `replay` workspace,
+because a recording carries none and a frame that changed with the shell it
+was replayed from would be a poor answer.
+
+**A replay reproduces inbound traffic and rendering, and never an outbound
+effect.** It writes to no socket, starts no daemon, reads no local session
+catalogue, and invents no line the live client would have been sent.
+`tui.Peer` is what makes that structural rather than remembered: `Attached`
+carries the websocket and sends, `Preview` is `--demo` and answers a prompt
+with its canned echo, and `Replaying` performs only the local half of the
+live path — the draft clears, the strand is marked submitting, the notice
+changes — while the turn the server echoed arrives from the recording as an
+ordinary entry. Every submit and command site enumerates the three. The
+footer's tokens-per-second follows the same rule: the window it reports is
+this client's own clock from a request going out to its settlement, and a
+replay spends that window reading a file, so a replay leaves it unset rather
+than reporting its own speed. The catalogue goes the same way: a connected
+client empties the demo models the launcher seeds, so a replay does too, and
+one whose recording carried no models snapshot opens the empty selector the
+live client opened.
+
+`/sessions` is the one place a replay knowingly draws what no live client
+could. The command reads the local launcher catalogue, which a replay must
+not touch and a recording does not carry, so it answers with a notice saying
+the command is not replayed — where the live client either opened the
+selector or said the command is local-only. The alternative is to invent one
+of those two answers, which is the thing `Peer` exists to prevent, so the
+divergence is deliberate and is recorded here rather than hidden.
+
+Only the last frame of a replay is reproducible across runs. The client
+renders a paced event's frame or leaves the previous one on screen depending
+on how long ago it last drew, so which of the two `--at` and `--all` show for
+a key press depends on the machine; the settling tick that ends a replay is a
+flush point, so that frame is always the current one. Making every frame
+reproducible needs an injected clock, which is separate work.
 
 Two protocol behaviors remain deliberately incomplete. Pending escalations are
 visible, but the native client does not yet send protocol-change/007's exact
@@ -719,6 +980,9 @@ real websocket `subscribe` returning a snapshot.
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
 | `packages/tui/src/tui/connection.gleam` | The websocket-owning actor and terminal inbox. |
+| `packages/tui/src/tui/bootstrap.gleam` | Canonical local identity, private endpoint records, authenticated readiness, and serialized daemon launch. |
+| `packages/tui/src/tui/sessions.gleam` | Local session selection and replacement connection ownership. |
+| `packages/tui/src/tui_ffi.erl` | Private file operations, kernel launch locks, paused process launch, and birth-qualified process identity. |
 | `packages/tui/src/tui/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root —

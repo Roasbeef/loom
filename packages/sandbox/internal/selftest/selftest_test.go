@@ -57,6 +57,15 @@ func TestProbeDirectoriesAreNotUnderTheScratchMount(t *testing.T) {
 			"jail's own tmpfs will hide the writable root the probes "+
 			"were given", dir, jail.ScratchMount)
 	}
+
+	// Nor under a directory every Seatbelt plan grants, or the probes'
+	// "outside" victim would be inside the jail.
+	for _, granted := range jail.DarwinUserDirectories() {
+		if strings.HasPrefix(filepath.Clean(dir)+string(filepath.Separator),
+			filepath.Clean(granted)+string(filepath.Separator)) {
+			t.Fatalf("probe directory %q is under the granted user directory %q", dir, granted)
+		}
+	}
 }
 
 // A cgroup base the helper can create children in but not move

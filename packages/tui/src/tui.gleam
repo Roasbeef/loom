@@ -39,17 +39,22 @@ import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/connection
+import tui/frame
 import tui/image_drop
 import tui/internal/ffi_bootstrap
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
+import tui/recording
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
+import tui/virtual_backend
 import tui/workspace
 
-type Speaker {
+/// Who a transcript line belongs to, which is the whole of its styling.
+@internal
+pub type Speaker {
   System
   User
   Assistant
@@ -61,18 +66,24 @@ type Speaker {
   Failure
 }
 
-type Line {
+/// One rendered transcript line before markdown and wrapping.
+@internal
+pub type Line {
   Line(speaker: Speaker, text: String)
 }
 
 // A stream stays separate from durable entries because the server may replay
 // the settled entry after its fragments. Keeping both in one list would render
 // the same assistant answer twice at the exact moment it becomes durable.
-type Stream {
+/// The undurable fragments of one strand-and-kind generation.
+@internal
+pub type Stream {
   Stream(strand: String, kind: String, fragments: List(String))
 }
 
-type Overlay {
+/// The modal surface that owns focus, if any.
+@internal
+pub type Overlay {
   NoOverlay
   ModelSelector(model_selector.State)
   AgentInspector(selected: Int)
@@ -90,9 +101,40 @@ type Launch {
   // Forwarding rather than reimplementing is what stops the launcher and
   // the server disagreeing about what an install did.
   Forward(arguments: List(String))
+
+  // `loom replay …` is not one either: it installs no terminal state and
+  // opens no socket. It plays a recording through the virtual backend and
+  // prints frames, which is how an agent with no terminal sees what the
+  // client would have drawn.
+  //
+  // Only the last frame is reproducible across runs. The client renders a
+  // paced event's frame or leaves the previous one on screen depending on
+  // how long ago it last drew, so which of the two `--at` and `--all` show
+  // for a key press depends on the machine; the settling tick before the
+  // last frame is a flush point, so that one is always the current frame.
+  // A recording's own first `resize` also supersedes `--width`/`--height`,
+  // which therefore only size the frames before it.
+  Replay(path: String, frames: FrameSelection, size: backend.TerminalSize)
 }
 
-type SubmissionMode {
+// Which of a replay's frames to print. A recording produces one frame per
+// event, and the interesting one is almost always the last, so that is the
+// default rather than a flag.
+type FrameSelection {
+  LastFrame
+  FrameAt(index: Int)
+  AllFrames
+}
+
+// The replay flags, gathered before a Launch is built so an unparseable
+// combination is one Invalid rather than a half-applied set.
+type ReplayOptions {
+  ReplayOptions(frames: FrameSelection, width: Int, height: Int)
+}
+
+/// What Enter does to a draft while an operation is live.
+@internal
+pub type SubmissionMode {
   SteerNow
   QueueAfter
 }
@@ -101,7 +143,37 @@ type SubmissionMode {
 // deliberately drains queued steer entries. Holding one instruction here until
 // the durable operation settles preserves the operator's intent without racing
 // a steer admission against cancellation.
-type Interrupt {
+/// Where this client's commands go, and what stands in for a server when
+/// they go nowhere.
+///
+/// This is one type rather than an optional socket because the absence of a
+/// socket means two opposite things. A design preview has no server and
+/// answers a submitted prompt itself, so the layout can be seen; a replay
+/// has no server *and must not invent one*, because every line the server
+/// would have sent is already in the recording and a locally fabricated
+/// echo would appear beside the real one. An `Option` collapses those two
+/// into the same `None`, which is exactly the bug this replaced.
+@internal
+pub type Peer {
+  /// A live ClientGateway websocket. Commands are written to it and the
+  /// server's own events come back as transcript.
+  Attached(socket: connection.Connection)
+
+  /// The `--demo` preview. A submitted prompt is echoed locally, because
+  /// there is nothing else to draw.
+  Preview
+
+  /// A replay of a recording. Inbound traffic and rendering are
+  /// reproduced; nothing is sent and nothing is invented. A submit does
+  /// only what the live path does *locally* — clear the draft, mark the
+  /// strand submitting, set the notice — and waits for the recorded
+  /// server events like the live client did.
+  Replaying
+}
+
+/// One held instruction, waiting for the operation it interrupted to settle.
+@internal
+pub type Interrupt {
   Interrupt(strand: String, pending: Option(String))
 }
 
@@ -127,7 +199,9 @@ const frame_interval_ms = 16
 /// that separates one burst from the next rather than a delay added to each.
 const deferred_frame_poll_ms = 8
 
-type FrameCache {
+/// The last completed frame, keyed by the screen and revision it was for.
+@internal
+pub type FrameCache {
   FrameCache(
     screen: Rect,
     revision: Int,
@@ -135,7 +209,13 @@ type FrameCache {
   )
 }
 
-type Model {
+/// The immutable presentation state.
+///
+/// Published `@internal` so the virtual-backend harness can build a state
+/// by hand and drive the real loop over it. Nothing outside this package
+/// sees it.
+@internal
+pub type Model {
   Model(
     quit: Bool,
     width: Int,
@@ -164,7 +244,7 @@ type Model {
     session: String,
     local_options: Option(bootstrap.Options),
     inbox: Subject(connection.Message),
-    socket: Option(connection.Connection),
+    peer: Peer,
     session_switch: sessions.SwitchStatus,
     next_id: Int,
     usage: message.Usage,
@@ -209,6 +289,11 @@ type Model {
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
+    /// The open `--record` file, when the launch asked for one. Present
+    /// in the model rather than beside the loop because the inbox is
+    /// drained inside `update_tick`, so there is no other point at which
+    /// both a websocket message and the recording are in scope.
+    recorder: Option(recording.Recorder),
   )
 }
 
@@ -275,12 +360,47 @@ pub type FrameDecision {
 pub fn main() {
   // Nothing but the rendered frame may write to this terminal from here on.
   ffi_bootstrap.silence_logger()
-  let launch = parse_launch(argv.load().arguments)
+
+  // `--record` is answered here rather than inside `parse_launch` because
+  // it qualifies every interactive launch rather than choosing one, and
+  // the local-option parser refuses flags it does not own.
+  //
+  // The two launches that are not interactive keep their arguments
+  // untouched. `loom ext` is a pipe to the server and every word of it is
+  // the server's, so a launcher that removed a pair because it recognised
+  // the name would silently change what the server was asked to do; a
+  // subcommand taking a `--record` of its own is the day that bites, and
+  // the passthrough is meant to be the one place that cannot happen.
+  // `replay` has its own parser and no recorder to open.
+  let raw = argv.load().arguments
+  let #(record, arguments) = case raw {
+    ["ext", ..] | ["replay", ..] -> #("", raw)
+    _other -> take_flag(raw, "--record")
+  }
+  let launch = parse_launch(arguments)
   case launch {
     // The passthrough runs before a single line of terminal setup: this
     // process is a pipe for the duration and then it is gone.
     Forward(arguments:) -> forward(arguments)
-    Demo | Local(..) | Remote(..) | Invalid(..) -> interactive(launch)
+    Replay(path:, frames:, size:) -> replay(path, frames, size)
+    Demo | Local(..) | Remote(..) | Invalid(..) -> interactive(launch, record)
+  }
+}
+
+// Removes one `--flag value` pair from an argument list, answering its
+// value and what is left. Absence is the empty string rather than an
+// error: every caller here treats a missing flag as a default.
+fn take_flag(arguments: List(String), flag: String) -> #(String, List(String)) {
+  case arguments {
+    [] | [_] -> #("", arguments)
+    [name, value, ..rest] ->
+      case name == flag {
+        True -> #(value, rest)
+        False -> {
+          let #(found, remaining) = take_flag([value, ..rest], flag)
+          #(found, [name, ..remaining])
+        }
+      }
   }
 }
 
@@ -319,84 +439,111 @@ fn flag_or_empty(arguments: List(String), flag: String) -> String {
   }
 }
 
-fn interactive(launch: Launch) -> Nil {
-  let inbox = connection.new_inbox()
-  let project = workspace.discover()
+/// A fresh presentation state for one terminal process.
+///
+/// The inbox and the discovered workspace are the only two facts a model
+/// cannot derive, so they are what a caller supplies. Published `@internal`
+/// because the virtual-backend harness needs the same starting point the
+/// interactive launch uses; a snapshot then overrides the fields it is
+/// about with an ordinary record update.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui.new_model(connection.new_inbox(), workspace.discover())
+/// ```
+@internal
+pub fn new_model(
+  inbox: Subject(connection.Message),
+  project: workspace.Context,
+) -> Model {
   let strands = demo_strands()
-  let base =
-    Model(
-      quit: False,
-      width: 80,
-      height: 24,
-      input: text_area.state_new(),
-      attachments: [],
-      history: [],
-      history_index: 0,
-      history_draft: "",
-      command_selected: 0,
-      submission_mode: SteerNow,
-      interrupt: None,
-      submitting: None,
-      transcript: [
-        Line(System, "etui input and gateway paths ready"),
-        Line(
-          Reasoning,
-          "Mapped the frozen ClientGateway events onto one immutable view model.",
-        ),
-        Line(ToolResult, "read · packages/client/CLAUDE.md"),
-        Line(
-          Assistant,
-          "## Native client\n\nThe pure-Gleam path is live. Use `/model` to switch models or `/help` for the command map.",
-        ),
-      ],
-      records: [],
-      notice: "interactive design preview",
-      help_open: False,
-      notes_open: False,
-      overlay: NoOverlay,
-      models: demo_models(),
-      current_model: "baseten-kimi-k3",
-      workspace: project,
-      strands:,
-      agent_summary: agents.summary(strands),
-      active_strand: "main",
-      session: "demo",
-      local_options: None,
-      inbox:,
-      socket: None,
-      session_switch: sessions.Idle,
-      next_id: 1,
-      usage: zero_usage(),
-      generation_started_ms: None,
-      output_rate_tps: None,
-      agent_rail_visible: False,
-      details_expanded: False,
-      repaint_phase: False,
-      activity_frame: 0,
-      activity_started_ms: None,
-      activity_elapsed_s: 0,
-      streams: [],
-      scroll_offset: 0,
-      render_revision: 0,
-      rendered_revision: -1,
-      rendered_row_count: 0,
-      rendered_rows: [],
-      record_rows: [],
-      pending_records: [],
-      record_cache_valid: False,
-      record_cache_width: 0,
-      record_cache_strand: "",
-      record_cache_details: False,
-      frame_revision: 0,
-      frame_cache: None,
-      frame_debt: FrameSettled,
-      last_frame_ms: ffi_bootstrap.monotonic_time_ms(),
-      activity_revision: 0,
-      quiet_for_ms: quiet_after_ms,
-    )
-  let initial = case launch {
-    // Unreachable: `main` answers this one before it builds a model.
-    Forward(..) | Demo -> base
+  Model(
+    quit: False,
+    width: 80,
+    height: 24,
+    input: text_area.state_new(),
+    attachments: [],
+    history: [],
+    history_index: 0,
+    history_draft: "",
+    command_selected: 0,
+    submission_mode: SteerNow,
+    interrupt: None,
+    submitting: None,
+    transcript: [
+      Line(System, "etui input and gateway paths ready"),
+      Line(
+        Reasoning,
+        "Mapped the frozen ClientGateway events onto one immutable view model.",
+      ),
+      Line(ToolResult, "read · packages/client/CLAUDE.md"),
+      Line(
+        Assistant,
+        "## Native client\n\nThe pure-Gleam path is live. Use `/model` to switch models or `/help` for the command map.",
+      ),
+    ],
+    records: [],
+    notice: "interactive design preview",
+    help_open: False,
+    notes_open: False,
+    overlay: NoOverlay,
+    models: demo_models(),
+    current_model: "baseten-kimi-k3",
+    workspace: project,
+    strands:,
+    agent_summary: agents.summary(strands),
+    active_strand: "main",
+    session: "demo",
+    local_options: None,
+    inbox:,
+    peer: Preview,
+    session_switch: sessions.Idle,
+    next_id: 1,
+    usage: zero_usage(),
+    generation_started_ms: None,
+    output_rate_tps: None,
+    agent_rail_visible: False,
+    details_expanded: False,
+    repaint_phase: False,
+    activity_frame: 0,
+    activity_started_ms: None,
+    activity_elapsed_s: 0,
+    streams: [],
+    scroll_offset: 0,
+    render_revision: 0,
+    rendered_revision: -1,
+    rendered_row_count: 0,
+    rendered_rows: [],
+    record_rows: [],
+    pending_records: [],
+    record_cache_valid: False,
+    record_cache_width: 0,
+    record_cache_strand: "",
+    record_cache_details: False,
+    frame_revision: 0,
+    frame_cache: None,
+    frame_debt: FrameSettled,
+    last_frame_ms: ffi_bootstrap.monotonic_time_ms(),
+    activity_revision: 0,
+    quiet_for_ms: quiet_after_ms,
+    recorder: None,
+  )
+}
+
+fn interactive(launch: Launch, record: String) -> Nil {
+  let inbox = connection.new_inbox()
+  let base = new_model(inbox, workspace.discover())
+
+  // The recording is opened on the model the launch produced, not on the
+  // one it started from: a connected model replaces the transcript and
+  // the notice wholesale, so a recorder opened before the connect
+  // reported a failed `--record` onto a transcript that was then thrown
+  // away, and the operator ran a whole session believing it was being
+  // recorded.
+  let launched = case launch {
+    // Unreachable: `main` answers these before it builds a model.
+    Forward(..) | Replay(..) | Demo -> base
     Local(options) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -406,7 +553,7 @@ fn interactive(launch: Launch) -> Nil {
           ..base,
           local_options: Some(options),
           workspace: case options.workspace {
-            "" -> project
+            "" -> base.workspace
             path -> workspace.discover_from(path)
           },
         )
@@ -422,6 +569,7 @@ fn interactive(launch: Launch) -> Nil {
     Remote(address, session, token) ->
       connect_remote(base, inbox, address, session, token)
   }
+  let initial = open_recording(launched, record)
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
@@ -434,11 +582,63 @@ fn interactive(launch: Launch) -> Nil {
   Nil
 }
 
+/// This client's side of etui's loop, for a run under the virtual backend.
+///
+/// The four functions are exactly the ones `interactive` hands etui, so a
+/// scripted run exercises the shipped loop rather than a second one written
+/// for tests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(run) = virtual_backend.run_script(tui.loop(), model, script)
+/// ```
+@internal
+pub fn loop() -> virtual_backend.Loop(Model) {
+  virtual_backend.Loop(
+    update: update,
+    view: view,
+    should_quit: fn(model: Model) { model.quit },
+    poll_timeout: terminal_poll_timeout,
+  )
+}
+
+/// Drives one script through the real loop and returns the frames it drew.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(run) = tui.run_script(model, script)
+/// ```
+@internal
+pub fn run_script(
+  model: Model,
+  script: virtual_backend.Script,
+) -> Result(virtual_backend.Run(Model), String) {
+  virtual_backend.run_script(loop(), model, script)
+}
+
+// A failed recording is a visible local error rather than a refused
+// launch: the session is still worth having, and the operator is told on
+// the frame that nothing is being written.
+fn open_recording(model: Model, record: String) -> Model {
+  case record {
+    "" -> model
+    path ->
+      case recording.start(path) {
+        Ok(recorder) ->
+          Model(..model, recorder: Some(recorder), notice: "recording")
+        Error(reason) -> append_error(model, reason)
+      }
+  }
+}
+
 fn parse_launch(arguments: List(String)) -> Launch {
   case arguments {
     [] -> Local(default_bootstrap_options())
     ["--demo"] -> Demo
     ["ext", ..rest] -> Forward(arguments: rest)
+    ["replay", ..rest] -> parse_replay(rest)
     _ ->
       case flag_value(arguments, "--addr"), flag_value(arguments, "--session") {
         Ok(address), Ok(session) ->
@@ -509,8 +709,187 @@ fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session-file <path>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
+  <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
-  <> "[--token-file <path> | --token <bearer>]"
+  <> "[--token-file <path> | --token <bearer>]\n"
+  <> "       loom replay <path> [--at <frame>] [--all] "
+  <> "[--width <w>] [--height <h>]\n"
+  <> "  the last frame is reproducible; a frame before a settling tick "
+  <> "may differ between runs\n"
+  <> "  --width/--height size the replay until the recording's own first "
+  <> "resize supersedes them"
+}
+
+fn parse_replay(arguments: List(String)) -> Launch {
+  case arguments {
+    [] -> Invalid("replay needs a recording path\n" <> launch_usage())
+    [path, ..options] ->
+      case
+        parse_replay_options(
+          options,
+          ReplayOptions(frames: LastFrame, width: 80, height: 24),
+        )
+      {
+        Ok(ReplayOptions(frames:, width:, height:)) ->
+          Replay(path:, frames:, size: backend.TerminalSize(width:, height:))
+        Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
+      }
+  }
+}
+
+// `--all` takes no value, so the list is walked one element at a time and
+// the flags that do take one consume the next themselves.
+fn parse_replay_options(
+  arguments: List(String),
+  options: ReplayOptions,
+) -> Result(ReplayOptions, String) {
+  case arguments {
+    [] -> Ok(options)
+    ["--all", ..rest] ->
+      parse_replay_options(rest, ReplayOptions(..options, frames: AllFrames))
+    [flag] -> Error("missing value for " <> flag)
+    [flag, value, ..rest] -> {
+      use options <- result.try(replay_option(options, flag, value))
+      parse_replay_options(rest, options)
+    }
+  }
+}
+
+fn replay_option(
+  options: ReplayOptions,
+  flag: String,
+  value: String,
+) -> Result(ReplayOptions, String) {
+  use number <- result.try(
+    int.parse(value)
+    |> result.map_error(fn(_) {
+      flag <> " needs a number, not \"" <> value <> "\""
+    }),
+  )
+
+  // Each range is checked where the flag is read. `list.drop` treats a
+  // negative count as none, so a negative `--at` would print the first
+  // frame rather than the worded error its own arm promises, and a screen
+  // of no cells renders nothing to compare.
+  case flag {
+    "--at" ->
+      case number >= 0 {
+        True -> Ok(ReplayOptions(..options, frames: FrameAt(index: number)))
+        False -> Error("--at cannot be negative, got " <> value)
+      }
+    "--width" ->
+      case number > 0 {
+        True -> Ok(ReplayOptions(..options, width: number))
+        False -> Error("--width needs at least one cell, got " <> value)
+      }
+    "--height" ->
+      case number > 0 {
+        True -> Ok(ReplayOptions(..options, height: number))
+        False -> Error("--height needs at least one cell, got " <> value)
+      }
+    _ -> Error("unknown replay option " <> flag)
+  }
+}
+
+// The agent-facing surface: a recording in, frames out, and a non-zero
+// status with a worded reason for anything that stops that happening.
+fn replay(
+  path: String,
+  frames: FrameSelection,
+  size: backend.TerminalSize,
+) -> Nil {
+  case replay_recording(path, size) {
+    Ok(rendered) -> print_frames(rendered, frames)
+    Error(reason) -> {
+      io.println_error("loom replay: " <> reason)
+      ffi_bootstrap.halt(1)
+      Nil
+    }
+  }
+}
+
+fn replay_recording(
+  path: String,
+  size: backend.TerminalSize,
+) -> Result(List(buffer.Buffer), String) {
+  use moments <- result.try(recording.decode_file(path))
+  replay_steps(recording.to_steps(moments), size)
+}
+
+/// Runs a decoded recording through the real loop and returns its frames.
+///
+/// The starting workspace is a fixed placeholder rather than the current
+/// directory: a recording carries no workspace, and a replay whose footer
+/// changed with the shell it was run from would be a poor golden file and
+/// a confusing answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(frames) =
+///   tui.replay_steps(steps, backend.TerminalSize(width: 80, height: 24))
+/// ```
+@internal
+pub fn replay_steps(
+  steps: List(virtual_backend.Step),
+  size: backend.TerminalSize,
+) -> Result(List(buffer.Buffer), String) {
+  let inbox = connection.new_inbox()
+  let model =
+    Model(
+      ..new_model(inbox, workspace.Context(path: "replay", branch: None)),
+      peer: Replaying,
+      transcript: [],
+      // The demo catalogue goes with the demo peer. `connect_remote`
+      // empties it for the same reason: a client shows the models the
+      // server named, and a replay whose recording never carried a
+      // catalogue snapshot must show the empty selector the live client
+      // showed, not four invented entries.
+      models: [],
+      session: "replay",
+      strands: [],
+      agent_summary: agents.summary([]),
+      notice: "replaying",
+    )
+  use run <- result.try(run_script(
+    model,
+    virtual_backend.script(size, steps, inbox),
+  ))
+  Ok(run.frames)
+}
+
+fn print_frames(frames: List(buffer.Buffer), selection: FrameSelection) -> Nil {
+  case selection {
+    AllFrames ->
+      list.index_fold(frames, Nil, fn(_acc, drawn, index) {
+        io.println(frame_separator(index))
+        io.println(frame.buffer_to_text(drawn))
+      })
+
+    // A missing frame is a real failure rather than an empty print: it
+    // means the recording had fewer events than the caller believed.
+    LastFrame -> print_one(list.last(frames), "the recording drew no frames")
+    FrameAt(index:) ->
+      print_one(
+        list.drop(frames, index) |> list.first,
+        "the recording has no frame " <> int.to_string(index),
+      )
+  }
+}
+
+fn print_one(frame_result: Result(buffer.Buffer, Nil), missing: String) -> Nil {
+  case frame_result {
+    Ok(drawn) -> io.println(frame.buffer_to_text(drawn))
+    Error(Nil) -> {
+      io.println_error("loom replay: " <> missing)
+      ffi_bootstrap.halt(1)
+      Nil
+    }
+  }
+}
+
+fn frame_separator(index: Int) -> String {
+  string.repeat("\u{2500}", 8) <> " frame " <> int.to_string(index) <> " "
 }
 
 fn connect_remote(
@@ -533,7 +912,7 @@ fn connect_remote(
       Model(
         ..base,
         session:,
-        socket: Some(socket),
+        peer: Attached(socket:),
         next_id: 4,
         models: [],
         strands: [],
@@ -561,7 +940,15 @@ fn flag_value(arguments: List(String), flag: String) -> Result(String, Nil) {
 // view therefore never consults the revision: rendering here would undo the
 // deferral, and would also build a frame nobody caches. Only a screen etui
 // reports that the cache was not drawn for falls through to a fresh render.
-fn view(
+/// Returns the frame for one screen, cached or freshly rendered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(frame, cursor) = tui.view(model, geometry.rect_new(0, 0, 80, 24))
+/// ```
+@internal
+pub fn view(
   model: Model,
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
@@ -1486,7 +1873,19 @@ fn render_command_palette(
   }
 }
 
-fn update(event: backend.InputEvent, model: Model) -> Model {
+/// Applies one terminal event to the model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let next = tui.update(backend.Tick, model)
+/// ```
+@internal
+pub fn update(event: backend.InputEvent, model: Model) -> Model {
+  // Before the event is interpreted, so a recording holds what the client
+  // was given rather than what it made of it.
+  recording.note_input(model.recorder, event)
+
   let updated = case event {
     backend.Resize(width, height) ->
       Model(..model, width:, height:)
@@ -1659,7 +2058,15 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
   }
 }
 
-fn terminal_poll_timeout(model: Model) -> Int {
+/// The wait this model would ask a terminal for before its next poll.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.terminal_poll_timeout(model) == 40
+/// ```
+@internal
+pub fn terminal_poll_timeout(model: Model) -> Int {
   paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
 }
 
@@ -1906,9 +2313,9 @@ fn adopt_session(
   inbox: Subject(connection.Message),
   socket: connection.Connection,
 ) -> Model {
-  case model.socket {
-    Some(previous) -> connection.close(previous)
-    None -> Nil
+  case model.peer {
+    Attached(socket: previous) -> connection.close(previous)
+    Preview | Replaying -> Nil
   }
 
   // Frames the old socket already delivered would otherwise sit unread in
@@ -1923,7 +2330,7 @@ fn adopt_session(
     session: target.session,
     local_options: Some(options),
     inbox:,
-    socket: Some(socket),
+    peer: Attached(socket:),
     session_switch: sessions.Idle,
     next_id: 4,
     transcript: [Line(System, "connecting to session " <> target.session)],
@@ -1968,6 +2375,8 @@ fn handle_connection_message(
   model: Model,
   incoming: connection.Message,
 ) -> Model {
+  recording.note_message(model.recorder, incoming)
+
   case incoming {
     connection.Connected ->
       Model(..model, notice: "connected")
@@ -1975,7 +2384,7 @@ fn handle_connection_message(
       |> invalidate_frame
     connection.Closed(reason) ->
       append_error(
-        Model(..model, socket: None),
+        Model(..model, peer: after_close(model.peer)),
         "connection closed: " <> reason,
       )
       |> mark_activity
@@ -2115,15 +2524,24 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.UsageChanged(usage: settled) -> {
       // Usage arrives once per settled generation, so this is the moment
       // the rate is known: the settlement's own output count over the
-      // time since its first fragment. A settlement that never streamed
-      // (a refusal, an empty turn) leaves the last rate standing.
-      let output_rate_tps = case model.generation_started_ms {
-        Some(started) ->
+      // time since the request went out. A settlement whose clock never
+      // started (a refusal, an empty turn) leaves the last rate standing.
+      let output_rate_tps = case model.peer, model.generation_started_ms {
+        // The window is this client's own clock from the request going
+        // out to the settlement, and a replay spends that window playing
+        // a file rather than waiting on a provider. `output_rate_min_ms`
+        // already discards the short ones, so a brief replay would report
+        // nothing anyway; a long one would report how fast the replay
+        // ran. Declining outright is the same rule that stops a replay
+        // echoing a prompt.
+        Replaying, _ -> model.output_rate_tps
+
+        Attached(..), Some(started) | Preview, Some(started) ->
           output_rate(
             settled.output,
             ffi_bootstrap.monotonic_time_ms() - started,
           )
-        None -> model.output_rate_tps
+        Attached(..), None | Preview, None -> model.output_rate_tps
       }
       let usage = add_usage(model.usage, settled)
       Model(
@@ -3249,10 +3667,22 @@ fn submit(model: Model) -> Model {
 }
 
 fn open_session_selector(model: Model) -> Model {
-  case model.local_options {
-    None ->
-      append_error(model, "/sessions is available only for local attachments")
-    Some(options) -> open_local_session_selector(model, options)
+  case model.peer {
+    // The selector is built from the local launcher catalogue, which a
+    // recording does not carry and a replaying machine need not have. It
+    // says so in the notice rather than inventing a listing or an error
+    // the live client never showed.
+    Replaying -> Model(..model, notice: "/sessions is not replayed")
+
+    Attached(..) | Preview ->
+      case model.local_options {
+        None ->
+          append_error(
+            model,
+            "/sessions is available only for local attachments",
+          )
+        Some(options) -> open_local_session_selector(model, options)
+      }
   }
 }
 
@@ -3285,13 +3715,18 @@ fn begin_session_switch(
   model: Model,
   choice: bootstrap.SessionChoice,
 ) -> Model {
-  case model.local_options {
-    None ->
+  case model.peer, model.local_options {
+    // Unreachable: a replay never opens the selector this arrives from.
+    // Enumerated rather than swept up, so a future path into it starts no
+    // daemon and opens no socket.
+    Replaying, _ -> Model(..model, overlay: NoOverlay)
+
+    Attached(..), None | Preview, None ->
       append_error(
         Model(..model, overlay: NoOverlay),
         "/sessions is available only for local attachments",
       )
-    Some(options) ->
+    Attached(..), Some(options) | Preview, Some(options) ->
       Model(
         ..model,
         overlay: NoOverlay,
@@ -3536,17 +3971,23 @@ fn send_prompt_content(
   text: String,
   images: List(image_drop.Image),
 ) -> Model {
-  case model.socket {
-    Some(_) ->
+  let sent =
+    Model(
+      ..model,
+      submitting: Some(model.active_strand),
+      notice: "image prompt sent to " <> model.active_strand,
+    )
+  case model.peer {
+    Attached(..) ->
       send_frame(
-        Model(
-          ..model,
-          submitting: Some(model.active_strand),
-          notice: "image prompt sent to " <> model.active_strand,
-        ),
+        sent,
         protocol.prompt_content(model.next_id, model.active_strand, content),
       )
-    None ->
+
+    // A replay stops exactly where the live client's local work stopped.
+    // The turn it produced is in the recording and arrives as an entry.
+    Replaying -> sent
+    Preview ->
       Model(
         ..model,
         transcript: list.append(model.transcript, [
@@ -3712,17 +4153,20 @@ fn send_prompt(model: Model, text: String) -> Model {
 // lets an immediate Escape place abort after prompt on the same connection,
 // even though the server's live phase has not reached the view yet.
 fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
-  case model.socket {
-    Some(_) ->
-      send_frame(
-        Model(
-          ..model,
-          submitting: Some(strand),
-          notice: "prompt sent to " <> strand,
-        ),
-        protocol.prompt(model.next_id, strand, text),
-      )
-    None ->
+  let sent =
+    Model(
+      ..model,
+      submitting: Some(strand),
+      notice: "prompt sent to " <> strand,
+    )
+  case model.peer {
+    Attached(..) ->
+      send_frame(sent, protocol.prompt(model.next_id, strand, text))
+
+    // The server echoed this turn back as an entry, and the recording has
+    // it. Drawing a local copy here would show the operator's line twice.
+    Replaying -> sent
+    Preview ->
       Model(
         ..model,
         transcript: list.append(model.transcript, [
@@ -3875,20 +4319,33 @@ fn toggle_details(model: Model) -> Model {
 }
 
 fn send_frame(model: Model, frame: String) -> Model {
-  case model.socket {
-    Some(socket) -> {
+  case model.peer {
+    Attached(socket:) -> {
       connection.send(socket, frame)
       Model(..model, next_id: model.next_id + 1)
     }
-    None -> model
+
+    // Neither peer has anywhere to write, and neither may pretend it does.
+    Preview | Replaying -> model
+  }
+}
+
+// What a closed websocket leaves behind. A live attachment falls back to
+// the preview, which is the behaviour a disconnected client has always
+// had; a replay stays a replay, because a recorded close must not turn the
+// rest of the recording into fabricated preview echoes.
+fn after_close(peer: Peer) -> Peer {
+  case peer {
+    Attached(..) | Preview -> Preview
+    Replaying -> Replaying
   }
 }
 
 fn quit(model: Model) -> Model {
   sessions.cancel(model.session_switch)
-  case model.socket {
-    Some(socket) -> connection.close(socket)
-    None -> Nil
+  case model.peer {
+    Attached(socket:) -> connection.close(socket)
+    Preview | Replaying -> Nil
   }
   Model(..model, quit: True)
 }

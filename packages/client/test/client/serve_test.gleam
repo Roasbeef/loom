@@ -149,12 +149,14 @@ fn settings_under(root: String) -> serve.Settings {
 pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
   // Without a toolchain the shell gets the system PATH; with one it gets
   // the compiler's, so `gleam` resolves in the shell as it does for the
-  // build. HOME and TMPDIR are always the workspace's, because the
-  // workspace is the one root the jail lets a tool write.
+  // build. HOME and TMPDIR are directories under the workspace, because
+  // the workspace is the one root the jail lets a tool write — and under
+  // its dot-directory, so what a toolchain writes to either stays out of
+  // the operator's tree.
   assert serve.session_environment("/work", None)
     == [
       #("PATH", "/usr/local/bin:/usr/bin:/bin"),
-      #("HOME", "/work"),
+      #("HOME", "/work/.codemode/home"),
       #("TMPDIR", "/work/.codemode/tmp"),
     ]
   let toolchain = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -162,6 +164,37 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
     list.key_find(serve.session_environment("/work", Some(toolchain)), "PATH")
   assert path == toolchain
   assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
+  assert serve.tool_home_directory("/work") == "/work/.codemode/home"
+}
+
+pub fn a_linked_worktree_widens_the_base_to_its_git_directories_test() {
+  // A worktree keeps its metadata under the main repository's .git, so
+  // a jailed git commit needs both that directory and the main .git it
+  // shares objects with; a primary checkout, whose .git is inside the
+  // workspace, gets nothing extra.
+  let root = "build/test-linked-worktree"
+  let _stale = simplifile.delete(root)
+  let assert Ok(cwd) = simplifile.current_directory()
+  let repo = cwd <> "/" <> root <> "/repo"
+  let work = cwd <> "/" <> root <> "/work"
+  let gitdir = repo <> "/.git/worktrees/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(gitdir)
+  let assert Ok(Nil) = simplifile.create_directory_all(work)
+  let assert Ok(Nil) =
+    simplifile.write(work <> "/.git", "gitdir: " <> gitdir <> "\n")
+  let assert Ok(Nil) = simplifile.write(gitdir <> "/commondir", "../..\n")
+
+  assert serve.linked_git_directories(work) == [gitdir, repo <> "/.git"]
+  let widened = serve.widening_linked_worktree(serve.base_policy(work), work)
+  assert widened.writable_roots == [work, gitdir, repo <> "/.git"]
+
+  // A primary checkout: .git is a directory, so reading it fails and
+  // nothing is widened.
+  let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/src")
+  assert serve.linked_git_directories(repo) == []
+  assert serve.widening_linked_worktree(serve.base_policy(repo), repo)
+    == serve.base_policy(repo)
+  let _cleanup = simplifile.delete(root)
 }
 
 pub fn boot_serves_healthz_and_ws_subscribe_test() {
@@ -909,7 +942,7 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
   assert environment
     == [
       #("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
-      #("HOME", "/work"),
+      #("HOME", "/work/.codemode/home"),
       #("TMPDIR", "/work/.codemode/tmp"),
       #("GH_TOKEN", "gho_secret"),
       #("GH_CONFIG_DIR", "/home/me/.config/gh"),

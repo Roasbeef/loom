@@ -213,6 +213,7 @@ import client/system_prompt
 import client/wiring
 import core/clock.{type Clock}
 import core/ids
+import filepath
 import gleam/bool
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/int
@@ -1844,6 +1845,7 @@ fn assemble(
     |> protecting_memory(memory_store, memory_digest)
     |> allowing_tool_tmpdir
     |> under_tools_config(settings.tools)
+    |> widening_linked_worktree(settings.workspace)
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
@@ -1851,12 +1853,12 @@ fn assemble(
   use Nil <- result.try(base_policy_fault(base_policy))
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
-  use Nil <- result.try(prepare_directories(
-    settings,
-    blob_root,
-    tmp_dir,
-    tool_tmp_directory(settings.workspace),
-  ))
+  use Nil <- result.try(
+    prepare_directories(settings, blob_root, tmp_dir, [
+      tool_tmp_directory(settings.workspace),
+      tool_home_directory(settings.workspace),
+    ]),
+  )
 
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
@@ -2706,9 +2708,14 @@ const hook_step_id = "extension-hooks"
 ///   `erl` resolve in the shell exactly as they do for the compiler. On a
 ///   Homebrew Mac the system directories alone hide both, and a model
 ///   that cannot run the project's tests falls back to `find /`.
-/// - `HOME` is the workspace. `bash -l` sources the dotfiles under
-///   `$HOME`, and with the name unset it read the operator's profile
-///   against an empty home and failed every line that mentioned it.
+/// - `HOME` is a directory under the workspace, so it is writable and
+///   empty. `bash -l` sources the dotfiles under `$HOME`, and with the
+///   name unset it read the operator's profile against an empty home and
+///   failed every line that mentioned it. It was the workspace itself for
+///   a while, and macOS answered by creating `Library/Caches` in the
+///   operator's checkout — an untracked directory in every `git status`
+///   the model ran. A home of its own keeps what a toolchain writes to
+///   `$HOME` off the tree.
 /// - `TMPDIR` is a directory under the workspace, the one root the jail
 ///   lets a tool write. The host's temp directory is not writable from
 ///   inside, so a compiler or test runner that mints temp files died on
@@ -2720,7 +2727,7 @@ const hook_step_id = "extension-hooks"
 /// assert serve.session_environment("/work", option.None)
 ///   == [
 ///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
-///     #("HOME", "/work"),
+///     #("HOME", "/work/.codemode/home"),
 ///     #("TMPDIR", "/work/.codemode/tmp"),
 ///   ]
 /// ```
@@ -2732,9 +2739,25 @@ pub fn session_environment(
 ) -> List(#(String, String)) {
   [
     #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
-    #("HOME", workspace),
+    #("HOME", tool_home_directory(workspace)),
     #("TMPDIR", tool_tmp_directory(workspace)),
   ]
+}
+
+/// Where a jailed tool's `HOME` points: a directory of its own beneath
+/// the code-mode work directory, beside `TMPDIR`, for the same reason —
+/// the workspace gains no second dot-directory, and nothing a tool
+/// writes to its home lands in the operator's tree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.tool_home_directory("/work") == "/work/.codemode/home"
+/// ```
+///
+@internal
+pub fn tool_home_directory(workspace: String) -> String {
+  workspace <> "/" <> codemode_wiring.work_directory <> "/home"
 }
 
 /// The whole environment a jailed tool shell of this session runs under:
@@ -2805,6 +2828,108 @@ pub fn tool_environment(
 @internal
 pub fn tool_tmp_directory(workspace: String) -> String {
   workspace <> "/" <> codemode_wiring.work_directory <> "/tmp"
+}
+
+/// The base policy widened for a workspace that is a linked git
+/// worktree: the directories git keeps for it outside the tree become
+/// writable roots, so `git commit` works there as it does in a primary
+/// checkout.
+///
+/// A primary checkout holds its metadata in `<workspace>/.git`, inside
+/// the one root the jail lets a tool write, and committing needs nothing
+/// more. A worktree made by `git worktree add` holds a `.git` *file*
+/// instead, naming a directory under the main repository's
+/// `.git/worktrees/<name>`, and that directory's `commondir` names the
+/// main repository's `.git` where objects and refs live. Both are outside
+/// the workspace, so under the default base a jailed `git commit` died
+/// on the index lock with "Operation not permitted" and the model
+/// concluded, correctly and uselessly, that it could not commit.
+///
+/// The widening is the same trust a primary checkout already extends: a
+/// model that can write `<workspace>/.git` can already plant a hook or
+/// rewrite a ref there, and the main repository's `.git` is the same
+/// kind of place for the same operator. A workspace that is not a
+/// worktree, or whose `.git` file cannot be read, is left exactly as it
+/// was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /work/.git reading `gitdir: /repo/.git/worktrees/work` and
+/// // /repo/.git/worktrees/work/commondir reading `../..`:
+/// // serve.widening_linked_worktree(base, "/work").writable_roots
+/// //   == ["/work", "/repo/.git/worktrees/work", "/repo/.git"]
+/// ```
+///
+@internal
+pub fn widening_linked_worktree(
+  base: policy.SandboxPolicy,
+  workspace: String,
+) -> policy.SandboxPolicy {
+  case linked_git_directories(workspace) {
+    [] -> base
+    outside ->
+      policy.SandboxPolicy(
+        ..base,
+        writable_roots: list.unique(list.append(base.writable_roots, outside)),
+      )
+  }
+}
+
+/// The directories a linked worktree's git metadata lives in, outside
+/// the workspace: the worktree's own git directory first, then the main
+/// repository's `.git` its `commondir` names. Empty for a primary
+/// checkout, for a directory that is not a repository, and for a `.git`
+/// file that does not parse — every failure reads as "nothing to widen".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.linked_git_directories("/not/a/worktree") == []
+/// ```
+///
+@internal
+pub fn linked_git_directories(workspace: String) -> List(String) {
+  let directories = {
+    use text <- result.try(result.replace_error(
+      simplifile.read(workspace <> "/.git"),
+      Nil,
+    ))
+    use gitdir_text <- result.try(gitdir_line(text))
+    use gitdir <- result.try(absolute_path(gitdir_text, against: workspace))
+
+    // A worktree without a readable commondir is a worktree git itself
+    // cannot use, so the main repository is simply not added.
+    let common =
+      simplifile.read(gitdir <> "/commondir")
+      |> result.replace_error(Nil)
+      |> result.try(absolute_path(_, against: gitdir))
+      |> result.map(list.wrap)
+      |> result.unwrap([])
+    Ok([gitdir, ..common])
+  }
+  result.unwrap(directories, [])
+}
+
+// The one line a linked worktree's `.git` file carries, without its
+// prefix and trailing newline.
+fn gitdir_line(text: String) -> Result(String, Nil) {
+  case text {
+    "gitdir: " <> rest -> Ok(string.trim(rest))
+    _other -> Error(Nil)
+  }
+}
+
+// A path from a git metadata file made absolute and free of `..`
+// segments, since a writable root is compared by prefix and `a/b/../c`
+// would cover nothing. Relative paths resolve against the file's own
+// directory, which is how git reads them.
+fn absolute_path(path: String, against base: String) -> Result(String, Nil) {
+  let trimmed = string.trim(path)
+  case filepath.is_absolute(trimmed) {
+    True -> filepath.expand(trimmed)
+    False -> filepath.expand(filepath.join(base, trimmed))
+  }
 }
 
 // The policy meet keeps only the environment names the session base
@@ -2962,7 +3087,7 @@ fn prepare_directories(
   settings: Settings,
   blob_root: String,
   tmp_dir: String,
-  tool_tmp_dir: String,
+  tool_dirs: List(String),
 ) -> Result(Nil, String) {
   let wanted = [
     parent_directory(settings.session_path),
@@ -2970,9 +3095,9 @@ fn prepare_directories(
     Some(settings.workspace),
     Some(blob_root),
     Some(tmp_dir),
-    Some(tool_tmp_dir),
   ]
-  list.try_each(option.values(wanted), fn(directory) {
+  let directories = list.append(option.values(wanted), tool_dirs)
+  list.try_each(directories, fn(directory) {
     simplifile.create_directory_all(directory)
     |> result.map_error(fn(error) {
       "could not create " <> directory <> ": " <> string.inspect(error)

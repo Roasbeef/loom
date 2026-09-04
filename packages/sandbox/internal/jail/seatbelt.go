@@ -67,6 +67,18 @@ const seatbeltFullNetworkProfile = `
   (global-name "com.apple.trustd.agent"))
 `
 
+// SeatbeltScratchParent is where the private per-execution scratch
+// directory is created on macOS. It is deliberately not the helper's own
+// TMPDIR: that is the user temp directory, which the profile grants to
+// every execution (see DarwinUserDirectories), and a scratch made there
+// would be writable by any concurrent jailed process rather than by the
+// one it was made for. /private/tmp is granted to none of them, so a
+// mode-0700 directory under it keeps the one-execution-one-scratch
+// property the Linux tmpfs mount gives for free. The self-test probes use
+// it for the same reason: a fixture under the user temp directory is no
+// longer outside the jail.
+const SeatbeltScratchParent = "/private/tmp"
+
 // SeatbeltPlan is the generated profile and its audit data. Profile paths are
 // passed as sandbox-exec parameters rather than interpolated into SBPL.
 type SeatbeltPlan struct {
@@ -106,6 +118,8 @@ func (p SeatbeltPlan) Enforcement(network policy.NetworkMode) []string {
 // tmpfs scratch request maps to scratchPath, a fresh mode-0700 directory owned
 // and removed by the supervising helper. Seatbelt has no mount namespace, so
 // the private directory is the macOS equivalent rather than a claimed tmpfs.
+// The user's own darwin temp and cache directories are granted alongside the
+// policy's roots, because Apple's toolchain shims write there unasked.
 func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	writable := normalizedSeatbeltPaths(pol.WritableRoots)
 	if scratchPath != "" {
@@ -113,6 +127,11 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	} else if !pol.ScratchIsTmpfs() {
 		writable = append(writable, normalizeSeatbeltPath(pol.Scratch))
 	}
+
+	// Apple's toolchain shims write caches to the user's own temp and
+	// cache directories regardless of TMPDIR; see DarwinUserDirectories
+	// for why those two are granted alongside the policy's roots.
+	writable = append(writable, normalizedSeatbeltPaths(DarwinUserDirectories())...)
 	writable = uniqueSorted(writable)
 
 	protected := protectedSeatbeltPaths(pol.Protected)

@@ -275,6 +275,14 @@ can repair from.
 
 ## Invariants
 
+- **`bash` asks for every writable root the session base grants, not the
+  workspace alone.** `policy.compose` intersects roots, so a shell that
+  asked for `[workspace]` would get the workspace whatever the base said;
+  a linked git worktree's base also grants the git directories under the
+  main repository's `.git` (`client/serve.widening_linked_worktree`), and
+  without them `git commit` dies on the index lock. Asking for the base's
+  own roots cannot widen past the base. `grep` and the rest keep their
+  narrower requirements.
 - **Tools never crash the strand.** Bad arguments, a policy refusal, a dead
   helper, a stale anchor, an unknown tool name — every one comes back as a
   structured `is_error` result the model can read. Dispatching an unknown

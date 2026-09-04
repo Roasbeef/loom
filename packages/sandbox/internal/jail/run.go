@@ -291,7 +291,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 				SeatbeltExecutable)
 		}
 		if req.Policy.ScratchIsTmpfs() {
-			scratchDir, err = os.MkdirTemp("", "loom-exec-scratch-")
+			scratchDir, err = os.MkdirTemp(SeatbeltScratchParent, "loom-exec-scratch-")
 			if err != nil {
 				policyR.Close()
 				reportR.Close()
