@@ -6,7 +6,7 @@ gleam = ">= 1.16.0"
 [dependencies]
 argv = ">= 1.1.0 and < 2.0.0"
 core = { path = "../core" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "fd1ff36cf167e3657a1727508aa602b8cf799422" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "702a88415d66acab7c977da41850a7e02cc2ebed" }
 filepath = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
