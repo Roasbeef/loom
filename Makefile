@@ -50,7 +50,9 @@ LOOSE_GLEAM := $(wildcard docs/examples/*.gleam)
 .PHONY: fmt
 fmt: ## Format all Gleam and Go sources in place
 	@set -e; for p in $(PACKAGES); do \
-		(cd packages/$$p && gleam format src test); \
+		(cd packages/$$p && \
+			paths="src test"; [ ! -d dev ] || paths="$$paths dev"; \
+			gleam format $$paths); \
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format $(LOOSE_GLEAM)
 	@cd $(GO_PKG) && gofmt -w .
@@ -59,7 +61,9 @@ fmt: ## Format all Gleam and Go sources in place
 .PHONY: fmt-check
 fmt-check: ## Verify formatting without writing (what CI enforces)
 	@set -e; for p in $(PACKAGES); do \
-		(cd packages/$$p && gleam format --check src test); \
+		(cd packages/$$p && \
+			paths="src test"; [ ! -d dev ] || paths="$$paths dev"; \
+			gleam format --check $$paths); \
 	done
 	@test -z "$(LOOSE_GLEAM)" || gleam format --check $(LOOSE_GLEAM)
 	@test -z "$$(cd $(GO_PKG) && gofmt -l .)" || { \
@@ -177,6 +181,10 @@ run-tui: binaries ## Attach the TUI: make run-tui ADDR=ws://host:port/v1/ws SESS
 		./bin/loom --addr "$(ADDR)" --session "$(SESSION)" \
 			--token-file "$(TOKEN_FILE)"; \
 	else ./bin/loom --addr "$(ADDR)" --session "$(SESSION)"; fi
+
+.PHONY: bench-tui
+bench-tui: ## Benchmark the TUI frame-rendering hot paths
+	@cd packages/tui && gleam dev
 
 .PHONY: dev
 dev: ## Build, start a server on a scratch session, attach the TUI (interactive)
