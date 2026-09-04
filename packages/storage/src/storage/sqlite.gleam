@@ -59,6 +59,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import gleam/uri
 import simplifile
 import sqlight.{type Connection}
 import storage/internal/branch
@@ -829,6 +830,56 @@ pub fn identity(
       outcome
     }
   }
+}
+
+/// Reads one complete entry without acquiring or renewing a writer lease.
+///
+/// The host supplies the path; callers must never accept it from a model.
+/// Identity and entry are read through one connection, so a replaced file
+/// cannot pair another session's identity with this session's payload.
+/// Read-only mode also prevents creating a missing source database.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.read_entry(path: source, session: session_id, entry: entry_id)
+/// ```
+pub fn read_entry(
+  path path: String,
+  session session: ids.SessionId,
+  entry entry: EntryId,
+) -> Result(Entry, StorageError) {
+  let encoded_path =
+    path
+    |> string.split("/")
+    |> list.map(uri.percent_encode)
+    |> string.join("/")
+  use conn <- result.try(
+    sqlight.open("file:" <> encoded_path <> "?mode=ro&cache=private")
+    |> result.map_error(fn(error) { BackendFault(describe_sqlight(error)) }),
+  )
+  let outcome = read_identified_entry(conn, session, entry)
+  let _closed = sqlight.close(conn)
+  outcome
+}
+
+fn read_identified_entry(
+  conn: Connection,
+  session: ids.SessionId,
+  entry: EntryId,
+) -> Result(Entry, StorageError) {
+  use #(identity, _parent) <- result.try(
+    read_identity(conn)
+    |> result.map_error(fn(error) { BackendFault(string.inspect(error)) }),
+  )
+  use Nil <- result.try(
+    case identity == Some(ids.session_id_to_string(session)) {
+      True -> Ok(Nil)
+      False -> Error(BackendFault("history source session identity mismatch"))
+    },
+  )
+  use entries <- result.try(do_get_entries(conn, [entry]))
+  dict.get(entries, entry) |> result.map_error(fn(_) { UnknownEntry(entry) })
 }
 
 fn read_identity(

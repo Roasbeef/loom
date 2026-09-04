@@ -4,6 +4,7 @@
 
 import core/clock
 import core/entry.{type Entry}
+import core/ids
 import core/register
 import core/tx.{InsertEntry, InsertUsage, SetRegister, Tx}
 import gleam/dict
@@ -320,4 +321,51 @@ pub fn racing_creates_write_one_catalog_row_test() {
   let assert Ok(stats) = storage.stats(survivor)
   assert stats.message_count == 0
   let assert Ok(Nil) = storage.close(survivor)
+}
+
+// A lease-free exact read must leave the live writer able to commit.
+// URI metacharacters are a filename, never query options supplied to SQLite.
+pub fn exact_read_preserves_writer_and_validates_source_test() {
+  let path = fresh_path("history?mode=rw#source")
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "live-writer"),
+      clock.fixed(at: 10_000),
+    )
+    as "the source writer must open"
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 14))
+  let #(foreign, _) = ids.mint_session(generator)
+  let assert Ok(Nil) =
+    sqlite.record_identity(
+      store.handle,
+      session_id: ids.session_id_to_string(session),
+      parent_session_id: None,
+    )
+    as "the source must carry its canonical identity"
+  let #(first, ctx) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "read canary")
+  let assert Ok(_) =
+    storage.commit(store, Tx(writes: [InsertEntry(first)], expected: []))
+    as "the first source entry must commit"
+  let assert Ok(stored) = sqlite.read_entry(path:, session:, entry: first.id)
+    as "read-only lookup must work while the writer holds its lease"
+  let assert Ok(entries) = storage.get_entries(store, [first.id])
+    as "the live source must remain readable"
+  assert dict.get(entries, first.id) == Ok(stored)
+  let assert Error(storage.BackendFault(_)) =
+    sqlite.read_entry(path:, session: foreign, entry: first.id)
+    as "a stale locator must not return another session's payload"
+  let #(second, _) =
+    fixtures.message_entry(ctx, Some(first.id), "writer still owns lease")
+  let assert Ok(_) =
+    storage.commit(store, Tx(writes: [InsertEntry(second)], expected: []))
+    as "exact reads must not steal the live writer's lease"
+  let assert Ok(Nil) = storage.close(store)
+    as "the original writer must close normally"
+  let absent = fresh_path("history-missing")
+  let assert Error(_) =
+    sqlite.read_entry(path: absent, session:, entry: first.id)
+    as "a missing source is an explicit failure"
+  assert simplifile.is_file(absent) == Ok(False)
 }
