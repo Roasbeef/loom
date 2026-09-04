@@ -1511,6 +1511,64 @@ pub fn replay_round_trip_snapshot_test() {
   snapshot_test.assert_snapshot("replay-transcript", frame.buffer_to_text(last))
 }
 
+pub fn a_replay_invents_no_catalogue_test() {
+  // The demo catalogue belongs to the demo peer. `connect_remote` empties
+  // it, so a live client whose server never sent a models snapshot opens
+  // an empty selector; a replay of that session must open the same one,
+  // not the four entries `new_model` seeds for `--demo`. The same rule
+  // that stops a replay echoing a prompt.
+  //
+  // The selector is where the catalogue is visible: the footer's model
+  // label is seeded on both paths alike, so it proves nothing either way.
+  let script = list.flatten([typed("/models"), [key("enter")]])
+  let assert Ok(frames) =
+    tui.replay_steps(script, backend.TerminalSize(width: 133, height: 20))
+  let assert Ok(drawn) = list.last(frames)
+  let text = frame.buffer_to_text(drawn)
+  assert string.contains(text, "session replay")
+  assert !string.contains(text, "baseten-deepseek-v4-flash")
+}
+
+pub fn a_live_recording_replays_to_its_settled_frame_test() {
+  // `test/recordings/gemini-flash-reply.jsonl` was recorded with
+  // `loom --record` against a real server and a real Gemini turn: the
+  // attach, the catalogue snapshots, one prompt, and its stream, usage and
+  // settlement. Replaying it is the whole point of the format — a bug seen
+  // in a live pane becomes a frame a test can hold.
+  //
+  // The recording stops at the settled turn and the golden pins the *last*
+  // frame, both for the same reason. Only the last frame is reproducible:
+  // whether a key press draws a fresh frame or leaves the previous one on
+  // screen depends on how long ago the client last drew, while the settling
+  // tick that ends a replay is a flush point. Indexing into the middle
+  // would be a golden that changes with the machine.
+  let assert Ok(moments) =
+    recording.decode_file("test/recordings/gemini-flash-reply.jsonl")
+  let assert Ok(frames) =
+    tui.replay_steps(
+      recording.to_steps(moments),
+      backend.TerminalSize(width: 133, height: 40),
+    )
+  let assert Ok(settled) = list.last(frames)
+
+  // A golden that could be satisfied by an empty screen proves nothing, so
+  // the reply and the settled phase are asserted before the picture. The
+  // operator's own turn must appear exactly once: the server echoed it as
+  // an entry, and a replay that also drew a local copy would show two.
+  let text = frame.buffer_to_text(settled)
+  assert string.contains(text, "The recording works.")
+  assert string.contains(text, "main: done")
+
+  // The golden is only reproducible because the fixture ends settled. A
+  // live strand paints the elapsed seconds of the *replay* into the
+  // prompt border, so a fixture truncated mid-turn would flake under
+  // load; the idle border title is that property, asserted.
+  assert string.contains(text, "prompt · / commands")
+  assert !string.contains(text, "Design-preview echo received.")
+  assert count_occurrences(text, "Reply with exactly this sentence") == 1
+  snapshot_test.assert_snapshot("live-gemini-flash-reply", text)
+}
+
 /// A blank last row survives the golden round trip.
 ///
 /// `write` appends one newline and the comparison takes one back off. An
@@ -1523,6 +1581,13 @@ pub fn a_snapshot_keeps_a_blank_last_row_test() {
     "blank-rows",
     frame.buffer_to_text(buffer.buffer_new(screen)),
   )
+}
+
+fn count_occurrences(text: String, needle: String) -> Int {
+  case string.split_once(text, needle) {
+    Ok(#(_before, after)) -> 1 + count_occurrences(after, needle)
+    Error(Nil) -> 0
+  }
 }
 
 // One session's worth of traffic: an attach, a user turn, a tool call and

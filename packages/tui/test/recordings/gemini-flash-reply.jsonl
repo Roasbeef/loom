@@ -1,0 +1,88 @@
+{"at":1915,"t":"resize","width":133,"height":40}
+{"at":1963,"t":"connected"}
+{"at":1963,"t":"incoming","text":"{\"v\":1,\"reply_to\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"full\",\"session\":\"loom-rec-1788512865\",\"next_seq\":1,\"strands\":[{\"id\":\"main\",\"name\":\"main\"}],\"entries\":[],\"usage\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":0,\"cost\":{\"input\":0.0,\"output\":0.0,\"cacheRead\":0.0,\"cacheWrite\":0.0,\"total\":0.0}}}}"}
+{"at":1963,"t":"incoming","text":"{\"v\":1,\"reply_to\":2,\"event\":\"snapshot\",\"body\":{\"mode\":\"models\",\"models\":[{\"name\":\"baseten-deepseek-v4-flash\",\"dialect\":\"openai\",\"model_id\":\"deepseek-ai/DeepSeek-V4-Flash-0731\",\"roles\":[\"subagent\"],\"active\":[]},{\"name\":\"baseten-glm-5-3\",\"dialect\":\"openai\",\"model_id\":\"zai-org/GLM-5.3\",\"roles\":[\"plan\"],\"active\":[]},{\"name\":\"baseten-glm-5-3-flash\",\"dialect\":\"openai\",\"model_id\":\"zai-org/GLM-5.3-Flash\",\"roles\":[\"summarize\"],\"active\":[]},{\"name\":\"baseten-kimi-k3\",\"dialect\":\"openai\",\"model_id\":\"moonshotai/Kimi-K3\",\"roles\":[\"main\"],\"active\":[]},{\"name\":\"gemini-flash\",\"dialect\":\"gemini\",\"model_id\":\"gemini-3.8-flash\",\"roles\":[\"main\",\"subagent\",\"plan\"],\"active\":[\"main\",\"subagent\",\"plan\"]},{\"name\":\"gemini-flash-3-5\",\"dialect\":\"gemini\",\"model_id\":\"gemini-3.5-flash\",\"roles\":[\"summarize\"],\"active\":[\"summarize\"]}]}}"}
+{"at":1963,"t":"incoming","text":"{\"v\":1,\"reply_to\":3,\"event\":\"snapshot\",\"body\":{\"mode\":\"config\",\"config\":{\"queue_mode\":\"consume_all\",\"tool_execution\":\"parallel\",\"model\":{\"provider\":\"gemini-flash\",\"model_id\":\"gemini-3.8-flash\"},\"model_name\":\"gemini-flash\",\"thinking_level\":\"low\",\"active_tools\":[\"agent_note\",\"agent_notes\",\"agent_roster\",\"agent_send\",\"agent_spawn\",\"agent_wait\",\"bash\",\"code_mode\",\"fs_edit\",\"fs_read\",\"fs_write\",\"grep\",\"history_search\",\"remember\",\"schedule_cancel\",\"schedule_create\",\"schedule_list\"]}}}"}
+{"at":10022,"t":"key","key":"R"}
+{"at":10024,"t":"key","key":"e"}
+{"at":10024,"t":"key","key":"p"}
+{"at":10024,"t":"key","key":"l"}
+{"at":10025,"t":"key","key":"y"}
+{"at":10025,"t":"key","key":" "}
+{"at":10025,"t":"key","key":"w"}
+{"at":10025,"t":"key","key":"i"}
+{"at":10025,"t":"key","key":"t"}
+{"at":10025,"t":"key","key":"h"}
+{"at":10025,"t":"key","key":" "}
+{"at":10026,"t":"key","key":"e"}
+{"at":10026,"t":"key","key":"x"}
+{"at":10026,"t":"key","key":"a"}
+{"at":10026,"t":"key","key":"c"}
+{"at":10026,"t":"key","key":"t"}
+{"at":10026,"t":"key","key":"l"}
+{"at":10026,"t":"key","key":"y"}
+{"at":10027,"t":"key","key":" "}
+{"at":10027,"t":"key","key":"t"}
+{"at":10027,"t":"key","key":"h"}
+{"at":10027,"t":"key","key":"i"}
+{"at":10027,"t":"key","key":"s"}
+{"at":10027,"t":"key","key":" "}
+{"at":10027,"t":"key","key":"s"}
+{"at":10027,"t":"key","key":"e"}
+{"at":10027,"t":"key","key":"n"}
+{"at":10028,"t":"key","key":"t"}
+{"at":10028,"t":"key","key":"e"}
+{"at":10028,"t":"key","key":"n"}
+{"at":10028,"t":"key","key":"c"}
+{"at":10028,"t":"key","key":"e"}
+{"at":10028,"t":"key","key":" "}
+{"at":10028,"t":"key","key":"a"}
+{"at":10028,"t":"key","key":"n"}
+{"at":10028,"t":"key","key":"d"}
+{"at":10029,"t":"key","key":" "}
+{"at":10029,"t":"key","key":"n"}
+{"at":10029,"t":"key","key":"o"}
+{"at":10029,"t":"key","key":"t"}
+{"at":10029,"t":"key","key":"h"}
+{"at":10029,"t":"key","key":"i"}
+{"at":10029,"t":"key","key":"n"}
+{"at":10029,"t":"key","key":"g"}
+{"at":10030,"t":"key","key":" "}
+{"at":10030,"t":"key","key":"e"}
+{"at":10030,"t":"key","key":"l"}
+{"at":10030,"t":"key","key":"s"}
+{"at":10030,"t":"key","key":"e"}
+{"at":10030,"t":"key","key":":"}
+{"at":10030,"t":"key","key":" "}
+{"at":10030,"t":"key","key":"T"}
+{"at":10031,"t":"key","key":"h"}
+{"at":10031,"t":"key","key":"e"}
+{"at":10031,"t":"key","key":" "}
+{"at":10031,"t":"key","key":"r"}
+{"at":10031,"t":"key","key":"e"}
+{"at":10031,"t":"key","key":"c"}
+{"at":10031,"t":"key","key":"o"}
+{"at":10031,"t":"key","key":"r"}
+{"at":10031,"t":"key","key":"d"}
+{"at":10032,"t":"key","key":"i"}
+{"at":10032,"t":"key","key":"n"}
+{"at":10032,"t":"key","key":"g"}
+{"at":10032,"t":"key","key":" "}
+{"at":10032,"t":"key","key":"w"}
+{"at":10033,"t":"key","key":"o"}
+{"at":10033,"t":"key","key":"r"}
+{"at":10033,"t":"key","key":"k"}
+{"at":10033,"t":"key","key":"s"}
+{"at":10033,"t":"key","key":"."}
+{"at":10033,"t":"key","key":"enter"}
+{"at":10084,"t":"incoming","text":"{\"v\":1,\"event\":\"op_transition\",\"seq\":10,\"body\":{\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"strand\":\"main\",\"phase\":\"starting\"}}"}
+{"at":10084,"t":"incoming","text":"{\"v\":1,\"reply_to\":4,\"event\":\"entry\",\"seq\":7,\"body\":{\"strand\":\"main\",\"entry\":{\"id\":\"01a06bac-b337-76bf-b2ce-139bbaf0dc2e\",\"parentId\":null,\"seq\":7,\"timestamp\":1788512875362,\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Reply with exactly this sentence and nothing else: The recording works.\"}],\"timestamp\":1788512875319}}}}"}
+{"at":10127,"t":"incoming","text":"{\"v\":1,\"event\":\"op_transition\",\"seq\":12,\"body\":{\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"strand\":\"main\",\"phase\":\"checkpoint\"}}"}
+{"at":10169,"t":"incoming","text":"{\"v\":1,\"event\":\"op_transition\",\"seq\":13,\"body\":{\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"strand\":\"main\",\"phase\":\"assistant\"}}"}
+{"at":10169,"t":"incoming","text":"{\"v\":1,\"event\":\"op_transition\",\"seq\":14,\"body\":{\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"strand\":\"main\",\"phase\":\"assistant\"}}"}
+{"at":15718,"t":"incoming","text":"{\"v\":1,\"event\":\"stream_delta\",\"body\":{\"strand\":\"main\",\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"ephemeral\":true,\"kind\":\"text\",\"text\":\"The recording works.\"}}"}
+{"at":15769,"t":"incoming","text":"{\"v\":1,\"event\":\"entry\",\"seq\":15,\"body\":{\"strand\":\"main\",\"entry\":{\"id\":\"01a06bac-b395-7855-9b8a-cfeb9e750e33\",\"parentId\":\"01a06bac-b337-76bf-b2ce-139bbaf0dc2e\",\"seq\":15,\"timestamp\":1788512881009,\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"The recording works.\",\"textSignature\":\"El4KXAERTTIP9BSio9KPOjTeMMXPuoB7A27IzOfTlGCG5iNESh+I7pqZUkpZbCMxiQTuWD6CrbRvmh6+gwHjgKL4bqGDmfQOjkTnpECjQqlInhM1UbQtVzN3DXSpddAI\"}],\"api\":\"gemini-generate-content\",\"provider\":\"gemini-flash\",\"model\":\"gemini-3.8-flash\",\"responseModel\":\"gemini-3.8-flash\",\"responseId\":\"bIqaary1DY7XjMcPocKxgAM\",\"usage\":{\"input\":17641,\"output\":4,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":17645,\"cost\":{\"input\":0.0,\"output\":0.0,\"cacheRead\":0.0,\"cacheWrite\":0.0,\"total\":0.0}},\"stopReason\":\"stop\",\"rawStopReason\":\"STOP\",\"endTurn\":true,\"timestamp\":1788512875519}}}}"}
+{"at":15769,"t":"incoming","text":"{\"v\":1,\"event\":\"usage\",\"seq\":17,\"body\":{\"strand\":\"main\",\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"usage\":{\"input\":17641,\"output\":4,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":17645,\"cost\":{\"input\":0.0,\"output\":0.0,\"cacheRead\":0.0,\"cacheWrite\":0.0,\"total\":0.0}}}}"}
+{"at":15769,"t":"incoming","text":"{\"v\":1,\"event\":\"op_transition\",\"seq\":18,\"body\":{\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"strand\":\"main\",\"phase\":\"checkpoint\"}}"}
+{"at":15811,"t":"incoming","text":"{\"v\":1,\"event\":\"strand_result\",\"seq\":21,\"body\":{\"strand\":\"main\",\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"status\":\"done\"}}"}
+{"at":15811,"t":"incoming","text":"{\"v\":1,\"event\":\"op_transition\",\"seq\":23,\"body\":{\"op\":\"01a06bac-b337-71de-b737-9b0a7f9ffbe9\",\"strand\":\"main\",\"phase\":\"done\"}}"}
