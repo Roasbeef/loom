@@ -461,3 +461,25 @@ pub fn exact_read_refuses_invalid_ids_and_failed_spills_test() {
     "could not save the complete history entry",
   )
 }
+
+pub fn exact_inline_json_preserves_fences_and_literal_escape_sequences_test() {
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 44))
+  let #(entry, _) = ids.mint_entry(generator)
+  let value =
+    json.Object([
+      #("```key", json.String("```gleam\nlet x = 1\n``` and literal \\u0060")),
+    ])
+  let seam = history.History(..unreachable(), read: fn(_, _) { Ok(value) })
+  let outcome =
+    run(seam, [
+      #("action", json.String("read")),
+      #("session", json.String(ids.session_id_to_string(session))),
+      #("entry", json.String(ids.entry_id_to_string(entry))),
+    ])
+  assert !outcome.is_error
+  let assert Ok(encoded) =
+    string.split(text_of(outcome), "\n") |> list.drop(3) |> list.first
+    as "an inline result must carry its complete JSON representation"
+  assert json.parse(encoded) == Ok(value)
+}
