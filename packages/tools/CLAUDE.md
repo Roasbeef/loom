@@ -149,9 +149,13 @@ can repair from.
   seam and the `history_search` tool over it. `History.search` takes a
   trimmed query, an already-clamped limit and a `Scope`
   (`Repository` | `ThisSession`) and answers hits or a `Refusal`
-  (`IndexUnavailable` | `IndexRefused`). The tool never names a session:
-  `ThisSession` means the *host's*, because a model that could name one
-  could read a session it was never given.
+  (`IndexUnavailable` | `IndexRefused`). `History.read` takes canonical
+  session and entry IDs and returns a complete codec entry. The host
+  resolves registered source paths and validates source identity without
+  acquiring a writer lease. `action=read` spills entries over 64 KiB through
+  `tools/blob`, returning bounded excerpts and a readable path; failed
+  spills refuse instead of silently clipping. Large single-line JSON needs
+  bounded shell reads rather than `fs_read` line pagination.
 - `tools/context.{Context, Report, Boundary, tool, tool_name, render,
   remaining}` — the `context_remaining` tool: the model's own door onto
   the compaction arithmetic. `Context.report` takes the *calling*

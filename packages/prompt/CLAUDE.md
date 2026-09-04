@@ -94,6 +94,13 @@ A directive whose content begins with `#` is a comment; any other
 unrecognized directive is corruption. The cost of that strictness is
 that a body line may not begin with `%%`.
 
+The default pack's identity section explains notes-based checkpoints,
+small stable note keys, exact history reads, and the absence of a guaranteed
+final note-writing turn. It asks agents to maintain their own inherited
+requirements and verify recalled facts. Mutable notes remain user-context
+data. Existing pinned prompts are not migrated; this rollout starts fresh
+sessions.
+
 The default system pack carries the canonical sections — `identity`,
 `tool_discipline`, `available_tools`, `delegation`, `conduct`,
 `environment`, `sandbox`, `repository_guidance` — plus the fragments

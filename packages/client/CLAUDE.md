@@ -239,7 +239,7 @@ over one session file. WP-L.
   classified and answered with lstat semantics so a symlink is never
   called a directory.
 - `client/history.{Config, Message, index_file, default_timeout_ms,
-  index_beside, probe, over_session, sqlite_generation, start, supervised,
+  index_beside, probe, over_session, with_source, sqlite_generation, start, supervised,
   stop, poke, synchronize, seam, commit_pull, supervised_commit_pull}` —
   the one process that owns this repository's `events/search` index, and
   the seams that reach it. Addressed by process name, like the Agency and
@@ -251,7 +251,10 @@ over one session file. WP-L.
   its rewrite generation as a **thunk** (`sqlite_generation`), called
   fresh on every pull, because a precise rewrite bumps it underneath a
   long-lived holder — and a generation that cannot be read skips the sync
-  rather than guessing zero.
+  rather than guessing zero. `with_source` records the host's session path
+  after sync. `ReadEntry` resolves canonical IDs through that registry,
+  validates source identity and returns a decoded entry through a read-only
+  SQLite connection. The model never chooses a filesystem path.
 - `client/notes.{max_digest_bytes, fence, digest_hooks, digest, cells,
   try_cells, strand_of}` — the `agent/` notes digest injected at run
   start, and the board read `client/checkpoint` shares. `cells` reads an
@@ -987,9 +990,10 @@ over one session file. WP-L.
   the compactions already on its branch (the window ordinal) — and
   `render` is the text: a `[loom]` header naming the window, the counts
   and where the cut messages went (`history_search` when `Recall` says
-  the host registered it), the notes quoted as data under
+  the strand can call it), the notes quoted as data under
   `max_notes_bytes`, and an operator's `compact` instructions quoted in
-  their own fence. `reminder_point` is one reserve below the threshold's
+  their own fence. A prior checkpoint is named by session and entry ID
+  for exact retrieval of inherited context. `reminder_point` is one reserve below the threshold's
   cut, `reminder` the user message the `context` slot appends past it.
   `remaining_seam` fills `tools/context`'s seam from the same projection
   and token fold the threshold reads. `docs/architecture/compaction.md`
