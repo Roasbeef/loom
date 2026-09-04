@@ -762,7 +762,7 @@ fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
       Length(1),
       Fill,
       Length(input_height(model)),
-      Length(footer_height(screen.size.width, model)),
+      Length(footer_height(screen.size.width)),
     ])
   {
     [header, body, input, footer] -> #(header, body, input, footer)
@@ -998,8 +998,10 @@ fn footer_sections(
     span.line_new([
       span.span_styled(
         " "
-          <> usage_summary(model.usage)
-          <> output_rate_label(model.output_rate_tps)
+          <> compact(
+          usage_summary(model.usage) <> output_rate_label(model.output_rate_tps),
+          footer_usage_cells - 2,
+        )
           <> " ",
         theme.footer_text(),
       ),
@@ -1033,36 +1035,58 @@ pub fn footer_status(agent_summary: String, notice: String) -> String {
   }
 }
 
-fn footer_height(width: Int, model: Model) -> Int {
-  let #(project, model_name, usage, status, _) = footer_sections(model)
-  footer_rows(width, project, model_name, usage, status)
+fn footer_height(width: Int) -> Int {
+  footer_rows(width)
 }
 
-/// Returns the rows needed to render all footer sections without collision.
+/// The most cells each footer section may take, including the space each
+/// side of it. `footer_sections` compacts every section to these, so the
+/// row count below can be decided from the width alone.
+const footer_project_cells = 70
+
+const footer_model_cells = 30
+
+const footer_usage_cells = 58
+
+const footer_status_cells = 42
+
+/// The rows the footer takes at a terminal width — one, two or three —
+/// decided from the width and the sections' fixed caps, never from what
+/// the sections happen to say.
+///
+/// That is the whole point of the caps. Measuring the rendered text
+/// instead made the footer flip between one row and two as a turn ran:
+/// `main: assistant` is wider than `main: done`, a `tok/s` suffix appears
+/// once a generation settles, and each change pushed the total across
+/// the threshold and moved the prompt box up or down under the operator's
+/// hands. A layout that depends only on the window can only change when
+/// the window does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.footer_rows(201) == 1
+/// assert tui.footer_rows(133) == 2
+/// assert tui.footer_rows(40) == 3
+/// ```
+///
 @internal
-pub fn footer_rows(
-  width: Int,
-  project: span.Line,
-  model_name: span.Line,
-  usage: span.Line,
-  status: span.Line,
-) -> Int {
-  let single_width =
-    span.line_width(project)
-    + span.line_width(usage)
-    + span.line_width(model_name)
-    + span.line_width(status)
+pub fn footer_rows(width: Int) -> Int {
+  let single =
+    footer_project_cells
+    + footer_model_cells
+    + footer_usage_cells
+    + footer_status_cells
     + 1
-  case single_width <= width {
-    True -> 1
-    False ->
-      case
-        span.line_width(project) + span.line_width(model_name) <= width
-        && span.line_width(usage) + span.line_width(status) <= width
-      {
-        True -> 2
-        False -> 3
-      }
+  let pair =
+    int.max(
+      footer_project_cells + footer_model_cells,
+      footer_usage_cells + footer_status_cells,
+    )
+  case width >= single, width >= pair {
+    True, _ -> 1
+    False, True -> 2
+    False, False -> 3
   }
 }
 
@@ -3121,7 +3145,7 @@ fn transcript_viewport_height(model: Model) -> Int {
   transcript_height(
     model.height,
     input_height(model),
-    footer_height(model.width, model),
+    footer_height(model.width),
   )
 }
 
@@ -3819,8 +3843,8 @@ fn toggle_details(model: Model) -> Model {
     details_expanded: expanded,
     repaint_phase: !model.repaint_phase,
     notice: case expanded {
-      True -> "reasoning and tool detail expanded"
-      False -> "reasoning and tool detail collapsed"
+      True -> "details expanded"
+      False -> "details collapsed"
     },
   )
 }
