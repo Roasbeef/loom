@@ -260,6 +260,14 @@ that tree separately from the self-contained server.
   position lands within a frame of the hand stopping. Ticks and resizes always
   render. The pacing clock is the monotonic clock, seeded at startup because a
   fresh node's monotonic time is negative.
+- **Presentation uses one caller-owned clock.** `new_model` supplies the
+  host's monotonic clock; `new_model_with_clock` lets a test supply its own.
+  Frame pacing, generation throughput, and activity elapsed time all read
+  `Model.monotonic_time_ms`, including the initial frame timestamp. This
+  controls presentation only: socket deadlines, daemon bootstrap, and
+  recording timestamps retain their real clocks. `test/clock_test.gleam`
+  exercises the event handler at negative epochs and pins repeated scripted
+  intermediate frames with a fixed clock.
 - **Panels draw borders, not interiors.** `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
   pins that, but it skips the block's area-dependent interior clear over cells
@@ -377,8 +385,9 @@ that tree separately from the self-contained server.
   long ago the client last drew, so `--at` and `--all` may differ between
   machines; the settling tick that ends a replay is a flush point, so that
   frame is always current. A golden pins the last frame for that reason.
-  Making every frame reproducible needs an injected clock and is separate
-  work.
+  Tests can now inject a presentation clock with `new_model_with_clock`.
+  The replay command still uses `new_model`; mapping recorded offsets onto
+  that clock remains separate work.
 - **A recording is what the client was given, not what it made of it.**
   `update` writes the input event before interpreting it, and
   `handle_connection_message` writes the message before decoding it, so a
@@ -412,6 +421,14 @@ archive does not bundle ERTS; a compatible `erl` must be on the client host's
 development-only and do not enter that archive.
 
 ## Snapshot tests
+
+The server package's `test/support/tui_driver` runs independent real TUI
+clients with `new_model_with_clock`, `connect_remote`, and `run_script`.
+The handshake is the same internal function an interactive launch uses.
+Each driver's socket ingress is separate from its model inbox so forwarding
+a selected frame through the virtual loop cannot reorder it behind newer
+socket traffic. These tests complement the scripted snapshots here; they
+exercise actual server commands and durable replies.
 
 `test/snapshots/*.txt` hold rendered frames as plain text, compared by
 `test/snapshot_test.gleam`. Each snapshot drives the shipped loop under the

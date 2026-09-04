@@ -5,6 +5,17 @@ stands against the plan of record, what to work on next, the rulings
 already made so nobody re-litigates them, what is deliberately left open,
 and how to verify a change. Rewrite it when you finish a body of work.
 
+**Active work: single daemon and multiplayer.** The owner selected one
+daemon across workspaces, no legacy compatibility path, and catalogue
+restoration followed by lazy session opening after restart. This branch
+has the [architecture target](architecture/sessions.md) and a
+[two-client test foundation](architecture/multiplayer.md#implemented-test-foundation).
+The daemon itself is not implemented. Reclaimable runtime addresses and
+session cleanup custody precede the manager and routing changes. This
+paragraph records the active wave; it is not a fresh verification of the
+older project-wide handoff below. Rebaseline that handoff when the wave
+finishes.
+
 It is deliberately not a history; the git log and the PR bodies carry how
 each change was reviewed. Re-baselined 2026-09-04 against `main` at
 `18e71d5`, with every claim below checked against the tree or against a
@@ -403,6 +414,15 @@ the process-environment secret lookup extensions use today.
 Each of these is settled. Re-open one only with new evidence, and record
 the reopening where the ruling lives.
 
+**One daemon hosts sessions across workspaces; restart restores only the
+catalogue.** Open a session lazily when an authorized operator requests
+it. Listing and preview never resume work. Concurrent opens for one
+session share one runtime. The new default does not retain a legacy
+server or protocol adapter, and existing user data stays untouched.
+[The execution ruling](design-notes/single-daemon.md#execution-ruling)
+supersedes the design note's historical migration proposal. These are
+implementation requirements, not claims about the baseline server.
+
 **A replay reproduces inbound traffic and rendering, and never an
 outbound effect** (`docs/architecture/client.md`, "Recording and
 replaying a session"). `tui.Peer`'s three variants are what make it
@@ -412,11 +432,11 @@ deliberate divergence is `/sessions`, which reads a local catalogue a
 recording cannot carry and so answers with a notice instead; inventing
 either live answer is the thing the type exists to prevent.
 
-**Only the last frame of a replay is reproducible** until a clock is
-injected. The client renders a paced event's frame or keeps the previous
-one depending on how long ago it drew, so `--at` and `--all` are for
-reading, and a golden pins the last frame, which the settling tick makes
-current. A fixture for a golden must therefore end settled.
+**The replay command still guarantees only its settled final frame.**
+Tests can now inject the presentation clock and reproduce intermediate
+frames. The command still uses the host clock, so `--at` and `--all`
+remain tools for inspection; mapping recording offsets onto the injected
+clock is separate work. A replay golden must still end settled.
 
 **A footer's layout is a function of the window, never of its text.**
 Measuring the rendered sections made the row count change mid-turn and

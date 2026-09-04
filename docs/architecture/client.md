@@ -1,5 +1,12 @@
 # The client plane
 
+**Transition in progress.** This page describes the implementation at
+`f019322`. [Sessions](sessions.md) documents the selected single-daemon
+replacement, and [multiplayer](multiplayer.md) documents shared-session
+identity and behavior. Those pages identify unimplemented requirements.
+The replacement will become the default without a legacy protocol path;
+the lifecycle and wire sections below will be reconciled as it lands.
+
 A session is a supervision tree inside one BEAM node: a writer holding
 the session file's lease, one driver actor per strand, a broker with a
 pool of jailed helpers behind it. A person is none of those things. They
@@ -930,6 +937,15 @@ inside the request, and appear in no `Tool`, no frame, no `LaunchSpec`
 environment and no log line.
 
 ## What the acceptance actually proves
+
+The real-client fan-out test in `client/tui_e2e_test` runs two independent
+TUI actors through the shipped virtual loop against `serve.boot`, SQLite,
+and real WebSockets. Each client submits a different prompt; both render
+the conditional provider replies and hold identical durable records once,
+in order. A fresh subscriber recovers both turns after the drivers leave.
+The existing native tmux drive remains. See
+[multiplayer](multiplayer.md#implemented-test-foundation) for the coverage
+boundary and the driver ownership model.
 
 `client/demo` drives the entire M3 flow **through the protocol alone**,
 against a real session, a real runtime with scripted provider effects,
