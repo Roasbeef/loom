@@ -436,11 +436,13 @@ most once every 16 ms while paced events keep arriving, the rest is
 recorded as `FrameDeferred`, the tick after the drained queue flushes it,
 and the poll wait is 8 ms while a frame is owed. The view never renders on
 its own; it shows whatever the event handler last cached for the screen.
-Measured on a 200×50 pseudo-terminal, forty wheel events in one write went
-from forty frames and 250 KB to three or four frames and 20 KB. The
-panels draw their borders themselves for the same reason: etui's
-`block.render` clears its interior cell by cell over a canvas the client
-had already painted, and that was more than half of a frame.
+The original one-off 200×50 pseudo-terminal measurement reported that forty
+wheel events went from forty frames and 250 KB to three or four frames and
+20 KB; its harness was not committed, so those figures are historical rather
+than a reproducible baseline. `make bench-tui` now keeps the panel optimization
+measurable in-tree. On OTP 29 and Gleam 1.18.1, three runs put the 200×50 panel
+pair at 0.172–0.178 ms through etui's block and 0.082–0.085 ms through the
+border-only path.
 
 ## Deliberately open
 

@@ -197,7 +197,7 @@ type Model {
 ///
 /// Etui draws one frame per input event, and a wheel flick or a held Page key
 /// arrives as a burst of events decoded from one read. Rendering each of them
-/// costs a full frame and a full-viewport terminal write per event, so a change
+/// costs a full frame and a viewport-sized terminal diff per event, so a change
 /// that lands inside the pacing interval is recorded here instead and rendered
 /// once the burst has drained or the interval has passed.
 @internal
@@ -651,12 +651,12 @@ pub fn panel_inner(area: Rect) -> Rect {
 /// Draws a rounded border and a left-aligned title, leaving the interior alone.
 ///
 /// This is etui's `block.render` without its interior clear. That clear walks
-/// every inner cell through a persistent-array write, and the two panels at
-/// 200×50 spent more than half of a frame on it, repainting cells the canvas
-/// had already painted. Leaving the interior to the canvas also keeps its
-/// repaint phase on vacated cells, which is what lets a detail-mode toggle
-/// rewrite positions the diff would otherwise retain. The bytes on the wire
-/// for a steady frame are the same as the block's; the test pins that.
+/// every inner cell, repainting an area the canvas already owns; `make
+/// bench-tui` measures the area-dependent work this removes. Leaving the
+/// interior to the canvas also keeps its repaint phase on vacated cells, which
+/// is what lets a detail-mode toggle rewrite positions the diff would otherwise
+/// retain. The bytes on the wire for a steady frame are the same as the
+/// block's; the test pins that.
 ///
 /// ## Examples
 ///
@@ -1490,7 +1490,7 @@ fn advance_activity_indicator(model: Model) -> Model {
 //
 // The cache is also where a burst is paced. Etui hands queued events out one
 // per poll and draws after each, so forty wheel events would otherwise be
-// forty frames and forty full-viewport writes. A stale cache inside the pacing
+// forty frames and forty viewport-sized diffs. A stale cache inside the pacing
 // interval is left in place and recorded as debt; the next tick, which cannot
 // arrive before the queue has drained, renders it once.
 fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {

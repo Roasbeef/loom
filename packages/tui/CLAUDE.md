@@ -213,7 +213,7 @@ that tree separately from the self-contained server.
   deliberate one.
 - **Bursts are paced, not drawn one event at a time.** Etui decodes one read
   into a queue of events and draws a frame after each, so a wheel flick or a
-  held Page key would otherwise cost a full frame and a full-viewport write
+  held Page key would otherwise cost a full frame and a viewport-sized diff
   per event. `frame_decision` renders a stale cache at most once every 16 ms
   while paced events keep arriving and records the rest as `FrameDeferred`;
   the tick that follows the drained queue flushes it, and `paced_poll_timeout`
@@ -223,10 +223,10 @@ that tree separately from the self-contained server.
   monotonic time is negative.
 - **Panels draw borders, not interiors.** `render_panel_border` puts the same
   bytes on the wire as etui's `block.render` over a blank canvas, and the test
-  pins that, but it skips the block's cell-by-cell interior clear, which at
-  200×50 was more than half of a frame spent repainting cells the canvas had
-  already painted. Interior cells therefore keep the canvas's repaint phase,
-  which is what lets a detail-mode toggle rewrite vacated positions.
+  pins that, but it skips the block's area-dependent interior clear over cells
+  the canvas already painted. `make bench-tui` compares both paths over the
+  same immutable buffer. Interior cells therefore keep the canvas's repaint
+  phase, which is what lets a detail-mode toggle rewrite vacated positions.
 - **Polling follows recent activity, not liveness.** Keyboard, paste, resize,
   scroll, and decoded websocket events reset the quiet timer. The loop polls at
   40 ms until 320 ms have passed without one, then at 400 ms, and at 8 ms
@@ -325,7 +325,8 @@ This package requires Gleam 1.18+ and Erlang/OTP 29, the repository-wide
 toolchain floor. It is part of root `PACKAGES`, so `make check` includes its
 format, warning-free build, tests, and house-rule census. The separate client
 archive does not bundle ERTS; a compatible `erl` must be on the client host's
-`PATH`.
+`PATH`. The `dev/tui_dev.gleam` benchmark and its `gleamy_bench` dependency are
+development-only and do not enter that archive.
 
 ## Deep Docs
 
