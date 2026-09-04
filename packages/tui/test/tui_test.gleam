@@ -84,6 +84,15 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
   assert tui.usage_summary(usage) == "in 12k · out 678 · cache 90k/123 · $0.037"
 }
 
+pub fn elapsed_label_reads_like_a_clock_test() {
+  assert tui.elapsed_label(0) == ""
+  assert tui.elapsed_label(1) == " (1s)"
+  assert tui.elapsed_label(59) == " (59s)"
+  assert tui.elapsed_label(60) == " (1m 00s)"
+  assert tui.elapsed_label(65) == " (1m 05s)"
+  assert tui.elapsed_label(754) == " (12m 34s)"
+}
+
 pub fn output_rate_is_tokens_over_streamed_seconds_test() {
   assert tui.output_rate(300, 2000) == Some(150)
   assert tui.output_rate(7, 1000) == Some(7)

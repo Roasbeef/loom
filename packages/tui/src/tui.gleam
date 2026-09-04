@@ -183,6 +183,14 @@ type Model {
     details_expanded: Bool,
     repaint_phase: Bool,
     activity_frame: Int,
+    /// When the active strand's current activity began, on the monotonic
+    /// clock; `None` while it is idle. Set and cleared on the indicator's
+    /// tick so the render stays pure.
+    activity_started_ms: Option(Int),
+    /// Whole seconds the active strand has been busy, recomputed on the
+    /// tick and shown beside the phase so a long think reads as time
+    /// passing rather than as a stall.
+    activity_elapsed_s: Int,
     streams: List(Stream),
     scroll_offset: Int,
     render_revision: Int,
@@ -365,6 +373,8 @@ fn interactive(launch: Launch) -> Nil {
       details_expanded: False,
       repaint_phase: False,
       activity_frame: 0,
+      activity_started_ms: None,
+      activity_elapsed_s: 0,
       streams: [],
       scroll_offset: 0,
       render_revision: 0,
@@ -1279,7 +1289,36 @@ fn input_title(model: Model) -> String {
       <> activity_glyph(model.activity_frame)
       <> " "
       <> status
+      <> elapsed_label(model.activity_elapsed_s)
       <> " · enter steers · tab queues "
+  }
+}
+
+/// How long the active strand has been busy, in the shape the prompt
+/// border shows beside its phase: empty in the first second, then `(7s)`,
+/// then `(1m 05s)` once a minute has passed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.elapsed_label(0) == ""
+/// assert tui.elapsed_label(7) == " (7s)"
+/// assert tui.elapsed_label(65) == " (1m 05s)"
+/// ```
+///
+@internal
+pub fn elapsed_label(seconds: Int) -> String {
+  case seconds <= 0, seconds >= 60 {
+    True, _ -> ""
+    False, False -> " (" <> int.to_string(seconds) <> "s)"
+    False, True -> {
+      let rest = seconds % 60
+      let padded = case rest < 10 {
+        True -> "0" <> int.to_string(rest)
+        False -> int.to_string(rest)
+      }
+      " (" <> int.to_string(seconds / 60) <> "m " <> padded <> "s)"
+    }
   }
 }
 
@@ -1483,14 +1522,28 @@ fn update_tick(model: Model) -> Model {
   Model(..drained, quiet_for_ms:)
 }
 
+// The tick is the one place the clock is read, so the elapsed count and
+// the glyph advance together and rendering stays a pure function of the
+// model. Going idle clears the clock, so the next activity starts from
+// zero rather than from wherever the last one stopped.
 fn advance_activity_indicator(model: Model) -> Model {
   case active_strand_live(model) {
-    False -> model
+    False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
     True -> {
+      let now = ffi_bootstrap.monotonic_time_ms()
+      let started = option.unwrap(model.activity_started_ms, now)
+      let activity_elapsed_s = { now - started } / 1000
       let activity_frame = model.activity_frame + 1
-      let advanced = Model(..model, activity_frame:)
+      let advanced =
+        Model(
+          ..model,
+          activity_frame:,
+          activity_started_ms: Some(started),
+          activity_elapsed_s:,
+        )
       case
         activity_glyph(model.activity_frame) == activity_glyph(activity_frame)
+        && activity_elapsed_s == model.activity_elapsed_s
       {
         True -> advanced
         False -> invalidate_frame(advanced)
