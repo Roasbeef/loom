@@ -14,9 +14,11 @@ The foundation is [PR #227](https://github.com/Roasbeef/loom/pull/227).
 The address primitive landed in
 [Weft #11](https://github.com/Roasbeef/weft/pull/11) and the owner published
 v0.4.3. The next branch, `client/session-runtime`, uses that published version
-and replaces strand-name
-atoms with reference addresses; its local runtime suite passes 109 tests,
-including a 1,000-strand atom-growth check. Session-service names, cleanup
+and replaces strand-name atoms with reference addresses. The two strand
+factories are unnamed and publish their typed handles in the runtime registry.
+Its local runtime suite passes 110 tests, including a 1,000-strand atom-growth
+check and repeated factory replacement without atom growth. The writer,
+registry and drain-ledger service names, cleanup
 custody, and the daemon itself remain unfinished. No evaluation path
 dependency remains. Foundation CI is green at `362d737` in run
 `33929462266` (Linux, macOS, jail and soak). Reclaimable runtime addresses
