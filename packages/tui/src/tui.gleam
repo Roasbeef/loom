@@ -114,6 +114,19 @@ const quiet_poll_ms = 400
 
 const quiet_after_ms = 320
 
+/// The shortest gap between two rendered frames while events keep arriving.
+///
+/// Sixty frames a second is faster than any terminal repaints a full
+/// viewport, so a burst paced to this never shows less motion than the
+/// terminal could have drawn.
+const frame_interval_ms = 16
+
+/// How long a poll waits for more input before a deferred frame is rendered.
+///
+/// The read only starts once etui's event queue is empty, so this is the gap
+/// that separates one burst from the next rather than a delay added to each.
+const deferred_frame_poll_ms = 8
+
 type FrameCache {
   FrameCache(
     screen: Rect,
@@ -173,9 +186,64 @@ type Model {
     record_cache_details: Bool,
     frame_revision: Int,
     frame_cache: Option(FrameCache),
+    frame_debt: FrameDebt,
+    last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
   )
+}
+
+/// Whether the cached frame still shows every visible change.
+///
+/// Etui draws one frame per input event, and a wheel flick or a held Page key
+/// arrives as a burst of events decoded from one read. Rendering each of them
+/// costs a full frame and a full-viewport terminal write per event, so a change
+/// that lands inside the pacing interval is recorded here instead and rendered
+/// once the burst has drained or the interval has passed.
+@internal
+pub type FrameDebt {
+  /// The cached frame shows every visible change.
+  FrameSettled
+
+  /// A visible change is on screen only as a stale frame, waiting for the
+  /// next tick or the next event outside the pacing interval.
+  FrameDeferred
+}
+
+/// How one input event relates to frame pacing.
+@internal
+pub type FrameBoundary {
+  /// A tick or a resize. A tick only arrives once the input queue has drained
+  /// and the read has waited without more bytes, so it is where a deferred
+  /// frame is flushed; a resize always redraws because the screen changed
+  /// shape under the stale frame.
+  FlushPoint
+
+  /// A keyboard, paste, or mouse event, which may be one of a burst.
+  Paced
+}
+
+/// Whether the cached frame matches the current screen and revision.
+@internal
+pub type CacheFreshness {
+  /// The cached frame is the frame this model would render.
+  FrameCurrent
+
+  /// The cache is empty, sized for another screen, or behind the revision.
+  FrameStale
+}
+
+/// What the terminal loop does with the frame after one event.
+@internal
+pub type FrameDecision {
+  /// The cached frame is current; return the exact same term.
+  KeepCachedFrame
+
+  /// Render now and restart the pacing interval.
+  RenderFrame
+
+  /// Leave the stale frame on screen and render at the next flush point.
+  DeferFrame
 }
 
 /// Runs the interactive terminal client.
@@ -298,6 +366,8 @@ fn interactive(launch: Launch) -> Nil {
       record_cache_details: False,
       frame_revision: 0,
       frame_cache: None,
+      frame_debt: FrameSettled,
+      last_frame_ms: ffi_bootstrap.monotonic_time_ms(),
       activity_revision: 0,
       quiet_for_ms: quiet_after_ms,
     )
@@ -462,38 +532,38 @@ fn flag_value(arguments: List(String), flag: String) -> Result(String, Nil) {
   }
 }
 
+// The frame on screen is whatever `refresh_frame_cache` last decided to
+// render, including a frame it deliberately left stale to pace a burst. The
+// view therefore never consults the revision: rendering here would undo the
+// deferral, and would also build a frame nobody caches. Only a screen etui
+// reports that the cache was not drawn for falls through to a fresh render.
 fn view(
   model: Model,
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
   case model.frame_cache {
-    Some(FrameCache(screen: cached_screen, revision:, rendered:)) ->
-      cached_frame(
-        rendered,
-        cached_screen,
-        revision,
-        screen,
-        model.frame_revision,
-        fn() { render_frame(model, screen) },
-      )
+    Some(FrameCache(screen: cached_screen, rendered:, ..)) ->
+      cached_frame(rendered, cached_screen, screen, fn() {
+        render_frame(model, screen)
+      })
     None -> render_frame(model, screen)
   }
 }
 
-/// Reuses a completed frame only while its screen and revision still match.
+/// Reuses a completed frame while it was rendered for this screen.
 ///
 /// The cached tuple is returned directly rather than reconstructed, preserving
 /// the Buffer term identity that etui uses as its constant-time diff fast path.
+/// Whether the cache is current or deliberately stale is `frame_decision`'s
+/// question, answered when the event was handled, not here.
 @internal
 pub fn cached_frame(
   cached: #(buffer.Buffer, Result(geometry.Position, Nil)),
   cached_screen: Rect,
-  cached_revision: Int,
   screen: Rect,
-  revision: Int,
   build: fn() -> #(buffer.Buffer, Result(geometry.Position, Nil)),
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
-  case cached_screen == screen && cached_revision == revision {
+  case cached_screen == screen {
     True -> cached
     False -> build()
   }
@@ -519,6 +589,9 @@ fn render_frame(
   let transcript_area = block.inner(transcript_panel, transcript_block)
   let #(paste_area, editor_area) =
     input_layout(block.inner(input_area, input_block), model.attachments)
+
+  // The editor is wrapped to the cells the chip leaves it, never resized to
+  // fit: the source text and cursor stay exactly what history will replay.
   let input_view = input_view_state(model.input, editor_area.size.width)
   let editor =
     text_area.textarea_new()
@@ -529,6 +602,9 @@ fn render_frame(
       theme.signal,
       style.bold(),
     ))
+
+  // Paint order is also z-order: the canvas owns every cell, the blocks draw
+  // over it, and the palette and overlays land last.
   let base =
     repaint_canvas(screen, model.repaint_phase)
     |> render_header(header_area, model)
@@ -1259,7 +1335,23 @@ fn update(event: backend.InputEvent, model: Model) -> Model {
     | backend.MouseMove(..) -> model
   }
   refresh_render_cache(model, updated)
-  |> refresh_frame_cache
+  |> refresh_frame_cache(frame_boundary(event))
+}
+
+// Ticks and resizes flush; everything a person or a terminal can produce in a
+// burst is paced. Mouse buttons are listed rather than swept up by a catch-all
+// so a new etui event variant is a compile error here, not a silent default.
+fn frame_boundary(event: backend.InputEvent) -> FrameBoundary {
+  case event {
+    backend.Tick | backend.Resize(..) -> FlushPoint
+    backend.KeyPress(_)
+    | backend.Paste(_)
+    | backend.MouseScroll(..)
+    | backend.MousePress(..)
+    | backend.MouseRelease(..)
+    | backend.MouseDrag(..)
+    | backend.MouseMove(..) -> Paced
+  }
 }
 
 // A terminal tick is the only idle-time event. Visible socket traffic marks
@@ -1299,21 +1391,72 @@ fn advance_activity_indicator(model: Model) -> Model {
 // model gives etui the exact same Buffer term on unchanged iterations. The
 // cache key stays scalar and screen-local; no complete Model comparison sits
 // on the idle path.
-fn refresh_frame_cache(model: Model) -> Model {
+//
+// The cache is also where a burst is paced. Etui hands queued events out one
+// per poll and draws after each, so forty wheel events would otherwise be
+// forty frames and forty full-viewport writes. A stale cache inside the pacing
+// interval is left in place and recorded as debt; the next tick, which cannot
+// arrive before the queue has drained, renders it once.
+fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
-  case model.frame_cache {
+  let freshness = case model.frame_cache {
     Some(FrameCache(screen: cached_screen, revision:, ..))
       if cached_screen == screen && revision == model.frame_revision
-    -> model
-    None | Some(_) ->
+    -> FrameCurrent
+    None | Some(_) -> FrameStale
+  }
+
+  // The clock is read once per event and only compared against itself, so a
+  // wall-clock step cannot stretch or collapse the interval.
+  let now = ffi_bootstrap.monotonic_time_ms()
+  case frame_decision(boundary, freshness, now - model.last_frame_ms) {
+    KeepCachedFrame -> model
+    DeferFrame -> Model(..model, frame_debt: FrameDeferred)
+    RenderFrame ->
       Model(
         ..model,
+        frame_debt: FrameSettled,
+        last_frame_ms: now,
         frame_cache: Some(FrameCache(
           screen:,
           revision: model.frame_revision,
           rendered: render_frame(model, screen),
         )),
       )
+  }
+}
+
+/// Decides whether an event's visible change is rendered now or deferred.
+///
+/// A current cache is always kept. A stale one is rendered at a flush point,
+/// or once `frame_interval_ms` has passed since the previous frame; inside the
+/// interval it is deferred, which caps a burst at one frame per interval
+/// instead of one per event while still moving the screen as the burst runs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.frame_decision(tui.Paced, tui.FrameCurrent, 0)
+///   == tui.KeepCachedFrame
+/// assert tui.frame_decision(tui.Paced, tui.FrameStale, 3) == tui.DeferFrame
+/// assert tui.frame_decision(tui.Paced, tui.FrameStale, 16) == tui.RenderFrame
+/// assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 3)
+///   == tui.RenderFrame
+/// ```
+@internal
+pub fn frame_decision(
+  boundary: FrameBoundary,
+  freshness: CacheFreshness,
+  elapsed_ms: Int,
+) -> FrameDecision {
+  case freshness, boundary {
+    FrameCurrent, _ -> KeepCachedFrame
+    FrameStale, FlushPoint -> RenderFrame
+    FrameStale, Paced ->
+      case elapsed_ms >= frame_interval_ms {
+        True -> RenderFrame
+        False -> DeferFrame
+      }
   }
 }
 
@@ -1327,7 +1470,29 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
 }
 
 fn terminal_poll_timeout(model: Model) -> Int {
-  poll_timeout_for(model.quiet_for_ms)
+  paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+}
+
+/// Returns the poll timeout, shortened while a deferred frame is waiting.
+///
+/// The deferred frame is rendered by the tick that follows the burst, and the
+/// tick arrives only after a read has waited this long without more bytes.
+/// Holding the wait short keeps the last position of a flick from lagging the
+/// hand by a whole quiet poll.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.paced_poll_timeout(tui.FrameDeferred, 0) == 8
+/// assert tui.paced_poll_timeout(tui.FrameSettled, 0) == 40
+/// assert tui.paced_poll_timeout(tui.FrameSettled, 320) == 400
+/// ```
+@internal
+pub fn paced_poll_timeout(debt: FrameDebt, quiet_for_ms: Int) -> Int {
+  case debt {
+    FrameDeferred -> deferred_frame_poll_ms
+    FrameSettled -> poll_timeout_for(quiet_for_ms)
+  }
 }
 
 /// Advances inactivity after one poll, resetting immediately on activity.
