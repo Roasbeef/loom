@@ -6,13 +6,12 @@ already made so nobody re-litigates them, what is deliberately left open,
 and how to verify a change. Rewrite it when you finish a body of work.
 
 It is deliberately not a history; the git log and the PR bodies carry how
-each change was reviewed. Re-baselined 2026-09-03 against `main` at
-`576d640`, with every claim below checked against the tree or against a
-CI run rather than carried forward, and the places where the previous
-edition was wrong named as such. The previous edition, baselined at
-`1137d64` the same day, named extension phase 4 as the next body of work;
-phase 4 has since been decided and built in its narrowed form (#203,
-#204, #205), so this edition rewrites that item rather than carrying it.
+each change was reviewed. Re-baselined 2026-09-04 against `main` at
+`18e71d5`, with every claim below checked against the tree or against a
+CI run rather than carried forward. The previous edition, baselined at
+`576d640` on 2026-09-03, described the Gemini adapter as living on a
+branch and knew nothing of the client's testing plane; both have since
+landed, so this edition rewrites those items rather than carrying them.
 
 ---
 
@@ -144,7 +143,7 @@ extension's; and Linux never ran the phase 3 e2e locally, only in CI.
 
 ### The model plane: three dialects, driven
 
-The `gemini` branch (2026-09-03) added a third wire dialect beside Messages
+Merged 2026-09-04 (#209). A third wire dialect sits beside Messages
 and chat-completions: `provider/adapter/gemini.gleam` speaks the Gemini
 Developer API's `streamGenerateContent` with a Google AI Studio key, and
 `dialect = "gemini"` in `loom.toml` routes to it. It was driven live on
@@ -158,10 +157,9 @@ running to its wall limit), and `make server-shipment` now builds the
 code-mode seed, because a server without one registers no `code_mode`
 and the model appears unable to find code mode. `docs/architecture/
 models.md` has the dialect; the Vertex AI route is not reachable with an
-API key and is not built. Two observations are recorded here rather than
+API key and is not built. One observation is recorded here rather than
 filed: finished subagents are reaped from the agents overlay once waited
-on, so there is nothing to select, and the TUI footer now shows output
-tokens per second for the last settled generation.
+on, so there is nothing to select.
 
 ### Memory: the producer now runs
 
@@ -176,6 +174,80 @@ the notes cursor in the head-replacing transaction, so the next pass
 rebuilds. Memory is complete against its plan and has its architecture
 page, `docs/architecture/memory.md`.
 
+### The client can now be driven and read without a terminal
+
+The largest change of 2026-09-04, and the one that changes how the next
+client bug gets fixed. Until it landed, every layer was tested except the
+one a person touches: `render_frame` had unit tests, and the rendered
+result had a tmux-bound end-to-end that asserted a few substrings.
+
+etui's `Backend` is a record of five functions, so #221 supplies a
+scripted one. `tui/virtual_backend` answers a list of events instead of a
+file descriptor and hands back every `Buffer` the shipped loop drew;
+`tui/frame` turns one into text. On top of that sit two things:
+
+- **`loom --record <path>`** writes every inbound message and input event
+  as JSON lines while a real session runs, and **`loom replay <path>
+  [--at N] [--all] [--width W] [--height H]`** replays one and prints
+  frames as text. That is the agent-facing surface: a bug seen in a pane
+  becomes a file, and an agent reads frames by running a command rather
+  than by scraping a terminal.
+- **Golden files** under `packages/tui/test/snapshots`, compared by
+  `test/snapshot_test` and rewritten by `LOOM_UPDATE_SNAPSHOTS=1`. Ten
+  are hand-built states; one replays a committed recording of a real
+  Gemini turn (`test/recordings/gemini-flash-reply.jsonl`).
+
+The rule that shaped it: **a replay reproduces inbound traffic and
+rendering, and never an outbound effect.** `tui.Peer` makes that
+structural rather than remembered — `Attached` carries the socket and
+sends, `Preview` is `--demo` and echoes, `Replaying` performs only the
+live path's local half — because the first replay of a real recording
+drew an assistant line the live client never showed, and a golden that
+records an invention is worse than no golden. The same rule removed a
+fabricated tokens-per-second figure computed from the replay's own clock.
+
+Two defects have been found by using it, both in the replay path itself;
+none yet in the live client, because the goldens are hours old. Its value
+is prospective, and `docs/architecture/client.md` §"Recording and
+replaying a session" plus `packages/tui/CLAUDE.md` carry the whole
+contract, including the one divergence that is deliberate: `/sessions`
+reads a local catalogue a recording cannot carry, so a replay says so
+rather than inventing either answer.
+
+### Four client fixes, all merged the same day
+
+Each was found by an operator looking at a pane, which is the gap the
+section above exists to close.
+
+- **#217** — the footer decided its row count from the width of the text
+  it happened to hold, so it flipped between one row and two as a turn
+  ran and moved the prompt box under the operator's hands. Rows now come
+  from the window alone; the `/details` status label was shortened
+  because it was the one string the section had to cut.
+- **#219** — the tokens-per-second clock started at the first stream
+  fragment, and a provider that streams whole parts (Gemini) delivered a
+  short reply as one burst, so the footer read `126000 tok/s`. The clock
+  now starts when the strand enters its `assistant` phase, and a window
+  under `output_rate_min_ms` reports no rate at all.
+- **#218** — three things a jailed shell hit on macOS. Apple's `git` and
+  `make` are `xcrun` shims that write a cache to the per-user darwin temp
+  directory whatever `TMPDIR` says, so every `git status` printed
+  `Operation not permitted`; both that directory and the user cache
+  directory are now Seatbelt writable roots, and the helper's private
+  scratch moved to `/private/tmp` so that grant cannot make one
+  execution's scratch writable by another. `HOME` was the workspace, so
+  macOS built a `Library/Caches` in the operator's checkout; it is now
+  `<workspace>/.codemode/home`. And a linked git worktree keeps its
+  metadata outside the workspace, so `git commit` died on the index lock:
+  the base now grants the worktree's git directory and the main
+  repository's `.git`, and `bash` asks for every root the base grants
+  rather than the workspace alone, because the meet would otherwise take
+  the widening straight back.
+- **#216** — `[tools]` in `loom.toml` opens the jailed shell's network
+  (`network = "full"`), passes named host variables through, sets
+  literals, and appends directories to `PATH`. It is what lets `gh` work
+  inside the jail. `grep` stays pinned offline whatever the base allows.
+
 ---
 
 ## What to do next
@@ -183,7 +255,42 @@ page, `docs/architecture/memory.md`.
 In this order. The first item is a body of work; the rest are smaller and
 can be interleaved by whoever is not on it.
 
-### 1. Memory is done; what is left is bookkeeping and two decisions
+### 1. The client simulator, both halves
+
+Briefed in full in `docs/design-notes/tui-simulation.md` (#220), written
+before the code so the code has something to be held to. Both stand on
+the virtual backend that has now landed, and neither is worth starting
+before reading that note.
+
+**Part A, the client-side simulator.** One seed splits into a script
+(server events keyed by durable position, and the operator's actions
+anchored to them) and a schedule (batching, tick pacing, resizes across
+every layout threshold, cross-strand interleaving, disconnect and
+reconnect, input bursts). It runs through the shipped `update` and
+`render_frame` under the virtual backend, and every frame is held to nine
+named invariants. Three of them are this week's bugs stated in one line
+each: layout is a function of the window, no truncation without an
+ellipsis, no rate without a window. It lives in `packages/tui/test`, not
+in `conformance`, because the checks are about frames.
+
+**The one production change it needs is an injected monotonic clock.**
+`tui.gleam` reads `ffi_bootstrap.monotonic_time_ms` in five places —
+`new_model`'s `last_frame_ms` seed, `advance_activity_indicator`,
+`refresh_frame_cache`'s 16 ms pacing decision, the `StreamDelta`
+generation clock, and `UsageChanged` — and until a schedule owns time,
+only the last frame of a replay is reproducible. That refactor is a
+behaviour-preserving prerequisite for both halves and should be done
+first, on its own.
+
+**Part B, the end-to-end run.** The same client loop against a real
+`loomd` whose provider and tools are the conformance simulator's scripted
+surface, over the real websocket, with no binary, PTY or tmux. It adds
+the wire round trip between the client and gateway codecs — two
+hand-written codecs with no test that they agree — plus command effects,
+settled-frame goldens per pinned seed, and the escalation path through
+the UI. It retires `client/tui_e2e_test` once it runs in the client gate.
+
+### 2. Memory is done; what is left is bookkeeping and two decisions
 
 **#149 is built and merged** (#208). Distillation now runs in
 the shipped session lifecycle: `client/distillpass` is a supervised
@@ -219,7 +326,7 @@ Note what this does *not* do: it does not touch extension memory
 (`ext.remember`/`ext.recall` are cells an extension owns, not the
 distillation pipeline) and it does not build memory stage M3.
 
-### 2. Close the phase-1 gate
+### 3. Close the phase-1 gate
 
 Small, and it is what the milestone's closing criterion actually asks for.
 **#99** and **#62** are closed with their measurements and **#155** is
@@ -230,7 +337,7 @@ first are the two flakes this week's PRs hit: `writer_publish_test`
 sending to an unregistered name, and the TUI `bootstrap_test` launch
 lock; neither is the interleave stall.
 
-### 3. The agent-authored on-ramp, if the ladder is still wanted
+### 4. The agent-authored on-ramp, if the ladder is still wanted
 
 **#30** (L1 skill store) and **#31** (L2 candidate pipeline) are the
 agent-authored path into the same manifest and install record an operator
@@ -242,7 +349,7 @@ this is the body of work, and its exit is a fixture tool that goes from
 agent-written source to an installed, vetted, jailed tool serving a live
 call with the approval recorded durably.
 
-### 4. Decide #144 against the extension route
+### 5. Decide #144 against the extension route
 
 **#144** (provider-backed web search as a core tool) is now the other
 answer to a question the extension route has answered in practice. The
@@ -251,7 +358,32 @@ argument that #144 must be a core change no longer holds. Decide whether
 #144 closes as "done by loom-web-search" or stays as a core tool for
 operators who will not install extensions.
 
-### 5. After that
+### 6. Two macOS CI flakes, if either recurs
+
+Neither is filed, because one occurrence is not a pattern and a
+speculative issue is worse than none. Both appeared on `gate (macos)`
+during #218's landing, on reruns that then passed, and neither touched
+the diff under test: a lock race in `packages/tui`'s `bootstrap_test`,
+and a `conformance/simulation_test` seed that did not reproduce. **File
+each the moment it happens a second time**, with both run URLs, rather
+than rediscovering it. The nightly long soak's `seeds 1001..` band
+(**#155**) is the standing example of the same shape.
+
+### 7. Multiplayer, if it is wanted
+
+Briefed in `docs/design-notes/multiplayer.md` (#222), from a cited survey
+of the gateway rather than from assumption. More holds than the word
+suggests: the gateway already fans every durable event out to every
+attached connection, the storage seq gives N clients one total order, and
+the single writer serialises every command, so the transcript is already
+the lock. What is missing is everything about *who* — twelve measured
+gaps, of which four need one `protocol-change` document. The brief's own
+first decision is the load-bearing one: identity is a server-minted
+principal bound to a token, never a name a client claims, because the
+transcript is the durable record. It is a body of work, not an
+afternoon, and it is listed last because nothing else waits on it.
+
+### 8. After that
 
 Phase 5 (**#25** LSP, **#26** DAP) is designed as extensions: a long-lived
 JSON-RPC child the extension starts from `session_start` through
@@ -270,6 +402,37 @@ the process-environment secret lookup extensions use today.
 
 Each of these is settled. Re-open one only with new evidence, and record
 the reopening where the ruling lives.
+
+**A replay reproduces inbound traffic and rendering, and never an
+outbound effect** (`docs/architecture/client.md`, "Recording and
+replaying a session"). `tui.Peer`'s three variants are what make it
+structural: a site that asked "is there a socket?" would take the demo
+branch under a replay and invent what the live client never drew. The one
+deliberate divergence is `/sessions`, which reads a local catalogue a
+recording cannot carry and so answers with a notice instead; inventing
+either live answer is the thing the type exists to prevent.
+
+**Only the last frame of a replay is reproducible** until a clock is
+injected. The client renders a paced event's frame or keeps the previous
+one depending on how long ago it drew, so `--at` and `--all` are for
+reading, and a golden pins the last frame, which the settling tick makes
+current. A fixture for a golden must therefore end settled.
+
+**A footer's layout is a function of the window, never of its text.**
+Measuring the rendered sections made the row count change mid-turn and
+moved the prompt box under the operator's hands. Sections are capped and
+the row count is decided from the width (#217).
+
+**A throughput figure needs a window worth dividing by.** Under
+`output_rate_min_ms` the footer shows no rate, because at that length the
+quotient is request latency and stream batching rather than throughput
+(#219).
+
+**A jailed tool's `HOME` and `TMPDIR` live under `<workspace>/.codemode`,
+and macOS grants the user's own temp and cache directories.** Apple's
+toolchain shims write there whatever the environment says, and a `HOME`
+that was the workspace made macOS build a `Library/` in the operator's
+checkout (#218).
 
 **Extensions run jailed by default, and reach the network through the
 broker** (`docs/adr/007-extension-tiers-and-brokered-egress.md`,
@@ -490,6 +653,23 @@ burst and 1.94 to 1.96 ms per bounded burst.
 
 Named, with an issue where one exists. None of these is unfinished work
 somebody forgot.
+
+- **The TUI reads the wall clock in five places**, so a scripted run
+  cannot own time and only a replay's last frame is reproducible. The
+  injected clock is the first item of the simulator work above, not a
+  loose end.
+- **Loom's state directories sit in the workspace, untracked.** A jailed
+  `git status` warns `could not open directory '.blobs/'` because the blob
+  store is protected by design. Whether `.blobs` and `.codemode` should be
+  excluded at boot, or live outside the workspace entirely, is undecided
+  and unfiled.
+- **The client plane has no TLS and one all-or-nothing bearer token.**
+  Documented in `docs/architecture/client.md`; it is a prerequisite for
+  multiplayer *between machines* over `--addr`, and is deliberately not
+  folded into the multiplayer brief.
+- **`deny` on an escalation is not CAS-guarded** where `approve` is, so
+  two clients racing approve and deny have no ordering on the deny side.
+  Harmless with one operator, which is why it is open rather than fixed.
 
 - **The MCP server jail** (#109). Undesigned, not unbuilt. `mcp/transport`
   is the seam an answer attaches to.
