@@ -103,14 +103,11 @@ pub const summary_pack_variable = "LOOM_SUMMARY_PACK"
 pub const override_variable = "LOOM_SYSTEM_PROMPT"
 
 /// The largest single instruction file this module will read, applied
-/// to each of `AGENTS.md` and `CLAUDE.md` on its own. Well above any
-/// real guidance file and well below what would trouble the boot
-/// process;
-/// `render` caps what actually reaches the prompt at
-/// `pack.max_repository_guidance_bytes` on a line boundary and announces
-/// the cut. A file above *this* bound is not a guidance file, and is
-/// skipped with a warning rather than read into memory to have all but
-/// 16 KiB of it thrown away.
+/// to each guidance file on its own. Well above any real guidance file
+/// and well below what would trouble the boot process. This is the only
+/// bound on guidance: what passes it reaches the prompt whole, as pi and
+/// oh-my-pi render these files, so a file above it is not a guidance
+/// file and is skipped with a warning rather than read into memory.
 pub const max_guidance_file_bytes = 1_048_576
 
 // --- the environment ------------------------------------------------------
@@ -851,18 +848,30 @@ pub fn discover(
   let #(claude, claude_notes) = workspace_slot(workspace, claude_file)
 
   #(
-    option.values([standing, agents, claude]),
+    option.values([standing, agents, distinct_from(claude, agents)]),
     list.flatten([standing_notes, agents_notes, claude_notes]),
   )
 }
 
-/// The instruction files of a workspace as one document, with a warning
+// A `CLAUDE.md` that is byte-identical to the `AGENTS.md` beside it is
+// the same file under the convention's second name — this repository
+// keeps its own that way, by `cp` — and carrying it twice would spend
+// the guidance budget on a copy while the cut falls on something new.
+fn distinct_from(
+  claude: Option(GuidanceFile),
+  agents: Option(GuidanceFile),
+) -> Option(GuidanceFile) {
+  case claude, agents {
+    Some(second), Some(first) if second.text == first.text -> None
+    _, _ -> claude
+  }
+}
+
+/// The instruction files of a session as one document, with a warning
 /// instead of a value when a file exists but cannot be used. What
-/// reaches the prompt is capped by `render` at
-/// `pack.max_repository_guidance_bytes` on a line boundary, framed by
-/// the pack's own fragments, and its truncation announced. This
-/// function's only judgment is `max_guidance_file_bytes`, applied per
-/// file.
+/// reaches the prompt is this document whole, framed by the pack's own
+/// fragments; the only judgment here is `max_guidance_file_bytes`,
+/// applied per file.
 ///
 /// No file at all is the ordinary case and says nothing.
 ///

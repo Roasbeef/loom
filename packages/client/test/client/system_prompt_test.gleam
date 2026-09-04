@@ -447,6 +447,18 @@ pub fn dot_loom_is_the_second_place_looked_test() {
   assert list.map(files, fn(file) { file.path }) == [home <> "/.loom/AGENTS.md"]
 }
 
+pub fn a_claude_md_identical_to_agents_md_is_carried_once_test() {
+  // The two names for one file (this repository mirrors CLAUDE.md into
+  // AGENTS.md by cp) must not cost the guidance budget twice.
+  let #(workspace, home) = instruction_root("mirrored")
+  write_file(workspace <> "/AGENTS.md", "the same instructions\n")
+  write_file(workspace <> "/CLAUDE.md", "the same instructions\n")
+
+  let #(files, notes) = system_prompt.discover(workspace:, home: Some(home))
+  assert notes == []
+  assert list.map(files, fn(file) { file.path }) == [workspace <> "/AGENTS.md"]
+}
+
 pub fn the_operators_default_is_carried_ahead_of_the_workspace_test() {
   // The operator's standing instructions and the project's own are
   // layered, not alternatives: the global file renders first, the
