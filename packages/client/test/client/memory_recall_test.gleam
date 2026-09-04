@@ -56,7 +56,9 @@ import tools/tool
 // The decision session A takes, and the word session B goes looking for.
 // Short, so compaction's keep-recent budget evicts it rather than
 // retaining it in the tail.
-const decision = "we settled on msgpack for the durable envelope"
+const decision = "we settled on msgpack for the durable envelope; "
+  <> "the record also preserves this additional implementation detail well "
+  <> "beyond the search excerpt: exact-read-canary-132"
 
 // A decision of session B's own, for the within-session scope row.
 const local_decision = "the reviewer strand owns the changelog"
@@ -118,6 +120,24 @@ pub fn a_fresh_session_finds_a_compacted_away_decision_test() {
   // Named by session A's canonical id, which is how a hit says where it
   // came from.
   assert string.contains(rendered, ids.session_id_to_string(first_id))
+
+  // The excerpt leads to a complete entry in a different session file.
+  let seam = history.seam(second.holder, timeout_ms: 2000)
+  let assert Ok([hit, ..]) = seam.search("msgpack", 5, history_tool.Repository)
+    as "the indexed decision must provide an exact address"
+  let complete =
+    tool.dispatch(
+      second.registry,
+      a_ctx(),
+      history_tool.tool_name,
+      json.Object([
+        #("action", json.String("read")),
+        #("session", json.String(hit.session)),
+        #("entry", json.String(hit.entry)),
+      ]),
+    )
+  assert !complete.is_error
+  assert string.contains(text_of(complete), "exact-read-canary-132")
 
   // --- the within-session scope row ---
   // Session B's own scope sees its own decision and not session A's.
@@ -222,14 +242,17 @@ fn open_session(
     ),
   ))
   use _holder <- result.try(
-    history.start(history.over_session(
-      name: holder,
-      path: index,
-      session: api.session_id(runtime),
-      store: opened.store,
-      generation: history.sqlite_generation(session_path),
-      timeout_ms: history.default_timeout_ms,
-    ))
+    history.start(
+      history.over_session(
+        name: holder,
+        path: index,
+        session: api.session_id(runtime),
+        store: opened.store,
+        generation: history.sqlite_generation(session_path),
+        timeout_ms: history.default_timeout_ms,
+      )
+      |> history.with_source(session_path),
+    )
     |> result.map_error(fn(_error) { "the index holder did not start" }),
   )
   use _pulls <- result.try(

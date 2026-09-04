@@ -2366,7 +2366,8 @@ fn assemble(
         store: opened.store,
         generation: history.sqlite_generation(settings.session_path),
         timeout_ms: history.default_timeout_ms,
-      ),
+      )
+        |> history.with_source(settings.session_path),
       history_pulls,
     )
     |> sup.start

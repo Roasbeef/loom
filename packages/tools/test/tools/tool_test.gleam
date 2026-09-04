@@ -251,9 +251,16 @@ fn unused_code_mode() -> codemode.CodeMode {
 }
 
 fn unused_history() -> history.History {
-  history.History(search: fn(_text, _limit, _scope) {
-    Error(history.IndexUnavailable(reason: unused_refusal()))
-  })
+  history.History(
+    read: fn(_, _) {
+      Error(history.IndexUnavailable(
+        reason: "read not configured in this fixture",
+      ))
+    },
+    search: fn(_text, _limit, _scope) {
+      Error(history.IndexUnavailable(reason: unused_refusal()))
+    },
+  )
 }
 
 fn unused_memory() -> remember.Memory {
