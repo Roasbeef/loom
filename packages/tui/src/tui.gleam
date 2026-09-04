@@ -576,19 +576,9 @@ fn render_frame(
   let #(header_area, body_area, input_area, footer_area) = layout(screen, model)
   let #(transcript_panel, agent_panel) =
     body_layout(body_area, model.width, model.agent_rail_visible)
-  let transcript_block =
-    block.block_new()
-    |> block.with_border(block.Rounded)
-    |> block.with_colors(theme.quiet, style.Default)
-    |> block.with_title(transcript_title(model), block.Top)
-  let input_block =
-    block.block_new()
-    |> block.with_border(block.Rounded)
-    |> block.with_colors(theme.signal, style.Default)
-    |> block.with_title(input_title(model), block.Top)
-  let transcript_area = block.inner(transcript_panel, transcript_block)
+  let transcript_area = panel_inner(transcript_panel)
   let #(paste_area, editor_area) =
-    input_layout(block.inner(input_area, input_block), model.attachments)
+    input_layout(panel_inner(input_area), model.attachments)
 
   // The editor is wrapped to the cells the chip leaves it, never resized to
   // fit: the source text and cursor stay exactly what history will replay.
@@ -603,15 +593,19 @@ fn render_frame(
       style.bold(),
     ))
 
-  // Paint order is also z-order: the canvas owns every cell, the blocks draw
-  // over it, and the palette and overlays land last.
+  // Paint order is also z-order: the canvas owns every cell, the panels draw
+  // only their borders over it, and the palette and overlays land last.
   let base =
     repaint_canvas(screen, model.repaint_phase)
     |> render_header(header_area, model)
-    |> block.render(transcript_panel, transcript_block)
+    |> render_panel_border(
+      transcript_panel,
+      transcript_title(model),
+      theme.quiet,
+    )
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
-    |> block.render(input_area, input_block)
+    |> render_panel_border(input_area, input_title(model), theme.signal)
     |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, input_view)
     |> render_footer(footer_area, model)
@@ -634,6 +628,108 @@ fn render_frame(
     ModelSelector(_) | AgentInspector(_) | SessionSelector(_) -> Error(Nil)
   }
   #(rendered, cursor)
+}
+
+/// The area inside a one-cell rounded border.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.panel_inner(geometry.rect_new(0, 1, 10, 5))
+///   == geometry.rect_new(1, 2, 8, 3)
+/// ```
+@internal
+pub fn panel_inner(area: Rect) -> Rect {
+  geometry.rect_new(
+    area.position.x + 1,
+    area.position.y + 1,
+    int.max(0, area.size.width - 2),
+    int.max(0, area.size.height - 2),
+  )
+}
+
+/// Draws a rounded border and a left-aligned title, leaving the interior alone.
+///
+/// This is etui's `block.render` without its interior clear. That clear walks
+/// every inner cell through a persistent-array write, and the two panels at
+/// 200×50 spent more than half of a frame on it, repainting cells the canvas
+/// had already painted. Leaving the interior to the canvas also keeps its
+/// repaint phase on vacated cells, which is what lets a detail-mode toggle
+/// rewrite positions the diff would otherwise retain. The bytes on the wire
+/// for a steady frame are the same as the block's; the test pins that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let screen = geometry.rect_new(0, 0, 12, 3)
+/// buffer.buffer_new(screen)
+/// |> tui.render_panel_border(screen, " title ", theme.quiet)
+/// ```
+@internal
+pub fn render_panel_border(
+  buf: buffer.Buffer,
+  area: Rect,
+  title: String,
+  color: style.Color,
+) -> buffer.Buffer {
+  let width = area.size.width
+  let height = area.size.height
+  case width < 2 || height < 2 {
+    True -> buf
+    False -> {
+      let x0 = area.position.x
+      let y0 = area.position.y
+      let x_right = geometry.right(area) - 1
+      let y_bottom = geometry.bottom(area) - 1
+      let border = style.new(color, style.Default, style.none())
+      let horizontal = string.repeat("─", width - 2)
+
+      // One string write per edge row is one array pass each, and the two
+      // verticals are one cell per row: a few dozen writes for the whole
+      // frame of the panel instead of one per interior cell.
+      let framed =
+        buf
+        |> buffer.set_string(
+          geometry.Position(x0, y0),
+          "╭" <> horizontal <> "╮",
+          border,
+        )
+        |> buffer.set_string(
+          geometry.Position(x0, y_bottom),
+          "╰" <> horizontal <> "╯",
+          border,
+        )
+        |> render_vertical_edges(x0, x_right, y0 + 1, y_bottom, border)
+
+      // The title sits one cell in from the corner and is cut to the top
+      // edge with an ellipsis, exactly where the block would have put it.
+      let title_width = width - 2
+      buffer.set_string(
+        framed,
+        geometry.Position(x0 + 1, y0),
+        text.truncate(title, title_width, "…"),
+        border,
+      )
+    }
+  }
+}
+
+fn render_vertical_edges(
+  buf: buffer.Buffer,
+  x_left: Int,
+  x_right: Int,
+  y: Int,
+  y_end: Int,
+  border: style.Style,
+) -> buffer.Buffer {
+  case y >= y_end {
+    True -> buf
+    False ->
+      buf
+      |> buffer.set_string(geometry.Position(x_left, y), "│", border)
+      |> buffer.set_string(geometry.Position(x_right, y), "│", border)
+      |> render_vertical_edges(x_left, x_right, y + 1, y_end, border)
+  }
 }
 
 fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {

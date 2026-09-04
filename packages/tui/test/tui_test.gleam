@@ -5,6 +5,7 @@ import etui/geometry.{Position}
 import etui/keys
 import etui/span
 import etui/style
+import etui/widgets/block
 import etui/widgets/textarea as text_area
 import gleam/bit_array
 import gleam/erlang/process
@@ -227,6 +228,51 @@ pub fn paced_poll_timeout_shortens_the_wait_for_a_deferred_frame_test() {
   assert tui.paced_poll_timeout(tui.FrameDeferred, 320) == 8
   assert tui.paced_poll_timeout(tui.FrameSettled, 0) == 40
   assert tui.paced_poll_timeout(tui.FrameSettled, 320) == 400
+}
+
+pub fn panel_inner_trims_the_border_test() {
+  assert tui.panel_inner(geometry.rect_new(0, 1, 10, 5))
+    == geometry.rect_new(1, 2, 8, 3)
+  assert tui.panel_inner(geometry.rect_new(0, 0, 1, 1))
+    == geometry.rect_new(1, 1, 0, 0)
+}
+
+pub fn panel_border_matches_the_block_it_replaces_test() {
+  // The border-only draw must put the same bytes on the wire as etui's block
+  // over a blank canvas; only the interior clear is gone.
+  let cases = [
+    #(geometry.rect_new(0, 0, 12, 4), " transcript / main "),
+    #(geometry.rect_new(2, 1, 30, 6), " transcript / main "),
+    #(geometry.rect_new(0, 0, 8, 3), " a much longer title than fits "),
+    #(geometry.rect_new(0, 0, 2, 2), ""),
+  ]
+  list.each(cases, fn(case_) {
+    let #(area, title) = case_
+    let screen = geometry.rect_new(0, 0, 32, 8)
+    let expected =
+      block.block_new()
+      |> block.with_border(block.Rounded)
+      |> block.with_colors(theme.quiet, style.Default)
+      |> block.with_title(title, block.Top)
+      |> block.render(buffer.buffer_new(screen), area, _)
+    let actual =
+      buffer.buffer_new(screen)
+      |> tui.render_panel_border(area, title, theme.quiet)
+    assert buffer.to_ansi(actual) == buffer.to_ansi(expected)
+  })
+}
+
+pub fn panel_border_draws_nothing_when_too_small_test() {
+  let screen = geometry.rect_new(0, 0, 4, 4)
+  let blank = buffer.buffer_new(screen)
+  let drawn =
+    tui.render_panel_border(
+      blank,
+      geometry.rect_new(0, 0, 1, 3),
+      "t",
+      theme.quiet,
+    )
+  assert ffi_term.same_term(blank, drawn)
 }
 
 pub fn cached_frame_rebuilds_for_resize_test() {
