@@ -457,10 +457,10 @@ so R1 warns until its census is zero and stays there.
 
 R5's six are what is left of ten after the four in packages this change
 owned — `core/corruption.bound`, `telemetry/field`'s two, and this tool's
-own census padding — were fixed. The remaining five files (`cap/git`,
-`client/agency`, `prompt/summary`, `provider`'s two adapters,
-`tools/agent`) are the same one-line shape and the same promotion is
-waiting on them.
+own census padding — were fixed. The remaining files (`cap/git`,
+`client/agency`, `provider`'s two adapters, `tools/agent`; `prompt/summary`
+was one until the summarizer it served was removed) are the same one-line
+shape and the same promotion is waiting on them.
 
 R7 is not R4 with a longer message, and inheriting R4's exemption would
 make it report nothing at all: every one of its eighty-four is in the

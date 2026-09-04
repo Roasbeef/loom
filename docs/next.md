@@ -13,6 +13,9 @@ edition was wrong named as such. The previous edition, baselined at
 `1137d64` the same day, named extension phase 4 as the next body of work;
 phase 4 has since been decided and built in its narrowed form (#203,
 #204, #205), so this edition rewrites that item rather than carrying it.
+Amended 2026-09-04 for the compaction change: the summarizer is gone and
+the notes checkpoint is the only compaction (see "Compaction: the notes
+checkpoint" and the ruling below).
 
 ---
 
@@ -178,10 +181,48 @@ page, `docs/architecture/memory.md`.
 
 ---
 
+### Compaction: the notes checkpoint replaced the summarizer
+
+Compaction no longer asks a provider to condense the cut half of a
+strand's context. The structural decision supplies a **checkpoint**
+built from the strand's own `agent_note` cells — a `[loom]` header
+naming the window ordinal, the counts and where the cut messages went
+(`history_search`, scope `session`), the notes newest first under a
+16 KiB cap, and an operator's `compact` instructions quoted in their
+own fence — and publishes it `from_hook: True` with no usage row
+(`client/checkpoint`, `docs/architecture/compaction.md`). Two things
+tell the model in time: the `context` slot appends a reminder once a
+strand is within one reserve of the threshold's cut, and the new
+`context_remaining` tool (`tools/context`) answers which window it is
+in, the tokens in use, the room left and the notes written, from the
+same projection and fold the threshold reads. The `identity` section of
+the system pack (now `loom-default-5`) says once that the window is
+finite and what survives it. `before_compact` notes land in the
+checkpoint. Removed with the summarizer: `client/summaries`,
+`prompt/summary`, the summarization pack and `LOOM_SUMMARY_PACK`,
+`wiring`'s summary request and relay; the machine's generate path stays
+as the frozen contract the simulation drives. Proved end to end in
+`compaction_test` against a provider that refuses every summary request.
+
 ## What to do next
 
 In this order. The first item is a body of work; the rest are smaller and
 can be interleaved by whoever is not on it.
+
+### 0. Watch the checkpoint in a real session
+
+The notes checkpoint became the only compaction by decision — the
+Astra design and the cost argument in `docs/architecture/compaction.md`,
+"What a compaction publishes" — not by the side-by-side measurement
+#132's comment asked for, and the summarizer path it would have been
+compared against is gone from the host. So the first thing to learn is
+whether a real model writes notes thick enough. Drive a long session
+past two boundaries and read the two checkpoints: if they are thin, the
+levers are the prompt's `identity` paragraph, the reminder's band
+(`checkpoint.reminder_point`, one reserve), and `max_notes_bytes`, in
+that order. Two things are deliberately not built and are named in the
+architecture doc: a model-requested rollover (a machine change) and
+window-addressable history search.
 
 ### 1. Memory is done; what is left is bookkeeping and two decisions
 
@@ -348,13 +389,26 @@ extension's tool to stand in for a built-in deactivates the built-in with
 capability control, and code mode's prelude still reaches `cap/proc.run`
 and `cap/fs.write` through the broker.
 
+**Compaction publishes the model's own notes and asks no summarizer**
+(`client/checkpoint`, `docs/architecture/compaction.md`). A summary is
+re-compressed at every boundary and loses detail silently; a note is
+copied forward whole and the cut transcript stays one search away, so
+the failure a thin board produces is recoverable where a thin summary's
+is not — and a checkpoint needs no provider to be up. The summarizer path
+was removed rather than kept as a policy, so there is no `Summary`
+option and no `LOOM_COMPACTION_POLICY`; the machine's generate path is
+untouched (frozen, simulation-driven) and no host selects it. A branch
+summary, which notes cannot describe, is declined. The retained tail is
+still kept verbatim, which is where Loom's shape differs from Codex's
+hard reset.
+
 **`before_compact` notes and never vetoes; `usage` is notify-only and
 outside the replay rule** (`client/extension/hooks.gleam` and
 `runtime/effects.gleam`). A compaction hook fires after the runtime has
-decided to compact and before the summary generation, and may return a
-note that lands fenced and attributed after the summariser's instruction,
-bounded cumulatively across the gather; the compaction happens whatever
-the hook does. `usage` fires from the one commit path after the writer
+decided to compact, at the structural decision, and may return a note
+that lands fenced and attributed at the end of the checkpoint, bounded
+cumulatively across the gather; the compaction happens whatever the hook
+does. `usage` fires from the one commit path after the writer
 returns, on the strand driver's process, so the slot must never block; it
 is at-most-once and covers the conversation ledger only.
 
@@ -567,7 +621,9 @@ somebody forgot.
   the spec defers and a config key that accepted hosts would promise
   filtering nothing enforces.
 - **Compaction stages C1/C2 and memory stage M3** are out of the release
-  by design and have no issue.
+  by design and have no issue; C1's file-operation tracking and blob-ref
+  carry-forward were summarizer features and have no meaning under the
+  checkpoint, so they should be re-scoped or dropped rather than built.
 
 ---
 

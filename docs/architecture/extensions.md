@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2333`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2320`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -1013,7 +1013,7 @@ approving, and read back what it was never shown.
 **Two contributions may not claim one tool name.** Within a contribution
 a repeated name is the author overriding themselves and the later one
 wins; *between* contributions it takes the boot down, naming both origins
-(`contributions.registry` at `client/contributions.gleam:213`). An
+(`contributions.registry` at `client/contributions.gleam:267`). An
 extension that could register `bash` would silently redefine what the
 model's `bash` call does, and every sandbox argument in the tree would be
 about the wrong function.
@@ -1193,7 +1193,7 @@ Where each event lands in the harness:
 | `tool_result` | `effects.ToolSurface.run`, over the settled reply before the driver commits it. The transform is applied by rebuilding the original reply with the hook's content, so `is_error`, `usage`, the timestamp and the call's coordinates stay the harness's — a hook may rewrite what the model reads and may not write the session's accounting |
 | `agent_end` | `effects.Hooks.run_end`, beside the follow-up the harness was already placing |
 | `agent_settled` | nowhere yet. The event and its fan-out exist, and a manifest may declare it; nothing in the harness produces it, and `serve` logs the declaration rather than pretending otherwise. See the design note's table for why it is not faked |
-| `before_compact` | `effects.Hooks.compaction_note`, asked in `runtime/strand_runtime` at the moment a structural summary request is dispatched — after the compaction is decided, before the generation starts. Every returned note is fenced `<extension name=…>` and attributed by the harness, bounded in total by the same `context_growth_tokens` a `context` transform gets, and appended to the summarizer's single user message *after* the pack's instruction. A branch summary is not a compaction and never fires it |
+| `before_compact` | `effects.Hooks.compaction_note`, asked in `runtime/strand_runtime` at the moment the structural decision supplies the checkpoint — after the compaction is decided, before it is published. Every returned note is fenced `<extension name=…>` and attributed by the harness, bounded in total by the same `context_growth_tokens` a `context` transform gets, and appended to the checkpoint *after* the harness's own text and the strand's notes, so it opens the next window with them. (The machine's generate path, which no host selects, would ask at the summary request's dispatch instead.) A branch summary is not a compaction and never fires it |
 | `usage` | `effects.Hooks.usage`, called from the driver's own `commit_then` once `writer.commit` has returned, for every `InsertUsage` in the transaction, paired with the seq storage assigned it. Notify-only: nothing reads the answer |
 
 Every payload crosses as a msgpack string holding JSON, the shape a tool
@@ -1217,9 +1217,9 @@ such argument: it fires once the runtime has already decided to compact,
 and there is nothing an answer can say that stops the compaction. That
 also makes it safe under the rule that hooks decide from durable state,
 for exactly the reason `context` is — the note is transient input to a
-request whose consuming commit is the summary, so a crash before that
-commit re-dispatches, re-asks, and the second answer is as good as the
-first because neither was written down. `usage` is the notify-only event
+checkpoint whose consuming commit is the compaction entry's publication,
+so a crash before that commit re-decides, re-asks, and the second answer
+is as good as the first because neither was written down. `usage` is the notify-only event
 the tracing and observability extensions want (Braintrust, LangSmith,
 OTel, Langfuse on pi), and it carries the ledger row's numbers and
 coordinates only: no request, no response, no model text, and not the
@@ -1326,7 +1326,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:670`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:832`). |
 | `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1448`), the two refusals it logs, and the contribution it appends. |
-| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:213`) and the collision that refuses a boot. |
+| `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:267`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
 | `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:399`. |

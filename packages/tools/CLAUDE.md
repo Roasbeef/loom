@@ -152,6 +152,19 @@ can repair from.
   (`IndexUnavailable` | `IndexRefused`). The tool never names a session:
   `ThisSession` means the *host's*, because a model that could name one
   could read a session it was never given.
+- `tools/context.{Context, Report, Boundary, tool, tool_name, render,
+  remaining}` — the `context_remaining` tool: the model's own door onto
+  the compaction arithmetic. `Context.report` takes the *calling*
+  strand's name — from `Ctx.strand`, never from an argument — and answers
+  a `Report`: which window the strand is in (one-based, counting the
+  compactions on its branch), the strand's context window, the tokens in
+  use as the threshold estimates them, the `Boundary` (`CheckpointAt`
+  with the threshold's cut point and the keep-recent budget, or
+  `NoCheckpoint` when compaction is off), and how many notes it has
+  written. The host fills the seam from the same projection and fold the
+  threshold reads (`client/checkpoint.remaining_seam`), so asked and told
+  are one number. Read-only, `Safe`, `Concurrent`, no sandbox
+  requirements.
 - `tools/schedule.{Schedules, Limits, Request, RequestedTiming, Created,
   Listed, Wake, Refusal, tools, create_tool_name, list_tool_name,
   cancel_tool_name, refusal_outcome, refusal_reason}` — the model's own
