@@ -1558,11 +1558,11 @@ fn advance_activity_indicator(model: Model) -> Model {
 // cache key stays scalar and screen-local; no complete Model comparison sits
 // on the idle path.
 //
-// The cache is also where a burst is paced. Etui hands queued events out one
-// per poll and draws after each, so forty wheel events would otherwise be
-// forty frames and forty viewport-sized diffs. A stale cache inside the pacing
-// interval is left in place and recorded as debt; the next tick, which cannot
-// arrive before the queue has drained, renders it once.
+// The cache is also where a burst is paced. Etui applies up to sixty-four
+// queued events before drawing, but each event still calls this update path and
+// a longer burst can span batches. A stale cache inside the pacing interval is
+// left in place and recorded as debt; the next tick, which cannot arrive before
+// the queue has drained, renders the final state once.
 fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let freshness = case model.frame_cache {

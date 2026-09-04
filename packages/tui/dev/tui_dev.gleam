@@ -13,6 +13,7 @@ import gleam/io
 import gleamy/bench
 import tui
 import tui/theme
+import tui_burst_dev
 
 type PanelPair {
   PanelPair(base: buffer.Buffer, transcript: Rect, input: Rect)
@@ -48,6 +49,8 @@ pub fn main() {
   )
   |> bench.table([bench.IPS, bench.Min, bench.Mean, bench.P(99)])
   |> io.println()
+
+  tui_burst_dev.run()
 }
 
 fn panel_pair(
