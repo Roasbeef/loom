@@ -97,9 +97,10 @@ pub type Tolerance {
 ///
 /// Constructor invariants: `writer_options.session` is an open session
 /// this tree becomes the sole committer for; `strand_options` is the
-/// per-strand driver template — its `strand` and `writer` fields are
-/// replaced per spawned strand by the factory, so the same effects,
-/// stream options, retry policy, and poll interval serve every strand
+/// per-strand driver template, constructed only once the real writer address
+/// and drain claim exist. Its `strand` is replaced per spawned strand by the
+/// factory, so the same effects, stream options, retry policy, and poll
+/// interval serve every strand
 /// while each strand's model identity stays durable in its own
 /// `strand.config` register; `subagent` decides, by name alone, which of
 /// the two factories starts a strand, and must be a pure total function
@@ -109,7 +110,8 @@ pub type Tolerance {
 pub type Config {
   Config(
     writer_options: writer.Options,
-    strand_options: strand_runtime.Options,
+    strand_options: fn(Name(writer.Message), fn(String, Pid) -> List(Pid)) ->
+      strand_runtime.Options,
     tolerance: Tolerance,
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
@@ -153,13 +155,9 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
   let writer_name = process.new_name(prefix: "loom_writer")
   let drains_subject = process.named_subject(drains_name)
   let template =
-    strand_runtime.Options(
-      ..config.strand_options,
-      writer: writer_name,
-      claim_reaper: fn(strand, reaper) {
-        drain_registry.claim(drains_subject, strand, reaper)
-      },
-    )
+    config.strand_options(writer_name, fn(strand, reaper) {
+      drain_registry.claim(drains_subject, strand, reaper)
+    })
   let factory = fn(strand_name) {
     let name =
       registry.ensure(process.named_subject(registry_name), strand_name)
