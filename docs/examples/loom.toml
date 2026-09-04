@@ -337,6 +337,9 @@ model_created = "steer"
 [tools]
 network = "off"
 # env = ["GH_TOKEN"]
+# Directories appended to the shell's PATH after the server's own, which
+# stay in front so the shell resolves the same gleam the compiler does.
+# path = ["/opt/homebrew/bin"]
 
 # [tools.set]
 # GH_CONFIG_DIR = "/home/me/.config/gh"

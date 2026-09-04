@@ -181,7 +181,8 @@ pub type ToolNetwork {
 /// `PATH`, `HOME` or `TMPDIR`, which the server owns
 /// (`client/serve.session_environment`); `set` is sorted by name, since
 /// the TOML dict loses file order and everything derived from a
-/// catalogue must be deterministic.
+/// catalogue must be deterministic; every `path` entry is a non-empty
+/// absolute directory, listed once, in file order.
 pub type ToolsConfig {
   ToolsConfig(
     /// Whether jailed tool shells get network egress.
@@ -194,6 +195,13 @@ pub type ToolsConfig {
     /// Literal `name = "value"` pairs set in every jailed tool shell,
     /// sorted by name.
     set: List(#(String, String)),
+    /// Directories appended to the jailed shell's `PATH`, after the
+    /// server's own entries, in file order. The server owns the front of
+    /// `PATH` so the shell resolves the same `gleam` and `erl` the compiler
+    /// does; this is how an operator adds the rest of a host's tools —
+    /// `/opt/homebrew/bin` for `gh` on a Homebrew Mac — without taking
+    /// that over.
+    path: List(String),
   )
 }
 
@@ -752,7 +760,7 @@ fn positive_int(
 /// ```
 ///
 pub fn default_tools() -> ToolsConfig {
-  ToolsConfig(network: ToolNetworkOff, env: [], set: [])
+  ToolsConfig(network: ToolNetworkOff, env: [], set: [], path: [])
 }
 
 /// Parses the optional `[tools]` table out of the same `loom.toml` the
@@ -800,7 +808,7 @@ pub fn parse_tools(text: String) -> Result(ToolsConfig, String) {
 fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["network", "env", "set"],
+    ["network", "env", "set", "path"],
     "[tools]",
   ))
   use network <- result.try(case optional_string(fields, "tools", "network") {
@@ -810,6 +818,7 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
   })
   use env <- result.try(tool_env_names(fields))
   use set <- result.try(tool_set_pairs(fields))
+  use path <- result.try(tool_path_entries(fields))
 
   // The two lists are one namespace: a name in both would be read from
   // the host and then overwritten by the literal, so whichever the
@@ -828,7 +837,7 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
       }
     }),
   )
-  Ok(ToolsConfig(network:, env:, set:))
+  Ok(ToolsConfig(network:, env:, set:, path:))
 }
 
 // Exactly two words, because the third one the wire vocabulary has —
@@ -879,6 +888,41 @@ fn tool_env_names(
 // the TOML dict loses file order, and a boot's constructed environment
 // should not depend on which order a dict happened to hand its keys
 // back.
+// Directories for the tail of `PATH`, in file order because search order
+// is the whole meaning of the list. Absolute, because a relative entry
+// would resolve against whatever the shell's working directory happened
+// to be — the workspace, which the model writes to.
+fn tool_path_entries(
+  fields: Dict(String, tom.Toml),
+) -> Result(List(String), String) {
+  use items <- result.try(case dict.get(fields, "path") {
+    Ok(tom.Array(items)) -> Ok(items)
+    Ok(_other) -> Error("tools.path must be an array of absolute directories")
+    Error(Nil) -> Ok([])
+  })
+  use names <- result.try(
+    list.try_map(items, fn(item) {
+      case item {
+        tom.String(name) ->
+          case string.starts_with(name, "/") {
+            True -> Ok(name)
+            False ->
+              Error(
+                "tools.path entries must be absolute directories, got \""
+                <> name
+                <> "\"",
+              )
+          }
+        _other -> Error("tools.path must be an array of absolute directories")
+      }
+    }),
+  )
+  case list.length(list.unique(names)) == list.length(names) {
+    True -> Ok(names)
+    False -> Error("tools.path lists a directory twice")
+  }
+}
+
 fn tool_set_pairs(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(#(String, String)), String) {

@@ -2786,7 +2786,9 @@ pub fn tool_environment(
   tools: catalog.ToolsConfig,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
-  let owned = session_environment(workspace, toolchain_path)
+  let owned =
+    session_environment(workspace, toolchain_path)
+    |> extending_path(tools.path)
 
   // A pass-through name settles one of two ways, so the fold carries
   // both answers: the pairs that were found, and the names that were not.
@@ -2830,6 +2832,26 @@ fn allowing_tool_tmpdir(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
     ..base,
     env_allow: list.unique(list.append(base.env_allow, ["TMPDIR"])),
   )
+}
+
+// The operator's `path` entries go on the tail of the server's `PATH`:
+// the toolchain and system directories stay in front, so the shell and
+// the compiler resolve the same `gleam` and `erl`, and what follows is
+// where the rest of the host's tools are found.
+fn extending_path(
+  environment: List(#(String, String)),
+  extra: List(String),
+) -> List(#(String, String)) {
+  case extra {
+    [] -> environment
+    dirs ->
+      list.map(environment, fn(pair) {
+        case pair {
+          #("PATH", value) -> #("PATH", value <> ":" <> string.join(dirs, ":"))
+          other -> other
+        }
+      })
+  }
 }
 
 /// The operator's `[tools]` table applied to the session base: the

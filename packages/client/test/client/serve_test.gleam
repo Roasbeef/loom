@@ -877,9 +877,14 @@ pub fn a_boot_with_schedules_runs_a_supervised_scanner_test() {
 // A `[tools]` table an operator opted in with: egress on, one name read
 // from the host, one literal.
 fn networked_tools() -> catalog.ToolsConfig {
-  catalog.ToolsConfig(network: catalog.ToolNetworkFull, env: ["GH_TOKEN"], set: [
-    #("GH_CONFIG_DIR", "/home/me/.config/gh"),
-  ])
+  catalog.ToolsConfig(
+    network: catalog.ToolNetworkFull,
+    env: ["GH_TOKEN"],
+    path: ["/opt/homebrew/bin"],
+    set: [
+      #("GH_CONFIG_DIR", "/home/me/.config/gh"),
+    ],
+  )
 }
 
 // A host environment with `GH_TOKEN` set and nothing else, so the skip
@@ -902,13 +907,28 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
     )
   assert environment
     == [
-      #("PATH", "/usr/local/bin:/usr/bin:/bin"),
+      #("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"),
       #("HOME", "/work"),
       #("TMPDIR", "/work/.codemode/tmp"),
       #("GH_TOKEN", "gho_secret"),
       #("GH_CONFIG_DIR", "/home/me/.config/gh"),
     ]
   assert unset == []
+}
+
+pub fn configured_path_entries_follow_the_servers_own_test() {
+  // The toolchain and system directories stay in front, so the shell
+  // resolves the same gleam the compiler does; the operator's directories
+  // are where the rest of the host's tools live.
+  let #(environment, _unset) =
+    serve.tool_environment(
+      "/work",
+      Some("/tool/bin:/usr/bin:/bin"),
+      networked_tools(),
+      reading: fn(_name) { Error(Nil) },
+    )
+  let assert Ok(path) = list.key_find(environment, "PATH")
+  assert path == "/tool/bin:/usr/bin:/bin:/opt/homebrew/bin"
 }
 
 pub fn an_unset_configured_name_is_skipped_and_reported_test() {

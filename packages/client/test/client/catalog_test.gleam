@@ -566,7 +566,12 @@ pub fn absent_tools_table_is_offline_with_nothing_added_test() {
   assert catalog.parse_tools(minimal) == Ok(catalog.default_tools())
   assert catalog.parse_tools(minimal)
     == Ok(
-      catalog.ToolsConfig(network: catalog.ToolNetworkOff, env: [], set: []),
+      catalog.ToolsConfig(
+        network: catalog.ToolNetworkOff,
+        env: [],
+        set: [],
+        path: [],
+      ),
     )
 }
 
@@ -579,7 +584,8 @@ pub fn the_example_catalogue_keeps_the_jail_offline_test() {
 pub fn a_full_tools_table_parses_test() {
   let text =
     with_tools(
-      "network = \"full\"\nenv = [\"GH_TOKEN\"]\n\n[tools.set]\nGH_CONFIG_DIR = \"/home/me/.config/gh\"",
+      "network = \"full\"\nenv = [\"GH_TOKEN\"]
+path = [\"/opt/homebrew/bin\", \"/usr/local/go/bin\"]\n\n[tools.set]\nGH_CONFIG_DIR = \"/home/me/.config/gh\"",
     )
   assert catalog.parse_tools(text)
     == Ok(
@@ -587,6 +593,7 @@ pub fn a_full_tools_table_parses_test() {
         network: catalog.ToolNetworkFull,
         env: ["GH_TOKEN"],
         set: [#("GH_CONFIG_DIR", "/home/me/.config/gh")],
+        path: ["/opt/homebrew/bin", "/usr/local/go/bin"],
       ),
     )
 }
@@ -599,6 +606,17 @@ pub fn tools_set_pairs_come_back_sorted_test() {
   let assert Ok(parsed) = catalog.parse_tools(text)
   assert list.map(parsed.set, fn(pair) { pair.0 })
     == ["A_FIRST", "M_MID", "Z_LAST"]
+}
+
+pub fn a_relative_path_entry_is_refused_test() {
+  // A relative directory would resolve against the shell's working
+  // directory, which is the workspace the model writes to.
+  let text = "[tools]\npath = [\"bin\"]\n"
+  let assert Error("tools.path entries must be absolute directories" <> _) =
+    catalog.parse_tools(text)
+  let twice = "[tools]\npath = [\"/opt/x\", \"/opt/x\"]\n"
+  let assert Error("tools.path lists a directory twice") =
+    catalog.parse_tools(twice)
 }
 
 pub fn unknown_tools_key_refused_test() {

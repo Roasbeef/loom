@@ -232,8 +232,13 @@ interrupt a person is a client-surface decision, not a runtime one.
 The lattice's other rung is reachable, and only by an operator. A
 `[tools]` table in `loom.toml` — `network = "off" | "full"`, default off
 and what the absence of the table means — is what puts `NetworkFull` on
-the session base, and `bash` and `grep` ask for whatever the base allows
-rather than stating a network of their own (`tool.asking_base_network`).
+the session base, and `bash` asks for whatever the base allows rather
+than stating a network of its own (`tool.asking_base_network`). `grep`
+does not follow: `rg` reads files and needs no egress, so it stays pinned
+off under any base. The same table's `env`, `set` and `path` keys widen
+the shell's environment — host variables by name, literals, and
+directories appended after the server's own `PATH` entries — which is
+what lets `gh` be found and authenticate once the network is open.
 The meet is why that indirection exists: a tool requirement of
 `NetworkOff` pins a call offline however wide the base is, so a tool that
 hard-coded it would make the setting reach nothing.
