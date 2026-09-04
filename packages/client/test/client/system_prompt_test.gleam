@@ -20,7 +20,6 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/serve
-import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock
@@ -215,7 +214,7 @@ pub fn the_shipped_prompt_is_complete_and_affordable_test() {
   // Nothing to warn about: the shipped pack carries every canonical
   // section and every fragment, and spells every placeholder right.
   assert rendered.warnings == []
-  assert rendered.version == "loom-default-4"
+  assert rendered.version == "loom-default-6"
   assert rendered.digest == pack.fingerprint(default.source)
   // Every byte here is paid on every request of every strand for the life
   // of the session. The bound is loose; it is here to make a prompt that
@@ -763,9 +762,6 @@ fn wiring_config(system: Option(String)) -> wiring.Config {
     fallback_context_window: 100_000,
     fallback_max_output_tokens: 4096,
     provider_timeout_ms: 1000,
-    summary_role: model.Summarize,
-    summary_pack: summary_pack(),
-    summaries: summary_sink(),
     session: memory_session(),
     compaction: operation.CompactionSettings(
       enabled: False,
@@ -784,17 +780,6 @@ fn wiring_config(system: Option(String)) -> wiring.Config {
     clock: clock.fixed(at: 0),
     entropy: fn() { 1 },
   )
-}
-
-fn summary_pack() -> pack.Pack {
-  let assert Ok(#(decoded, [])) = system_prompt.summary_pack(None)
-    as "the shipped summarization pack must load cleanly"
-  decoded
-}
-
-fn summary_sink() -> summaries.Summaries {
-  let assert Ok(sink) = summaries.start() as "the summary sink must start"
-  sink
 }
 
 fn memory_session() -> session.Session {

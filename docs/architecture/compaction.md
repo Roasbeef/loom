@@ -1,612 +1,292 @@
 # Compaction
 
-Every long session eventually holds more conversation than the model's
-window will take. Compaction is what Loom does about it: summarize the
-older half of a strand's context, keep the newer half verbatim, and
-write both to the tree as one row. The machinery for that existed from
-the durable entry type up through the state machine for most of the
-project's life and none of it ran — the threshold was a constant that
-never fired, every structural decision declined, and a production run
-that overflowed its window drained as a terminal failure. It runs now,
-and what follows is compaction as built.
+Loom bounds a strand's active context by appending a checkpoint to its
+conversation tree. The checkpoint contains a bounded snapshot of the
+strand's notes and a verbatim recent tail. Older entries remain in the
+store; they stop appearing in the next model request. The host builds the
+checkpoint locally, without asking a model to summarize the transcript.
 
-Compaction straddles two of Loom's three planes. The durability
-plane stores the checkpoint and stops reading at it
-(`docs/architecture/durability.md`); the orchestration plane decides
-when to write one and drives the provider round-trip that produces it
-(`docs/architecture/orchestration.md`). The reasoning behind the
-design — why the summary is a serialized transcript rather than the live
-context, how pi and oh-my-pi solve the same problem, what the cache
-arithmetic says — is `docs/design-notes/compaction-and-memory.md`, and
-is not repeated here.
+This document describes the notes-based policy in PR #223. Deployment
+starts fresh sessions. Resuming an in-flight task from the removed
+summarizer implementation is outside this change's supported rollout.
 
-## Compaction is an append, not a rewrite
+The policy depends on three distinct mechanisms:
 
-A `CompactionEntry` is one more write-once row in the conversation tree,
-parented on the strand's current leaf, carrying the summary text and a
-complete copy of the retained tail (`core/entry.gleam:53`). Nothing is
-deleted. Every summarized message stays in the tree, navigable,
-forkable, and indexable; what changes is only the *projection*, because
-a context scan stops inclusively at the first compaction it meets
-(`project`, `session/session.gleam:769`). Recovery therefore replays the
-same context it had before the crash, since the compaction entry is in
-the log like everything else.
+| Mechanism | Responsibility | Limit |
+|---|---|---|
+| `agent_note` and `agent_notes` | Maintain and retrieve the strand's working notes. | The model decides what to record; the harness does not prove completeness. |
+| Compaction | Replace older projected conversation with a notes snapshot and recent messages. | Snapshot size is bounded; the newest exchange may exceed the recent-token target. |
+| `history_search` | Find excerpts, then retrieve complete entries by session and entry IDs. | Search covers indexed text in registered repository sessions, not every possible source. |
 
-The storage plane was built around this before it happened. The SQLite
-branch index bounds its divergence copy at the newest compaction on the
-path, which is what keeps forking from costing quadratic index growth —
-so compaction is the thing that makes cheap forks stay cheap.
+The durable transcript is the source for recall under both the former
+summarizer policy and this policy. Removing the summarizer does not make
+history durable for the first time. It removes a provider dependency and
+an additional model's choice of what to preserve, while placing more
+responsibility on the working agent's note-taking and retrieval.
 
-## The path, end to end
+## The durable boundary
+
+A `CompactionEntry` is an append, not a rewrite. It is parented on the
+strand's current leaf and stores the replacement text plus the retained
+messages. Publication moves the leaf in the same transaction. A crash
+therefore exposes either the prior context or the committed checkpoint,
+not a partially replaced conversation.
+
+Projection scans backward to the newest compaction, includes it, and
+stops. The checkpoint text becomes a user message, followed by the
+retained tail and subsequent entries. Neither the notes nor recalled
+history becomes system instructions. The original entries remain
+available to storage scans and exact history reads.
+
+The frozen structural contract still calls the replacement text
+`summary` and the cut input `messages_to_summarize`. Those names do not
+imply a summarizer call. This host supplies the text through
+`VerdictSupplied`; it does not select the generation path. The retained
+structural machinery also serves branch operations and remains part of
+the frozen interface.
 
 ```mermaid
-flowchart TB
-    subgraph driver["strand driver process"]
-        CP["checkpoint, step 3<br/>threshold hook asked every pass"]
-        SET["assistant settlement<br/>classified as overflow"]
-        DEC["structural decision hook<br/>-> VerdictGenerate"]
-        PROG["summary_progress hook<br/>reads the sink"]
-        PUB["publish: CompactionEntry + leaf move<br/>then resume the checkpoint"]
-    end
-
-    subgraph effect["spawned effect process"]
-        DISP["wiring.dispatch<br/>builds the provider request"]
-        RELAY["relay: file the settlement,<br/>then forward the terminal event"]
-    end
-
-    SINK["summary sink (bounded actor)"]
-    PREP["op.preparation register<br/>the frozen input"]
-
-    CP -- "ThresholdExceeded(Prepared)" --> PREP
-    SET -- "overflow, one-shot unspent" --> PREP
-    PREP --> DEC
-    DEC -- "commit intent, then Dispatch" --> DISP
-    DISP --> RELAY
-    RELAY --> SINK
-    RELAY -- "terminal event" --> PROG
-    SINK --> PROG
-    PROG -- "SummaryProduced" --> PUB
-
-    classDef durable fill:#1f5,stroke:#093,color:#000;
-    class PREP,PUB durable;
+flowchart LR
+    T[Threshold or provider overflow] --> P[Frozen preparation]
+    O[Operator compact] --> P
+    P --> C[Local checkpoint from notes]
+    N[Strand note registers] --> C
+    C --> H[before_compact additions]
+    H --> D[Commit checkpoint and leaf]
+    D --> G[Project checkpoint plus retained tail]
+    S[Original durable entries] --> R[Search excerpts and exact reads]
 ```
 
-The two boxes are two processes. Everything in the first runs on the
-strand driver; the provider round-trip runs on a process the driver
-spawned and monitors. The sink between them exists because those halves
-cannot hand a string to each other directly: the hook that asks whether
-a summary was produced has no field to carry one, and runs on the wrong
-process to have received it.
-
-## What fires the threshold
-
-Step 3 of the checkpoint procedure is the compaction check, and it runs
-at every checkpoint of an open run, including the `MayFinish` boundary
-where the run is about to end. Two conditions gate it: the run's
-captured settings must have compaction enabled, and this boundary must
-not already have been checked — `threshold_checked` names the trigger
-entry whose check already ran, so a boundary is never checked twice
-(`machine/planner.gleam:749`). What the machine reads is
-`PlannerInputs.threshold`, which the runtime supplies as a plain value
-on every pass of the drive loop (`threshold`,
-`runtime/strand_runtime.gleam:1620`).
-
-The hook behind it is built in production wiring from the catalogue's
-own model facts rather than from a fixture: the threshold's context
-window is the *strand's* — read from its durable configuration's own
-catalogue entry, so a strand switched off the configured route is
-measured against the window it will actually be dispatched into — and
-only an identity the catalogue does not know falls back to the config's
-declared figures (`compaction_hooks`, `client/wiring.gleam:303`;
-`docs/architecture/models.md` has the routing side). The inequality is pi's —
-compact once the context passes `context_window - reserve_tokens` — and
-the defaults are pi's too, 16,384 reserve and 20,000 keep-recent, stated
-once in `client/serve.gleam:945` (`default_reserve_tokens`) and
-overridable from the environment. A setting that cannot describe a
-working compaction — a non-positive keep-recent, or a reserve leaving no
-room above the tail — disables compaction rather than firing a threshold
-on every checkpoint and then preparing nothing
-(`compaction_settings`, `client/serve.gleam:898`).
-
-The hook reads the strand's context straight from the session store
-rather than through the writer, which is what makes it callable from a
-hook at all: both storage backends are actors, so the access serializes
-with every other one. It reads the *durable* projection on purpose. A
-threshold decision taken before a crash has to be taken again after it,
-and process-local state would not survive to be re-taken. A strand with
-no leaf, or a read that fails, projects as empty, which reads downstream
-as "nothing to compact" — the safe direction, since no strand should be
-halted because a token count could not be taken
-(`project`, `runtime/hooks.gleam:386`).
-
-## Counting the context the way the provider counts it
-
-A pure estimate drifts against the provider on exactly the axes that
-matter — cache reads, thinking tokens, the provider's own serialization
-overhead — and it drifts *low*, which is the dangerous direction: a run
-that believes it has room overflows instead of compacting. So the fold
-is not an estimate when it does not have to be. It takes the newest
-settled assistant message's provider-reported `total_tokens` out of the
-projection and adds a characters-over-four estimate only for the
-messages committed after it (`context_tokens`,
-`runtime/hooks.gleam:423`). Everything that reaches the wire counts
-toward the estimate — text, thinking, serialized tool-call arguments,
-tool-result text — and an image counts as a flat 6,000 characters,
-because its base64 payload is an order of magnitude larger than what a
-provider bills for it (`estimate_message`, `runtime/hooks.gleam:440`).
-
-Synthetic settlements report zero and are skipped: an abort or a
-transport failure never described a real request, and an errored
-response is dropped from the projection anyway
-(`newest_reported`, `runtime/hooks.gleam:506`).
-
-**The fold must skip what a compaction carried.** A `CompactionEntry`
-holds a *copy* of its retained tail, so after a compaction the assistant
-messages at the head of the projection are the same messages that were
-in flight before it — and their reported usage describes the context
-they were sent in, which was the large one the compaction just replaced.
-Read one of those numbers and the threshold is crossed again on the very
-next checkpoint, and on every checkpoint after that, forever: a session
-that compacts once compacts on every operation for the rest of its life.
-So the projection is handed to the hook together with a count of how
-many leading messages the compaction contributed — its summary,
-projected as one user message, plus every message of its retained tail —
-and the fold starts after them (`Projected`, `runtime/hooks.gleam:335`).
-That is pi's "reject usage older than the latest compaction" in the
-shape Loom's projection makes available. When nothing after the carried
-messages has a reported number yet, the whole projection is estimated
-instead — an estimate of the small post-compaction context, never the
-provider's memory of the large one it replaced.
-
-`a_finished_compaction_does_not_re_fire_the_threshold_test` in
-`packages/client/test/client/compaction_test.gleam` is the regression:
-it compacts, prompts once more with a cheap turn, and asserts the tree
-still holds exactly one compaction.
-
-## The cost, recorded rather than hidden
-
-`PlannerInputs.threshold` is a value, not a thunk, and that field is
-frozen in spec Part 1. So an open operation pays one branch scan and one
-projection per driver message — per poll tick, per doorbell, per settled
-effect — whether or not anything is near the window.
-
-Three things bound it. An idle strand never reaches `build_inputs` at
-all, so a session sitting still costs nothing. The hook checks
-`settings.enabled` before it calls a projection, so a host with
-compaction off pays nothing either (`threshold`,
-`runtime/hooks.gleam:569`). And the scan stops at the newest compaction,
-so the window it grows in is exactly the window compaction closes — the
-cost is bounded by the very thing it triggers. If it ever shows in a
-profile, the fix is named: a memo keyed on the strand leaf's register
-seq, since the branch is a function of the leaf and entries are
-write-once. That memo is not built.
-
-## Where the cut lands
-
-Once the threshold is crossed, the same function that answered it builds
-the split (`preparation`, `runtime/hooks.gleam:534`). It walks the
-projection newest-first spending the keep-recent budget, and stops at the
-first message that does not fit rather than skipping it, because a
-retained tail has to be a contiguous suffix of the projection
-(`recent`, `runtime/hooks.gleam:569`). Everything older than the
-resulting boundary is what the summarizer is sent; everything newer
-survives verbatim.
-
-Then the boundary moves. **A cut point moves later off a tool result,
-never earlier** (`cut`, `runtime/hooks.gleam:535`). A tool result at the
-head of a retained tail is an answer to a call the model can no longer
-see, so it belongs on the summarized side with the assistant turn that
-made it, and moving the boundary later is what puts it there. The
-direction matters as much as the rule. A boundary that only ever moves
-later can only *shrink* the retained tail, so the keep-recent budget it
-was just measured against still holds — and the cut can never come to
-rest between an assistant turn and one of its results.
-
-One consequence is worth naming rather than leaving as a stub: because
-the boundary only ever moves later, it always lands on a turn boundary,
-so this builder cannot produce pi's split-turn case. The preparation's
-`is_split_turn` is correspondingly always `False` here, and
-`turn_prefix_messages` is always empty. That in turn is why the
-production progress hook never has to answer `SummaryNeedsRequest`: one
-request per attempt is the whole loop.
-
-A previous compaction's summary is not re-summarized: it travels as
-`previous_summary`, which selects the pack's iterative-update prompt. Its
-*retained tail* is, though — those messages survived one compaction and
-would otherwise be dropped silently by the next.
-
-When the walk leaves nothing older than the tail, the builder answers
-`EmptyPreparation`, which the machine reads as "mark the boundary
-checked and carry on" rather than as an error.
-
-## The summary request
-
-The structural decision hook in production always returns
-`VerdictGenerate`: every compaction goes to a provider. `VerdictSupplied`
-exists for a host that summarizes for itself, and a harness that used it
-here would be answering its own compaction.
-
-The words a summarizer reads live in the `prompt` package, as a second
-pack alongside the system prompt, with its own version identity and the
-same total decoder (`summary_source`, `prompt/default.gleam:264`). It
-carries four sections — a summarization system prompt, an initial
-compaction instruction, an iterative update instruction, a branch-summary
-instruction — plus three fragments the input selects between. The format
-is pi's, ported section for section: Goal, Constraints & Preferences,
-Progress, Key Decisions, Next Steps, Critical Context, with explicit
-instructions to preserve paths, identifiers, error messages, and
-`sha256-` blob addresses verbatim.
-
-The doomed messages reach the model as *text*, not as messages. They are
-role-tagged, tool results truncated at 2,000 characters, and wrapped in a
-`<conversation>` element the prompts describe as a record of the past
-(`serialize`, `prompt/summary.gleam:270`). Nothing inside it can be
-mistaken for a turn addressed to the model, no tool call in it can be
-answered, and splicing goes through a substitution that never re-scans
-what it just inserted — so a transcript containing a placeholder cannot
-rewrite the instructions wrapped around it.
-
-The request itself is one user message holding the system section and
-the selected instruction concatenated, and nothing else: no `system`
-field, no tool array (`summary_provider_request`,
-`client/wiring.gleam:506`). It routes through the `Summarize` role when
-one is configured, falling back to the strand's ordinary dispatch target
-otherwise — for an on-route strand that is the role's chain, walked, and
-only an off-route strand summarizes on exactly its captured identity —
-routing a summary to a cheaper model is why the role exists, and unlike
-a generation there is no durable identity contract to honour, since the
-summary is published as text rather than as a response attributed to a
-model (`summary_target`, `client/wiring.gleam:629`). An
-operator's manual instructions reach the prompt from the operation's
-durable state rather than from the preparation, because the preparation
-is the frozen *input* the decision hook approved and the instructions are
-a property of the operation that asked (`instructions_for`,
-`client/wiring.gleam:561`).
-
-### The cache decision is a request shape
-
-Sending no system prompt and no tool array is the cost decision, not an
-omission. The Anthropic adapter spends four cache breakpoints on every
-request, and the two one-hour marks — the expensive, long-lived ones —
-hang on exactly those two positions, because tools and system render
-ahead of the messages and change at most once a session. A request that
-carries neither writes no long-lived cache entry, and cannot disturb the
-session's own pinned head, because it never sends one. That is pi's
-`cacheRetention: "none"` expressed structurally rather than as a
-convention someone has to remember: there is no flag to forget, and
-`a_summary_request_pays_no_cache_write_on_the_head_test` in
-`packages/client/test/client/wiring_test.gleam` pins the contrast
-against an ordinary generation so the shape cannot leak the other way.
-
-The honest residue: the adapter still hangs a rolling five-minute mark on
-the last block of each of the final two user turns
-(`mark_tail_user_turns`, `provider/adapter/anthropic.gleam:440`), and a
-summary request has exactly one user turn. So it writes one five-minute
-cache entry that will never be read — the next summary's bytes differ —
-and pays roughly 1.25x base input on its serialized transcript instead of
-1x. At a 150k-token compaction point that is real money. Removing it
-needs a request-level flag in `provider`, which `ProviderRequest` has no
-field for today. It is not built.
-
-## The relay across the process boundary
-
-The machine's structural loop is deliberately two-step. A nested summary
-request settles as `ObservedSummaryReturned`, which carries only the
-*usage* — the ledger row is what that transaction is for — and the
-runtime then asks the `summary_progress` hook whether the attempt
-produced a summary, needs another request, or failed. The hook's
-arguments are `(operation, task_id, attempt)`. The response text is not
-among them, and that signature is frozen.
-
-The two halves also run on different processes. `client/wiring`'s
-dispatch runs on the effect process the driver spawned; the hook runs on
-the driver itself. So the text needs a rendezvous, and `client/summaries`
-is it: a small actor keyed by the same triple the hook is asked about
-(`key`, `client/summaries.gleam:148`), holding the newest 32 settlements
-and dropping the oldest beyond that. A session compacts a handful of
-times; the bound exists so a long-lived server cannot accumulate summary
-text nobody will ask for again.
-
-The recording happens in a wrapper around the provider surface rather
-than inside it, so a host with its own provider — the scripted demo is
-one — can still run the real hooks over it
-(`recording_summaries`, `client/wiring.gleam:435`). The wrapper owns the
-inner stream and **files the settlement before forwarding the terminal
-event** (`record_summary_event`, `client/wiring.gleam:471`, through the
-observer-before-forward seam in `client/provider_relay.gleam:85`). That
-ordering is the whole point: by the time the effect process reports the request
-settled and the driver turns around to ask for progress, the text is
-already in the sink, so the hook's read is a question about a record that
-exists rather than a race it might lose. A response that reached for a
-tool is a failed attempt rather than a summary — the summarizer was sent
-no tool array, so a call in the answer means it did something else — and
-so is an answer with no text (`settlement_of`,
-`client/wiring.gleam:437`).
-
-Ownership flows inward on the same relay. Its public custodian monitors the
-effect consumer and adopts the guard, private observer, and inner stream owner
-before their work begins; the guard alone consumes the inner stream. Explicit
-cancellation of the wrapper cancels the inner handle, and abort or driver
-restart does the same without waiting for the provider deadline. A guard or
-observer crash becomes an in-band transport failure, while a silent inner
-owner becomes terminal `CancellationUnconfirmed` after one fixed grace. The
-custodian remains alive as a drain witness until the registered subtree exits.
-Consumer death records nothing. The record-before-forward law still applies
-when a real settlement wins the race; cancellation never manufactures a
-summary record.
-
-**A missing record reads as retryable, never as an empty summary.**
-Nothing in the sink is durable, and deliberately so. A record lost to a
-crashed process, a reaped effect, or an evicted entry reads back as
-absent, and the hook reports a retryable failure, so the machine starts
-the attempt over and asks the provider again — exactly what it does for
-an orphaned summary request (`summary_progress`,
-`client/wiring.gleam:642`). Answering `SummaryProduced(summary: "")`
-instead would publish a `CompactionEntry` whose summary is nothing at
-all, silently replacing a conversation with a blank. Losing the text
-costs one request; trusting the gap costs the conversation.
-
-Neither end of the sink can take a strand down with it. Both calls check
-that the actor is alive first, because `process.call` exits its caller
-when the callee is gone: a dead sink must surface as a lost record, not
-as a faulted driver or a crashed effect.
-
-## What gets committed
-
-Each nested request settles its own ledger row and clears the in-flight
-marker in one transaction, so the next pass is unambiguously "between
-requests" (`settle_summary_request`, `machine/planner.gleam:3031`). Those
-rows carry no entry id, because they commit before the result entry
-exists. When progress finally reports `SummaryProduced`, the publication
-is a single transaction: the compaction entry parented on the current
-leaf, carrying the summary, the complete retained tail from the frozen
-preparation, the `tokens_before` the preparation recorded, a `from_hook`
-of `False`, and the summarizer's display usage — plus the leaf move
-(`compaction_publication`, `machine/planner.gleam:3437`). No extra usage
-row is written on this path; the hook-supplied path writes one because
-nothing else billed it, and the generated path already paid per request.
-
-Where the run goes next depends on who hosted the work. An in-run
-compaction restores the checkpoint it copied aside, already marked
-threshold-checked, so the same boundary is never rechecked and the run
-carries straight on to its generation step (`publish_structural`,
-`machine/planner.gleam:3345`). A standalone compaction operation
-finishes, with the new entry as its result leaf.
-
-## When the compaction does not happen
-
-Decline and failure both end an in-run compaction with nothing published,
-and for both the first question is the `CompactionReason` — not the error
-and not how far the retry ladder got. That is one rule read at two sites,
-`decide_structural` for a decline (`machine/planner.gleam:2812`) and
-`structural_failure` for a failure (`machine/planner.gleam:3370`).
-
-**A threshold compaction is Loom's own clamp**, applied because the
-context crossed an inequality the harness chose. Failing to apply it
-costs the clamp, not the conversation: every message that was in the
-tree is still in the tree, still projecting to the same context, still
-the size it was when the last generation request fitted the window. So
-the run restores the checkpoint the compaction copied aside and carries
-on unsummarized, whether the compaction was declined by a hook or failed
-past its retry ladder against a summarizer that was down.
-
-**An overflow compaction is the provider's verdict** that the context
-does not fit, and a run that cannot shrink a context the provider has
-already refused has nowhere left to go. A declined or failed overflow
-compaction drains the run, exactly as before.
-
-What neither ever does is publish. An empty summary would replace the
-conversation with nothing, and
-`a_terminally_failed_summary_publishes_nothing_test` asserts the tree
-gains no compaction at all.
-
-### What the run does next, and why it is not nothing
-
-A threshold compaction that failed leaves a question a decline does not:
-the summarizer will be just as unavailable at the next boundary, and the
-context did not shrink, so the threshold will be crossed again. Restoring
-the checkpoint alone would re-enter the whole structural lifecycle — a
-decision hook, a resolution, a full retry ladder of provider requests
-against the same dead route — on every turn for the rest of the run.
-
-So abandoning a threshold compaction also **switches threshold compaction
-off for the remainder of that run**, by clearing `enabled` in the run's
-own captured `CompactionSettings`
-(`abandon_threshold_compaction`, `machine/planner.gleam:3317`). That is
-the durable record of the attempt the backoff needs, and it needs no new
-state: `enabled` is already the single gate step 3 reads
-(`after_inbox`, `machine/planner.gleam:794`), already inside `op.state`,
-and therefore already survives a crash-restore rather than re-opening the
-gate on recovery.
-
-The backoff interval is the operation. `RunSettings` is captured per
-operation at acceptance, so the next prompt on the strand takes a fresh
-snapshot with compaction enabled and asks the summarizer again. A
-summarizer outage costs the run its compaction, not the session its
-ability to compact.
-
-The run then continues unclamped, which is survivable because the clamp
-was never the only guard. Overflow recovery does not consult these
-settings at all — a request that does not fit still diverts into a
-compaction task (`settle_overflow`, `machine/planner.gleam:1224`) — so
-the provider's own limit remains the backstop. If the summarizer is
-still down when it fires, that compaction drains the run, and by then
-draining is the honest outcome.
-
-### Which failures leave the run alive
-
-Not every structural error is about the summarizer, so the threshold path
-consults one predicate before it decides to survive
-(`fatal_to_the_context`, `machine/planner.gleam:3278`). It asks what the
-error is a statement *about*. An unresolvable route, a provider that
-would not answer, a summarizer that replied with a tool call instead of
-a summary, a settlement lost with its process, an attempt orphaned at the
-attempt cap — all of those describe the summarizer, and the run survives
-them. An error that says the *context* does not fit describes the
-conversation, and the run drains on it even from the threshold path.
-
-The predicate is a denylist rather than an allowlist, deliberately. A
-code it has never heard of, from a host's own hooks, is far likelier to
-be one more way for a summarizer to be unavailable than a claim that the
-conversation cannot continue — and the two mistakes cost differently.
-Continuing when the run should have drained costs one more generation
-request, which the overflow path catches. Draining when the run should
-have continued costs the whole session, which is the failure this
-distinction exists to prevent (issue #34). Corruption is untouched by
-any of it: an undecodable register or an impossible observation is a
-`Fault` raised at its own site, never an `OperationError`, so nothing
-here can turn an impossible state into a survivable one.
-
-`threshold_summarizer_unresolved_keeps_the_run_alive_test`,
-`threshold_summary_failure_past_the_ladder_keeps_the_run_alive_test`,
-`overflow_summarizer_unresolved_still_drains_test` and
-`threshold_context_overflow_still_drains_test` in
-`packages/machine/test/machine/failure_test.gleam` drive a failing
-summarize route down each path and pin the four outcomes apart.
-
-## What a later projection sees
-
-Every context read afterwards scans the branch newest-first and stops
-inclusively at the first compaction. The compaction is therefore the
-oldest entry the scan returns, and the projection opens with its summary
-rendered as a **user** message — the summary is injected context, not
-model output — followed by its retained tail, and nothing earlier is read
-(`project_entry`, `session/session.gleam:930-719`). The ordinary rules then
-apply to the tail: errored, aborted, and deferred responses drop, and a
-retained tool call whose result was severed by the cut heals with a
-synthetic error result. On a settled history that healing is a no-op,
-which is exactly what the cut rule buys.
-
-Forks follow with no extra design. A fork is a new strand whose leaf
-register points into the shared tree, so a fork taken *below* a
-compaction has no compaction on its path and its scan runs to the root —
-it sees the full history, unsummarized. A fork taken *above* one inherits
-the summary and the retained tail like any other reader. Compaction is a
-path-local event; siblings are untouched. The branch index's divergence
-copy is bounded at that same compaction, which is the cheap-fork property
-the storage plane was already built around.
-
-## The other two ways in
-
-**Overflow.** When a provider reports that the context does not fit, the
-settlement classifies as an overflow and the machine asks the runtime for
-a preparation before deciding anything (`settle_overflow`,
-`machine/planner.gleam:1403`). The hook behind that key is the same
-builder the threshold uses, asked unconditionally: a provider that says
-the context does not fit has already evaluated the inequality, so the
-only question left is whether there is anything to compact
-(`overflow`, `runtime/hooks.gleam:668`). A preparation with something in
-it diverts the run into a compaction task, committing the overflowing
-response, its leaf move, its usage row, the preparation and the new state
-as one transaction — so the compaction task can never exist without the
-response that caused it — and resumes the same trigger with the one-shot
-recovery marked spent, so a retried request cannot loop on overflow
-(`enter_overflow_compaction`, `machine/planner.gleam:1289`). An empty
-preparation, or a second overflow on the same step, drains the run as
-`context_overflow`; so does a compaction that was declined or that failed
-against its summarizer, which is where this path parts company with the
-threshold's. Before the wiring existed the default preparation was
-always empty, which is why an overflowing production run simply died.
-
-**The manual command.** `Compact(strand, instructions)` accepts a
-standalone compaction operation, and it goes through the same builder:
-the client hub reads the strand's durable projection, prepares it with
-the run's own settings, and hands the result to `machine/acceptance`
-(`compaction_preparation`, `client/gateway.gleam:2596`). An
-operator-requested compaction therefore cuts where an automatic one cuts,
-keeps what an automatic one keeps, and carries a previous summary forward
-the same way; a change to the cut rule cannot apply to only some of the
-three entry points. When the projection has nothing older than the tail,
-acceptance rejects with `NothingToCompact` rather than opening an
-operation that would publish nothing.
-
-## What is not built, and what is not proven
-
-Stated plainly, because each of these reads like a feature from the
-outside.
-
-**Kill-and-recover mid-compaction has no production-hooks scenario.**
-The compaction tests drive a real session and a real runtime through the
-production seams, but none of them kills anything. The seam-level
-equivalent is covered — a summary the sink does not hold starts the
-attempt over and the compaction still lands
-(`a_retryable_summary_failure_is_retried_test`) — and the machine-level
-crash points are covered by the deterministic simulation
-(`docs/architecture/simulation.md`), which trips thresholds, generates
-summaries and prepares overflow compactions under injected faults
-including a tree killed mid-flight. But the simulation
-supplies its *own* hooks, with a placeholder preparation rather than
-`runtime/hooks.preparation`; the enumerated interleave harness never
-reaches compaction at all. Nothing yet crashes a strand mid-compaction
-with the production builder installed.
-
-**`make e2e` runs compaction live and never fires it.** The end-to-end
-rig installs the production wiring with production's own settings —
-16,384 reserve, 20,000 keep-recent — against a 200,000-token window, and
-its scripted turns report a few hundred tokens apiece. So the threshold
-never crosses. What that proves is that the compaction seams cost a
-normal session nothing, not that they fire; the firing is proved in
-`packages/client/test/client/compaction_test.gleam`, against a
-10,000-token window, and in the gateway demo, which compacts `main` over the
-wire and asserts the committed entry carries the text the provider
-produced with `from_hook: False`.
-
-**Branch summaries are wired everywhere except at the trigger.** The
-prompt section exists, the request builder is total over both preparation
-shapes, the machine's navigation host is built, and the projection
-already renders a branch summary as user-message context. Nothing
-dispatches one: `client/gateway` accepts every navigation with
-`summarize: False`, so the navigation host never enters its structural
-lifecycle.
-
-**Cumulative file-operation tracking is not filled.** The preparation
-carries a `FileOperations` record and the pack renders a `<read-files>`
-/ `<modified-files>` block when it is non-empty, but the builder always
-constructs it empty. Filling it means extracting paths from the tool
-calls in the summarized span and merging the previous compaction's lists,
-and it is a preparation change rather than a prompt one.
-
-**`SummaryNeedsRequest` is never returned in production.** Because this
-builder cannot produce a split preparation, one request per attempt is
-the whole loop.
-
-**The simulation never fails a summarizer.** Its `summary_progress` hook
-answers only `SummaryProduced` or `SummaryNeedsRequest`
-(`hooks`, `conformance/simulation/surface.gleam:1247`), so no seed drives
-a structural failure and the seeded soak proves the survival rule only by
-*not* regressing around it. Adding a refusing summarizer means a new
-`script.Structural` variant, and drawing it would reshuffle every seed's
-schedule — the corpus is the oracle, so a variant added here should stay
-out of the weight table and be reached by an explicitly constructed
-script. The rule itself is pinned at the machine level, in
-`packages/machine/test/machine/failure_test.gleam`, and at the seam level
-by `a_terminally_failed_summary_publishes_nothing_test`.
-
-## Where the code lives
-
-| Path | What it holds |
+`before_compact` extensions can append notes to a supplied checkpoint.
+Their additions pass through the structural lifecycle before publication;
+an extension does not rewrite the already committed transcript. The
+checkpoint's 16 KiB note cap bounds the strand-note block, not arbitrary
+extension additions or the entire eventual provider request.
+
+## What survives a cut
+
+`runtime/hooks.preparation` is shared by threshold, overflow and operator
+compaction. It selects a contiguous suffix using `keep_recent_tokens`,
+then applies two retention rules:
+
+1. Keep the newest assistant message and every message after it. Those
+   messages can contain tool results or queued user input that the model
+   has not read. Before the first assistant message, keep all input.
+2. If the candidate boundary starts on a tool result, move it backward to
+   retain the assistant call and its results together.
+
+The token setting is a target, not a hard cap. For example, a batch that
+returns 25,000 tokens survives a 20,000-token recent target. Trimming the
+batch to satisfy the target could remove the result that caused the
+threshold crossing before the agent ever sees it.
+
+If this protected exchange cannot fit the model's window, compaction may
+not recover enough room. The existing overflow path then reports failure.
+A successful cut must not conceal the failure by discarding unread input.
+If there is nothing eligible to cut, preparation is empty.
+
+The replacement text contains the closed-window ordinal, cut and retained
+message counts, the pre-cut context estimate, the strand's notes, and any
+operator compaction instructions. Its note block is capped at **16,384
+bytes**, newest-written first. Older notes may be omitted, and a single
+oversized note may be clipped. The text identifies truncation and points
+to `agent_notes` for the complete board. Bytes are not model tokens; the
+rough four-characters-per-token estimate is not a universal bound.
+
+When a prior checkpoint exists on the branch, the new text includes its
+session and entry IDs. A child strand can inherit a checkpoint while
+having an empty note board of its own. The reference makes that inherited
+context retrievable without recursively embedding all prior checkpoints.
+It does not guarantee that the child notices an omission. The prompt
+asks the child to copy relevant inherited requirements into its own notes.
+
+## Notes and the system prompt
+
+The default prompt tells the agent to maintain a small set of current
+notes: objective, constraints, decisions, progress, evidence, and next
+steps. Stable keys are preferable to one new key per event, because the
+snapshot has a fixed byte budget. Notes should include concrete file and
+entry IDs, test outcomes, failed approaches, and unfinished work.
+
+The agent should update notes before a large tool batch, not wait for a
+capacity reminder. A tool result can move context from below the reminder
+point to above the compaction point in one step. Loom currently provides
+no guaranteed final note-writing turn.
+
+Run-start note injection still matters. `client/notes.digest_hooks`
+appends a user message containing up to **4,096 bytes** of the current
+strand's notes. An empty board injects nothing. This refreshes mutable
+notes that may have changed since the last checkpoint, including notes
+written after it. The immutable checkpoint remains the snapshot that was
+published at its own boundary.
+
+Both renderings quote and attribute notes as historical data. Their
+fences prevent text from closing the surrounding presentation; they do
+not prove that a model will ignore a malicious instruction in that text.
+The prompt must preserve the distinction between recalled facts and
+current instructions. It also asks the agent to verify facts against
+current evidence when the distinction matters.
+
+The system prompt is pinned for a session. This rollout assumes new
+sessions receive the new default. Mutable note contents are not inserted
+into that system prompt: doing so would change its cached prefix on each
+update and give model-authored records the wrong instruction authority.
+If an operator removes note or recall tools, the model must respect its
+actual tool schema. The checkpoint checks the strand's active tool list
+before advertising history search.
+
+## Triggers and context introspection
+
+Automatic compaction is checked at run checkpoints, including the
+boundary where a run may finish. With context window `W` and reserve `R`,
+the threshold is **estimated context > W − R**. The machine records which
+trigger entry it already checked, so the same boundary does not repeatedly
+request compaction. Host defaults are a 16,384-token reserve and a
+20,000-token recent target; invalid settings disable compaction.
+
+The context fold uses the latest useful provider usage report plus
+estimates for later messages. After a cut, it excludes usage reports
+inside the carried tail: those reports measured the context that was
+replaced. Without that exclusion, an old report could immediately fire
+the threshold again. Estimation remains approximate and does not promise
+an exact provider-side count of every prompt, tool schema or image.
+
+The host uses each strand's configured model window, falling back to its
+configured default when model facts are unavailable. Switching a strand
+to a smaller model therefore changes the threshold it is measured against.
+
+A transient reminder is appended to generation requests after context
+passes **W − 2R**. It repeats while the strand remains in that band; it is
+not a durable, one-time fallback phase. Threshold compaction runs before
+the next generation, so a sufficiently large result can skip the band.
+
+`context_remaining` reports the caller's strand, current window ordinal,
+estimated usage, space before the checkpoint threshold, recent-token
+target and note count. Its strand identity comes from harness coordinates,
+not model arguments. It reports whether compaction is disabled. It does
+not reserve capacity, write notes, or request a cut.
+
+A provider context-overflow settlement can also trigger one recovery
+compaction. The structural state records that attempt before publication;
+a subsequent overflow follows the existing failure path instead of
+retrying indefinitely. Operator `compact` uses the same preparation and
+publication machinery. There is currently **no model-callable
+`new_context` or equivalent compact tool**.
+
+If checkpoint construction cannot read its required durable state, it
+declines rather than claiming that the strand wrote no notes. A declined
+threshold compaction leaves the run alive; a declined overflow recovery
+cannot recover the rejected request and drains the run. The original
+transcript is still present in both cases.
+
+## Search, exact recall and large results
+
+`history_search` uses a repository-wide SQLite FTS5 index. Ordinary calls
+use `query`, optional `scope` (`repository` or `session`), and a hit limit
+clamped to 1–50. Search returns ranked excerpts with canonical session and
+entry IDs. SQLite currently chooses a 12-FTS-token snippet; those are
+search-index tokens, not model tokens.
+
+A subsequent call retrieves the complete entry:
+
+```json
+{"action":"read","session":"<session ID from hit>","entry":"<entry ID from hit>"}
+```
+
+The host records source paths in the rebuildable index. The model supplies
+IDs, never a database path. An exact read resolves the host's locator,
+opens the source read-only, validates its canonical session identity,
+and decodes the stored entry using the ordinary total decoder. It neither
+acquires nor renews a writer lease and cannot create a missing source.
+Unknown IDs, a mismatched source, corruption or an unavailable file
+produce explicit failures. Removing a session from the index also removes
+its source locator.
+
+Exact reads return the complete encoded entry, including fields that FTS
+does not search. The current FTS extraction covers user, assistant and
+tool-result text plus compaction and branch-summary text. It does not
+index tool-call arguments, thinking, images or custom-entry payloads.
+Exact reads can inspect those fields when an entry ID is known; they do
+not make an unindexed term searchable. Parent IDs in full entries also
+provide addresses for following preceding context. Window listing and
+paged transcript browsing are not implemented by this extension.
+
+Entries larger than **65,536 bytes** spill to the content-addressed blob
+store. The tool returns bounded excerpts and an explicit path; it does
+not duplicate the complete payload in result details. A failed blob write
+returns an error rather than truncated success. Spill is implemented by
+this tool; it is not an automatic wrapper around every tool result.
+
+The stored JSON may contain a very long single line. `fs_read` refuses a
+rendered window over 64 KiB and a file over 8 MiB, so line pagination alone
+cannot read every blob. The result directs the agent to bounded byte-range
+reads through `bash` for these cases. This is a delivery limitation when
+the host has disabled that tool. Blob spill bounds model-context delivery;
+it does not bound the decoded entry's peak allocation inside the harness.
+
+Sessions are indexed while running and on reopen. There is no repository
+backfill service. A never-indexed session is not searchable, and a removed
+or moved source may make an old hit unreadable. The index has no authority
+over session commits; a failed sync does not roll back conversation.
+
+A future vector index can share these source IDs and exact reads. FTS
+would still serve exact names and errors, while embeddings could retrieve
+semantically related passages. Such an index remains derived data, with
+its own model-version and rewrite invalidation rules. The current sqlight
+surface exposes no extension-loader API; trusted registration or binding
+support and release packaging would need validation. No embedding model
+or vector extension is introduced by this change.
+
+## Codex prior art and issue #132
+
+[Issue #132](https://github.com/Roasbeef/loom/issues/132) discusses both
+context policy and a separate projected task-state design. Notes-based
+compaction does not implement that projected state, transactional
+`state_patch`, or a schema that proves task-state completeness.
+
+The relevant Codex changes establish several separate mechanisms:
+
+| Codex change | Mechanism | Loom status |
+|---|---|---|
+| [#29743](https://github.com/openai/codex/pull/29743) | Local reset at token-budget compaction, retaining fresh initial context. | Local checkpoint publication; Loom also retains a recent exchange. |
+| [#33255](https://github.com/openai/codex/pull/33255) | A final fallback phase with additional room and tools available before reset. | Not implemented; the transient reminder is weaker. |
+| [#39827](https://github.com/openai/codex/pull/39827) | History window/item listing, exact reads and search; separate note operations. | FTS search and exact entry reads, plus strand notes. Window browsing remains absent. |
+| [#40539](https://github.com/openai/codex/pull/40539) | A bounded thread hint, with native-provider handling. | Run-start note content and checkpoint snapshots use user-context messages. |
+
+A hard reset, note persistence, note injection, retrieval and a final
+fallback phase are separate choices. Sharing some of them is not evidence
+that Loom has reproduced Codex's full behavior or quality. The current
+policy follows the issue's later choice of notes as the default; it is
+not a measured claim of superiority over summarization.
+
+## Verification and remaining evidence
+
+The deterministic tests cover preparation boundaries, checkpoint
+rendering and truncation, context arithmetic, supplied checkpoint hooks,
+provider-overflow recovery, exact cross-session reads, writer-lease
+preservation, source validation and large-entry spill behavior. Scripted
+providers establish harness transitions; they do not establish whether a
+real model writes useful notes or recalls an omitted constraint.
+
+A quality comparison should cross at least two boundaries with a real
+provider. It should hide checkable requirements, decisions and tool-result
+canaries in the early conversation; require real `agent_note` calls;
+exercise restart and a child with an independent board; and require exact
+retrieval of a fact omitted from the notes. Compare against a pinned
+summarizer baseline using final task correctness, missed constraints,
+recall success, note and retrieval tokens, latency and provider cost.
+That comparison has not been completed here. “State of the art” is an
+evaluation target, not a property conferred by the architecture alone.
+
+## Source map
+
+| Source | Responsibility |
 |---|---|
-| `core/entry.gleam` | `CompactionEntry`: summary, retained-tail copy, `tokens_before`, `from_hook`, usage. |
-| `session/session.gleam` | The compaction-stopped branch scan and the projection that opens with a summary and its tail. |
-| `machine/operation.gleam` | `CompactionSettings`, the `Compacting` phase with its `resume_after`, `CompactionPreparation`, the structural decision states. |
-| `machine/planner.gleam` | Checkpoint step 3, overflow diversion, the decide/generate/publish lifecycle, and the publication transaction. |
-| `machine/acceptance.gleam` | `AcceptCompaction`, and the `NothingToCompact` rejection. |
-| `runtime/effects.gleam` | The `ThresholdQuery` / `OverflowQuery` hook vocabulary, and the inert defaults. |
-| `runtime/hooks.gleam` | The token fold, the carried guard, the one preparation builder, and the two compaction signals. |
-| `runtime/strand_runtime.gleam` | Where the threshold is asked on every pass, and where an overflow preparation is fetched. |
-| `prompt/summary.gleam` | The pack's vocabulary, the input types, and the transcript serializer. |
-| `prompt/default.gleam` | `summary_source`: the shipped summarization pack. |
-| `client/wiring.gleam` | The production hooks, the summary request shape, the recording relay, and the progress hook. |
-| `client/summaries.gleam` | The bounded sink the relay files into and the hook reads. |
-| `client/serve.gleam` | The defaults, their environment overrides, and the clamp that disables rather than misfires. |
-| `client/gateway.gleam` | The manual `compact` command, over the same preparation builder. |
-| `client/test/client/compaction_test.gleam` | Threshold, overflow recovery, retry, and terminal failure, through the production seams. |
-
-Each path is relative to its package's source root — `runtime/hooks.gleam`
-is `packages/runtime/src/runtime/hooks.gleam`. For intent,
-`docs/design-notes/compaction-and-memory.md` carries the rationale and
-the reference-implementation comparison; `docs/loom-implementation-spec.md`
-Part 1.1 freezes `CompactionEntry` and §3.2 holds the normative
-projection and budgeting rules — threshold compaction at checkpoints
-only, once per trigger id, with reserve and keep-recent validated at set
-time; `docs/spec-gaps.md` records where implementation refined the spec.
+| `core/entry.gleam`, `session/session.gleam` | Durable checkpoint format and context projection. |
+| `machine/operation.gleam`, `machine/planner.gleam` | Frozen preparations, threshold guards and structural publication. |
+| `runtime/hooks.gleam` | Usage accounting and retention boundaries. |
+| `runtime/strand_runtime.gleam` | Hook execution and durable driver transitions. |
+| `client/checkpoint.gleam`, `client/wiring.gleam` | Notes snapshot, prior-checkpoint references, reminder and host decisions. |
+| `client/notes.gleam`, `prompt/default.gleam` | Run-start digest and agent note-taking protocol. |
+| `tools/history.gleam`, `client/history.gleam` | Search/read tool contract and host-owned source resolution. |
+| `events/search.gleam`, `storage/sqlite.gleam` | Rebuildable index and lease-free source reads. |

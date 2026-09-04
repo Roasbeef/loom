@@ -9,8 +9,6 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/grants
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock
 import core/ids
@@ -22,7 +20,6 @@ import gleam/string
 import machine/operation as machine_operation
 import machine/planner
 import machine/strand.{ModelIdentity, StrandConfiguration}
-import prompt/pack
 import provider/gateway
 import provider/http
 import provider/model
@@ -124,17 +121,6 @@ fn workspace() -> String {
   workspace
 }
 
-fn summary_pack() -> pack.Pack {
-  let assert Ok(#(decoded, [])) = system_prompt.summary_pack(None)
-    as "the shipped summarization pack must load cleanly"
-  decoded
-}
-
-fn summary_sink() -> summaries.Summaries {
-  let assert Ok(sink) = summaries.start() as "the summary sink must start"
-  sink
-}
-
 fn memory_session() -> session.Session {
   let assert Ok(opened) = session.open_memory(clock.fixed(at: 0))
     as "the memory session must open"
@@ -152,9 +138,6 @@ fn config(base_policy: policy.SandboxPolicy) -> wiring.Config {
     fallback_context_window: 111_000,
     fallback_max_output_tokens: 2222,
     provider_timeout_ms: 1000,
-    summary_role: model.Summarize,
-    summary_pack: summary_pack(),
-    summaries: summary_sink(),
     session: memory_session(),
     compaction: machine_operation.CompactionSettings(
       enabled: False,

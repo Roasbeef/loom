@@ -24,3 +24,9 @@ CREATE TABLE IF NOT EXISTS search_cursor (
   generation INTEGER NOT NULL,
   high_water INTEGER NOT NULL
 ) WITHOUT ROWID;
+
+-- Host-registered source locators for lease-free exact entry reads.
+CREATE TABLE IF NOT EXISTS search_source (
+  session_id TEXT NOT NULL PRIMARY KEY,
+  path TEXT NOT NULL
+) WITHOUT ROWID;

@@ -48,7 +48,9 @@
 //// that are already durable, and the structural anti-feedback exclusion
 //// belongs to memory stage M2 rather than here.
 
+import core/codec
 import core/ids.{type SessionId}
+import core/json.{type JsonValue}
 import events/search.{type Search, type SearchError}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
@@ -59,6 +61,7 @@ import gleam/result
 import gleam/string
 import runtime/internal/ffi_sup
 import runtime/writer
+import simplifile
 import storage/sqlite
 import storage/storage.{type Storage}
 import tools/history as history_tool
@@ -182,6 +185,35 @@ pub fn over_session(
   })
 }
 
+/// Registers this session's source while synchronizing its index.
+/// The path comes from host settings, never from tool arguments.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config |> history.with_source("/data/session.db")
+/// ```
+pub fn with_source(config: Config, path: String) -> Config {
+  // Capture the host's working directory now. A repository index is shared
+  // by sessions launched from different directories, so a relative locator
+  // would later resolve against whichever host happened to read it.
+  let source = case string.starts_with(path, "/") {
+    True -> Ok(path)
+    False ->
+      simplifile.current_directory()
+      |> result.map(fn(here) { here <> "/" <> path })
+      |> result.map_error(fn(error) {
+        "history source has no absolute path: " <> string.inspect(error)
+      })
+  }
+  Config(..config, pull: fn(index) {
+    use path <- result.try(source)
+    use Nil <- result.try(config.pull(index))
+    search.register_source(index, config.session, path)
+    |> result.map_error(describe_search_error)
+  })
+}
+
 /// The rewrite-generation thunk for a SQLite session file.
 ///
 /// ## Examples
@@ -215,6 +247,11 @@ pub opaque type Message {
     limit: Int,
     scope: history_tool.Scope,
     reply_with: Subject(Result(List(history_tool.Hit), String)),
+  )
+  ReadEntry(
+    session: SessionId,
+    entry: ids.EntryId,
+    reply_with: Subject(Result(JsonValue, String)),
   )
   Stop
 }
@@ -332,19 +369,29 @@ pub fn seam(
   name: Name(Message),
   timeout_ms timeout_ms: Int,
 ) -> history_tool.History {
-  history_tool.History(search: fn(text, limit, scope) {
-    case ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _)) {
-      Error(reason) -> Error(history_tool.IndexUnavailable(reason:))
+  history_tool.History(
+    read: fn(session, entry) {
+      ask(name, timeout_ms, ReadEntry(session:, entry:, reply_with: _))
+      |> result.map_error(fn(reason) { history_tool.IndexUnavailable(reason:) })
+      |> result.try(fn(result) {
+        result
+        |> result.map_error(fn(reason) { history_tool.IndexRefused(reason:) })
+      })
+    },
+    search: fn(text, limit, scope) {
+      case ask(name, timeout_ms, Query(text:, limit:, scope:, reply_with: _)) {
+        Error(reason) -> Error(history_tool.IndexUnavailable(reason:))
 
-      // A holder that is alive but holds nothing is unavailability,
-      // not a refusal: the tool's refusal rendering suggests rephrasing
-      // the query, and no rephrasing opens an index.
-      Ok(Error(reason)) if reason == unavailable_index ->
-        Error(history_tool.IndexUnavailable(reason:))
-      Ok(Error(reason)) -> Error(history_tool.IndexRefused(reason:))
-      Ok(Ok(hits)) -> Ok(hits)
-    }
-  })
+        // A holder that is alive but holds nothing is unavailability,
+        // not a refusal: the tool's refusal rendering suggests rephrasing
+        // the query, and no rephrasing opens an index.
+        Ok(Error(reason)) if reason == unavailable_index ->
+          Error(history_tool.IndexUnavailable(reason:))
+        Ok(Error(reason)) -> Error(history_tool.IndexRefused(reason:))
+        Ok(Ok(hits)) -> Ok(hits)
+      }
+    },
+  )
 }
 
 /// Starts the commit subscriber that turns the runtime writer's
@@ -411,12 +458,40 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply_with, Error(unavailable_index))
       actor.continue(state)
     }
+    ReadEntry(session:, entry:, reply_with:), Some(index) -> {
+      process.send(reply_with, read_entry(index, session, entry))
+      actor.continue(state)
+    }
+    ReadEntry(reply_with:, ..), None -> {
+      process.send(reply_with, Error(unavailable_index))
+      actor.continue(state)
+    }
     Stop, Some(index) -> {
       let _closed = search.close(index)
       actor.stop()
     }
     Stop, None -> actor.stop()
   }
+}
+
+fn read_entry(
+  index: Search,
+  session: SessionId,
+  entry: ids.EntryId,
+) -> Result(JsonValue, String) {
+  use source <- result.try(
+    search.source(index, session) |> result.map_error(describe_search_error),
+  )
+  use path <- result.try(case source {
+    Some(path) -> Ok(path)
+    None ->
+      Error(
+        "no registered source for this session; reopen it to enable exact reads",
+      )
+  })
+  sqlite.read_entry(path:, session:, entry:)
+  |> result.map(codec.encode_entry)
+  |> result.map_error(fn(error) { string.inspect(error) })
 }
 
 const unavailable_index = "the search index could not be opened; recall is "

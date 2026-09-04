@@ -124,3 +124,29 @@ pub fn delete_cursor(session_id session_id: String) {
   let sql = "DELETE FROM search_cursor WHERE session_id = ?"
   #(sql, [dev.ParamString(session_id)])
 }
+
+pub fn register_source(session_id session_id: String, path path: String) {
+  let sql =
+    "INSERT INTO search_source (session_id, path) VALUES (?, ?)
+ON CONFLICT (session_id) DO UPDATE SET path = excluded.path"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(path)])
+}
+
+pub type GetSource {
+  GetSource(path: String)
+}
+
+pub fn get_source(session_id session_id: String) {
+  let sql = "SELECT path FROM search_source WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], get_source_decoder())
+}
+
+pub fn get_source_decoder() -> decode.Decoder(GetSource) {
+  use path <- decode.field(0, decode.string)
+  decode.success(GetSource(path:))
+}
+
+pub fn delete_source(session_id session_id: String) {
+  let sql = "DELETE FROM search_source WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}

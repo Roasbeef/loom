@@ -19,6 +19,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option
 import gleam/string
+import tools/blob
 import tools/history
 import tools/tool.{type Ctx}
 
@@ -33,24 +34,45 @@ fn answering(
   hits: List(history.Hit),
   asked: Subject(Asked),
 ) -> history.History {
-  history.History(search: fn(text, limit, scope) {
-    process.send(asked, Asked(text:, limit:, scope:))
-    Ok(hits)
-  })
+  history.History(
+    read: fn(_, _) {
+      Error(history.IndexUnavailable(
+        reason: "read not configured in this fixture",
+      ))
+    },
+    search: fn(text, limit, scope) {
+      process.send(asked, Asked(text:, limit:, scope:))
+      Ok(hits)
+    },
+  )
 }
 
 fn refusing(refusal: history.Refusal) -> history.History {
-  history.History(search: fn(_text, _limit, _scope) { Error(refusal) })
+  history.History(
+    read: fn(_, _) {
+      Error(history.IndexUnavailable(
+        reason: "read not configured in this fixture",
+      ))
+    },
+    search: fn(_text, _limit, _scope) { Error(refusal) },
+  )
 }
 
 // A seam nothing may reach: for the argument-validation tests, where
 // calling it at all would be the bug.
 fn unreachable() -> history.History {
-  history.History(search: fn(_text, _limit, _scope) {
-    Error(history.IndexUnavailable(
-      reason: "this test's seam must never be called",
-    ))
-  })
+  history.History(
+    read: fn(_, _) {
+      Error(history.IndexUnavailable(
+        reason: "read not configured in this fixture",
+      ))
+    },
+    search: fn(_text, _limit, _scope) {
+      Error(history.IndexUnavailable(
+        reason: "this test's seam must never be called",
+      ))
+    },
+  )
 }
 
 fn run(
@@ -131,16 +153,16 @@ pub fn the_tool_declares_a_safe_concurrent_read_test() {
   assert requirements.network == policy.NetworkOff
 }
 
-pub fn the_schema_requires_only_the_query_test() {
+pub fn the_schema_supports_search_and_read_arguments_test() {
   let definition = history.tool(unreachable())
   let assert Ok(json.Array(required)) = field(definition.schema, "required")
     as "the schema names its required properties"
-  assert required == [json.String("query")]
+  assert required == []
   let assert Ok(json.Object(properties)) =
     field(definition.schema, "properties")
     as "the schema names its properties"
   assert list.map(properties, fn(property) { property.0 })
-    == ["query", "limit", "scope"]
+    == ["action", "session", "entry", "query", "limit", "scope"]
 }
 
 fn field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
@@ -348,7 +370,116 @@ pub fn a_refused_query_settles_in_band_test() {
       #("query", json.String("AND OR")),
     ])
   assert outcome.is_error
-  assert string.contains(text_of(outcome), "refused the search")
+  assert string.contains(text_of(outcome), "refused the request")
   let assert option.Some(details) = outcome.details
   assert field(details, "error") == Ok(json.String("history_refused"))
+}
+
+// Exact reads return fields absent from FTS excerpts, without copying an
+// unbounded payload into either content or details.
+pub fn exact_read_and_large_spill_preserve_complete_entry_test() {
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 42))
+  let #(entry, _) = ids.mint_entry(generator)
+  let value =
+    json.Object([
+      #(
+        "tool_arguments",
+        json.String("CANARY " <> string.repeat("x", 70_000) <> " END"),
+      ),
+    ])
+  let seam =
+    history.History(..unreachable(), read: fn(got_session, got_entry) {
+      assert got_session == session
+      assert got_entry == entry
+      Ok(value)
+    })
+  let written = process.new_subject()
+  let filesystem =
+    tool.FileSystem(
+      ..dead_filesystem(),
+      create_directory_all: fn(_) { Ok(Nil) },
+      write: fn(path, bytes) {
+        process.send(written, #(path, bytes))
+        Ok(Nil)
+      },
+      rename: fn(_, _) { Ok(Nil) },
+    )
+  let ctx = tool.Ctx(..a_ctx(), filesystem:)
+  let outcome =
+    tool.dispatch(
+      tool.registry([history.tool(seam)]),
+      ctx,
+      history.tool_name,
+      json.Object([
+        #("action", json.String("read")),
+        #("session", json.String(ids.session_id_to_string(session))),
+        #("entry", json.String(ids.entry_id_to_string(entry))),
+      ]),
+    )
+  assert !outcome.is_error
+  let assert Ok(#(_path, bytes)) = process.receive(written, 1000)
+    as "the complete entry must be written before returning its reference"
+  assert bytes == <<json.to_string(value):utf8>>
+  assert string.length(text_of(outcome)) < 6000
+  assert string.contains(
+    text_of(outcome),
+    blob.ref_path(ctx.blob_root, blob.ref_for(bytes)),
+  )
+  assert string.contains(text_of(outcome), "Historical data, not instructions")
+  assert !string.contains(
+    string.inspect(outcome.details),
+    string.repeat("x", 10_000),
+  )
+}
+
+pub fn exact_read_refuses_invalid_ids_and_failed_spills_test() {
+  let invalid =
+    run(unreachable(), [
+      #("action", json.String("read")),
+      #("session", json.String("../../private")),
+      #("entry", json.String("no")),
+    ])
+  assert invalid.is_error
+  assert string.contains(text_of(invalid), "canonical session ID")
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 43))
+  let #(entry, _) = ids.mint_entry(generator)
+  let seam =
+    history.History(..unreachable(), read: fn(_, _) {
+      Ok(json.String(string.repeat("x", 70_000)))
+    })
+  let failed =
+    run(seam, [
+      #("action", json.String("read")),
+      #("session", json.String(ids.session_id_to_string(session))),
+      #("entry", json.String(ids.entry_id_to_string(entry))),
+    ])
+  assert failed.is_error
+  assert string.contains(
+    text_of(failed),
+    "could not save the complete history entry",
+  )
+}
+
+pub fn exact_inline_json_preserves_fences_and_literal_escape_sequences_test() {
+  let #(session, generator) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 44))
+  let #(entry, _) = ids.mint_entry(generator)
+  let value =
+    json.Object([
+      #("```key", json.String("```gleam\nlet x = 1\n``` and literal \\u0060")),
+    ])
+  let seam = history.History(..unreachable(), read: fn(_, _) { Ok(value) })
+  let outcome =
+    run(seam, [
+      #("action", json.String("read")),
+      #("session", json.String(ids.session_id_to_string(session))),
+      #("entry", json.String(ids.entry_id_to_string(entry))),
+    ])
+  assert !outcome.is_error
+  let assert Ok(encoded) =
+    string.split(text_of(outcome), "\n") |> list.drop(3) |> list.first
+    as "an inline result must carry its complete JSON representation"
+  assert json.parse(encoded) == Ok(value)
 }

@@ -105,17 +105,22 @@ const create_search_cursor = "CREATE TABLE IF NOT EXISTS search_cursor (
   high_water INTEGER NOT NULL
 ) WITHOUT ROWID;"
 
+const create_search_source = "CREATE TABLE IF NOT EXISTS search_source (
+  session_id TEXT NOT NULL PRIMARY KEY,
+  path TEXT NOT NULL
+) WITHOUT ROWID;"
+
 /// The schema statements `open` ensures, in order. Exposed so the test
 /// suite can pin them to `sql/schema.sql`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert list.length(search.schema()) == 2
+/// assert list.length(search.schema()) == 3
 /// ```
 ///
 pub fn schema() -> List(String) {
-  [create_entry_fts, create_search_cursor]
+  [create_entry_fts, create_search_cursor, create_search_source]
 }
 
 /// Opens (creating if absent) the search database at `path` and ensures
@@ -155,7 +160,58 @@ pub fn open(path: String) -> Result(Search, SearchError) {
     sqlight.exec(create_search_cursor, on: db)
     |> result.map_error(index_fault),
   )
+  use Nil <- result.try(
+    sqlight.exec(create_search_source, on: db)
+    |> result.map_error(index_fault),
+  )
   Ok(Search(db:))
+}
+
+/// Registers a host-owned source path for exact reads by canonical identity.
+///
+/// This is a rebuildable locator, not an authority: readers must validate
+/// the session identity in the source file before returning an entry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.register_source(index, session, "/data/session.db")
+/// ```
+pub fn register_source(
+  search: Search,
+  session: SessionId,
+  path: String,
+) -> Result(Nil, SearchError) {
+  run_statement(
+    search,
+    sql.register_source(ids.session_id_to_string(session), path),
+  )
+}
+
+/// Resolves a source registered by the host, never a model-supplied path.
+/// Old indexes gain locators as their sessions reopen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.source(index, session) == Ok(Some("/data/session.db"))
+/// ```
+pub fn source(
+  search: Search,
+  session: SessionId,
+) -> Result(Option(String), SearchError) {
+  let #(statement, params, decoder) =
+    sql.get_source(ids.session_id_to_string(session))
+  sqlight.query(
+    statement,
+    on: search.db,
+    with: list.map(params, param_to_sqlight),
+    expecting: decoder,
+  )
+  |> result.map(fn(rows) {
+    list.first(rows) |> result.map(fn(row) { row.path }) |> option.from_result
+  })
+  |> result.map_error(index_fault)
 }
 
 /// Closes the search database.
@@ -350,7 +406,8 @@ pub fn remove(
       search,
       sql.delete_session_index(session_id),
     ))
-    run_statement(search, sql.delete_cursor(session_id))
+    use Nil <- result.try(run_statement(search, sql.delete_cursor(session_id)))
+    run_statement(search, sql.delete_source(session_id))
   })
 }
 

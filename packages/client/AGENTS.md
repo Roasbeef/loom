@@ -239,7 +239,7 @@ over one session file. WP-L.
   classified and answered with lstat semantics so a symlink is never
   called a directory.
 - `client/history.{Config, Message, index_file, default_timeout_ms,
-  index_beside, probe, over_session, sqlite_generation, start, supervised,
+  index_beside, probe, over_session, with_source, sqlite_generation, start, supervised,
   stop, poke, synchronize, seam, commit_pull, supervised_commit_pull}` —
   the one process that owns this repository's `events/search` index, and
   the seams that reach it. Addressed by process name, like the Agency and
@@ -251,9 +251,17 @@ over one session file. WP-L.
   its rewrite generation as a **thunk** (`sqlite_generation`), called
   fresh on every pull, because a precise rewrite bumps it underneath a
   long-lived holder — and a generation that cannot be read skips the sync
-  rather than guessing zero.
+  rather than guessing zero. `with_source` records the host's session path
+  after sync. `ReadEntry` resolves canonical IDs through that registry,
+  validates source identity and returns a decoded entry through a read-only
+  SQLite connection. The model never chooses a filesystem path.
 - `client/notes.{max_digest_bytes, fence, digest_hooks, digest, cells,
-  strand_of}` — the `agent/` notes digest injected at run start.
+  try_cells, strand_of}` — the `agent/` notes digest injected at run
+  start, and the board read `client/checkpoint` shares. `cells` reads an
+  unreadable store as an empty board — right for a digest, which a run
+  is never held up for — and `try_cells` is the `Result` form the
+  checkpoint asks, because publishing "you wrote no notes" over a store
+  that did not answer would be a durable falsehood.
   `digest_hooks` **wraps** an existing `run_start` rather than setting it
   (`hooks.with_run_start` replaces, so a setter would silently drop a
   previous layer), resolves the strand from the `OpId` through the
@@ -957,30 +965,39 @@ over one session file. WP-L.
   `tool.Terminate` rather than the hardcoded `False` it was: `terminates`
   is where `TerminateRun` becomes the `Bool` the frozen effect type
   carries, and it is the only place the polarity is written down.
-- `client/wiring.{compaction_hooks, recording_summaries}` — the two
-  halves of live compaction, separable so a host with its own provider
-  surface can run the real ones. `compaction_hooks` builds the whole
+- `client/wiring.{compaction_hooks, strand_window, resolution}` — live
+  compaction's host half, separable so a host with its own provider
+  surface can run the real hooks. `compaction_hooks` builds the whole
   `effects.Hooks` record through `runtime/hooks`: real admission from
   the gateway's resolved model facts, threshold and overflow over the
-  strand's durable projection, `VerdictGenerate` for every structural
-  decision, and the progress hook. `recording_summaries` wraps a
-  provider surface so a settled summary is filed in the sink on its way
-  past — the same composition shape as `gateway.tap_provider`. The summary
-  relay also propagates cancellation and consumer death inward, but records
-  nothing when the consumer is gone.
-- `client/wiring.{summary_provider_request, settlement_of,
-  summary_progress, resolution}` — the summary path in pieces: the
-  request a structural summary is made as, how a settled response reads,
-  what the sink's record means to the machine, and whether a captured
-  identity still routes.
-- `client/summaries.{Summaries, Settlement, Record, start, stop, pid,
-  key, record, read}` — the summary sink: a small bounded actor keyed by
-  `(operation, task, attempt)`, the rendezvous between the effect
-  process that receives a summary and the driver process that reports on
-  it. Nothing here is durable, on purpose; see Invariants.
-- `client/system_prompt.{summary_pack, summary_pack_variable}` — the
-  summarization pack this boot summarizes with: the shipped one, or the
-  file `LOOM_SUMMARY_PACK` names.
+  strand's durable projection, the notes checkpoint as every structural
+  decision (`VerdictSupplied`, no usage; a branch summary and an
+  unbuildable checkpoint decline), and the near-limit reminder on the
+  `context` slot. `strand_window` is the window a strand is measured
+  against — its own catalogue entry, else the fallback — exposed so
+  `serve` can build the `context_remaining` seam from the same rule
+  before the config exists. `resolution` asks whether the configured
+  role still routes. There is no summary request, no sink and no
+  progress hook: no summarizer serves this host, and a `SummaryRequest`
+  reaching `dispatch` is refused terminally.
+- `client/checkpoint.{Recall, Closed, Checkpoint, max_notes_bytes,
+  header_prefix, instructions_fence, reminder_prefix, for_operation,
+  render, reminder_point, reminder, reminder_text, remaining_seam}` —
+  the context checkpoint: what replaces the older half of a strand's
+  context when its window fills. `for_operation` builds it from durable
+  state alone — the operation's frozen preparation, the strand its
+  `op.meta` names, that strand's `agent/{strand}/` cells newest first,
+  the compactions already on its branch (the window ordinal) — and
+  `render` is the text: a `[loom]` header naming the window, the counts
+  and where the cut messages went (`history_search` when `Recall` says
+  the strand can call it), the notes quoted as data under
+  `max_notes_bytes`, and an operator's `compact` instructions quoted in
+  their own fence. A prior checkpoint is named by session and entry ID
+  for exact retrieval of inherited context. `reminder_point` is one reserve below the threshold's
+  cut, `reminder` the user message the `context` slot appends past it.
+  `remaining_seam` fills `tools/context`'s seam from the same projection
+  and token fold the threshold reads. `docs/architecture/compaction.md`
+  carries the argument for a checkpoint over a summary.
 - `client/serve.{default_reserve_tokens, default_keep_recent_tokens}` —
   pi's compaction defaults, and the only place they are stated.
   `LOOM_COMPACTION`, `LOOM_COMPACTION_RESERVE` and
@@ -993,13 +1010,17 @@ over one session file. WP-L.
   name. `code_mode` is `BuiltIn` and gated on its plane, exactly as
   `history_search`, `remember` and the `schedule_*` tools are.
 - `client/contributions.built_in(Option(Agency), Option(CodeMode),
-  Option(History), Option(Memory), Option(Schedules))` — the host's own
-  single contribution: five core tools, plus the six `agent_*` tools only when
-  a messaging plane exists, plus `code_mode` only when this host wired a
-  code-mode pipeline, plus `history_search` only when its search index
-  opened, plus `remember` only when the memory session beside the session
-  file opened, plus the three `schedule_*` tools only when the schedule
-  store did. A plane that is absent contributes nothing at all.
+  Option(History), Option(Memory), Option(Schedules), Option(Context))`
+  — the host's own single contribution: five core tools, plus the six
+  `agent_*` tools only when a messaging plane exists, plus `code_mode`
+  only when this host wired a code-mode pipeline, plus `history_search`
+  only when its search index opened, plus `remember` only when the
+  memory session beside the session file opened, plus the three
+  `schedule_*` tools only when the schedule store did, plus
+  `context_remaining` over `client/checkpoint.remaining_seam` — the one
+  seam every served session has, so its `Option` is for a registry built
+  with no session behind it. A plane that is absent contributes nothing
+  at all.
 - `client/contributions.registry(List(Contribution)) ->
   Result(Registry, Collision)` — the seam an installed extension enters
   the registry through. Last-registration-wins survives *inside* one
@@ -2290,21 +2311,37 @@ an install is under the extensions root.
   policy refusal. Both send and select by hand instead, watching the
   callee's monitor: absent, dead, dying mid-answer and too slow all
   degrade to "nobody is there", which un-parks the call and settles it.
-- **Compaction is answered by these seams, and by nothing that supplies
-  its own summary.** `compaction_hooks` returns `VerdictGenerate` for
-  every structural decision: `VerdictSupplied` exists for a host that
-  brings its own summarizer, and a harness that used it here would be
-  answering its own compaction. The M3 demo installs *these* hooks over
-  its scripted provider — it has no `demo_hooks` of its own — so the
-  `CompactionEntry` it asserts on carries text that came off the wire.
-- **A summary request carries no system prompt and no tool array**, and
-  its whole content is one assembled user message. Both one-hour cache
-  breakpoints hang on the two positions it omits, so a prompt read
-  exactly once writes no long-lived cache entry and cannot disturb the
-  session's own pinned head (pi's `cacheRetention: "none"`, expressed as
-  a request shape). The residual cost is the adapter's rolling
-  five-minute mark on that single user turn; removing it needs a
-  request-level cache flag in `provider`, which this stage did not open.
+- **Compaction is answered by these seams, with the strand's own notes,
+  and no provider is asked.** `compaction_hooks` answers every
+  compaction's structural decision `VerdictSupplied` with the checkpoint
+  `client/checkpoint` builds — the window header, the `agent/{strand}/`
+  cells, the operator's instructions — and no usage, because nothing was
+  billed. It declines a branch summary (notes say nothing about an
+  abandoned branch, and nothing asks for one) and a checkpoint whose
+  registers would not read (a declined threshold compaction leaves the
+  run alive; publishing a false "no notes" would not be recoverable).
+  `VerdictGenerate` is never selected: the machine's generate path is a
+  frozen contract the simulation still drives, and a `SummaryRequest`
+  reaching `dispatch` is refused terminally, since no prompt exists to
+  make one with. The M3 demo installs *these* hooks over its scripted
+  provider — it has no `demo_hooks` of its own — so the `CompactionEntry`
+  it asserts on is the hook-supplied checkpoint production code
+  published.
+- **The reminder and the tool read the threshold's own numbers.** The
+  `context` slot appends the notes reminder once a strand's context
+  passes `checkpoint.reminder_point` — one reserve below the cut — and
+  `context_remaining` answers from `checkpoint.remaining_seam`; both
+  re-project the strand through `runtime/hooks.project` and price it
+  with `hooks.context_tokens`, never from the message list in hand,
+  because the fold has to skip what a compaction carried or it reads the
+  pre-compaction usage and fires forever. The window is
+  `wiring.strand_window`'s, the strand's own. Asked and told are one
+  number.
+- **The reminder is transient.** It is a transform on one request's
+  messages, never an entry: a crash re-projects and re-decides, and the
+  tree never holds it. `a_near_limit_request_carries_the_notes_reminder_test`
+  pins both halves — that the request carries it inside the band and
+  that the durable projection does not.
 - **Role follows identity, and the role is derived at dispatch.** An
   `effects.RequestSpec` carries no strand name and one wiring config
   serves every strand, so `wiring.request_target` asks the *captured
@@ -2327,14 +2364,6 @@ an install is under the extensions root.
   written down in `protocol-change/009`: a *generation* settled by a
   fallback target that returned `Deferred` fails the same check and drains
   as failure. Nothing settles `Deferred` today.
-- **Summaries route through the `Summarize` role when one is
-  configured** — as a role, `ForRole(Summarize, None)`, chain walk
-  included — and fall back to the strand's own target when it is not.
-  Unlike a generation there is no durable identity contract to honour:
-  the summary is published as text, not as a response attributed to a
-  model. `None` is the one place a route's own declared thinking level is
-  left standing, because a one-shot prompt has no per-turn budget to
-  inherit from the conversation it is summarizing.
 - **A catalogue entry's `thinking` seeds a strand; it never overrides a
   dispatch.** The per-turn level is absolute at dispatch and travels as
   the walk's overlay onto *every* target attempted, so a fallback cannot
@@ -2363,24 +2392,24 @@ an install is under the extensions root.
   main entry's dialect for a strand switched to the other one. Only an
   identity the catalogue does not know falls back to `Config.api` and the
   two `fallback_*` counts.
-- **A summary the sink does not hold is a retryable failure, never an
-  empty summary.** `SummaryProduced(summary: "")` would publish a
-  `CompactionEntry` that silently replaced a conversation with a blank;
-  asking the provider again costs one request. That is also why the
-  record is filed *before* the terminal event is forwarded to the effect
-  process: by the time the driver asks for progress, the text is already
-  there. A crash, a reaped effect, or an evicted record all read as
-  `Absent` and retry, which is exactly what the machine does for an
-  orphaned summary request.
-- **A summary response that reached for a tool is a failed attempt.**
-  The summarizer was sent no tool array, so a call in its answer means
-  it did something other than summarize, and publishing its prose would
-  be guessing. So is an answer with no text.
-- **The operator's `compact` instructions reach the provider from the
+- **A checkpoint never publishes a blank.** A strand with no notes is
+  told, in the checkpoint, that it wrote none and where notes go; a
+  checkpoint whose inputs would not read is declined rather than
+  rendered from an empty board. Neither shape can replace a window with
+  nothing, or with a false record of nothing.
+- **The `before_compact` note lands in the checkpoint.**
+  `runtime/strand_runtime` asks `Hooks.compaction_note` at the structural
+  decision and appends every block after the harness's own text and the
+  strand's notes; `extension/hooks.note_block` frames it for the model
+  reading its next window, not for a summarizer. Still never a veto, and
+  still under the replay rule: the decision is transient until the
+  publication commits it.
+- **The operator's `compact` instructions reach the checkpoint from the
   operation's durable state**, not from the preparation:
   `StructuralPreparation` has no field for them, because the preparation
   is the *input* the decision hook froze and the instructions are a
-  property of the operation that asked.
+  property of the operation that asked. They are quoted in the
+  operator's own words, in their own fence.
 - **A manual `compact` cuts where an automatic one cuts.** The hub's
   preparation goes through `runtime/hooks.preparation` — the same
   builder the threshold and overflow hooks use — against the run's own

@@ -13,8 +13,8 @@
 ////
 //// The effect surface follows the conformance simulation's shape —
 //// generation requests are answered by the *content and phase of the
-//// projected context*, tools settle scripted results, hooks supply the
-//// compaction summary — copied rather than imported, because the
+//// projected context*, tools settle scripted results, compaction
+//// publishes the harness's own checkpoint — copied rather than imported, because the
 //// conformance package's surface is test support, not a library
 //// (spec-gaps: no cross-test-boundary imports). Inter-strand messaging
 //// uses the same pattern as the conformance multi-strand scenario: once
@@ -32,8 +32,6 @@ import client/gateway
 import client/grants
 import client/protocol
 import client/server
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock
 import core/entry
@@ -69,12 +67,6 @@ pub const session_id = "demo-session"
 
 /// The durable cross-strand report the subagent sends its parent.
 pub const report_text = "research reports: verified the fetch layer"
-
-/// What the scripted provider answers a summary request with. The demo
-/// asserts the committed `CompactionEntry` carries exactly this, which
-/// is how it proves the summary came from a provider rather than from a
-/// hook the demo installed.
-pub const summary_text = "nested summary output"
 
 /// One line of the demo's narrative.
 pub type Narrative =
@@ -121,23 +113,17 @@ pub fn run() -> Result(Narrative, String) {
 
   // Compaction runs on the *production* seams. The demo scripts the
   // provider's answers and the tools' results, and nothing else: the
-  // hooks that decide whether to compact, what to compact, and what the
-  // provider's answer meant are `client/wiring`'s own, over a real
+  // hooks that decide whether to compact, what to compact, and what
+  // checkpoint replaces it are `client/wiring`'s own, over a real
   // session and a real routing table. A demo that supplied its own
-  // summary would prove nothing about whether compaction runs.
+  // checkpoint would prove nothing about whether compaction runs.
   use wiring_config <- result.try(compaction_wiring(session))
   let effects =
     effects.Effects(
       clock: clock.stepping(from: 1_756_000_000_000, by: 3),
       entropy:,
       timers: effects.real_timers(),
-      provider: gateway.tap_provider(
-        wiring.recording_summaries(
-          scripted_provider(),
-          into: wiring_config.summaries,
-        ),
-        to: name,
-      ),
+      provider: gateway.tap_provider(scripted_provider(), to: name),
       tools: scripted_tools(),
       hooks: wiring.compaction_hooks(wiring_config),
     )
@@ -804,17 +790,18 @@ fn report_entry_on_main(envelope: protocol.EventEnvelope) -> Bool {
   }
 }
 
-// A compaction entry whose summary is the *scripted provider's* answer.
-// The demo supplies no summary of its own any more: the hooks are
+// A compaction entry carrying the harness's own checkpoint. The demo
+// supplies no compaction text of its own: the hooks are
 // `client/wiring`'s, so a compaction that lands here was decided,
-// prepared, dispatched and read back by production code, and its text
-// came off the wire.
+// prepared and published by production code, and its text is the
+// checkpoint `client/checkpoint` built — hook-supplied, and opening with
+// the window-boundary header.
 fn compaction_entry(envelope: protocol.EventEnvelope, strand: String) -> Bool {
   case envelope.event {
     protocol.EntryEvent(record: protocol.EntryRecord(
       strand: on,
-      entry: entry.CompactionEntry(summary:, from_hook: False, ..),
-    )) -> on == strand && summary == summary_text
+      entry: entry.CompactionEntry(summary:, from_hook: True, ..),
+    )) -> on == strand && string.contains(summary, "[loom] Context window")
     _ -> False
   }
 }
@@ -1066,7 +1053,13 @@ fn scripted_provider() -> effects.ProviderSurface {
     let events = process.new_subject()
     case spec {
       effects.PollRequest(..) -> settle(events, answer("polled", 1), [])
-      effects.SummaryRequest(..) -> settle(events, answer(summary_text, 2), [])
+
+      // Unreachable: the production hooks answer every compaction with a
+      // checkpoint, so the machine never generates. Answered rather than
+      // crashed so the surface stays total, with text the
+      // `compaction_entry` predicate could never accept.
+      effects.SummaryRequest(..) ->
+        settle(events, answer("no summarizer serves this host", 2), [])
       effects.GenerationRequest(context:, ..) ->
         generation_response(events, context)
     }
@@ -1275,7 +1268,7 @@ fn scripted_tools() -> effects.ToolSurface {
 }
 
 // The production wiring config the demo's compaction hooks are built
-// from. Its provider gateway is routed for real — the summary role
+// from. Its provider gateway is routed for real — the main role
 // resolves, admission reports the route's window — but its transport is
 // never reached: the effects record's provider surface is the scripted
 // one above, so every request the demo makes is answered by the script
@@ -1283,14 +1276,6 @@ fn scripted_tools() -> effects.ToolSurface {
 fn compaction_wiring(
   session: session.Session,
 ) -> Result(wiring.Config, String) {
-  use summary_sink <- result.try(
-    summaries.start()
-    |> result.map_error(fn(_) { "the summary sink did not start" }),
-  )
-  use pack <- result.try(
-    system_prompt.summary_pack(None)
-    |> result.map(fn(loaded) { loaded.0 }),
-  )
   use broker_actor <- result.try(
     broker.start(
       broker.BrokerConfig(
@@ -1309,7 +1294,7 @@ fn compaction_wiring(
   // asserted away, because `wiring.Config` is built inside a `Result`
   // already and a refusal costs one line.
   use tool_registry <- result.try(
-    contributions.built_in(None, None, None, None, None)
+    contributions.built_in(None, None, None, None, None, None)
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
   )
@@ -1324,9 +1309,6 @@ fn compaction_wiring(
     fallback_context_window: demo_context_window,
     fallback_max_output_tokens: 1_000_000,
     provider_timeout_ms: 4000,
-    summary_role: model.Summarize,
-    summary_pack: pack,
-    summaries: summary_sink,
     session:,
     compaction: operation.CompactionSettings(
       enabled: True,
@@ -1381,5 +1363,4 @@ fn demo_gateway() -> provider_gateway.Gateway {
     api_key_secret: "ACME_KEY",
   ))
   |> provider_gateway.route(model.Main, [identity])
-  |> provider_gateway.route(model.Summarize, [identity])
 }

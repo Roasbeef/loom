@@ -587,11 +587,13 @@ seed bands.
   escalation round trip all run through the public protocol in
   `make check-client`, and the parent-plus-two-subagents kill/reboot
   variant runs at runtime level. *Compaction is live* as of Stage C0
-  (`docs/design-notes/compaction-and-memory.md`): `client/serve` builds
-  its hooks through `runtime/hooks`, a `SummaryRequest` becomes a real
-  gateway request under the summarization pack, and the demo installs
-  those same hooks — it has no compaction hooks of its own, so the
-  `CompactionEntry` it asserts on carries text the provider produced.
+  (`docs/design-notes/compaction-and-memory.md`), and has since changed
+  shape (`docs/architecture/compaction.md`): `client/serve` builds its
+  hooks through `runtime/hooks`, the structural decision supplies a
+  checkpoint built from the strand's own notes rather than dispatching a
+  `SummaryRequest`, and the demo installs those same hooks — it has no
+  compaction hooks of its own, so the `CompactionEntry` it asserts on
+  carries the checkpoint production code published.
   *The native TUI leg is closed for its implemented surface* (issue #7):
   `client/tui_e2e_test` exports the real `tui` shipment, runs it in a
   terminal under `tmux` against a real `client/serve.boot`, and drives a turn,
@@ -736,8 +738,9 @@ named here so no row above implies otherwise:
 - **The rest of the hook registry.** Stage C0 wired the compaction
   slots: `client/wiring.compaction_hooks` builds real admission from the
   gateway's model facts, the usage-aware threshold and the overflow
-  preparation over the strand's durable projection, generation as the
-  structural verdict, and the summary-progress hook. What is still
+  preparation over the strand's durable projection, and the notes
+  checkpoint as the structural verdict (the summary-progress hook is
+  left at its default, since no host selects generation). What is still
   inert: `run_start` and `run_end` inject nothing (`client/agency`
   composes a reap onto `run_end` and nothing else), branch summaries
   have the seams but no production caller through the navigation host,

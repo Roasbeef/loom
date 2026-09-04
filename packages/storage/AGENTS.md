@@ -42,6 +42,10 @@ by WP-C-full.
   `session/id` / `session/parent` register cells are the truth — so it
   needs no schema version bump and a failed write costs only a repair on
   the next open.
+- `storage/sqlite.read_entry` — a path-based, read-only lookup for exact
+  history recall. It checks canonical session identity and uses the total
+  entry decoder without acquiring a writer lease. Missing files are not
+  created; source paths must come from the host, never a model argument.
 - `storage/sqlite.{Rewrite, RewriteError, rewrite_into, generation}` — the
   offline precise rewrite (pi §2.9) over a **closed** file, and the
   rewrite-generation counter external indexes key their cursors on.

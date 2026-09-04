@@ -13,7 +13,7 @@
 //// loudly rather than being papered over.
 
 import client/contributions
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
 import tools/history as history_tool
@@ -46,7 +46,7 @@ pub fn built_in(
   schedules: Option(schedule_tool.Schedules),
 ) -> Registry {
   let assert Ok(registry) =
-    contributions.built_in(agency, code_mode, history, memory, schedules)
+    contributions.built_in(agency, code_mode, history, memory, schedules, None)
     |> contributions.registry
     as "the built-in contributions never claim the same tool name twice"
   registry

@@ -139,7 +139,7 @@
 //// Either way `shutdown` is the same path, front to back: listener,
 //// then the service supervisor, then the runtime (whose close stops the
 //// strand drivers before the writer they commit through and releases
-//// the lease), then broker, pool, and summary sink.
+//// the lease), then broker and pool.
 ////
 //// ## Which deaths are fatal, and which restart
 ////
@@ -155,11 +155,11 @@
 //// hints, an evicted scratch cache, or the sockets attached to the old
 //// hub — never the server. A spent restart budget is fatal, in order.
 ////
-//// **Fatal** — the helper pool, the broker, the summary sink, the
-//// session tree, the listener, and the service supervisor. Each of the
-//// first three is captured *by value* into closures built during the
-//// boot (the broker into the wiring effects and the code-mode seam, the
-//// pool into the broker's checkout, the sink into `wiring.Config`), so
+//// **Fatal** — the helper pool, the broker, the session tree, the
+//// listener, and the service supervisor. Each of the first two is
+//// captured *by value* into closures built during the boot (the broker
+//// into the wiring effects and the code-mode seam, the pool into the
+//// broker's checkout), so
 //// a replacement would be unreachable by everything already holding the
 //// old handle: restarting one leaves a server that looks alive and
 //// refuses every call. That is also the posture the effect plane wants
@@ -180,6 +180,7 @@ import broker/policy
 import broker/token
 import client/agency
 import client/catalog
+import client/checkpoint
 import client/codemode as codemode_wiring
 import client/contributions
 import client/distill
@@ -208,7 +209,6 @@ import client/schedulescan
 import client/scheduleseam
 import client/scratch
 import client/server
-import client/summaries
 import client/system_prompt
 import client/wiring
 import core/clock.{type Clock}
@@ -390,7 +390,6 @@ pub type Booted {
     served: server.Server,
     broker: Broker,
     pool: Pool,
-    summaries: summaries.Summaries,
     /// The hub's stable address. Everything that talks to the hub — the
     /// listener, the commit forwarder, the provider tap — holds this
     /// name rather than a pid, which is what lets the hub be restarted
@@ -1322,15 +1321,11 @@ pub fn boot_with(
 /// only that supervisor's own death — its restart budget spent —
 /// reaches this list.
 fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
-  let named = [
+  [
     #("the session tree", booted.runtime.tree.supervisor),
     #("the websocket listener", booted.served.supervisor),
     #("the service supervisor", booted.services),
   ]
-  case summaries.pid(booted.summaries) {
-    Ok(pid) -> [#("the summary sink", pid), ..named]
-    Error(Nil) -> named
-  }
 }
 
 // Code mode, and the MCP servers it reaches — one decision, because the
@@ -2088,6 +2083,20 @@ fn assemble(
       extension_memory.for_session(agency_config),
     )
 
+  // The model's own door onto the compaction arithmetic. It reads the
+  // strand's window the way the threshold will — the strand's own
+  // catalogue entry, else the configured fallback — so what the model is
+  // told and what it is compacted on are one number.
+  let facts = catalogue_facts(settings.catalog)
+  let context_seam =
+    checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
+      wiring.strand_window(
+        opened,
+        facts,
+        strand,
+        fallback: settings.context_window,
+      )
+    })
   use tool_registry <- result.try(
     list.append(
       contributions.built_in(
@@ -2096,6 +2105,7 @@ fn assemble(
         history_seam,
         memory_seam,
         schedule_seam,
+        Some(context_seam),
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
@@ -2146,26 +2156,6 @@ fn assemble(
     ])
   })
 
-  // The summarization pack, before the open for the same reason the
-  // system prompt is: `wiring.Config` needs the decoded value. Nothing
-  // about it is pinned — it is read once per compaction, never cached,
-  // and swapping it costs no cache write.
-  use #(summary_pack, summary_warnings) <- result.try(
-    system_prompt.summary_pack(
-      option.from_result(env_text(system_prompt.summary_pack_variable)),
-    ),
-  )
-  list.each(summary_warnings, fn(warning) {
-    log.warn(logger, "summary_pack.warning", [
-      field.text(key: "detail", value: warning),
-    ])
-  })
-  use summary_sink <- result.try(
-    summaries.start()
-    |> result.map_error(fn(error) {
-      "the summary sink did not start: " <> string.inspect(error)
-    }),
-  )
   let configuration =
     machine_strand.StrandConfiguration(
       model: settings.model,
@@ -2185,9 +2175,6 @@ fn assemble(
       fallback_context_window: settings.context_window,
       fallback_max_output_tokens: settings.max_output_tokens,
       provider_timeout_ms: 300_000,
-      summary_role: model.Summarize,
-      summary_pack:,
-      summaries: summary_sink,
       session: opened,
       compaction: settings.compaction,
       broker: broker_actor,
@@ -2379,7 +2366,8 @@ fn assemble(
         store: opened.store,
         generation: history.sqlite_generation(settings.session_path),
         timeout_ms: history.default_timeout_ms,
-      ),
+      )
+        |> history.with_source(settings.session_path),
       history_pulls,
     )
     |> sup.start
@@ -2409,7 +2397,6 @@ fn assemble(
     served:,
     broker: broker_actor,
     pool:,
-    summaries: summary_sink,
     gateway: hub.Gateway(name:),
     services: services.pid,
     stops:,
@@ -2472,7 +2459,6 @@ pub fn shutdown(booted: Booted) -> Nil {
   stop_services(booted.services)
   broker.stop(booted.broker)
   exec.stop_pool(booted.pool)
-  summaries.stop(booted.summaries)
 
   // Last, and after the runtime: an MCP client owns a child OS process,
   // and stopping one closes that child's stdin and kills it. Nothing can

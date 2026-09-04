@@ -52,6 +52,9 @@ fn generated_queries() -> List(#(String, String)) {
   let #(set_cursor, _) =
     sql.set_cursor(session_id: "", generation: 0, high_water: 0)
   let #(delete_cursor, _) = sql.delete_cursor(session_id: "")
+  let #(register_source, _) = sql.register_source(session_id: "", path: "")
+  let #(get_source, _, _) = sql.get_source(session_id: "")
+  let #(delete_source, _) = sql.delete_source(session_id: "")
   [
     #("InsertEntryText", insert_entry_text),
     #("DeleteSessionIndex", delete_session_index),
@@ -60,6 +63,9 @@ fn generated_queries() -> List(#(String, String)) {
     #("GetCursor", get_cursor),
     #("SetCursor", set_cursor),
     #("DeleteCursor", delete_cursor),
+    #("RegisterSource", register_source),
+    #("GetSource", get_source),
+    #("DeleteSource", delete_source),
   ]
   |> list.map(fn(query) { #(query.0, normalize_query(query.1)) })
 }

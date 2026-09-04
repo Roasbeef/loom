@@ -598,24 +598,18 @@ extended by the M3 runtime wave.
   starts after them. Without the guard the threshold re-fires on the
   turn after every compaction, forever — pi guards the same way, by
   rejecting usage older than the latest compaction.
-- **A retained tail never opens on a tool result.** `preparation` walks
-  newest-first until the keep-recent budget is spent, then moves the
-  boundary *later* until it lands on a user, assistant or custom
-  message. A result severed from its call would open the tail as an
-  answer to a question the model can no longer see; moving later — not
-  earlier — keeps call and results together on the summarized side, so
-  no orphan is created in either direction. A consequence worth naming:
-  the cut always lands on a turn boundary, so this builder never
-  produces pi's split-turn case and `is_split_turn` is always `False`.
-- **One preparation builder serves all three triggers.** The threshold
-  hook, the overflow hook, and a manual `Compact` command
-  (`client/gateway`) all call `hooks.preparation`, so all three cut
-  where the others cut and a change to the rule cannot apply to only
-  some of them. A carried summary travels as `previous_summary` — input
-  to the iterative-update prompt — rather than being handed back to the
-  summarizer as transcript; its retained tail *is* re-summarized,
-  because those messages survived one compaction and the next would
-  otherwise drop them silently.
+- **A retained tail never opens on a tool result.** `preparation` treats
+  keep-recent as a target, preserves the newest assistant exchange and all
+  following input, then aligns a result boundary backward to its call.
+  This prevents threshold-triggering results from disappearing before the
+  model reads them. Before the first assistant, all input is protected.
+  An exchange larger than the model window can fail overflow recovery;
+  the cut must not silently remove it to meet the target.
+- **One preparation builder serves all three triggers.** Threshold,
+  overflow and operator `Compact` use `hooks.preparation`. Prior checkpoint
+  text travels separately as `previous_summary` in the frozen contract;
+  the host supplies the replacement. A previously retained exchange can
+  be cut once a newer exchange exists.
 - **Close is an orderly shutdown, and lease release depends on its drain
   barrier.** `close` terminates the tree the way OTP terminates one —
   reverse start order, reason `shutdown` — so every strand driver is

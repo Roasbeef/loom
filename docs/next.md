@@ -13,6 +13,45 @@ CI run rather than carried forward. The previous edition, baselined at
 branch and knew nothing of the client's testing plane; both have since
 landed, so this edition rewrites those items rather than carrying them.
 
+## Compaction review: PR #223
+
+This section is the 2026-09-04 compaction update against `main` at
+`f019322`, integrated by `d87900e`. The project-wide survey below retains
+its earlier baseline; it is not a renewed audit of every issue or CI run.
+
+The host now publishes notes-based checkpoints without a summarizer
+provider. The review preserves the newest assistant exchange and every
+following result or user message across a cut. `keep_recent_tokens` is a
+soft target: an unread exchange cannot be discarded merely to meet it.
+Exact `history_search` reads resolve canonical session/entry IDs through
+host-registered absolute paths, validate the source identity, and preserve
+writer leases. Oversized results spill completely to blobs or fail
+explicitly. Prior checkpoints remain addressable for inherited context.
+
+The default prompt describes stable note keys and exact recall. The
+run-start digest still injects current notes as user-context data, while
+the checkpoint is an immutable snapshot. **Rollout starts fresh sessions**;
+we are not supporting resumed tasks from the removed summarizer. The
+near-limit reminder is not Codex's final fallback phase, and there is no
+model-callable rollover tool.
+
+`docs/architecture/compaction.md` is the current design reference. It
+corrects the former claim that a summarizer's omissions were permanently
+unrecoverable: both policies preserve the durable transcript. It also
+separates snapshot bounds from preservation of the complete note board.
+
+Next for this subsystem is the real-model comparison described there:
+multiple boundaries, actual note writes, omitted-fact recall, restart and
+a child with an independent board, with correctness and cost measured
+against a pinned summarizer baseline. That evaluation has not been run.
+#132's projected task-state design and window-listing recall remain
+separate work. Vector search could share the exact-read addresses, but
+requires embedding and native-extension integration of its own.
+
+Validation: the integrated native `make check` passed. See PR #223 for
+the final follow-up integration results and checks on the published head;
+a prior head's green CI is not evidence for later commits.
+
 ---
 
 ## Where the tree is

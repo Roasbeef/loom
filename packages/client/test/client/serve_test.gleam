@@ -7,6 +7,7 @@
 //// provider transport never sends and the helper never spawns — which
 //// is exactly the keyless-environment boot story the module documents.
 
+import broker/broker
 import broker/exec
 import broker/policy
 import client/catalog
@@ -17,7 +18,6 @@ import client/protocol
 import client/rules
 import client/schedule
 import client/serve
-import client/summaries
 import client/system_prompt
 import core/clock
 import core/message
@@ -566,24 +566,25 @@ pub fn a_fatal_drain_ledger_death_keeps_the_lease_test() {
     as "the listener must be closed once the host has torn the stack down"
 }
 
-/// A linked child — the summary sink is one, started with a plain
-/// `actor.start` on the boot process — reaches the host through its exit
-/// trap rather than through a monitor, and costs the same orderly
-/// shutdown.
+/// A linked child — the broker is one, started with a plain
+/// `actor.start` on the boot process and captured by value rather than
+/// watched by name — reaches the host through its exit trap rather than
+/// through a monitor, and costs the same orderly shutdown. Nothing names
+/// it to the host, so the report says only that a linked service died.
 pub fn a_linked_childs_death_releases_the_lease_test() {
   let fault_root = "build/serve-test-linked-fault"
   let _stale = simplifile.delete(fault_root)
   let assert Ok(booted) = serve.boot(settings_under(fault_root))
     as "the server must boot"
 
-  let assert Ok(sink) = summaries.pid(booted.summaries)
-    as "the summary sink must be alive"
-  process.kill(sink)
+  let assert Ok(broker_pid) = broker.pid(booted.broker)
+    as "the broker must be alive"
+  process.kill(broker_pid)
 
   let assert Ok(host.Faulted(child:, ..)) =
     process.receive(booted.stops, within: 10_000)
     as "a linked child's death must be reported, not fatal by side effect"
-  assert child == "the summary sink"
+  assert string.starts_with(child, "a linked service")
 
   let assert Ok(reopened) =
     session.open_sqlite(

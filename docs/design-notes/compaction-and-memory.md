@@ -1,9 +1,17 @@
 # Design note: compaction and memory
 
-Status: **Stages C0 and M1 are built; everything else is proposed.**
-Part 0 below describes the position this note was written from, which
-C0 has since changed: compaction now runs in production, answered by
-`client/wiring`'s hooks against a real provider. M1 has since changed the
+Status: **Stages C0 and M1 are built; everything else is proposed — and
+C0's summarizer has since been replaced.** Part 2 below designs
+compaction as a provider-summarized transcript, and that is how C0
+shipped. It no longer is: compaction now publishes a checkpoint built
+from the strand's own `agent_note` cells, asks no provider, and points
+the model at `history_search` for whatever the notes did not carry
+(`docs/architecture/compaction.md`, "What a compaction publishes").
+Read Part 2's summarizer as the design that was tried and removed, and
+the cache arithmetic in it as the argument that still holds for what a
+compaction must not send. Part 0 below describes the position this note
+was written from, which C0 has since changed: compaction now runs in
+production, answered by `client/wiring`'s hooks. M1 has since changed the
 memory half the same way: recall is wired, `history_search` is
 registered, and the `agent/` digest is injected. Read Part 0 as history
 and Part 5 as the plan. Loom's compaction machinery was already
@@ -83,7 +91,7 @@ the rest of the note can say "wire X" and mean something checkable.
 ## Inert in production — the three unplugged seams
 
 `client/serve.gleam:652` builds effects through `wiring.build_effects`,
-which installed `effects.default_hooks()` (`client/wiring.gleam:111`),
+which installed `effects.default_hooks()` (`client/wiring.gleam:102`),
 wrapped only by `agency.reaping_hooks` for child-reaping. The defaults
 (`runtime/effects.gleam:288`):
 

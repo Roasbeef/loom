@@ -86,6 +86,7 @@ import gleam/result
 import tools/agent.{type Agency}
 import tools/bash
 import tools/codemode as codemode_tool
+import tools/context as context_tool
 import tools/fs
 import tools/grep
 import tools/history as history_tool
@@ -138,8 +139,8 @@ pub type Collision {
 
 /// The one contribution a host's own planes make, in the order the
 /// registry has always been built in: the five core tools, the six
-/// `agent_*` tools, `code_mode`, `history_search`, `remember`, and the
-/// three `schedule_*` tools.
+/// `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
+/// `schedule_*` tools, and `context_remaining`.
 ///
 /// Each `Option` is a plane that decided its own presence from the host
 /// it found, and the gating is arithmetic rather than tidiness: the wire
@@ -147,13 +148,17 @@ pub type Collision {
 /// prompt, and is the byte prefix of the provider's cached region — so a
 /// permanently-refusing definition would be paid for on every request of
 /// every strand for the life of the session. A host with none of the
-/// planes offers five tools.
+/// planes offers five tools. `context_remaining` is the one whose plane
+/// every served session has — it needs the session store and the
+/// compaction settings and nothing else — so its `Option` is for a
+/// registry built with no session behind it, which only a test does.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// let assert [contributions.Contribution(origin: contributions.BuiltIn, ..)] =
 ///   contributions.built_in(
+///     option.None,
 ///     option.None,
 ///     option.None,
 ///     option.None,
@@ -168,6 +173,7 @@ pub fn built_in(
   history: Option(history_tool.History),
   memory: Option(remember.Memory),
   schedules: Option(schedule_tool.Schedules),
+  context: Option(context_tool.Context),
 ) -> List(Contribution) {
   [
     Contribution(
@@ -200,6 +206,10 @@ pub fn built_in(
           None -> []
           Some(schedules) ->
             schedule_tool.tools(schedules, scheduleseam.limits())
+        },
+        case context {
+          None -> []
+          Some(context) -> [context_tool.tool(context)]
         },
       ]),
     ),

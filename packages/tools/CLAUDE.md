@@ -149,9 +149,26 @@ can repair from.
   seam and the `history_search` tool over it. `History.search` takes a
   trimmed query, an already-clamped limit and a `Scope`
   (`Repository` | `ThisSession`) and answers hits or a `Refusal`
-  (`IndexUnavailable` | `IndexRefused`). The tool never names a session:
-  `ThisSession` means the *host's*, because a model that could name one
-  could read a session it was never given.
+  (`IndexUnavailable` | `IndexRefused`). `History.read` takes canonical
+  session and entry IDs and returns a complete codec entry. The host
+  resolves registered source paths and validates source identity without
+  acquiring a writer lease. `action=read` spills entries over 64 KiB through
+  `tools/blob`, returning bounded excerpts and a readable path; failed
+  spills refuse instead of silently clipping. Large single-line JSON needs
+  bounded shell reads rather than `fs_read` line pagination.
+- `tools/context.{Context, Report, Boundary, tool, tool_name, render,
+  remaining}` — the `context_remaining` tool: the model's own door onto
+  the compaction arithmetic. `Context.report` takes the *calling*
+  strand's name — from `Ctx.strand`, never from an argument — and answers
+  a `Report`: which window the strand is in (one-based, counting the
+  compactions on its branch), the strand's context window, the tokens in
+  use as the threshold estimates them, the `Boundary` (`CheckpointAt`
+  with the threshold's cut point and the keep-recent budget, or
+  `NoCheckpoint` when compaction is off), and how many notes it has
+  written. The host fills the seam from the same projection and fold the
+  threshold reads (`client/checkpoint.remaining_seam`), so asked and told
+  are one number. Read-only, `Safe`, `Concurrent`, no sandbox
+  requirements.
 - `tools/schedule.{Schedules, Limits, Request, RequestedTiming, Created,
   Listed, Wake, Refusal, tools, create_tool_name, list_tool_name,
   cancel_tool_name, refusal_outcome, refusal_reason}` — the model's own

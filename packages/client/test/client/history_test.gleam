@@ -14,6 +14,7 @@ import core/entry.{type Entry, MessageEntry}
 import core/ids.{type EntryId, type SessionId}
 import core/message.{UserMessage, UserText}
 import core/tx.{InsertEntry, Tx}
+import events/search
 import gleam/erlang/process.{type Name}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -438,4 +439,17 @@ fn fresh_index(lane: String) -> String {
   let _wal = simplifile.delete(path <> "-wal")
   let _shm = simplifile.delete(path <> "-shm")
   path
+}
+
+pub fn relative_sources_are_persisted_as_absolute_host_paths_test() {
+  let #(store, session) = a_store(71, ["source locator"])
+  let name = process.new_name(prefix: "history-relative-source")
+  let config =
+    config(name, ":memory:", session, store)
+    |> history.with_source("data/session.db")
+  let assert Ok(index) = search.open(":memory:")
+    as "the locator index must open"
+  assert config.pull(index) == Ok(Nil)
+  assert search.source(index, session) == Ok(Some(absolute("data/session.db")))
+  assert search.close(index) == Ok(Nil)
 }

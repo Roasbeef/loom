@@ -480,3 +480,16 @@ pub fn malformed_query_is_an_error_not_a_crash_test() {
   let assert Error(search.IndexFault(..)) =
     search.query(service, text: "\"unbalanced", limit: 10)
 }
+
+pub fn source_locator_registration_and_replacement_test() {
+  let service = open_search()
+  assert search.source(service, sid(91)) == Ok(None)
+  assert search.register_source(service, sid(91), "/host/a.db") == Ok(Nil)
+  assert search.source(service, sid(91)) == Ok(Some("/host/a.db"))
+  assert search.register_source(service, sid(91), "/host/moved.db") == Ok(Nil)
+  assert search.source(service, sid(91)) == Ok(Some("/host/moved.db"))
+  assert search.source(service, sid(92)) == Ok(None)
+  assert search.remove(service, session: sid(91)) == Ok(Nil)
+  assert search.source(service, sid(91)) == Ok(None)
+  assert search.close(service) == Ok(Nil)
+}

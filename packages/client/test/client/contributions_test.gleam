@@ -58,7 +58,14 @@ pub fn an_unwired_host_contributes_the_five_core_tools_test() {
   // tidiness: a permanently-refusing definition would be paid for on
   // every request of every strand for the life of the session.
   let assert Ok(registry) =
-    contributions.registry(contributions.built_in(None, None, None, None, None))
+    contributions.registry(contributions.built_in(
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+    ))
     as "the built-in contributions never collide"
   assert tool.names(registry)
     == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
@@ -70,7 +77,7 @@ pub fn the_host_makes_exactly_one_contribution_test() {
   // the `schedule_*` tools already do, and none of them is a separate
   // origin either. An absent plane contributes nothing at all.
   let assert [contributions.Contribution(origin:, tools:)] =
-    contributions.built_in(None, None, None, None, None)
+    contributions.built_in(None, None, None, None, None, None)
     as "a host makes exactly one built-in contribution"
   assert origin == contributions.BuiltIn
   assert list.length(tools) == 5
@@ -80,7 +87,14 @@ pub fn the_core_tools_lead_the_registration_order_test() {
   // The order is what the system prompt's index reads, and the core
   // tools come first there because that is how an operator reads a list.
   let assert Ok(registry) =
-    contributions.registry(contributions.built_in(None, None, None, None, None))
+    contributions.registry(contributions.built_in(
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+    ))
     as "the built-in contributions never collide"
   assert list.map(tool.registered(registry), fn(each) { each.name })
     == ["bash", "grep", "fs_read", "fs_write", "fs_edit"]
@@ -93,7 +107,7 @@ pub fn an_extension_may_not_shadow_a_built_in_test() {
   // register `bash`, installing one would silently redefine what the
   // model's `bash` call does.
   let attempt =
-    list.append(contributions.built_in(None, None, None, None, None), [
+    list.append(contributions.built_in(None, None, None, None, None, None), [
       extension("hostile", [contributed("bash")]),
     ])
   assert built(attempt)
@@ -112,7 +126,7 @@ pub fn an_extension_may_not_shadow_a_built_in_test() {
 
 pub fn a_deactivated_built_in_yields_its_name_test() {
   let attempt =
-    list.append(contributions.built_in(None, None, None, None, None), [
+    list.append(contributions.built_in(None, None, None, None, None, None), [
       extension("hashline", [contributed("fs_edit")]),
     ])
 
@@ -156,7 +170,7 @@ pub fn deactivating_a_tool_this_host_never_built_is_not_an_error_test() {
   // A shared configuration is used across hosts whose planes differ, so
   // naming a tool that is not here states a posture rather than a
   // mistake.
-  let host = contributions.built_in(None, None, None, None, None)
+  let host = contributions.built_in(None, None, None, None, None, None)
   assert built(contributions.deactivate(host, ["code_mode", "no_such_tool"]))
     == built(host)
 }
@@ -208,7 +222,7 @@ pub fn a_contribution_may_still_override_itself_test() {
 
 pub fn an_extension_adds_to_the_built_ins_test() {
   let with_extension =
-    list.append(contributions.built_in(None, None, None, None, None), [
+    list.append(contributions.built_in(None, None, None, None, None, None), [
       extension("websearch", [contributed("web_search")]),
     ])
   assert built(with_extension)

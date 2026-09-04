@@ -13,8 +13,9 @@
 //// `history_search`, dispatched through a real registry.
 ////
 //// What is scripted is the provider, and only the provider: it answers
-//// turns and summaries so a compaction happens without a network. The
-//// compaction it produces is the machine's own.
+//// turns so a compaction happens without a network. The checkpoint that
+//// compaction publishes is the harness's own, built from the strand's
+//// notes by the production hooks.
 
 import broker/broker
 import broker/exec
@@ -23,8 +24,6 @@ import broker/token
 import client/escalate
 import client/history
 import client/serve
-import client/summaries
-import client/system_prompt
 import client/wiring
 import core/clock
 import core/entry
@@ -57,7 +56,9 @@ import tools/tool
 // The decision session A takes, and the word session B goes looking for.
 // Short, so compaction's keep-recent budget evicts it rather than
 // retaining it in the tail.
-const decision = "we settled on msgpack for the durable envelope"
+const decision = "we settled on msgpack for the durable envelope; "
+  <> "the record also preserves this additional implementation detail well "
+  <> "beyond the search excerpt: exact-read-canary-132"
 
 // A decision of session B's own, for the within-session scope row.
 const local_decision = "the reviewer strand owns the changelog"
@@ -67,8 +68,6 @@ const window = 10_000
 const reserve = 2000
 
 const keep_recent = 500
-
-const scripted_summary = "[from the provider] earlier work, summarized"
 
 // A message of roughly 400 estimated tokens, so the keep-recent budget
 // is a budget rather than a formality.
@@ -121,6 +120,24 @@ pub fn a_fresh_session_finds_a_compacted_away_decision_test() {
   // Named by session A's canonical id, which is how a hit says where it
   // came from.
   assert string.contains(rendered, ids.session_id_to_string(first_id))
+
+  // The excerpt leads to a complete entry in a different session file.
+  let seam = history.seam(second.holder, timeout_ms: 2000)
+  let assert Ok([hit, ..]) = seam.search("msgpack", 5, history_tool.Repository)
+    as "the indexed decision must provide an exact address"
+  let complete =
+    tool.dispatch(
+      second.registry,
+      a_ctx(),
+      history_tool.tool_name,
+      json.Object([
+        #("action", json.String("read")),
+        #("session", json.String(hit.session)),
+        #("entry", json.String(hit.entry)),
+      ]),
+    )
+  assert !complete.is_error
+  assert string.contains(text_of(complete), "exact-read-canary-132")
 
   // --- the within-session scope row ---
   // Session B's own scope sees its own decision and not session A's.
@@ -185,24 +202,16 @@ fn open_session(
     }),
   )
   use entropy <- result.try(start_entropy(seed))
-  use sink <- result.try(
-    summaries.start()
-    |> result.map_error(fn(_error) { "the summary sink did not start" }),
-  )
   let holder = process.new_name(prefix: "loom_recall_holder")
   let pulls = process.new_name(prefix: "loom_recall_pulls")
-  use config <- result.try(wiring_config(opened, sink, index, holder))
+  use config <- result.try(wiring_config(opened, index, holder))
   use turns <- result.try(start_turns())
-  use summaries_seen <- result.try(start_turns())
   let effects_record =
     effects.Effects(
       clock: a_clock(),
       entropy:,
       timers: effects.real_timers(),
-      provider: wiring.recording_summaries(
-        scripted_provider(turns, summaries_seen),
-        into: sink,
-      ),
+      provider: scripted_provider(turns),
       tools: refusing_tools(),
       hooks: wiring.compaction_hooks(config),
     )
@@ -233,14 +242,17 @@ fn open_session(
     ),
   ))
   use _holder <- result.try(
-    history.start(history.over_session(
-      name: holder,
-      path: index,
-      session: api.session_id(runtime),
-      store: opened.store,
-      generation: history.sqlite_generation(session_path),
-      timeout_ms: history.default_timeout_ms,
-    ))
+    history.start(
+      history.over_session(
+        name: holder,
+        path: index,
+        session: api.session_id(runtime),
+        store: opened.store,
+        generation: history.sqlite_generation(session_path),
+        timeout_ms: history.default_timeout_ms,
+      )
+      |> history.with_source(session_path),
+    )
     |> result.map_error(fn(_error) { "the index holder did not start" }),
   )
   use _pulls <- result.try(
@@ -258,11 +270,9 @@ fn close_session(live: Live) -> Nil {
 
 fn wiring_config(
   opened: session.Session,
-  sink: summaries.Summaries,
   index: String,
   holder: Name(history.Message),
 ) -> Result(wiring.Config, String) {
-  use loaded <- result.try(system_prompt.summary_pack(None))
   use broker_actor <- result.try(
     broker.start(
       broker.BrokerConfig(
@@ -286,9 +296,6 @@ fn wiring_config(
       fallback_context_window: window,
       fallback_max_output_tokens: 1024,
       provider_timeout_ms: 2000,
-      summary_role: model.Summarize,
-      summary_pack: loaded.0,
-      summaries: sink,
       session: opened,
       compaction: compaction_settings(),
       broker: broker_actor,
@@ -427,17 +434,14 @@ fn text_of(outcome: tool.ToolOutcome) -> String {
 
 // --- the scripted provider -------------------------------------------------
 
-fn scripted_provider(
-  turns: Subject(Subject(Int)),
-  summaries_seen: Subject(Subject(Int)),
-) -> effects.ProviderSurface {
+fn scripted_provider(turns: Subject(Subject(Int))) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 2000, request: fn(spec) {
     let events = process.new_subject()
     case spec {
-      effects.SummaryRequest(..) -> {
-        let _attempt = next_turn(summaries_seen)
-        settle(events, answer(scripted_summary, 40))
-      }
+      // Unreachable: the production hooks answer every compaction with a
+      // checkpoint. Answered rather than crashed so the surface is total.
+      effects.SummaryRequest(..) ->
+        settle(events, answer("no summarizer serves this host", 40))
       effects.PollRequest(..) -> settle(events, answer("polled", 1))
       effects.GenerationRequest(..) ->
         case next_turn(turns) {
@@ -533,7 +537,6 @@ fn routed_gateway() -> provider_gateway.Gateway {
     api_key_secret: "ACME_KEY",
   ))
   |> provider_gateway.route(model.Main, [identity])
-  |> provider_gateway.route(model.Summarize, [identity])
 }
 
 fn refusing_tools() -> effects.ToolSurface {
