@@ -268,13 +268,13 @@ pub fn grep_budget_admits_two_concurrent_calls_in_one_batch_test() {
     }
 }
 
-// --- the session's network posture, followed (the operator's [tools]) -----
+// --- the network stays off whatever the session base allows ------------
 
-// A search needs no network of its own, and asks for the session's
-// anyway: one jailed shell holding a posture the operator did not choose
-// is the drift this closes, in either direction. `bash_test` has the
-// argument in full.
-pub fn grep_asks_for_the_session_bases_network_test() {
+// A search needs no network and never asks for one: under a base an
+// operator opened with `[tools] network = "full"`, the requirement is
+// still off, and the meet keeps the call offline. `bash` is the tool that
+// follows the base; `rg` reads files.
+pub fn grep_stays_offline_under_an_opened_base_test() {
   let filesystem = memory_fs.filesystem(memory_fs.start())
   let recorded = process.new_subject()
   let ctx =
@@ -296,7 +296,7 @@ pub fn grep_asks_for_the_session_bases_network_test() {
     grep.tool().run(tool.Ctx(..ctx, base_policy: opened), pattern_args("todo"))
   let assert Ok(fake_broker.Spec(spec:)) = process.receive(recorded, 1000)
     as "the tool never cleared a call"
-  assert spec.requirements.network == policy.NetworkFull
+  assert spec.requirements.network == policy.NetworkOff
 }
 
 pub fn grep_stays_offline_under_an_offline_base_test() {
