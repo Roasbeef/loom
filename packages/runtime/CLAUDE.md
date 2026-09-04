@@ -87,7 +87,9 @@ extended by the M3 runtime wave.
   detach flag, and the durable reap mark. `is_descendant` is the walk the
   addressing rule is decided by, and it fails closed.
 - `runtime/registry.Message` — the strand-incarnation registry actor: strand
-  name ↔ the process name its driver registers under. Reaper claims live only
+  name ↔ its driver's reclaimable `weft/registry.Address`. This actor owns
+  the reference namespace; repeated strand allocation creates no atoms.
+  Reaper claims live only
   in `runtime/internal/drain_registry`; keeping them out of this restartable
   actor prevents a name-registry restart from erasing ownership barriers.
 - `runtime/internal/drain_registry.Message` — the session-local actor owning
@@ -286,7 +288,8 @@ extended by the M3 runtime wave.
     deferred poll permit), `RetryDue`, `RequestAbort`,
     `ProviderDone(token, terminal)`, `ToolDone(token, outcome)`,
     `EffectExit(down)`. Callers use the stable
-    registered subject, while the reaper, effect workers, and timers use a
+    address resolved to the current subject, while the reaper, effect workers,
+    and timers use a
     private direct subject bound to this driver incarnation. The split prevents
     a predecessor's late result from resolving the stable name to a replacement
     and settling newly replayed work with the same durable token. The ledger
@@ -295,7 +298,7 @@ extended by the M3 runtime wave.
     queues in the mailbox and is handled once the barrier opens, so no effect
     is driven before it and no intent needs hand-carrying through a gate.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
-    return the process name a strand's driver registers under — plus
+    return the reference address a strand's driver binds — plus
     `Lookup(strand, reply_with)` and `Known(reply_with)`.
     Senders: `runtime/supervisor`'s strand factory and booter, and
     `runtime/api` when it rings a doorbell or addresses a sibling strand.
@@ -366,11 +369,12 @@ extended by the M3 runtime wave.
   repopulates it), and a booter crash all converge on "list the store,
   start what is missing". Subagents created mid-session seed their
   registers first, which is why every later reboot finds them.
-- **Process names are minted once per strand and outlive their drivers.**
+- **Reference addresses are minted once per strand and outlive their drivers.**
   The registry precedes the writer in the rest-for-one order, so it survives
-  writer and strand crashes; a replacement driver registers under the *same*
-  name and stays addressable, and doorbells resolve through `lookup` at ring
-  time rather than caching pids. A registry crash remints names while the
+  writer and strand crashes; a replacement driver binds the *same*
+  reference and stays addressable, and doorbells resolve through `lookup` at
+  ring time rather than caching pids. A registry crash replaces its namespace
+  while the
   earlier drain ledger preserves effect ordering; only a whole-tree reboot
   starts both actors empty.
 - **Inter-strand messaging is the queue machinery, not a mailbox.**
@@ -427,8 +431,8 @@ extended by the M3 runtime wave.
   abnormally. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.
 - **Internal events are addressed to one incarnation, not one logical
-  strand.** The public registered subject remains the address for `Nudge` and
-  external abort requests across a restart. Provider completions, tool
+  strand.** Public `Nudge` and external abort requests resolve the logical
+  reference address across a restart. Provider completions, tool
   completions, recovery acknowledgements, poll ticks, retry wakes, and internal
   abort retries instead capture the driver's direct subject. A durable effect
   token is intentionally reused when recovery replays an effect, so token-only
@@ -647,12 +651,13 @@ extended by the M3 runtime wave.
   `tx.LeaseLost`: `runtime/api` turns it into `SessionStolen`, and
   `runtime/strand_runtime` halts the strand on it rather than reloading,
   because reloading reads the same file and meets the same fence.
-- **The names, not the pids, are the addresses.** The writer and each
-  strand register under fresh process names so restarts keep them
-  addressable. Loss-tolerant public strand messages resolve that name once and
+- **Logical addresses, not cached pids, identify restartable services.** The
+  writer still uses a process name; strand drivers bind reclaimable reference
+  addresses. Loss-tolerant public strand messages resolve the address once and
   send the tagged envelope directly to the resolved PID; checking and then
   sending through the name would leave an unregistration race between two
-  lookups.
+  lookups. Removing the remaining session-service names is the next part of
+  the single-daemon port; this change removes per-strand atom allocation only.
 - **Log context reaches an effect process because the closure carries
   it, not because anything is inherited.** `spawn_effect` takes the
   step-scoped logger as an argument, and the body that runs on the new
