@@ -9,8 +9,12 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/otp/actor
+import gleam/otp/factory_supervisor
 import gleam/result
+import runtime/internal/ffi_sup
 import runtime/registry
+import runtime/strand_runtime
 import weft/poll
 import weft/registry as address
 
@@ -74,4 +78,65 @@ fn kill_and_join(pid: process.Pid) -> Nil {
     |> process.selector_receive(2000)
     as "the test registry must exit"
   Nil
+}
+
+pub fn factory_replacements_use_live_handles_without_new_atoms_test() {
+  let name = process.new_name("runtime-factory-catalogue")
+  let assert Ok(started) = registry.start(name)
+    as "the runtime registry must start"
+  assert registry.factory(started.data, registry.Primary) == Error(Nil)
+  assert registry.factory(started.data, registry.Subagent) == Error(Nil)
+
+  // Warm the real OTP factory path, then retain the primary while repeatedly
+  // replacing the subagent slot. Each published handle must start a child.
+  let primary = start_factory()
+  registry.publish_factory(started.data, registry.Primary, primary)
+  cycle_factory(started.data)
+  let before = system_count(AtomCount)
+  int.range(from: 0, to: 100, with: Nil, run: fn(_, _) {
+    cycle_factory(started.data)
+  })
+  assert system_count(AtomCount) == before
+  assert registry.factory(started.data, registry.Primary) == Ok(primary)
+  kill_and_join(primary.pid)
+  assert registry.factory(started.data, registry.Primary) == Error(Nil)
+  kill_and_join(started.pid)
+}
+
+fn start_factory() -> registry.Factory {
+  let assert Ok(started) =
+    factory_supervisor.worker_child(fn(_strand: String) {
+      actor.new(Nil)
+      |> actor.on_message(fn(state, _message: strand_runtime.Message) {
+        actor.continue(state)
+      })
+      |> actor.start
+    })
+    |> factory_supervisor.start
+    as "the unnamed factory must start"
+  registry.Factory(started.pid, started.data)
+}
+
+fn cycle_factory(inbox: process.Subject(registry.Message)) -> Nil {
+  let factory = start_factory()
+  registry.publish_factory(inbox, registry.Subagent, factory)
+  let assert Ok(current) = registry.factory(inbox, registry.Subagent)
+    as "the replacement handle must be discoverable"
+  assert current == factory
+  let assert Ok(child) = factory_supervisor.start_child(current.handle, "sub:1")
+    as "the published handle must start a real child"
+  assert process.subject_owner(child.data) == Ok(child.pid)
+
+  // A clean supervisor stop also joins its child. The stale slot is retained
+  // until replacement, but liveness lookup must not return the dead handle.
+  process.unlink(factory.pid)
+  let monitor = process.monitor(factory.pid)
+  assert ffi_sup.terminate_supervisor(factory.pid, 2000) == Ok(Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the factory must join its child before exiting"
+  assert registry.factory(inbox, registry.Subagent) == Error(Nil)
+  assert !process.is_alive(child.pid)
 }

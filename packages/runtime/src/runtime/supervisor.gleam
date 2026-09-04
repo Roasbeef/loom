@@ -116,8 +116,7 @@ pub type Config {
   )
 }
 
-/// A running session tree: the supervisor pid and the stable names of
-/// its members.
+/// A running session tree: its root, service names, and factory registry slots.
 pub type SessionTree {
   SessionTree(
     /// The root supervisor whose death ends ordinary session liveness.
@@ -126,16 +125,12 @@ pub type SessionTree {
     drains: Name(drain_registry.Message),
     /// The stable name of the session's sole durable writer.
     writer: Name(writer.Message),
-    /// The stable logical-strand to process-name registry.
+    /// The stable logical-strand address and factory-handle registry.
     registry: Name(registry.Message),
-    /// The primary-strand dynamic supervisor.
-    strands: Name(
-      factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-    ),
-    /// The separately budgeted subagent-strand dynamic supervisor.
-    subagent_strands: Name(
-      factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-    ),
+    /// The primary-strand dynamic supervisor's registry slot.
+    strands: registry.FactoryKind,
+    /// The separately budgeted subagent factory's registry slot.
+    subagent_strands: registry.FactoryKind,
     /// The pure classification used to choose one of the two factories.
     subagent: fn(String) -> Bool,
   )
@@ -156,8 +151,6 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
   let drains_name = process.new_name(prefix: "loom_drains")
   let registry_name = process.new_name(prefix: "loom_registry")
   let writer_name = process.new_name(prefix: "loom_writer")
-  let strands_name = process.new_name(prefix: "loom_strands")
-  let subagent_strands_name = process.new_name(prefix: "loom_subagent_strands")
   let drains_subject = process.named_subject(drains_name)
   let template =
     strand_runtime.Options(
@@ -195,8 +188,7 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
         intensity: config.tolerance.intensity,
         period: config.tolerance.period,
       )
-      |> factory_supervisor.named(strands_name)
-      |> factory_supervisor.supervised,
+      |> registered_factory(registry_name, registry.Primary),
     )
     |> sup.add(
       factory_supervisor.worker_child(factory)
@@ -204,18 +196,11 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
         intensity: config.subagent_tolerance.intensity,
         period: config.subagent_tolerance.period,
       )
-      |> factory_supervisor.named(subagent_strands_name)
-      |> factory_supervisor.supervised,
+      |> registered_factory(registry_name, registry.Subagent),
     )
     |> sup.add(
       supervision.worker(fn() {
-        booter_start(
-          writer_name,
-          registry_name,
-          strands_name,
-          subagent_strands_name,
-          config.subagent,
-        )
+        booter_start(writer_name, registry_name, config.subagent)
       }),
     )
     |> sup.start
@@ -232,13 +217,34 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
         drains: drains_name,
         writer: writer_name,
         registry: registry_name,
-        strands: strands_name,
-        subagent_strands: subagent_strands_name,
+        strands: registry.Primary,
+        subagent_strands: registry.Subagent,
         subagent: config.subagent,
       ))
     }
     Error(error) -> Error(error)
   }
+}
+
+// Publishing inside the child start callback orders discovery before the
+// booter can use it. The registry outlives both factories and is rebuilt
+// before them when rest-for-one restarts its own boundary.
+fn registered_factory(
+  builder: factory_supervisor.Builder(String, Subject(strand_runtime.Message)),
+  registry_name: Name(registry.Message),
+  kind: registry.FactoryKind,
+) -> supervision.ChildSpecification(
+  factory_supervisor.Supervisor(String, Subject(strand_runtime.Message)),
+) {
+  supervision.supervisor(fn() {
+    use started <- result.try(factory_supervisor.start(builder))
+    registry.publish_factory(
+      process.named_subject(registry_name),
+      kind,
+      registry.Factory(started.pid, started.data),
+    )
+    Ok(started)
+  })
 }
 
 /// Stops the tree the way OTP stops a supervision tree: children are
@@ -345,14 +351,26 @@ pub fn start_strand(
 // Which factory owns a strand. Asked afresh every time rather than
 // remembered, so the answer survives a restart without any state of its
 // own.
-fn factory_for(
-  tree: SessionTree,
-  strand: String,
-) -> Name(factory_supervisor.Message(String, Subject(strand_runtime.Message))) {
+fn factory_for(tree: SessionTree, strand: String) -> registry.FactoryKind {
   case tree.subagent(strand) {
     True -> tree.subagent_strands
     False -> tree.strands
   }
+}
+
+/// The current factory process, for observing its restart boundary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // supervisor.factory_pid(tree, tree.subagent_strands)
+/// ```
+pub fn factory_pid(
+  tree: SessionTree,
+  kind: registry.FactoryKind,
+) -> Result(Pid, Nil) {
+  registry.factory(process.named_subject(tree.registry), kind)
+  |> result.map(fn(factory) { factory.pid })
 }
 
 /// The live driver subject for a strand, when one has been started.
@@ -383,23 +401,9 @@ pub fn strand_subject(
 fn booter_start(
   writer_name: Name(writer.Message),
   registry_name: Name(registry.Message),
-  strands_name: Name(
-    factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-  ),
-  subagent_strands_name: Name(
-    factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-  ),
   subagent: fn(String) -> Bool,
 ) -> actor.StartResult(Subject(Nil)) {
-  case
-    boot_strands(
-      writer_name,
-      registry_name,
-      strands_name,
-      subagent_strands_name,
-      subagent,
-    )
-  {
+  case boot_strands(writer_name, registry_name, subagent) {
     Ok(Nil) ->
       actor.new(Nil)
       |> actor.on_message(fn(state, _message: Nil) { actor.continue(state) })
@@ -411,12 +415,6 @@ fn booter_start(
 fn boot_strands(
   writer_name: Name(writer.Message),
   registry_name: Name(registry.Message),
-  strands_name: Name(
-    factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-  ),
-  subagent_strands_name: Name(
-    factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-  ),
   subagent: fn(String) -> Bool,
 ) -> Result(Nil, String) {
   let w = process.named_subject(writer_name)
@@ -427,8 +425,8 @@ fn boot_strands(
   list.try_each(cells, fn(cell) {
     let #(strand_name, _register) = cell
     let factory_name = case subagent(strand_name) {
-      True -> subagent_strands_name
-      False -> strands_name
+      True -> registry.Subagent
+      False -> registry.Primary
     }
     ensure_strand_running(registry_name, factory_name, strand_name)
     |> result.replace_error(
@@ -439,32 +437,22 @@ fn boot_strands(
 
 fn ensure_strand_running(
   registry_name: Name(registry.Message),
-  strands_name: Name(
-    factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-  ),
+  kind: registry.FactoryKind,
   strand: String,
 ) -> Result(Nil, actor.StartError) {
   let reg = process.named_subject(registry_name)
   let name = registry.ensure(reg, strand)
   use <- bool.guard(when: alive(name), return: Ok(Nil))
 
-  // Sending into an unregistered name crashes the sender, and this is
-  // called from `api.create_strand` on a tool's effect process: a spawn
-  // racing a factory restart would take that process down and settle as
-  // a synthetic tool failure rather than as a worded refusal. The guard
-  // costs one liveness check and reads far better in the logs.
-  use <- bool.guard(
-    when: !factory_alive(strands_name),
-    return: Error(actor.InitFailed(
+  // Resolve the current typed handle for each start. A dead predecessor is
+  // a worded refusal during restart, not a send to an unregistered name.
+  use factory <- result.try(
+    registry.factory(reg, kind)
+    |> result.replace_error(actor.InitFailed(
       "the strand factory is restarting; retry the start",
     )),
   )
-  case
-    factory_supervisor.start_child(
-      factory_supervisor.get_by_name(strands_name),
-      strand,
-    )
-  {
+  case factory_supervisor.start_child(factory.handle, strand) {
     Ok(_started) -> Ok(Nil)
 
     // A concurrent starter won the race: the strand is running.
@@ -478,15 +466,4 @@ fn ensure_strand_running(
 
 fn alive(name: address.Address(strand_runtime.Message)) -> Bool {
   address.lookup(name) |> result.is_ok
-}
-
-fn factory_alive(
-  name: Name(
-    factory_supervisor.Message(String, Subject(strand_runtime.Message)),
-  ),
-) -> Bool {
-  case process.subject_owner(process.named_subject(name)) {
-    Ok(pid) -> process.is_alive(pid)
-    Error(Nil) -> False
-  }
 }
