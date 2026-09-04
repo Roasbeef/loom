@@ -30,11 +30,15 @@ pub fn allocating_strand_addresses_does_not_grow_atoms_test() {
   let assert Ok(started) = registry.start(name)
     as "the runtime registry must start"
 
-  // Warm both the existing-key and new-key paths before measuring. The
-  // service's one legacy name is allocated above, outside the strand count.
-  let first = registry.ensure(started.data, "warm")
-  assert registry.ensure(started.data, "warm") == first
-  assert registry.lookup(started.data, "warm") == Ok(first)
+  // Warm allocation, lookup, and the loop's integer helpers before measuring.
+  // Otherwise a fresh VM counts library module loading as strand atom growth.
+  // The service's legacy name is also outside the measured strand count.
+  let warm = "warm-" <> int.to_string(0)
+  let first = registry.ensure(started.data, warm)
+  int.range(from: 0, to: 1, with: Nil, run: fn(_, _) {
+    assert registry.ensure(started.data, warm) == first
+    assert registry.lookup(started.data, warm) == Ok(first)
+  })
   let before = system_count(AtomCount)
   int.range(from: 0, to: 1000, with: Nil, run: fn(_, index) {
     let strand = "strand-" <> int.to_string(index)
@@ -91,7 +95,9 @@ pub fn factory_replacements_use_live_handles_without_new_atoms_test() {
   // replacing the subagent slot. Each published handle must start a child.
   let primary = start_factory()
   registry.publish_factory(started.data, registry.Primary, primary)
-  cycle_factory(started.data)
+  int.range(from: 0, to: 1, with: Nil, run: fn(_, _) {
+    cycle_factory(started.data)
+  })
   let before = system_count(AtomCount)
   int.range(from: 0, to: 100, with: Nil, run: fn(_, _) {
     cycle_factory(started.data)
