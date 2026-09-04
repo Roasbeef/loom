@@ -80,7 +80,8 @@ only Go module.
   path denies, and the denies are the final rules in the profile. Two
   roots the policy never names are granted on every plan: the user's
   darwin temp and cache directories (`confstr(3)`, in
-  `seatbelt_userdirs_darwin.go`), because Apple's `git`/`make`/`clang`
+  `seatbelt_userdirs_darwin.go`, via `/usr/bin/getconf` rather than cgo so
+  `CGO_ENABLED=0` still builds), because Apple's `git`/`make`/`clang`
   shims write `xcrun`'s cache and clang's module cache there whatever
   `TMPDIR` says — and the private per-execution scratch is made under
   `/private/tmp`, not the helper's `TMPDIR`, precisely so that grant does
