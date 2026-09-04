@@ -3790,8 +3790,8 @@ fn toggle_details(model: Model) -> Model {
     details_expanded: expanded,
     repaint_phase: !model.repaint_phase,
     notice: case expanded {
-      True -> "reasoning and tool detail expanded"
-      False -> "reasoning and tool detail collapsed"
+      True -> "details expanded"
+      False -> "details collapsed"
     },
   )
 }
