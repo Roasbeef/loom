@@ -30,5 +30,7 @@ argv = ">= 1.1.0 and < 2.0.0"
 tom = ">= 2.1.0 and < 3.0.0"
 
 [dev_dependencies]
+tui = { path = "../tui" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "702a88415d66acab7c977da41850a7e02cc2ebed" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"

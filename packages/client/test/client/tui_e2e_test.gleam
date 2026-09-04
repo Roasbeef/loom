@@ -51,10 +51,14 @@ import client/catalog
 import client/codemode
 import client/distillpass
 import client/gateway as hub
+import client/internal/ffi_os
 import client/protocol
 import client/schedule
 import client/serve
 import core/clock
+import core/entry
+import core/message
+import etui/backend
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -75,6 +79,8 @@ import support/internal/ffi_proc
 import support/internal/ffi_ws
 import support/provider as provider_test
 import support/terminal.{type Terminal}
+import support/tui_driver
+import weft/poll
 
 // A home directory that does not exist, so a server booted here never
 // picks up the developer's own `~/.agents/AGENTS.md`. A home with no
@@ -95,6 +101,10 @@ const prompt_text = "answer the terminal probe"
 /// whole round trip. Deliberately a single alphanumeric word: glamour
 /// word-wraps the assistant block, and a phrase could be split.
 const assistant_marker = "skein7f3a"
+
+const second_prompt = "answer the terminal probe again"
+
+const second_marker = "skein8b2c"
 
 const cols = 110
 
@@ -141,6 +151,184 @@ pub fn the_real_tui_drives_the_real_server_test_() -> EunitTest {
       Ok(ready) -> drive(ready)
     }
   })
+}
+
+/// Two independent clients share the real server without a terminal binary.
+///
+/// This is a fan-out foundation, not the complete multiplayer acceptance:
+/// principals, roles, shared configuration, and lazy session opening remain
+/// separate scenarios once the daemon serves those contracts.
+pub fn two_virtual_tuis_share_one_real_session_test_() -> EunitTest {
+  Timeout(60 / gleeunit_timeout_scale, virtual_drive)
+}
+
+fn virtual_drive() -> Nil {
+  let test_root =
+    "build/tui-pair-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(test_root <> "/work")
+    as "the independent clients need an isolated workspace"
+  let assert Ok(booted) = serve.boot(settings_at(test_root))
+    as "the server must boot for the virtual client pair"
+  let address =
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v1/ws"
+  let outcome = virtual_pair(address, booted.served.token)
+  let persisted = snapshot_text(booted)
+  let detached =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case hub.attached(booted.gateway) == 0 {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+
+  // Teardown precedes assertions so a failed frame check releases the lease.
+  serve.shutdown(booted)
+  case outcome {
+    Error(reason) -> io.println_error(reason)
+    Ok(Nil) -> Nil
+  }
+  assert outcome == Ok(Nil) as string.inspect(outcome)
+  assert detached == poll.Answered(Nil)
+    as "both driver exits must detach their real sockets"
+  assert string.contains(persisted, assistant_marker)
+  assert string.contains(persisted, second_marker)
+  assert string.contains(persisted, second_prompt)
+    as "a fresh subscriber must recover both completed turns"
+}
+
+fn virtual_pair(address: String, token: String) -> Result(Nil, String) {
+  use alice <- result.try(
+    tui_driver.start(address, token, session_id)
+    |> result.map_error(string.inspect),
+  )
+  let outcome = case tui_driver.start(address, token, session_id) {
+    Error(reason) -> Error(string.inspect(reason))
+    Ok(bob) -> {
+      let outcome = virtual_turns(alice.data, bob.data)
+      tui_driver.stop(bob.data)
+      outcome
+    }
+  }
+  tui_driver.stop(alice.data)
+  outcome
+}
+
+fn virtual_turns(
+  alice: process.Subject(tui_driver.Message),
+  bob: process.Subject(tui_driver.Message),
+) -> Result(Nil, String) {
+  use Nil <- result.try(
+    await_pair(alice, bob, "both initial snapshots", fn(a, b) {
+      string.contains(a.frame, "attached to session " <> session_id)
+      && string.contains(b.frame, "attached to session " <> session_id)
+    }),
+  )
+  let _ =
+    tui_driver.play(alice, [
+      backend.Paste(prompt_text),
+      backend.KeyPress("enter"),
+    ])
+  use Nil <- result.try(
+    await_pair(alice, bob, "Alice's shared turn", fn(a, b) {
+      shared_turns(a, b, 1)
+    }),
+  )
+  let _ =
+    tui_driver.play(bob, [
+      backend.Paste(second_prompt),
+      backend.KeyPress("enter"),
+    ])
+  await_pair(alice, bob, "Bob's shared turn", fn(a, b) { shared_turns(a, b, 2) })
+}
+
+fn shared_turns(
+  a: tui_driver.Sample,
+  b: tui_driver.Sample,
+  count: Int,
+) -> Bool {
+  let users =
+    list.filter_map(a.model.records, fn(record) {
+      case record.entry {
+        entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
+          Ok(content)
+        _ -> Error(Nil)
+      }
+    })
+  let answers =
+    list.filter_map(a.model.records, fn(record) {
+      case record.entry {
+        entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) ->
+          Ok(content)
+        _ -> Error(Nil)
+      }
+    })
+  let expected_users =
+    [prompt_text, second_prompt]
+    |> list.take(count)
+    |> list.reverse
+    |> list.map(fn(text) { [message.UserText(text, None)] })
+  let expected_answers =
+    [assistant_marker, second_marker]
+    |> list.take(count)
+    |> list.reverse
+    |> list.map(fn(marker) {
+      [message.AssistantText("the scripted model answered " <> marker, None)]
+    })
+  a.model.records == b.model.records
+  && users == expected_users
+  && answers == expected_answers
+  && a.model.streams == []
+  && b.model.streams == []
+  && a.model.submitting == None
+  && b.model.submitting == None
+  && list.any(a.model.strands, fn(strand) {
+    strand.id == "main" && strand.live_phase == None
+  })
+  && list.any(b.model.strands, fn(strand) {
+    strand.id == "main" && strand.live_phase == None
+  })
+  && list.all(list.take([assistant_marker, second_marker], count), fn(marker) {
+    string.contains(a.frame, marker) && string.contains(b.frame, marker)
+  })
+}
+
+fn await_pair(
+  alice: process.Subject(tui_driver.Message),
+  bob: process.Subject(tui_driver.Message),
+  condition: String,
+  ready: fn(tui_driver.Sample, tui_driver.Sample) -> Bool,
+) -> Result(Nil, String) {
+  case
+    poll.until(within: 10_000, every: 10, attempt: fn() {
+      let a = tui_driver.play(alice, [])
+      let b = tui_driver.play(bob, [])
+      case ready(a, b) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> {
+      let a = tui_driver.play(alice, [])
+      let b = tui_driver.play(bob, [])
+      Error(
+        condition
+        <> " timed out. Alice:\n"
+        <> a.frame
+        <> "\nBob:\n"
+        <> b.frame
+        <> "\nAlice records: "
+        <> string.inspect(a.model.records)
+        <> "\nBob records: "
+        <> string.inspect(b.model.records),
+      )
+    }
+  }
 }
 
 // --- prerequisites ---------------------------------------------------------
@@ -531,9 +719,14 @@ fn scripted_transport() -> http.Transport {
 
 // The answer is conditional on the typed prompt.
 fn answer(body: String) -> String {
-  case string.contains(body, prompt_text) {
-    True -> sse_transcript("the scripted model answered " <> assistant_marker)
-    False ->
+  case
+    string.contains(body, second_prompt),
+    string.contains(body, prompt_text)
+  {
+    True, _ -> sse_transcript("the scripted model answered " <> second_marker)
+    False, True ->
+      sse_transcript("the scripted model answered " <> assistant_marker)
+    False, False ->
       sse_transcript("the provider request did not carry the typed prompt")
   }
 }
@@ -601,13 +794,17 @@ fn absolute(path: String) -> String {
 }
 
 fn settings() -> serve.Settings {
+  settings_at(root)
+}
+
+fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
-    session_path: root <> "/session.db",
+    session_path: test_root <> "/session.db",
     bind_host: "127.0.0.1",
     bind_port: 0,
-    token_path: root <> "/session.db.token",
-    workspace: absolute(root) <> "/work",
-    base_policy: serve.base_policy(absolute(root) <> "/work"),
+    token_path: test_root <> "/session.db.token",
+    workspace: absolute(test_root) <> "/work",
+    base_policy: serve.base_policy(absolute(test_root) <> "/work"),
     // No tool is dispatched in this protocol round trip, so the terminal
     // boundary stays independent of whichever jail layers the host offers.
     helper_path: "/bin/sh",
@@ -633,7 +830,7 @@ fn settings() -> serve.Settings {
       keep_recent_tokens: 20_000,
     ),
     // No seed: this host must not go looking for a toolchain.
-    codemode_seed: root <> "/no-such-seed",
+    codemode_seed: test_root <> "/no-such-seed",
     codemode_seams: codemode.WorkspaceOnly,
     rules: [],
     schedules: [],
