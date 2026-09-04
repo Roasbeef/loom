@@ -1634,13 +1634,23 @@ an install is under the extensions root.
 
 ## Invariants
 
+- **A linked git worktree widens the session base to its git directories.**
+  `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a
+  `gitdir:` file, the named directory and the main repository's `.git`
+  its `commondir` points at join `writable_roots`, because a jailed
+  `git commit` must write the index lock and objects there and both sit
+  outside the workspace. It is the trust a primary checkout's `.git`
+  already has. A primary checkout, a non-repository, or an unreadable
+  `.git` file leaves the base untouched.
 - **A jailed child's environment is three names, built once per session.**
   `serve.session_environment` gives every tool shell, satellite and hook
   host the same `PATH` (the code-mode toolchain's when one was found, so
   `gleam` and `erl` resolve in the shell as they do for the compiler),
-  `HOME` (the workspace, so `bash -l` reads no operator dotfiles) and
-  `TMPDIR` (`<workspace>/.codemode/tmp`, the one root the jail lets a tool
-  write; the host's temp directory is not reachable from inside). The
+  `HOME` (`<workspace>/.codemode/home`, so `bash -l` reads no operator
+  dotfiles and what a toolchain writes to its home — macOS makes a
+  `Library/Caches` — stays out of the operator's tree) and `TMPDIR`
+  (`<workspace>/.codemode/tmp`, the one root the jail lets a tool write;
+  the host's temp directory is not reachable from inside). The
   session base policy grants `TMPDIR` for the same reason the code-mode
   builder grants it on its derived base: the policy meet keeps only the
   names the base allows.

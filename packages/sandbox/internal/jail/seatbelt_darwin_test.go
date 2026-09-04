@@ -17,7 +17,13 @@ func TestSeatbeltEnforcesFilesystemAndNetworkOnDarwin(t *testing.T) {
 		t.Skipf("%s unavailable: %v", SeatbeltExecutable, err)
 	}
 
-	root := t.TempDir()
+	// Not t.TempDir(): that lives under the user temp directory, which the
+	// plan grants, so a sibling there is no longer "outside" the jail.
+	root, err := os.MkdirTemp(SeatbeltScratchParent, "loom-seatbelt-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
 	writable := filepath.Join(root, "writable")
 	outside := filepath.Join(root, "outside")
 	protected := filepath.Join(writable, "secret")
@@ -41,6 +47,23 @@ func TestSeatbeltEnforcesFilesystemAndNetworkOnDarwin(t *testing.T) {
 	runSeatbeltChild(t, plan, "write", insideFile)
 	if _, err := os.Stat(insideFile); err != nil {
 		t.Fatalf("write inside writable root failed: %v", err)
+	}
+
+	// The per-user darwin temp and cache directories are writable too, so
+	// xcrun's cache and clang's module cache do not fail under the jail.
+	// Read through the same confstr the plan used, not $TMPDIR, which a
+	// test runner may have pointed elsewhere.
+	userDirs := DarwinUserDirectories()
+	if len(userDirs) != 2 {
+		t.Fatalf("expected the user temp and cache directories, got %v", userDirs)
+	}
+	for _, dir := range userDirs {
+		cacheFile := filepath.Join(dir, "loom-seatbelt-test-"+filepath.Base(root))
+		runSeatbeltChild(t, plan, "write", cacheFile)
+		if _, err := os.Stat(cacheFile); err != nil {
+			t.Fatalf("write inside user directory %s failed: %v", dir, err)
+		}
+		os.Remove(cacheFile)
 	}
 	for name, target := range map[string]string{
 		"outside write":   filepath.Join(outside, "escaped"),
