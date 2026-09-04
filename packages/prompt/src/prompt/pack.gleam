@@ -1007,10 +1007,6 @@ fn guidance_text(environment: Environment) -> String {
   option.unwrap(environment.repository_guidance, "")
 }
 
-fn byte_size(text: String) -> Int {
-  bit_array.byte_size(bit_array.from_string(text))
-}
-
 // One pass over the template. A substituted value goes straight into the
 // output and is never looked at again, which is the property that makes
 // injected file content inert here.
