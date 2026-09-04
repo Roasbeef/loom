@@ -5,7 +5,7 @@
 //// order —
 ////
 //// 1. the **drain ledger** (logical strand → live effect reapers),
-//// 2. the **strand registry** (name ↔ process-name map, so restarts keep
+//// 2. the **strand registry** (strand ↔ reference address, so restarts keep
 ////    every strand addressable),
 //// 3. the **StorageWriter**,
 //// 4. the **StrandSupervisor** — a factory (simple-one-for-one) of strand
@@ -59,8 +59,9 @@
 //// (`api.create_strand`) seed their registers first, so every reboot
 //// finds them.
 ////
-//// The writer and each strand register under stable process names owned
-//// by the registry, so the tree's callers hold names, not pids.
+//// The writer still uses a stable process name. Strand drivers bind typed
+//// reference addresses owned by the registry, so their callers resolve the
+//// current incarnation without allocating permanent atoms per strand.
 
 import core/register
 import gleam/bool
@@ -79,6 +80,7 @@ import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
 import runtime/writer
+import weft/registry as address
 
 /// Restart-tolerance settings for the supervisors in the tree.
 ///
@@ -366,7 +368,7 @@ pub fn strand_subject(
   strand: String,
 ) -> Result(Subject(strand_runtime.Message), Nil) {
   case registry.lookup(process.named_subject(tree.registry), strand) {
-    Ok(name) -> Ok(process.named_subject(name))
+    Ok(name) -> address.lookup(name)
     Error(Nil) -> Error(Nil)
   }
 }
@@ -474,11 +476,8 @@ fn ensure_strand_running(
   }
 }
 
-fn alive(name: Name(strand_runtime.Message)) -> Bool {
-  case process.subject_owner(process.named_subject(name)) {
-    Ok(pid) -> process.is_alive(pid)
-    Error(Nil) -> False
-  }
+fn alive(name: address.Address(strand_runtime.Message)) -> Bool {
+  address.lookup(name) |> result.is_ok
 }
 
 fn factory_alive(

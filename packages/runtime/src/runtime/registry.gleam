@@ -1,14 +1,14 @@
 //// The strand-incarnation registry: one small actor mapping strand names to
-//// stable process names.
+//// reclaimable process addresses.
 ////
-//// Process names are minted once per strand and survive every restart
+//// Reference addresses are minted once per strand and survive every restart
 //// below the registry: the strand factory asks `ensure` when it starts a
 //// driver, so a crashed driver's replacement registers under the *same*
-//// process name and stays addressable, and doorbells resolve through
-//// `lookup` at ring time rather than caching pids. The registry sits
-//// first in the session tree's rest-for-one order, so it outlives writer
-//// and strand crashes; only a whole-tree reboot (open, close) starts it
-//// empty, and the strand booter then repopulates it from the store.
+//// address and stays addressable, and doorbells resolve through
+//// `lookup` at ring time rather than caching pids. The registry precedes the
+//// writer and strand factories, so it outlives their crashes. Its own restart
+//// creates a fresh reference namespace and the booter repopulates it from
+//// durable strand records, while the earlier drain ledger stays intact.
 ////
 //// Effect-generation reapers live in the earlier, non-restartable
 //// `runtime/internal/drain_registry`; they cannot safely share this actor's
@@ -18,24 +18,32 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
+import gleam/result
 import gleam/string
 import runtime/strand_runtime
+import weft/actor
+import weft/registry as address
 
 /// Messages understood by the registry. Opaque: callers use the wrapper
 /// functions below.
 pub opaque type Message {
-  Ensure(strand: String, reply_with: Subject(Name(strand_runtime.Message)))
+  Ensure(
+    strand: String,
+    reply_with: Subject(address.Address(strand_runtime.Message)),
+  )
   Lookup(
     strand: String,
-    reply_with: Subject(Result(Name(strand_runtime.Message), Nil)),
+    reply_with: Subject(Result(address.Address(strand_runtime.Message), Nil)),
   )
   Known(reply_with: Subject(List(String)))
 }
 
 type State {
-  State(names: Dict(String, Name(strand_runtime.Message)))
+  State(
+    namespace: address.Registry,
+    names: Dict(String, address.Address(strand_runtime.Message)),
+  )
 }
 
 /// Starts a registry registered under `name`.
@@ -47,9 +55,20 @@ type State {
 /// ```
 ///
 pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
-  actor.new(State(names: dict.new()))
+  actor.new_with_initialiser(1000, fn(inbox) {
+    // The reference namespace shares this registry's restart boundary, not
+    // the earlier drain ledger's. Losing routing cannot erase effect custody.
+    use namespace <- result.try(address.start())
+    actor.initialised(State(namespace:, names: dict.new()))
+    |> actor.returning(inbox)
+    |> Ok
+  })
   |> actor.named(name)
   |> actor.on_message(handle)
+  |> actor.on_shutdown(fn(state, _reason) {
+    let _stopped = address.stop(state.namespace)
+    Nil
+  })
   |> actor.start
 }
 
@@ -74,9 +93,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.continue(state)
         }
         Error(Nil) -> {
-          let fresh = process.new_name(prefix: "loom_strand")
+          let fresh = address.new_address(state.namespace)
           process.send(reply_with, fresh)
-          actor.continue(State(names: dict.insert(state.names, strand, fresh)))
+          actor.continue(
+            State(..state, names: dict.insert(state.names, strand, fresh)),
+          )
         }
       }
     Lookup(strand:, reply_with:) -> {
@@ -93,7 +114,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-/// The stable process name for a strand, minting one on first use.
+/// The stable reference address for a strand, minting one on first use.
 ///
 /// ## Examples
 ///
@@ -104,11 +125,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 pub fn ensure(
   registry: Subject(Message),
   strand: String,
-) -> Name(strand_runtime.Message) {
+) -> address.Address(strand_runtime.Message) {
   process.call_forever(registry, Ensure(strand, _))
 }
 
-/// The strand's registered process name, if one was ever minted.
+/// The strand's reference address, if one was ever minted.
 ///
 /// ## Examples
 ///
@@ -119,11 +140,11 @@ pub fn ensure(
 pub fn lookup(
   registry: Subject(Message),
   strand: String,
-) -> Result(Name(strand_runtime.Message), Nil) {
+) -> Result(address.Address(strand_runtime.Message), Nil) {
   process.call_forever(registry, Lookup(strand, _))
 }
 
-/// Every strand name the registry has minted a process name for, sorted.
+/// Every strand name the registry has minted an address for, sorted.
 ///
 /// ## Examples
 ///

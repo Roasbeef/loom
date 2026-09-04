@@ -38,6 +38,7 @@ import support/fake
 import support/harness
 import support/recorder
 import telemetry/log
+import weft/registry as address
 
 pub fn strand_restart_reaps_the_live_tool_effect_test() {
   let rec = recorder.start()
@@ -1053,8 +1054,10 @@ pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
       },
       logger: log.discard(),
     )
+  let assert Ok(names) = address.start()
+    as "the strand address namespace must start"
   let assert Ok(started) =
-    strand_runtime.start(options, process.new_name(prefix: "loom_strand_test"))
+    strand_runtime.start(options, address.new_address(names))
     as "the driver must start"
 
   // The driver is linked to whoever started it; the kill below must reach
@@ -1064,4 +1067,5 @@ pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
   process.kill(started.pid)
   assert process.receive(observed, within: 2000) == Ok(True)
     as "the claimed pid must outlive the driver until the claim is answered"
+  assert address.stop(names) == Ok(Nil)
 }

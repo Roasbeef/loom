@@ -79,6 +79,7 @@ import telemetry/field
 import telemetry/log.{type Logger}
 import weft
 import weft/actor
+import weft/registry as address
 
 /// Driver configuration.
 ///
@@ -281,7 +282,7 @@ type Outcome {
   Halt(String)
 }
 
-/// Starts a strand driver registered under `name`. The initialized actor first
+/// Starts a strand driver bound to `address`. The initialized actor first
 /// waits on the prior-generation drain barrier, then drives immediately, so an
 /// open operation restored from storage resumes without external input — crash
 /// recovery and cold start are the same path.
@@ -289,19 +290,17 @@ type Outcome {
 /// ## Examples
 ///
 /// ```gleam
-/// // strand_runtime.start(options, name)
+/// // strand_runtime.start(options, address)
 /// ```
 ///
 pub fn start(
   options: Options,
-  name: Name(Message),
+  address: address.Address(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    // The public subject may be a registered name which does not exist until
-    // this initializer returns. It deliberately stays out of State: callers
-    // use that durable address, while callbacks must be unable to capture it
-    // and cross an incarnation boundary. The direct endpoint also lets a fast
-    // first claim acknowledge recovery before actor registration completes.
+    // Callers resolve the logical address afresh. Callbacks instead capture
+    // this incarnation's private endpoint, never the restartable address, so
+    // late effects and timer wakes cannot reach a replacement driver.
     let internal = process.new_subject()
 
     // The barrier acknowledgement gets a subject of its own rather than a
@@ -347,7 +346,7 @@ pub fn start(
     |> actor.continuing(AwaitPredecessors(resolution:))
     |> Ok
   })
-  |> actor.named(name)
+  |> actor.addressed(address)
   |> actor.on_message(handle)
   |> actor.start
 }
@@ -357,14 +356,14 @@ pub fn start(
 /// ## Examples
 ///
 /// ```gleam
-/// // supervisor.add(builder, strand_runtime.supervised(options, name))
+/// // supervisor.add(builder, strand_runtime.supervised(options, address))
 /// ```
 ///
 pub fn supervised(
   options: Options,
-  name: Name(Message),
+  address: address.Address(Message),
 ) -> ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(options, name) })
+  supervision.worker(fn() { start(options, address) })
 }
 
 /// Rings the strand's doorbell: re-plan at the next opportunity.
