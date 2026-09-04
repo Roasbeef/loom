@@ -1856,12 +1856,12 @@ fn assemble(
   use Nil <- result.try(base_policy_fault(base_policy))
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
-  use Nil <- result.try(prepare_directories(
-    settings,
-    blob_root,
-    tmp_dir,
-    tool_tmp_directory(settings.workspace),
-  ))
+  use Nil <- result.try(
+    prepare_directories(settings, blob_root, tmp_dir, [
+      tool_tmp_directory(settings.workspace),
+      tool_home_directory(settings.workspace),
+    ]),
+  )
 
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
@@ -2721,9 +2721,14 @@ const hook_step_id = "extension-hooks"
 ///   `erl` resolve in the shell exactly as they do for the compiler. On a
 ///   Homebrew Mac the system directories alone hide both, and a model
 ///   that cannot run the project's tests falls back to `find /`.
-/// - `HOME` is the workspace. `bash -l` sources the dotfiles under
-///   `$HOME`, and with the name unset it read the operator's profile
-///   against an empty home and failed every line that mentioned it.
+/// - `HOME` is a directory under the workspace, so it is writable and
+///   empty. `bash -l` sources the dotfiles under `$HOME`, and with the
+///   name unset it read the operator's profile against an empty home and
+///   failed every line that mentioned it. It was the workspace itself for
+///   a while, and macOS answered by creating `Library/Caches` in the
+///   operator's checkout — an untracked directory in every `git status`
+///   the model ran. A home of its own keeps what a toolchain writes to
+///   `$HOME` off the tree.
 /// - `TMPDIR` is a directory under the workspace, the one root the jail
 ///   lets a tool write. The host's temp directory is not writable from
 ///   inside, so a compiler or test runner that mints temp files died on
@@ -2735,7 +2740,7 @@ const hook_step_id = "extension-hooks"
 /// assert serve.session_environment("/work", option.None)
 ///   == [
 ///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
-///     #("HOME", "/work"),
+///     #("HOME", "/work/.codemode/home"),
 ///     #("TMPDIR", "/work/.codemode/tmp"),
 ///   ]
 /// ```
@@ -2747,9 +2752,25 @@ pub fn session_environment(
 ) -> List(#(String, String)) {
   [
     #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
-    #("HOME", workspace),
+    #("HOME", tool_home_directory(workspace)),
     #("TMPDIR", tool_tmp_directory(workspace)),
   ]
+}
+
+/// Where a jailed tool's `HOME` points: a directory of its own beneath
+/// the code-mode work directory, beside `TMPDIR`, for the same reason —
+/// the workspace gains no second dot-directory, and nothing a tool
+/// writes to its home lands in the operator's tree.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.tool_home_directory("/work") == "/work/.codemode/home"
+/// ```
+///
+@internal
+pub fn tool_home_directory(workspace: String) -> String {
+  workspace <> "/" <> codemode_wiring.work_directory <> "/home"
 }
 
 /// The whole environment a jailed tool shell of this session runs under:
@@ -2977,7 +2998,7 @@ fn prepare_directories(
   settings: Settings,
   blob_root: String,
   tmp_dir: String,
-  tool_tmp_dir: String,
+  tool_dirs: List(String),
 ) -> Result(Nil, String) {
   let wanted = [
     parent_directory(settings.session_path),
@@ -2985,9 +3006,9 @@ fn prepare_directories(
     Some(settings.workspace),
     Some(blob_root),
     Some(tmp_dir),
-    Some(tool_tmp_dir),
   ]
-  list.try_each(option.values(wanted), fn(directory) {
+  let directories = list.append(option.values(wanted), tool_dirs)
+  list.try_each(directories, fn(directory) {
     simplifile.create_directory_all(directory)
     |> result.map_error(fn(error) {
       "could not create " <> directory <> ": " <> string.inspect(error)

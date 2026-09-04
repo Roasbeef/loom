@@ -1638,9 +1638,11 @@ an install is under the extensions root.
   `serve.session_environment` gives every tool shell, satellite and hook
   host the same `PATH` (the code-mode toolchain's when one was found, so
   `gleam` and `erl` resolve in the shell as they do for the compiler),
-  `HOME` (the workspace, so `bash -l` reads no operator dotfiles) and
-  `TMPDIR` (`<workspace>/.codemode/tmp`, the one root the jail lets a tool
-  write; the host's temp directory is not reachable from inside). The
+  `HOME` (`<workspace>/.codemode/home`, so `bash -l` reads no operator
+  dotfiles and what a toolchain writes to its home — macOS makes a
+  `Library/Caches` — stays out of the operator's tree) and `TMPDIR`
+  (`<workspace>/.codemode/tmp`, the one root the jail lets a tool write;
+  the host's temp directory is not reachable from inside). The
   session base policy grants `TMPDIR` for the same reason the code-mode
   builder grants it on its derived base: the policy meet keeps only the
   names the base allows.
