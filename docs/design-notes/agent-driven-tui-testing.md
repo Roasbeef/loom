@@ -4,6 +4,14 @@ Status: **note, not a work package.** Captured while the idea is fresh;
 nothing here is built. Promote to a numbered work package when the code
 mode milestone closes.
 
+> **Adoption update (2026-09-04).** Superseded in direction by
+> `docs/design-notes/tui-simulation.md`. etui's backend is a record of
+> functions, so a scripted virtual backend replaces the PTY and tmux
+> layers below for testing; record/replay (`loom --record`, `loom
+> replay`) is the agent-facing surface; and the seeded generator and the
+> end-to-end run are briefed there as work packages 4 and 5. tmux and
+> herdr remain the route for a session an agent uses across turns.
+>
 > **Adoption update (2026-08-31).** This note records the retired Go client
 > and its proposed Bubble Tea test stack. Loom now ships the native Gleam
 > `packages/tui` client. Its model tests and the real terminal/server scenario
