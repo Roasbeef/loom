@@ -262,6 +262,19 @@ pub fn panel_border_matches_the_block_it_replaces_test() {
   })
 }
 
+pub fn panel_border_preserves_prepainted_interior_test() {
+  let screen = geometry.rect_new(0, 0, 12, 4)
+  let inside = Position(3, 2)
+  let painted =
+    buffer.buffer_new(screen)
+    |> buffer.set_string(inside, "kept", theme.current_bold())
+  let drawn =
+    tui.render_panel_border(painted, screen, " transcript ", theme.quiet)
+
+  // The border renderer must leave both the content and style untouched.
+  assert buffer.get_cell(drawn, inside) == buffer.get_cell(painted, inside)
+}
+
 pub fn panel_border_draws_nothing_when_too_small_test() {
   let screen = geometry.rect_new(0, 0, 4, 4)
   let blank = buffer.buffer_new(screen)
