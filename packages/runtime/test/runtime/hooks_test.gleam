@@ -146,7 +146,7 @@ pub fn the_tail_is_the_newest_messages_within_the_budget_test() {
     hooks.uncompacted([
       fake.user("m1"),
       fake.user("m2"),
-      fake.user("m3"),
+      fake.answer("m3", 0),
       fake.user("m4"),
       fake.user("m5"),
     ])
@@ -159,35 +159,50 @@ pub fn the_tail_is_the_newest_messages_within_the_budget_test() {
     ..,
   )) = hooks.preparation(projected, settings(3, 0), one, tokens_before: 5)
   assert messages_to_summarize == [fake.user("m1"), fake.user("m2")]
-  assert retained_tail == [fake.user("m3"), fake.user("m4"), fake.user("m5")]
+  assert retained_tail
+    == [fake.answer("m3", 0), fake.user("m4"), fake.user("m5")]
 }
 
-// The cut moves *later* off a tool result, never earlier: a retained
-// tail that opened on a result would be an answer to a call the model
-// can no longer see. Here the budget of three would keep the result, so
-// the boundary slides past it and the tail is the two messages after.
+// Align backward so the retained results always include their calls.
 pub fn a_tail_never_opens_on_a_tool_result_test() {
-  let projected =
-    hooks.uncompacted([
-      fake.user("m1"),
-      fake.tool_use("calling", [#("c1", "bash")], 0),
-      tool_result("c1", "bash"),
-      fake.user("m4"),
-      fake.answer("done", 0),
-    ])
-  let assert Prepared(preparation: CompactionPreparation(
-    messages_to_summarize:,
+  let call = fake.tool_use("calling", [#("c1", "bash")], 0)
+  let result = tool_result("c1", "bash")
+  let tail = [call, result, fake.user("m4"), fake.answer("done", 0)]
+  let projected = hooks.uncompacted([fake.user("m1"), ..tail])
+  let assert Prepared(CompactionPreparation(
     retained_tail:,
+    messages_to_summarize:,
     ..,
   )) = hooks.preparation(projected, settings(3, 0), one, tokens_before: 5)
-  assert retained_tail == [fake.user("m4"), fake.answer("done", 0)]
-  // The call and its result stay together on the summarized side.
-  assert messages_to_summarize
-    == [
-      fake.user("m1"),
-      fake.tool_use("calling", [#("c1", "bash")], 0),
-      tool_result("c1", "bash"),
-    ]
+    as "older input can be compacted"
+  assert retained_tail == tail
+  assert messages_to_summarize == [fake.user("m1")]
+}
+
+pub fn unread_tool_batch_survives_a_budget_smaller_than_its_results_test() {
+  let tail = [
+    fake.tool_use("calling", [#("c1", "bash"), #("c2", "bash")], 0),
+    tool_result("c1", "bash"),
+    tool_result("c2", "bash"),
+    fake.user("queued correction"),
+    fake.user("queued requirement"),
+  ]
+  let projected = hooks.uncompacted([fake.user("older"), ..tail])
+  let assert Prepared(CompactionPreparation(
+    retained_tail:,
+    messages_to_summarize:,
+    ..,
+  )) = hooks.preparation(projected, settings(1, 0), one, tokens_before: 6)
+    as "the whole unread exchange must survive the cut"
+  assert retained_tail == tail
+  assert messages_to_summarize == [fake.user("older")]
+}
+
+pub fn input_before_the_first_assistant_is_never_compacted_away_test() {
+  let projected =
+    hooks.uncompacted([fake.user("requirement"), fake.user("correction")])
+  assert hooks.preparation(projected, settings(0, 0), one, tokens_before: 2)
+    == EmptyPreparation
 }
 
 // A previous summary is input to the update prompt, not transcript: it
@@ -200,7 +215,7 @@ pub fn a_carried_summary_is_not_re_summarized_test() {
       messages: [
         fake.user("[summary] earlier work"),
         fake.user("carried-1"),
-        fake.user("fresh-1"),
+        fake.answer("fresh-1", 0),
         fake.user("fresh-2"),
       ],
       carried: 2,
@@ -213,7 +228,7 @@ pub fn a_carried_summary_is_not_re_summarized_test() {
     ..,
   )) = hooks.preparation(projected, settings(2, 0), one, tokens_before: 4)
   assert messages_to_summarize == [fake.user("carried-1")]
-  assert retained_tail == [fake.user("fresh-1"), fake.user("fresh-2")]
+  assert retained_tail == [fake.answer("fresh-1", 0), fake.user("fresh-2")]
 }
 
 pub fn nothing_older_than_the_tail_is_an_empty_preparation_test() {
@@ -303,7 +318,7 @@ pub fn overflow_prepares_unconditionally_test() {
     hooks.overflow(
       settings(1, 0),
       projection: fn(_strand) {
-        hooks.uncompacted([fake.user("m1"), fake.user("m2")])
+        hooks.uncompacted([fake.user("m1"), fake.answer("m2", 0)])
       },
       estimate: one,
     )

@@ -42,23 +42,24 @@
 //// ## Where a compaction may cut
 ////
 //// `preparation` walks the projection newest-first until
-//// `keep_recent_tokens` is spent, then moves the boundary **later**
-//// until it lands on a user, assistant, or custom message. A tool
+//// `keep_recent_tokens` is spent, then aligns the boundary backward
+//// to a user, assistant, or custom message. A tool
 //// result is never a cut point (pi): severed from the assistant turn
 //// that called it, it would open the retained tail as an answer to a
-//// question the model can no longer see. Moving later — rather than
-//// earlier — keeps a call and its results together on the *summarized*
-//// side, so no orphan is created in either direction. A consequence
-//// worth naming: the cut always lands on a turn boundary, so this
-//// builder never produces pi's split-turn case, and
-//// `CompactionPreparation.is_split_turn` is correspondingly always
-//// `False` here.
+//// question the model can no longer see. Aligning backward retains both
+//// the call and its results. The newest assistant exchange and all input
+//// after it survive even when they exceed the keep-recent target: results
+//// can trigger a checkpoint before the model has read them. No assistant
+//// yet means all input is protected. A protected exchange larger than the
+//// model window reaches the ordinary overflow failure instead of silently
+//// disappearing. This builder never splits a tool exchange.
 
 import core/entry.{type UsageRow}
 import core/ids.{type OpId}
 import core/json
 import core/message.{type AgentMessage}
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -533,7 +534,7 @@ fn newest_reported(
 
 /// The compaction preparation for a projection: the newest messages
 /// within `settings.keep_recent_tokens` become the retained tail, cut at
-/// a turn boundary, and everything older is what the summarizer is sent.
+/// an exchange boundary; everything older becomes the frozen cut input.
 /// `EmptyPreparation` when there would be nothing to summarize, which
 /// the machine reads as "mark the boundary checked and carry on".
 ///
@@ -542,10 +543,10 @@ fn newest_reported(
 /// all three compact the same way and a change to the cut rule cannot
 /// apply to only some of them.
 ///
-/// A previous compaction's summary is *not* re-summarized: it travels as
-/// `previous_summary`, which selects the summary pack's iterative-update
-/// prompt. Its retained tail is, though — those messages survived one
-/// compaction and would otherwise be dropped silently by the next.
+/// The preceding checkpoint travels separately as `previous_summary` in
+/// the frozen preparation contract. The host chooses its replacement;
+/// retained messages remain eligible for later cuts after a newer exchange.
+/// The most recent exchange is protected independently of the token target.
 ///
 /// ## Examples
 ///
@@ -560,13 +561,16 @@ pub fn preparation(
   tokens_before tokens_before: Int,
 ) -> PreparationOutcome {
   // The carried summary heads the projection as one user message. It is
-  // input to the *update* prompt, not part of the transcript being
-  // summarized, so it is dropped from the body here.
+  // supplied separately to the host, rather than counted as a fresh
+  // transcript message in the candidate cut.
   let body = case projected.previous_summary {
     Some(_) -> list.drop(projected.messages, 1)
     None -> projected.messages
   }
-  let tail = cut(recent(body, settings.keep_recent_tokens, estimate))
+  let candidate = recent(body, settings.keep_recent_tokens, estimate)
+  let protected = latest_exchange(body, body)
+  let keep = int.max(list.length(candidate), list.length(protected))
+  let tail = cut(body, list.length(body) - keep, body)
   let to_summarize = list.take(body, list.length(body) - list.length(tail))
   case to_summarize {
     [] -> EmptyPreparation
@@ -617,14 +621,41 @@ fn recent_loop(
   }
 }
 
-// Moves a candidate tail's start later until it is a valid cut point: a
-// tool result at the head of a retained tail is an answer to a call the
-// model can no longer see, so it belongs on the summarized side with the
-// assistant turn that made it.
-fn cut(tail: List(AgentMessage)) -> List(AgentMessage) {
-  case tail {
-    [message.ToolResultMessage(..), ..rest] -> cut(rest)
-    kept -> kept
+// The latest assistant and everything after it may include results or
+// queued user input that no model has read. The budget is a soft target:
+// removing unread input to meet it would turn compaction into data loss.
+// Before the first assistant, every input message is still protected.
+fn latest_exchange(
+  messages: List(AgentMessage),
+  protected: List(AgentMessage),
+) -> List(AgentMessage) {
+  case messages {
+    [] -> protected
+    [message.AssistantMessage(..), ..rest] -> latest_exchange(rest, messages)
+    [_, ..rest] -> latest_exchange(rest, protected)
+  }
+}
+
+// Align backward when a budget cutoff lands inside a tool batch. The
+// remembered suffix starts at the last non-result message, so both the
+// assistant's calls and all their results remain visible together.
+fn cut(
+  messages: List(AgentMessage),
+  remaining: Int,
+  aligned: List(AgentMessage),
+) -> List(AgentMessage) {
+  case messages {
+    [] -> aligned
+    [message, ..rest] -> {
+      let aligned = case message {
+        message.ToolResultMessage(..) -> aligned
+        _ -> messages
+      }
+      case remaining <= 0 {
+        True -> aligned
+        False -> cut(rest, remaining - 1, aligned)
+      }
+    }
   }
 }
 
