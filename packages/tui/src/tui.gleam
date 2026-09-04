@@ -47,9 +47,12 @@ import tui/protocol.{ModelInfo, Strand}
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
+import tui/virtual_backend
 import tui/workspace
 
-type Speaker {
+/// Who a transcript line belongs to, which is the whole of its styling.
+@internal
+pub type Speaker {
   System
   User
   Assistant
@@ -61,18 +64,24 @@ type Speaker {
   Failure
 }
 
-type Line {
+/// One rendered transcript line before markdown and wrapping.
+@internal
+pub type Line {
   Line(speaker: Speaker, text: String)
 }
 
 // A stream stays separate from durable entries because the server may replay
 // the settled entry after its fragments. Keeping both in one list would render
 // the same assistant answer twice at the exact moment it becomes durable.
-type Stream {
+/// The undurable fragments of one strand-and-kind generation.
+@internal
+pub type Stream {
   Stream(strand: String, kind: String, fragments: List(String))
 }
 
-type Overlay {
+/// The modal surface that owns focus, if any.
+@internal
+pub type Overlay {
   NoOverlay
   ModelSelector(model_selector.State)
   AgentInspector(selected: Int)
@@ -92,7 +101,9 @@ type Launch {
   Forward(arguments: List(String))
 }
 
-type SubmissionMode {
+/// What Enter does to a draft while an operation is live.
+@internal
+pub type SubmissionMode {
   SteerNow
   QueueAfter
 }
@@ -101,7 +112,9 @@ type SubmissionMode {
 // deliberately drains queued steer entries. Holding one instruction here until
 // the durable operation settles preserves the operator's intent without racing
 // a steer admission against cancellation.
-type Interrupt {
+/// One held instruction, waiting for the operation it interrupted to settle.
+@internal
+pub type Interrupt {
   Interrupt(strand: String, pending: Option(String))
 }
 
@@ -127,7 +140,9 @@ const frame_interval_ms = 16
 /// that separates one burst from the next rather than a delay added to each.
 const deferred_frame_poll_ms = 8
 
-type FrameCache {
+/// The last completed frame, keyed by the screen and revision it was for.
+@internal
+pub type FrameCache {
   FrameCache(
     screen: Rect,
     revision: Int,
@@ -135,7 +150,13 @@ type FrameCache {
   )
 }
 
-type Model {
+/// The immutable presentation state.
+///
+/// Published `@internal` so the virtual-backend harness can build a state
+/// by hand and drive the real loop over it. Nothing outside this package
+/// sees it.
+@internal
+pub type Model {
   Model(
     quit: Bool,
     width: Int,
@@ -319,81 +340,100 @@ fn flag_or_empty(arguments: List(String), flag: String) -> String {
   }
 }
 
+/// A fresh presentation state for one terminal process.
+///
+/// The inbox and the discovered workspace are the only two facts a model
+/// cannot derive, so they are what a caller supplies. Published `@internal`
+/// because the virtual-backend harness needs the same starting point the
+/// interactive launch uses; a snapshot then overrides the fields it is
+/// about with an ordinary record update.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui.new_model(connection.new_inbox(), workspace.discover())
+/// ```
+@internal
+pub fn new_model(
+  inbox: Subject(connection.Message),
+  project: workspace.Context,
+) -> Model {
+  let strands = demo_strands()
+  Model(
+    quit: False,
+    width: 80,
+    height: 24,
+    input: text_area.state_new(),
+    attachments: [],
+    history: [],
+    history_index: 0,
+    history_draft: "",
+    command_selected: 0,
+    submission_mode: SteerNow,
+    interrupt: None,
+    submitting: None,
+    transcript: [
+      Line(System, "etui input and gateway paths ready"),
+      Line(
+        Reasoning,
+        "Mapped the frozen ClientGateway events onto one immutable view model.",
+      ),
+      Line(ToolResult, "read · packages/client/CLAUDE.md"),
+      Line(
+        Assistant,
+        "## Native client\n\nThe pure-Gleam path is live. Use `/model` to switch models or `/help` for the command map.",
+      ),
+    ],
+    records: [],
+    notice: "interactive design preview",
+    help_open: False,
+    notes_open: False,
+    overlay: NoOverlay,
+    models: demo_models(),
+    current_model: "baseten-kimi-k3",
+    workspace: project,
+    strands:,
+    agent_summary: agents.summary(strands),
+    active_strand: "main",
+    session: "demo",
+    local_options: None,
+    inbox:,
+    socket: None,
+    session_switch: sessions.Idle,
+    next_id: 1,
+    usage: zero_usage(),
+    generation_started_ms: None,
+    output_rate_tps: None,
+    agent_rail_visible: False,
+    details_expanded: False,
+    repaint_phase: False,
+    activity_frame: 0,
+    activity_started_ms: None,
+    activity_elapsed_s: 0,
+    streams: [],
+    scroll_offset: 0,
+    render_revision: 0,
+    rendered_revision: -1,
+    rendered_row_count: 0,
+    rendered_rows: [],
+    record_rows: [],
+    pending_records: [],
+    record_cache_valid: False,
+    record_cache_width: 0,
+    record_cache_strand: "",
+    record_cache_details: False,
+    frame_revision: 0,
+    frame_cache: None,
+    frame_debt: FrameSettled,
+    last_frame_ms: ffi_bootstrap.monotonic_time_ms(),
+    activity_revision: 0,
+    quiet_for_ms: quiet_after_ms,
+  )
+}
+
 fn interactive(launch: Launch) -> Nil {
   let inbox = connection.new_inbox()
-  let project = workspace.discover()
-  let strands = demo_strands()
-  let base =
-    Model(
-      quit: False,
-      width: 80,
-      height: 24,
-      input: text_area.state_new(),
-      attachments: [],
-      history: [],
-      history_index: 0,
-      history_draft: "",
-      command_selected: 0,
-      submission_mode: SteerNow,
-      interrupt: None,
-      submitting: None,
-      transcript: [
-        Line(System, "etui input and gateway paths ready"),
-        Line(
-          Reasoning,
-          "Mapped the frozen ClientGateway events onto one immutable view model.",
-        ),
-        Line(ToolResult, "read · packages/client/CLAUDE.md"),
-        Line(
-          Assistant,
-          "## Native client\n\nThe pure-Gleam path is live. Use `/model` to switch models or `/help` for the command map.",
-        ),
-      ],
-      records: [],
-      notice: "interactive design preview",
-      help_open: False,
-      notes_open: False,
-      overlay: NoOverlay,
-      models: demo_models(),
-      current_model: "baseten-kimi-k3",
-      workspace: project,
-      strands:,
-      agent_summary: agents.summary(strands),
-      active_strand: "main",
-      session: "demo",
-      local_options: None,
-      inbox:,
-      socket: None,
-      session_switch: sessions.Idle,
-      next_id: 1,
-      usage: zero_usage(),
-      generation_started_ms: None,
-      output_rate_tps: None,
-      agent_rail_visible: False,
-      details_expanded: False,
-      repaint_phase: False,
-      activity_frame: 0,
-      activity_started_ms: None,
-      activity_elapsed_s: 0,
-      streams: [],
-      scroll_offset: 0,
-      render_revision: 0,
-      rendered_revision: -1,
-      rendered_row_count: 0,
-      rendered_rows: [],
-      record_rows: [],
-      pending_records: [],
-      record_cache_valid: False,
-      record_cache_width: 0,
-      record_cache_strand: "",
-      record_cache_details: False,
-      frame_revision: 0,
-      frame_cache: None,
-      frame_debt: FrameSettled,
-      last_frame_ms: ffi_bootstrap.monotonic_time_ms(),
-      activity_revision: 0,
-      quiet_for_ms: quiet_after_ms,
-    )
+  let base = new_model(inbox, workspace.discover())
   let initial = case launch {
     // Unreachable: `main` answers this one before it builds a model.
     Forward(..) | Demo -> base
@@ -406,7 +446,7 @@ fn interactive(launch: Launch) -> Nil {
           ..base,
           local_options: Some(options),
           workspace: case options.workspace {
-            "" -> project
+            "" -> base.workspace
             path -> workspace.discover_from(path)
           },
         )
@@ -432,6 +472,42 @@ fn interactive(launch: Launch) -> Nil {
       terminal_poll_timeout,
     )
   Nil
+}
+
+/// This client's side of etui's loop, for a run under the virtual backend.
+///
+/// The four functions are exactly the ones `interactive` hands etui, so a
+/// scripted run exercises the shipped loop rather than a second one written
+/// for tests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(run) = virtual_backend.run_script(tui.loop(), model, script)
+/// ```
+@internal
+pub fn loop() -> virtual_backend.Loop(Model) {
+  virtual_backend.Loop(
+    update: update,
+    view: view,
+    should_quit: fn(model: Model) { model.quit },
+    poll_timeout: terminal_poll_timeout,
+  )
+}
+
+/// Drives one script through the real loop and returns the frames it drew.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(run) = tui.run_script(model, script)
+/// ```
+@internal
+pub fn run_script(
+  model: Model,
+  script: virtual_backend.Script,
+) -> Result(virtual_backend.Run(Model), String) {
+  virtual_backend.run_script(loop(), model, script)
 }
 
 fn parse_launch(arguments: List(String)) -> Launch {
@@ -561,7 +637,15 @@ fn flag_value(arguments: List(String), flag: String) -> Result(String, Nil) {
 // view therefore never consults the revision: rendering here would undo the
 // deferral, and would also build a frame nobody caches. Only a screen etui
 // reports that the cache was not drawn for falls through to a fresh render.
-fn view(
+/// Returns the frame for one screen, cached or freshly rendered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(frame, cursor) = tui.view(model, geometry.rect_new(0, 0, 80, 24))
+/// ```
+@internal
+pub fn view(
   model: Model,
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
@@ -1486,7 +1570,15 @@ fn render_command_palette(
   }
 }
 
-fn update(event: backend.InputEvent, model: Model) -> Model {
+/// Applies one terminal event to the model.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let next = tui.update(backend.Tick, model)
+/// ```
+@internal
+pub fn update(event: backend.InputEvent, model: Model) -> Model {
   let updated = case event {
     backend.Resize(width, height) ->
       Model(..model, width:, height:)
@@ -1659,7 +1751,15 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
   }
 }
 
-fn terminal_poll_timeout(model: Model) -> Int {
+/// The wait this model would ask a terminal for before its next poll.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.terminal_poll_timeout(model) == 40
+/// ```
+@internal
+pub fn terminal_poll_timeout(model: Model) -> Int {
   paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
 }
 

@@ -1,5 +1,6 @@
 import core/json
 import core/message
+import etui/backend
 import etui/buffer
 import etui/geometry.{Position}
 import etui/keys
@@ -21,6 +22,7 @@ import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/connection
+import tui/frame
 import tui/image_drop
 import tui/internal/ffi_file
 import tui/internal/workspace_file
@@ -30,8 +32,10 @@ import tui/protocol.{ModelInfo, Strand}
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
+import tui/virtual_backend
 import tui/workspace
 import tui_test/ffi_term
+import tui_test/gateway
 
 pub fn main() {
   gleeunit.main()
@@ -1229,4 +1233,82 @@ pub fn prompt_wrap_uses_terminal_cells_for_wide_graphemes_test() {
   assert view.lines == ["ab界", "cd"]
   assert view.cursor_y == 1
   assert view.cursor_x == 2
+}
+
+pub fn buffer_to_lines_skips_wide_continuation_cells_test() {
+  let screen = geometry.rect_new(0, 0, 6, 2)
+  let drawn =
+    buffer.buffer_new(screen)
+    |> buffer.set_string(
+      Position(0, 0),
+      "\u{4F60}\u{597D}",
+      style.default_style(),
+    )
+    |> buffer.set_string(Position(0, 1), "ok", style.default_style())
+
+  // Two wide glyphs fill four cells, and the two continuation markers must
+  // not become spaces or the row would be wider than the terminal drew it.
+  assert frame.buffer_to_lines(drawn) == ["\u{4F60}\u{597D}", "ok"]
+  assert frame.buffer_to_text(drawn) == "\u{4F60}\u{597D}\nok"
+}
+
+pub fn a_script_draws_one_frame_per_event_test() {
+  let inbox = connection.new_inbox()
+  let model = quiet_model(inbox)
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [virtual_backend.Input(backend.KeyPress("/"))],
+      inbox,
+    )
+
+  // The initial resize etui synthesizes, the scripted key, and the two
+  // settling ticks: four iterations, four frames.
+  let assert Ok(run) = tui.run_script(model, script)
+  assert list.length(run.frames) == 4
+  let assert Ok(last) = list.last(run.frames)
+  assert string.contains(frame.buffer_to_text(last), "/details")
+}
+
+pub fn a_scripted_resize_moves_the_reported_size_test() {
+  let inbox = connection.new_inbox()
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 40, height: 10),
+      [virtual_backend.Input(backend.Resize(72, 20))],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(quiet_model(inbox), script)
+  let assert Ok(last) = list.last(run.frames)
+  assert list.length(frame.buffer_to_lines(last)) == 20
+}
+
+pub fn a_delivered_message_reaches_the_model_test() {
+  let inbox = connection.new_inbox()
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 72, height: 14),
+      [
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.full_snapshot("demo")),
+        ),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(quiet_model(inbox), script)
+  let assert Ok(last) = list.last(run.frames)
+  assert string.contains(frame.buffer_to_text(last), "attached to session")
+}
+
+// A model with the demo scaffolding removed, so a frame shows only what the
+// script put there. The workspace is fixed rather than discovered: the footer
+// prints it, and the checkout path is not a property of the client.
+fn quiet_model(inbox: process.Subject(connection.Message)) -> tui.Model {
+  tui.Model(
+    ..tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None)),
+    transcript: [],
+    strands: [],
+    agent_summary: agents.summary([]),
+    notice: "ready",
+  )
 }
