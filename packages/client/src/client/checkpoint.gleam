@@ -1,5 +1,5 @@
 //// The context checkpoint: what replaces the older half of a strand's
-//// context when its window fills — the model's own notes, carried whole
+//// context when its window fills: a bounded snapshot of the model's notes, carried
 //// across the boundary, in place of a summarizer's paraphrase.
 ////
 //// # What a compaction publishes, and why it is not a summary
@@ -15,24 +15,12 @@
 //// cells, the notes the model kept as it worked; and an operator's
 //// `Compact` instructions when there were any. No provider is asked.
 ////
-//// Loom used to send the cut messages to a summarizer model and publish
-//// its prose, iteratively re-summarized at every later compaction. That
-//// is gone, and the argument for removing it rather than keeping it as
-//// an option is about what each mistake costs. A summary condenses the
-//// transcript once per compaction and again at the next, so a detail the
-//// summarizer drops is gone from the model's reach for good, and it
-//// drops them silently. A note the model wrote is copied forward whole
-//// every time, and the transcript it came from is one search away — so
-//// the failure a missed note produces is a recoverable one. It is also
-//// what a summarizer outage used to cost: an overflow compaction that
-//// could not reach its summarizer drained the run, where the checkpoint
-//// needs no provider at all. This is the shape Codex's Astra rollover
-//// ships as "notes across context windows" and issue #132 names
-//// `CheckpointAndReset`, with one deliberate difference: Loom keeps the
-//// retained tail verbatim, so a rollover never drops a tool result the
-//// model has not read yet. The machine's generate path — the structural
-//// lifecycle that would dispatch a summary request — is left standing as
-//// the frozen contract it is and is never selected by this host.
+//// This host publishes notes instead of calling a summarizer. The tradeoff
+//// is provider-independent rollover versus reliance on the agent maintaining
+//// useful notes. Both policies preserve the durable transcript; neither
+//// guarantees that the model notices an omitted requirement. Notes snapshots
+//// are bounded, and exact history reads make omitted material retrievable.
+//// The structural generation lifecycle remains as frozen-contract machinery.
 ////
 //// # What a checkpoint costs, and cannot cost
 ////
@@ -83,6 +71,7 @@
 
 import client/notes
 import core/clock.{type Clock}
+import core/entry
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
@@ -98,14 +87,14 @@ import storage/storage
 import tools/context
 
 /// Whether the messages a checkpoint cut can be searched from the next
-/// window — that is, whether this host registered `history_search`.
+/// window: the tool must be registered and active on this strand.
 pub type Recall {
-  /// `history_search` is registered; the header says how to reach the
+  /// `history_search` is active; the header says how to reach the
   /// cut messages.
   Searchable
 
-  /// No index behind this host. The header says so, so the model knows
-  /// its notes are the only carry-forward there is.
+  /// `history_search` is unavailable to this strand. The header says so,
+  /// so the model knows direct recall is unavailable.
   Unsearchable
 }
 
@@ -199,20 +188,19 @@ pub fn for_operation(
     Compaction(cut_messages:, retained_messages:, tokens_before:) -> {
       use cells <- result.try(notes.try_cells(session, strand))
       use closed <- result.try(closed_windows(session, strand))
-      Ok(
-        Checkpoint(
-          text: render(Closed(
-            strand:,
-            window: closed + 1,
-            cut_messages:,
-            retained_messages:,
-            tokens_before:,
-            notes: cells,
-            instructions:,
-            recall:,
-          )),
-        ),
-      )
+      Ok(Checkpoint(
+        text: render(Closed(
+          strand:,
+          window: list.length(closed) + 1,
+          cut_messages:,
+          retained_messages:,
+          tokens_before:,
+          notes: cells,
+          instructions:,
+          recall:,
+        ))
+        <> previous_checkpoint(session, closed),
+      ))
     }
   }
 }
@@ -256,15 +244,17 @@ fn preparation_of(
   }
 }
 
-// How many compactions already stand on the strand's branch: the number
-// of windows closed before this one. A strand with no leaf has closed
-// none.
-fn closed_windows(session: Session, strand: String) -> Result(Int, Nil) {
+// Prior checkpoints, newest first, provide both the window ordinal and
+// an exact address for inherited context. A strand without a leaf has none.
+fn closed_windows(
+  session: Session,
+  strand: String,
+) -> Result(List(entry.Entry), Nil) {
   case session.strand_leaf(session, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) ->
-      count_compactions(session, leaf)
-    Ok(Some(session.Cell(value: None, ..))) -> Ok(0)
-    Ok(None) -> Ok(0)
+      scan_compactions(session, leaf)
+    Ok(Some(session.Cell(value: None, ..))) -> Ok([])
+    Ok(None) -> Ok([])
     Error(_unreadable) -> Error(Nil)
   }
 }
@@ -272,12 +262,30 @@ fn closed_windows(session: Session, strand: String) -> Result(Int, Nil) {
 // The scan is filtered to compaction entries, so what comes back is one
 // row per window closed rather than the whole branch; and it runs once
 // per compaction, where a summary request used to run a provider.
-fn count_compactions(session: Session, leaf: EntryId) -> Result(Int, Nil) {
+fn scan_compactions(
+  session: Session,
+  leaf: EntryId,
+) -> Result(List(entry.Entry), Nil) {
   storage.branch_scan(from: leaf)
   |> storage.branch_kind(storage.Compaction)
   |> storage.scan_branch(session.store, _)
-  |> result.map(list.length)
   |> result.replace_error(Nil)
+}
+
+// Keep the address of inherited checkpoint text without embedding it
+// recursively. Exact reads recover what the current notes omit.
+fn previous_checkpoint(session: Session, closed: List(entry.Entry)) -> String {
+  case session.id(session), list.first(closed) {
+    Ok(Some(session_id)), Ok(prior) ->
+      "\n\nPrior checkpoint source: session="
+      <> ids.session_id_to_string(session_id)
+      <> " entry="
+      <> ids.entry_id_to_string(prior.id)
+      <> ". If history_search is available, use action=read with these IDs. "
+      <> "It may hold inherited requirements missing "
+      <> "from your current notes. Retrieve it when that context is needed."
+    _, _ -> ""
+  }
 }
 
 // --- the checkpoint text ---------------------------------------------------
@@ -326,7 +334,7 @@ fn recall_sentence(recall: Recall) -> String {
       <> "error message or test result in them when the notes do not carry "
       <> "it."
     Unsearchable ->
-      "this host registered no history_search, so what the notes do not "
+      "history_search is not active on this strand, so what the notes do not "
       <> "carry cannot be recovered from here — write down what you will "
       <> "still need."
   }
@@ -526,7 +534,7 @@ pub fn remaining_seam(
     )
     Ok(context.Report(
       strand:,
-      window: closed + 1,
+      window: list.length(closed) + 1,
       context_window:,
       used_tokens:,
       boundary: boundary(context_window, settings),

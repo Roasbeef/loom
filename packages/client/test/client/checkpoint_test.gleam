@@ -45,7 +45,7 @@ pub fn a_searchable_host_points_at_history_search_test() {
 // model is told its notes are the whole carry-forward.
 pub fn an_unsearchable_host_says_so_test() {
   let text = checkpoint.render(closed([], None, checkpoint.Unsearchable))
-  assert string.contains(text, "registered no history_search")
+  assert string.contains(text, "history_search is not active on this strand")
   assert string.contains(text, "history_search with scope") == False
 }
 
@@ -230,10 +230,19 @@ pub fn a_checkpoint_is_built_from_the_operations_own_registers_test() {
 pub fn the_window_ordinal_counts_earlier_compactions_test() {
   let opened = a_session()
   let leaf = a_compaction_entry(opened, "main")
+  let assert Ok(#(session_id, _)) =
+    session.ensure_id(opened, ids.generator(clock.fixed(at: 2000), seed: 79))
+    as "the checkpoint must carry a canonical source identity"
   let operation = a_compaction_at(opened, "main", 5, leaf, cut: 3, retained: 1)
   let assert Ok(checkpoint.Checkpoint(text:)) =
     checkpoint.for_operation(opened, operation, checkpoint.Searchable, None)
   assert string.starts_with(text, checkpoint.header_prefix <> "2 closed here")
+  assert string.contains(
+    text,
+    "session=" <> ids.session_id_to_string(session_id),
+  )
+  assert string.contains(text, "entry=" <> ids.entry_id_to_string(leaf))
+  assert string.contains(text, "inherited requirements")
 }
 
 pub fn a_branch_summary_is_not_a_compaction_test() {

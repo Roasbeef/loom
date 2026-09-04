@@ -359,7 +359,7 @@ fn structural_decision(config: Config, operation: OpId) -> StructuralVerdict {
     checkpoint.for_operation(
       config.session,
       operation,
-      recall(config),
+      recall(config, operation),
       instructions_for(config, operation),
     )
   {
@@ -370,13 +370,25 @@ fn structural_decision(config: Config, operation: OpId) -> StructuralVerdict {
   }
 }
 
-// Whether the cut messages stay reachable from the next window. The
-// registry is the one every request's tool array is rendered from, so a
-// `history_search` it holds is one the model can call.
-fn recall(config: Config) -> checkpoint.Recall {
-  case tool.lookup(config.registry, history.tool_name) {
-    Ok(_registered) -> checkpoint.Searchable
-    Error(Nil) -> checkpoint.Unsearchable
+// A registered tool may still be disabled on this strand. Match the
+// durable active-tool list used to build generation requests.
+fn recall(config: Config, operation: OpId) -> checkpoint.Recall {
+  let available = {
+    use strand <- result.try(notes.strand_of(config.session, operation))
+    use cell <- result.try(
+      session.strand_configuration(config.session, strand)
+      |> result.replace_error(Nil),
+    )
+    use configuration <- result.try(option.to_result(cell, Nil))
+    use _registered <- result.try(tool.lookup(
+      config.registry,
+      history.tool_name,
+    ))
+    Ok(list.contains(configuration.value.active_tool_names, history.tool_name))
+  }
+  case available {
+    Ok(True) -> checkpoint.Searchable
+    _ -> checkpoint.Unsearchable
   }
 }
 

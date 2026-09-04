@@ -214,7 +214,7 @@ pub fn the_shipped_prompt_is_complete_and_affordable_test() {
   // Nothing to warn about: the shipped pack carries every canonical
   // section and every fragment, and spells every placeholder right.
   assert rendered.warnings == []
-  assert rendered.version == "loom-default-5"
+  assert rendered.version == "loom-default-6"
   assert rendered.digest == pack.fingerprint(default.source)
   // Every byte here is paid on every request of every strand for the life
   // of the session. The bound is loose; it is here to make a prompt that
