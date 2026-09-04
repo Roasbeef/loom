@@ -299,3 +299,44 @@ body = "The migration window opens today. Confirm the plan is ready."
 # or cancel it.
 [schedules]
 model_created = "steer"
+
+
+# What the jailed tool shells may reach. The whole table is optional, and
+# leaving it out means exactly what is written below: no network, and an
+# environment of the three names the server owns.
+#
+#   network = "off"  — the DEFAULT. bwrap unshares the network namespace
+#                      and seccomp denies the socket calls, so `gh`,
+#                      `git fetch` and `curl` do not work inside the
+#                      jail. That is the design and not an oversight:
+#                      egress is the exfiltration channel, and a model
+#                      that can read your repository and open a socket
+#                      can send it anywhere.
+#   network = "full" — unrestricted egress for every jailed tool shell.
+#                      This is YOUR decision to make per catalogue, and
+#                      it is the whole of the decision: there is no
+#                      host allowlist, because filtering by host needs
+#                      an egress proxy the spec defers, and a key that
+#                      accepted hosts would promise filtering nothing
+#                      enforces.
+#
+# `env` names host environment variables passed into every jailed tool
+# shell. The NAMES live here; the values are read from the server's own
+# environment at boot, the same discipline `api_key_env` follows. A name
+# the host has not set is skipped with one warning line at boot, never a
+# boot failure — a tool that wanted it says so in band when it runs.
+#
+# [tools.set] carries literal variables, for pointing a tool at
+# configuration outside the workspace (gh's login store, say).
+#
+# PATH, HOME and TMPDIR may not appear in either list. The server derives
+# all three from the workspace and the toolchain code mode found, and a
+# shell that took one from this file would resolve a different `gleam`
+# than the compiler does, or source your own dotfiles from inside the
+# jail.
+[tools]
+network = "off"
+# env = ["GH_TOKEN"]
+
+# [tools.set]
+# GH_CONFIG_DIR = "/home/me/.config/gh"
