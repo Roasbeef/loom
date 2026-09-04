@@ -427,22 +427,25 @@ top of a block and one between two constructor fields because
 
 ---
 
-**Frame pacing is the terminal client's job, not etui's**
+**Frame pacing and etui's input batching compose**
 (`packages/tui/src/tui.gleam`, `frame_decision`; `docs/performance.md`).
-Etui decodes one read into a queue of events and draws a complete frame
-after each, which is the right contract for a library that does not know
-what a frame costs. The tui therefore paces: a stale frame is rendered at
-most once every 16 ms while paced events keep arriving, the rest is
-recorded as `FrameDeferred`, the tick after the drained queue flushes it,
-and the poll wait is 8 ms while a frame is owed. The view never renders on
-its own; it shows whatever the event handler last cached for the screen.
+Etui applies up to sixty-four immediately ready events before drawing again.
+The tui still paces because each event passes through `update`, where Loom
+maintains the completed-frame cache, and longer input runs can cross etui's
+batch boundary. A stale frame is rendered at most once every 16 ms while paced
+events keep arriving, the rest is recorded as `FrameDeferred`, the tick after
+the drained queue flushes it, and the poll wait is 8 ms while a frame is owed.
+The view never renders on its own; it shows whatever the event handler last
+cached for the screen.
 The original one-off 200×50 pseudo-terminal measurement reported that forty
 wheel events went from forty frames and 250 KB to three or four frames and
 20 KB; its harness was not committed, so those figures are historical rather
 than a reproducible baseline. `make bench-tui` now keeps the panel optimization
-measurable in-tree. On OTP 29 and Gleam 1.18.1, three runs put the 200×50 panel
-pair at 0.172–0.178 ms through etui's block and 0.082–0.085 ms through the
-border-only path.
+measurable in-tree and also compares the old and bounded input policies. On
+OTP 29 and Gleam 1.18.1, three runs put the 200×50 panel pair at 0.171 to
+0.177 ms through etui's block and 0.084 ms through the border-only path.
+Rebuilding a Loom-style frame took 43.10 to 44.57 ms per forty-event old-style
+burst and 1.94 to 1.96 ms per bounded burst.
 
 ## Deliberately open
 
@@ -512,14 +515,14 @@ somebody forgot.
 
 ---
 
-**Two etui follow-ups the scrolling work left upstream.** `block.render`
-could skip its interior clear when a caller has already painted the area,
-and the buffered loops could coalesce the queued events of one read before
-they draw, which would make the tui's pacing unnecessary rather than
-merely effective. Etui is pinned by commit in `packages/tui/gleam.toml`,
-so either lands there first and arrives here as a pin bump; neither is
-blocking, and the tui's `render_panel_border` test pins the bytes so the
-bump can be checked mechanically.
+**Etui now batches queued input.** The pin at `702a884` applies up to
+sixty-four immediately ready events before a buffered loop draws again. Loom
+retains its pacing because each event still passes through `update`, where the
+completed frame cache is maintained, and longer input runs can cross the batch
+boundary. The remaining upstream follow-up is allowing `block.render` to skip
+its interior clear when a caller has already painted the area. Loom already
+uses `render_panel_border`, whose test pins the bytes, so that API would remove
+local code rather than provide another client-side speedup.
 
 ## How to verify
 

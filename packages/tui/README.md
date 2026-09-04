@@ -226,17 +226,23 @@ make check-tui
 make lint-tui
 ```
 
-The development-only rendering benchmark compares the old etui panel clear
-with the border-only renderer over the same immutable buffer. Run it more than
+The development-only benchmark first compares the old etui panel clear with
+the border-only renderer over the same immutable buffer. It then replays forty
+queued key events through an in-memory backend, comparing the old
+one-event-per-frame policy with etui's bounded buffered loop. Run it more than
 once on the same machine and runtime before comparing commits:
 
 ```sh
 make bench-tui
 ```
 
-Its durations are milliseconds per invocation. This microbenchmark isolates
-panel construction; it does not count frames or terminal bytes from an input
-burst, which still requires the pseudo-terminal workload in
+The panel table reports milliseconds per invocation. The queued-input section
+reports microseconds per forty-event burst for an exact cached frame and an
+invalidated 200-by-50 Loom-style frame. It includes in-memory terminal setup
+and cleanup on both paths; the bounded path also includes the public loop's
+cleanup guard. Fixed lifecycle cost therefore obscures the tiny cached-frame
+difference. It does not count real terminal bytes or input latency, which still
+requires the pseudo-terminal workload in
 `docs/performance.md`.
 
 On the machine used for issue #114, an already-resolved warning-free build is

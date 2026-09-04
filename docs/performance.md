@@ -19,9 +19,13 @@ claims and need separate evidence.
 
 Scrolling was the next layer, and it needed a different workload from the
 three below because the cost was in the event stream rather than in any one
-frame. Etui decodes one 128-byte read into a queue of events and draws a
-complete frame after each, so a wheel flick reached the client as a burst that
-was paid for one frame at a time.
+frame. Etui previously decoded one 128-byte read into a queue of events and
+drew a complete frame after each, so a wheel flick reached the client as a
+burst that was paid for one frame at a time. The pinned etui revision now
+applies up to sixty-four immediately ready events before a buffered loop draws
+again. Loom retains its frame pacing because each event still passes through
+`update`, where its completed-frame cache is maintained, and longer input runs
+can span etui batches.
 
 The original investigation used OTP 29.0.5 and Gleam 1.18.1 on a 200×50
 pseudo-terminal with 8400 wrapped rows (400 five-line exchanges). Its one-off
@@ -33,8 +37,8 @@ about 20 KB, and about 50 ms after pacing and the border-only panel draw. The
 harness was not committed, so these figures are historical motivation rather
 than a baseline another developer can reproduce from this tree.
 
-The repeatable in-tree microbenchmark isolates the panel work from that
-end-to-end workload:
+The repeatable in-tree benchmark isolates both the panel work and the queued
+event policy from that end-to-end workload:
 
 ```sh
 make bench-tui
@@ -44,15 +48,27 @@ make bench-tui
 the same immutable base buffer with etui's block and Loom's border-only path.
 It reports milliseconds per invocation through `gleamy_bench`; run it several
 times on the same runtime and machine when comparing commits. On the original
-development Mac with OTP 29 and Gleam 1.18.1, three consecutive 200×50 runs
-measured 0.172–0.178 ms for etui's block and 0.082–0.085 ms for Loom's border,
+development Mac with OTP 29 and Gleam 1.18.1, three 200×50 runs measured 0.171
+to 0.177 ms for etui's block and 0.084 ms for Loom's border,
 about a 2.1-fold improvement in the isolated panel work.
 
-This microbenchmark cannot confirm frame counts, terminal bytes, or the time
-for a complete input burst because those properties exist at the terminal-loop
-boundary, outside either render function. A future end-to-end benchmark must
-provide the long transcript as a fixture, drive the pseudo-terminal, and
-record both frame markers and bytes without changing the production demo.
+`packages/tui/dev/tui_burst_dev.gleam` then replays forty queued key events
+through an in-memory 200×50 terminal. It compares the old
+one-event-per-frame loop with the public bounded etui loop pinned by Loom. On
+the same development Mac, three runs rebuilt a Loom-style frame in 43.10 to
+44.57 ms per old-style burst and 1.94 to 1.96 ms per bounded burst, a
+22-fold reduction. With the exact completed frame already cached, both paths
+measured 0.35 to 0.36 ms because terminal setup and cleanup dominate the
+complete in-memory lifecycle. The bounded result also includes the public
+loop's cleanup guard. Etui's narrower benchmark excludes that lifecycle and
+measured the cached-frame policy itself at 2.14 to 2.21 microseconds versus
+0.43 to 0.45 microseconds per burst.
+
+These microbenchmarks cannot confirm real terminal frame counts, bytes, or
+input latency because the backend deliberately performs no terminal I/O. A
+future end-to-end benchmark must provide the long transcript as a fixture,
+drive the pseudo-terminal, and record both frame markers and bytes without
+changing the production demo.
 
 ## Name the experiment
 
