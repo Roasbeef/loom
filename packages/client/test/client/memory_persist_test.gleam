@@ -249,6 +249,9 @@ fn settings(
     // provider's turns. `memory_lifecycle_test` is where the shipped
     // producer is exercised.
     memory: distillpass.no_pass(),
+    // Offline, three names: the jail every session had before the
+    // `[tools]` table existed.
+    tools: catalog.default_tools(),
   )
 }
 
