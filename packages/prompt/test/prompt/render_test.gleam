@@ -201,7 +201,7 @@ fn with_guidance(text: String) -> Environment {
   )
 }
 
-const guidance_pack = "%% section repository_guidance\n{repository_guidance}\n%% section _repository_guidance\nproject data follows\n<g>\n{repository_guidance_text}\n</g>\n%% section _repository_guidance_truncated\n[cut]"
+const guidance_pack = "%% section repository_guidance\n{repository_guidance}\n%% section _repository_guidance\nproject data follows\n<g>\n{repository_guidance_text}\n</g>"
 
 pub fn render_frames_repository_guidance_test() {
   assert pack.render(decoded(guidance_pack), with_guidance("Use tabs."))
@@ -232,24 +232,14 @@ pub fn render_never_expands_placeholders_inside_guidance_test() {
   assert !string.contains(rendered, "/bin/bash")
 }
 
-pub fn render_caps_guidance_at_a_line_boundary_test() {
+pub fn render_carries_guidance_whole_test() {
+  // No byte budget: a long pair of instruction files reaches the model
+  // in full, last line included, rather than cut with a notice.
   let line = string.repeat("x", 99)
-  let huge = string.join(list.repeat(line, 400), "\n")
+  let huge = string.join(list.repeat(line, 600), "\n") <> "\nlast line"
   let rendered = pack.render(decoded(guidance_pack), with_guidance(huge))
-  // Cut announced, never silent.
-  assert string.contains(rendered, "[cut]")
-  // Cut on a line boundary: no partial line survives.
-  assert list.all(
-    string.split(rendered, on: "\n")
-      |> list.filter(string.starts_with(_, "x")),
-    fn(kept) { kept == line },
-  )
-  assert string.length(rendered) < 100 + pack.max_repository_guidance_bytes
-}
-
-pub fn render_does_not_announce_a_cut_that_did_not_happen_test() {
-  let rendered = pack.render(decoded(guidance_pack), with_guidance("short"))
-  assert !string.contains(rendered, "[cut]")
+  assert string.contains(rendered, huge)
+  assert string.ends_with(string.trim_end(rendered), "last line\n</g>")
 }
 
 // --- byte stability ------------------------------------------------------

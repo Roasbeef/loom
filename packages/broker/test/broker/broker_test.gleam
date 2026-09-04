@@ -170,6 +170,30 @@ pub fn abort_revokes_and_cancels_test() {
   broker.stop(started)
 }
 
+pub fn caller_death_cancels_execution_test() {
+  // The tool effect that asked for the call is killed mid-execution, as
+  // an aborted run kills it. Nobody is left to cancel the call, so the
+  // relay must: the sleeping fake helper is cancelled and comes back to
+  // the pool well inside the wall deadline the spec allowed.
+  let #(started, _helper, checkins) =
+    broker_with(fake_helper.SleepUntilCancel, at: 1000)
+  let callers = process.new_subject()
+  let caller =
+    process.spawn_unlinked(fn() {
+      let events = process.new_subject()
+      let assert Ok(_handle) =
+        broker.clear_call(started, spec(op()), events:, waiting: 2000)
+      process.send(callers, Nil)
+      process.sleep_forever()
+    })
+  let assert Ok(Nil) = process.receive(callers, 3000)
+  // Nothing has settled yet: the execution is sleeping.
+  assert process.receive(checkins, 200) == Error(Nil)
+  process.kill(caller)
+  let assert Ok(_) = process.receive(checkins, 2000)
+  broker.stop(started)
+}
+
 pub fn degraded_dispatch_settles_in_band_test() {
   let #(started, _helper, checkins) =
     broker_with(fake_helper.Degraded, at: 1000)

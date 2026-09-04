@@ -84,6 +84,24 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
   assert tui.usage_summary(usage) == "in 12k · out 678 · cache 90k/123 · $0.037"
 }
 
+pub fn elapsed_label_reads_like_a_clock_test() {
+  assert tui.elapsed_label(0) == ""
+  assert tui.elapsed_label(1) == " (1s)"
+  assert tui.elapsed_label(59) == " (59s)"
+  assert tui.elapsed_label(60) == " (1m 00s)"
+  assert tui.elapsed_label(65) == " (1m 05s)"
+  assert tui.elapsed_label(754) == " (12m 34s)"
+}
+
+pub fn output_rate_is_tokens_over_streamed_seconds_test() {
+  assert tui.output_rate(300, 2000) == Some(150)
+  assert tui.output_rate(7, 1000) == Some(7)
+  // No elapsed time is no rate, never a division by zero.
+  assert tui.output_rate(300, 0) == None
+  assert tui.output_rate_label(Some(87)) == " · 87 tok/s"
+  assert tui.output_rate_label(None) == ""
+}
+
 pub fn footer_stacks_only_when_all_sections_do_not_fit_test() {
   let project =
     span.line_plain(
@@ -335,6 +353,15 @@ pub fn slash_command_palette_filters_and_completes_test() {
   assert command.selected(suggestions, 1) == Some("/strand ")
   assert command.suggestions("ordinary prompt") == []
   assert command.suggestions("/strand main") == []
+  // A closed argument vocabulary keeps the palette open past the space.
+  assert list.map(command.suggestions("/effort "), fn(s) { s.command })
+    == [
+      "/effort off", "/effort minimal", "/effort low", "/effort medium",
+      "/effort high", "/effort xhigh", "/effort max",
+    ]
+  assert list.map(command.suggestions("/effort hi"), fn(s) { s.command })
+    == ["/effort high"]
+  assert command.suggestions("/effort nope") == []
   assert tui.command_palette_escape(keys.Escape)
   assert !tui.command_palette_escape(keys.Char("x"))
 }
@@ -581,6 +608,9 @@ pub fn model_argument_test() {
 
 pub fn missing_argument_test() {
   assert command.parse("/fork") == command.MissingArgument("fork")
+  assert command.parse("/effort") == command.MissingArgument("effort")
+  assert command.parse("/effort high") == command.Effort("high")
+  assert command.help_text() |> string.contains("/effort <level>")
 }
 
 pub fn unknown_command_test() {

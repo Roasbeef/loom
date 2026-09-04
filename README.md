@@ -536,10 +536,12 @@ is released rather than left to expire. Its flags:
 **Models.** `--config` points at a catalogue: named entries (`dialect`,
 `base_url`, `api_key_env`, `model_id`, context and output limits, thinking
 level) plus role → fallback-chain routing. `docs/examples/loom.toml` is the
-commented example and `docs/examples/loom-baseten.toml` wires four
+commented example — it carries all three dialects, `anthropic`, `openai`
+and `gemini` — and `docs/examples/loom-baseten.toml` wires four
 OpenAI-dialect models with per-role chains. Precedence is flags > config
 file > environment > defaults: with `--config` the catalogue is the whole
-model surface; without it `LOOM_MODEL` (default `claude-opus-5`),
+model surface, and the launcher supplies `~/.loom/loom.toml` when the flag
+is absent and that file exists; without either `LOOM_MODEL` (default `claude-opus-5`),
 `LOOM_BASE_URL`, `LOOM_CONTEXT_WINDOW`, `LOOM_MAX_OUTPUT_TOKENS` and
 `LOOM_SYSTEM_PROMPT` shape a one-entry catalogue. API keys never live in
 the file — each entry's `api_key_env` names the variable read at dispatch,
@@ -591,6 +593,8 @@ a sibling repository and is published to Hex.
 make check            # the full gate: format check, warning-free build, tests, lint
 make lint             # the house rules on their own (lint-<package> narrows it)
 make binaries         # bin/loom-exec plus the native TUI shipment and launcher
+make install          # seed, server and client releases under ~/.local; then just `loom`
+                      # INSTALL_CLIENT=slim for a client on the host's own Erlang
 make dev              # build, start a server on a scratch session, attach the TUI
 make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
 make e2e              # the jailed end-to-end against a freshly built helper

@@ -21,7 +21,7 @@
 ////
 //// ```toml
 //// [models.<name>]
-//// dialect = "anthropic" | "openai"   # which wire adapter speaks it
+//// dialect = "anthropic" | "openai" | "gemini"   # which wire adapter speaks it
 //// base_url = "https://..."           # optional; dialect default used
 //// api_key_env = "SOME_API_KEY"       # env var *name*, never a value
 //// model_id = "provider-model-id"
@@ -94,6 +94,10 @@ pub type Dialect {
   /// An OpenAI-compatible chat-completions API (OpenAI itself, Baseten,
   /// and every other endpoint speaking that dialect).
   OpenAiCompatible
+
+  /// The Gemini `generateContent` API (Google AI Studio keys against the
+  /// Gemini Developer API).
+  Gemini
 }
 
 /// One named catalogue entry: everything needed to register the model's
@@ -306,10 +310,11 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   use dialect <- result.try(case dialect_text {
     "anthropic" -> Ok(Anthropic)
     "openai" -> Ok(OpenAiCompatible)
+    "gemini" -> Ok(Gemini)
     other ->
       Error(
         place
-        <> ".dialect must be \"anthropic\" or \"openai\", got \""
+        <> ".dialect must be \"anthropic\", \"openai\" or \"gemini\", got \""
         <> other
         <> "\"",
       )
@@ -358,6 +363,7 @@ pub fn default_base_url(dialect: Dialect) -> String {
   case dialect {
     Anthropic -> "https://api.anthropic.com"
     OpenAiCompatible -> "https://api.openai.com/v1"
+    Gemini -> "https://generativelanguage.googleapis.com/v1beta"
   }
 }
 
@@ -756,6 +762,7 @@ pub fn dialect_to_string(dialect: Dialect) -> String {
   case dialect {
     Anthropic -> "anthropic"
     OpenAiCompatible -> "openai"
+    Gemini -> "gemini"
   }
 }
 
@@ -831,6 +838,12 @@ fn provider_config(entry: CatalogModel) -> provider_gateway.ProviderConfig {
       )
     OpenAiCompatible ->
       provider_gateway.OpenAiCompatibleProvider(
+        name: entry.name,
+        base_url: entry.base_url,
+        api_key_secret: entry.api_key_env,
+      )
+    Gemini ->
+      provider_gateway.GeminiProvider(
         name: entry.name,
         base_url: entry.base_url,
         api_key_secret: entry.api_key_env,

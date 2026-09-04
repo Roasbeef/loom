@@ -142,6 +142,27 @@ because it is asked before the terminal transaction commits; the host
 registry serialises the whole session's invocations rather than one
 extension's; and Linux never ran the phase 3 e2e locally, only in CI.
 
+### The model plane: three dialects, driven
+
+The `gemini` branch (2026-09-03) added a third wire dialect beside Messages
+and chat-completions: `provider/adapter/gemini.gleam` speaks the Gemini
+Developer API's `streamGenerateContent` with a Google AI Studio key, and
+`dialect = "gemini"` in `loom.toml` routes to it. It was driven live on
+gemini-3.8-flash through the TUI: tool calls with thought-signature
+replay, a two-subagent fan-out, and a code-mode program all worked, and a
+Gemini-driven review of the adapter found two real replay defects that
+are fixed with tests. Two things the drive turned up outside the model
+plane were fixed on the same branch: the broker relay now cancels a
+jailed command whose caller died (an escaped run used to leave the child
+running to its wall limit), and `make server-shipment` now builds the
+code-mode seed, because a server without one registers no `code_mode`
+and the model appears unable to find code mode. `docs/architecture/
+models.md` has the dialect; the Vertex AI route is not reachable with an
+API key and is not built. Two observations are recorded here rather than
+filed: finished subagents are reaped from the agents overlay once waited
+on, so there is nothing to select, and the TUI footer now shows output
+tokens per second for the last settled generation.
+
 ### Memory: the producer now runs
 
 The previous edition said the producer was inert: `client/distill` was

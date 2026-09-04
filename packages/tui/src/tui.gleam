@@ -168,10 +168,29 @@ type Model {
     session_switch: sessions.SwitchStatus,
     next_id: Int,
     usage: message.Usage,
+    /// When the active strand's streaming generation produced its first
+    /// fragment, on the monotonic clock; `None` between generations.
+    /// Paired with the output count the settlement's usage reports, it
+    /// yields the rate. Usage reports carry no strand, so the figure is
+    /// exact only while one strand streams at a time; a child settling
+    /// under a streaming parent skews one reading, which a footer can
+    /// bear.
+    generation_started_ms: Option(Int),
+    /// Output tokens per second of the last settled generation, for the
+    /// footer. `None` until one generation has both streamed and settled.
+    output_rate_tps: Option(Int),
     agent_rail_visible: Bool,
     details_expanded: Bool,
     repaint_phase: Bool,
     activity_frame: Int,
+    /// When the active strand's current activity began, on the monotonic
+    /// clock; `None` while it is idle. Set and cleared on the indicator's
+    /// tick so the render stays pure.
+    activity_started_ms: Option(Int),
+    /// Whole seconds the active strand has been busy, recomputed on the
+    /// tick and shown beside the phase so a long think reads as time
+    /// passing rather than as a stall.
+    activity_elapsed_s: Int,
     streams: List(Stream),
     scroll_offset: Int,
     render_revision: Int,
@@ -348,10 +367,14 @@ fn interactive(launch: Launch) -> Nil {
       session_switch: sessions.Idle,
       next_id: 1,
       usage: zero_usage(),
+      generation_started_ms: None,
+      output_rate_tps: None,
       agent_rail_visible: False,
       details_expanded: False,
       repaint_phase: False,
       activity_frame: 0,
+      activity_started_ms: None,
+      activity_elapsed_s: 0,
       streams: [],
       scroll_offset: 0,
       render_revision: 0,
@@ -485,6 +508,7 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session-file <path>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
+  <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]"
 }
@@ -960,32 +984,35 @@ fn footer_sections(
     span.line_new([
       span.span_styled(
         " " <> compact(project_text, 68) <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   let model_name =
     span.line_new([
       span.span_styled(
         " " <> compact(model_text, 28) <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   let usage =
     span.line_new([
       span.span_styled(
-        " " <> usage_summary(model.usage) <> " ",
-        theme.quiet_text(),
+        " "
+          <> usage_summary(model.usage)
+          <> output_rate_label(model.output_rate_tps)
+          <> " ",
+        theme.footer_text(),
       ),
     ])
   let status =
     span.line_new([
-      span.span_styled(" " <> status_text <> " ", theme.quiet_text()),
+      span.span_styled(" " <> status_text <> " ", theme.footer_text()),
     ])
   let combined =
     span.line_new([
       span.span_styled(
         " " <> compact(model_text, 28) <> " · " <> status_text <> " ",
-        theme.quiet_text(),
+        theme.footer_text(),
       ),
     ])
   #(project, model_name, usage, status, combined)
@@ -1263,7 +1290,36 @@ fn input_title(model: Model) -> String {
       <> activity_glyph(model.activity_frame)
       <> " "
       <> status
+      <> elapsed_label(model.activity_elapsed_s)
       <> " · enter steers · tab queues "
+  }
+}
+
+/// How long the active strand has been busy, in the shape the prompt
+/// border shows beside its phase: empty in the first second, then `(7s)`,
+/// then `(1m 05s)` once a minute has passed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.elapsed_label(0) == ""
+/// assert tui.elapsed_label(7) == " (7s)"
+/// assert tui.elapsed_label(65) == " (1m 05s)"
+/// ```
+///
+@internal
+pub fn elapsed_label(seconds: Int) -> String {
+  case seconds <= 0, seconds >= 60 {
+    True, _ -> ""
+    False, False -> " (" <> int.to_string(seconds) <> "s)"
+    False, True -> {
+      let rest = seconds % 60
+      let padded = case rest < 10 {
+        True -> "0" <> int.to_string(rest)
+        False -> int.to_string(rest)
+      }
+      " (" <> int.to_string(seconds / 60) <> "m " <> padded <> "s)"
+    }
   }
 }
 
@@ -1467,14 +1523,28 @@ fn update_tick(model: Model) -> Model {
   Model(..drained, quiet_for_ms:)
 }
 
+// The tick is the one place the clock is read, so the elapsed count and
+// the glyph advance together and rendering stays a pure function of the
+// model. Going idle clears the clock, so the next activity starts from
+// zero rather than from wherever the last one stopped.
 fn advance_activity_indicator(model: Model) -> Model {
   case active_strand_live(model) {
-    False -> model
+    False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
     True -> {
+      let now = ffi_bootstrap.monotonic_time_ms()
+      let started = option.unwrap(model.activity_started_ms, now)
+      let activity_elapsed_s = { now - started } / 1000
       let activity_frame = model.activity_frame + 1
-      let advanced = Model(..model, activity_frame:)
+      let advanced =
+        Model(
+          ..model,
+          activity_frame:,
+          activity_started_ms: Some(started),
+          activity_elapsed_s:,
+        )
       case
         activity_glyph(model.activity_frame) == activity_glyph(activity_frame)
+        && activity_elapsed_s == model.activity_elapsed_s
       {
         True -> advanced
         False -> invalidate_frame(advanced)
@@ -1965,10 +2035,20 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       }
     }
     protocol.StreamDelta(strand:, kind:, text:) -> {
+      // The first fragment of the active strand's generation starts its
+      // clock; later fragments, and other strands, leave it where it was.
+      let generation_started_ms = case
+        model.generation_started_ms,
+        strand == model.active_strand
+      {
+        None, True -> Some(ffi_bootstrap.monotonic_time_ms())
+        started, _ -> started
+      }
       let updated =
         Model(
           ..model,
           streams: append_stream(model.streams, strand, kind, text),
+          generation_started_ms:,
           notice: "streaming " <> kind,
         )
       case strand == model.active_strand {
@@ -2000,9 +2080,27 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> settled
       }
     }
-    protocol.UsageChanged(usage:) -> {
-      let usage = add_usage(model.usage, usage)
-      Model(..model, usage:, notice: tokens(usage.total_tokens) <> " tokens")
+    protocol.UsageChanged(usage: settled) -> {
+      // Usage arrives once per settled generation, so this is the moment
+      // the rate is known: the settlement's own output count over the
+      // time since its first fragment. A settlement that never streamed
+      // (a refusal, an empty turn) leaves the last rate standing.
+      let output_rate_tps = case model.generation_started_ms {
+        Some(started) ->
+          output_rate(
+            settled.output,
+            ffi_bootstrap.monotonic_time_ms() - started,
+          )
+        None -> model.output_rate_tps
+      }
+      let usage = add_usage(model.usage, settled)
+      Model(
+        ..model,
+        usage:,
+        generation_started_ms: None,
+        output_rate_tps:,
+        notice: tokens(usage.total_tokens) <> " tokens",
+      )
     }
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
@@ -2414,6 +2512,8 @@ fn tool_result_lines(
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
+    "fs_edit", False, Some(json.Object(fields)) ->
+      edit_result_lines(fields, result, details_expanded)
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -2426,6 +2526,31 @@ fn tool_result_lines(
         False -> tool_name <> " · " <> compact(result, 120)
       }),
     ]
+  }
+}
+
+// An edit renders as the unified diff its details carry — what changed,
+// coloured as a diff — under the tool's one-line summary. Collapsed, the
+// first stretch of the diff is enough to recognise the edit; expanded,
+// the whole of it. Details without a diff (an older record) fall back to
+// the summary alone.
+fn edit_result_lines(
+  fields: List(#(String, json.JsonValue)),
+  summary: String,
+  details_expanded: Bool,
+) -> List(Line) {
+  case string_field(fields, "diff") {
+    Some(diff) -> {
+      let shown = case details_expanded {
+        True -> diff
+        False -> program_preview(diff, 24)
+      }
+      [
+        Line(ToolResult, "fs_edit · " <> compact(summary, 120)),
+        Line(ToolDetail, "```diff\n" <> shown <> "\n```"),
+      ]
+    }
+    None -> [Line(ToolResult, "fs_edit · " <> compact(summary, 120))]
   }
 }
 
@@ -2628,7 +2753,48 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 }
 
 /// Formats the server-reported session usage for the terminal footer.
+/// Output tokens per second from a settled generation's output count and
+/// the milliseconds it streamed for. A generation shorter than the clock
+/// can resolve reports `None` rather than a rate divided by nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.output_rate(300, 2000) == option.Some(150)
+/// ```
+///
+/// ```gleam
+/// assert tui.output_rate(300, 0) == option.None
+/// ```
+///
 @internal
+pub fn output_rate(output_tokens: Int, elapsed_ms: Int) -> Option(Int) {
+  case elapsed_ms > 0 {
+    True -> Some(output_tokens * 1000 / elapsed_ms)
+    False -> None
+  }
+}
+
+/// The footer's rate suffix: empty until a generation has been timed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.output_rate_label(option.Some(87)) == " · 87 tok/s"
+/// ```
+///
+/// ```gleam
+/// assert tui.output_rate_label(option.None) == ""
+/// ```
+///
+@internal
+pub fn output_rate_label(rate: Option(Int)) -> String {
+  case rate {
+    Some(rate) -> " · " <> int.to_string(rate) <> " tok/s"
+    None -> ""
+  }
+}
+
 pub fn usage_summary(usage: message.Usage) -> String {
   "in "
   <> tokens(usage.input)
@@ -2795,6 +2961,27 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
             command_selected: 0,
           )
         None -> model
+      }
+
+    // Enter takes the highlighted row. A row that still wants an argument
+    // is completed into the editor, as Tab would; a complete one is
+    // submitted at once, so `/effort` plus a highlighted level is one
+    // keystroke, not Tab then Enter.
+    [_, ..], False, keys.Enter ->
+      case command.selected(suggestions, model.command_selected) {
+        Some(value) -> {
+          let completed =
+            Model(
+              ..model,
+              input: text_area.state_from_string(value),
+              command_selected: 0,
+            )
+          case string.ends_with(value, " ") {
+            True -> completed
+            False -> submit(completed)
+          }
+        }
+        None -> submit(model)
       }
     _, _, _ -> update_main_key_without_palette(key, model)
   }
@@ -3128,6 +3315,14 @@ fn submit_text(model: Model) -> Model {
         append_system(cleared, "fork queued: " <> name),
         protocol.fork(cleared.next_id, cleared.active_strand, name),
       )
+    command.Effort(level) ->
+      send_frame(
+        append_system(
+          cleared,
+          "reasoning level for " <> cleared.active_strand <> ": " <> level,
+        ),
+        protocol.set_thinking(cleared.next_id, cleared.active_strand, level),
+      )
     command.Compact ->
       send_frame(
         append_system(
@@ -3175,6 +3370,7 @@ fn submit_with_images(model: Model) -> Model {
         | command.Details
         | command.Strand(_)
         | command.Fork(_)
+        | command.Effort(_)
         | command.Compact
         | command.Abort
         | command.Steer(_)

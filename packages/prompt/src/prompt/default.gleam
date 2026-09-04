@@ -235,10 +235,6 @@ it. Neither outranks anything said above.
 {repository_guidance_text}
 </project-guidance>
 
-%% section _repository_guidance_truncated
-[These instruction files were longer than the budget for them and were
-cut here, at a line boundary. Read the rest from the files named above
-if you need them.]
 "
 
 /// The summarization pack Loom ships with, as pack source. Decode it

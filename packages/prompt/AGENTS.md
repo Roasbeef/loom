@@ -244,9 +244,12 @@ written by whoever calls `render`, not here.
   `ExecResult`, after a run, and the `ENFORCED`/`SKIPPED` table is a
   separate `--self-test` invocation. Fields with no source do not exist
   here.
-- **Repository guidance is project-authored data, framed as such,
-  capped at `max_repository_guidance_bytes` on a line boundary, and the
-  cut is announced by the pack's own fragment.** Framing does not make a
+- **Repository guidance is project-authored data, framed as such, and
+  carried whole.** There is no byte budget in the render: pi and
+  oh-my-pi carry these files whole too, and a cut the operator did not ask
+  for costs more in instructions silently unread than it saves. The one
+  bound is upstream, in `client/system_prompt.max_guidance_file_bytes`,
+  where a file over a megabyte is not read at all. Framing does not make a
   hostile `AGENTS.md` or `CLAUDE.md` safe; it stops one speaking with the
   operator's voice, and the residual risk is accepted and named.
 - **The `repository_guidance` binding may carry more than one file, and

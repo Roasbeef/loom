@@ -225,6 +225,7 @@ import gleam/string
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
+import provider/adapter/gemini
 import provider/adapter/openai
 import provider/gateway as provider_gateway
 import provider/http
@@ -1007,6 +1008,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
   case dialect {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
+    catalog.Gemini -> gemini.api_name
   }
 }
 
@@ -1832,6 +1834,7 @@ fn assemble(
   let base_policy =
     protecting_index(settings.base_policy, index_path)
     |> protecting_memory(memory_store, memory_digest)
+    |> allowing_tool_tmpdir
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
@@ -1839,7 +1842,12 @@ fn assemble(
   use Nil <- result.try(base_policy_fault(base_policy))
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
-  use Nil <- result.try(prepare_directories(settings, blob_root, tmp_dir))
+  use Nil <- result.try(prepare_directories(
+    settings,
+    blob_root,
+    tmp_dir,
+    tool_tmp_directory(settings.workspace),
+  ))
 
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
@@ -1984,6 +1992,15 @@ fn assemble(
     )
   let code_mode = option.map(code_mode_host, codemode_wiring.seam)
 
+  // The environment every jailed child of this session inherits, tool
+  // and hook alike. It is built once the code-mode decision is in so the
+  // shell finds the same `gleam` and `erl` the compiler uses.
+  let environment =
+    session_environment(
+      settings.workspace,
+      option.map(code_mode_host, fn(config) { config.toolchain_path }),
+    )
+
   // Recall, on the same two-name pattern and gated the same way: the
   // holder that owns the index cannot exist until the runtime has been
   // opened (its canonical session id is what a scoped query and every
@@ -2034,7 +2051,7 @@ fn assemble(
       hosts_seam,
       extension_hosts.invoker(
         hosts_seam,
-        at: hook_coordinates(settings, entropy(), clock),
+        at: hook_coordinates(settings, entropy(), clock, environment),
       ),
       code_mode_host,
       extension_memory.for_session(agency_config),
@@ -2150,7 +2167,7 @@ fn assemble(
       base_policy:,
       escalations: escalate.seam(escalate_config),
       demand: settings.demand,
-      env: session_environment(),
+      env: environment,
       clock:,
       entropy:,
     ))
@@ -2631,6 +2648,7 @@ fn hook_coordinates(
   settings: Settings,
   seed: Int,
   clock: Clock,
+  environment: List(#(String, String)),
 ) -> extension_hosts.Coordinates {
   let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
   extension_hosts.Coordinates(
@@ -2643,7 +2661,7 @@ fn hook_coordinates(
     workspace: settings.workspace,
     base_policy: settings.base_policy,
     demand: settings.demand,
-    env: session_environment(),
+    env: environment,
   )
 }
 
@@ -2655,12 +2673,73 @@ const root_strand = "main"
 /// them, and the pooled budget follows the pair.
 const hook_step_id = "extension-hooks"
 
-/// The environment a satellite's children inherit.
+/// The environment a session's jailed children inherit: the shell the
+/// `bash` tool runs, a satellite, a hook host.
 ///
 /// Allowlist-constructed and shared by the tool path and the hook path,
-/// so a host launched by whichever came first is the same host.
-fn session_environment() -> List(#(String, String)) {
-  [#("PATH", "/usr/local/bin:/usr/bin:/bin")]
+/// so a host launched by whichever came first is the same host. Three
+/// names, each earned by a failure a live drive produced:
+///
+/// - `PATH` is the toolchain's when code mode found one, so `gleam` and
+///   `erl` resolve in the shell exactly as they do for the compiler. On a
+///   Homebrew Mac the system directories alone hide both, and a model
+///   that cannot run the project's tests falls back to `find /`.
+/// - `HOME` is the workspace. `bash -l` sources the dotfiles under
+///   `$HOME`, and with the name unset it read the operator's profile
+///   against an empty home and failed every line that mentioned it.
+/// - `TMPDIR` is a directory under the workspace, the one root the jail
+///   lets a tool write. The host's temp directory is not writable from
+///   inside, so a compiler or test runner that mints temp files died on
+///   its first one. Code mode pins its compiler's `TMPDIR` the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.session_environment("/work", option.None)
+///   == [
+///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
+///     #("HOME", "/work"),
+///     #("TMPDIR", "/work/.codemode/tmp"),
+///   ]
+/// ```
+///
+@internal
+pub fn session_environment(
+  workspace: String,
+  toolchain_path: Option(String),
+) -> List(#(String, String)) {
+  [
+    #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
+    #("HOME", workspace),
+    #("TMPDIR", tool_tmp_directory(workspace)),
+  ]
+}
+
+/// Where a jailed tool's `TMPDIR` points: beneath the code-mode work
+/// directory the server already owns inside the workspace, so the
+/// workspace gains no second dot-directory for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
+/// ```
+///
+@internal
+pub fn tool_tmp_directory(workspace: String) -> String {
+  workspace <> "/" <> codemode_wiring.work_directory <> "/tmp"
+}
+
+// The policy meet keeps only the environment names the session base
+// allows, and the base allows `PATH` and `HOME` but not `TMPDIR`. The
+// bash tool passes `TMPDIR` (see `session_environment`), so the name is
+// granted on the session base here — the same move the code-mode
+// builder makes on its own derived base, for the same variable.
+fn allowing_tool_tmpdir(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base,
+    env_allow: list.unique(list.append(base.env_allow, ["TMPDIR"])),
+  )
 }
 
 /// Slack over an invocation's own deadline before a caller gives up on the
@@ -2739,6 +2818,7 @@ fn prepare_directories(
   settings: Settings,
   blob_root: String,
   tmp_dir: String,
+  tool_tmp_dir: String,
 ) -> Result(Nil, String) {
   let wanted = [
     parent_directory(settings.session_path),
@@ -2746,6 +2826,7 @@ fn prepare_directories(
     Some(settings.workspace),
     Some(blob_root),
     Some(tmp_dir),
+    Some(tool_tmp_dir),
   ]
   list.try_each(option.values(wanted), fn(directory) {
     simplifile.create_directory_all(directory)

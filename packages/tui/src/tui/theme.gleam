@@ -22,6 +22,10 @@ pub const current = style.Rgb(91, 203, 217)
 /// Secondary annotations and inactive controls.
 pub const quiet = style.Rgb(118, 124, 130)
 
+/// The footer's grey: `quiet` lifted for legibility against a dark
+/// terminal at a glance.
+pub const muted = style.Rgb(170, 176, 182)
+
 /// Failures and refused actions.
 pub const danger = style.Rgb(235, 102, 112)
 
@@ -65,6 +69,20 @@ pub fn current_bold() -> style.Style {
 /// ```
 pub fn quiet_text() -> style.Style {
   style.new(quiet, style.Default, style.dim())
+}
+
+/// The footer's text: the same quiet hue as the transcript's asides, one
+/// step brighter and never dimmed, because the footer is read at a glance
+/// against the terminal's own background and dim grey on black was
+/// falling below what a glance can pick up.
+///
+/// ## Examples
+///
+/// ```gleam
+/// span.span_styled(" in 12k · out 678 ", theme.footer_text())
+/// ```
+pub fn footer_text() -> style.Style {
+  style.new(muted, style.Default, style.none())
 }
 
 /// A quiet modal label whose background keeps its full terminal intensity.

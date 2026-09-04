@@ -447,20 +447,39 @@ pub fn dot_loom_is_the_second_place_looked_test() {
   assert list.map(files, fn(file) { file.path }) == [home <> "/.loom/AGENTS.md"]
 }
 
-pub fn a_workspace_agents_file_beats_every_user_default_test() {
-  let #(workspace, home) = instruction_root("workspace-wins")
+pub fn a_claude_md_identical_to_agents_md_is_carried_once_test() {
+  // The two names for one file (this repository mirrors CLAUDE.md into
+  // AGENTS.md by cp) must not cost the guidance budget twice.
+  let #(workspace, home) = instruction_root("mirrored")
+  write_file(workspace <> "/AGENTS.md", "the same instructions\n")
+  write_file(workspace <> "/CLAUDE.md", "the same instructions\n")
+
+  let #(files, notes) = system_prompt.discover(workspace:, home: Some(home))
+  assert notes == []
+  assert list.map(files, fn(file) { file.path }) == [workspace <> "/AGENTS.md"]
+}
+
+pub fn the_operators_default_is_carried_ahead_of_the_workspace_test() {
+  // The operator's standing instructions and the project's own are
+  // layered, not alternatives: the global file renders first, the
+  // project's after it, and one global file is all a session carries.
+  let #(workspace, home) = instruction_root("layered")
   write_file(workspace <> "/AGENTS.md", "the project's own instructions\n")
+  write_file(workspace <> "/CLAUDE.md", "the claude-specific file\n")
   write_user_default(home, ".agents", "the tool-neutral default\n")
   write_user_default(home, ".loom", "the launcher's default\n")
 
   let #(files, notes) = system_prompt.discover(workspace:, home: Some(home))
   assert notes == []
-  assert list.map(files, fn(file) { file.origin })
-    == [system_prompt.WorkspaceFile]
-  assert list.map(files, fn(file) { file.path }) == [workspace <> "/AGENTS.md"]
+  assert list.map(files, fn(file) { #(file.origin, file.path) })
+    == [
+      #(system_prompt.UserDefaultFile, home <> "/.agents/AGENTS.md"),
+      #(system_prompt.WorkspaceFile, workspace <> "/AGENTS.md"),
+      #(system_prompt.WorkspaceFile, workspace <> "/CLAUDE.md"),
+    ]
 }
 
-pub fn an_unusable_agents_file_does_not_fall_back_to_the_operator_test() {
+pub fn an_unusable_agents_file_leaves_the_operators_default_standing_test() {
   let #(workspace, home) = instruction_root("unusable-agents")
   write_file(
     workspace <> "/AGENTS.md",
@@ -468,11 +487,11 @@ pub fn an_unusable_agents_file_does_not_fall_back_to_the_operator_test() {
   )
   write_user_default(home, ".agents", "the tool-neutral default\n")
 
-  // The workspace has spoken for the slot. Silently serving the
-  // operator's defaults in place of a project file that happens to be
-  // unreadable would swap one set of instructions for another.
+  // The project slot has spoken and earns its warning; the operator's
+  // file is its own slot and is neither promoted nor lost because of it.
   let #(files, notes) = system_prompt.discover(workspace:, home: Some(home))
-  assert files == []
+  assert list.map(files, fn(file) { file.origin })
+    == [system_prompt.UserDefaultFile]
   let assert [note] = notes as "there must be exactly one note"
   assert string.contains(note, workspace <> "/AGENTS.md")
 }

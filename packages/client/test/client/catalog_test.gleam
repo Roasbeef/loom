@@ -31,14 +31,34 @@ pub fn example_parses_sorted_and_routed_test() {
   let parsed = example()
   // Entries come back sorted by name regardless of file order.
   assert list.map(parsed.models, fn(entry) { entry.name })
-    == ["anthropic-opus", "baseten-oss"]
+    == ["anthropic-opus", "baseten-oss", "gemini-flash"]
   // Roles come back in canonical order with their chains intact.
   assert parsed.roles
     == [
       #(model.Main, ["baseten-oss", "anthropic-opus"]),
-      #(model.Subagent, ["baseten-oss"]),
+      #(model.Subagent, ["baseten-oss", "gemini-flash"]),
       #(model.Summarize, ["anthropic-opus"]),
     ]
+}
+
+pub fn example_gemini_entry_takes_the_dialect_default_url_test() {
+  let assert Ok(entry) = catalog.find(example(), "gemini-flash")
+  assert entry.dialect == catalog.Gemini
+  assert entry.base_url == "https://generativelanguage.googleapis.com/v1beta"
+  assert entry.api_key_env == "GEMINI_API_KEY"
+  assert entry.model_id == "gemini-3.8-flash"
+  assert entry.thinking == model.ThinkingLow
+  assert catalog.dialect_to_string(entry.dialect) == "gemini"
+  // The gateway registers the entry under the Gemini adapter.
+  let gateway =
+    catalog.gateway(
+      example(),
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(at: 0),
+    )
+  let assert Ok(subagent) = provider_gateway.resolve(gateway, model.Subagent)
+  assert subagent.provider == "baseten-oss"
 }
 
 pub fn example_baseten_entry_is_openai_dialect_test() {
@@ -67,6 +87,8 @@ pub fn routed_and_active_roles_test() {
   assert catalog.active_roles(parsed, "anthropic-opus") == ["summarize"]
   assert catalog.routed_roles(parsed, "baseten-oss") == ["main", "subagent"]
   assert catalog.active_roles(parsed, "baseten-oss") == ["main", "subagent"]
+  assert catalog.routed_roles(parsed, "gemini-flash") == ["subagent"]
+  assert catalog.active_roles(parsed, "gemini-flash") == []
 }
 
 pub fn resolved_identity_uses_catalogue_name_test() {

@@ -48,9 +48,10 @@ subagent = ["baseten-oss"]
 summarize = ["anthropic-opus"]
 ```
 
-`dialect` is `"anthropic"` or `"openai"` and selects the wire adapter.
-`base_url` is optional; omitting it takes the dialect's conventional
-root (`https://api.anthropic.com`, `https://api.openai.com/v1`), and a
+`dialect` is `"anthropic"`, `"openai"` or `"gemini"` and selects the wire
+adapter. `base_url` is optional; omitting it takes the dialect's
+conventional root (`https://api.anthropic.com`, `https://api.openai.com/v1`,
+`https://generativelanguage.googleapis.com/v1beta`), and a
 trailing slash is stripped so the config author need not know that the
 gateway's `ProviderConfig` forbids one. `model_id` is the identifier
 the provider expects in the request body, copied through verbatim.
@@ -59,7 +60,9 @@ the window is what adapter-computed overflow compares against, so a
 figure invented here buys a wrong overflow verdict later. `thinking`
 accepts `off`, `low`, `medium`, `high`, or `unsupported`, where
 `unsupported` is the config author's word for a model with no reasoning
-mode and maps to `off`, which sends no reasoning field at all.
+mode and maps to `off`, which sends no reasoning field at all. For a
+Gemini 3 model, which cannot stop reasoning, `off` therefore means the
+model reasons at its own default and shows none of it.
 
 **Keys never live in the file.** `api_key_env` names an environment
 variable, and that name travels all the way into the gateway's
@@ -79,7 +82,10 @@ with a confusing missing-key error hours later; refusing the file is
 the cheaper failure. The `[roles]` table must route `main` — a strand
 with no main identity has nothing to run.
 
-Without `--config` the server shapes a one-entry catalogue from the
+The launcher fills in `--config` itself when the flag is absent and
+`~/.loom/loom.toml` exists, so an operator's standing catalogue serves
+every workspace without being named each time; a workspace can never
+supply one. Without either the server shapes a one-entry catalogue from the
 environment instead: an Anthropic entry named `anthropic` whose model
 id, base URL, and limits come from `LOOM_MODEL`, `LOOM_BASE_URL`,
 `LOOM_CONTEXT_WINDOW`, and `LOOM_MAX_OUTPUT_TOKENS`, routed as `main`.
@@ -215,7 +221,7 @@ be inventing the caller as well as the route. Recorded in
 
 ## Dialects and the adapter seam
 
-What actually differs between the two dialects is small and entirely
+What actually differs between the dialects is small and entirely
 contained in the adapters. Anthropic posts to `base_url <> "/v1/messages"`
 with `x-api-key` and `anthropic-version: 2023-06-01`, takes the system
 prompt as a top-level `system` field, names its output ceiling
@@ -230,6 +236,32 @@ the message list as a `system` turn, names its ceiling
 too — named SSE events with typed content blocks against unnamed chunk
 documents terminated by a literal `[DONE]` — and each folds its own
 dialect into the same settled assistant message.
+
+The Gemini adapter is the third, and the first that is shaped like
+neither. It posts to `base_url <> "/models/" <> model_id <>
+":streamGenerateContent?alt=sse"` with the key in `x-goog-api-key`, takes
+the system prompt as `systemInstruction`, names its ceiling
+`maxOutputTokens`, and declares tools as `functionDeclarations` carrying
+`parametersJsonSchema`. Reasoning is a `thinkingConfig`, and the knob
+inside it depends on the model generation: Gemini 3 takes a
+`thinkingLevel` word and rejects a token budget, Gemini 2.5 takes a
+`thinkingBudget` and rejects the word, so the adapter reads the
+generation off the model id — the same rule pi and oh-my-pi apply. Its
+stream has no terminator sentinel: each unnamed event is a whole
+`GenerateContentResponse`, whose parts arrive complete rather than as
+deltas (a function call comes with its arguments already parsed), and
+the body simply closes after the chunk that carried a `finishReason`.
+Two facts about that wire are load-bearing. A `thoughtSignature` may
+ride on any part and must be replayed with the block it signed; a
+function call sent back without one is a hard 400, so a call with no
+stored signature — one another model made earlier in the conversation —
+replays with the `skip_thought_signature_validator` sentinel the API
+documents for that case. And `STOP` is the only finish reason a
+tool-calling turn ends with, so settlement promotes it to tool use when
+the response carried a call. `docs/examples/loom.toml` has the entry
+shape; a Google AI Studio key is what `api_key_env` names, since Vertex
+AI wants OAuth rather than an API key and is not reachable through this
+dialect.
 
 Above that seam nothing knows the difference. A catalogue entry chooses
 an adapter and a base URL, and every layer above holds a
@@ -277,7 +309,12 @@ not touch `thinking_level`, even though the entry declares one. The
 entry's level seeds a strand at creation; the per-turn level afterwards
 belongs to whoever is having the conversation, and changing model mid-run
 is not a request to un-raise a reasoning budget somebody deliberately
-raised. A client that wants both sends both keys. What a *newly seeded*
+raised. A client that wants both sends both keys. The TUI exposes the
+level on its own as `/effort <level>`, which sends `set_config` with
+`thinking_level` for the active strand and lets the server validate the
+word (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); the
+adapters map that seven-step vocabulary onto whatever their dialect
+offers, so `xhigh` on a Gemini entry reaches the wire as `HIGH`. What a *newly seeded*
 strand gets is the other half of the same rule: `fork` and `create_strand`
 copy the source strand's configuration but re-seed its thinking level from
 the catalogue entry the copied identity names, because a fresh strand has
@@ -373,7 +410,7 @@ points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 | `client/protocol.gleam` | `ListModels`, `ModelsSnapshot`, `ModelInfo`, `SetConfig` — the wire shapes, pinned by the Go golden fixtures. |
 | `provider/gateway.gleam` | `ProviderConfig`, the builder, `resolve`, and the chain walk. |
 | `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget` (whose `ForRole` carries the thinking overlay — `protocol-change/009`), `ThinkingLevel`, `ProviderRequest`. |
-| `provider/adapter/anthropic.gleam`, `.../openai.gleam` | The two dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
+| `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | The three dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
 | `packages/tui/src/tui/model_selector.gleam` | The `/model` picker: the modal, search ranking, cursor, role tags, and selected catalogue name. |

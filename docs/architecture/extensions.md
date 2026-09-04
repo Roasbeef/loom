@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2273`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2291`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -1329,7 +1329,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:213`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
-| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:376`. |
+| `tui/tui.gleam` | `loom ext …` forwarded to the server by the same ladder a local session uses; the `Forward` arm is at `tui.gleam:399`. |
 | `client/test/client/extension_test.gleam` | The install acceptance, layer by layer, plus the one real jailed build. |
 | `codemode/test/codemode/host_test.gleam` | The host's contract over a faked satellite: two invocations on one node, `busy`, the revoked token, and the two endings that destroy it. |
 | `client/test/client/extension_e2e_test.gleam` | The dispatch acceptance: a real build, a real satellite, a real TLS origin, and the two absence claims about the credential. |

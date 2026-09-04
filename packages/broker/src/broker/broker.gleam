@@ -968,21 +968,31 @@ fn dispatch(
   // forwards output to the caller, enforces the aggregate wall
   // deadline, and reports settlement back to the broker. The broker
   // monitors it so an unsettled death reclaims the call's reservations.
+  // The relay in turn monitors the caller: a tool effect that is killed
+  // mid-call (an aborted run) can no longer cancel its own execution,
+  // and without this watch the jailed command would run on to its wall
+  // limit with nobody left to want its output.
+  let caller_pid = process.subject_owner(events)
   let ready = process.new_subject()
   let relay_pid =
     process.spawn_unlinked(fn() {
       let exec_events = process.new_subject()
+      let caller_watch = case caller_pid {
+        Ok(pid) -> Some(process.monitor(pid))
+        Error(Nil) -> None
+      }
       process.send(ready, exec_events)
-      relay(
-        exec_events,
-        events,
-        broker_subject,
-        call_id,
-        helper,
-        state.clock,
-        spec.budget.deadline_ms,
-        Streaming,
-      )
+      relay(Relay(
+        exec_events:,
+        caller: events,
+        caller_watch:,
+        broker_subject:,
+        call_id:,
+        helper:,
+        clock: state.clock,
+        deadline_ms: spec.budget.deadline_ms,
+        mode: Streaming,
+      ))
     })
   let monitor = process.monitor(relay_pid)
 
@@ -1044,71 +1054,94 @@ type RelayMode {
   Draining
 }
 
-fn relay(
-  exec_events: Subject(exec.ExecEvent),
-  caller: Subject(CallEvent),
-  broker_subject: Subject(Msg),
-  call_id: Int,
-  helper: Helper,
-  relay_clock: Clock,
-  deadline_ms: Int,
-  mode: RelayMode,
-) -> Nil {
-  let #(now, relay_clock) = clock.read(relay_clock)
-  let remaining = int.max(deadline_ms - now, 0)
-  case process.receive(exec_events, remaining + 20) {
-    Ok(exec.Output(stream:, data:, total_bytes:, truncated:)) -> {
-      process.send(caller, CallOutput(stream:, data:, total_bytes:, truncated:))
-      relay(
-        exec_events,
-        caller,
-        broker_subject,
-        call_id,
-        helper,
-        relay_clock,
-        deadline_ms,
-        mode,
+// Everything one relay loop iteration carries. `caller_watch` is the
+// monitor on the process that asked for the call, `None` once it has
+// fired or when the caller's subject named no live owner.
+type Relay {
+  Relay(
+    exec_events: Subject(exec.ExecEvent),
+    caller: Subject(CallEvent),
+    caller_watch: Option(process.Monitor),
+    broker_subject: Subject(Msg),
+    call_id: Int,
+    helper: Helper,
+    clock: Clock,
+    deadline_ms: Int,
+    mode: RelayMode,
+  )
+}
+
+// What wakes a relay: the helper spoke, or the caller died.
+type RelayWake {
+  FromExec(event: exec.ExecEvent)
+  CallerGone
+}
+
+fn relay_wake(relay: Relay, within: Int) -> Result(RelayWake, Nil) {
+  let selector =
+    process.new_selector()
+    |> process.select_map(relay.exec_events, FromExec)
+  let selector = case relay.caller_watch {
+    Some(monitor) ->
+      process.select_specific_monitor(selector, monitor, fn(_down) {
+        CallerGone
+      })
+    None -> selector
+  }
+  process.selector_receive(selector, within)
+}
+
+fn relay(link: Relay) -> Nil {
+  let #(now, relay_clock) = clock.read(link.clock)
+  let link = Relay(..link, clock: relay_clock)
+  let remaining = int.max(link.deadline_ms - now, 0)
+  case relay_wake(link, remaining + 20) {
+    Ok(FromExec(exec.Output(stream:, data:, total_bytes:, truncated:))) -> {
+      process.send(
+        link.caller,
+        CallOutput(stream:, data:, total_bytes:, truncated:),
       )
+      relay(link)
     }
-    Ok(exec.Exited(result:)) ->
-      settle(caller, broker_subject, call_id, CallExited(result:))
-    Ok(exec.Failed(failure:)) ->
-      settle(caller, broker_subject, call_id, CallFailed(failure:))
+    Ok(FromExec(exec.Exited(result:))) -> settle(link, CallExited(result:))
+    Ok(FromExec(exec.Failed(failure:))) -> settle(link, CallFailed(failure:))
+
+    // The caller is gone, so nothing wants this execution any more:
+    // cancel it and drain to the helper's terminal event, which is what
+    // returns the helper and the budget slot to the pool. A caller that
+    // dies during the drain changes nothing; the cancel is already in.
+    Ok(CallerGone) ->
+      case link.mode {
+        Streaming -> {
+          exec.cancel(link.helper)
+          relay(
+            Relay(
+              ..link,
+              caller_watch: None,
+              deadline_ms: now + relay_grace_ms,
+              mode: Draining,
+            ),
+          )
+        }
+        Draining -> relay(Relay(..link, caller_watch: None))
+      }
     Error(Nil) ->
-      case mode {
+      case link.mode {
         // Wall deadline hit: cancel and drain. The helper's own ladder
         // (TERM then KILL, then the pool's outright kill) guarantees a
         // terminal event; Draining's window bounds our trust in that.
         Streaming -> {
-          exec.cancel(helper)
+          exec.cancel(link.helper)
           relay(
-            exec_events,
-            caller,
-            broker_subject,
-            call_id,
-            helper,
-            relay_clock,
-            now + relay_grace_ms,
-            Draining,
+            Relay(..link, deadline_ms: now + relay_grace_ms, mode: Draining),
           )
         }
-        Draining ->
-          settle(
-            caller,
-            broker_subject,
-            call_id,
-            CallFailed(failure: exec.CancelEscalated),
-          )
+        Draining -> settle(link, CallFailed(failure: exec.CancelEscalated))
       }
   }
 }
 
-fn settle(
-  caller: Subject(CallEvent),
-  broker_subject: Subject(Msg),
-  call_id: Int,
-  outcome: CallOutcome,
-) -> Nil {
-  process.send(broker_subject, Settle(call_id:))
-  process.send(caller, CallSettled(outcome:))
+fn settle(link: Relay, outcome: CallOutcome) -> Nil {
+  process.send(link.broker_subject, Settle(call_id: link.call_id))
+  process.send(link.caller, CallSettled(outcome:))
 }

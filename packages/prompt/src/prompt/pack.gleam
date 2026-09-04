@@ -109,11 +109,6 @@ pub const directive_prefix = "%%"
 /// pack from putting a megabyte into an error report's subject.
 pub const max_name_length = 64
 
-/// The byte budget for injected repository guidance. Guidance longer
-/// than this is cut at a line boundary and the cut is announced by the
-/// `_repository_guidance_truncated` fragment — never silently.
-pub const max_repository_guidance_bytes = 16_384
-
 /// One named section of a pack, in the order the file listed it.
 ///
 /// Invariants, established by `decode` and relied on by `render`:
@@ -383,7 +378,7 @@ pub const required_fragments = [
   "_enforcement_enforced", "_enforcement_platform", "_enforcement_degraded",
   "_enforcement_best_effort", "_network_blocked", "_network_proxied",
   "_network_open", "_protected_paths", "_available_tools",
-  "_repository_guidance", "_repository_guidance_truncated",
+  "_repository_guidance",
 ]
 
 /// Every placeholder name a pack may use. The closed list is half of why
@@ -918,7 +913,7 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
       #("protected_paths", join(environment.protected_paths)),
       #("network_allow", join(allowed_hosts(environment.network))),
       #("available_tools_list", snippet_list(environment.available_tools)),
-      #("repository_guidance_text", guidance_text(pack, environment)),
+      #("repository_guidance_text", guidance_text(environment)),
     ])
   let selected = [
     #(
@@ -1001,50 +996,15 @@ fn snippet_list(snippets: List(String)) -> String {
 }
 
 // Repository guidance is project-authored data, not the operator's
-// words. It is capped at a line boundary, and a cut is announced with
-// the pack's own truncation fragment rather than a sentence welded in
-// here. The text itself is inserted verbatim and never re-scanned, so a
-// guidance file containing `{workspace}` renders those characters.
-fn guidance_text(pack: Pack, environment: Environment) -> String {
-  case environment.repository_guidance {
-    None -> ""
-    Some(text) ->
-      case cap(text, max_repository_guidance_bytes) {
-        #(kept, False) -> kept
-        #(kept, True) ->
-          kept
-          <> "\n\n"
-          <> result.unwrap(body(pack, "_repository_guidance_truncated"), "")
-      }
-  }
-}
-
-// Keeps whole lines while they fit the byte budget. A first line that
-// alone exceeds the budget keeps nothing: cutting mid-line is how a
-// truncation marker ends up inside a sentence it appears to be part of.
-fn cap(text: String, budget: Int) -> #(String, Bool) {
-  cap_loop(string.split(text, on: "\n"), budget, [])
-}
-
-fn cap_loop(
-  lines: List(String),
-  remaining: Int,
-  kept: List(String),
-) -> #(String, Bool) {
-  case lines {
-    [] -> #(string.join(list.reverse(kept), "\n"), False)
-    [line, ..rest] -> {
-      let cost = byte_size(line) + 1
-      case cost <= remaining {
-        True -> cap_loop(rest, remaining - cost, [line, ..kept])
-        False -> #(string.join(list.reverse(kept), "\n"), True)
-      }
-    }
-  }
-}
-
-fn byte_size(text: String) -> Int {
-  bit_array.byte_size(bit_array.from_string(text))
+// words, and it is carried whole. The text is inserted verbatim and
+// never re-scanned, so a guidance file containing `{workspace}` renders
+// those characters. There is no byte budget here: pi and oh-my-pi render
+// these files whole too, a pair of them runs to some eight thousand
+// tokens, and a cut the operator did not ask for costs more in
+// instructions silently unread than it saves. The one bound is
+// upstream, where a file over a megabyte is not read at all.
+fn guidance_text(environment: Environment) -> String {
+  option.unwrap(environment.repository_guidance, "")
 }
 
 // One pass over the template. A substituted value goes straight into the

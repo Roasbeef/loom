@@ -954,11 +954,16 @@ fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     ctx.filesystem.write(resolved, <<edited:utf8>>),
     fs_error_outcome,
   )
-  edit_outcome(path, hunks, edited)
+  edit_outcome(path, content, hunks, edited)
 }
 
+// The details carry the edit as a unified diff against the pre-image, so
+// a client can show what changed rather than how many hunks it took; the
+// model's own result text stays the one-line summary, since the model
+// wrote the hunks and does not need them read back.
 fn edit_outcome(
   path: String,
+  before: String,
   hunks: List(hashline.Hunk),
   edited: String,
 ) -> ToolOutcome {
@@ -973,6 +978,7 @@ fn edit_outcome(
       #("total_lines", json.Int(total_lines)),
       #("digest", json.String(hashline.digest(edited))),
       #("anchor_version", json.Int(hashline.anchor_version)),
+      #("diff", json.String(hashline.render_diff(before, hunks))),
     ]),
   )
 }

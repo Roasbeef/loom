@@ -7,6 +7,7 @@ PACKAGES := core storage session machine prompt telemetry runtime provider \
 	broker mcp tools cap ext codemode events client conformance tui lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
+PREFIX   ?= $(HOME)/.local
 
 .DEFAULT_GOAL := help
 
@@ -107,8 +108,13 @@ tui-shipment: ## Package the native TUI: build/tui-erlang-shipment + bin/loom
 	@chmod +x bin/loom
 	@echo "built build/tui-erlang-shipment and bin/loom"
 
+# The seed is a prerequisite because a server booted without one registers
+# no `code_mode` tool and says so only in its log; a drive against such a
+# server reads as a model that cannot find code mode, which has misled a
+# session more than once. The seed script is the one step allowed the
+# network, and it is a no-op once the seed builds offline.
 .PHONY: server-shipment
-server-shipment: ## Package the server: build/erlang-shipment + bin/loomd (needs erl to run)
+server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bin/loomd (needs erl to run)
 	@cd packages/client && gleam export erlang-shipment
 	@mkdir -p bin build
 	@rm -f bin/loom-server
@@ -154,9 +160,35 @@ release: ## Build the self-contained server into build/release/loom (needs rebar
 release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serves code mode
 	@scripts/release.sh --smoke
 
+# The client gets the same treatment as the server: an OTP release with
+# the runtime system copied in, so `loom` runs on a machine with no
+# Erlang. The shipment (`make tui-shipment`) is not retired by it — a
+# package manager that already provides Erlang wants the slim one.
+.PHONY: release-client
+release-client: ## Build the self-contained client into build/release/loom-client
+	@scripts/release-client.sh
+
+.PHONY: release-client-smoke
+release-client-smoke: ## Boot build/release/loom-client with no erl on PATH
+	@scripts/release-client.sh --smoke
+
 .PHONY: dist
-dist: release release-smoke tui-shipment ## Package the server and native client tarballs
+dist: release release-smoke release-client release-client-smoke tui-shipment ## Package the server and both client tarballs
 	@scripts/dist.sh
+
+# Everything a person needs to type `loom` in a directory: the seed, the
+# self-contained server release, a client, and two launchers under
+# $(PREFIX)/bin. PREFIX defaults to $$HOME/.local. INSTALL_CLIENT picks the
+# client: `bundled` (default) is the self-contained release, `slim` is the
+# shipment that runs on the host's own Erlang, which is what a package
+# manager providing Erlang as a dependency wants. scripts/install.sh says
+# what lands where and why each launcher is shaped as it is.
+INSTALL_CLIENT ?= bundled
+CLIENT_ARTIFACT := $(if $(filter slim,$(INSTALL_CLIENT)),tui-shipment,release-client)
+
+.PHONY: install
+install: codemode-seed release $(CLIENT_ARTIFACT) ## Install loom and loomd under PREFIX (INSTALL_CLIENT=bundled|slim)
+	@PREFIX="$(PREFIX)" LOOM_CLIENT="$(INSTALL_CLIENT)" scripts/install.sh
 
 # ------------------------------------------------------------------- running
 

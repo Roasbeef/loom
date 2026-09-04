@@ -71,6 +71,11 @@ pub fn launch_arguments_do_not_trust_workspace_configuration_test() {
   assert !list.contains(arguments, "--config")
 }
 
+pub fn the_default_catalogue_lives_in_the_state_root_test() {
+  assert bootstrap.default_catalogue_path("/home/me/.loom")
+    == "/home/me/.loom/loom.toml"
+}
+
 pub fn launch_arguments_forward_an_operator_named_config_test() {
   let arguments =
     bootstrap.launch_arguments(

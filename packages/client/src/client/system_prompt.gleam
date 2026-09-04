@@ -103,14 +103,11 @@ pub const summary_pack_variable = "LOOM_SUMMARY_PACK"
 pub const override_variable = "LOOM_SYSTEM_PROMPT"
 
 /// The largest single instruction file this module will read, applied
-/// to each of `AGENTS.md` and `CLAUDE.md` on its own. Well above any
-/// real guidance file and well below what would trouble the boot
-/// process;
-/// `render` caps what actually reaches the prompt at
-/// `pack.max_repository_guidance_bytes` on a line boundary and announces
-/// the cut. A file above *this* bound is not a guidance file, and is
-/// skipped with a warning rather than read into memory to have all but
-/// 16 KiB of it thrown away.
+/// to each guidance file on its own. Well above any real guidance file
+/// and well below what would trouble the boot process. This is the only
+/// bound on guidance: what passes it reaches the prompt whole, as pi and
+/// oh-my-pi render these files, so a file above it is not a guidance
+/// file and is skipped with a warning rather than read into memory.
 pub const max_guidance_file_bytes = 1_048_576
 
 // --- the environment ------------------------------------------------------
@@ -797,8 +794,8 @@ pub type GuidanceOrigin {
   /// repository. Project-authored data, framed as such.
   WorkspaceFile
 
-  /// The operator's own global `AGENTS.md`, read only when the
-  /// workspace has none of its own. Trusted the way an explicit
+  /// The operator's own global `AGENTS.md`, carried into every session
+  /// ahead of whatever the workspace says. Trusted the way an explicit
   /// `--config` is trusted: it is the operator's file, not the
   /// workspace's.
   UserDefaultFile
@@ -818,46 +815,63 @@ pub type GuidanceFile {
 /// prompt renders them, paired with a warning for every file that
 /// existed but could not be used.
 ///
-/// Two slots, and the first is the interesting one. Slot one is the
-/// `AGENTS.md` instructions: the workspace's own if it has one,
-/// otherwise the operator's global default, looked up under
-/// `user_default_directories` in order. Slot two is the workspace's
-/// `CLAUDE.md`. A workspace file therefore always beats a global one,
-/// and a session can carry at most one `UserDefaultFile`.
+/// Three slots, rendered in this order. Slot one is the operator's
+/// standing instructions: the global `AGENTS.md` looked up under
+/// `user_default_directories` in order, the first location holding a
+/// file winning. Slot two is the workspace's `AGENTS.md`; slot three the
+/// workspace's `CLAUDE.md`. The layering is the one the cross-tool
+/// convention settled on — what the operator always wants, then what
+/// this project adds — so a session carries at most one
+/// `UserDefaultFile` and it is never displaced by a project file.
 ///
-/// Only a path with *no file at all* lets the search move on. A file
-/// that exists but is oversize or unreadable has spoken for its slot and
-/// earns a warning; substituting the operator's defaults for a project
-/// file that happens to be unreadable would swap one set of instructions
-/// for another behind the operator's back.
+/// Within the global lookup, only a path with *no file at all* lets the
+/// search move on to the next directory. Anywhere, a file that exists
+/// but is oversize or unreadable has spoken for its slot and earns a
+/// warning rather than a substitute.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // system_prompt.discover(workspace: "/work", home: option.Some("/home/me"))
-/// // -> #([GuidanceFile("/work/AGENTS.md", WorkspaceFile, "# project")], [])
+/// // -> #([
+/// //   GuidanceFile("/home/me/.agents/AGENTS.md", UserDefaultFile, "# mine"),
+/// //   GuidanceFile("/work/AGENTS.md", WorkspaceFile, "# project"),
+/// // ], [])
 /// ```
 ///
 pub fn discover(
   workspace workspace: String,
   home home: Option(String),
 ) -> #(List(GuidanceFile), List(String)) {
-  let #(instructions, instruction_notes) = agents_slot(workspace, home)
-  let #(claude, claude_notes) = claude_slot(workspace)
+  let #(standing, standing_notes) = user_default(home)
+  let #(agents, agents_notes) = workspace_slot(workspace, agents_file)
+  let #(claude, claude_notes) = workspace_slot(workspace, claude_file)
 
   #(
-    option.values([instructions, claude]),
-    list.append(instruction_notes, claude_notes),
+    option.values([standing, agents, distinct_from(claude, agents)]),
+    list.flatten([standing_notes, agents_notes, claude_notes]),
   )
 }
 
-/// The instruction files of a workspace as one document, with a warning
+// A `CLAUDE.md` that is byte-identical to the `AGENTS.md` beside it is
+// the same file under the convention's second name — this repository
+// keeps its own that way, by `cp` — and carrying it twice would spend
+// the guidance budget on a copy while the cut falls on something new.
+fn distinct_from(
+  claude: Option(GuidanceFile),
+  agents: Option(GuidanceFile),
+) -> Option(GuidanceFile) {
+  case claude, agents {
+    Some(second), Some(first) if second.text == first.text -> None
+    _, _ -> claude
+  }
+}
+
+/// The instruction files of a session as one document, with a warning
 /// instead of a value when a file exists but cannot be used. What
-/// reaches the prompt is capped by `render` at
-/// `pack.max_repository_guidance_bytes` on a line boundary, framed by
-/// the pack's own fragments, and its truncation announced. This
-/// function's only judgment is `max_guidance_file_bytes`, applied per
-/// file.
+/// reaches the prompt is this document whole, framed by the pack's own
+/// fragments; the only judgment here is `max_guidance_file_bytes`,
+/// applied per file.
 ///
 /// No file at all is the ordinary case and says nothing.
 ///
@@ -931,29 +945,17 @@ type Candidate {
   Present(text: String)
 }
 
-// Slot one: the workspace's `AGENTS.md`, or the operator's global one
-// when the workspace has no such file.
-fn agents_slot(
+// A workspace slot: one named file in the workspace root, present,
+// unusable or absent, with no fallback of any kind. The operator's
+// standing instructions are a slot of their own, looked for once under
+// the one name the cross-tool convention settled on; a second global
+// file under a second name would only make the precedence harder to
+// predict.
+fn workspace_slot(
   workspace: String,
-  home: Option(String),
+  file: String,
 ) -> #(Option(GuidanceFile), List(String)) {
-  let path = workspace <> "/" <> agents_file
-  case candidate(path) {
-    Present(text:) -> #(
-      Some(GuidanceFile(path:, origin: WorkspaceFile, text:)),
-      [],
-    )
-    Unusable(note:) -> #(None, [note])
-    Absent -> user_default(home)
-  }
-}
-
-// Slot two: the workspace's `CLAUDE.md`, which has no global fallback.
-// The operator's standing instructions are looked for once, under the
-// name the cross-tool convention settled on, and a second global file
-// under a second name would only make the precedence harder to predict.
-fn claude_slot(workspace: String) -> #(Option(GuidanceFile), List(String)) {
-  let path = workspace <> "/" <> claude_file
+  let path = workspace <> "/" <> file
   case candidate(path) {
     Present(text:) -> #(
       Some(GuidanceFile(path:, origin: WorkspaceFile, text:)),

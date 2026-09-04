@@ -49,6 +49,14 @@ pub type Command {
     name: String,
   )
 
+  /// Set the active strand's reasoning level for its next turns.
+  Effort(
+    /// The level word the server accepts: `off`, `minimal`, `low`,
+    /// `medium`, `high`, `xhigh` or `max`. Validated server-side, so an
+    /// unknown word comes back as a worded error rather than a guess.
+    level: String,
+  )
+
   /// Compact the active strand.
   Compact
 
@@ -109,7 +117,17 @@ pub type Suggestion {
 
 /// Returns prefix-matched slash commands for an incomplete command word.
 pub fn suggestions(input: String) -> List(Suggestion) {
-  let input = string.trim(input)
+  let input = string.trim_start(input)
+  case input {
+    // A command with a closed argument vocabulary keeps the palette open
+    // past the space and offers the words themselves, so the operator
+    // never has to remember them; Tab completes one and Enter submits.
+    "/effort " <> partial -> level_suggestions(string.trim(partial))
+    _ -> word_suggestions(string.trim(input))
+  }
+}
+
+fn word_suggestions(input: String) -> List(Suggestion) {
   case string.starts_with(input, "/"), string.contains(input, " ") {
     True, False ->
       all_suggestions()
@@ -118,6 +136,25 @@ pub fn suggestions(input: String) -> List(Suggestion) {
       })
     _, _ -> []
   }
+}
+
+/// The reasoning levels `/effort` completes, with what each one means.
+/// The vocabulary is the server's (`set_config` validates it); the
+/// adapters fold its seven steps onto whatever their dialect offers.
+pub const effort_levels = [
+  #("off", "no reasoning requested"),
+  #("minimal", "the smallest budget the model offers"),
+  #("low", "a small reasoning budget"),
+  #("medium", "a medium reasoning budget"),
+  #("high", "a large reasoning budget"),
+  #("xhigh", "beyond high where the model offers it"),
+  #("max", "the largest budget the model offers"),
+]
+
+fn level_suggestions(partial: String) -> List(Suggestion) {
+  effort_levels
+  |> list.filter(fn(level) { string.starts_with(level.0, partial) })
+  |> list.map(fn(level) { Suggestion("/effort " <> level.0, level.1, False) })
 }
 
 /// Moves a slash palette selection and wraps at either edge.
@@ -156,6 +193,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/sessions", "switch local sessions", False),
     Suggestion("/notes", "browse agent notes", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
+    Suggestion("/effort", "set the active strand's reasoning level", True),
     Suggestion("/strands", "list session strands", False),
     Suggestion("/strand", "switch the active strand", True),
     Suggestion("/fork", "fork the active strand", True),
@@ -209,6 +247,7 @@ pub fn parse(input: String) -> Command {
     "/sessions" -> Sessions
     "/notes" -> Notes
     "/details" -> Details
+    "/effort" -> MissingArgument("effort")
     "/compact" -> Compact
     "/abort" -> Abort
     "/steer" -> MissingArgument("steer")
@@ -220,6 +259,7 @@ pub fn parse(input: String) -> Command {
     "/model " <> rest -> required_argument("model", rest, Model)
     "/strand " <> rest -> required_argument("strand", rest, Strand)
     "/fork " <> rest -> required_argument("fork", rest, Fork)
+    "/effort " <> rest -> required_argument("effort", rest, Effort)
     "/steer " <> rest -> required_argument("steer", rest, Steer)
     "/queue " <> rest -> required_argument("queue", rest, Queue)
     "/" <> rest -> Unknown(command_name(rest))
@@ -267,6 +307,7 @@ pub fn help_text() -> String {
   <> "/sessions         switch locally managed sessions\n"
   <> "/notes            browse the active strand's agent notes\n"
   <> "/details          toggle reasoning and tool detail\n"
+  <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
   <> "/strands          list session strands\n"
   <> "/strand <name>    switch the active strand\n"
   <> "/fork <name>      fork the active strand\n"

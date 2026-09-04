@@ -59,7 +59,8 @@ pub type Options {
     server: String,
     /// The launcher state root, or `~/.loom` when empty.
     state_directory: String,
-    /// A model catalogue file to hand the server, or none when empty.
+    /// A model catalogue file to hand the server, or the state root's own
+    /// `loom.toml` when empty and present, or none.
     ///
     /// Named by the operator on the command line, so it is trusted the way
     /// an explicitly attached server's `--config` is; the launcher still
@@ -476,7 +477,8 @@ fn start_server(
   paths: Paths,
 ) -> Result(Target, String) {
   use server <- result.try(find_server(options.server))
-  use config <- result.try(resolve_config(options.config))
+  use state_root <- result.try(state_directory(options.state_directory))
+  use config <- result.try(resolve_config(options.config, state_root))
   use port <- result.try(
     ffi_bootstrap.reserve_loopback_port()
     |> result.map_error(fn(reason) { "reserve loopback port: " <> reason }),
@@ -672,6 +674,34 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
     lock: filepath.join(lock_directory, endpoint_key <> ".lock"),
     private_directories:,
   ))
+}
+
+// The default catalogue only when the file is there. Existence is checked
+// before the path is made canonical, because on Linux `realpath` happily
+// resolves a name whose final component does not exist, and a launcher
+// that then passed the path along would boot a server that refuses a
+// catalogue nobody wrote — which is what CI's bootstrap e2e did.
+fn present_default_catalogue(state_directory: String) -> String {
+  let path = default_catalogue_path(state_directory)
+  case ffi_bootstrap.path_exists(path) {
+    True -> ffi_bootstrap.canonical_path(path) |> result.unwrap(path)
+    False -> ""
+  }
+}
+
+/// Where the launcher looks for the operator's standing catalogue when no
+/// `--config` is given: `loom.toml` in the state root, `~/.loom` by
+/// default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert bootstrap.default_catalogue_path("/home/me/.loom")
+///   == "/home/me/.loom/loom.toml"
+/// ```
+///
+pub fn default_catalogue_path(state_directory: String) -> String {
+  filepath.join(state_directory, "loom.toml")
 }
 
 fn state_directory(override: String) -> Result(String, String) {
@@ -1090,9 +1120,19 @@ fn server_arguments(
 // than a server that boots without it or dies on its own flag parsing. The
 // path is made canonical because the server runs from the private state
 // directory, not from wherever the operator typed the flag.
-fn resolve_config(config: String) -> Result(String, String) {
+//
+// With no flag, the launcher's own state root is consulted for a
+// `loom.toml` — the operator's standing catalogue, trusted as a flag is
+// because it lives beside the launcher's sessions and tokens and nothing
+// in a workspace can put a file there. Absent, the server shapes its
+// catalogue from the environment as before; the launcher still never
+// reads a catalogue out of the workspace.
+fn resolve_config(
+  config: String,
+  state_directory: String,
+) -> Result(String, String) {
   case config {
-    "" -> Ok("")
+    "" -> Ok(present_default_catalogue(state_directory))
     path ->
       ffi_bootstrap.canonical_path(path)
       |> result.map_error(fn(reason) {

@@ -143,6 +143,24 @@ fn settings_under(root: String) -> serve.Settings {
   )
 }
 
+pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
+  // Without a toolchain the shell gets the system PATH; with one it gets
+  // the compiler's, so `gleam` resolves in the shell as it does for the
+  // build. HOME and TMPDIR are always the workspace's, because the
+  // workspace is the one root the jail lets a tool write.
+  assert serve.session_environment("/work", None)
+    == [
+      #("PATH", "/usr/local/bin:/usr/bin:/bin"),
+      #("HOME", "/work"),
+      #("TMPDIR", "/work/.codemode/tmp"),
+    ]
+  let toolchain = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  let assert Ok(path) =
+    list.key_find(serve.session_environment("/work", Some(toolchain)), "PATH")
+  assert path == toolchain
+  assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
+}
+
 pub fn boot_serves_healthz_and_ws_subscribe_test() {
   // A fresh root per run so the session always starts empty.
   let _stale = simplifile.delete(root)
