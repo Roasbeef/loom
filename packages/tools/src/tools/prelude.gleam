@@ -34,12 +34,12 @@
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
 ////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
 ////   e598c08fecc9068f608dd85f7ed334435fa47a1e68ab6cce1ac98ed92eecab68  packages/cap/src/cap/runtime.gleam
-////   25eb4efd48f17c523a587e8e02a0c5d9c31a12f71601c48276f9c28d1e2f696d  packages/cap/src/cap/schedule.gleam
+////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): c10f6644f7fdafbad8a649aa894a8065eefe5e357f22ff55cb917167ab22f704
+//// Body digest (every line after the marker): dedd03589bf1905ab90fae2913c6c68228cc1aba8a1b65d59640b39c35f4fede
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -624,13 +624,33 @@ pub fn serve_over(BitArray, Transport, fn(Asked) -> Answer) -> Result(Nil, BootE
 on: text injected back into that strand's own context later, on a timer,
 whether or not anyone is watching.
 
+/// Whether a recurring schedule takes the host's default expiry or a
+/// narrower one this program states.
+///
+/// Two variants rather than a pair of `Option`s, because \"say nothing and
+/// get the host's ceiling\" and \"state both bounds\" are the only two
+/// things a caller can usefully mean, and a record of two `Option`s would
+/// offer four. Both bounds are always active whichever variant is used —
+/// the host applies its default in place of anything this does not state
+/// — and whichever is reached first ends the schedule.
+///
+/// `Bounds` can only ever *narrow*. The host holds both numbers to the
+/// same ceilings it holds its own configuration to, so a value above one
+/// is denied with `invalid_schedule` rather than granted.
+pub type Bounds {
+  /// The host's defaults: its ceiling on both bounds. What `every`,
+  /// `cron`, `at` and `after` pass.
+  DefaultBounds
+  /// The bounds this program wants, each at or under the host's ceiling.
+  Bounds(max_fires: Int, expires_after_s: Int)
+}
 /// What a `create` actually produced.
 pub type Created {
-  Created(name: String, when: String, wake: Wake)
+  Created(name: String, target: String, when: String, wake: Wake)
 }
-/// One schedule already set on this strand.
+/// One schedule this strand owns.
 pub type Schedule {
-  Schedule(name: String, when: String, wake: Wake, fired: Int, body: String)
+  Schedule(name: String, target: String, when: String, wake: Wake, fired: Int, body: String)
 }
 /// Why a scheduling call failed.
 pub type ScheduleError {
@@ -656,6 +676,26 @@ pub type Wake {
   /// idle. What a host that forbids waking grants instead.
   SteersOnly
 }
+/// Schedules `body` to fire on this strand once, `seconds` from now.
+///
+/// This is the relative one-shot, and it exists because **nothing tells
+/// this program the current time**: the strand's prompt carries no clock
+/// and no date, so an absolute instant for `at` cannot be computed here
+/// and a guessed one is either refused or fired at the wrong moment. The
+/// host resolves this against the session's own clock.
+///
+/// `seconds` is between 1 and 604800 (seven days); outside that it is
+/// denied with `invalid_schedule`, and the refusal says why the upper
+/// bound is where it is — a schedule only fires while this session's
+/// server is running.
+///
+/// Capability: `schedule.create`.
+pub fn after(String, Int, Wake, String) -> Result(Created, ScheduleError)
+/// `after`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
+///
+/// Capability: `schedule.create`.
+pub fn after_on(String, String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// Schedules `body` to fire on this strand once, at `instant` — an
 /// RFC3339 UTC timestamp, for example `\"2026-09-01T09:00:00Z\"`.
 ///
@@ -664,14 +704,83 @@ pub type Wake {
 ///
 /// Capability: `schedule.create`.
 pub fn at(String, String, Wake, String) -> Result(Created, ScheduleError)
-/// Cancels one schedule on this strand by name. It will not fire again.
+/// `at`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
 ///
-/// A name that is not this strand's own is denied with
-/// `schedule_not_found` rather than silently succeeding, so a program
-/// cannot believe it has tidied up when it has not.
+/// Capability: `schedule.create`.
+pub fn at_on(String, String, String, Wake, String) -> Result(Created, ScheduleError)
+/// Cancels one schedule this strand set on itself, by name. It will not
+/// fire again, and its record of past fires goes with it, so the name is
+/// free to use again.
+///
+/// A name this strand does not own is denied with `schedule_not_found`
+/// rather than silently succeeding, so a program cannot believe it has
+/// tidied up when it has not — and a schedule that fires onto another
+/// strand is not found by this call at all: it wants `cancel_on`.
 ///
 /// Capability: `schedule.cancel`.
 pub fn cancel(String) -> Result(Nil, ScheduleError)
+/// Cancels one schedule this strand set onto another strand — the
+/// counterpart to `every_on` and `at_on`, addressed by the same target.
+///
+/// A schedule is named by the pair `{target, name}`, so this is not a
+/// convenience over `cancel`: the same name may be in use on this strand
+/// and on a subagent's, and `cancel` means this strand's own. `list`
+/// shows which target each schedule fires onto.
+///
+/// Capability: `schedule.cancel`.
+pub fn cancel_on(String, String) -> Result(Nil, ScheduleError)
+/// Schedules `body` to fire on this strand on a five-field cron
+/// expression — `\"0 9 * * 1-5\"` for 09:00 on weekdays.
+///
+/// **All times are UTC**, and both day fields are ORed when both are
+/// restricted; the module doc has the whole of the grammar and what it
+/// deliberately does not accept. An expression the host cannot parse is
+/// denied with `invalid_schedule`, and the refusal names the field and
+/// the item that caused it.
+///
+/// Reach for this rather than `every` whenever the *time of day* matters:
+/// an interval is a grid aligned to the epoch, so `every(…, 86_400, …)`
+/// fires at midnight UTC and there is no argument that moves it.
+///
+/// A cron schedule's first fire is its first match **after the host
+/// loaded it**. A match earlier the same day, before this program ran,
+/// was never asked for and does not fire.
+///
+/// Capability: `schedule.create`.
+pub fn cron(String, String, Wake, String) -> Result(Created, ScheduleError)
+/// `cron`, with the expression's fields read against a clock a fixed
+/// offset from UTC — `\"+02:00\"`, `\"-05:30\"` — rather than against UTC
+/// itself.
+///
+/// Reach for this when somebody named a time in their own clock:
+/// `cron_at_offset(\"standup\", \"0 9 * * 1-5\", \"+02:00\", …)` is 09:00 in a
+/// UTC+02:00 country, which is 07:00 UTC. Everything else is `cron`'s:
+/// the grammar, the ORed day fields, the first fire being the first match
+/// after the host loaded the schedule.
+///
+/// It is a **fixed offset and not a timezone**. Loom carries no timezone
+/// database and has ruled that it will not, so nothing here follows a
+/// daylight-saving change: an offset written in summer fires an hour out
+/// all winter, and one written in winter fires an hour out all summer.
+/// Write the offset in force now, and say in the body which clock the
+/// schedule was set for, so whoever reads the fire can tell.
+///
+/// The offset is between `\"-14:00\"` and `\"+14:00\"`; anything outside
+/// that, or written any other way, is denied with `invalid_schedule`.
+///
+/// Capability: `schedule.create`.
+pub fn cron_at_offset(String, String, String, Wake, String) -> Result(Created, ScheduleError)
+/// `cron`, onto a strand this one spawned rather than onto itself. The
+/// target rule and the ownership rule are `every_on`'s exactly.
+///
+/// Capability: `schedule.create`.
+pub fn cron_on(String, String, String, Wake, String) -> Result(Created, ScheduleError)
+/// `cron`, with the expiry bounds stated rather than defaulted. The
+/// bounds rule is `every_within`'s exactly.
+///
+/// Capability: `schedule.create`.
+pub fn cron_within(String, String, Bounds, Wake, String) -> Result(Created, ScheduleError)
 /// Schedules `body` to fire on this strand every `seconds` seconds, until
 /// the schedule expires on its own.
 ///
@@ -683,11 +792,37 @@ pub fn cancel(String) -> Result(Nil, ScheduleError)
 ///
 /// Capability: `schedule.create`.
 pub fn every(String, Int, Wake, String) -> Result(Created, ScheduleError)
-/// Lists the schedules set on this strand.
+/// `every`, onto a strand this one spawned rather than onto itself.
 ///
-/// Only this strand's own, and only ones a program or the model created:
-/// a schedule the operator configured is not listed and cannot be
-/// cancelled here.
+/// `target` is that strand's name — the one its handle carries. Anything
+/// else is denied with `invalid_schedule`: the host checks the target
+/// against its own record of who spawned whom, so a sibling's or a
+/// parent's name is refused however it was obtained.
+///
+/// The schedule is **this** strand's: it appears in `list` with `target`
+/// set, and `cancel_on` retires it. It is also always steer-only —
+/// `Created.wake` says so — and it ends when the target's work does,
+/// which is what a heartbeat watching a subagent wants: it steers the
+/// child while there is something to steer and stops when there is not.
+///
+/// Capability: `schedule.create`.
+pub fn every_on(String, String, Int, Wake, String) -> Result(Created, ScheduleError)
+/// `every`, with the expiry bounds stated rather than defaulted.
+///
+/// The only way to ask for a *shorter* life than the host's ceiling —
+/// four fires, or an hour — which is what a program wants when the thing
+/// it is watching will plainly be over long before a week is. `Bounds`
+/// cannot widen anything: a value above the host's ceiling is denied with
+/// `invalid_schedule`.
+///
+/// Capability: `schedule.create`.
+pub fn every_within(String, Int, Bounds, Wake, String) -> Result(Created, ScheduleError)
+/// Lists the schedules this strand owns, wherever each fires.
+///
+/// Only ones this strand created — its own heartbeats and any it set onto
+/// a strand it spawned, each row naming its `target` — and only ones a
+/// program or the model created: a schedule the operator configured is
+/// not listed and cannot be cancelled here.
 ///
 /// Capability: `schedule.list`.
 pub fn list() -> Result(List(Schedule), ScheduleError)

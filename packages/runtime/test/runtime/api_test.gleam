@@ -567,3 +567,105 @@ fn fact_runtime() -> api.Runtime {
     as "the session tree must boot"
   rt
 }
+
+// The reserved side of the same compare-and-set, which is what lets a
+// harness component mint a record under its own prefix exactly once: the
+// second writer through the check-then-write gap is told it lost rather
+// than silently overwriting the first (issue #162).
+pub fn put_reserved_fact_expecting_claims_a_cell_once_test() {
+  let rt = fact_runtime()
+  let key = "schedule/config/main/poll"
+  let assert Ok(_seq) =
+    api.put_reserved_fact_expecting(
+      rt,
+      key,
+      json.String("first"),
+      expected: None,
+    )
+    as "an absent reserved cell is a legitimate expectation"
+  let assert Error(api.FactConflict(key: conflicted)) =
+    api.put_reserved_fact_expecting(
+      rt,
+      key,
+      json.String("second"),
+      expected: None,
+    )
+    as "a second claim against the same absent expectation must lose"
+  assert conflicted == key
+  let assert Ok(Some(json.String("first"))) = api.fact(rt, key)
+
+  // Disjoint from the unreserved door: an ordinary key is refused here
+  // exactly as a reserved one is refused to `put_fact_expecting`.
+  let assert Error(api.UnreservedFactKey(key: "review/findings")) =
+    api.put_reserved_fact_expecting(
+      rt,
+      "review/findings",
+      json.Null,
+      expected: None,
+    )
+  process.kill(rt.tree.supervisor)
+}
+
+// The set form of the same retirement: everything under one prefix, in
+// one transaction, and nothing outside it. The neighbour here shares a
+// string prefix with the target (`hb` and `hb-2`), which is the mistake
+// this door hands to its caller — a prefix is a path, and the namespace's
+// owner is the only party that knows where its segments end.
+pub fn delete_reserved_prefix_removes_exactly_the_prefix_test() {
+  let rt = fact_runtime()
+  let marks = ["schedule/fired/main/hb/0", "schedule/fired/main/hb/60"]
+  let neighbour = "schedule/fired/main/hb-2/0"
+  let assert Ok(Nil) = api.put_reserved_fact(rt, neighbour, json.Null)
+    as "the neighbour must be writable"
+  list.each(marks, fn(key) {
+    let assert Ok(Nil) = api.put_reserved_fact(rt, key, json.Null)
+      as "each mark must be writable"
+    Nil
+  })
+
+  assert api.delete_reserved_prefix(rt, prefix: "schedule/fired/main/hb/")
+    == Ok(2)
+  let assert Ok([]) = api.reserved_facts(rt, prefix: "schedule/fired/main/hb/")
+    as "every cell under the prefix must be gone"
+  let assert Ok(Some(json.Null)) = api.fact(rt, neighbour)
+    as "a similarly named neighbour must survive"
+
+  // Nothing under the prefix is success and commits nothing: the count
+  // is the only observation left to make afterwards.
+  assert api.delete_reserved_prefix(rt, prefix: "schedule/fired/main/hb/")
+    == Ok(0)
+
+  // Unreserved prefixes are refused here exactly as they are to every
+  // other door on this side of the reservation, so this can never become
+  // a bulk delete over the model-writable blackboard.
+  assert api.delete_reserved_prefix(rt, prefix: "review/")
+    == Error(api.UnreservedFactKey(key: "review/"))
+  process.kill(rt.tree.supervisor)
+}
+
+// Retiring a reserved record leaves nothing behind for a prefix scan to
+// read and discard, and frees the key to be claimed afresh (issue #164).
+pub fn delete_reserved_fact_removes_the_cell_test() {
+  let rt = fact_runtime()
+  let key = "schedule/config/main/poll"
+  let assert Ok(Nil) = api.put_reserved_fact(rt, key, json.String("live"))
+  let assert Ok(Nil) = api.delete_reserved_fact(rt, key)
+  let assert Ok(None) = api.fact(rt, key) as "a deleted cell reads as absent"
+  let assert Ok([]) = api.reserved_facts(rt, prefix: "schedule/config/")
+    as "a deleted cell leaves no tombstone under its prefix"
+
+  // Already absent: the intent is met, so this is not an error.
+  let assert Ok(Nil) = api.delete_reserved_fact(rt, key)
+
+  // The key is free again, which is what a cancel-then-recreate needs.
+  let assert Ok(_seq) =
+    api.put_reserved_fact_expecting(
+      rt,
+      key,
+      json.String("again"),
+      expected: None,
+    )
+  let assert Error(api.UnreservedFactKey(key: "review/findings")) =
+    api.delete_reserved_fact(rt, "review/findings")
+  process.kill(rt.tree.supervisor)
+}

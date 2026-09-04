@@ -22,10 +22,11 @@ over one session file. WP-L.
 ## Key Types
 
 - `client/protocol.{CommandEnvelope, Command}` — the client→server
-  envelope `{v, id, cmd, body}` and its fifteen commands (`Subscribe`,
+  envelope `{v, id, cmd, body}` and its seventeen commands (`Subscribe`,
   `CatchUp`, `Prompt`, `PromptContent`, `Steer`, `FollowUp`, `Abort`,
   `Approve`, `Deny`, `Fork`, `Navigate`, `Compact`, `CreateStrand`,
-  `ListModels` (wire name `models`), `SetConfig`) plus `UnknownCommand`,
+  `ListModels` (wire name `models`), `SetConfig`, `ListSchedules` (wire name
+  `schedules`), `CancelSchedule` (wire name `schedule_cancel`)) plus `UnknownCommand`,
   which keeps an unrecognized name as data.
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
@@ -34,6 +35,30 @@ over one session file. WP-L.
   with `Snapshot`, `Strand`, `LiveOp`, `EntryRecord`, `EscalationRecord`,
   `Denial`, and `ModelInfo` as the body shapes (`ModelsSnapshot` is the
   `models` command's reply).
+- `client/protocol.{ListSchedules, CancelSchedule, SchedulesSnapshot,
+  ScheduleInfo, ScheduleWake}` — the operator's scheduling surface,
+  `protocol-change/013`. `schedules` `{}` lists every schedule the
+  session holds — operator `[[schedule]]` tables first, then every live
+  model-created cell — as a `snapshot` mode `schedules`; `schedule_cancel`
+  `{target, name}` retires one model-created schedule and replies with
+  **the listing as it stands after the cancel**, so a client re-renders
+  from one round trip. A row is `{name, target, owner, when, wake, fired,
+  body}`, every field always present: `{target, name}` is a schedule's
+  durable identity, which is why both are required on a cancel; `owner`
+  is the wire string a client renders (`"operator"`, or the owning
+  strand's name) rather than a discriminated type, because the host knows
+  which kind a row is and a client cannot; `when` is
+  `scheduleseam.describe_timing`'s rendering, printed verbatim and never
+  parsed; `wake` is the wire's one boolean here, and in Gleam it is
+  `ScheduleWake { WakesIdle | SteersOnly }` with the boolean confined to
+  the codec — 012 declined the "frozen contract" escape for a `Bool`
+  while the field was still being minted. Refusals: an operator table is
+  `conflict` naming the configuration file and the restart; nothing live
+  is `bad_request` (a name never used and one already cancelled are the
+  same absence, since the store keeps no tombstone); a hub with no
+  scheduling plane answers `schedules` with an empty listing on the
+  `models` posture and `schedule_cancel` with `unsupported`, because a
+  cancel that cancelled nothing must never read as one that worked.
 - `client/protocol.ProtocolFault` — what a malformed frame decodes to;
   nothing here crashes.
 - `client/gateway.{Gateway, Options, Message, start}` — the hub actor,
@@ -164,7 +189,15 @@ over one session file. WP-L.
   framing that marks another agent's text as data. `child_name` mints
   `sub:{parent}/{slug}-{digest}`, the digest being
   `agent.call_site_digest` over the caller's coordinates and the `Minter`
-  inside them.
+  inside them. `owns(runtime, ancestor:, strand:)` is the addressing rule
+  exposed for a seam outside the messaging plane —
+  `client/scheduleseam` asks it whether a schedule's target is a strand
+  the caller spawned — and it fails closed at every step: an unreadable
+  ledger, a strand with no cell and a cell that will not decode all
+  answer `False`, and the relation is strict, so a caller meaning "itself
+  or a descendant" says so at its own door. `is_subagent` is not a
+  substitute: it says a name was minted by *an* Agency, not by whom, and
+  a sibling's name is shaped exactly like a child's.
 - `client/codemode.{Config, Toolchain, seam, discover, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
@@ -444,17 +477,21 @@ over one session file. WP-L.
   next invariant — so the ledger read happens once per strand per
   incarnation, on the pass a hold begins, and costs nothing before or
   after.
-- `client/schedule.{Schedule, Timing, Expiry, Wake, Lateness, Policy,
+- `client/schedule.{Schedule, Owner, Timing, Expiry, Wake, Lateness,
+  Origin, Policy,
   parse, parse_policy,
   default_policy, policy_opens_the_door, wake_under, build,
-  encode, decode, config_key, config_key_prefix, cancelled_value,
-  parse_instant, render_instant, fired_key,
-  fired_key_prefix, fired_value, injection, interval_occurrence,
-  interval_late, interval_expired, max_schedules, max_model_schedules,
+  encode, decode, config_key, config_key_prefix, strand_prefixes,
+  parse_instant, render_instant, parse_utc_offset, render_utc_offset,
+  max_utc_offset_s, min_utc_offset_s, fired_key,
+  fired_key_prefix, fired_value, seen_key, seen_value, decode_seen,
+  injection, origin_of, interval_occurrence,
+  interval_late, recurring_expired, cron_occurrence, cron_late,
+  cron_next_delay_ms, relative_instant, max_schedules, max_model_schedules,
   min_interval_s,
   max_name_length, max_body_length, max_target_length,
   default_max_fires, max_max_fires, default_expires_after_s,
-  max_expires_after_s}` — scheduled heartbeats (`docs/design-notes/
+  max_expires_after_s, min_in_seconds, max_in_seconds}` — scheduled heartbeats (`docs/design-notes/
   scheduled-heartbeats.md`), the time-triggered sibling of `client/rules`:
   a `[[schedule]]` fires on a clock instead of on a literal match, parsed
   from the same `loom.toml` by the same strict, total discipline. A
@@ -475,25 +512,132 @@ over one session file. WP-L.
   share: it enforces exactly what `parse` enforces, through the same
   predicates and constants, so the two creation paths word refusals
   differently and can never disagree about what is allowed. A schedule is
-  either `Interval(seconds,
-  expiry)`, aligned to a fixed grid (`slot = floor(now_s / seconds)`), or
-  `OneShot(at)`, a single RFC3339 UTC instant — never both, no five-field
-  cron syntax, no timezones. Every `Interval` schedule carries a
+  exactly one of three: `Interval(seconds, expiry)`, aligned to a fixed
+  grid (`slot = floor(now_s / seconds)`); `Cron(expression, offset_s,
+  expiry)`, a five-field calendar expression parsed by `client/cron` and
+  read against a UTC clock shifted by `offset_s`; or
+  `OneShot(at)`, a single RFC3339 UTC instant. Never two, never none, and
+  still **no timezones anywhere** — the design note cut cron as a swamp,
+  and what changed is that the swamp is the *timezone* half rather than
+  the syntax half.
+  **`offset_s` is a fixed offset and emphatically not a zone**, which is
+  the whole of what the addition costs and what every description a model
+  or an operator reads has to say. A zone is a function from an instant
+  to an offset — Berlin is +01:00 in January and +02:00 in July — and
+  answering which needs the IANA database this tree will not carry, so a
+  schedule written `+02:00` in summer fires an hour off its author's own
+  clock all winter. What it buys is the thing an operator actually asks
+  for: "09:00 my time", which a UTC-read expression cannot say at all.
+  Written `utc_offset = "+02:00"` in TOML (`[+-]HH:MM`, allowed **only**
+  beside `cron` and refused in words beside `every`/`at`), carried as
+  `utc_offset_s: Int` in the config cell (absent → 0, so every cell
+  written before the offset existed decodes unchanged), and parsed by the
+  one `parse_utc_offset` all three doors share. The bound is
+  `min_utc_offset_s`..`max_utc_offset_s`, ±14 hours, held by
+  `parse_utc_offset` *and* by `build`, because `decode` reaches the
+  constructor with a number that never passed through the parser.
+  **The shift is a reading of the clock, never a change to an
+  occurrence's identity**: an occurrence at UTC epoch `t` matches when
+  `cron.matches(expression, at_s: t + offset_s)`, and the three search
+  functions shift in and shift straight back out — so every occurrence id
+  they return is a **UTC** epoch second and `fired_key`, `seen_key` and
+  `config_key` are byte-identical to what they were. Storing ids in
+  shifted time instead would have made an edited offset unread the whole
+  fire history and re-fire everything. `cron` buys the one thing an interval cannot say at all:
+  a **phase**. The interval grid is aligned to the epoch, so `every =
+  "86400s"` is always 00:00 UTC and `0 9 * * 1-5` is the only way to ask
+  for 09:00 on weekdays. It needs no `min_interval_s` check, and that is
+  a property of the grammar rather than an omission — cron's finest grain
+  is a minute, so `* * * * *` is already exactly at the floor.
+  **`Interval` and `Cron` answer "what is due" differently, on purpose.**
+  An interval fires the slot `now_s` falls in whether or not that slot
+  began before the schedule existed, because a heartbeat grid has no
+  wall-clock meaning and "the current slot" is the only honest reading of
+  *now*. A cron occurrence *is* an instant somebody named, so
+  `cron_occurrence` answers with the last match at or before `now_s`
+  (`cron.previous_occurrence(before_s: now_s + 1)`) **and only if that
+  match is at or after `since_s`** — the observation instant from the
+  seen cell. A `0 9 * * *` schedule created at 15:00 therefore does not
+  fire this morning's 09:00; it waits for tomorrow's. `cron_late` follows
+  the same instant: the preceding occurrence has to have been *owed*
+  (`>= since_s`) and unmarked for a fire to be `Late`, which is what
+  makes a first fire on time. `cron_next_delay_ms` is the re-arm, floored
+  at a second like the interval one, and `None` — no match within
+  `cron.search_horizon_days` — is a schedule that will not fire again.
+  All three take `offset_s`, search in shifted time and answer in UTC;
+  `cron_next_delay_ms` in particular shifts the match back *before* it
+  meets `now_ms`, since shifting only one of the two would arm a delay
+  wrong by the whole offset.
+  Both recurring shapes carry a
   mandatory `Expiry`: `max_fires` and `expires_after_s` are both always
   active, defaulted when unset, and whichever is reached first ends the
   schedule — the guardrail that caps one schedule's durable fire-mark
   footprint at exactly 1,000 rows and makes `WakesIdle` (below) safe to
-  offer at all. `Wake` is `WakesIdle | SteersOnly` and `Lateness` is
+  offer at all. The two bounds read two different durable facts.
+  `max_fires` counts the fired-marks; `expires_after_s` is measured from
+  `since_s`, **the instant the scanner first observed the schedule**,
+  which it records once in the cell `seen_key` names (`seen_value`,
+  `decode_seen`) — a third corner of `schedule/`, disjoint from the
+  `fired/` marks and the `config/` cells by its second segment, and
+  unreachable by `put_fact` like both. Measuring age from the earliest
+  fired-mark, which is how this shipped, gave a schedule that never
+  landed a fire no clock at all: a steer-only heartbeat on a strand
+  nobody opens a run on ticked for the life of the session while
+  `expires_after_s` read to an operator as a week (issue #157). The
+  cancellation tombstone is gone with it — `cancelled_value` no longer
+  exists, because cancelling a model-created schedule now deletes its
+  config cell (`api.delete_reserved_fact`), which is what keeps
+  `config_key_prefix` a list of live schedules. `Wake` is `WakesIdle | SteersOnly` and `Lateness` is
   `OnTime | Late`: both are two-variant types rather than the `Bool`s
   they were, because each is read at one end and written at another and
   neither name carries its own polarity. The TOML `wake` key, the stored
   config cell and the tool result all stay booleans on the wire, and
   each boundary writes that translation down once.
-  `interval_occurrence`/`interval_late`/`interval_expired`
+  `relative_instant` (with `min_in_seconds`/`max_in_seconds`) turns a
+  model's "in N seconds" into the absolute epoch second a `OneShot`
+  needs, refusing anything outside 1..604800 in words. It exists because
+  **the model has no clock**: the system prompt carries neither the date
+  nor the time, so a model asked to check back in 45 minutes cannot
+  compute the instant `at` wants, and the model-facing one-shot was
+  unusable in practice for the case it is most wanted in. The caller
+  supplies `now_s` rather than this module reading one, because this
+  module performs no I/O — `client/scheduleseam` reads the injected
+  `runtime/effects.clock`.
+  `interval_occurrence`/`interval_late`/`recurring_expired`/
+  `cron_occurrence`/`cron_late`/`cron_next_delay_ms`
   are pure functions over the occurrence arithmetic — deliberately
   factored out of the actor that drives them so a fencepost error gets a
   direct, deterministic test rather than one hidden behind a timer
   harness.
+  **A schedule has an `Owner` as well as a `target`, and the pair is
+  what bounds its life** (#163, #154). `Owner` is `OperatorOwned |
+  StrandOwned(strand)`: a `[[schedule]]` table parses to the first, a
+  model-created cell always carries the second, and `decode` has **no
+  path** to `OperatorOwned` — a cell with no `owner` field reads as
+  `StrandOwned(target)`, which is what every cell an earlier build wrote
+  actually was, and the absent field can therefore only ever name the
+  strand the schedule already fires onto. Ownership decides who may
+  `list` and `cancel`; the target decides whose context a fire lands in.
+  Keying cancellation on the creator is the fix: a schedule used to be
+  cancellable only by the strand it fired onto, so a subagent's own
+  heartbeat became uncancellable the moment that subagent settled and
+  held a ceiling slot for the rest of the session. What ownership
+  deliberately does *not* touch is a schedule's **identity**, which
+  stays `{target, name}` — config, seen and fired keys are unchanged and
+  name uniqueness is still per target across both stores, because an
+  occurrence is a fact about a strand's timeline and two schedules
+  sharing that pair would share a mark whoever owned them.
+  `strand_prefixes(strand)` is the one place a strand's whole durable
+  scheduling footprint is written down — the config, seen and fired
+  prefixes, each ending in `/` so a reap cannot reach a
+  similarly-named neighbour — and it is what `client/scheduleseam`
+  retires on a run end. `Origin` gained a third variant with the owner:
+  `OperatorConfigured | SelfScheduled | OwnerScheduled(owner)`, derived
+  from the value by `origin_of` rather than paired on by the scanner,
+  and the third one exists because text a parent scheduled onto a child
+  must not reach the child as "a heartbeat *you* scheduled" — it names
+  the owner and says the instruction is worth what a steer from that
+  strand is worth, and no more.
 - `client/scheduleseam.{Wiring, Door, seam, door, limits,
   describe_timing, cell}` — the host half of the model-facing scheduling
   door, filling `tools/schedule`'s seam the way `client/memory` fills
@@ -502,7 +646,32 @@ over one session file. WP-L.
   `Policy` (applied through `schedule.wake_under`, which caps `wake`
   rather than vetoing the call, so the tool can tell the model what it
   actually got), the `max_model_schedules`
-  ceiling, and the shared bounds via `client/schedule.build`. `Wiring`
+  ceiling, and the shared bounds via `client/schedule.build`.
+  `requested_timing` maps the door's four `RequestedTiming` shapes onto
+  one `Timing`, and it is the seam's job rather than the door's because
+  everything it needs is on this side: the one RFC3339 parser, the one
+  cron grammar (`client/cron.parse`), the defaulted `Expiry` a recurring
+  schedule always gets, and — for the relative one-shot `In(seconds)` —
+  the session's injected `runtime/effects.clock`, read through
+  `core/clock.read` exactly as the scanner reads it, never a wall-clock
+  call of its own. `In` is the only arm that reads a clock, and it is the
+  reason the argument exists at all: the model is told no date, so it
+  cannot compute an `at`. `requested_expiry` defaults `max_fires` and
+  `expires_after_s` and checks *neither* — both go on to
+  `schedule.build`, whose `checked_expiry` is the same ceiling a
+  `[[schedule]]` table meets, so this door holds no second copy of a
+  bound. `describe_timing` is the one rendering both `create` and `list`
+  use, and a cron reads back as `cron "0 9 * * 1-5" UTC+02:00, at most N
+  times` — the clock said out loud, because a caller reading
+  `0 9 * * 1-5` has no other way to know which 09:00 it got. A schedule
+  with no offset still renders bare `UTC`
+  (`schedule.render_utc_offset(0)`), because most have none and spelling
+  `UTC+00:00` out every time would train a reader to skip the clause that
+  matters on the rare one that does. `requested_timing`'s cron arm parses
+  the door's `utc_offset` through `schedule.parse_utc_offset` — the same
+  parser the operator's TOML key uses, so a model and an operator cannot
+  disagree about `+05:30` — and an absent argument is plain UTC, which is
+  what every request meant before the argument existed. `Wiring`
   carries `operator_schedules` for one reason worth knowing: both stores
   feed one scanner, which derives a fired-mark from `{target, name}`
   alone, so a model name colliding with an operator's would make two
@@ -512,34 +681,170 @@ over one session file. WP-L.
   `api.open`, so it is built before a runtime exists, and it reads the
   session's one holder through `agency.borrow_runtime` rather than
   standing up a second actor. `Door` is the same three operations keyed
-  on a strand name, which is what `client/codemode` serves `schedule.*`
-  over — one implementation behind both doors, so a program and a tool
-  call cannot disagree about what this session's schedules are.
-- `client/schedulescan.{Options, ModelDoor, Message, default_options,
-  with_logger, with_model_door_open, poke, start, supervised}` — the
-  scheduled-heartbeat scanner. Every tick unions the operator's fixed
+  on the **caller's** strand name, which is what `client/codemode` serves
+  `schedule.*` over — one implementation behind both doors, so a program
+  and a tool call cannot disagree about what this session's schedules
+  are. `list(caller)` answers every cell whose *owner* is the caller,
+  child-targeting ones included, and `cancel(caller, name, target)` finds
+  `{target or caller, name}` and requires the owner to match, else
+  `NotFound` — the same answer a name that does not exist gets, so a
+  caller guessing at a sibling's name learns nothing from the
+  difference.
+  Both of its writes are guarded rather than blind: `create` commits the
+  config cell with `api.put_reserved_fact_expecting(expected: None)`, so
+  a name belongs to whichever writer commits first and the loser is
+  answered `NameTaken` rather than having its schedule replaced — which
+  is what makes "creating never silently replaces" a property of the
+  commit instead of the tool door's `Exclusive` serialization, an
+  argument that never covered the code-mode door's per-plan processes
+  (#162). `cancel` deletes the cell through `api.delete_reserved_fact`
+  instead of writing a tombstone over it, both because every scanner
+  tick and every seam call reads the whole `schedule/config/` prefix
+  (#164) and because, once `create` commits on the cell's absence, a
+  tombstone would hold the name against every later create for the life
+  of the session. The pre-checks stay — `name_is_free` is the only thing
+  that can catch an operator's `{target, name}`, which has no cell for a
+  claim to collide with — and the ceiling stays inexact under a
+  code-mode fan-out, which can over-admit by up to `max_outstanding`;
+  nothing rests on the exact count, so it is documented rather than
+  fixed.
+- `client/cron.{Expression, parse, source, matches, next_occurrence,
+  previous_occurrence, max_expression_length, search_horizon_days}` —
+  standard five-field cron: the parsed expression, what it refuses in
+  words, and pure occurrence arithmetic over a UTC calendar. `Expression`
+  is opaque because its value sets carry invariants only `parse`
+  establishes (sorted, deduplicated, in range, `7` folded to `0` in
+  day-of-week), so `client/schedule` stores the **source text** and
+  re-parses on `decode` rather than storing an expansion. `parse` is
+  total and its error is prose, because the only thing a caller does with
+  it is put it in front of whoever wrote the expression. Both searches
+  are strictly-greater/strictly-less and bounded by
+  `search_horizon_days` — a legal expression need not recur (`0 0 30 2 *`
+  asks for the thirtieth of February), so an unbounded search would not
+  return. The one rule a reimplementation gets wrong is in here and
+  documented at length: **when both day fields are restricted they are
+  ORed, not ANDed**, so `0 9 1 * 1` fires on the first of the month *and*
+  on every Monday. This module holds **no offset and no timezone
+  handling at all**, and that stayed true when `client/schedule` grew a
+  fixed `utc_offset`: the shift is applied by the caller, which adds
+  `offset_s` to the instant it asks about and subtracts it from the
+  answer, so nothing here reads a clock or knows an offset exists. No seconds field, no names, and
+  `L`/`W`/`?`/`#` refused by name. Performs no I/O and reads no clock:
+  the scanner supplies the instant.
+- `client/scheduleadmin.{Admin, Row, CancelRefusal, admin}` — the
+  operator's door onto the scheduling store, opposite
+  `client/scheduleseam`'s model-facing one: it lists **everything** (an
+  operator watching a session watches all of it) and cancels only what a
+  strand wrote. A `[[schedule]]` table has no durable cell — it is
+  configuration, parsed at boot, and the file is the record, the posture
+  `client/rulescan` takes toward `[[rule]]` — so naming one is refused
+  with the reason rather than ignored. Cancellation reuses
+  `scheduleseam.retire` and then `schedulescan.poke`: one deletion order
+  for both doors, because the order (marks, seen cell, config cell last)
+  *is* the crash story, and a second order written here would be a
+  second chance to get it wrong. `gateway.with_schedules` takes the
+  `Admin`, and `client/serve` builds it over the very
+  `scheduleseam.Wiring` the model's door uses, so `None` there means no
+  admin.
+- `client/schedulescan.{Options, ModelDoor, Message, max_timer_delay_ms,
+  default_options, with_logger, with_model_door_open, poke, start,
+  supervised}` — the
+  scheduled-heartbeat scanner, and a **`weft/state_machine`**
+  (loom#165). One state, `Watching`, which the machine never leaves; the
+  data is the parsed operator list plus the runtime and nothing else; and
+  the whole of its liveness is one **named** timeout under a single
+  constant name, re-armed by every scan for the soonest boundary any
+  still-active schedule needs. A scan that finds nothing active and has
+  `DoorShut` `sm.cancel_timeout`s that name instead, so every path
+  through a scan says what should be armed under it and the timer belongs
+  to the machine rather than to a phase (`docs/weft.md` rule 8). The
+  first arming is a zero-delay one made by `sm.on_enter`, which runs
+  exactly once because the machine has one state — an injected
+  `sm.continuing(Rescan)` would have scanned inside `start`'s own
+  continuation, and "the first tick is armed and has not run" is a state
+  the fixtures hold still and step through. Neither `weft/actor` nor a
+  periodic timeout: the delay is *recomputed per scan* from the store,
+  which neither a state timeout (cancelled by a transition this machine
+  never makes) nor a fixed cadence can carry. It arms through
+  `sm.with_timer_source(timer.Injected(after: runtime.effects.timers.after))`,
+  so a simulated session's heartbeats still run on logical time and
+  `schedulescan_test`'s fake wheel still drives them by hand — that
+  injectable source (weft 0.4.2) is the thing whose absence kept this
+  module hand-rolled. With it the generation tag `Message` used to carry
+  is gone: `Message` is `Tick | Rescan`, arming under one name supersedes
+  the previous arming, and a superseded wake dies in weft's own timer
+  book rather than in a guard written here. `start` and `supervised`
+  keep `gleam/otp/actor`'s `StartResult` and
+  `supervision.ChildSpecification` — weft returns upstream's own types —
+  so `client/serve` needed no change at the boundary.
+  Every tick unions the operator's fixed
   list with the model's config cells read fresh from the store, never a
   cached list: a cell can appear or be cancelled between any two ticks
   and this actor is restartable, so a cache would be a second source of
-  truth. `poke` is what the seam rings after a write so a new schedule
+  truth. The union is an append and nothing more, because a schedule now
+  carries its own `client/schedule.Owner`: whose text a fire is comes
+  from `schedule.origin_of` rather than from a pairing this actor used to
+  carry, and a config cell can never decode as the operator's.
+  `poke` is what the seam rings after a write so a new schedule
   starts on time rather than at the next armed deadline; it checks the
   name is registered first, because a send to an unregistered name
   raises and the caller is a tool body. `with_model_door_open` sets
   `Options.model_door` to `DoorOpen`, which keeps a slow rescan floor
   when the model may create schedules, so a lost poke self-heals within
   one `min_interval_s` instead of stalling forever.
-  Unlike
-  `client/rulescan` it is driven by its own injected
-  `runtime/effects.Timers.after` deadline, never by a writer hint, and it
+  `process_schedule` dispatches the three timings, and `process_cron`
+  mirrors `process_interval` step for step — read the marks
+  (`marked_occurrences`, shared), settle the observation instant
+  (`observed_since`), test `schedule.recurring_expired`, fire what is
+  due, re-arm. The cron-specific arithmetic is all in `client/schedule`,
+  so this half stays a scanner. Two differences are worth knowing. The
+  seen cell is claimed by this actor as it always was, so `since_s` is
+  available on a schedule's very first tick — which is exactly the tick
+  that decides whether anything is owed, since a cron occurrence
+  predating `since_s` was never asked for. And a cron expression with no
+  next match inside `cron.search_horizon_days` is `Expired` for the
+  tick, with a `schedule.cron_never_matches` warning: `0 0 30 2 *` is
+  legal, will never fire, and must not leave the machine waking up over
+  it forever. Unlike
+  `client/rulescan` it is driven by its own named timeout on the injected
+  `runtime/effects.Timers` clock, never by a writer hint, and it
   holds no progress state across ticks: every tick re-derives which
   schedules are due or expired from a bounded scan of the write-once
   fired-marks already in the store, read straight off `storage`
   (`client/schedule.fired_key_prefix`) rather than through the writer's
   mailbox — the same isolation `client/rulescan`'s direct reads give it,
   for the same reason: a slow tick must never queue in front of a
-  settlement. The same "durable-derived beats durable-stored" argument
+  settlement. The one fact the marks cannot supply is when a schedule's
+  `expires_after_s` window opened — a schedule that never fired has no
+  earliest mark — so the scanner is also the **single writer** of that
+  schedule's `client/schedule.seen_key` cell, and claiming it is its only
+  write besides the fire itself. `observed_since` reads the cell off the
+  store like a mark and, finding it absent, claims it with
+  `api.put_reserved_fact_expecting(expected: None)`; a `FactConflict`
+  means another incarnation won the gap, so the winner's instant is read
+  back rather than assumed. The cell is written at most once per
+  `{strand, name}` — the invariant every reader of it rests on — and a
+  store fault that leaves it unrecorded logs `schedule.seen_unrecorded`
+  and measures that one tick from `now`, which expires nothing: a fault
+  must neither shorten a schedule's life nor lengthen it. The same "durable-derived beats durable-stored" argument
   keeps `client/rulescan`'s cursor a checkpoint rather than a source of
   truth.
+  **A settled target ends the schedule, and the check is a subagent's
+  only.** Before any timing arithmetic, a schedule whose target is a
+  subagent asks whether that strand has stopped: dead when its lineage
+  cell carries the `reaped` mark, or when its `brief` has a terminal
+  result (`api.await_strand_result(within_ms: 0)`, one immediate store
+  read) — exactly the pair `client/agency.is_live` and `reap` decide
+  from. A dead target's schedule is `Expired` for that tick: no fire, no
+  re-arm, and no wake whoever configured it, which is the belt to
+  `client/scheduleseam.reaping_hooks`' braces (#163). It **fails
+  closed**: a `sub:` target with no lineage cell, or one whose cell will
+  not decode, reads as finished — the opposite direction from
+  `client/rulescan`'s hold, deliberately, because a held rule costs a
+  tick while a fired schedule may open a run. A root strand answers
+  `False` without a read at all: `main` is idle between runs rather than
+  finished, so a terminal result there says the last prompt ended and
+  nothing about the next one.
   A fire is one `api.steer_marking` when `Schedule.wake` is `SteersOnly`
   — the injection and the occurrence's write-once fired-mark in one
   transaction, exactly `client/rulescan`'s at-most-once argument, held on
@@ -1556,6 +1861,26 @@ an install is under the extensions root.
   ancestor that still remembers the child's name from addressing it
   after the reap. `client/rulescan`'s module doc has the full argument
   and the FAIL OPEN branches (no cell, a cell that will not decode).
+- **A schedule is owned by the strand that created it and lives no
+  longer than the strand it fires onto.** Those are two rules and both
+  are needed. Ownership is what makes a schedule retirable: cancellation
+  and listing are keyed on the creator, so a parent can cancel a
+  heartbeat it set onto a child that has already settled — which nobody
+  could do while a schedule was cancellable only by its target (#163).
+  The target's lifetime is what makes it bounded: `client/scheduleseam`'s
+  `run_end` reap retires every schedule keyed to a strand whose brief
+  just ended, and `client/schedulescan` refuses to fire onto a target
+  the lineage ledger says is reaped or whose brief has settled, so
+  neither a lost reap nor an operator's `[[schedule]]` can keep a
+  finished child's clock running. A target may only ever be the caller
+  or a strand it spawned, decided from the ledger through
+  `agency.owns` — the addressing rule above, narrowed — and no schedule
+  onto a subagent may wake it, whatever the operator's policy permits,
+  because a subagent has one run and a fresh one after its work ended
+  would extend a child's life outside its parent's spawn budget. What
+  ownership does not move is a schedule's identity: the config, seen and
+  fired keys stay `{target, name}`, because an occurrence is a fact
+  about the target's timeline.
 - **A code-mode submission is judged against the seam it named, and
   routed by the seam the host wired.** The two halves are read from
   different places on purpose. The allowlist follows the *submission*

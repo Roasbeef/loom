@@ -59,6 +59,8 @@ mode-`0600` token file beside the session.
 | `compact`      | `op_transition` (phase `compacting`)       |
 | `models`       | `snapshot` (mode `models`)                 |
 | `set_config`   | `snapshot` (mode `config`)                 |
+| `schedules`    | `snapshot` (mode `schedules`)              |
+| `schedule_cancel` | `snapshot` (mode `schedules`)           |
 
 **Queued versus placed.** Not every `entry` reply describes an entry
 that is in the tree. The `entry` acking a `steer` or a `follow_up` is
@@ -151,13 +153,30 @@ once, in seq order**.
   `model` (`{provider, model_id}`), `thinking_level`, and
   `active_tools` require a `strand` and set that strand's durable
   configuration directly.
+- `schedules` `{}` — list every schedule this session holds; the reply
+  is a `schedules` snapshot. The body is deliberately empty: there is
+  nothing to scope, because an operator watching a session watches all
+  of it. A gateway with no scheduling plane answers an empty listing
+  (`protocol-change/013`).
+- `schedule_cancel` `{target: string, name: string}` — retire one
+  **model-created** schedule. Both fields are required: `{target, name}`
+  is a schedule's identity in every durable key it owns, so a cancel
+  that guessed a target would name a different clock. On success the
+  reply is the `schedules` snapshot *as it stands after the cancel*, so
+  one round trip both acts and re-renders. Naming an operator
+  `[[schedule]]` is refused with `conflict` — a table is configuration,
+  edited in the file and picked up on restart, and has no durable cell
+  to remove. Naming nothing live is refused with `bad_request`; a name
+  never used and a name already cancelled are the same absence. A
+  gateway with no scheduling plane refuses with `unsupported`, never an
+  empty success.
 
 ## Event bodies
 
 ### `snapshot`
 
 `{mode, session?, next_seq?, strands?, entries?, escalations?, usage?,
-config?, models?}`
+config?, models?, schedules?}`
 
 - `mode: "full"` — `session`, `next_seq`, `strands`, `entries` (recent
   window, oldest first, each in the `entry` body shape), `escalations`
@@ -176,6 +195,23 @@ config?, models?}`
   model and `active` the subset it currently resolves for (both always
   present, possibly empty). A gateway with no configured catalogue
   answers an empty list.
+- `mode: "schedules"` — `schedules` only: every schedule the session
+  holds, one row per schedule, `{name, target, owner, when, wake,
+  fired, body}`. Every field is always present. `name` and `target` are
+  the pair `schedule_cancel` names, and together they are the
+  schedule's durable identity. `owner` is the string a client renders:
+  `"operator"` for a `[[schedule]]` table, otherwise the name of the
+  strand that created the schedule. `when` is the gateway's own
+  rendering of the timing (an open string — display it verbatim, never
+  parse it). `wake` is `true` when a fire may start a fresh run on an
+  idle target and `false` when it may only steer one already open.
+  `fired` counts the occurrences already spent. `body` is the text one
+  fire injects and — like every field of a schedule a model created —
+  is untrusted display data, so a client sanitises it before it reaches
+  a terminal, as the `escalation` section's rendering rules require.
+  Rows are ordered: every operator schedule first, then every
+  model-created one. A gateway with no scheduling plane answers an
+  empty list.
 
 Strand: `{id, name?, leaf?: entry-id, live_op?: {op, phase}}`.
 

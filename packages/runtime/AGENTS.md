@@ -36,10 +36,34 @@ extended by the M3 runtime wave.
   retrying — `retry_admission` decrements only on `Retry`, so spending
   four attempts against a fence that refuses all four would report
   `RaceLost` and name the wrong cause.
-- `runtime/api.{put_reserved_fact, reserved_facts, reserved_fact_key}` —
-  the harness-only door to the reserved corners of `fact.custom`, and the
+- `runtime/api.{put_reserved_fact, put_reserved_fact_expecting,
+  delete_reserved_fact, delete_reserved_prefix, reserved_facts,
+  reserved_fact_key}` — the
+  harness-only door to the reserved corners of `fact.custom`, and the
   predicate naming them. Deliberately disjoint from `put_fact`/`facts`,
-  which refuse and hide the same keys.
+  which refuse and hide the same keys. `put_reserved_fact_expecting` is
+  `put_fact_expecting`'s compare-and-set on the reserved side — the
+  `expected: None` form is how a harness component mints a record under
+  its own prefix exactly once instead of read-then-blind-write (#162) —
+  and `delete_reserved_fact` is the blackboard's one delete door, reserved
+  only, so a retired record leaves no tombstone for every later prefix
+  scan to discard (#164); nothing a model reaches can make a cell vanish.
+  `delete_reserved_prefix` is that delete in its **set** form and not a
+  loop over the singular one: it lists the prefix, commits one `core/tx`
+  of `DeleteRegister` writes so the set is never half retired, and
+  answers how many there were — the only observation left once the cells
+  are gone. Zero commits nothing. It refuses an unreserved prefix like
+  every door on this side of the reservation, so it can never become a
+  bulk delete over the model-writable blackboard, where no delete door
+  exists at all. **A prefix is a path and the caller owns that
+  discipline**: this door deletes what the store matches, so a prefix
+  stopping mid-segment (`schedule/fired/main`) reaches `mainly`'s cells
+  too, and callers pass prefixes ending in the separator
+  (`client/schedule.strand_prefixes`) because only a namespace's owner
+  knows where its segments end. Its caller is
+  `client/scheduleseam`, which retires a cancelled schedule's fired-marks
+  with it and a settled strand's whole scheduling footprint on a run
+  end.
 - `runtime/supervisor.SessionTree` — a rest-for-one supervisor over six
   children in order: the significant temporary **drain ledger**, the
   restartable strand **registry**, the **StorageWriter**, the

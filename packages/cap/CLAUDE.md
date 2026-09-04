@@ -109,9 +109,10 @@ below.
   codes this loop mints itself are `bad_kind`, `busy` and `crashed`;
   every other code is the serving function's own vocabulary
   (`packages/ext`'s, in practice).
-- `cap/schedule.{Schedule, Created, Wake, ScheduleError}` — heartbeats a
-  program sets for the strand it is running on, the code-mode half of the
-  door `tools/schedule` opens for a tool call. Both land on one
+- `cap/schedule.{Schedule, Created, Wake, Bounds, ScheduleError}` — heartbeats a
+  program sets for the strand it is running on or for a strand that
+  strand spawned, the code-mode half of the door `tools/schedule` opens
+  for a tool call. Both land on one
   implementation (`client/scheduleseam.Door`), so either door can cancel
   what the other created. `Created.wake` is what the host actually
   granted and is not always what was asked for — an operator policy may
@@ -120,10 +121,69 @@ below.
   a `Wake` (`WakesIdle | SteersOnly`) rather than a `Bool`, so the
   request and the grant read the same way at both ends; the capability
   wire still carries a boolean in both directions.
-  Workspace seam only, not orchestration: the intersection of the two
-  seams' allowlists *is* the confinement property, and widening it from
-  one module to two was judged too expensive for a convenience nobody has
-  asked for.
+  **Four timings, and two of them are not conveniences.** `every` is a
+  fixed interval, `at` a UTC instant, `cron` a five-field calendar
+  expression, and `after` a one-shot a fixed while from now — one of the
+  four per schedule. `after` exists because *nothing tells a program the
+  current time*: the strand's prompt carries no clock and no date, so an
+  absolute instant for `at` cannot be computed inside a program and a
+  guessed one is either refused or fired at the wrong moment; the host
+  resolves it against the session's own clock, bounded at 1..604800
+  seconds. `cron` exists because an interval cannot express a *phase* —
+  the grid is aligned to the epoch, so `every(…, 86_400, …)` is always
+  00:00 UTC — and it is the standard five fields and nothing more: no
+  seconds field, no month or day names, none of `L`/`W`/`?`/`#`, and the
+  two day fields ORed rather than ANDed when both are restricted.
+  `cron`'s fields are read in **UTC**, and `cron_at_offset(name,
+  expression, offset, wake, body)` is the one door onto a different
+  clock: it takes a **fixed offset** written `[+-]HH:MM` (`"+02:00"`,
+  `"-05:30"`, between `"-14:00"` and `"+14:00"`) and **not a timezone**.
+  That distinction is the whole of what the function costs, and it is
+  what the doc comment has to state: a zone is a function from an instant
+  to an offset, which needs a database Loom does not carry, so nothing
+  here follows a daylight-saving change and an offset written in summer
+  fires an hour out all winter. Write the offset in force now and say in
+  the body which clock the schedule was set for. The offset is refused
+  beside any timing but `cron`, which names no fields for it to shift,
+  and it moves no durable identity: the host records an occurrence under
+  the UTC second it fell on, so an offset added or changed later re-fires
+  nothing. `every_within` and `cron_within` are the same two
+  recurring shapes with `Bounds(max_fires:, expires_after_s:)` stated
+  rather than defaulted; `DefaultBounds` is what the plain
+  functions pass, and `Bounds` can only *narrow* — the host holds both
+  numbers to the same ceilings it holds its own configuration to and
+  denies anything above one as `invalid_schedule`.
+  **A target is a request, never an instruction.** `every_on`, `at_on`,
+  `cron_on`, `after_on` and `cancel_on` are the functions that name one
+  (`cron_at_offset` deliberately does not: it is this strand's own
+  schedule, and the smallest addition the offset needed), and the host
+  admits only the calling strand itself or a strand it spawned, decided
+  from its own lineage ledger and refused as `invalid_schedule`
+  otherwise — a program cannot reach a sibling's or a parent's context by
+  writing a name. The plain `every`/`at`/`cron`/`after`/`cancel` mean
+  this strand. Two consequences a program has to read rather than
+  assume: a schedule onto a subagent is always `SteersOnly`, because a
+  subagent has one run and a fresh one after it would extend a child's
+  life past its work; and `list`/`cancel` are keyed on the strand that
+  **created** a schedule rather than the one it fires onto, which is what
+  makes a heartbeat onto a subagent cancellable at all once that
+  subagent has finished. `Schedule.target` and `Created.target` are how
+  a program tells the two apart, since one name may be in use on this
+  strand and on a child's at once.
+  Workspace seam only and not orchestration, asked and decided in issue
+  #156. The bar for the one entry the two seams share is the bar
+  `cap/report` meets: `report.emit` mints nothing durable and causes no
+  later effect, it is only how a program says what it found. A `create`
+  here mints a durable reserved cell that admits a turn onto a strand at
+  a later time, with nobody present and possibly waking an idle strand,
+  which is the ability to cause future execution and so is authority.
+  The intersection of the two seams' allowlists *is* the confinement
+  property, so widening it from one module to two would spend one rule
+  read in two directions on a convenience nobody has asked for; nothing
+  is unreachable, only indirect, since an orchestration program has the
+  strand it runs on schedule a heartbeat through the `schedule_*` tools.
+  The intersection test pinning `["cap/report"]` is the ruling's
+  checkable form.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services

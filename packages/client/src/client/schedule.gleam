@@ -53,32 +53,154 @@
 //// body = "Check on the review subagent and steer it if it has stalled."
 ////
 //// [[schedule]]
+//// name = "weekday-standup"
+//// cron = "0 9 * * 1-5"
+//// utc_offset = "+02:00"
+//// body = "Summarise what is in flight, as a standup note."
+////
+//// [[schedule]]
 //// name = "one-shot-reminder"
 //// at = "2026-09-01T09:00:00Z"
 //// body = "The migration window opens today. Confirm the plan is ready."
 //// ```
 ////
-//// ## Interval and one-shot, and nothing else
+//// ## Owner and target: two questions, and the answer to both bounds a
+//// schedule's life
 ////
-//// A schedule is either a fixed interval (`every = "300s"`, a positive
-//// whole number of seconds followed by a literal `s`) or a one-shot
-//// (`at`, an RFC3339 UTC timestamp) — never both, and never neither. No
-//// five-field cron syntax and no timezone handling beyond UTC epoch
-//// seconds: the design note cuts both as a swamp neither prior-art use
-//// case (watching a subagent, polling unattended) needs.
+//// A schedule names the strand it fires onto (`target`) and the party it
+//// belongs to (`owner`, see `Owner`). They are the same strand for the
+//// ordinary case — a strand asking for its own heartbeat — and they
+//// differ in exactly one admitted shape: a strand scheduling onto a
+//// strand it spawned, which the seam admits only against the lineage
+//// ledger (`client/scheduleseam`, issue #154).
+////
+//// Keying *cancellation* on the owner is what closes the hole issue #163
+//// named. A schedule used to be cancellable only by the strand it fired
+//// onto, so a subagent's own heartbeat became uncancellable the moment
+//// that subagent settled: it held a ceiling slot for the rest of the
+//// session and, with `wake = true`, kept re-opening runs on a driver
+//// whose task had ended. With an owner, a parent's schedule onto a child
+//// outlives the child's turn and is still the parent's to retire, and a
+//// child's own schedules die when the child does — `client/scheduleseam`
+//// reaps them on the run end, and `client/schedulescan` treats a settled
+//// or reaped target as the end of the schedule.
+////
+//// What ownership deliberately does *not* touch is a schedule's
+//// **identity**, which stays `{target, name}`: the config cell, the
+//// observation instant and every fired-mark are keyed on it, and name
+//// uniqueness is still per target across both stores. An occurrence is a
+//// fact about a strand's timeline, and two schedules sharing that pair
+//// would share a mark whoever owned them.
+////
+//// ## Three shapes, and no fourth
+////
+//// A schedule is exactly one of a fixed interval (`every = "300s"`, a
+//// positive whole number of seconds followed by a literal `s`), a
+//// calendar expression (`cron = "0 9 * * 1-5"`, five fields, UTC — see
+//// `client/cron`), or a one-shot (`at`, an RFC3339 UTC timestamp). Never
+//// two of them, and never none. Cron arrived after the other two: the
+//// design note cut it as a swamp, and what changed is that the swamp is
+//// the *timezone* half, not the syntax half. `client/cron` speaks the
+//// five-field grammar and nothing else — no names, no `L`/`W`/`?`, no
+//// seconds field — and every instant it works in is a UTC epoch second,
+//// so there is still no timezone handling anywhere in this module.
+////
+//// What cron buys that `every` cannot say at all is a *phase*: `every =
+//// "86400s"` is a grid aligned to the epoch, so a daily heartbeat is
+//// always at 00:00 UTC, and `0 9 * * 1-5` is the only way to ask for
+//// 09:00 on weekdays.
+////
+//// ## A fixed offset, and deliberately not a timezone
+////
+//// A `Cron` carries an `offset_s` — seconds east of UTC, written
+//// `utc_offset = "+02:00"` in TOML and `utc_offset` at both
+//// model-facing doors — and zero, plain UTC, is what every schedule
+//// that does not name one gets. It exists because "09:00 my time" is
+//// the most common thing anybody actually wants from a calendar
+//// expression, and a five-field expression read in UTC cannot say it.
+////
+//// It is a **fixed offset**, and the distance between that and a
+//// timezone is the whole of what this feature costs. A zone is a
+//// *function from an instant to an offset*: Berlin is +01:00 in
+//// January and +02:00 in July, and answering which requires the IANA
+//// database and a plan for updating it twice a year. Loom carries no
+//// such database and has ruled that it will not. So a schedule written
+//// `+02:00` in summer keeps firing at that offset through the winter,
+//// an hour off the wall clock of whoever wrote it, and every
+//// description a model or an operator reads says so in those words: a
+//// fixed offset, no daylight-saving changes, write the offset in force
+//// now.
+////
+//// **The shift is a reading of the clock, never a change to an
+//// occurrence's identity.** An occurrence at UTC epoch second `t`
+//// matches when `client/cron.matches(expression, at_s: t + offset_s)`,
+//// and the three search functions below shift into that reading and
+//// shift straight back out — so every value they return, and therefore
+//// every occurrence id in a fired-mark key, is a **UTC** epoch second
+//// exactly as it was before offsets existed. That direction is what
+//// makes the feature additive rather than a migration: `fired_key`,
+//// `seen_key` and `config_key` are untouched, a cell written before the
+//// offset existed decodes with `offset_s` of zero (`utc_offset_s`
+//// absent), and changing a schedule's offset renames not one durable
+//// row. Had the ids been stored in shifted time instead, an offset
+//// edited later would have made the whole fire history unreadable and a
+//// schedule re-fire everything it had already done.
+////
+//// The bound is `min_utc_offset_s`..`max_utc_offset_s`, ±14 hours,
+//// which spans every offset any inhabited place uses. The key is
+//// admitted only beside `cron`: an `every` grid is aligned to the epoch
+//// and has no fields to read, and an `at` instant is RFC3339, which
+//// already carries its own offset in the text.
+////
+//// ## The due occurrence, and where `Interval` and `Cron` differ
+////
+//// Both recurring shapes answer "what is due now" from the store alone,
+//// and they answer it differently on purpose.
+////
+//// An `Interval` fires the slot `now_s` falls in, whether or not that
+//// slot began before anyone had heard of the schedule. A heartbeat grid
+//// has no wall-clock meaning — slot 29,800,000 is not a time anybody
+//// asked for — so "the current slot" is the only honest reading of
+//// "now", and a schedule created mid-slot fires immediately rather than
+//// waiting up to a full period for a boundary nobody chose.
+////
+//// A `Cron` occurrence *is* a time somebody asked for, so the rule is
+//// stricter: the due occurrence is the last match at or before `now_s`
+//// (`cron_occurrence`), and it fires **only if that match is at or after
+//// `since_s`** — the instant a running scanner first observed the
+//// schedule (`seen_key`). An occurrence that passed before the schedule
+//// existed was never asked for, so a `0 9 * * *` schedule created at
+//// 15:00 does not fire this morning's 09:00 on its first tick; it waits
+//// for tomorrow's. Lateness follows the same instant: see `cron_late`.
 ////
 //// ## Expiry is mandatory for a recurring schedule, always both bounds
 ////
-//// An `every` schedule always carries an `Expiry`, defaulted when the
-//// operator does not set it: `max_fires` defaults to and caps at 1000,
+//// An `every` or `cron` schedule always carries an `Expiry`, defaulted
+//// when the operator does not set it: `max_fires` defaults to and caps at 1000,
 //// `expires_after_s` defaults to and caps at 604800 seconds (7 days).
 //// Whichever bound is hit first ends the schedule — "both bounds,
 //// always, earliest wins," not "either/or" — which is what keeps the
 //// worst case at exactly 1000 fire-mark rows per schedule rather than
 //// leaving an operator free to write a 60-second-interval, 7-day,
-//// no-`max_fires` schedule that would leave 10,080. A one-shot schedule
+//// no-`max_fires` schedule that would leave 10,080. A `cron` schedule
+//// carries the identical `Expiry` for the identical reason — a
+//// five-field expression can name a minute of every hour of every day
+//// as easily as `every = "60s"` can. A one-shot schedule
 //// carries no `Expiry` at all: its occurrence count is 1 by
 //// construction, so there is nothing left for a bound to protect.
+////
+//// **The age bound counts from when a running scanner first observed
+//// the schedule**, not from its first fire. `client/schedulescan`
+//// records that instant once, durably, in the cell `seen_key` names,
+//// and `recurring_expired` measures `expires_after_s` against it. The
+//// alternative — measuring from the earliest fired-mark — left a
+//// schedule that had never once landed a fire with no clock at all, so
+//// a `wake = false` heartbeat held forever on a strand nobody opens a
+//// run on ticked for the life of the session, and `expires_after_s`
+//// promised an operator a week that would never begin (issue #157).
+//// Counting from first observation is what makes the key mean what it
+//// reads as: the schedule ends after its window whether anything ever
+//// fired or not.
 ////
 //// ## `wake`: opt-in, and why it may default to something rules cannot
 ////
@@ -101,7 +223,12 @@
 //// config that boots and then behaves strangely. `max_schedules` bounds
 //// how many standing clocks one session may run. `min_interval_s` is
 //// comfortably above timer/poll granularity and keeps an `every`
-//// schedule from being a busy-loop against provider budget.
+//// schedule from being a busy-loop against provider budget. **A `cron`
+//// schedule needs no such bound**, and that is a property of the
+//// grammar rather than an omission: cron's finest grain is a minute, so
+//// the tightest expression the syntax can write — `* * * * *` — is
+//// already exactly `min_interval_s` apart, and there is nothing for a
+//// floor to refuse.
 //// `max_name_length` and the character rules on a name are copied from
 //// `client/rules.max_name_length` verbatim, for the identical reason:
 //// the name is a durable key segment and appears inside the injected
@@ -125,6 +252,7 @@
 //// function. `gleam_time` is declared as a direct dependency of this
 //// package for that reason — see `gleam.toml`.
 
+import client/cron.{type Expression}
 import core/json.{type JsonValue}
 import gleam/dict.{type Dict}
 import gleam/int
@@ -144,7 +272,7 @@ import tom
 /// `max_name_length` characters, and contains no `/`, no `"` and no
 /// newline; `target` is non-empty and at most `max_target_length`
 /// characters; `body` is non-empty and at most `max_body_length`
-/// characters.
+/// characters; a `StrandOwned` `owner` is bounded exactly as `target` is.
 pub type Schedule {
   Schedule(
     /// The operator's handle for the schedule: the durable fired-mark's
@@ -153,6 +281,11 @@ pub type Schedule {
     /// The strand this schedule addresses, by name — `"main"` unless the
     /// operator names a specific one (a subagent strand, say).
     target: String,
+    /// Who the schedule belongs to: the operator, or the strand that
+    /// asked for it. `target` and `owner` are the same strand for the
+    /// ordinary model-created schedule and differ when a parent
+    /// schedules onto a child it spawned.
+    owner: Owner,
     /// The fixed interval or the one-shot instant this schedule fires on.
     timing: Timing,
     /// Whether this schedule may start a fresh run on an idle strand,
@@ -163,14 +296,72 @@ pub type Schedule {
   )
 }
 
+/// Who a schedule belongs to — which is a different question from which
+/// strand it fires onto, and the two answers together are what bound a
+/// schedule's life.
+///
+/// Ownership decides who may `list` and `cancel` a schedule; `target`
+/// decides whose context a fire lands in. Keying cancellation on the
+/// *creator* rather than on the target is what fixes the hole issue #163
+/// names: a schedule created by a subagent onto itself was cancellable
+/// only through a strand that had already settled, so nobody could
+/// retire it and it held a session-wide ceiling slot for good. With an
+/// owner, a parent can schedule onto a child and still cancel it, and
+/// the child's own schedules are reaped when the child's run ends.
+///
+/// The identity of a schedule stays `{target, name}` — the config, seen
+/// and fired keys are unchanged by this type, and name uniqueness is
+/// still per target — because those keys are what the scanner derives an
+/// occurrence from, and two schedules sharing them would share a mark
+/// whoever owned them.
+pub type Owner {
+  /// A `[[schedule]]` table in `loom.toml`. Not the model's to list or
+  /// cancel through any door, and attributed as standing configuration
+  /// when it fires. A stored config cell can never decode to this — see
+  /// `decode` — so nothing a model creates can claim the operator's
+  /// voice.
+  OperatorOwned
+
+  /// The strand that asked for the schedule. It is the only strand that
+  /// may list or cancel it, and — when it is not also the target — the
+  /// strand a fire attributes itself to.
+  StrandOwned(strand: String)
+}
+
 /// When a schedule fires.
 ///
-/// `Interval` aligns to a fixed grid — `slot = floor(now_s /
-/// interval_s)` — and always carries an `Expiry`; `OneShot` fires once,
-/// at or after `at` (epoch seconds, UTC), and carries no expiry because
-/// its occurrence count is 1 by construction.
+/// Two recurring shapes and one single occurrence. Both recurring ones
+/// always carry an `Expiry` — the module doc's "Expiry is mandatory"
+/// section is the argument, and it applies to a calendar expression
+/// exactly as it does to a fixed interval — and `OneShot` carries none
+/// because its occurrence count is 1 by construction.
 pub type Timing {
+  /// A fixed grid aligned to the epoch: `slot = floor(now_s /
+  /// interval_s)`, and the occurrence a slot names is its own epoch
+  /// second. Fires the slot `now_s` falls in, including the slot that
+  /// was already under way when the schedule was created.
   Interval(seconds: Int, expiry: Expiry)
+
+  /// A five-field cron expression, read against a UTC clock shifted by
+  /// `offset_s` (`client/cron`). Unlike
+  /// `Interval` this can express a phase and a calendar shape —
+  /// "09:00 on weekdays", "the first of the month" — and unlike
+  /// `Interval` it never fires an occurrence that passed before the
+  /// schedule was first observed, because a cron occurrence is an
+  /// instant somebody named rather than a slot on a grid. See
+  /// `cron_occurrence`.
+  Cron(
+    expression: Expression,
+    /// Seconds east of UTC the expression's fields are read in, between
+    /// `min_utc_offset_s` and `max_utc_offset_s`, and `0` for plain UTC.
+    /// A **fixed** offset and not a timezone: see the module doc's
+    /// "A fixed offset, and deliberately not a timezone" section for
+    /// what that costs and why the alternative is not on offer.
+    offset_s: Int,
+    expiry: Expiry,
+  )
+
+  /// One occurrence, at or after `at` (epoch seconds, UTC).
   OneShot(at: Int)
 }
 
@@ -242,6 +433,21 @@ pub const default_expires_after_s = 604_800
 /// the cap.
 pub const max_expires_after_s = 604_800
 
+/// The furthest east a `cron` schedule's `utc_offset` may sit, in
+/// seconds: 14 hours, which is the largest offset any inhabited place
+/// uses (Kiritimati, UTC+14). Wider than every real zone and narrow
+/// enough that an offset written by mistake — milliseconds, a bare hour
+/// count in the wrong unit — is refused rather than silently shifting a
+/// schedule by months.
+pub const max_utc_offset_s = 50_400
+
+/// The furthest west a `cron` schedule's `utc_offset` may sit, in
+/// seconds: 14 hours behind UTC. Symmetric with `max_utc_offset_s`
+/// rather than stopping at the real western extreme (UTC-12), because a
+/// symmetric bound is one rule a reader can hold and the asymmetry would
+/// buy nothing.
+pub const min_utc_offset_s = -50_400
+
 // The strand a schedule addresses when the operator names none.
 const default_target = "main"
 
@@ -303,7 +509,7 @@ fn parse_document(
     Ok(_other) ->
       Error(
         "schedule must be an array of [[schedule]] tables, each with "
-        <> "name, a timing (every or at), and body",
+        <> "name, a timing (every, cron or at), and body",
       )
   })
   use Nil <- result.try(bounded_count(list.length(tables)))
@@ -324,8 +530,8 @@ fn parse_schedule(
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     [
-      "name", "target", "every", "at", "max_fires", "expires_after_s", "wake",
-      "body",
+      "name", "target", "every", "cron", "utc_offset", "at", "max_fires",
+      "expires_after_s", "wake", "body",
     ],
     place,
   ))
@@ -338,7 +544,11 @@ fn parse_schedule(
   use timing <- result.try(schedule_timing(fields, place))
   use wake <- result.try(schedule_wake(fields, place))
   use body <- result.try(bounded_string(fields, place, "body", max_body_length))
-  Ok(Schedule(name:, target:, timing:, wake:, body:))
+
+  // An operator's table is the operator's, whatever it targets: a
+  // `[[schedule]]` naming a subagent is standing configuration about
+  // that subagent, not something the subagent may cancel.
+  Ok(Schedule(name:, target:, owner: OperatorOwned, timing:, wake:, body:))
 }
 
 // The name is a durable key segment (`fired_key`) and it is quoted
@@ -405,35 +615,181 @@ fn schedule_target(
   }
 }
 
-// Exactly one of `every`/`at`, and the keys each licenses.
+// Exactly one of `every`/`cron`/`at`, and the keys each licenses.
+//
+// The count is taken first and separately from the parse, because "you
+// named two timings" and "your cron expression has a bad hour field" are
+// different mistakes and an operator reading the second before the first
+// would fix the wrong thing.
 fn schedule_timing(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Timing, String) {
-  case dict.has_key(fields, "every"), dict.has_key(fields, "at") {
-    True, True ->
-      Error(
-        place
-        <> ".every and .at are mutually exclusive: a schedule is either a "
-        <> "fixed interval or a one-shot, never both",
-      )
-    False, False ->
-      Error(
-        place
-        <> " must set exactly one of .every or .at: a fixed interval or a "
-        <> "one-shot",
-      )
-    True, False -> {
+  use named <- result.try(one_timing_key(fields, place))
+
+  case named {
+    EveryKey -> {
+      use Nil <- result.try(refuse_cron_only_keys(fields, place, "every"))
       use seconds <- result.try(interval_seconds(fields, place))
-      use expiry <- result.try(interval_expiry(fields, place))
+      use expiry <- result.try(recurring_expiry(fields, place))
       Ok(Interval(seconds:, expiry:))
     }
-    False, True -> {
-      use Nil <- result.try(refuse_interval_only_keys(fields, place))
+
+    CronKey -> {
+      use expression <- result.try(cron_expression(fields, place))
+      use offset_s <- result.try(cron_utc_offset(fields, place))
+      use expiry <- result.try(recurring_expiry(fields, place))
+      Ok(Cron(expression:, offset_s:, expiry:))
+    }
+
+    AtKey -> {
+      use Nil <- result.try(refuse_cron_only_keys(fields, place, "at"))
+      use Nil <- result.try(refuse_recurring_only_keys(fields, place))
       use at <- result.try(one_shot_at(fields, place))
       Ok(OneShot(at:))
     }
   }
+}
+
+// The one key that only means something beside `cron`.
+//
+// An offset shifts the clock a calendar expression's fields are read
+// against, and the other two timings have no fields to read: an `every`
+// grid is aligned to the epoch and an `at` is already an absolute
+// instant with its own offset written into the RFC3339 text. So
+// `utc_offset` beside either is a mistake about what the key does, and
+// silently ignoring it would leave an operator believing a schedule
+// fires at a local time it will not.
+fn refuse_cron_only_keys(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  timing: String,
+) -> Result(Nil, String) {
+  case dict.has_key(fields, "utc_offset") {
+    False -> Ok(Nil)
+    True ->
+      Error(
+        place
+        <> ".utc_offset is only valid alongside .cron: it shifts the clock "
+        <> "a calendar expression's fields are read against, and ."
+        <> timing
+        <> " names no fields. An `every` grid is aligned to the epoch, and "
+        <> "an `at` instant already carries its own offset.",
+      )
+  }
+}
+
+// `utc_offset` is `[+-]HH:MM`, absent meaning UTC.
+//
+// Written as `+02:00` rather than as a number of hours or seconds
+// because that is the spelling every operator already knows from
+// RFC3339 and from the offsets a clock displays, and because a signed
+// number of hours cannot say `+05:30` at all — which India, Iran and
+// Nepal all need.
+fn cron_utc_offset(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Int, String) {
+  case dict.get(fields, "utc_offset") {
+    Error(Nil) -> Ok(0)
+    Ok(tom.String(text)) ->
+      parse_utc_offset(text)
+      |> result.map_error(fn(reason) { place <> ".utc_offset: " <> reason })
+    Ok(_other) ->
+      Error(
+        place
+        <> ".utc_offset must be a quoted offset of the form \"+02:00\" or "
+        <> "\"-05:30\"",
+      )
+  }
+}
+
+/// Which of the three `[[schedule]]` timing keys a table set.
+///
+/// A type rather than the key's own string, so `schedule_timing` reads a
+/// value the compiler has already narrowed to three cases and needs no
+/// unreachable arm for a fourth spelling that cannot arrive. `parse`'s
+/// allowed-key list and `timing_keys` are the two places a new timing
+/// would be added, and forgetting either fails a test rather than
+/// silently ignoring a key.
+type TimingKey {
+  EveryKey
+  CronKey
+  AtKey
+}
+
+// The three spellings, paired with what each names. One list, so a
+// refusal's wording and the keys the parser actually looks for cannot
+// drift apart.
+const timing_keys = [
+  #("every", EveryKey),
+  #("cron", CronKey),
+  #("at", AtKey),
+]
+
+// Which of the three timing keys this table set, refusing none and more
+// than one in words.
+//
+// The count is a question about the length of a list rather than a case
+// over three `dict.has_key` results crossed with each other: three
+// booleans crossed are eight arms saying three things, and the message a
+// reader gets is better for naming exactly the keys they wrote.
+fn one_timing_key(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(TimingKey, String) {
+  let named =
+    list.filter(timing_keys, fn(pair) {
+      let #(key, _timing) = pair
+      dict.has_key(fields, key)
+    })
+
+  case named {
+    [#(_key, only)] -> Ok(only)
+
+    [] ->
+      Error(
+        place
+        <> " must set exactly one of ."
+        <> string.join(spelled(timing_keys), ", .")
+        <> ": a fixed interval, a cron expression, or a one-shot",
+      )
+
+    [_first, _second, ..] ->
+      Error(
+        place
+        <> " sets ."
+        <> string.join(spelled(named), " and .")
+        <> ", which are mutually exclusive: a schedule fires on one "
+        <> "timing, never two",
+      )
+  }
+}
+
+fn spelled(keys: List(#(String, TimingKey))) -> List(String) {
+  list.map(keys, fn(pair) {
+    let #(key, _timing) = pair
+    key
+  })
+}
+
+// A `cron` key is an ordinary quoted string handed to `client/cron`,
+// which is total and words its own refusals by field and item. The
+// message is prefixed with the place so an operator reading it knows
+// which table to edit, and otherwise passed through untouched — this
+// module has nothing to add about an hour field.
+fn cron_expression(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Expression, String) {
+  use text <- result.try(bounded_string(
+    fields,
+    place,
+    "cron",
+    cron.max_expression_length,
+  ))
+  cron.parse(text)
+  |> result.map_error(fn(reason) { place <> ".cron: " <> reason })
 }
 
 fn interval_seconds(
@@ -521,10 +877,11 @@ fn is_digit(grapheme: String) -> Bool {
   list.contains(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"], grapheme)
 }
 
-// The two keys that only mean something beside `every`. A one-shot's
-// occurrence count is 1 by construction, so either one here is a
-// contradiction worth naming rather than silently ignoring.
-fn refuse_interval_only_keys(
+// The two keys that only mean something beside a *recurring* timing —
+// `every` or `cron`. A one-shot's occurrence count is 1 by construction,
+// so either one here is a contradiction worth naming rather than
+// silently ignoring.
+fn refuse_recurring_only_keys(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Nil, String) {
@@ -532,16 +889,17 @@ fn refuse_interval_only_keys(
     True ->
       Error(
         place
-        <> ".max_fires is only valid alongside .every: a one-shot "
-        <> "schedule fires exactly once by construction",
+        <> ".max_fires is only valid alongside .every or .cron: a "
+        <> "one-shot schedule fires exactly once by construction",
       )
     False ->
       case dict.has_key(fields, "expires_after_s") {
         True ->
           Error(
             place
-            <> ".expires_after_s is only valid alongside .every: a "
-            <> "one-shot schedule fires exactly once by construction",
+            <> ".expires_after_s is only valid alongside .every or "
+            <> ".cron: a one-shot schedule fires exactly once by "
+            <> "construction",
           )
         False -> Ok(Nil)
       }
@@ -549,8 +907,9 @@ fn refuse_interval_only_keys(
 }
 
 // Both bounds, always, whichever the operator states or not — a
-// recurring schedule's expiry is never optional (see the module doc).
-fn interval_expiry(
+// recurring schedule's expiry is never optional (see the module doc),
+// and `every` and `cron` are held to the identical pair.
+fn recurring_expiry(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Expiry, String) {
@@ -791,10 +1150,12 @@ pub fn fired_key(
 
 /// The prefix every one of one schedule's fired-marks on one strand
 /// shares — `fired_key` with the occurrence number left off. This is
-/// what `client/schedulescan` scans with `runtime/api.reserved_facts` to
-/// count a schedule's total fires and find its earliest occurrence,
-/// which is the whole of how expiry is computed: no separate counter,
-/// no cached "started at," just a bounded scan of the marks themselves.
+/// what `client/schedulescan` scans to count a schedule's fires and to
+/// see whether the immediately preceding slot landed one — `max_fires`
+/// and `Lateness` out of a single bounded scan, with no separate
+/// counter. Expiry's other half, the age bound, is not derivable from
+/// these marks at all: a schedule that has never fired has none. That
+/// instant lives in its own cell instead (`seen_key`).
 ///
 /// ## Examples
 ///
@@ -821,12 +1182,130 @@ pub fn fired_value(schedule: Schedule) -> JsonValue {
   json.String(schedule.name)
 }
 
-// --- interval occurrence arithmetic --------------------------------------
+/// The reserved key holding the epoch second a schedule was first
+/// observed by a running scanner — where its `expires_after_s` clock
+/// starts.
+///
+/// `schedule/seen/…`, its own corner of the namespace, disjoint from the
+/// `schedule/fired/…` marks and the `schedule/config/…` cells by its
+/// second segment. That is the argument `config_key` makes, arriving a
+/// third time: each of the three shapes means a different thing, is
+/// written under a different rule — a mark once per occurrence, a config
+/// cell once per creation, this one once per schedule, ever — and
+/// sharing a prefix would let a malformed key of one shape be read as
+/// another. It sits under `runtime/api.schedule_fact_prefix` like the
+/// other two, so it is unreachable by `put_fact`: a model can neither
+/// forge an observation instant nor delete one to restart its own
+/// schedule's clock.
+///
+/// One writer, `client/schedulescan`, claims this cell with an
+/// expect-absent compare-and-set on the first tick that sees the
+/// schedule and never writes it again — so every reader of it, on any
+/// later tick or any later incarnation, agrees on one instant. It is
+/// keyed on `{strand, name}` exactly as the marks are, which is what
+/// makes it the same clock for the operator's schedules and the model's
+/// alike.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.seen_key(strand: "main", name: "heartbeat")
+///   == "schedule/seen/main/heartbeat"
+/// ```
+///
+pub fn seen_key(strand strand: String, name name: String) -> String {
+  api.schedule_fact_prefix <> "seen/" <> strand <> "/" <> name
+}
+
+/// The seen cell's stored value: the epoch second of the observation,
+/// and nothing else. The key already carries the strand and the name, so
+/// the instant is the whole of what this cell has to say.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.seen_value(1_700_000_000) == json.Int(1_700_000_000)
+/// ```
+///
+pub fn seen_value(since_s since_s: Int) -> JsonValue {
+  json.Int(since_s)
+}
+
+/// Reads a seen cell back, total: anything that is not a plain epoch
+/// second is `Error(Nil)`, which the scanner treats as an observation it
+/// has not recorded rather than as an instant to measure a life against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.decode_seen(schedule.seen_value(since_s: 42)) == Ok(42)
+/// ```
+///
+/// ```gleam
+/// assert schedule.decode_seen(json.String("42")) == Error(Nil)
+/// ```
+///
+pub fn decode_seen(value: JsonValue) -> Result(Int, Nil) {
+  case value {
+    json.Int(value: since_s) -> Ok(since_s)
+
+    json.Object(..)
+    | json.Array(..)
+    | json.String(..)
+    | json.Float(..)
+    | json.Bool(..)
+    | json.Null -> Error(Nil)
+  }
+}
+
+/// Every reserved prefix one strand's schedules occupy: the config
+/// cells, the observation instants, and the fired-marks, in that order.
+///
+/// The one place the *durable footprint of a strand's schedules* is
+/// written down, so retiring them is one list rather than three call
+/// sites that can each forget a corner. `client/scheduleseam` reads it
+/// twice: when a strand's own run ends and its schedules are reaped, and
+/// as the shape a single cancellation deletes a narrower slice of.
+///
+/// Each prefix ends in `/`, which is what keeps a strand from reaping a
+/// differently-named neighbour: `sub:main/worker` and
+/// `sub:main/worker-2` share a string prefix and not a path one. A
+/// spawned strand's own children are safe for the same reason from the
+/// other side — a child's name is `sub:{parent}/…`, so its keys sit
+/// under `schedule/config/sub:sub:main/…` and no ancestor's prefix
+/// reaches them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.strand_prefixes(strand: "main")
+///   == [
+///     "schedule/config/main/", "schedule/seen/main/",
+///     "schedule/fired/main/",
+///   ]
+/// ```
+///
+pub fn strand_prefixes(strand strand: String) -> List(String) {
+  [
+    config_key_prefix <> strand <> "/",
+    api.schedule_fact_prefix <> "seen/" <> strand <> "/",
+    api.schedule_fact_prefix <> "fired/" <> strand <> "/",
+  ]
+}
+
+// --- occurrence arithmetic ------------------------------------------------
 //
 // Pure and exported so `client/schedulescan`'s tick handler stays a thin
 // wrapper and this arithmetic — the one place a fencepost error would be
 // easy to make and easy to miss in an actor test — gets a direct,
 // deterministic unit test instead of only an actor-and-timer-driven one.
+//
+// Two families, one per recurring shape, and they answer the same three
+// questions: what is due, whether it is late, and how long until the
+// next one. `Interval`'s answers are division; `Cron`'s are a calendar
+// search delegated to `client/cron`. `recurring_expired` is shared,
+// because expiry is about fired-marks and an observation instant and
+// knows nothing about how an occurrence was chosen.
 
 /// The `Interval` slot `now_s` falls in, named by its own epoch second
 /// (`slot * seconds`, not the slot number) — what `fired_key` stores as
@@ -919,77 +1398,362 @@ pub fn interval_late(
   }
 }
 
-/// Whether a recurring schedule's expiry has been reached against what
-/// has actually fired: both bounds, always, earliest wins — the same
-/// rule `parse` enforces on the *configured* values, checked here against
-/// the durable fired-marks themselves.
+/// Whether a recurring schedule's expiry has been reached: both bounds,
+/// always, earliest wins — the same rule `parse` enforces on the
+/// *configured* values, checked here against what the store actually
+/// holds.
+///
+/// Shared by `Interval` and `Cron`, which is why it takes neither an
+/// interval nor an expression: both bounds are questions about the
+/// durable record — how many marks are under this schedule's prefix, and
+/// how long ago it was first observed — and neither depends on how the
+/// occurrences were spaced.
+///
+/// The two bounds read two different durable facts. `max_fires` counts
+/// the schedule's fired-marks, which is exactly what has been spent.
+/// `expires_after_s` is measured from `since_s`, the instant a running
+/// scanner first observed this schedule (`seen_key`) — *not* from its
+/// earliest fired-mark, which is how this was first written and which
+/// gave a schedule that had never landed a fire no age clock at all
+/// (issue #157). A held `wake = false` heartbeat on a strand nobody
+/// opens a run on is exactly that schedule, and it ticked forever.
+/// Reading the start instant off a cell written once, when the schedule
+/// was first seen, makes the bound mean the window an operator reads it
+/// as and ends a schedule that never fires.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert schedule.interval_expired(
+/// assert schedule.recurring_expired(
 ///   occurrences: [0, 60],
 ///   expiry: schedule.Expiry(max_fires: 2, expires_after_s: 604_800),
 ///   now_s: 120,
+///   since_s: 0,
 /// )
 /// ```
 ///
 /// ```gleam
-/// assert !schedule.interval_expired(
-///   occurrences: [0],
-///   expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
-///   now_s: 120,
+/// // never fired, and its window has closed: expired all the same
+/// assert schedule.recurring_expired(
+///   occurrences: [],
+///   expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 100),
+///   now_s: 101,
+///   since_s: 0,
 /// )
 /// ```
 ///
-pub fn interval_expired(
+/// ```gleam
+/// assert !schedule.recurring_expired(
+///   occurrences: [0],
+///   expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+///   now_s: 120,
+///   since_s: 0,
+/// )
+/// ```
+///
+pub fn recurring_expired(
   occurrences occurrences: List(Int),
   expiry expiry: Expiry,
   now_s now_s: Int,
+  since_s since_s: Int,
 ) -> Bool {
   // "Has this many-or-more fired" only needs the elements up to the
   // bound, not a full walk to count them (lint R5) — the same
   // `too_long`-shaped idiom `client/rules` uses for a string length.
   case list.drop(occurrences, int.max(expiry.max_fires - 1, 0)) != [] {
     True -> True
-    False ->
-      case earliest(occurrences) {
-        None -> False
-        Some(first) -> now_s - first >= expiry.expires_after_s
-      }
+
+    // The age bound needs no scan at all now that the start instant is
+    // recorded rather than inferred: one subtraction against the cell
+    // the scanner claimed the first time it saw this schedule.
+    False -> now_s - since_s >= expiry.expires_after_s
   }
 }
 
-fn earliest(occurrences: List(Int)) -> Option(Int) {
-  case occurrences {
-    [] -> None
-    [first, ..rest] -> Some(list.fold(rest, first, int.min))
+// --- cron occurrence arithmetic ------------------------------------------
+//
+// `Interval`'s three answers are division on `now_s`. Cron's are a
+// calendar search, so all three delegate to `client/cron` and add
+// exactly one thing of their own: the `since_s` rule the module doc
+// states, which is what keeps a schedule from firing an occurrence that
+// passed before anybody had asked for it.
+
+/// The occurrence a `Cron` schedule owes at `now_s`, or `None` when it
+/// owes none.
+///
+/// The candidate is the last match at or before `now_s` —
+/// `cron.previous_occurrence` is strictly-before, so the seed is
+/// `now_s + 1` and a tick landing exactly on a match sees that match.
+/// A tick between two matches sees the earlier one, which is what makes
+/// a fire that the server was down for land as one catch-up rather than
+/// being skipped.
+///
+/// It is then **refused if it predates `since_s`**, the instant a running
+/// scanner first observed this schedule (`seen_key`). This is the whole
+/// difference from `interval_occurrence`, and the reason for it is that a
+/// cron occurrence is an instant somebody named. `every = "86400s"`
+/// names slot boundaries on an epoch grid, so "the current slot" is the
+/// only reading of *now* that means anything and a schedule created
+/// mid-slot fires at once. `0 9 * * *` names 09:00, and a schedule
+/// created at 15:00 was never asking about this morning: firing it would
+/// deliver a heartbeat for a window that closed before the schedule
+/// existed, immediately and annotated late, which reads as a bug however
+/// carefully it is documented.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(expression) = cron.parse("0 9 * * *")
+/// // 2026-09-02T09:30:00Z, a schedule observed at 2026-09-02T00:00:00Z:
+/// // this morning's 09:00 is due.
+/// assert schedule.cron_occurrence(
+///     expression: expression,
+///     now_s: 1_788_341_400,
+///     since_s: 1_788_307_200,
+///   )
+///   == Some(1_788_339_600)
+/// ```
+///
+/// ```gleam
+/// let assert Ok(expression) = cron.parse("0 9 * * *")
+/// // The same instant, but the schedule was only observed at 09:15:
+/// // 09:00 predates it and is not owed.
+/// assert schedule.cron_occurrence(
+///     expression: expression,
+///     now_s: 1_788_341_400,
+///     since_s: 1_788_340_500,
+///   )
+///   == None
+/// ```
+///
+pub fn cron_occurrence(
+  expression expression: Expression,
+  offset_s offset_s: Int,
+  now_s now_s: Int,
+  since_s since_s: Int,
+) -> Option(Int) {
+  // The search runs in shifted time and the answer is shifted back, so
+  // every instant that leaves this function is a UTC epoch second — the
+  // occurrence id a fired-mark is keyed on, unchanged by the offset. See
+  // the module doc's "A fixed offset" section for why that direction is
+  // load-bearing rather than tidy.
+  case cron.previous_occurrence(expression, before_s: now_s + offset_s + 1) {
+    // No match within the search horizon looking backwards, which for
+    // any expression that recurs means the schedule is younger than its
+    // first occurrence.
+    None -> None
+
+    // The match is real but predates the observation instant: it was
+    // never asked for, so nothing is owed and nothing is recorded.
+    Some(shifted) if shifted - offset_s < since_s -> None
+
+    Some(shifted) -> Some(shifted - offset_s)
   }
+}
+
+/// Whether a `Cron` occurrence about to fire should be annotated `Late`:
+/// the occurrence *before* it was itself due — at or after `since_s` —
+/// and has no fired-mark.
+///
+/// The same reasoning as `interval_late`, with the preceding window
+/// found by a calendar search instead of by subtracting an interval.
+/// Lateness is never decided by comparing `now_s` against the
+/// occurrence: the occurrence is chosen *from* `now_s`
+/// (`cron_occurrence`), so such a check would read as on-time whenever
+/// the tick is prompt and as late whenever it is a second slow, which is
+/// jitter rather than a missed window. What actually distinguishes the
+/// two is already in the marks — a prompt series has a mark on every
+/// preceding occurrence, and a window nothing ticked through has none.
+///
+/// The `since_s` guard is the same one `cron_occurrence` applies, and it
+/// matters most on the very first fire: the occurrence before a
+/// schedule's first is not a window it missed, so its absent mark says
+/// nothing and the fire is `OnTime`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(expression) = cron.parse("0 9 * * *")
+/// // The first fire of a schedule observed at 2026-09-02T00:00:00Z:
+/// // yesterday's 09:00 predates it, so nothing was missed.
+/// assert schedule.cron_late(
+///     expression: expression,
+///     occurrences: [],
+///     occurrence: 1_788_339_600,
+///     since_s: 1_788_307_200,
+///   )
+///   == schedule.OnTime
+/// ```
+///
+/// ```gleam
+/// let assert Ok(expression) = cron.parse("0 9 * * *")
+/// // The same fire from a schedule observed a week earlier, with no
+/// // mark on the preceding day: a window closed unfired.
+/// assert schedule.cron_late(
+///     expression: expression,
+///     occurrences: [],
+///     occurrence: 1_788_339_600,
+///     since_s: 1_787_702_400,
+///   )
+///   == schedule.Late
+/// ```
+///
+pub fn cron_late(
+  expression expression: Expression,
+  offset_s offset_s: Int,
+  occurrences occurrences: List(Int),
+  occurrence occurrence: Int,
+  since_s since_s: Int,
+) -> Lateness {
+  // Shifted in, shifted out, exactly as `cron_occurrence` does it: the
+  // preceding occurrence is compared against `occurrences`, which holds
+  // UTC epoch seconds read off the fired-marks.
+  case cron.previous_occurrence(expression, before_s: occurrence + offset_s) {
+    // Nothing precedes this occurrence within the horizon, so there is
+    // no earlier window its absence could stand for.
+    None -> OnTime
+
+    Some(shifted) ->
+      preceding_lateness(occurrences, shifted - offset_s, since_s)
+  }
+}
+
+// The verdict once the preceding occurrence is known: it has to have
+// been *owed* before its absence means anything.
+fn preceding_lateness(
+  occurrences: List(Int),
+  preceding: Int,
+  since_s: Int,
+) -> Lateness {
+  case preceding >= since_s, list.contains(occurrences, preceding) {
+    // Before the schedule was observed. Never due, so never missed —
+    // this is what makes a first fire on time.
+    False, _fired -> OnTime
+
+    // Due and fired: the series is prompt.
+    _observed, True -> OnTime
+
+    // Due and unfired: a window closed with nothing in it.
+    True, False -> Late
+  }
+}
+
+/// How long to wait, in milliseconds, for a `Cron` schedule's next
+/// occurrence — or `None` when the expression has none within
+/// `cron.search_horizon_days`.
+///
+/// Floored at one second for the reason `client/schedulescan`'s interval
+/// re-arm is: a boundary the clock has already reached would otherwise
+/// arm a zero delay and spin the scanner against the same occurrence.
+///
+/// `None` is a schedule that will not fire again — an expression naming
+/// a date that does not exist, most of the year — and the scanner treats
+/// it as expired for that tick rather than re-arming on a guess.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(expression) = cron.parse("0 9 * * 1-5")
+/// // 2026-09-04T09:00:00Z is a Friday fire; the next is the Monday,
+/// // 2026-09-07T09:00:00Z, three days later.
+/// assert schedule.cron_next_delay_ms(
+///     expression: expression,
+///     now_s: 1_788_512_400,
+///     now_ms: 1_788_512_400_000,
+///   )
+///   == Some(259_200_000)
+/// ```
+///
+pub fn cron_next_delay_ms(
+  expression expression: Expression,
+  offset_s offset_s: Int,
+  now_s now_s: Int,
+  now_ms now_ms: Int,
+) -> Option(Int) {
+  // The search is in shifted time and the wait is in real time, so the
+  // match is shifted back before it meets `now_ms`. Shifting only one of
+  // the two would arm a delay wrong by the whole offset.
+  cron.next_occurrence(expression, after_s: now_s + offset_s)
+  |> option.map(fn(shifted) {
+    int.max({ shifted - offset_s } * 1000 - now_ms, 1000)
+  })
 }
 
 // --- the injected text ---------------------------------------------------
 
 /// Whose text a fire is injecting, which is the one question the fence
 /// around it exists to answer.
+///
+/// Three answers rather than two, because "the model wrote this" stopped
+/// being one fact the moment a strand could schedule onto a strand it
+/// spawned. A heartbeat firing on a child says the parent set it; a
+/// heartbeat that told the child *it* had scheduled the thing would be
+/// inviting the child to treat a sibling authority's instruction as its
+/// own earlier intent.
 pub type Origin {
   /// An operator's `[[schedule]]` table. Standing configuration the model
   /// had no hand in.
   OperatorConfigured
 
-  /// A schedule the model created for itself through `tools/schedule` or
-  /// the `schedule.*` capabilities.
-  ModelCreated
+  /// A schedule the strand being fired on created for itself, through
+  /// `tools/schedule` or the `schedule.*` capabilities.
+  SelfScheduled
+
+  /// A schedule another strand — the one that spawned this target —
+  /// created onto it. Carries the owner's name, because a reader that
+  /// cannot see who set a heartbeat cannot weigh it.
+  OwnerScheduled(owner: String)
+}
+
+/// Whose text one schedule's fire is, derived from the schedule itself.
+///
+/// The origin used to be a property of the *store* a schedule was read
+/// out of, which is why `client/schedulescan` used to pair the two by
+/// hand. `Owner` makes it a property of the value: an operator's table
+/// parses to `OperatorOwned`, a config cell always decodes to
+/// `StrandOwned` (`decode` has no path to the other), and the remaining
+/// question — self or owner — is one comparison.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // schedule.origin_of(operator_table) == schedule.OperatorConfigured
+/// ```
+///
+/// ```gleam
+/// // a strand's own heartbeat
+/// // schedule.origin_of(sched) == schedule.SelfScheduled
+/// ```
+///
+pub fn origin_of(schedule: Schedule) -> Origin {
+  case schedule.owner {
+    OperatorOwned -> OperatorConfigured
+    StrandOwned(strand:) ->
+      case strand == schedule.target {
+        True -> SelfScheduled
+        False -> OwnerScheduled(owner: strand)
+      }
+  }
 }
 
 /// How a fire attributes itself, which is the whole point of the fence.
 ///
-/// Both origins say the same two things — this is not a turn from the
-/// user, and it arrived on a timer — and then diverge on the one question
-/// the fence exists to answer: *whose text is this*. Getting that wrong
-/// in the model-created direction is the sharper error, because a model
-/// reading "this is standing operator configuration" above text it wrote
-/// itself has been handed an authority nobody granted, on a schedule it
-/// set. So the model-created line says plainly that the reader wrote it.
+/// Every origin says the same two things — this is not a turn from the
+/// user, and it arrived on a timer — and then diverges on the one
+/// question the fence exists to answer: *whose text is this*. Getting
+/// that wrong in the model's direction is the sharper error, because a
+/// model reading "this is standing operator configuration" above text it
+/// wrote itself has been handed an authority nobody granted, on a
+/// schedule it set. So the self-scheduled line says plainly that the
+/// reader wrote it.
+///
+/// The owner-scheduled line is the same error one step along. Text a
+/// *parent* scheduled onto a child is neither the operator's nor the
+/// child's own earlier intent, and telling the child "you scheduled
+/// this" would let a strand's instruction reach it disguised as its own
+/// memory. So that line names the owner and says exactly what the
+/// instruction is worth: as much as a steer from that strand, and no
+/// more.
 fn attribution(origin: Origin) -> String {
   case origin {
     OperatorConfigured ->
@@ -998,12 +1762,23 @@ fn attribution(origin: Origin) -> String {
       <> "prompted it — and no reply is expected; treat it as scheduled "
       <> "instruction and carry on with the work in hand."
 
-    ModelCreated ->
+    SelfScheduled ->
       "This is a heartbeat *you* scheduled earlier, firing automatically "
       <> "on a timer. It is not a turn from the user, and it is not "
       <> "operator configuration — it carries no authority beyond what you "
       <> "already had when you set it. No reply is expected; treat it as a "
       <> "note to self and carry on with the work in hand."
+
+    OwnerScheduled(owner:) ->
+      "This heartbeat was scheduled by "
+      <> owner
+      <> ", the strand that spawned you, and is firing automatically on a "
+      <> "timer. It is not a turn from the user, it is not operator "
+      <> "configuration, and it is not something you scheduled: it carries "
+      <> "no authority beyond a steer from that strand would. No reply is "
+      <> "expected; weigh it as you would any instruction from "
+      <> owner
+      <> " and carry on with the work in hand."
   }
 }
 
@@ -1029,7 +1804,7 @@ fn attribution(origin: Origin) -> String {
 /// ```
 ///
 /// ```gleam
-/// // schedule.injection(sched, schedule.Late, schedule.ModelCreated)
+/// // schedule.injection(sched, schedule.Late, schedule.SelfScheduled)
 /// ```
 ///
 pub fn injection(schedule: Schedule, late: Lateness, origin: Origin) -> String {
@@ -1175,13 +1950,22 @@ pub const max_model_schedules = 16
 
 /// The reserved key one model-created schedule's config lives under.
 ///
-/// `schedule/config/…`, disjoint from the `schedule/fired/…` marks: a
-/// fired-mark says an occurrence is spent and is written once, a config
-/// cell says a schedule exists and is overwritten when it is cancelled.
-/// Sharing a prefix would let a malformed key of one shape be read as the
-/// other. Both sit under `runtime/api.schedule_fact_prefix`, so neither
-/// is reachable by `put_fact` — a model reaches this cell through the
-/// tool seam, which is harness code, and never by writing a fact itself.
+/// `schedule/config/…`, disjoint from both the `schedule/fired/…` marks
+/// and the `schedule/seen/…` instants: a fired-mark says an occurrence
+/// is spent, a seen cell says when a schedule's age clock started, and a
+/// config cell says a schedule exists. Sharing a prefix would let a
+/// malformed key of one shape be read as another. All three sit under
+/// `runtime/api.schedule_fact_prefix`, so none is reachable by
+/// `put_fact` — a model reaches this cell through the tool seam, which
+/// is harness code, and never by writing a fact itself.
+///
+/// The cell exists for exactly as long as the schedule does: it is
+/// written once, with an expect-absent compare-and-set so two concurrent
+/// creations cannot both believe they won, and **deleted** when the
+/// schedule is cancelled rather than overwritten with a tombstone. That
+/// is what keeps this prefix a list of the live schedules and nothing
+/// else, so the `max_model_schedules` ceiling bounds what one tick and
+/// one seam call read (issue #164).
 ///
 /// ## Examples
 ///
@@ -1198,15 +1982,6 @@ pub fn config_key(strand strand: String, name name: String) -> String {
 /// what `client/schedulescan` scans once per tick to find them.
 pub const config_key_prefix = api.schedule_fact_prefix <> "config/"
 
-/// A cancelled schedule's cell value.
-///
-/// Cancellation overwrites rather than deletes, because the register is a
-/// cell and "there is no such key" and "there was one and it is finished"
-/// are worth telling apart when reading the reserved namespace by hand.
-/// `decode` refuses it, so a tombstone is simply not a schedule to every
-/// caller that matters.
-pub const cancelled_value = json.Null
-
 /// Renders one schedule as the JSON its config cell holds.
 ///
 /// ## Examples
@@ -1216,15 +1991,32 @@ pub const cancelled_value = json.Null
 /// ```
 ///
 pub fn encode(schedule: Schedule) -> JsonValue {
-  json.Object(list.append(
+  json.Object(
     [
       #("name", json.String(schedule.name)),
       #("target", json.String(schedule.target)),
       #("wake", json.Bool(stored_wake(schedule.wake))),
       #("body", json.String(schedule.body)),
-    ],
-    timing_fields(schedule.timing),
-  ))
+    ]
+    |> list.append(owner_fields(schedule.owner))
+    |> list.append(timing_fields(schedule.timing)),
+  )
+}
+
+// The owner as the cell carries it: one string naming the owning strand.
+//
+// `OperatorOwned` writes no field, and that is not an omission. An
+// operator's schedule has no cell in this store at all — it is read from
+// `loom.toml` every boot, exactly as a `[[rule]]` is — so the only way
+// this arm is reached is a caller encoding a parsed table for a test.
+// Writing a spelling for it would create the one thing the reserved
+// namespace is meant to make impossible: a stored value that decodes as
+// the operator's voice.
+fn owner_fields(owner: Owner) -> List(#(String, JsonValue)) {
+  case owner {
+    OperatorOwned -> []
+    StrandOwned(strand:) -> [#("owner", json.String(strand))]
+  }
 }
 
 // The stored cell keeps `wake` a JSON boolean rather than following the
@@ -1240,15 +2032,36 @@ fn stored_wake(wake: Wake) -> Bool {
   }
 }
 
+// The timing as the cell carries it: one field naming the shape, plus
+// the two expiry fields a recurring shape always has.
+//
+// A `Cron` stores its **source text**, not the parsed sets, and `decode`
+// re-parses it. The sets carry invariants only `cron.parse` establishes,
+// so a stored expansion of them would be a second, unvalidated way for
+// an `Expression` to come into being; and the text is what an operator
+// or a model wrote, which is what a listing has to echo back.
 fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
   case timing {
     Interval(seconds:, expiry:) -> [
       #("every_s", json.Int(seconds)),
-      #("max_fires", json.Int(expiry.max_fires)),
-      #("expires_after_s", json.Int(expiry.expires_after_s)),
+      ..expiry_fields(expiry)
     ]
+
+    Cron(expression:, offset_s:, expiry:) -> [
+      #("cron", json.String(cron.source(expression))),
+      #("utc_offset_s", json.Int(offset_s)),
+      ..expiry_fields(expiry)
+    ]
+
     OneShot(at:) -> [#("at_s", json.Int(at))]
   }
+}
+
+fn expiry_fields(expiry: Expiry) -> List(#(String, JsonValue)) {
+  [
+    #("max_fires", json.Int(expiry.max_fires)),
+    #("expires_after_s", json.Int(expiry.expires_after_s)),
+  ]
 }
 
 /// Reads one config cell back, total: any value that is not a schedule
@@ -1269,33 +2082,127 @@ fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
 /// ```
 ///
 /// ```gleam
-/// assert schedule.decode(schedule.cancelled_value) == Error(Nil)
+/// assert schedule.decode(json.Null) == Error(Nil)
 /// ```
 ///
 pub fn decode(value: JsonValue) -> Result(Schedule, Nil) {
   use fields <- result.try(object_fields(value))
   use name <- result.try(string_field(fields, "name"))
   use target <- result.try(string_field(fields, "target"))
+  use owner <- result.try(owner_field(fields, "owner", target))
   use wake <- result.try(wake_field(fields, "wake"))
   use body <- result.try(string_field(fields, "body"))
   use timing <- result.try(decode_timing(fields))
-  build(name:, target:, timing:, wake:, body:)
+  build(name:, target:, owner:, timing:, wake:, body:)
   |> result.replace_error(Nil)
 }
 
-fn decode_timing(fields: List(#(String, JsonValue))) -> Result(Timing, Nil) {
-  case int_field(fields, "every_s"), int_field(fields, "at_s") {
-    // Exactly one, mirroring the `every`/`at` exclusivity `parse`
-    // enforces on the TOML side.
-    Ok(_seconds), Ok(_at) -> Error(Nil)
-    Error(Nil), Error(Nil) -> Error(Nil)
-    Ok(seconds), Error(Nil) -> {
-      use max_fires <- result.try(int_field(fields, "max_fires"))
-      use expires_after_s <- result.try(int_field(fields, "expires_after_s"))
-      Ok(Interval(seconds:, expiry: Expiry(max_fires:, expires_after_s:)))
-    }
-    Error(Nil), Ok(at) -> Ok(OneShot(at:))
+// The owner a cell names, defaulting to the target.
+//
+// A cell written before ownership existed carries no `owner` field, and
+// the schedule it describes was created by the strand it targets — that
+// was the only shape the door could produce — so the absent field means
+// `StrandOwned(target)` and every such cell keeps working, cancellable
+// by the strand that made it. The default is also the safe one: it can
+// only ever name the strand the schedule already fires onto, so no
+// missing field can widen who owns a schedule.
+//
+// There is deliberately no spelling of `OperatorOwned` here. A model's
+// cell that could decode as the operator's would fire with the
+// operator's attribution and be uncancellable through the door that
+// created it.
+fn owner_field(
+  fields: List(#(String, JsonValue)),
+  key: String,
+  target: String,
+) -> Result(Owner, Nil) {
+  case field(fields, key) {
+    Ok(json.String(value: strand)) -> Ok(StrandOwned(strand:))
+    Error(Nil) -> Ok(StrandOwned(strand: target))
+    Ok(_other) -> Error(Nil)
   }
+}
+
+// Which shape a stored cell names, before anything about it is read.
+//
+// One variant per stored field, so "exactly one timing" is a question
+// about the length of a list rather than a case over three `Result`s
+// crossed with each other — the same shape `one_timing_key` gives the
+// TOML side, and for the same reason: a fourth timing would add one
+// entry here instead of doubling an arm count.
+type StoredTiming {
+  StoredEvery(seconds: Int)
+  StoredCron(text: String)
+  StoredAt(at: Int)
+}
+
+fn decode_timing(fields: List(#(String, JsonValue))) -> Result(Timing, Nil) {
+  let named =
+    [
+      int_field(fields, "every_s") |> result.map(StoredEvery),
+      string_field(fields, "cron") |> result.map(StoredCron),
+      int_field(fields, "at_s") |> result.map(StoredAt),
+    ]
+    |> result.values
+
+  // Exactly one, mirroring the exclusivity `parse` enforces on the TOML
+  // side. A cell naming two is not a schedule this build would have
+  // written, and there is no honest way to pick between them.
+  case named {
+    [only] -> stored_timing(fields, only)
+    [] | [_first, _second, ..] -> Error(Nil)
+  }
+}
+
+// One stored shape read back. A `cron` cell is re-parsed through
+// `cron.parse` rather than trusted: the decoder is total at a durability
+// boundary, so an expression this build's grammar no longer accepts
+// drops the cell exactly as an out-of-bounds interval does, and the
+// schedule stops firing rather than running on a value nothing would
+// admit today.
+fn stored_timing(
+  fields: List(#(String, JsonValue)),
+  stored: StoredTiming,
+) -> Result(Timing, Nil) {
+  case stored {
+    StoredAt(at:) -> Ok(OneShot(at:))
+
+    StoredEvery(seconds:) -> {
+      use expiry <- result.try(stored_expiry(fields))
+      Ok(Interval(seconds:, expiry:))
+    }
+
+    StoredCron(text:) -> {
+      use expression <- result.try(
+        cron.parse(text) |> result.replace_error(Nil),
+      )
+      use offset_s <- result.try(stored_utc_offset(fields))
+      use expiry <- result.try(stored_expiry(fields))
+      Ok(Cron(expression:, offset_s:, expiry:))
+    }
+  }
+}
+
+// The offset a stored cell names, defaulting to UTC.
+//
+// **Absent means zero**, and that is what keeps every cell written
+// before the offset existed decoding unchanged: such a cell described a
+// schedule read against plain UTC, which is exactly what an offset of
+// zero says. A field that is present but not an integer is refused
+// rather than defaulted, because a cell nothing in this build could have
+// written is not a schedule that runs today.
+fn stored_utc_offset(fields: List(#(String, JsonValue))) -> Result(Int, Nil) {
+  case field(fields, "utc_offset_s") {
+    Error(Nil) -> Ok(0)
+    Ok(json.Int(value: offset_s)) -> Ok(offset_s)
+    Ok(_other) -> Error(Nil)
+  }
+}
+
+fn stored_expiry(fields: List(#(String, JsonValue))) -> Result(Expiry, Nil) {
+  use max_fires <- result.try(int_field(fields, "max_fires"))
+  use expires_after_s <- result.try(int_field(fields, "expires_after_s"))
+  Ok(Expiry(max_fires:, expires_after_s:))
 }
 
 fn object_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), Nil) {
@@ -1362,6 +2269,7 @@ fn wake_field(
 ///
 /// ```gleam
 /// // schedule.build(name: "poll", target: "main",
+/// //   owner: schedule.StrandOwned("main"),
 /// //   timing: schedule.OneShot(at: 0), wake: schedule.SteersOnly,
 /// //   body: "look")
 /// ```
@@ -1369,15 +2277,17 @@ fn wake_field(
 pub fn build(
   name name: String,
   target target: String,
+  owner owner: Owner,
   timing timing: Timing,
   wake wake: Wake,
   body body: String,
 ) -> Result(Schedule, String) {
   use Nil <- result.try(checked_name(name))
   use Nil <- result.try(checked_target(target))
+  use Nil <- result.try(checked_owner(owner))
   use Nil <- result.try(checked_body(body))
   use Nil <- result.try(checked_timing(timing))
-  Ok(Schedule(name:, target:, timing:, wake:, body:))
+  Ok(Schedule(name:, target:, owner:, timing:, wake:, body:))
 }
 
 fn checked_name(name: String) -> Result(Nil, String) {
@@ -1422,6 +2332,28 @@ fn checked_target(target: String) -> Result(Nil, String) {
   }
 }
 
+// An owning strand is a strand address like the target, so it owes the
+// same two bounds. Held here rather than trusted from the seam because
+// `decode` reaches this constructor too, and a cell claiming a
+// pathological owner is exactly the value a re-validating decoder is
+// for.
+fn checked_owner(owner: Owner) -> Result(Nil, String) {
+  case owner {
+    OperatorOwned -> Ok(Nil)
+    StrandOwned(strand:) ->
+      case strand == "", too_long(strand, max_target_length) {
+        True, _ -> Error("owner must not be empty")
+        _, True ->
+          Error(
+            "owner must be at most "
+            <> int.to_string(max_target_length)
+            <> " characters",
+          )
+        False, False -> Ok(Nil)
+      }
+  }
+}
+
 fn checked_body(body: String) -> Result(Nil, String) {
   case body == "", too_long(body, max_body_length) {
     True, _ -> Error("body must not be empty")
@@ -1438,8 +2370,21 @@ fn checked_body(body: String) -> Result(Nil, String) {
 fn checked_timing(timing: Timing) -> Result(Nil, String) {
   case timing {
     OneShot(..) -> Ok(Nil)
+
     Interval(seconds:, expiry:) -> {
       use Nil <- result.try(checked_interval(seconds))
+      checked_expiry(expiry)
+    }
+
+    // Nothing to check about the expression itself: an `Expression`
+    // exists only because `cron.parse` accepted it, and cron's own
+    // minute granularity means the tightest thing the grammar can say is
+    // already at `min_interval_s`. The offset is the one number a stored
+    // cell or a model argument can put out of range, so it is checked
+    // here where `decode` reaches it too, and the expiry is the same
+    // bound an interval owes.
+    Cron(offset_s:, expiry:, ..) -> {
+      use Nil <- result.try(checked_utc_offset(offset_s))
       checked_expiry(expiry)
     }
   }
@@ -1463,6 +2408,28 @@ fn checked_interval(seconds: Int) -> Result(Nil, String) {
         <> "hard way — use `at`",
       )
     False, False -> Ok(Nil)
+  }
+}
+
+// The offset bound, held here rather than only in `parse_utc_offset`
+// because `decode` and the model-facing door both reach this
+// constructor with a number that never passed through that parser — a
+// cell an older build wrote, a bound a later build narrowed.
+fn checked_utc_offset(offset_s: Int) -> Result(Nil, String) {
+  case offset_s < min_utc_offset_s || offset_s > max_utc_offset_s {
+    True ->
+      Error(
+        "utc_offset_s must be between "
+        <> int.to_string(min_utc_offset_s)
+        <> " and "
+        <> int.to_string(max_utc_offset_s)
+        <> " seconds ("
+        <> render_utc_offset(min_utc_offset_s)
+        <> " to "
+        <> render_utc_offset(max_utc_offset_s)
+        <> ")",
+      )
+    False -> Ok(Nil)
   }
 }
 
@@ -1604,6 +2571,79 @@ pub fn parse_instant(text: String) -> Result(Int, String) {
   }
 }
 
+/// The shortest relative one-shot a model may ask for, in seconds.
+///
+/// One second, because there is nothing to protect: a relative one-shot
+/// fires once, so the busy-loop argument `min_interval_s` rests on does
+/// not apply, and a model that wants a reminder in a moment is asking
+/// for one turn later rather than for a standing clock.
+pub const min_in_seconds = 1
+
+/// The furthest ahead a relative one-shot may be asked for, in seconds:
+/// 604800, seven days, the same window `max_expires_after_s` caps a
+/// recurring schedule's life at.
+///
+/// The number is shared rather than coincidental. A schedule only fires
+/// while this session's server is running, so a wake-up a fortnight out
+/// is a promise this process cannot keep; capping the relative form at
+/// the same week every other bound uses makes the whole feature answer
+/// to one horizon.
+pub const max_in_seconds = 604_800
+
+/// Turns a model's "in N seconds" into the absolute epoch second a
+/// `OneShot` needs, refusing an N outside `min_in_seconds`..`max_in_seconds`
+/// in words.
+///
+/// This exists because **the model has no clock**. Loom's system prompt
+/// carries neither the date nor the time, deliberately, so a model asked
+/// to check back "in 45 minutes" cannot compute the RFC3339 instant `at`
+/// wants — it can only guess, and a guessed absolute instant is either
+/// refused as unparseable or, worse, accepted and fired at the wrong
+/// time. The relative form moves the one piece of arithmetic that needs
+/// a clock to the side of the seam that has one.
+///
+/// The caller supplies `now_s` rather than this module reading a clock:
+/// `client/schedule` performs no I/O, and the seam already holds the
+/// injected `runtime/effects.clock` every other instant in the session
+/// comes from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.relative_instant(now_s: 1000, in_seconds: 45) == Ok(1045)
+/// ```
+///
+/// ```gleam
+/// let assert Error(reason) =
+///   schedule.relative_instant(now_s: 1000, in_seconds: 0)
+/// assert string.contains(reason, "at least")
+/// ```
+///
+pub fn relative_instant(
+  now_s now_s: Int,
+  in_seconds in_seconds: Int,
+) -> Result(Int, String) {
+  case in_seconds < min_in_seconds, in_seconds > max_in_seconds {
+    True, _ ->
+      Error(
+        "in_seconds must be at least "
+        <> int.to_string(min_in_seconds)
+        <> ": a heartbeat cannot fire before it is created",
+      )
+
+    _, True ->
+      Error(
+        "in_seconds must be at most "
+        <> int.to_string(max_in_seconds)
+        <> " (seven days): a schedule only fires while this session's "
+        <> "server is running, so anything further out is a promise this "
+        <> "process cannot keep — use a recurring schedule instead",
+      )
+
+    False, False -> Ok(now_s + in_seconds)
+  }
+}
+
 /// Renders epoch seconds back as the RFC3339 UTC instant a model wrote,
 /// so a confirmation echoes the vocabulary of the request rather than a
 /// number nobody asked about.
@@ -1617,4 +2657,158 @@ pub fn parse_instant(text: String) -> Result(Int, String) {
 pub fn render_instant(seconds: Int) -> String {
   timestamp.from_unix_seconds(seconds)
   |> timestamp.to_rfc3339(duration.seconds(0))
+}
+
+/// Parses a `[+-]HH:MM` clock offset into seconds east of UTC.
+///
+/// The one parser for the spelling every door uses — the `utc_offset`
+/// TOML key, the `utc_offset` tool argument, and the `utc_offset`
+/// capability field — because three grammars for one field is three ways
+/// to be slightly different about `+05:30`.
+///
+/// It is strict on purpose. The sign is mandatory (a bare `02:00` names
+/// no direction), both fields are exactly two digits, the minutes must
+/// be under 60, and the result is held to
+/// `min_utc_offset_s`..`max_utc_offset_s`. Every refusal is prose,
+/// because the only thing a caller does with it is show it to whoever
+/// wrote the offset.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.parse_utc_offset("+02:00") == Ok(7200)
+/// ```
+///
+/// ```gleam
+/// assert schedule.parse_utc_offset("-05:30") == Ok(-19_800)
+/// ```
+///
+pub fn parse_utc_offset(text: String) -> Result(Int, String) {
+  use sign <- result.try(offset_sign(text))
+  use #(hours, minutes) <- result.try(offset_digits(text))
+  let seconds = sign * { hours * 3600 + minutes * 60 }
+  case seconds < min_utc_offset_s || seconds > max_utc_offset_s {
+    True ->
+      Error(
+        "an offset must be between "
+        <> render_utc_offset(min_utc_offset_s)
+        <> " and "
+        <> render_utc_offset(max_utc_offset_s)
+        <> ", which spans every offset any inhabited place uses",
+      )
+    False -> Ok(seconds)
+  }
+}
+
+// Which direction the offset runs, refusing a spelling that names none.
+//
+// A bare `02:00` is the mistake worth wording rather than guessing at:
+// half the world would read it as east and half as "the local time is
+// two hours", and a schedule shifted the wrong way by four hours is a
+// heartbeat that fires in the middle of the night.
+fn offset_sign(text: String) -> Result(Int, String) {
+  case string.starts_with(text, "+"), string.starts_with(text, "-") {
+    True, _west -> Ok(1)
+    _east, True -> Ok(-1)
+    False, False ->
+      Error(
+        "an offset must start with `+` or `-`, for example \"+02:00\" or "
+        <> "\"-05:30\": an unsigned offset names no direction",
+      )
+  }
+}
+
+// The `HH:MM` after the sign, as a pair of numbers.
+//
+// Exactly two digits each and a literal colon, so the length check
+// carries most of the grammar and the digit scan below it is bounded.
+// `24:00` is admitted by these rules and refused by the range check in
+// `parse_utc_offset`, which is the honest division: this function knows
+// the shape, that one knows what a clock offset may be.
+fn offset_digits(text: String) -> Result(#(Int, Int), String) {
+  use #(hours, minutes) <- result.try(offset_halves(text))
+  use hour <- result.try(clock_field(hours))
+  use minute <- result.try(clock_field(minutes))
+  case minute < 60 {
+    True -> Ok(#(hour, minute))
+    False -> Error(malformed_offset())
+  }
+}
+
+// The two halves either side of the colon, and nothing else: no colon,
+// or more than one, is a shape this grammar does not have.
+fn offset_halves(text: String) -> Result(#(String, String), String) {
+  case string.split(string.drop_start(text, 1), ":") {
+    [hours, minutes] -> Ok(#(hours, minutes))
+    [] | [_only] | [_first, _second, _third, ..] -> Error(malformed_offset())
+  }
+}
+
+// One two-digit clock field. The length check is what refuses `+2:00`
+// and `+02:5`, which `int.parse` alone would happily accept.
+fn clock_field(text: String) -> Result(Int, String) {
+  case string.length(text) == 2, int.parse(text) {
+    True, Ok(value) -> Ok(value)
+
+    True, Error(Nil) | False, Ok(_value) | False, Error(Nil) ->
+      Error(malformed_offset())
+  }
+}
+
+// The one wording every shape failure gets. A function rather than a
+// `const` because a Gleam constant must be a single literal and this is
+// two joined.
+fn malformed_offset() -> String {
+  "an offset must be written as `[+-]HH:MM` — two digits, a colon, "
+  <> "two digits — for example \"+02:00\" or \"-05:30\""
+}
+
+/// Renders seconds east of UTC as the clock an operator or a model
+/// reads: `"UTC"` at zero, and `"UTC+02:00"` or `"UTC-05:30"` otherwise.
+///
+/// Zero renders as bare `UTC` rather than as `UTC+00:00` because the
+/// overwhelming majority of schedules carry no offset at all, and a
+/// rendering that spelled one out on every row would train a reader to
+/// skip the part that matters on the rare schedule that has one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.render_utc_offset(0) == "UTC"
+/// ```
+///
+/// ```gleam
+/// assert schedule.render_utc_offset(-19_800) == "UTC-05:30"
+/// ```
+///
+pub fn render_utc_offset(offset_s: Int) -> String {
+  case offset_s == 0 {
+    True -> "UTC"
+    False -> {
+      let magnitude = int.absolute_value(offset_s)
+      "UTC"
+      <> offset_direction(offset_s)
+      <> two_digits(magnitude / 3600)
+      <> ":"
+      <> two_digits(magnitude % 3600 / 60)
+    }
+  }
+}
+
+// Which side of UTC an offset sits on, as the character a reader expects
+// in front of it.
+fn offset_direction(offset_s: Int) -> String {
+  case offset_s > 0 {
+    True -> "+"
+    False -> "-"
+  }
+}
+
+// A clock field, zero-padded, which is what makes `+02:00` read as an
+// offset rather than as arithmetic.
+fn two_digits(value: Int) -> String {
+  case value < 10 {
+    True -> "0" <> int.to_string(value)
+    False -> int.to_string(value)
+  }
 }

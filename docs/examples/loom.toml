@@ -137,12 +137,62 @@ body = "Never force-push a shared branch. Open a new branch instead."
 # fenced and attributed the same way a rule's is, so it can never be
 # mistaken for a turn from the person at the keyboard.
 #
-# A schedule is EITHER recurring (`every`) or one-shot (`at`), never both
-# and never neither. `every` is a positive whole number of seconds
-# followed by a literal `s` — no five-field cron syntax — and may not go
-# below 60s, which would be a busy-loop against provider budget. `at` is
-# a quoted RFC3339 UTC timestamp; there is no timezone handling beyond
-# UTC. `target` names the strand to fire onto, defaulting to main.
+# A schedule sets EXACTLY ONE of three timing keys: `every`, `cron` or
+# `at`. Never two, and never none.
+#
+# `every` is a positive whole number of seconds followed by a literal
+# `s`, and may not go below 60s, which would be a busy-loop against
+# provider budget. The grid is aligned to the epoch, so `every =
+# "86400s"` fires at 00:00 UTC and there is no key that moves it.
+#
+# `cron` is a standard five-field expression — `minute hour day-of-month
+# month day-of-week` — and is how you ask for a time of day or a
+# calendar shape that an interval cannot express. Every field takes `*`,
+# a number, a range `a-b`, a step `*/n` or `a-b/n`, or a comma-separated
+# list of those; day-of-week is 0-7 with 0 and 7 both Sunday. There is no
+# seconds field, month and day names such as JAN or MON are not
+# understood, and neither are the extensions L, W, ? and #. When BOTH day
+# fields are restricted they are ORed rather than ANDed, which is what
+# standard cron means and is the one rule that catches everybody out:
+# `cron = "0 9 1 * 1"` fires at 09:00 on the first of every month AND at
+# 09:00 on every Monday, not only on Mondays that fall on the first.
+#
+# `at` is a quoted RFC3339 UTC timestamp.
+#
+# EVERY TIME HERE IS UTC unless a `cron` table says otherwise. Loom
+# carries no timezone database and has ruled that it will not, so `cron =
+# "0 9 * * 1-5"` on its own is 09:00 UTC on weekdays and a scheduler on
+# your machine that speaks local time will disagree with this file by its
+# own offset.
+#
+# `utc_offset` is how you write the local time you actually meant: a
+# fixed offset from UTC, `[+-]HH:MM`, between "-14:00" and "+14:00" and
+# valid ONLY beside `cron`. `cron = "0 9 * * 1-5"` with `utc_offset =
+# "+02:00"` is 09:00 in a UTC+02:00 country, which is 07:00 UTC.
+#
+# IT IS AN OFFSET AND NOT A TIMEZONE, and the difference will bite you
+# twice a year. A zone is a function from an instant to an offset —
+# Berlin is +01:00 in January and +02:00 in July — and answering which
+# needs the database Loom does not carry. A schedule you write "+02:00"
+# in summer keeps firing at that offset all winter, an hour off your own
+# clock. Write the offset in force now, say in the body which clock the
+# schedule was set for, and edit the table when the offset changes. What
+# the offset never touches is the fire history: an occurrence is recorded
+# under the UTC second it fell on, so adding or changing an offset
+# renames nothing and re-fires nothing.
+#
+# A cron schedule's first fire is its first match AFTER a running server
+# loaded it. A match earlier the same day, before the server came up, was
+# never asked for and does not fire — unlike `every`, whose grid has no
+# wall-clock meaning and which fires the slot it is created inside.
+#
+# `target` names the strand to fire onto, defaulting to main.
+#
+# A schedule aimed at a SUBAGENT strand ends when that subagent's work
+# does — the server reads the same record it reaps children by, so a
+# heartbeat watching a child stops the moment the child's task settles
+# rather than ticking against a strand that has finished. That applies to
+# the tables here as well as to anything the model creates.
 #
 # `wake` is where a schedule differs from a rule, and it is opt-in. With
 # `wake = false` (the default) a schedule steers a run already in flight
@@ -151,13 +201,20 @@ body = "Never force-push a shared branch. Open a new branch instead."
 # point of a heartbeat that watches an unattended subagent, and is safe
 # to offer only because of the expiry below.
 #
-# A recurring schedule ALWAYS expires, whether you say so or not. Both
-# bounds are always active and the earlier one wins: `max_fires` defaults
-# to and caps at 1000, `expires_after_s` defaults to and caps at 604800
-# (7 days). That is what stops a `wake = true` schedule keeping a session
-# alive — and spending — past a bound you set and can see in this file. A
-# one-shot needs neither key and refuses both: it fires once by
-# construction.
+# A recurring schedule — `every` or `cron` alike — ALWAYS expires,
+# whether you say so or not. Both bounds are always active and the
+# earlier one wins: `max_fires` defaults to and caps at 1000,
+# `expires_after_s` defaults to and caps at 604800 (7 days). That is what
+# stops a `wake = true` schedule keeping a session alive — and spending —
+# past a bound you set and can see in this file. A one-shot needs neither
+# key and refuses both: it fires once by construction.
+#
+# `expires_after_s` is counted from when a running server first loads the
+# schedule — from creation, for one the model made — and NOT from its
+# first fire. So a schedule that never manages to fire at all still ends
+# after its window: one that only steers, on a strand where no run ever
+# opens, stops costing anything once the window closes rather than
+# waiting for a fire that may never come.
 #
 # Each fire is durable and exactly-once: a crash between deciding to fire
 # and committing cannot double-fire on restart. A window missed because
@@ -178,6 +235,16 @@ max_fires = 24
 body = """
 Check on the review subagent. If it has stalled or is repeating itself,
 steer it back to the diff and ask for its findings so far.
+"""
+
+[[schedule]]
+name = "weekday-standup"
+cron = "0 9 * * 1-5"
+utc_offset = "+02:00"
+max_fires = 20
+body = """
+Summarise what is in flight and what is blocked, as a standup note. Keep
+it to five lines. This heartbeat was set for 09:00 on a UTC+02:00 clock.
 """
 
 [[schedule]]
@@ -206,12 +273,29 @@ body = "The migration window opens today. Confirm the plan is ready."
 #             the door. Choose this if scheduling should be your decision
 #             and nobody else's.
 #
+# The model states its timing with in_seconds, every_seconds, cron or at
+# — one of the four. in_seconds is a one-shot that many seconds from now,
+# and it exists because the model is told neither the date nor the time
+# and so cannot work out an absolute instant for at; cron is the same
+# five-field UTC expression the tables above take. It may also narrow the
+# expiry with max_fires and expires_after_s, which cannot widen it.
+#
 # A model-created schedule is held to every limit a [[schedule]] table
-# above is held to, and it cannot raise any of them: it fires onto the
-# strand that created it and no other, it expires on both max_fires and
-# expires_after_s with the earlier winning, and one session holds a
-# limited number of them at once. Those bounds hold under every setting;
-# what "wake" adds is the one thing they do not bound, which is how long
-# a session that nobody is prompting keeps running.
+# above is held to, and it cannot raise any of them: it expires on both
+# max_fires and expires_after_s with the earlier winning, and one session
+# holds a limited number of them at once. Those bounds hold under every
+# setting; what "wake" adds is the one thing they do not bound, which is
+# how long a session that nobody is prompting keeps running.
+#
+# It fires onto the strand that created it, or onto a strand that strand
+# SPAWNED — a subagent it started, so a parent agent can watch its own
+# unattended work — and nowhere else. A strand cannot schedule onto a
+# sibling, onto its parent, or onto anything it did not start; the server
+# decides that from its own record of who spawned whom, not from a name
+# the model wrote. A schedule onto a subagent never wakes it under any
+# setting, "wake" included: a subagent has one run, so it steers that run
+# while there is one and ends when the subagent's work does. Whichever
+# strand a schedule fires onto, only the strand that created it can list
+# or cancel it.
 [schedules]
 model_created = "steer"

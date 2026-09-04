@@ -256,7 +256,8 @@ Websocket, JSON (client-friendliness beats msgpack here), versioned:
 ```
 c→s: {v:1, id, cmd: "prompt"|"prompt_content"|"steer"|"follow_up"|"abort"|"approve"|"deny"
               |"fork"|"navigate"|"compact"|"create_strand"|"set_config"
-              |"subscribe"|"catch_up"|"models", body}
+              |"subscribe"|"catch_up"|"models"|"schedules"
+              |"schedule_cancel", body}
 s→c: {v:1, reply_to?, event: "snapshot"|"entry"|"op_transition"|"stream_delta"
               |"usage"|"escalation"|"strand_result"|"error", seq?, body}
 ```

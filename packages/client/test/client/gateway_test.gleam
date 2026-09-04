@@ -9,6 +9,8 @@ import client/gateway
 import client/grants
 import client/protocol
 import client/provider_relay
+import client/schedule
+import client/scheduleadmin
 import core/clock
 import core/entry as core_entry
 import core/ids
@@ -45,6 +47,15 @@ fn start_harness() -> Harness {
   start_harness_with(catalog: None)
 }
 
+// The host whose scheduling plane is open, over a scripted door.
+fn start_harness_with_schedules(admin: scheduleadmin.Admin) -> Harness {
+  start_harness_full(
+    None,
+    Some(tool_registry.built_in(None, None, None, None, None)),
+    Some(admin),
+  )
+}
+
 // Every harness but one carries the production tool registry, so
 // `set_config active_tools` has the same registry to validate against
 // that the effect wiring dispatches through.
@@ -52,13 +63,14 @@ fn start_harness_with(catalog catalogue: Option(catalog.Catalog)) -> Harness {
   start_harness_full(
     catalogue,
     Some(tool_registry.built_in(None, None, None, None, None)),
+    None,
   )
 }
 
 // The host that configured no registry: active-set changes have
 // nothing to check against and are refused.
 fn start_harness_without_registry() -> Harness {
-  start_harness_full(None, None)
+  start_harness_full(None, None, None)
 }
 
 // A two-entry catalogue whose second entry ("fallback") is routed but
@@ -96,6 +108,7 @@ fn test_catalog() -> catalog.Catalog {
 fn start_harness_full(
   catalogue: Option(catalog.Catalog),
   registry: Option(tool.Registry),
+  schedules: Option(scheduleadmin.Admin),
 ) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
@@ -178,6 +191,10 @@ fn start_harness_full(
   }
   let options = case registry {
     Some(registry) -> gateway.with_registry(options, registry)
+    None -> options
+  }
+  let options = case schedules {
+    Some(admin) -> gateway.with_schedules(options, admin)
     None -> options
   }
   let assert Ok(_started) = gateway.start(options, name)
@@ -1695,4 +1712,194 @@ pub fn provider_relay_guard_crash_keeps_custodian_until_inner_drain_test() {
   assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
   process.send(release, Nil)
   assert stream.await_drain_forever(drain_witness) == stream.Drained
+}
+
+// --- the operator's schedule surface ---------------------------------------
+
+// The hub's own conduct over a scripted door: what it lists, what code it
+// answers each refusal with, and what a successful cancel replies with.
+// The real door over a real store is `scheduleadmin_test`'s subject, and
+// scripting it here is what keeps this file about the hub.
+type DoorMessage {
+  ListRows(reply: Subject(Result(List(scheduleadmin.Row), String)))
+  CancelRow(
+    target: String,
+    name: String,
+    reply: Subject(Result(Nil, scheduleadmin.CancelRefusal)),
+  )
+}
+
+fn scripted_admin(rows: List(scheduleadmin.Row)) -> scheduleadmin.Admin {
+  let assert Ok(door) =
+    actor.new(rows)
+    |> actor.on_message(fn(rows, message) {
+      case message {
+        ListRows(reply:) -> {
+          process.send(reply, Ok(rows))
+          actor.continue(rows)
+        }
+        CancelRow(target:, name:, reply:) -> {
+          let #(kept, answer) = scripted_cancel(rows, target, name)
+          process.send(reply, answer)
+          actor.continue(kept)
+        }
+      }
+    })
+    |> actor.start
+    as "the scripted schedule door must start"
+  scheduleadmin.Admin(
+    list: fn() { process.call(door.data, waiting: 1000, sending: ListRows) },
+    cancel: fn(target, name) {
+      process.call(door.data, waiting: 1000, sending: CancelRow(target, name, _))
+    },
+  )
+}
+
+// The real door's three answers, decided the way the real one decides
+// them: an operator row cannot be retired, a model row is removed, and
+// anything else was never there.
+fn scripted_cancel(
+  rows: List(scheduleadmin.Row),
+  target: String,
+  name: String,
+) -> #(List(scheduleadmin.Row), Result(Nil, scheduleadmin.CancelRefusal)) {
+  case list.find(rows, fn(row) { row.target == target && row.name == name }) {
+    Error(Nil) -> #(rows, Error(scheduleadmin.NotFound))
+    Ok(found) if found.owner == "operator" -> #(
+      rows,
+      Error(scheduleadmin.OperatorConfigured),
+    )
+    Ok(found) -> #(list.filter(rows, fn(row) { row != found }), Ok(Nil))
+  }
+}
+
+fn operator_row() -> scheduleadmin.Row {
+  scheduleadmin.Row(
+    name: "nightly",
+    target: "main",
+    owner: "operator",
+    when: "every 3600s, at most 24 times",
+    wake: schedule.WakesIdle,
+    fired: 7,
+    body: "summarize what changed today",
+  )
+}
+
+fn model_row() -> scheduleadmin.Row {
+  scheduleadmin.Row(
+    name: "heartbeat",
+    target: "sub:main/reviewer-abc123",
+    owner: "main",
+    when: "every 300s, at most 20 times",
+    wake: schedule.SteersOnly,
+    fired: 2,
+    body: "report where the review has got to",
+  )
+}
+
+fn schedules_listing(harness: Harness, id: Int) -> List(protocol.ScheduleInfo) {
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(id)
+  let assert protocol.SnapshotEvent(protocol.SchedulesSnapshot(schedules:)) =
+    envelope.event
+    as "a schedules snapshot was expected"
+  schedules
+}
+
+/// The `models` posture: a host with no scheduling plane has nothing to
+/// list, and says so with an empty listing rather than an error, so a
+/// client renders "no schedules" from the same reply shape it always
+/// gets.
+pub fn schedules_without_a_door_lists_nothing_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 30, protocol.ListSchedules)
+  assert schedules_listing(harness, 30) == []
+}
+
+/// Order is part of the answer: standing configuration first, then what
+/// this session grew. An operator reading the table sees which half is
+/// theirs without reading the `owner` column.
+pub fn schedules_lists_operator_rows_before_model_rows_test() {
+  let harness =
+    start_harness_with_schedules(scripted_admin([operator_row(), model_row()]))
+  subscribe(harness)
+  send(harness, 31, protocol.ListSchedules)
+  assert schedules_listing(harness, 31)
+    == [
+      protocol.ScheduleInfo(
+        name: "nightly",
+        target: "main",
+        owner: "operator",
+        when: "every 3600s, at most 24 times",
+        wake: protocol.WakesIdle,
+        fired: 7,
+        body: "summarize what changed today",
+      ),
+      protocol.ScheduleInfo(
+        name: "heartbeat",
+        target: "sub:main/reviewer-abc123",
+        owner: "main",
+        when: "every 300s, at most 20 times",
+        wake: protocol.SteersOnly,
+        fired: 2,
+        body: "report where the review has got to",
+      ),
+    ]
+}
+
+/// The reply to a cancel *is* the listing that remains, which is what
+/// lets a client re-render from one round trip. A success followed by a
+/// stale table would be the same bug the poke after a retire exists to
+/// prevent, one layer up.
+pub fn cancelling_a_model_schedule_replies_with_what_remains_test() {
+  let harness =
+    start_harness_with_schedules(scripted_admin([operator_row(), model_row()]))
+  subscribe(harness)
+  send(
+    harness,
+    32,
+    protocol.CancelSchedule(
+      target: "sub:main/reviewer-abc123",
+      name: "heartbeat",
+    ),
+  )
+  let remaining = schedules_listing(harness, 32)
+  assert list.map(remaining, fn(row) { row.name }) == ["nightly"]
+
+  // And the door was actually asked, not merely answered: a second
+  // listing agrees with the reply.
+  send(harness, 33, protocol.ListSchedules)
+  assert list.map(schedules_listing(harness, 33), fn(row) { row.name })
+    == ["nightly"]
+}
+
+/// A conflict rather than a bad request: the name is real and the
+/// operator may certainly end it — the file is where they do it.
+pub fn cancelling_an_operator_schedule_is_a_conflict_test() {
+  let harness =
+    start_harness_with_schedules(scripted_admin([operator_row(), model_row()]))
+  subscribe(harness)
+  send(harness, 34, protocol.CancelSchedule(target: "main", name: "nightly"))
+  expect_error(harness, 34, protocol.code_conflict)
+
+  // Refused means untouched: both rows are still there.
+  send(harness, 35, protocol.ListSchedules)
+  assert list.length(schedules_listing(harness, 35)) == 2
+}
+
+pub fn cancelling_an_unknown_schedule_is_a_bad_request_test() {
+  let harness = start_harness_with_schedules(scripted_admin([operator_row()]))
+  subscribe(harness)
+  send(harness, 36, protocol.CancelSchedule(target: "main", name: "ghost"))
+  expect_error(harness, 36, protocol.code_bad_request)
+}
+
+/// Unsupported rather than an empty success: a cancellation that
+/// cancelled nothing must not read as one that worked.
+pub fn cancelling_without_a_door_is_unsupported_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 37, protocol.CancelSchedule(target: "main", name: "nightly"))
+  expect_error(harness, 37, protocol.code_unsupported)
 }

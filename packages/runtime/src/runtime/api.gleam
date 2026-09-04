@@ -1303,6 +1303,19 @@ pub fn put_fact_expecting(
     when: reserved_fact_key(key),
     return: Error(ReservedFactKey(key:)),
   )
+  commit_fact_expecting(runtime, key, value, expected)
+}
+
+// The compare-and-set fact commit both expecting doors share. As with
+// `commit_fact`, the reservation check is the caller's, and it is the
+// only thing that differs between `put_fact_expecting` and
+// `put_reserved_fact_expecting`.
+fn commit_fact_expecting(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  expected: Option(Seq),
+) -> Result(Seq, ApiError) {
   let plan_tx =
     tx.Tx(
       writes: [
@@ -1431,8 +1444,9 @@ pub const rule_fact_prefix = "rule/"
 /// write-once fired-mark per `{strand, schedule, occurrence}`, which is
 /// the only thing an operator's `[[schedule]]` needs to survive a crash
 /// or a restart; and `schedule/config/…`, one cell per schedule the
-/// model created for itself through the tool seam, overwritten with a
-/// tombstone when it is cancelled. An operator's schedules are never
+/// model created for itself through the tool seam, claimed on its
+/// absence and deleted outright when it is cancelled. An operator's
+/// schedules are never
 /// stored — they are read from `loom.toml` at boot, exactly as rules
 /// are.
 ///
@@ -1538,6 +1552,141 @@ pub fn put_reserved_fact(
   case reserved_fact_key(key) {
     False -> Error(UnreservedFactKey(key:))
     True -> commit_fact(runtime, key, value)
+  }
+}
+
+/// Writes one reserved `fact.custom` cell only if it is still at the seq
+/// the caller read — `put_fact_expecting`'s compare-and-set, on the
+/// harness-only side of the reservation.
+///
+/// `expected` is what `fact_cell` returned, or `None` for a cell that
+/// must still be absent. That second form is the one this door exists
+/// for. A harness component that mints a durable record under a reserved
+/// prefix — a model-created schedule's config cell, say — and must never
+/// silently replace one that already exists needs "write only if nobody
+/// has" to be one commit rather than a read followed by a blind write:
+/// two callers racing through the gap between those two would both see
+/// absence and both write, and the second would erase the first without
+/// either learning it (issue #162). A cell that moved answers
+/// `FactConflict`, exactly as the unreserved door does.
+///
+/// Unreserved keys are refused, as they are to `put_reserved_fact`: the
+/// two write paths stay disjoint so neither can be pressed into service
+/// as the other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.put_reserved_fact_expecting(runtime, config_key, payload,
+/// //   expected: None)
+/// ```
+///
+pub fn put_reserved_fact_expecting(
+  runtime: Runtime,
+  key: String,
+  value: JsonValue,
+  expected expected: Option(Seq),
+) -> Result(Seq, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(key),
+    return: Error(UnreservedFactKey(key:)),
+  )
+  commit_fact_expecting(runtime, key, value, expected)
+}
+
+/// Deletes one reserved `fact.custom` cell. Deleting a cell that is
+/// already absent succeeds: the caller's intent — that the cell not exist
+/// — is met either way, which is also what `core/tx.DeleteRegister`
+/// promises.
+///
+/// The one delete door on the blackboard, and reserved-only on purpose.
+/// An unreserved fact is a last-write-wins cell a model owns, and nothing
+/// a model can reach should be able to make a record vanish rather than
+/// change. A harness component that owns a reserved namespace, by
+/// contrast, needs to retire a record without leaving a tombstone that
+/// every later scan of the prefix has to read and discard (issue #164).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.delete_reserved_fact(runtime, config_key)
+/// ```
+///
+pub fn delete_reserved_fact(
+  runtime: Runtime,
+  key: String,
+) -> Result(Nil, ApiError) {
+  use <- bool.guard(
+    when: !reserved_fact_key(key),
+    return: Error(UnreservedFactKey(key:)),
+  )
+  let plan_tx =
+    tx.Tx(
+      writes: [tx.DeleteRegister(ns: register.FactCustom, key:)],
+      expected: [],
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(_) -> Ok(Nil)
+    Error(error) -> Error(commit_failure(error))
+  }
+}
+
+/// Deletes every reserved `fact.custom` cell under one prefix in a single
+/// transaction, and answers how many there were.
+///
+/// `delete_reserved_fact` retires one record; this retires a *set* of
+/// them, which is a different operation and not a loop over the first
+/// one. A harness component that owns a namespace sometimes has to
+/// retire everything a subject wrote there — every fired-mark of a
+/// cancelled schedule, every durable trace of a strand whose run has
+/// ended — and doing that one commit at a time leaves the set half
+/// retired for as long as the loop takes, which is a state no reader of
+/// the prefix is written to expect. One `core/tx.Tx` of
+/// `DeleteRegister` writes lands all of them or none.
+///
+/// The count is the answer rather than `Nil` because "how much was
+/// there" is the only observation a caller can make afterwards: the
+/// cells are gone, so a caller that wants to log or assert what it
+/// retired has nothing left to count. Zero is an ordinary answer and
+/// commits nothing at all.
+///
+/// The prefix must itself be reserved, exactly as `reserved_facts`
+/// requires, so this can never be pressed into service as a bulk delete
+/// over the model-writable blackboard — where a delete door does not
+/// exist at all, and deliberately (see `delete_reserved_fact`).
+///
+/// **A prefix is a path, and the caller owns that discipline.** This
+/// door deletes what the store matches, so a prefix that stops mid-
+/// segment reaches a differently-named neighbour: `schedule/fired/main`
+/// would take `mainly`'s marks too. Callers here pass prefixes ending in
+/// the separator (`client/schedule.strand_prefixes` is the worked
+/// example) rather than relying on a check this door cannot make, since
+/// only the namespace's owner knows where its segments end.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.delete_reserved_prefix(runtime, prefix: "schedule/fired/main/hb/")
+/// // -> Ok(3)
+/// ```
+///
+pub fn delete_reserved_prefix(
+  runtime: Runtime,
+  prefix prefix: String,
+) -> Result(Int, ApiError) {
+  use cells <- result.try(reserved_facts(runtime, prefix:))
+
+  // Nothing there is success, and committing an empty transaction to
+  // say so would journal a row for a decision that changed nothing.
+  use <- bool.guard(when: cells == [], return: Ok(0))
+  let writes =
+    list.map(cells, fn(pair) {
+      let #(key, _value) = pair
+      tx.DeleteRegister(ns: register.FactCustom, key:)
+    })
+  case writer.commit(writer_subject(runtime), tx.Tx(writes:, expected: [])) {
+    Ok(_result) -> Ok(list.length(cells))
+    Error(error) -> Error(commit_failure(error))
   }
 }
 

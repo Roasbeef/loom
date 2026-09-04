@@ -167,10 +167,36 @@ session and sends it many invocations.
   `satellite.ServedHere`: a workspace read, a process-local store write
   and a blob mint leave no VM, so there is nothing a jail could contain
   and a composed `SandboxPolicy` would have no enforcer. The `schedule.*`
-  arms are the newest and the strand they act on is **bound by the host**,
+  arms are the newest and the **calling** strand is **bound by the host**,
   from the code-mode request, and never travels over the cap channel: a
-  program cannot name a strand, so it cannot schedule into another one's
-  context. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
+  program cannot name the strand its own authority comes from. A
+  `ScheduleRequest.target` — and the target on a cancel — *is* a program's
+  to write, and it is a request rather than an instruction: the host
+  admits only the calling strand itself or a strand that strand spawned,
+  decided from its own lineage ledger, and refuses anything else as
+  `ScheduleInvalid`. So a program still cannot schedule into an
+  unrelated strand's context, and `ScheduleCreated.target` /
+  `ScheduleRow.target` are what tell it where a schedule actually
+  landed. `ScheduleRequest` carries **four timing fields** — `every_seconds`,
+  `cron`, `at`, `in_seconds` — of which the router admits exactly one,
+  refusing none and more than one by name (`one_timing`) before the host
+  sees the request, plus `max_fires` and `expires_after_s`, which cross
+  untouched because the ceilings on them are the host's. The two newer
+  timings each say something the original pair could not: `cron` names a
+  phase and a calendar shape, which an epoch-aligned interval has no
+  argument for, and `in_seconds` names a relative one-shot, which a
+  program with no clock in its prompt cannot express as an absolute
+  instant. `utc_offset` is a fifth field and not a fifth timing: it
+  shifts the clock `cron`'s fields are read against, so the router
+  refuses it beside any other timing (`licensed_offset`) rather than
+  handing on a request the host would have to invent a meaning for. It
+  is a **fixed offset and not a timezone** — nothing in Loom follows a
+  daylight-saving change — and the router says so in the field's doc
+  because it is the one thing a program will otherwise get wrong. None
+  of the four, and not the offset, is parsed here — the host owns the one
+  RFC3339 parser, the one cron grammar and the one `[+-]HH:MM` grammar —
+  so this package gains no calendar code, no offset arithmetic and no
+  clock. `ScheduleWake` (`WakesIdle | SteersOnly`) is this module's own
   name for what a schedule may do to an idle strand, restated here the
   way `ScheduleRefusal` restates the host's refusal vocabulary, since
   `codemode` may depend on neither `client` nor `tools`; the cap wire

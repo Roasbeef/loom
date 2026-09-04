@@ -96,14 +96,18 @@ that tree separately from the self-contained server.
 ## Traffic
 
 - **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
-  `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`, and
-  standalone `compact`.
-- **Events in**: full/strand/model/config snapshots, durable entries, stream
-  deltas, operation transitions, usage, escalation notices, and server
-  errors. Unknown event names are accepted and ignored for forward
-  compatibility.
+  `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`,
+  standalone `compact`, `schedules`, and `schedule_cancel`.
+- **Events in**: full/strand/model/config/schedules snapshots, durable
+  entries, stream deltas, operation transitions, usage, escalation
+  notices, and server errors. Unknown event names are accepted and
+  ignored for forward compatibility.
 - **Keyboard**: ordinary text sends a prompt; slash commands own application
   actions. `/model` opens the model selector, `/agents` opens the inspector,
+  `/schedules` lists every schedule the session holds and `/unschedule
+  <name> [target]` retires one a strand created (the target defaults to
+  the active strand, and an operator `[[schedule]]` comes back as a
+  `conflict` naming the configuration file),
   `/sessions` opens the locally managed session selector, `/notes` opens the
   latest durable agent-note digest, `Shift+Tab` toggles the compact rail,
   `Ctrl+G` toggles reasoning/tool detail, and Page Up/Page Down traverse

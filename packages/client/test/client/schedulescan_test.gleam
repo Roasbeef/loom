@@ -17,9 +17,12 @@
 //// about a turn completing, so a request that never resolves keeps a
 //// strand's run open indefinitely without a scripted answer to maintain.
 
+import client/cron
 import client/schedule
 import client/schedulescan
 import core/clock.{type Clock}
+import core/ids
+import core/json.{type JsonValue}
 import core/message
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
@@ -29,10 +32,13 @@ import gleam/otp/actor
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
+import machine/codec
+import machine/operation
 import machine/strand as machine_strand
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/lineage
 import session/session
 
 // --- a tiny deterministic timer wheel ---------------------------------------
@@ -55,6 +61,7 @@ type ClockMessage {
   JumpTo(now: Int)
   PendingCount(reply: Subject(Int))
   EarliestAt(reply: Subject(Option(Int)))
+  PendingDelays(reply: Subject(List(Int)))
 }
 
 type ClockState {
@@ -113,6 +120,18 @@ fn handle_clock_message(
       process.send(
         reply,
         option.map(earliest_deadline(state.deadlines), fn(due) { due.at }),
+      )
+      actor.continue(state)
+    }
+
+    // Every pending deadline as a delay from now, which is the shape an
+    // assertion about the *clamp* needs: the clamped arming is not the
+    // earliest deadline in the wheel, so a peek at the front cannot see
+    // it.
+    PendingDelays(reply:) -> {
+      process.send(
+        reply,
+        list.map(state.deadlines, fn(due: Deadline) { due.at - state.now }),
       )
       actor.continue(state)
     }
@@ -192,6 +211,12 @@ fn fake_earliest_delay_ms(fc: FakeClock) -> Option(Int) {
   }
 }
 
+// The delay, in ms from `now`, of every pending deadline. A peek,
+// consuming nothing.
+fn fake_delays(fc: FakeClock) -> List(Int) {
+  process.call(fc.subject, waiting: 1000, sending: PendingDelays)
+}
+
 // --- polling ----------------------------------------------------------------
 
 // Tick handling is asynchronous on the scanner's own process, so every
@@ -233,8 +258,38 @@ type Rig {
   )
 }
 
+// The strand driver's own checkpoint poll, parked far beyond any
+// interval this file uses so it never becomes the earliest pending
+// deadline and never interferes with `fake_advance`. Named rather than
+// written twice because `await_armed` below tells the scanner's armings
+// from it by exactly this number.
+const driver_poll_ms = 1_000_000_000
+
 fn harness(
   schedules: List(schedule.Schedule),
+  from_ms: Int,
+) -> Result(Rig, String) {
+  harness_with(schedulescan.default_options(schedules), from_ms)
+}
+
+// The same rig with the model-facing door open, which is the one setting
+// that changes what a scan finding nothing active does: it arms the
+// rescan floor rather than cancelling the timer. A fixed delay from
+// *now* is also what makes two scans at two logical instants arm two
+// distinguishable deadlines, which the supersession test needs.
+fn harness_open(
+  schedules: List(schedule.Schedule),
+  from_ms: Int,
+) -> Result(Rig, String) {
+  harness_with(
+    schedulescan.default_options(schedules)
+      |> schedulescan.with_model_door_open,
+    from_ms,
+  )
+}
+
+fn harness_with(
+  options: schedulescan.Options,
   from_ms: Int,
 ) -> Result(Rig, String) {
   let fc = start_fake_clock(from: from_ms)
@@ -258,32 +313,49 @@ fn harness(
       thinking_level: machine_strand.ThinkingOff,
       active_tool_names: [],
     )
-  let options = api.default_options(configuration)
+  let options_of_api = api.default_options(configuration)
   use runtime <- result.try(
     api.open(
       opened,
       effects_record,
-      // Far larger than any interval this file uses, so the strand
-      // driver's own checkpoint poll never becomes the earliest pending
-      // deadline and never interferes with `fake_advance`.
-      api.Options(..options, poll_interval_ms: 1_000_000_000),
+      api.Options(..options_of_api, poll_interval_ms: driver_poll_ms),
     )
     |> result.map_error(string.inspect),
   )
   let scanner = process.new_name(prefix: "loom_schedulescan_test")
   use services <- result.try(
     sup.new(sup.OneForOne)
-    |> sup.add(schedulescan.supervised(
-      schedulescan.default_options(schedules),
-      runtime,
-      scanner,
-    ))
+    |> sup.add(schedulescan.supervised(options, runtime, scanner))
     |> sup.start
     |> result.replace_error("the scanner supervisor did not start"),
   )
   process.unlink(services.pid)
   await_named(scanner, 2000)
+
+  // The scanner's first arming is made on the way into `Watching`, which
+  // weft runs after `start` has acknowledged — so the name being
+  // registered is not yet proof that a deadline is in the wheel, and a
+  // `fake_advance` racing it would pop the strand driver's poll instead
+  // and jump logical time eleven days. Waiting for an arming that is not
+  // the driver's is what makes every fixture below deterministic.
+  await_armed(fc, 2000)
   Ok(Rig(runtime:, session: opened, fc:, scanner:, services: services.pid))
+}
+
+// Waits until the wheel holds a deadline that is not the strand driver's
+// checkpoint poll, which is to say until the scanner has armed.
+fn await_armed(fc: FakeClock, remaining_ms: Int) -> Nil {
+  let _armed =
+    await_true(
+      fn() {
+        case fake_earliest_delay_ms(fc) {
+          None -> False
+          Some(delay) -> delay < driver_poll_ms
+        }
+      },
+      remaining_ms,
+    )
+  Nil
 }
 
 fn stop(rig: Rig) -> Nil {
@@ -297,15 +369,6 @@ fn stop(rig: Rig) -> Nil {
 // what `poke` sends, and is the shape an out-of-band wake actually takes.
 fn replay_tick(rig: Rig) -> Nil {
   process.send(process.named_subject(rig.scanner), schedulescan.Rescan)
-}
-
-// A wake tagged with a generation the actor has already moved past — the
-// shape a superseded timer chain delivers.
-fn stale_tick(rig: Rig, generation: Int) -> Nil {
-  process.send(
-    process.named_subject(rig.scanner),
-    schedulescan.Tick(generation:),
-  )
 }
 
 // A provider whose every request parks forever: the returned handle
@@ -367,6 +430,17 @@ fn fired_count(runtime: api.Runtime, prefix: String) -> Int {
   }
 }
 
+// The instant recorded for a schedule on `main`, as the store holds it —
+// the cell `client/schedule.seen_key` names, read through the same door
+// the fired-marks are read through. `None` covers both "never recorded"
+// and an unreadable store, which no assertion here needs to tell apart.
+fn seen(runtime: api.Runtime, name: String) -> Option(JsonValue) {
+  case api.fact(runtime, schedule.seen_key(strand: "main", name:)) {
+    Ok(cell) -> cell
+    Error(_reason) -> None
+  }
+}
+
 fn idle(rig: Rig, strand: String) -> Bool {
   case session.strand_state(rig.session, strand) {
     Ok(Some(session.Cell(value: state, ..))) -> state.current_operation == None
@@ -384,9 +458,58 @@ fn interval_schedule(
   schedule.Schedule(
     name:,
     target: "main",
+    owner: schedule.OperatorOwned,
     timing: schedule.Interval(
       seconds:,
       expiry: schedule.Expiry(max_fires: 1000, expires_after_s: 604_800),
+    ),
+    wake:,
+    body: "heartbeat",
+  )
+}
+
+// An interval schedule whose age bound is short enough for a test to
+// step over, and whose fire-count bound is deliberately not the one under
+// test. `SteersOnly` on an idle strand is the shape issue #157 was about:
+// every fire holds, so no mark ever lands to date the schedule by.
+fn aging_schedule(
+  name name: String,
+  seconds seconds: Int,
+  expires_after_s expires_after_s: Int,
+) -> schedule.Schedule {
+  schedule.Schedule(
+    name:,
+    target: "main",
+    owner: schedule.OperatorOwned,
+    timing: schedule.Interval(
+      seconds:,
+      expiry: schedule.Expiry(max_fires: 1000, expires_after_s:),
+    ),
+    wake: schedule.SteersOnly,
+    body: "heartbeat",
+  )
+}
+
+// A cron schedule whose expiry's fire-count bound is the one under test
+// and whose window is not: seven days is longer than any jump this file
+// makes, so nothing here expires by age.
+fn cron_schedule(
+  name name: String,
+  expression expression: String,
+  offset_s offset_s: Int,
+  wake wake: schedule.Wake,
+  max_fires max_fires: Int,
+) -> schedule.Schedule {
+  let assert Ok(parsed) = cron.parse(expression)
+    as "the fixture's cron expression must parse"
+  schedule.Schedule(
+    name:,
+    target: "main",
+    owner: schedule.OperatorOwned,
+    timing: schedule.Cron(
+      expression: parsed,
+      offset_s:,
+      expiry: schedule.Expiry(max_fires:, expires_after_s: 604_800),
     ),
     wake:,
     body: "heartbeat",
@@ -397,6 +520,7 @@ fn one_shot_schedule(name name: String, at at: Int) -> schedule.Schedule {
   schedule.Schedule(
     name:,
     target: "main",
+    owner: schedule.OperatorOwned,
     timing: schedule.OneShot(at:),
     wake: schedule.WakesIdle,
     body: "reminder",
@@ -496,6 +620,7 @@ pub fn a_held_one_shot_retries_no_faster_than_the_interval_floor_test() {
     schedule.Schedule(
       name: "stuck",
       target: "main",
+      owner: schedule.OperatorOwned,
       timing: schedule.OneShot(at: 100),
       wake: schedule.SteersOnly,
       body: "reminder",
@@ -560,6 +685,7 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
     schedule.Schedule(
       name: "capped",
       target: "main",
+      owner: schedule.OperatorOwned,
       timing: schedule.Interval(
         seconds: 60,
         expiry: schedule.Expiry(max_fires: 1, expires_after_s: 604_800),
@@ -588,6 +714,663 @@ pub fn an_expired_schedule_stops_firing_and_stops_rearming_test() {
   assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
     as "an expired schedule must stop contributing to the re-arm"
   stop(rig)
+}
+
+// --- 7. cron: the first fire is the first match after it was observed -----
+//
+// Every instant below is UTC, from the first week of September 2026:
+//
+//   2026-09-02T09:00:00Z (Wed) = 1788339600
+//   2026-09-02T15:00:00Z (Wed) = 1788361200
+//   2026-09-03T09:00:00Z (Thu) = 1788426000
+//   2026-09-04T09:00:00Z (Fri) = 1788512400
+//   2026-09-05T09:00:00Z (Sat) = 1788598800
+//   2026-09-06T09:00:00Z (Sun) = 1788685200
+//   2026-09-06T10:00:00Z (Sun) = 1788688800
+
+const wednesday_at_three_pm_ms = 1_788_361_200_000
+
+const wednesday_at_nine_ms = 1_788_339_600_000
+
+const sunday_at_ten_s = 1_788_688_800
+
+// A daily heartbeat created in the afternoon must not fire this
+// morning's occurrence — it was never asked for — and must arm for
+// tomorrow's rather than for a slot boundary nobody chose. This is the
+// whole difference from `Interval`, which fires the slot it is created
+// inside.
+pub fn a_daily_cron_does_not_fire_at_creation_and_arms_for_tomorrow_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      offset_s: 0,
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+  let assert Ok(rig) = harness([sched], wednesday_at_three_pm_ms)
+    as "the harness must boot"
+
+  // The first tick: nothing due, because 09:00 this morning passed
+  // before the scanner had ever seen this schedule.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(150)
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 0
+    as "a cron schedule must not fire an occurrence that predates it"
+  assert idle(rig, "main") as "the strand must not have been woken"
+
+  // It armed for 09:00 tomorrow: eighteen hours from 15:00.
+  assert fake_earliest_delay_ms(rig.fc) == Some(64_800_000)
+    as "the re-arm must wait for the next match, not for a grid boundary"
+
+  // Tomorrow's occurrence fires, exactly once.
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+  let thursday =
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_426_000,
+    )
+  assert await_true(fn() { fired(rig.runtime, thursday) }, 2000)
+    as "the first match after the schedule was observed must fire"
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 1
+
+  // And it is not annotated late: the occurrence before it — 09:00 the
+  // day the schedule was created — predates the observation instant, so
+  // it was never due and nothing was missed.
+  assert !string.contains(injected_text(rig, "main"), "(late)")
+    as "a cron schedule's first fire must not read as a catch-up"
+
+  // And re-armed a day out, for the match after that.
+  assert await_true(
+    fn() { fake_earliest_delay_ms(rig.fc) == Some(86_400_000) },
+    2000,
+  )
+    as "a daily cron must re-arm twenty-four hours later"
+  stop(rig)
+}
+
+// A window the server slept through costs exactly one catch-up fire, the
+// same property `interval_schedule` has, reached a different way: the
+// due occurrence is the single last match at or before now, so the
+// matches in between are never even looked at. The `(late)` marker is on
+// the injection's first line, which is all a collapsed client shows.
+pub fn a_cron_jump_past_three_occurrences_fires_one_late_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      offset_s: 0,
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+  let assert Ok(rig) = harness([sched], wednesday_at_three_pm_ms)
+    as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(150)
+
+  // Sunday morning: Thursday, Friday and Saturday's 09:00 have all gone
+  // by unobserved, and Sunday's is the one that is due.
+  fake_jump_to(rig.fc, sunday_at_ten_s * 1000)
+  assert fake_advance(rig.fc) as "the resumed tick must be pending"
+
+  let sunday =
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_685_200,
+    )
+  assert await_true(fn() { fired(rig.runtime, sunday) }, 2000)
+    as "the resumed tick must fire the last match at or before now"
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_426_000,
+    ),
+  )
+    as "a skipped match must never fire"
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_598_800,
+    ),
+  )
+    as "nor the one immediately before the due occurrence"
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 1
+    as "at most one late fire, not a replay of the whole backlog"
+
+  let text = injected_text(rig, "main")
+  assert string.contains(text, "(late)")
+    as "the catch-up fire must say so on its first line"
+  assert string.contains(text, "scheduled window for this occurrence has")
+  stop(rig)
+}
+
+// `max_fires` ends a cron schedule exactly as it ends an interval one:
+// both carry the same `Expiry`, and `schedule.recurring_expired` is the
+// one predicate either goes through.
+pub fn a_capped_cron_expires_after_its_one_fire_test() {
+  let sched =
+    cron_schedule(
+      name: "capped",
+      expression: "0 9 * * *",
+      offset_s: 0,
+      wake: schedule.WakesIdle,
+      max_fires: 1,
+    )
+
+  // Created exactly on a match, so the very first tick has something
+  // due: the observation instant and the occurrence coincide, and the
+  // `>= since_s` rule admits the boundary.
+  let assert Ok(rig) = harness([sched], wednesday_at_nine_ms)
+    as "the harness must boot"
+  let first =
+    schedule.fired_key(
+      strand: "main",
+      name: "capped",
+      occurrence: 1_788_339_600,
+    )
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(fn() { fired(rig.runtime, first) }, 2000)
+    as "an occurrence landing on the observation instant must fire"
+  assert fired_count(rig.runtime, "schedule/fired/main/capped/") == 1
+
+  // The next tick finds the cap already spent: no fire, and no re-arm.
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+  process.sleep(150)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "capped",
+      occurrence: 1_788_426_000,
+    ),
+  )
+    as "an expired cron schedule must not fire again"
+  assert fired_count(rig.runtime, "schedule/fired/main/capped/") == 1
+
+  // The one deadline left in the wheel is the strand driver's own
+  // checkpoint poll, parked far out by `harness` — not a re-arm.
+  assert await_true(fn() { fake_pending(rig.fc) == 1 }, 2000)
+    as "an expired cron schedule must stop contributing to the re-arm"
+  stop(rig)
+}
+
+// --- cron with a fixed UTC offset -----------------------------------------
+//
+// `0 9 * * *` read against UTC+02:00. Every instant below is UTC:
+//
+//   2026-09-02T07:00:00Z = 1788332400  (09:00 local, Wed — an occurrence)
+//   2026-09-02T09:00:00Z = 1788339600  (11:00 local — not an occurrence)
+//   2026-09-03T07:00:00Z = 1788418800  (09:00 local, Thu — an occurrence)
+
+const wednesday_at_seven_ms = 1_788_332_400_000
+
+const two_hours_east = 7200
+
+// The property the whole offset rests on, end to end: a `+02:00`
+// schedule fires when the clock two hours east says 09:00 — 07:00 UTC —
+// and the mark it writes is keyed on that **UTC** second. Nothing about
+// the durable key shape moves with the offset, which is what lets an
+// operator add or change one without stranding a fire history.
+pub fn an_offset_cron_fires_at_the_shifted_utc_second_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      offset_s: two_hours_east,
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+
+  // Booted exactly on the occurrence, so the observation instant and the
+  // occurrence coincide and the `>= since_s` rule admits the boundary —
+  // the same arrangement `a_capped_cron_expires_after_its_one_fire_test`
+  // uses, one offset along.
+  let assert Ok(rig) = harness([sched], wednesday_at_seven_ms)
+    as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+
+  let utc_second =
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_332_400,
+    )
+  assert await_true(fn() { fired(rig.runtime, utc_second) }, 2000)
+    as "the local 09:00 must fire at the UTC second it falls on"
+
+  // And nothing was recorded under the second the expression would have
+  // named read in UTC. This is the assertion that fails if the search's
+  // shift is not undone before the occurrence becomes an id.
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(
+      strand: "main",
+      name: "standup",
+      occurrence: 1_788_339_600,
+    ),
+  )
+    as "an occurrence id must be a UTC second, never a local one"
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 1
+
+  // The re-arm waits for the next local 09:00, twenty-four hours on.
+  assert await_true(
+    fn() { fake_earliest_delay_ms(rig.fc) == Some(86_400_000) },
+    2000,
+  )
+    as "an offset cron must re-arm at the next local match"
+  stop(rig)
+}
+
+// The mirror, which is what makes the test above a measurement: booted
+// at 09:00 **UTC**, which is 11:00 on the schedule's own clock, this
+// morning's local 09:00 has already passed and was never asked for. So
+// nothing fires, and the wait is twenty-two hours rather than a day.
+pub fn an_offset_cron_created_after_its_local_time_waits_test() {
+  let sched =
+    cron_schedule(
+      name: "standup",
+      expression: "0 9 * * *",
+      offset_s: two_hours_east,
+      wake: schedule.WakesIdle,
+      max_fires: 1000,
+    )
+  let assert Ok(rig) = harness([sched], wednesday_at_nine_ms)
+    as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(150)
+  assert fired_count(rig.runtime, "schedule/fired/main/standup/") == 0
+    as "a local occurrence that predates the schedule must not fire"
+  assert idle(rig, "main") as "the strand must not have been woken"
+  assert fake_earliest_delay_ms(rig.fc) == Some(79_200_000)
+    as "the wait is to the next local 09:00, twenty-two hours from 09:00 UTC"
+  stop(rig)
+}
+
+// --- 6. the observation instant: one write, and the clock it starts -------
+
+// Issue #157 end to end. A `wake = false` heartbeat on a strand nobody
+// ever opens a run on holds on every tick, so no fired-mark ever lands —
+// and while `expires_after_s` was measured from the earliest mark, that
+// meant a schedule with no clock at all, ticking for the life of the
+// session behind a config key that read as a week. The first tick now
+// records when it observed the schedule, and that recording is what ends
+// it.
+pub fn a_held_schedule_expires_from_its_observation_instant_test() {
+  let sched = aging_schedule(name: "hb", seconds: 60, expires_after_s: 3600)
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  assert idle(rig, "main") as "the strand must start idle"
+
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(fn() { seen(rig.runtime, "hb") == Some(json.Int(0)) }, 2000)
+    as "the first tick must record the instant it observed the schedule"
+  assert fired_count(rig.runtime, "schedule/fired/main/hb/") == 0
+    as "a held fire leaves no mark, which is why the marks cannot date it"
+
+  // Past the schedule's window, with nothing having fired inside it.
+  fake_jump_to(rig.fc, 4_000_000)
+  assert fake_advance(rig.fc) as "the re-armed tick must be pending"
+
+  // The one deadline left in the wheel is the strand driver's own
+  // checkpoint poll (parked far out by `harness`), not a re-arm from a
+  // schedule — the same reading the max_fires expiry test above takes.
+  // Settled before it is read, never polled: a count taken in the gap
+  // between the pop and the re-arm reads `1` for a schedule that is
+  // still very much arming, which would pass against the bug.
+  process.sleep(200)
+  assert fake_pending(rig.fc) == 1
+    as "a schedule expired by age must stop contributing to the re-arm"
+  assert fired_count(rig.runtime, "schedule/fired/main/hb/") == 0
+    as "an expired schedule must not fire on its way out"
+  stop(rig)
+}
+
+// The cell is written at most once per schedule, and that is the whole
+// invariant: a later tick re-basing the clock to its own `now` would give
+// a schedule an age that never grows, which is the bug this fix is for
+// wearing a different hat.
+pub fn the_observation_instant_is_written_once_test() {
+  let sched = aging_schedule(name: "hb", seconds: 60, expires_after_s: 3600)
+  let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(fn() { seen(rig.runtime, "hb") == Some(json.Int(0)) }, 2000)
+    as "the first tick must record its own instant"
+
+  // A second scan, out of band, at a later logical time: same cell, same
+  // instant, because the cell was not absent this time.
+  fake_jump_to(rig.fc, 120_000)
+  replay_tick(rig)
+  process.sleep(150)
+  assert seen(rig.runtime, "hb") == Some(json.Int(0))
+    as "a later tick must not re-base the clock to its own now"
+  stop(rig)
+}
+
+// An instant already in the store belongs to the schedule, not to
+// whichever incarnation ticks next — which is what makes a restart
+// harmless. Planted an hour and more back with nothing ever fired, the
+// very first tick of this scanner must find the schedule finished rather
+// than starting its clock afresh.
+pub fn a_planted_observation_instant_is_honoured_test() {
+  let sched = aging_schedule(name: "hb", seconds: 60, expires_after_s: 3600)
+  let assert Ok(rig) = harness([sched], 4_000_000) as "the harness must boot"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.seen_key(strand: "main", name: "hb"),
+      schedule.seen_value(since_s: 0),
+    )
+    as "the seen cell must be writable"
+
+  // The first tick has been armed since `harness` returned and has not
+  // run yet, so the plant lands before this scanner has ever looked.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  process.sleep(200)
+  assert fake_pending(rig.fc) == 1
+    as "a schedule planted as observed long ago must expire on sight"
+  assert fired_count(rig.runtime, "schedule/fired/main/hb/") == 0
+    as "an expired schedule must not fire"
+  assert seen(rig.runtime, "hb") == Some(json.Int(0))
+    as "the planted instant must survive the tick that read it"
+  stop(rig)
+}
+
+// --- a settled target ends the schedule ------------------------------------
+
+// Issue #163's sharp half, in the scanner. A subagent has one run; once
+// it has ended, a schedule keyed to that strand must not fire — and a
+// `WakesIdle` one must certainly not open a fresh run on a driver whose
+// task is over, which is a child extending its own liveness outside the
+// spawn budget its parent was held to.
+//
+// The strand here is real and idle, with a live driver, which is what
+// makes the assertion mean something: the fire would land if the check
+// were not there, and the control test below proves exactly that.
+pub fn a_reaped_target_stops_the_schedule_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_lineage(rig, child, an_op(), reaped: True)
+  plant_config(rig, child, "watch")
+
+  // The wheel already holds the scanner's first armed tick and each
+  // strand driver's own checkpoint poll (parked far out by `harness`), so
+  // the assertion is against that baseline rather than a count: an
+  // `Active` schedule would add exactly one deadline to it.
+  //
+  // The baseline is settled before it is read. `start_child` returns as
+  // soon as the strand exists, and *that* strand's driver arms its own
+  // poll on its own process afterwards — so a count taken in the gap is
+  // one short of the baseline the assertion below will meet, and the
+  // test fails claiming a re-arm that was somebody else's poll arriving.
+  process.sleep(200)
+  let before = fake_pending(rig.fc)
+  replay_tick(rig)
+  process.sleep(200)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+  )
+    as "a schedule on a reaped strand must not fire"
+  assert idle(rig, child) as "and must certainly not open a run on it"
+  assert fake_pending(rig.fc) == before
+    as "a schedule whose target has stopped must stop re-arming"
+  stop(rig)
+}
+
+// The same schedule with a live target fires and opens the run, which is
+// what makes the two tests above and below a measurement rather than a
+// pair of vacuous truths: what changes between them is one durable fact
+// about the target, not whether the strand is reachable.
+pub fn a_live_child_target_still_fires_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_lineage(rig, child, an_op(), reaped: False)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+      )
+    },
+    2000,
+  )
+    as "a schedule on a live child must fire"
+  stop(rig)
+}
+
+// The second of the two facts a settled target is read from, and the one
+// an ordinary subagent actually ends by: its brief has a terminal
+// result. The Agency reads exactly this pair (`is_live`, `reap`), so the
+// scanner agreeing with it is the point rather than a coincidence.
+pub fn a_settled_brief_stops_the_schedule_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  let brief = an_op()
+  plant_lineage(rig, child, brief, reaped: False)
+  plant_settled(rig, brief)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  process.sleep(200)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+  )
+    as "a schedule on a strand whose brief has settled must not fire"
+  assert idle(rig, child) as "and must not open a run on it"
+  stop(rig)
+}
+
+// Fails closed: a `sub:` target with no lineage cell is not a strand
+// this session started, and a schedule naming one is over rather than
+// waiting. The direction is deliberately the opposite of
+// `client/rulescan`'s hold, because a held rule costs a tick and a fired
+// schedule may open a run.
+pub fn a_target_with_no_lineage_cell_stops_the_schedule_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  process.sleep(200)
+  assert !fired(
+    rig.runtime,
+    schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+  )
+    as "a subagent-shaped target with no ledger cell must not fire"
+  assert idle(rig, child) as "and must not open a run on it"
+  stop(rig)
+}
+
+// A root strand is idle between runs rather than finished, so none of
+// the above may leak onto `main`: a terminal result there says the last
+// prompt ended, not that the next one will never arrive.
+pub fn a_settled_root_target_still_fires_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let assert Ok(op) = api.prompt(rig.runtime, [user("hello")])
+    as "the prompt must open a run on main"
+  plant_settled(rig, op)
+
+  let planted =
+    schedule.Schedule(
+      name: "mine",
+      target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
+      timing: schedule.OneShot(at: 0),
+      wake: schedule.WakesIdle,
+      body: "look at the build",
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.config_key(strand: "main", name: "mine"),
+      schedule.encode(planted),
+    )
+    as "the config cell must be writable"
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: "main", name: "mine", occurrence: 0),
+      )
+    },
+    2000,
+  )
+    as "a root strand's own schedule must fire whatever its last result was"
+  stop(rig)
+}
+
+// A parent-owned schedule firing on a child must not tell the child it
+// scheduled the thing itself. The attribution names the owner and says
+// what the instruction is worth — as much as a steer from that strand,
+// and no more — because a strand's instruction reaching a child
+// disguised as the child's own earlier intent is an authority nobody
+// granted.
+pub fn a_parent_owned_fire_is_attributed_to_the_parent_test() {
+  let assert Ok(rig) = harness([], 0) as "the harness must boot"
+  let child = start_child(rig)
+  plant_lineage(rig, child, an_op(), reaped: False)
+  plant_config(rig, child, "watch")
+
+  replay_tick(rig)
+  assert await_true(
+    fn() {
+      fired(
+        rig.runtime,
+        schedule.fired_key(strand: child, name: "watch", occurrence: 0),
+      )
+    },
+    2000,
+  )
+    as "the schedule must fire onto the live child"
+
+  let text = injected_text(rig, child)
+  assert string.contains(text, "scheduled by main")
+  assert string.contains(text, "no authority beyond a steer")
+  assert !string.contains(text, "you* scheduled")
+  assert !string.contains(text, "standing operator configuration")
+  stop(rig)
+}
+
+// --- fixtures for a child target -------------------------------------------
+
+// A real, idle subagent strand with a live driver — `api.create_idle_strand`
+// is the same door the `fork` and `create_strand` protocol commands use.
+// Real rather than planted because every test above turns on whether a
+// fire *lands*, and a strand nothing is listening on would refuse one for
+// reasons that have nothing to do with the check under test.
+fn start_child(rig: Rig) -> String {
+  let child = "sub:main/worker-abc123"
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      rig.runtime,
+      named: child,
+      configuration: machine_strand.StrandConfiguration(
+        model: machine_strand.ModelIdentity(
+          provider: "acme",
+          model_id: "loom-1",
+        ),
+        thinking_level: machine_strand.ThinkingOff,
+        active_tool_names: [],
+      ),
+      at: None,
+    )
+    as "the child strand must be creatable"
+  child
+}
+
+// The child's lineage cell, as the Agency would have written it. The two
+// facts the scanner reads from it are `reaped` and `brief`; everything
+// else is filled in to make a well-formed cell.
+fn plant_lineage(
+  rig: Rig,
+  child: String,
+  brief: ids.OpId,
+  reaped reaped: Bool,
+) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      lineage.register_key(child),
+      lineage.encode(lineage.Lineage(
+        strand: child,
+        parent: "main",
+        depth: 1,
+        minted_by: lineage.CallSite(
+          operation: brief,
+          step_id: "turn-1:tools",
+          source_index: 0,
+        ),
+        brief:,
+        tools: [],
+        deadline: None,
+        detached: False,
+        reaped:,
+      )),
+    )
+    as "the ledger must accept a cell written by the harness"
+  Nil
+}
+
+// A terminal result for one operation, under the reserved
+// `operation-result/` key `api.await_strand_result` reads — the same fact
+// a real run's terminal transaction writes, which is what makes "this
+// strand's brief has settled" a durable question.
+fn plant_settled(rig: Rig, op: ids.OpId) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      operation.result_fact_key(op),
+      codec.encode_last_result(operation.RunLastResult(
+        operation: op,
+        leaf: None,
+        outcome: operation.RunCompleted(
+          completion: operation.CompletedByAssistant,
+        ),
+        final_assistant: None,
+      )),
+    )
+    as "a terminal result must be plantable"
+  Nil
+}
+
+// A parent-owned, waking schedule onto a child, planted straight into
+// the store: the seam refuses to grant `WakesIdle` on a subagent target,
+// and what these tests exercise is the scanner's own refusal to act on
+// one however it got there — an operator's `[[schedule]]`, or a cell an
+// older build wrote.
+fn plant_config(rig: Rig, child: String, name: String) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      rig.runtime,
+      schedule.config_key(strand: child, name:),
+      schedule.encode(schedule.Schedule(
+        name:,
+        target: child,
+        owner: schedule.StrandOwned(strand: "main"),
+        timing: schedule.OneShot(at: 0),
+        wake: schedule.WakesIdle,
+        body: "check on the review",
+      )),
+    )
+    as "the config cell must be writable"
+  Nil
+}
+
+fn an_op() -> ids.OpId {
+  let #(op, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
+  op
 }
 
 // --- one chain, however many wakes ----------------------------------------
@@ -624,22 +1407,86 @@ pub fn pokes_leave_exactly_one_live_timer_chain_test() {
   stop(rig)
 }
 
-// The other half of the same mechanism, isolated: a wake from a chain the
-// actor has replaced must die where it lands rather than re-arming.
-pub fn a_stale_tick_does_not_rearm_test() {
-  let sched =
-    interval_schedule(name: "hb", seconds: 60, wake: schedule.SteersOnly)
+// The other half of the same mechanism, isolated: a wake for an arming
+// a later scan replaced must die where it lands rather than re-arming.
+//
+// Since the port this is weft's property rather than this module's — the
+// timer book stamps every arming under `scan_timer` with a generation
+// and drops a fire that does not carry the current one — so the test
+// drives it the only way an injected source can be driven: arm, poke to
+// supersede, then run the superseded wake on purpose and look at what
+// the wheel holds afterwards. An injected `after` yields no handle, so
+// the superseded wake is genuinely delivered; nothing here is racing it.
+//
+// The door is open and there are no schedules, which is what makes the
+// two armings tellable apart: each scan arms the rescan floor as a fixed
+// delay from *now*, so a jump between them puts the second arming
+// strictly later than the first and the earliest deadline is certainly
+// the superseded one.
+pub fn a_superseded_wake_dies_in_the_book_test() {
+  let assert Ok(rig) = harness_open([], 0) as "the harness must boot"
+
+  // Run the first arming so the machine has scanned once and armed the
+  // floor from t=0.
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(
+    fn() { fake_earliest_delay_ms(rig.fc) == Some(idle_floor_ms()) },
+    2000,
+  )
+    as "an idle scan with the door open must arm the rescan floor"
+  let armed = fake_pending(rig.fc)
+
+  // A poke half a floor later: its scan arms the floor again, from the
+  // new now, so the wheel holds two armings under one name and the older
+  // one is the superseded one.
+  fake_jump_to(rig.fc, idle_floor_ms() / 2)
+  replay_tick(rig)
+  assert await_true(fn() { fake_pending(rig.fc) == armed + 1 }, 2000)
+    as "the poke's own scan must arm under the same name"
+
+  // The superseded wake, delivered. It must reach no handler: nothing is
+  // armed by it, so the count falls back to one live chain rather than
+  // staying where a re-arm would have kept it.
+  assert fake_advance(rig.fc) as "the superseded wake must be pending"
+  process.sleep(200)
+  assert fake_pending(rig.fc) == armed
+    as "a superseded wake must die in the timer book without re-arming"
+  stop(rig)
+}
+
+// The rescan floor, as the scanner computes it. Written here rather than
+// inlined because two tests read it and it is a product of an imported
+// constant, which a Gleam `const` cannot be.
+fn idle_floor_ms() -> Int {
+  schedule.min_interval_s * 1000
+}
+
+// The clamp, which nothing else in this suite can reach: an interval is
+// capped at `schedule.max_interval_s` (a week, three orders of magnitude
+// inside the limit), so only a one-shot naming an instant far enough out
+// can ask for a delay a BEAM `receive after` would refuse.
+//
+// `runtime/effects.real_timers` sleeps for the delay on an *unlinked*
+// process, so an unclamped 5·10^12 ms would raise `timeout_value` where
+// nobody is listening: the chain would end silently and every schedule
+// in the session with it. The assertion is over every pending delay
+// rather than the earliest, because the strand driver's own poll is
+// nearer than the clamp.
+pub fn a_delay_beyond_the_timer_limit_is_clamped_test() {
+  // 5·10^9 epoch seconds is a little past the year 2128; the wait from
+  // t=0 is 5·10^12 ms, which is a thousand times the limit.
+  let sched = one_shot_schedule(name: "far", at: 5_000_000_000)
   let assert Ok(rig) = harness([sched], 0) as "the harness must boot"
-  process.sleep(300)
-  let before = fake_pending(rig.fc)
 
-  // Generation 0 is behind whatever the actor has reached.
-  stale_tick(rig, 0)
-  stale_tick(rig, 0)
-  process.sleep(300)
-
-  // No new deadline was armed by either: a stale tick is inert.
-  assert fake_pending(rig.fc) == before
+  assert fake_advance(rig.fc) as "the first tick must be pending"
+  assert await_true(
+    fn() {
+      list.fold(fake_delays(rig.fc), 0, int.max)
+      == schedulescan.max_timer_delay_ms
+    },
+    2000,
+  )
+    as "a delay beyond what a BEAM timer holds must be armed at the limit"
   stop(rig)
 }
 
@@ -684,6 +1531,7 @@ pub fn a_model_created_schedule_fires_attributed_to_the_model_test() {
     schedule.Schedule(
       name: "mine",
       target: "main",
+      owner: schedule.StrandOwned(strand: "main"),
       timing: schedule.OneShot(at: 0),
       wake: schedule.WakesIdle,
       body: "look at the build",

@@ -174,9 +174,10 @@ the gateway and native client build to.
 c→s  {"v":1, "id":<uint>, "cmd":<name>, "body":{...}}
 s→c  {"v":1, "reply_to":<uint>?, "event":<name>, "seq":<uint>?, "body":{...}}
 
-cmd    subscribe, catch_up, prompt, steer, follow_up, abort,
-       approve, deny, fork, navigate, compact, create_strand,
-       models, set_config
+cmd    subscribe, catch_up, prompt, prompt_content, steer,
+       follow_up, abort, approve, deny, fork, navigate, compact,
+       create_strand, models, set_config, schedules,
+       schedule_cancel
 event  snapshot, entry, op_transition, stream_delta, usage,
        escalation, strand_result, error
 ```
@@ -194,10 +195,12 @@ pure and total: a malformed frame yields a `ProtocolFault` value —
 never a crash. `core/json` bounds nesting at 256 levels, so a deeply
 nested frame is a corruption report rather than a stack overflow.
 
-Fourteen commands ship; the spec's Part 1.6 list names thirteen.
-`models` arrived with the model catalogue and the spec text was never
-amended, so the built protocol is one command wider than the frozen
-contract says.
+Seventeen commands ship, and the spec's Part 1.6 list names all
+seventeen. It did not always: `models` arrived with the model catalogue
+and the spec text was never amended, which a documentation pass caught
+and `protocol-change/003` ratified. `prompt_content` (`011`) and the two
+schedule commands (`012`) were proposed before they shipped, which is
+the order the ground rules ask for.
 
 Every command gets exactly one reply on the issuing connection: an event
 with `reply_to` set, or `error` with `reply_to` on failure.
@@ -212,6 +215,7 @@ with `reply_to` set, or `error` with `reply_to` on failure.
 | `compact` | `op_transition` (`compacting`) |
 | `models` | `snapshot` (`models`) |
 | `set_config` | `snapshot` (`config`) |
+| `schedules`, `schedule_cancel` | `snapshot` (`schedules`) |
 
 Where the reply is *also* a durable-stream event — the `entry` acking a
 `prompt` — the hub suppresses that one connection's broadcast copy and
@@ -251,7 +255,7 @@ the hub already emits two labels protocol.md does not list
 
 The two implementations are not kept compatible by discipline. **Golden
 fixtures under `packages/client/testdata/protocol/` pin the canonical text of
-every command and event shape**, thirty-five files; the gateway conformance
+every command and event shape**, thirty-nine files; the gateway conformance
 test and the native client's total decoders are held against that vocabulary.
 Either side drifting fails a test rather than a session.
 

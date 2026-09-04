@@ -593,7 +593,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:569`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:585`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -621,7 +621,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1791`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:1821`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -1144,9 +1144,9 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:444`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:480`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
-are already durable in the intent (`client/agency.gleam:458`):
+are already durable in the intent (`client/agency.gleam:494`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
 the digest is sixteen fixed hex characters over the operation, the
 minting step and the source index. The model never supplies a name, so it

@@ -59,6 +59,13 @@ type Seen {
   WriteAsked(path: String, contents: String)
   EditAsked(path: String, edits: Int)
   ScheduleCreateAsked(name: String)
+
+  // Recorded only when a request actually carried an offset, so every
+  // fixture that sends none reads exactly as it did before the field
+  // existed — and a request that carries one has to say so here rather
+  // than being invisible.
+  ScheduleOffsetAsked(offset: String)
+
   ScheduleListAsked
   ScheduleCancelAsked(name: String)
 }
@@ -123,8 +130,15 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
     },
     schedule_create: fn(request: workspace.ScheduleRequest) {
       process.send(seen, ScheduleCreateAsked(request.name))
+      case request.utc_offset {
+        None -> Nil
+        Some(offset) -> process.send(seen, ScheduleOffsetAsked(offset))
+      }
       Ok(workspace.ScheduleCreated(
         name: request.name,
+        // The host resolves an absent target to the execution's own
+        // strand; this fake stands in for the one the bridge binds.
+        target: option.unwrap(request.target, "main"),
         when: "every 60s, at most 1000 times",
         wake: request.wake,
       ))
@@ -134,6 +148,7 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
       Ok([
         workspace.ScheduleRow(
           name: "poll",
+          target: "main",
           when: "every 60s, at most 1000 times",
           wake: workspace.WakesIdle,
           fired: 2,
@@ -141,7 +156,7 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
         ),
       ])
     },
-    schedule_cancel: fn(name) {
+    schedule_cancel: fn(name, _target) {
       process.send(seen, ScheduleCancelAsked(name))
       Ok(Nil)
     },
@@ -991,6 +1006,147 @@ pub fn schedule_create_refuses_both_or_neither_timing_test() {
   assert neither.code == args.invalid_argument_code
   // Neither reached the host: a request the router can see is wrong is
   // never handed on.
+  assert drain(seen) == []
+}
+
+// The refusal names the arguments the program actually sent, because a
+// program told "give exactly one timing" with four spellings to choose
+// from cannot tell which two of them it used.
+pub fn a_two_timing_refusal_names_both_timings_test() {
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("cron", text("0 9 * * *")),
+        #("in_seconds", int(600)),
+      ]),
+    )
+
+  assert string.contains(denial.message, "in_seconds")
+  assert string.contains(denial.message, "cron")
+  assert drain(seen) == []
+}
+
+// Each of the four timings on its own is serviced and reaches the host.
+// A table rather than four tests, because the property is that the
+// router admits exactly these four and the difference between them is
+// one argument.
+pub fn each_single_timing_is_serviced_test() {
+  let timings = [
+    #("every_seconds", int(60)),
+    #("cron", text("0 9 * * 1-5")),
+    #("at", text("2026-09-01T09:00:00Z")),
+    #("in_seconds", int(2700)),
+  ]
+  list.each(timings, fn(timing) {
+    let seen = recorder()
+    let assert framing.CapOk(value:) =
+      serviced(
+        answering(seen),
+        "schedule.create",
+        map([#("name", text("poll")), #("body", text("look")), timing]),
+      )
+      as "one timing on its own must be serviced"
+
+    assert drain(seen) == [ScheduleCreateAsked("poll")]
+    assert field(value, "name") == Ok(text("poll"))
+  })
+}
+
+// The two expiry arguments cross the router untouched: the host holds
+// them to its own ceilings, and this package has no ceiling of its own
+// to state.
+pub fn the_expiry_bounds_reach_the_host_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+        #("max_fires", int(4)),
+        #("expires_after_s", int(3600)),
+      ]),
+    )
+    as "a bounded request must be serviced"
+
+  assert drain(seen) == [ScheduleCreateAsked("poll")]
+  assert field(value, "name") == Ok(text("poll"))
+}
+
+// `utc_offset` crosses the router untouched beside a cron expression:
+// the host owns the one `[+-]HH:MM` grammar, so this package parses
+// nothing and states no bound of its own.
+pub fn a_utc_offset_reaches_the_host_beside_cron_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("standup")),
+        #("body", text("look")),
+        #("cron", text("0 9 * * 1-5")),
+        #("utc_offset", text("+02:00")),
+      ]),
+    )
+    as "an offset beside cron must be serviced"
+
+  assert drain(seen)
+    == [ScheduleCreateAsked("standup"), ScheduleOffsetAsked("+02:00")]
+  assert field(value, "name") == Ok(text("standup"))
+}
+
+// An offset shifts a calendar expression's fields, and the other three
+// timings name none — so an offset without `cron` is refused here rather
+// than handed on for the host to invent a meaning for.
+pub fn an_offset_without_cron_is_refused_test() {
+  let timings = [
+    #("every_seconds", int(300)),
+    #("at", text("2026-09-01T09:00:00Z")),
+    #("in_seconds", int(600)),
+  ]
+  list.each(timings, fn(timing) {
+    let seen = recorder()
+    let denial =
+      refused(
+        answering(seen),
+        "schedule.create",
+        map([
+          #("name", text("poll")),
+          #("body", text("look")),
+          #("utc_offset", text("+02:00")),
+          timing,
+        ]),
+      )
+
+    assert denial.code == args.invalid_argument_code
+    assert string.contains(denial.message, "only valid beside `cron`")
+    assert drain(seen) == []
+  })
+}
+
+pub fn a_mistyped_expiry_bound_is_refused_test() {
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "schedule.create",
+      map([
+        #("name", text("poll")),
+        #("body", text("look")),
+        #("every_seconds", int(60)),
+        #("max_fires", text("4")),
+      ]),
+    )
+
+  assert denial.code == args.invalid_argument_code
   assert drain(seen) == []
 }
 

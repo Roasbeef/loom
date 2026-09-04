@@ -370,15 +370,53 @@ pub type ScheduleWake {
   SteersOnly
 }
 
-/// One heartbeat a program asked for. `every_seconds` and `at` are the
-/// two shapes a schedule takes, and exactly one is present — the router
-/// refuses a request naming both or neither before the host sees it, so
-/// the host never has to decide what a contradictory request meant.
+/// One heartbeat a program asked for.
+///
+/// Four timing fields and **exactly one is present** — the router
+/// refuses a request naming none or more than one before the host sees
+/// it, so the host never has to decide what a contradictory request
+/// meant. The two beyond the original pair each say something the pair
+/// cannot: `cron` names a phase and a calendar shape, which an
+/// epoch-aligned interval has no argument for, and `in_seconds` names a
+/// relative one-shot, which a program running with no clock in its
+/// prompt cannot express as an absolute instant.
 pub type ScheduleRequest {
   ScheduleRequest(
     name: String,
+    /// Which strand the heartbeat should fire onto, as the program named
+    /// it, or `None` for the strand the execution belongs to. The host
+    /// resolves and *authorizes* it — only the execution's own strand or
+    /// one it spawned is admitted — because the lineage ledger that
+    /// decides is on the other side of this seam.
+    target: Option(String),
+    /// A recurring interval in seconds.
     every_seconds: Option(Int),
+    /// A one-shot at an RFC3339 UTC instant, as the program wrote it.
+    /// The host parses it: it owns the one parser.
     at: Option(String),
+    /// A recurring five-field cron expression, as the program wrote it.
+    /// The host parses it, for the reason it parses `at`.
+    cron: Option(String),
+    /// The clock `cron`'s fields are read against, as a `[+-]HH:MM`
+    /// offset from UTC, or `None` for plain UTC. The host parses it — it
+    /// owns the one offset grammar — and refuses it beside any other
+    /// timing, because an offset shifts a calendar expression's fields
+    /// and the other three timings have no fields. A **fixed** offset
+    /// and not a timezone: nothing in Loom follows daylight-saving
+    /// changes.
+    utc_offset: Option(String),
+    /// A one-shot this many seconds from now. The host resolves it
+    /// against the session's own clock, which is the point of the field:
+    /// this package has no clock and neither does the program.
+    in_seconds: Option(Int),
+    /// End a recurring schedule after this many fires, or `None` for the
+    /// host's default. The host holds it to its own ceiling, so this can
+    /// only narrow a schedule.
+    max_fires: Option(Int),
+    /// End a recurring schedule this many seconds after it is created,
+    /// or `None` for the host's default. Bounded exactly as `max_fires`
+    /// is.
+    expires_after_s: Option(Int),
     wake: ScheduleWake,
     body: String,
   )
@@ -388,13 +426,24 @@ pub type ScheduleRequest {
 /// granted, which is not always what was asked for: an operator policy
 /// may permit scheduling and forbid waking.
 pub type ScheduleCreated {
-  ScheduleCreated(name: String, when: String, wake: ScheduleWake)
+  ScheduleCreated(
+    name: String,
+    /// The strand it fires onto, resolved by the host: the execution's
+    /// own when the request named none.
+    target: String,
+    when: String,
+    wake: ScheduleWake,
+  )
 }
 
 /// One heartbeat, as `cap/schedule.list` reads it.
 pub type ScheduleRow {
   ScheduleRow(
     name: String,
+    /// The strand this one fires onto. A listing is keyed on who *owns* a
+    /// schedule rather than on where it fires, so it can hold rows for
+    /// more than one strand and a row without this would be ambiguous.
+    target: String,
     when: String,
     wake: ScheduleWake,
     fired: Int,
@@ -416,10 +465,12 @@ pub type ScheduleRefusal {
   /// This session already holds all the schedules it will.
   ScheduleLimitReached(reason: String)
 
-  /// A schedule of this name already exists on this strand.
+  /// A schedule of this name already fires onto the target.
   ScheduleNameTaken(reason: String)
 
-  /// No schedule of this name exists on this strand.
+  /// The calling strand owns no schedule of this name on that target —
+  /// which is also the answer for one another strand owns, so a program
+  /// learns what is its own to cancel and nothing about anyone else's.
   ScheduleNotFound(reason: String)
 
   /// The schedule store could not be reached.
@@ -456,16 +507,21 @@ pub type Workspace {
     kv_set: fn(String, BitArray) -> Result(Nil, KvRefusal),
     /// Removes a scratch key. Removing an absent key succeeds.
     kv_delete: fn(String) -> Result(Nil, KvRefusal),
-    /// Sets one heartbeat on the strand this execution belongs to. The
-    /// host binds the strand — this package never learns it, exactly as
-    /// it never learns a workspace root — so nothing a program sends can
-    /// redirect a schedule onto another strand.
+    /// Sets one heartbeat, by default on the strand this execution
+    /// belongs to. The host binds *that* strand — this package never
+    /// learns it, exactly as it never learns a workspace root — so a
+    /// program cannot redirect a schedule by naming a caller. A
+    /// `ScheduleRequest.target` is a request rather than an
+    /// instruction: the host admits only the execution's own strand or
+    /// one it spawned, and refuses anything else as
+    /// `ScheduleInvalid`.
     schedule_create: fn(ScheduleRequest) ->
       Result(ScheduleCreated, ScheduleRefusal),
-    /// Lists that strand's heartbeats.
+    /// Lists the heartbeats that strand owns, wherever each fires.
     schedule_list: fn() -> Result(List(ScheduleRow), ScheduleRefusal),
-    /// Cancels one of that strand's heartbeats by name.
-    schedule_cancel: fn(String) -> Result(Nil, ScheduleRefusal),
+    /// Cancels one heartbeat that strand owns, by name and by the strand
+    /// it fires onto (`None` for the execution's own).
+    schedule_cancel: fn(String, Option(String)) -> Result(Nil, ScheduleRefusal),
     /// Writes one artifact and answers its content address.
     emit: Emit,
     /// How many artifacts one execution may mint.
@@ -943,46 +999,118 @@ fn schedule_create_plan(
   use name <- result.try(args.string(request.args, "name"))
   use body <- result.try(args.string(request.args, "body"))
   use wake <- result.try(requested_wake(request.args))
+  use target <- result.try(optional_string(request.args, "target"))
   use every_seconds <- result.try(optional_int(request.args, "every_seconds"))
   use at <- result.try(optional_string(request.args, "at"))
+  use cron <- result.try(optional_string(request.args, "cron"))
+  use utc_offset <- result.try(optional_string(request.args, "utc_offset"))
+  use in_seconds <- result.try(optional_int(request.args, "in_seconds"))
+  use max_fires <- result.try(optional_int(request.args, "max_fires"))
+  use expires_after_s <- result.try(optional_int(
+    request.args,
+    "expires_after_s",
+  ))
 
   // Exactly one timing, decided here rather than at the host, so a
   // contradictory request costs one denial instead of a round trip into
   // a store that would have had to invent an answer.
-  use Nil <- result.try(case every_seconds, at {
-    Some(_seconds), Some(_instant) ->
-      Error(args.invalid(
-        "give either `every_seconds` or `at`, not both: a schedule is "
-        <> "either a recurring heartbeat or a one-shot",
-      ))
-    None, None ->
-      Error(args.invalid(
-        "give one of `every_seconds` (a recurring heartbeat) or `at` (a "
-        <> "one-shot RFC3339 UTC instant)",
-      ))
-    Some(_seconds), None | None, Some(_instant) -> Ok(Nil)
-  })
+  use Nil <- result.try(one_timing(every_seconds, at, cron, in_seconds))
+  use Nil <- result.try(licensed_offset(cron, utc_offset))
   Ok(
     ServedHere(fn() {
       case
         seam.schedule_create(ScheduleRequest(
           name:,
+          target:,
           every_seconds:,
           at:,
+          cron:,
+          utc_offset:,
+          in_seconds:,
+          max_fires:,
+          expires_after_s:,
           wake:,
           body:,
         ))
       {
         Error(refusal) -> schedule_refused(refusal)
-        Ok(ScheduleCreated(name:, when:, wake:)) ->
+        Ok(ScheduleCreated(name:, target:, when:, wake:)) ->
           answered([
             #("name", msgpack.StringValue(name)),
+            #("target", msgpack.StringValue(target)),
             #("when", msgpack.StringValue(when)),
             #("wake", msgpack.BoolValue(wake_flag(wake))),
           ])
       }
     }),
   )
+}
+
+// Which of the four timing arguments arrived, refusing none and more
+// than one by name.
+//
+// The names are collected into a list rather than crossed in a `case`,
+// so this is a question about a length: four spellings crossed would be
+// sixteen arms saying three things, and the refusal a program reads is
+// better for naming exactly what it sent.
+fn one_timing(
+  every_seconds: Option(Int),
+  at: Option(String),
+  cron: Option(String),
+  in_seconds: Option(Int),
+) -> Result(Nil, CapDenial) {
+  let named =
+    [
+      option.map(in_seconds, fn(_seconds) { "in_seconds" }),
+      option.map(every_seconds, fn(_seconds) { "every_seconds" }),
+      option.map(cron, fn(_expression) { "cron" }),
+      option.map(at, fn(_instant) { "at" }),
+    ]
+    |> option.values
+
+  case named {
+    [_only] -> Ok(Nil)
+
+    [] ->
+      Error(args.invalid(
+        "give one of `in_seconds` (a one-shot that many seconds from now), "
+        <> "`every_seconds` (a recurring heartbeat), `cron` (a recurring "
+        <> "five-field UTC calendar expression) or `at` (a one-shot "
+        <> "RFC3339 UTC instant)",
+      ))
+
+    [_first, _second, ..] ->
+      Error(args.invalid(
+        "give exactly one of `in_seconds`, `every_seconds`, `cron` or `at` "
+        <> "— this request gave "
+        <> string.join(named, " and ")
+        <> ": a schedule fires on one timing, never two",
+      ))
+  }
+}
+
+// `utc_offset` shifts the clock a calendar expression's fields are read
+// against, so it only means anything beside `cron`.
+//
+// Refused here rather than at the host for the reason `one_timing` is:
+// the denial a program reads names the argument it actually sent, and a
+// request that reached the host with an offset and no expression would
+// leave the host inventing what it meant.
+fn licensed_offset(
+  cron: Option(String),
+  utc_offset: Option(String),
+) -> Result(Nil, CapDenial) {
+  case cron, utc_offset {
+    Some(_expression), _offset | None, None -> Ok(Nil)
+
+    None, Some(_offset) ->
+      Error(args.invalid(
+        "`utc_offset` is only valid beside `cron`: it shifts the clock a "
+        <> "calendar expression's fields are read against, and no other "
+        <> "timing names fields. An `every_seconds` grid is aligned to the "
+        <> "epoch, and an `at` instant already carries its own offset.",
+      ))
+  }
 }
 
 // A program may leave `wake` out entirely, and absent reads as the
@@ -1027,6 +1155,7 @@ fn schedule_list_plan(
 fn schedule_row(row: ScheduleRow) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("name"), msgpack.StringValue(row.name)),
+    #(msgpack.StringValue("target"), msgpack.StringValue(row.target)),
     #(msgpack.StringValue("when"), msgpack.StringValue(row.when)),
     #(msgpack.StringValue("wake"), msgpack.BoolValue(wake_flag(row.wake))),
     #(msgpack.StringValue("fired"), msgpack.IntValue(row.fired)),
@@ -1039,9 +1168,10 @@ fn schedule_cancel_plan(
   request: CapRequest,
 ) -> Result(CapPlan, CapDenial) {
   use name <- result.try(args.string(request.args, "name"))
+  use target <- result.try(optional_string(request.args, "target"))
   Ok(
     ServedHere(fn() {
-      case seam.schedule_cancel(name) {
+      case seam.schedule_cancel(name, target) {
         Error(refusal) -> schedule_refused(refusal)
         Ok(Nil) -> answered([#("cancelled", msgpack.BoolValue(True))])
       }
