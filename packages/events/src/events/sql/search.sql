@@ -45,3 +45,13 @@ ON CONFLICT (session_id) DO UPDATE SET
 
 -- name: DeleteCursor :exec
 DELETE FROM search_cursor WHERE session_id = ?;
+
+-- name: RegisterSource :exec
+INSERT INTO search_source (session_id, path) VALUES (?, ?)
+ON CONFLICT (session_id) DO UPDATE SET path = excluded.path;
+
+-- name: GetSource :many
+SELECT path FROM search_source WHERE session_id = ?;
+
+-- name: DeleteSource :exec
+DELETE FROM search_source WHERE session_id = ?;
