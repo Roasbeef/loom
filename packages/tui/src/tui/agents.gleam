@@ -45,7 +45,6 @@ pub fn render_rail(
     )
   let inside = block.inner(area, frame)
   buf
-  |> buffer.clear(area)
   |> block.render(area, frame)
   |> paragraph.render_styled(
     inside,

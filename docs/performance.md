@@ -17,6 +17,43 @@ The same client can still grow its transcript projection forever, so a quiet CPU
 sample says nothing about its long-session memory bound. Those are separate
 claims and need separate evidence.
 
+Scrolling was the next layer, and it needed a different workload from the
+three below because the cost was in the event stream rather than in any one
+frame. Etui decodes one 128-byte read into a queue of events and draws a
+complete frame after each, so a wheel flick reached the client as a burst that
+was paid for one frame at a time.
+
+The original investigation used OTP 29.0.5 and Gleam 1.18.1 on a 200×50
+pseudo-terminal with 8400 wrapped rows (400 five-line exchanges). Its one-off
+Python `pty.fork` harness wrapped `gleam run -- --demo`, enlarged the demo
+transcript, wrote forty SGR wheel events at once, and counted frames by cursor
+moves to the first transcript row. It reported forty frames, 250 KB of output,
+and about 250 ms of client CPU before the change, versus three or four frames,
+about 20 KB, and about 50 ms after pacing and the border-only panel draw. The
+harness was not committed, so these figures are historical motivation rather
+than a baseline another developer can reproduce from this tree.
+
+The repeatable in-tree microbenchmark isolates the panel work from that
+end-to-end workload:
+
+```sh
+make bench-tui
+```
+
+`packages/tui/dev/tui_dev.gleam` renders the transcript and input panels over
+the same immutable base buffer with etui's block and Loom's border-only path.
+It reports milliseconds per invocation through `gleamy_bench`; run it several
+times on the same runtime and machine when comparing commits. On the original
+development Mac with OTP 29 and Gleam 1.18.1, three consecutive 200×50 runs
+measured 0.172–0.178 ms for etui's block and 0.082–0.085 ms for Loom's border,
+about a 2.1-fold improvement in the isolated panel work.
+
+This microbenchmark cannot confirm frame counts, terminal bytes, or the time
+for a complete input burst because those properties exist at the terminal-loop
+boundary, outside either render function. A future end-to-end benchmark must
+provide the long transcript as a fixture, drive the pseudo-terminal, and
+record both frame markers and bytes without changing the production demo.
+
 ## Name the experiment
 
 A useful result carries enough context for another developer to reproduce it.

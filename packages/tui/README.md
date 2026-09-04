@@ -226,6 +226,19 @@ make check-tui
 make lint-tui
 ```
 
+The development-only rendering benchmark compares the old etui panel clear
+with the border-only renderer over the same immutable buffer. Run it more than
+once on the same machine and runtime before comparing commits:
+
+```sh
+make bench-tui
+```
+
+Its durations are milliseconds per invocation. This microbenchmark isolates
+panel construction; it does not count frames or terminal bytes from an input
+burst, which still requires the pseudo-terminal workload in
+`docs/performance.md`.
+
 On the machine used for issue #114, an already-resolved warning-free build is
 about 0.3 seconds. A clean build, including resolution and download of nineteen
 packages, took 10.72 seconds; the compiler portion took 1.22 seconds. These are

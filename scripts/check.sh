@@ -41,10 +41,16 @@ for pkg in "${targets[@]}"; do
     continue
   fi
   echo "==> $pkg"
-  (cd "packages/$pkg" \
-    && gleam format --check src test \
-    && gleam build --warnings-as-errors \
-    && gleam test)
+  (
+    cd "packages/$pkg"
+    format_paths=(src test)
+    if [ -d dev ]; then
+      format_paths+=(dev)
+    fi
+    gleam format --check "${format_paths[@]}"
+    gleam build --warnings-as-errors
+    gleam test
+  )
 done
 # Loom's own lint runs last. R0, R2, R4 and R6 gate — each has a census of
 # zero that the promotion exists to keep (packages/lint/CLAUDE.md, Staging)

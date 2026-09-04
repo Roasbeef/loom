@@ -5,6 +5,7 @@ import etui/geometry.{Position}
 import etui/keys
 import etui/span
 import etui/style
+import etui/widgets/block
 import etui/widgets/textarea as text_area
 import gleam/bit_array
 import gleam/erlang/process
@@ -173,7 +174,7 @@ pub fn cached_frame_reuses_the_exact_buffer_term_test() {
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Ok(Position(2, 1)))
   let #(reused, cursor) =
-    tui.cached_frame(cached, screen, 7, screen, 7, fn() {
+    tui.cached_frame(cached, screen, screen, fn() {
       panic as "a matching frame cache must not rebuild"
     })
 
@@ -181,33 +182,110 @@ pub fn cached_frame_reuses_the_exact_buffer_term_test() {
   assert cursor == Ok(Position(2, 1))
 }
 
-pub fn cached_frame_rebuilds_after_visible_revisions_test() {
+pub fn cached_frame_keeps_a_deferred_frame_on_screen_test() {
+  // A frame left stale to pace a burst must reach etui as the exact cached
+  // term: the view rebuilding it would both undo the deferral and diff a
+  // frame nobody stored. Visible revisions are settled when the event is
+  // handled, which `frame_decision` pins.
   let screen = geometry.rect_new(0, 0, 8, 2)
   let cached_buffer = buffer.buffer_new(screen)
   let cached = #(cached_buffer, Error(Nil))
-  let changes = [
-    "transcript",
-    "input and cursor",
-    "overlay",
-    "status",
-    "activity indicator",
-  ]
+  let #(shown, _) =
+    tui.cached_frame(cached, screen, screen, fn() {
+      panic as "a deferred frame must not be rebuilt by the view"
+    })
+  assert ffi_term.same_term(cached_buffer, shown)
+}
 
-  list.each(changes, fn(label) {
-    let replacement =
-      buffer.set_string(
-        buffer.buffer_new(screen),
-        Position(0, 0),
-        label,
-        style.new(style.Default, style.Default, style.none()),
-      )
-    let #(rebuilt, _) =
-      tui.cached_frame(cached, screen, 7, screen, 8, fn() {
-        #(replacement, Error(Nil))
-      })
-    assert ffi_term.same_term(replacement, rebuilt)
-    assert !ffi_term.same_term(cached_buffer, rebuilt)
+pub fn frame_decision_keeps_a_current_cache_test() {
+  assert tui.frame_decision(tui.Paced, tui.FrameCurrent, 0)
+    == tui.KeepCachedFrame
+  assert tui.frame_decision(tui.FlushPoint, tui.FrameCurrent, 1000)
+    == tui.KeepCachedFrame
+}
+
+pub fn frame_decision_paces_a_burst_test() {
+  // Inside the interval a stale frame waits; at or past it, it renders. A
+  // wheel flick decoded from one read therefore costs one frame per interval
+  // rather than one per event.
+  assert tui.frame_decision(tui.Paced, tui.FrameStale, 0) == tui.DeferFrame
+  assert tui.frame_decision(tui.Paced, tui.FrameStale, 15) == tui.DeferFrame
+  assert tui.frame_decision(tui.Paced, tui.FrameStale, 16) == tui.RenderFrame
+  assert tui.frame_decision(tui.Paced, tui.FrameStale, 400) == tui.RenderFrame
+}
+
+pub fn frame_decision_flushes_at_a_tick_or_resize_test() {
+  // The tick that follows a drained queue renders whatever was deferred, no
+  // matter how recently the previous frame was drawn.
+  assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 0)
+    == tui.RenderFrame
+  assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 3)
+    == tui.RenderFrame
+}
+
+pub fn paced_poll_timeout_shortens_the_wait_for_a_deferred_frame_test() {
+  assert tui.paced_poll_timeout(tui.FrameDeferred, 0) == 8
+  assert tui.paced_poll_timeout(tui.FrameDeferred, 320) == 8
+  assert tui.paced_poll_timeout(tui.FrameSettled, 0) == 40
+  assert tui.paced_poll_timeout(tui.FrameSettled, 320) == 400
+}
+
+pub fn panel_inner_trims_the_border_test() {
+  assert tui.panel_inner(geometry.rect_new(0, 1, 10, 5))
+    == geometry.rect_new(1, 2, 8, 3)
+  assert tui.panel_inner(geometry.rect_new(0, 0, 1, 1))
+    == geometry.rect_new(1, 1, 0, 0)
+}
+
+pub fn panel_border_matches_the_block_it_replaces_test() {
+  // The border-only draw must put the same bytes on the wire as etui's block
+  // over a blank canvas; only the interior clear is gone.
+  let cases = [
+    #(geometry.rect_new(0, 0, 12, 4), " transcript / main "),
+    #(geometry.rect_new(2, 1, 30, 6), " transcript / main "),
+    #(geometry.rect_new(0, 0, 8, 3), " a much longer title than fits "),
+    #(geometry.rect_new(0, 0, 2, 2), ""),
+  ]
+  list.each(cases, fn(case_) {
+    let #(area, title) = case_
+    let screen = geometry.rect_new(0, 0, 32, 8)
+    let expected =
+      block.block_new()
+      |> block.with_border(block.Rounded)
+      |> block.with_colors(theme.quiet, style.Default)
+      |> block.with_title(title, block.Top)
+      |> block.render(buffer.buffer_new(screen), area, _)
+    let actual =
+      buffer.buffer_new(screen)
+      |> tui.render_panel_border(area, title, theme.quiet)
+    assert buffer.to_ansi(actual) == buffer.to_ansi(expected)
   })
+}
+
+pub fn panel_border_preserves_prepainted_interior_test() {
+  let screen = geometry.rect_new(0, 0, 12, 4)
+  let inside = Position(3, 2)
+  let painted =
+    buffer.buffer_new(screen)
+    |> buffer.set_string(inside, "kept", theme.current_bold())
+  let drawn =
+    tui.render_panel_border(painted, screen, " transcript ", theme.quiet)
+
+  // The border renderer must leave both the content and style untouched.
+  assert buffer.get_cell(drawn, inside) == buffer.get_cell(painted, inside)
+}
+
+pub fn panel_border_draws_nothing_when_too_small_test() {
+  let screen = geometry.rect_new(0, 0, 4, 4)
+  let blank = buffer.buffer_new(screen)
+  let drawn =
+    tui.render_panel_border(
+      blank,
+      geometry.rect_new(0, 0, 1, 3),
+      "t",
+      theme.quiet,
+    )
+  assert ffi_term.same_term(blank, drawn)
 }
 
 pub fn cached_frame_rebuilds_for_resize_test() {
@@ -216,36 +294,12 @@ pub fn cached_frame_rebuilds_for_resize_test() {
   let cached_buffer = buffer.buffer_new(before)
   let replacement = buffer.buffer_new(after)
   let #(rebuilt, cursor) =
-    tui.cached_frame(
-      #(cached_buffer, Ok(Position(1, 1))),
-      before,
-      4,
-      after,
-      4,
-      fn() { #(replacement, Ok(Position(1, 1))) },
-    )
+    tui.cached_frame(#(cached_buffer, Ok(Position(1, 1))), before, after, fn() {
+      #(replacement, Ok(Position(1, 1)))
+    })
 
   assert ffi_term.same_term(replacement, rebuilt)
   assert cursor == Ok(Position(1, 1))
-}
-
-pub fn cached_frame_rebuilds_for_cursor_revision_test() {
-  let screen = geometry.rect_new(0, 0, 8, 2)
-  let cached_buffer = buffer.buffer_new(screen)
-  let replacement = buffer.buffer_new(screen)
-  let #(rebuilt, cursor) =
-    tui.cached_frame(
-      #(cached_buffer, Ok(Position(1, 1))),
-      screen,
-      4,
-      screen,
-      5,
-      fn() { #(replacement, Ok(Position(3, 1))) },
-    )
-
-  assert ffi_term.same_term(replacement, rebuilt)
-  assert !ffi_term.same_term(cached_buffer, rebuilt)
-  assert cursor == Ok(Position(3, 1))
 }
 
 pub fn adaptive_poll_enters_quiet_only_after_hysteresis_test() {
