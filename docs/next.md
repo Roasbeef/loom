@@ -109,6 +109,17 @@ fail. All 1,125 client tests, client lint and the documentation gate pass.
 Independent source review found no issue. Partial-boot custody and typed
 close remain unfinished.
 
+SQLite close now retains its first outcome. A real write-lock test first
+reproduced a binding crash on `SQLITE_BUSY`; lease deletion now shares
+failed-open cleanup's existing busy-total exec path. After that fix,
+restoring the old second-close success reproduced the lost-error bug.
+The sealed connection now returns its original failure on retry. A quoted
+owner test covers successful release and idempotence. Storage passes all
+30 tests and lint, cross-backend conformance passes all 69 tests, and
+independent review found no issue. No binding or Erlang changes were
+needed. The storage actor still remains alive after close; its eventual
+retirement belongs to the instance's resource owner.
+
 Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
 adopted owner remains alive; it does not automatically cancel that owner
 on the raw crash. The owner-death regression instead kills the scope

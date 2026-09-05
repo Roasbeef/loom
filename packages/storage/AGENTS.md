@@ -136,7 +136,11 @@ by WP-C-full.
 - **Parent-must-exist is enforced at commit**; in-transaction parents work
   because writes apply in order.
 - **Close is idempotent** (pi §1.5): a sealed handle answers handle-closed
-  on reads and faulted on commits rather than crashing.
+  on reads and faulted on commits rather than crashing. SQLite retains
+  its original close result, including a failed lease deletion; a retry
+  cannot turn that failure into permission to replace the writer. Both
+  close and failed-open lease cleanup use the binding's busy-total exec
+  path, with the owner quoted as a literal and the fence matched exactly.
 - **Stats equal the ledger sum after every commit** — the conformance suite
   asserts it at each transaction, not just at the end.
 - **A version is migrated or refused, never misread — and a refusal writes
