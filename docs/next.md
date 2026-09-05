@@ -65,11 +65,15 @@ does not erase that observation.
 **Next: surviving cleanup custody, then daemon admission.**
 The assembly slice is published as
 [PR #233](https://github.com/Roasbeef/loom/pull/233), head `b6df17e`,
-above #229 in native stack #231. Work continues on
-`client/session-ownership` above that head.
+above #229 in native stack #231.
 All four #233 CI jobs passed in run `33938772943`.
 
-The ownership branch adds an internal `api.open_published` hook. The
+The publication hook is now
+[PR #234](https://github.com/Roasbeef/loom/pull/234), head `23873e9`,
+above #233 in the same native stack. Its remote CI run `33940014310`
+is running. Work continues on `client/instance-lifecycle` above #234.
+
+The ownership slice adds an internal `api.open_published` hook. The
 root's first child-start callback publishes the runtime and direct drain
 witness before starting the writer or recovered drivers. The runtime
 gate passes 118 tests. Three focused tests cover paused publication,
