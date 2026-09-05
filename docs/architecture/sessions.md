@@ -29,6 +29,19 @@ These checks establish the assembly boundary, not daemon recovery: the
 existing host still lacks partial-boot and owner-death custody, and close
 does not yet return the drain verdict needed to release a reservation.
 
+Each assembly now creates a random writer-owner identity. Closing SQLite
+deletes the lease row, so the next open can reuse fence one; reusing the
+owner too could restore authority to a still-open, expired connection.
+A real-SQLite regression retains such a connection across takeover,
+close and reopen, then proves it cannot renew or delete the current lease.
+The saved session identity remains unchanged across these incarnations.
+
+SQLite close also retains its first result. If lease deletion is blocked,
+it returns an error through the binding's busy-safe path; later closes
+return that same error rather than claiming the reservation can be freed.
+This storage result is a prerequisite for the assembly's typed close,
+not a replacement for external-effect drain proof.
+
 The runtime's internal `api.open_published` hook publishes its root and
 direct drain witness before the writer or any recovered driver starts.
 The callback acknowledges custody or refuses startup. It runs once per

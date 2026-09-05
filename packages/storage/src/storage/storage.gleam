@@ -374,8 +374,10 @@ pub fn stats(storage: Storage(handle)) -> Result(SessionStats, StorageError) {
 }
 
 /// Closes the handle: releases backend resources (and, for SQLite, the
-/// writer lease). Idempotent — closing a closed handle returns `Ok(Nil)`;
-/// every other operation on a closed handle returns `HandleClosed`. The
+/// writer lease). A successful close is idempotent and returns `Ok(Nil)`
+/// again. SQLite also retains a failed close result: sealing its connection
+/// does not prove that lease release succeeded. Other reads on a sealed
+/// handle return `HandleClosed`, and commits return `Faulted`. The
 /// shipped backends keep their (idle) actor process alive after close so
 /// late callers get an error value rather than a crashed call; the owning
 /// supervisor reclaims the process.

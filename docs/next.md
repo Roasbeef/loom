@@ -65,11 +65,16 @@ does not erase that observation.
 **Next: surviving cleanup custody, then daemon admission.**
 The assembly slice is published as
 [PR #233](https://github.com/Roasbeef/loom/pull/233), head `b6df17e`,
-above #229 in native stack #231. Work continues on
-`client/session-ownership` above that head.
+above #229 in native stack #231.
 All four #233 CI jobs passed in run `33938772943`.
 
-The ownership branch adds an internal `api.open_published` hook. The
+The publication hook is now
+[PR #234](https://github.com/Roasbeef/loom/pull/234), head `abfcc3a`,
+above #233 in the same native stack. The interleave repair below is
+published, and native `gh stack rebase --upstack --no-trunk` carried it
+into `client/instance-lifecycle`, where work continues.
+
+The ownership slice adds an internal `api.open_published` hook. The
 root's first child-start callback publishes the runtime and direct drain
 witness before starting the writer or recovered drivers. The runtime
 gate passes 118 tests. Three focused tests cover paused publication,
@@ -88,7 +93,41 @@ before the writer counted that commit. Delaying that observer reproduced
 the exact failure locally. A writer round trip now precedes the report's
 count and crash assertions. A parked-observer regression fails without
 that synchronization; the corrected runtime gate passes all 119 tests
-with zero lint errors. Remote verification of the correction is pending.
+with zero lint errors. The corrected macOS run `33951055828` passed all
+119 runtime tests, then failed the unchanged cap test
+`race_returns_first_and_cancels_losers_test`: its delayed loser sent a
+message before cancellation. It passed 30 local repeats and a targeted
+CI retry without a cap-test change. All four jobs in run `33951055828`
+now pass at `abfcc3a`. The interleave failure did not recur.
+
+The lifecycle branch now generates a fresh random writer-owner identity
+on every assembly. A real-SQLite test retains an expired fence-one writer
+across takeover, clean close and reopen. It proves that the stale writer
+cannot renew or delete the new lease while the saved session ID remains
+stable. Restoring the previous constant owner makes the renewal assertion
+fail. All 1,125 client tests, client lint and the documentation gate pass.
+Independent source review found no issue. Partial-boot custody and typed
+close remain unfinished.
+
+SQLite close now retains its first outcome. A real write-lock test first
+reproduced a binding crash on `SQLITE_BUSY`; lease deletion now shares
+failed-open cleanup's existing busy-total exec path. After that fix,
+restoring the old second-close success reproduced the lost-error bug.
+The sealed connection now returns its original failure on retry. A quoted
+owner test covers successful release and idempotence. Storage passes all
+30 tests and lint, cross-backend conformance passes all 69 tests, and
+independent review found no issue. No binding or Erlang changes were
+needed. The storage actor still remains alive after close; its eventual
+retirement belongs to the instance's resource owner.
+
+The combined `make check` and real `make e2e-client-bootstrap` pass at
+`3bc8226`: 1,125 client, 164 TUI, 119 runtime, 30 storage and 69
+conformance tests, with zero lint errors. The documentation gate also
+passes. These are the lease-safety prerequisites, not a complete instance
+custodian or daemon. The existing `provider/custodian` shows the Weft
+pattern for independently watching worker death with `cancel_when_exits`
+and retaining children with `adopt_under`; assembly cleanup still needs
+its resource ordering and early publication integrated.
 
 Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
 adopted owner remains alive; it does not automatically cancel that owner
