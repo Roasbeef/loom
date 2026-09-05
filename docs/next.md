@@ -63,13 +63,54 @@ passed. The original failure's cause remains unestablished; the rerun
 does not erase that observation.
 
 **Next: surviving cleanup custody, then daemon admission.**
+The assembly slice is published as
+[PR #233](https://github.com/Roasbeef/loom/pull/233), head `b6df17e`,
+above #229 in native stack #231. Work continues on
+`client/session-ownership` above that head.
+All four #233 CI jobs passed in run `33938772943`.
+
+The ownership branch adds an internal `api.open_published` hook. The
+root's first child-start callback publishes the runtime and direct drain
+witness before starting the writer or recovered drivers. The runtime
+gate passes 118 tests. Three focused tests cover paused publication,
+refusal and scope-holder death; moving publication after startup makes
+the ordering regression fail. Independent source review found no issue.
+The combined `make check` and `make e2e-client-bootstrap` pass at
+`31ba8ac`: 1,124 client, 164 TUI, 118 runtime and 69 conformance tests,
+with zero lint errors. `make doc-check` also passes.
+
+The ownership slice is published as
+[PR #234](https://github.com/Roasbeef/loom/pull/234), above #233 in stack
+#231. Its first CI run, `33940014310`, passed the Linux gate, jail E2E
+and 200-seed soak, but failed the macOS interleave baseline: 13 commits
+instead of 14. The harness could observe the durable terminal record
+before the writer counted that commit. Delaying that observer reproduced
+the exact failure locally. A writer round trip now precedes the report's
+count and crash assertions. A parked-observer regression fails without
+that synchronization; the corrected runtime gate passes all 119 tests
+with zero lint errors. Remote verification of the correction is pending.
+
+Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
+adopted owner remains alive; it does not automatically cancel that owner
+on the raw crash. The owner-death regression instead kills the scope
+holder, which initiates cancellation and produces a normal drain witness.
+Full assembly integration must cover independent worker faults explicitly,
+not assume that consuming a withheld outcome will initiate cleanup.
+
 `open_instance` still uses the old host and `close_instance` still
 discards its runtime drain result. Neither is ready for a daemon manager
 to call as a complete lifecycle boundary. Partial boot and owner death
 must leave resource handles with surviving custody before recovered work
-can execute. Runtime recovery currently starts drivers before
-`api.open` returns; publishing custody after that return is too late.
+can execute. Ordinary `api.open` still resumes drivers before it returns;
+the assembly must use the new publication hook to establish custody first.
 An uncertain drain must retain the reservation and prevent replacement.
+
+Resource retirement needs its own checks: SQLite `Close` releases the
+lease and closes the connection but leaves its actor alive for idempotent
+calls. The pool and MCP stop APIs send asynchronous requests. Closing a
+lease or sending those requests alone does not prove bounded process
+counts or complete external-process teardown. Measure those lifetimes
+when integrating the typed close outcome.
 
 After custody, implement the durable catalogue with restore-only startup,
 lazy authorized opening, one daemon listener and routed attachments, safe

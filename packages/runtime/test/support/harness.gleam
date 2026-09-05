@@ -32,6 +32,7 @@ import machine/strand.{ModelIdentity, StrandConfiguration, ThinkingOff}
 import runtime/api
 import runtime/effects
 import runtime/supervisor
+import runtime/writer
 import session/session.{type Session}
 import storage/storage
 import support/fake
@@ -90,12 +91,30 @@ pub fn configuration() -> strand.StrandConfiguration {
 /// A run whose numbering drifted is discarded and started over on a fresh
 /// session; `attempts` bounds that. See `attempt_run`.
 pub fn run(scenario: Scenario, kill_at: Int) -> Report {
-  attempt_run(scenario, kill_at, attempts: 5)
+  run_observed(scenario, kill_at, fn(_) { Nil })
+}
+
+/// Runs a scenario with a hook before each commit reaches the recorder.
+/// Tests can park the writer after durability but before observation to
+/// prove that a terminal snapshot alone cannot finish the report.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.run_observed(scenario, 0, fn(_session) { Nil })
+/// ```
+pub fn run_observed(
+  scenario: Scenario,
+  kill_at: Int,
+  before_count: fn(Session) -> Nil,
+) -> Report {
+  attempt_run(scenario, kill_at, before_count, attempts: 5)
 }
 
 fn attempt_run(
   scenario: Scenario,
   kill_at: Int,
+  before_count: fn(Session) -> Nil,
   attempts attempts: Int,
 ) -> Report {
   let rec = recorder.start()
@@ -121,6 +140,7 @@ fn attempt_run(
       poll_interval_ms: 250,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
       after_commit: fn(_) {
+        before_count(sess)
         case recorder.on_commit(rec) {
           // Crash between this commit and the next: the commit is
           // durable, the committer never learns it succeeded.
@@ -142,7 +162,8 @@ fn attempt_run(
     Spoiled(why:) -> {
       process.kill(rt.tree.supervisor)
       case attempts > 1 {
-        True -> attempt_run(scenario, kill_at, attempts: attempts - 1)
+        True ->
+          attempt_run(scenario, kill_at, before_count, attempts: attempts - 1)
         False ->
           panic as {
             "the " <> scenario.name <> " opening kept drifting: " <> why
@@ -240,6 +261,11 @@ fn drive_run(
   let outcome = wait_terminal(sess, op)
   stop_abort_pump(pump)
 
+  // Storage publishes the terminal record before the writer counts its
+  // commit. A writer round trip must finish before reading the recorder;
+  // otherwise the baseline can omit its last boundary and test fewer crashes.
+  wait_for_commit_observers(rt)
+
   // A run armed to crash must actually have crashed: a bomb that never
   // fired would make the interleave loop vacuous.
   case kill_at > 0 {
@@ -256,6 +282,24 @@ fn drive_run(
   assert_placement_invariants(sess)
   process.kill(rt.tree.supervisor)
   Report(outcome:, projection:, usage_total:, commits:, rec:)
+}
+
+fn wait_for_commit_observers(rt: api.Runtime) -> Nil {
+  let observed =
+    poll.until(within: 20_000, every: 10, attempt: fn() {
+      // The final observer may be the armed crash boundary. Isolate the
+      // read so that this expected writer death retries through its address.
+      let outcomes =
+        weft.new([fn() { writer.stats(rt.tree.writer) }])
+        |> weft.deadline(1000)
+        |> weft.start
+      case outcomes {
+        [weft.Completed(..)] -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  assert observed == poll.Answered(Nil)
+  Nil
 }
 
 // The budget is wall-clock, which is the whole reason this is a `weft/poll`

@@ -156,12 +156,44 @@ pub type SessionTree {
 /// ```
 ///
 pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
+  start_published(config, fn(_tree) { Ok(Nil) })
+}
+
+/// Publishes the root and its drain witness before any writer or driver starts.
+///
+/// The callback runs once, in the root's first child-start callback. It must
+/// only transfer custody, not call a writer or synchronously close the root:
+/// those operations require this startup callback to return. Refusal prevents
+/// recovery. Restarts below the drain ledger retain the original publication.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // supervisor.start_published(config, fn(tree) { retain_custody(tree) })
+/// ```
+@internal
+pub fn start_published(
+  config: Config,
+  publish: fn(SessionTree) -> Result(Nil, String),
+) -> Result(SessionTree, actor.StartError) {
   use namespace <- result.try(
     address.start() |> result.map_error(actor.InitFailed),
   )
   let drains_name = address.new_address(namespace)
   let registry_name = address.new_address(namespace)
   let writer_name = address.new_address(namespace)
+  let describe_tree = fn(root, drains) {
+    SessionTree(
+      supervisor: root,
+      drains:,
+      writer: writer_name,
+      registry: registry_name,
+      namespace:,
+      strands: registry.Primary,
+      subagent_strands: registry.Subagent,
+      subagent: config.subagent,
+    )
+  }
   let factory = fn(strand_name) {
     use reg <- result.try(registry_subject(registry_name))
     use drains <- result.try(
@@ -188,7 +220,19 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
       period: config.tolerance.period,
     )
     |> sup.add(
-      drain_registry.supervised(drains_name)
+      supervision.supervisor(fn() {
+        use started <- result.try(drain_registry.start(drains_name))
+
+        // OTP invokes child-start callbacks in the root itself. Publish the
+        // exact root and direct witness before returning the first child;
+        // no later child can execute while custody is being acknowledged.
+        let tree = describe_tree(process.self(), started.data)
+        retain_namespace(namespace, tree.supervisor)
+        use Nil <- result.try(
+          publish(tree) |> result.map_error(actor.InitFailed),
+        )
+        Ok(started)
+      })
       |> supervision.restart(supervision.Temporary)
       |> supervision.significant(True),
     )
@@ -234,18 +278,8 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
           actor.InitFailed("the drain ledger died during startup")
         }),
       )
-      retain_namespace(namespace, started.pid)
       process.unlink(started.pid)
-      Ok(SessionTree(
-        supervisor: started.pid,
-        drains:,
-        writer: writer_name,
-        registry: registry_name,
-        namespace:,
-        strands: registry.Primary,
-        subagent_strands: registry.Subagent,
-        subagent: config.subagent,
-      ))
+      Ok(describe_tree(started.pid, drains))
     }
     Error(error) -> {
       let _stopped = address.stop(namespace)
