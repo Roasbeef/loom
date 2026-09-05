@@ -96,9 +96,9 @@ that synchronization; the corrected runtime gate passes all 119 tests
 with zero lint errors. The corrected macOS run `33951055828` passed all
 119 runtime tests, then failed the unchanged cap test
 `race_returns_first_and_cancels_losers_test`: its delayed loser sent a
-message before cancellation. It passed 30 local repeats; a targeted retry
-is waiting for the complete workflow to finish. The interleave failure
-did not recur.
+message before cancellation. It passed 30 local repeats and a targeted
+CI retry without a cap-test change. All four jobs in run `33951055828`
+now pass at `abfcc3a`. The interleave failure did not recur.
 
 The lifecycle branch now generates a fresh random writer-owner identity
 on every assembly. A real-SQLite test retains an expired fence-one writer
@@ -119,6 +119,15 @@ owner test covers successful release and idempotence. Storage passes all
 independent review found no issue. No binding or Erlang changes were
 needed. The storage actor still remains alive after close; its eventual
 retirement belongs to the instance's resource owner.
+
+The combined `make check` and real `make e2e-client-bootstrap` pass at
+`3bc8226`: 1,125 client, 164 TUI, 119 runtime, 30 storage and 69
+conformance tests, with zero lint errors. The documentation gate also
+passes. These are the lease-safety prerequisites, not a complete instance
+custodian or daemon. The existing `provider/custodian` shows the Weft
+pattern for independently watching worker death with `cancel_when_exits`
+and retaining children with `adopt_under`; assembly cleanup still needs
+its resource ordering and early publication integrated.
 
 Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
 adopted owner remains alive; it does not automatically cancel that owner
