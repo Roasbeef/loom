@@ -79,6 +79,17 @@ The combined `make check` and `make e2e-client-bootstrap` pass at
 `31ba8ac`: 1,124 client, 164 TUI, 118 runtime and 69 conformance tests,
 with zero lint errors. `make doc-check` also passes.
 
+The ownership slice is published as
+[PR #234](https://github.com/Roasbeef/loom/pull/234), above #233 in stack
+#231. Its first CI run, `33940014310`, passed the Linux gate, jail E2E
+and 200-seed soak, but failed the macOS interleave baseline: 13 commits
+instead of 14. The harness could observe the durable terminal record
+before the writer counted that commit. Delaying that observer reproduced
+the exact failure locally. A writer round trip now precedes the report's
+count and crash assertions. A parked-observer regression fails without
+that synchronization; the corrected runtime gate passes all 119 tests
+with zero lint errors. Remote verification of the correction is pending.
+
 Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
 adopted owner remains alive; it does not automatically cancel that owner
 on the raw crash. The owner-death regression instead kills the scope
