@@ -11,12 +11,13 @@
 ////
 //// Only the events that move the model. `Tick` is excluded because it
 //// carries no information — the replay backend supplies its own ticks, and
-//// recording thousands of idle ones would bury the events that matter. The
-//// mouse events other than the wheel are excluded because `update` returns
-//// the model unchanged for every one of them, so a recording that carried
-//// them would replay identically and cost bytes to say so. `Recorded` is
-//// the set that is left, and it is a type rather than a filter, so nothing
-//// downstream has to ask whether a moment is recordable.
+//// recording thousands of idle ones would bury the events that matter.
+//// `MouseMove` is excluded because `update` returns the model unchanged for
+//// it, so a recording that carried it would replay identically and cost
+//// bytes to say so; a press, drag or release is kept, because that is how a
+//// mouse selection is made and a replay has to be able to make one.
+//// `Recorded` is the set that is left, and it is a type rather than a
+//// filter, so nothing downstream has to ask whether a moment is recordable.
 ////
 //// ## The wire form
 ////
@@ -87,6 +88,15 @@ pub type Recorded {
 
   /// A mouse wheel notch at a cell position.
   Scrolled(x: Int, y: Int, direction: ScrollDirection)
+
+  /// A mouse button going down on a cell.
+  Pressed(x: Int, y: Int, button: backend.MouseButton)
+
+  /// The pointer moving with a button held.
+  Dragged(x: Int, y: Int, button: backend.MouseButton)
+
+  /// A mouse button coming up on a cell.
+  Released(x: Int, y: Int, button: backend.MouseButton)
 
   /// One message from the websocket actor's inbox.
   Arrived(message: connection.Message)
@@ -184,14 +194,13 @@ pub fn of_input(event: backend.InputEvent) -> Option(Recorded) {
       Some(Scrolled(x:, y:, direction: ScrollUp))
     backend.MouseScroll(x, y, False) ->
       Some(Scrolled(x:, y:, direction: ScrollDown))
+    backend.MousePress(x, y, button) -> Some(Pressed(x:, y:, button:))
+    backend.MouseDrag(x, y, button) -> Some(Dragged(x:, y:, button:))
+    backend.MouseRelease(x, y, button) -> Some(Released(x:, y:, button:))
 
-    // A tick carries nothing, and the four remaining mouse events leave the
-    // model exactly as they found it.
-    backend.Tick
-    | backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..)
-    | backend.MouseMove(..) -> None
+    // A tick carries nothing, and a move with no button held leaves the
+    // model exactly as it found it.
+    backend.Tick | backend.MouseMove(..) -> None
   }
 }
 
@@ -213,6 +222,12 @@ pub fn to_step(event: Recorded) -> virtual_backend.Step {
       virtual_backend.Input(backend.MouseScroll(x, y, True))
     Scrolled(x:, y:, direction: ScrollDown) ->
       virtual_backend.Input(backend.MouseScroll(x, y, False))
+    Pressed(x:, y:, button:) ->
+      virtual_backend.Input(backend.MousePress(x, y, button))
+    Dragged(x:, y:, button:) ->
+      virtual_backend.Input(backend.MouseDrag(x, y, button))
+    Released(x:, y:, button:) ->
+      virtual_backend.Input(backend.MouseRelease(x, y, button))
     Arrived(message:) -> virtual_backend.Deliver(message:)
   }
 }
@@ -326,7 +341,34 @@ fn encode_event(event: Recorded) -> List(#(String, json.JsonValue)) {
       #("y", json.Int(y)),
       #("up", json.Bool(direction == ScrollUp)),
     ]
+    Pressed(x:, y:, button:) -> encode_button("press", x, y, button)
+    Dragged(x:, y:, button:) -> encode_button("drag", x, y, button)
+    Released(x:, y:, button:) -> encode_button("release", x, y, button)
     Arrived(message:) -> encode_message(message)
+  }
+}
+
+fn encode_button(
+  tag: String,
+  x: Int,
+  y: Int,
+  button: backend.MouseButton,
+) -> List(#(String, json.JsonValue)) {
+  [
+    #("t", json.String(tag)),
+    #("x", json.Int(x)),
+    #("y", json.Int(y)),
+    #("button", json.String(button_name(button))),
+  ]
+}
+
+// The button by name rather than by etui's bit value, so a recording reads
+// as what happened and does not change meaning if etui renumbers.
+fn button_name(button: backend.MouseButton) -> String {
+  case button {
+    backend.MouseLeft -> "left"
+    backend.MouseMiddle -> "middle"
+    backend.MouseRight -> "right"
   }
 }
 
@@ -363,6 +405,9 @@ fn decode_event(
     "paste" -> result.map(required_string(fields, "text"), Pasted)
     "resize" -> decode_resize(fields)
     "scroll" -> decode_scroll(fields)
+    "press" -> decode_button(fields, Pressed)
+    "drag" -> decode_button(fields, Dragged)
+    "release" -> decode_button(fields, Released)
     "connected" -> Ok(Arrived(message: connection.Connected))
     "incoming" ->
       result.map(required_string(fields, "text"), fn(text) {
@@ -399,6 +444,24 @@ fn decode_scroll(
     Ok(_) | Error(Nil) -> Error("scroll needs a boolean \"up\"")
   })
   Ok(Scrolled(x:, y:, direction:))
+}
+
+// The three button events share one shape and differ only in the
+// constructor, which the tag has already chosen.
+fn decode_button(
+  fields: List(#(String, json.JsonValue)),
+  build: fn(Int, Int, backend.MouseButton) -> Recorded,
+) -> Result(Recorded, String) {
+  use x <- result.try(required_int(fields, "x"))
+  use y <- result.try(required_int(fields, "y"))
+  use name <- result.try(required_string(fields, "button"))
+  use button <- result.try(case name {
+    "left" -> Ok(backend.MouseLeft)
+    "middle" -> Ok(backend.MouseMiddle)
+    "right" -> Ok(backend.MouseRight)
+    other -> Error("unknown mouse button \"" <> other <> "\"")
+  })
+  Ok(build(x, y, button))
 }
 
 fn object_fields(

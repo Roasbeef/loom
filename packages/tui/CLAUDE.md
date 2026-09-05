@@ -43,7 +43,8 @@ that tree separately from the self-contained server.
   the replay command lives in `tui`, and a `virtual_backend` that imported
   `tui` would close a cycle.
 - `tui/recording.Recorded` is the closed set of events worth replaying —
-  keys, pastes, resizes, wheel notches and inbox messages — and
+  keys, pastes, resizes, wheel notches, button presses, drags, releases and
+  inbox messages — and
   `tui/recording.Moment` pairs one with its monotonic offset. `Recorder` is
   the open `--record` file, held in the `Model` because the inbox is drained
   inside `update_tick` and there is no other point at which both a websocket
@@ -52,6 +53,15 @@ that tree separately from the self-contained server.
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what
   `loom replay` prints, so the two cannot disagree about a frame.
+- `tui/selection.Selection` is a left-button drag in progress or settled:
+  an anchor and a head in screen cells, clipped to the panel interior the
+  press landed in (`tui.hit_area`), so the transcript's border glyphs and
+  the rail beside it are never part of a copy. `text` reads the covered
+  rows back from the frame on display through `frame.row_text`, `highlight`
+  adds the reverse modifier to those cells, and `clipboard_sequence` is the
+  OSC 52 write. `tui.Clipboard` says whether that write reaches a terminal:
+  only the interactive launch sets `TerminalClipboard`; a replay or a
+  scripted test keeps `NoClipboard`, because their stdout is not one.
 - `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
@@ -149,6 +159,16 @@ that tree separately from the self-contained server.
   transcript scrollback. Escape closes an open surface before it requests an
   active-operation interrupt. Mouse-wheel events share that same tail-relative
   scroll law.
+- **Mouse selection**: the backend reports the mouse so the wheel can scroll,
+  which stops the terminal selecting text for us, so the client does it. A
+  left-button drag highlights the cells it covers within the panel the press
+  landed in; the release copies exactly the highlighted text to the system
+  clipboard with OSC 52 and the footer says `copied N lines`. The highlight
+  stays up as confirmation until the next key, paste, wheel notch or click;
+  Escape clears it without reaching the interrupt. Whether the write lands is
+  the terminal's policy — Herdr, kitty, WezTerm, Ghostty and Alacritty honour
+  it by default, iTerm2 behind a preference, Terminal.app not at all — and
+  the client cannot tell, so the notice reports what was sent.
 - **Command and agent selection**: typing `/` opens the prefix-filtered command
   palette. Up and Down move palette or inspector selection, Tab completes a
   command, and Enter on an agent opens its strand transcript. A strand switch
@@ -179,7 +199,11 @@ that tree separately from the self-contained server.
   accept only regular files up to 4 KiB, and keep displayed refs shape- and
   length-bounded. When all sections
   cannot share one row, usage and agent status move to a second row; if those
-  collide, status takes a third row so the usage tail remains visible.
+  collide, status takes a third row so the usage tail remains visible. The
+  row count comes from fixed caps so it cannot flap with the notice text,
+  but the status section grows into every column a wider terminal has past
+  the single-row threshold (`footer_status_limit`), so a long notice is cut
+  only when the screen is actually short of room.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.
@@ -388,6 +412,13 @@ that tree separately from the self-contained server.
   Tests can now inject a presentation clock with `new_model_with_clock`.
   The replay command still uses `new_model`; mapping recorded offsets onto
   that clock remains separate work.
+- **A copy reads the frame on display, not a fresh render.** The release
+  takes its text from the cached frame, stale or not, because that is what
+  the hand highlighted; a fresh render could differ by a stream fragment
+  that arrived during the drag. The highlight itself is the last paint of
+  `render_frame`, over overlays, and the selection is screen cells: it is
+  dropped by the next input rather than tracked through a reflow, so a
+  settled highlight under moving transcript is decoration, never authority.
 - **A recording is what the client was given, not what it made of it.**
   `update` writes the input event before interpreting it, and
   `handle_connection_message` writes the message before decoding it, so a
