@@ -63,12 +63,33 @@ passed. The original failure's cause remains unestablished; the rerun
 does not erase that observation.
 
 **Next: surviving cleanup custody, then daemon admission.**
+The assembly slice is published as
+[PR #233](https://github.com/Roasbeef/loom/pull/233), head `b6df17e`,
+above #229 in native stack #231. Work continues on
+`client/session-ownership` above that head.
+All four #233 CI jobs passed in run `33938772943`.
+
+The ownership branch adds an internal `api.open_published` hook. The
+root's first child-start callback publishes the runtime and direct drain
+witness before starting the writer or recovered drivers. The runtime
+gate passes 118 tests. Three focused tests cover paused publication,
+refusal and scope-holder death; moving publication after startup makes
+the ordering regression fail. Independent source review found no issue.
+The full combined gate has not yet run for this ownership slice.
+
+Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
+adopted owner remains alive; it does not automatically cancel that owner
+on the raw crash. The owner-death regression instead kills the scope
+holder, which initiates cancellation and produces a normal drain witness.
+Full assembly integration must cover independent worker faults explicitly,
+not assume that consuming a withheld outcome will initiate cleanup.
+
 `open_instance` still uses the old host and `close_instance` still
 discards its runtime drain result. Neither is ready for a daemon manager
 to call as a complete lifecycle boundary. Partial boot and owner death
 must leave resource handles with surviving custody before recovered work
-can execute. Runtime recovery currently starts drivers before
-`api.open` returns; publishing custody after that return is too late.
+can execute. Ordinary `api.open` still resumes drivers before it returns;
+the assembly must use the new publication hook to establish custody first.
 An uncertain drain must retain the reservation and prevent replacement.
 
 After custody, implement the durable catalogue with restore-only startup,
