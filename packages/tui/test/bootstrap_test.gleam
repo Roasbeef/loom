@@ -242,11 +242,13 @@ pub fn launch_lock_is_released_when_its_owner_dies_test() {
   let root = test_root("launch-lock-owner-death")
   let path = filepath.join(root, "session.lock")
   let ready = process.new_subject()
-  let parked = process.new_subject()
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
   let holder =
     process.spawn_unlinked(fn() {
+      // Only the resource owner may receive on its parking inbox. A parent
+      // inbox would crash this worker and release the lock before the kill.
+      let parked = process.new_subject()
       let assert Ok(lock) = ffi_bootstrap.try_launch_lock(path)
       process.send(ready, Nil)
       let _ = process.receive(parked, 5000)
@@ -285,12 +287,14 @@ pub fn paused_server_dies_with_launcher_before_release_test() {
   let marker = filepath.join(root, "started")
   let log = filepath.join(root, "server.log")
   let ready = process.new_subject()
-  let parked = process.new_subject()
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
 
   let launcher =
     process.spawn_unlinked(fn() {
+      // The launcher must remain alive until the test kills it, so its
+      // parking inbox belongs to this process rather than the parent.
+      let parked = process.new_subject()
       let assert Ok(started) =
         ffi_bootstrap.spawn_server(
           "/bin/sh",

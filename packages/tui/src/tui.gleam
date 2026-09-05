@@ -286,6 +286,9 @@ pub type Model {
     frame_revision: Int,
     frame_cache: Option(FrameCache),
     frame_debt: FrameDebt,
+    /// The presentation clock, shared by pacing, activity, and throughput.
+    /// Scripts inject this clock without changing transport deadlines.
+    monotonic_time_ms: fn() -> Int,
     last_frame_ms: Int,
     activity_revision: Int,
     quiet_for_ms: Int,
@@ -457,6 +460,27 @@ pub fn new_model(
   inbox: Subject(connection.Message),
   project: workspace.Context,
 ) -> Model {
+  new_model_with_clock(inbox, project, ffi_bootstrap.monotonic_time_ms)
+}
+
+/// Creates a presentation state whose timing is controlled by its caller.
+///
+/// The clock seeds the first frame and measures every later presentation
+/// interval in the same era. A test may advance it between events without
+/// sleeping. Network and bootstrap deadlines retain their real clocks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let model = tui.new_model_with_clock(inbox, project, fn() { -10_000 })
+/// assert model.last_frame_ms == -10_000
+/// ```
+@internal
+pub fn new_model_with_clock(
+  inbox: Subject(connection.Message),
+  project: workspace.Context,
+  monotonic_time_ms: fn() -> Int,
+) -> Model {
   let strands = demo_strands()
   Model(
     quit: False,
@@ -524,7 +548,8 @@ pub fn new_model(
     frame_revision: 0,
     frame_cache: None,
     frame_debt: FrameSettled,
-    last_frame_ms: ffi_bootstrap.monotonic_time_ms(),
+    monotonic_time_ms:,
+    last_frame_ms: monotonic_time_ms(),
     activity_revision: 0,
     quiet_for_ms: quiet_after_ms,
     recorder: None,
@@ -892,7 +917,19 @@ fn frame_separator(index: Int) -> String {
   string.repeat("\u{2500}", 8) <> " frame " <> int.to_string(index) <> " "
 }
 
-fn connect_remote(
+/// Attaches a model through the same handshake as an interactive launch.
+///
+/// The caller owns the model's inbox and must run the terminal loop in
+/// that process. Tests use this seam so their initial subscriptions cannot
+/// drift from the subscriptions a shipped client sends.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let attached = tui.connect_remote(model, model.inbox, address, session, token)
+/// ```
+@internal
+pub fn connect_remote(
   base: Model,
   inbox: Subject(connection.Message),
   address: String,
@@ -1954,7 +1991,7 @@ fn advance_activity_indicator(model: Model) -> Model {
   case active_strand_live(model) {
     False -> Model(..model, activity_started_ms: None, activity_elapsed_s: 0)
     True -> {
-      let now = ffi_bootstrap.monotonic_time_ms()
+      let now = model.monotonic_time_ms()
       let started = option.unwrap(model.activity_started_ms, now)
       let activity_elapsed_s = { now - started } / 1000
       let activity_frame = model.activity_frame + 1
@@ -1997,7 +2034,7 @@ fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
 
   // The clock is read once per event and only compared against itself, so a
   // wall-clock step cannot stretch or collapse the interval.
-  let now = ffi_bootstrap.monotonic_time_ms()
+  let now = model.monotonic_time_ms()
   case frame_decision(boundary, freshness, now - model.last_frame_ms) {
     KeepCachedFrame -> model
     DeferFrame -> Model(..model, frame_debt: FrameDeferred)
@@ -2537,10 +2574,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         Replaying, _ -> model.output_rate_tps
 
         Attached(..), Some(started) | Preview, Some(started) ->
-          output_rate(
-            settled.output,
-            ffi_bootstrap.monotonic_time_ms() - started,
-          )
+          output_rate(settled.output, model.monotonic_time_ms() - started)
         Attached(..), None | Preview, None -> model.output_rate_tps
       }
       let usage = add_usage(model.usage, settled)
@@ -3244,7 +3278,7 @@ fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
 /// the first fragment as a fallback — and whichever comes first wins.
 fn generation_clock(model: Model, strand: String) -> Option(Int) {
   case model.generation_started_ms, strand == model.active_strand {
-    None, True -> Some(ffi_bootstrap.monotonic_time_ms())
+    None, True -> Some(model.monotonic_time_ms())
     started, _ -> started
   }
 }

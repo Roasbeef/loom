@@ -168,9 +168,20 @@ over one session file. WP-L.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
   `loom` binary against a real `serve.boot`, in a real terminal
   (`tmux` on a private socket, declared geometry, every wait a predicate
-  over pane content with a deadline). The only test in the tree with a
-  fake on *neither* side of the protocol; only the model is scripted.
+  over pane content with a deadline). Neither side of the protocol is
+  fake; only the model is scripted.
   Skips — loudly — when `tmux` or `go` is absent.
+- `test/support/tui_driver` is the in-process real-client companion.
+  Each actor owns a socket ingress and a separate model inbox, and uses
+  `tui.connect_remote` and `tui.run_script` for the shipped handshake and
+  loop. Selected socket messages move through the model inbox in order;
+  sharing that inbox with the socket would let re-delivery reorder frames.
+  `two_virtual_tuis_share_one_real_session_test_` in `tui_e2e_test` checks
+  two distinct prompt/reply round trips, equal decoded records once in
+  order, rendered replies, fresh-subscription recovery, and both detaches.
+  The next prompt waits for the clients' idle phase, not merely the
+  assistant entry. `tui` and the existing pinned `etui` are test-only
+  dependencies; neither enters the server's production dependency graph.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent
