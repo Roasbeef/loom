@@ -21,6 +21,14 @@ extended by the M3 runtime wave.
   (`protocol-change/008`).
   It addresses **one strand at a time**; `api.on_strand` rebinds the same
   tree to a sibling, so every operation works for subagents too.
+- `runtime/api.open_published` and `runtime/supervisor.start_published`
+  expose an internal publication boundary before recovery. The first
+  child-start callback publishes the exact root and direct drain witness
+  before the writer, factories or drivers start. Refusal prevents recovery;
+  restarts below the significant temporary drain ledger do not republish.
+  The callback only transfers custody: runtime calls and synchronous close
+  would block startup. The caller is an exit-trapping resource owner and
+  must establish surviving custody itself; the API does not create it.
 - `runtime/api.{CreateStrandError, Delivery}` — subagent creation, and
   whether a cross-strand message landed as a `Steered(entry)` on an open
   run or `Started(operation)` on an idle strand. `create_strand` is

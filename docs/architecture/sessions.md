@@ -29,6 +29,14 @@ These checks establish the assembly boundary, not daemon recovery: the
 existing host still lacks partial-boot and owner-death custody, and close
 does not yet return the drain verdict needed to release a reservation.
 
+The runtime's internal `api.open_published` hook publishes its root and
+direct drain witness before the writer or any recovered driver starts.
+The callback acknowledges custody or refuses startup. It runs once per
+root, not on ordinary writer/driver restarts. Tests cover paused recovery,
+refusal and session-owner death with a surviving Weft scope. The serving
+assembly has not yet adopted this hook or gained complete partial-boot
+cleanup.
+
 ## One process across workspaces
 
 One `loomd` process runs one BEAM VM and hosts the user's active sessions

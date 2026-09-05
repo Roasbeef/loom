@@ -202,9 +202,9 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:356`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:389`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
-(`runtime/api.gleam:270`), and its shape is the shape of every admission
+(`runtime/api.gleam:408`), and its shape is the shape of every admission
 in the system.
 
 It reads the strand state, the leaf, and the pending payloads — capturing
@@ -273,7 +273,7 @@ pub fn nudge(runtime: Runtime) -> Nil {
 }
 ```
 
-That is the doorbell doctrine in six lines (`runtime/api.gleam:405`).
+That is the doorbell doctrine in six lines (`runtime/api.gleam:746`).
 Every payload travels in a commit; the process message that follows
 carries nothing and asks only for promptness. Losing it costs one poll
 interval — 200 ms by default — because the driver's periodic `PollTick`
@@ -1010,7 +1010,7 @@ Kill the tree at any instant and the session resumes without repeating
 itself. Three mechanisms make that true, and they compose.
 
 **The supervision tree is the recovery policy, written as data**
-(`runtime/supervisor.gleam:143`). It is rest-for-one over six children,
+(`runtime/supervisor.gleam:216`). It is rest-for-one over six children,
 in order:
 
 ```mermaid
@@ -1063,7 +1063,7 @@ failed check faults the strand rather than guessing.
 The booter is what makes recovery boot *all* strands rather than just
 `main`: it lists the `strand.*` registers and starts a driver for every
 strand it finds, routing each to its factory
-(`runtime/supervisor.gleam:285`). Cold open, a writer crash, and a booter
+(`runtime/supervisor.gleam:505`). Cold open, a writer crash, and a booter
 crash all converge on "list the store, start what is missing".
 
 **No effect crosses the next incarnation's start barrier.** This is the
@@ -1170,7 +1170,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:913`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:946`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1181,7 +1181,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1192`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1225`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3656`). Keying
@@ -1189,9 +1189,10 @@ on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
 
-Four corners of `fact.custom` are reserved and refused to `put_fact`:
-`escalation/`, `operation-result/`, `lineage/` and `prompt/`
-(`runtime/api.gleam:949`). Because reserving also *hides* a namespace
+Eight prefixes in `fact.custom` are reserved and refused to `put_fact`:
+`escalation/`, `operation-result/`, `lineage/`, `prompt/`, `session/`,
+`rule/`, `schedule/` and `ext/` (`runtime/api.gleam:1558`). Because
+reserving also *hides* a namespace
 from `facts`, harness code reads and writes those through
 `reserved_facts` / `put_reserved_fact`, which refuse everything outside
 the reserved set — the two doors are disjoint so neither can be pressed
@@ -1482,7 +1483,7 @@ give you the single instrumentation point that `after_commit` exploits.
 
 **Recovery as a data structure.** A rest-for-one supervisor with six
 ordered children *is* the recovery policy
-(`runtime/supervisor.gleam:143`). Blast radius is expressed by where a
+(`runtime/supervisor.gleam:216`). Blast radius is expressed by where a
 child sits in a list, and the "restart it and let it re-read durable
 state" strategy replaces the defensive coding a non-supervised runtime
 needs at every layer.
