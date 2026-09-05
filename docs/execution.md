@@ -144,6 +144,42 @@ line was never read is a gate that did not run, whatever the
 notification said; in the caught case the log's first page was compile
 errors.
 
+### Bound test runs and report elapsed time
+
+Use `make test-<package>` or `bash scripts/test.sh <package>`. The full
+gate, E2E targets and soak chunks use the same runner. It starts the
+package application, prints EUnit test names and timings, and preserves
+the existing per-test timeout scale. An independent process deadline
+defaults to 1,200 seconds per package invocation, including compilation.
+Set `LOOM_TEST_TIMEOUT_SECONDS` to a finite positive value for a measured
+shorter or longer run. A timeout exits 124, never success, and kills the
+test command's process group. That kill is a test failure, not proof that
+external effects drained safely.
+
+For a focused run, use an explicit filter:
+
+```sh
+LOOM_TEST_TIMEOUT_SECONDS=60 bash scripts/test.sh storage --match quoted_writer_identity
+```
+
+The filter matches module or function names, including test generators.
+No matches is an error. Do not pass `--match` to `gleam test`: the pinned
+Gleeunit entry point ignores that argument and runs every test.
+
+On macOS the wrapper runs its command under `caffeinate -i`; the idle-sleep
+assertion ends with the command and changes no persistent power setting.
+Manual sleep can still suspend the host. The wrapper checks both wall and
+monotonic elapsed time, so suspension or a backwards wall-clock adjustment
+cannot silently extend its budget. When a log has a long quiet interval,
+check both test timing and the host's sleep log before calling it a deadlock.
+In the September 5 run, two sleep intervals accounted for roughly 73 of
+76 wall-clock minutes; the awake rerun passed in 186 seconds.
+
+The watchdog's fault tests run under their own 20-second deadline in
+`make check`. They cover a blocked command, descendant termination,
+interrupts, invalid deadlines and exit-status preservation. Go tests retain
+their own ten-minute timeout and run under the outer process deadline too.
+
 ### A long-lived tree's incremental build cache can lie
 
 A deterministic test failure in a package the diff does not touch is not

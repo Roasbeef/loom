@@ -28,12 +28,12 @@ check-%: binaries ## Full gate for one package, e.g. make check-machine
 .PHONY: test
 test: ## Run tests only (skips format check), all Gleam packages
 	@set -e; for p in $(PACKAGES); do \
-		echo "==> $$p"; (cd packages/$$p && gleam test); \
+		echo "==> $$p"; bash scripts/test.sh $$p; \
 	done
 
 .PHONY: test-%
 test-%: ## Run tests for one package, e.g. make test-core
-	@cd packages/$* && gleam test
+	@bash scripts/test.sh $*
 
 .PHONY: build
 build: ## Warning-free build of every Gleam package
@@ -231,7 +231,8 @@ sandbox: ## Build the loom-exec sandbox helper binary
 
 .PHONY: sandbox-test
 sandbox-test: ## Vet, build, and test the Go sandbox package
-	@cd $(GO_PKG) && go vet ./... && go build ./... && go test ./...
+	@cd $(GO_PKG) && go vet ./... && go build ./... && \
+		python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)
@@ -241,29 +242,29 @@ selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED pe
 
 .PHONY: e2e
 e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper
-	@cd packages/conformance && gleam test
+	@bash scripts/test.sh conformance
 
 .PHONY: e2e-client-bootstrap
 e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the real local server through the native TUI bootstrap
 	@cd packages/tui && \
 		LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		gleam test -- --match bootstrap_real_server_lifecycle_test && \
+		bash ../../scripts/test.sh tui --match bootstrap_real_server_lifecycle_test && \
 		env 'BASH_FUNC_read%%=() { return 0; }' \
-		gleam test -- --match paused_server_dies_with_launcher_before_release_test && \
+		bash ../../scripts/test.sh tui --match paused_server_dies_with_launcher_before_release_test && \
 		env 'BASH_FUNC_cat%%=() { return 0; }' \
-		gleam test -- --match launch_lock_is_single_winner_test && \
+		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test && \
 		env 'BASH_FUNC_read%%=() { return 1; }' \
-		gleam test -- --match launch_lock_is_single_winner_test && \
+		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test && \
 		hostile_bin="$$(/usr/bin/mktemp -d "$${TMPDIR:-/tmp}/loom-lock-path.XXXXXX")" && \
 		trap 'rm -rf "$$hostile_bin"' 0 1 2 15 && \
 		printf '%s\n' '#!/bin/sh' 'exit 0' > "$$hostile_bin/cat" && \
 		chmod 0755 "$$hostile_bin/cat" && \
 		PATH="$$hostile_bin:$$PATH" \
-		gleam test -- --match launch_lock_is_single_winner_test
+		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test
 
 .PHONY: conformance
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
-	@cd packages/conformance && gleam test
+	@bash scripts/test.sh conformance
 
 .PHONY: codemode-seed
 codemode-seed: ## Prepare the offline package cache code-mode builds clone
@@ -271,7 +272,7 @@ codemode-seed: ## Prepare the offline package cache code-mode builds clone
 
 .PHONY: e2e-codemode
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
-	@cd packages/codemode && gleam test
+	@bash scripts/test.sh codemode
 
 # ------------------------------------------------------------ the simulator
 
@@ -290,8 +291,8 @@ soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=
 	while [ $$left -gt 0 ]; do \
 		n=$$( [ $$left -lt $(SOAK_CHUNK) ] && echo $$left || echo $(SOAK_CHUNK) ); \
 		echo "==> seeds $$from..$$(( from + n - 1 ))"; \
-		( cd packages/conformance && \
-			LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from gleam test ) || \
+		( LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from \
+			bash scripts/test.sh conformance ) || \
 			{ echo "soak FAILED in seeds $$from..$$(( from + n - 1 ))"; exit 1; }; \
 		from=$$(( from + n )); left=$$(( left - n )); \
 	done; \

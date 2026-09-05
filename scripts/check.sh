@@ -7,6 +7,11 @@ cd "$(dirname "$0")/.."
 packages=(core storage session machine prompt telemetry runtime provider broker mcp tools cap ext codemode events client tui conformance lint sandbox)
 targets=("${@:-${packages[@]}}")
 
+if [ $# -eq 0 ]; then
+  python3 scripts/with_timeout.py 20 -- \
+    python3 -m unittest discover -s scripts -p test_with_timeout.py
+fi
+
 # The `code_mode` description carries the capability prelude's public
 # signatures, generated from `packages/cap` into a committed artifact
 # (`make gen-prelude`). Drift there is not a build error anywhere else:
@@ -37,7 +42,8 @@ for pkg in "${targets[@]}"; do
         exit 1
       fi
     )
-    (cd "packages/$pkg" && go vet ./... && go build ./... && go test ./...)
+    (cd "packages/$pkg" && go vet ./... && go build ./... && \
+      python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...)
     continue
   fi
   echo "==> $pkg"
@@ -48,8 +54,7 @@ for pkg in "${targets[@]}"; do
       format_paths+=(dev)
     fi
     gleam format --check "${format_paths[@]}"
-    gleam build --warnings-as-errors
-    gleam test
+    bash ../../scripts/test.sh "$pkg"
   )
 done
 # Loom's own lint runs last. R0, R2, R4 and R6 gate — each has a census of
