@@ -69,9 +69,10 @@ above #229 in native stack #231.
 All four #233 CI jobs passed in run `33938772943`.
 
 The publication hook is now
-[PR #234](https://github.com/Roasbeef/loom/pull/234), head `23873e9`,
-above #233 in the same native stack. Its remote CI run `33940014310`
-is running. Work continues on `client/instance-lifecycle` above #234.
+[PR #234](https://github.com/Roasbeef/loom/pull/234), head `abfcc3a`,
+above #233 in the same native stack. The interleave repair below is
+published, and native `gh stack rebase --upstack --no-trunk` carried it
+into `client/instance-lifecycle`, where work continues.
 
 The ownership slice adds an internal `api.open_published` hook. The
 root's first child-start callback publishes the runtime and direct drain
@@ -92,7 +93,21 @@ before the writer counted that commit. Delaying that observer reproduced
 the exact failure locally. A writer round trip now precedes the report's
 count and crash assertions. A parked-observer regression fails without
 that synchronization; the corrected runtime gate passes all 119 tests
-with zero lint errors. Remote verification of the correction is pending.
+with zero lint errors. The corrected macOS run `33951055828` passed all
+119 runtime tests, then failed the unchanged cap test
+`race_returns_first_and_cancels_losers_test`: its delayed loser sent a
+message before cancellation. It passed 30 local repeats; a targeted retry
+is waiting for the complete workflow to finish. The interleave failure
+did not recur.
+
+The lifecycle branch now generates a fresh random writer-owner identity
+on every assembly. A real-SQLite test retains an expired fence-one writer
+across takeover, clean close and reopen. It proves that the stale writer
+cannot renew or delete the new lease while the saved session ID remains
+stable. Restoring the previous constant owner makes the renewal assertion
+fail. All 1,125 client tests, client lint and the documentation gate pass.
+Independent source review found no issue. Partial-boot custody and typed
+close remain unfinished.
 
 Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
 adopted owner remains alive; it does not automatically cancel that owner

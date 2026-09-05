@@ -1085,6 +1085,10 @@ over one session file. WP-L.
   their services are configured. `stops` belongs to the caller that opened
   the instance. `open_instance` and `close_instance` expose this assembly
   without a listener, token file, token directory or signal handler.
+  Each open generates a fresh random SQLite writer-owner identity. This
+  identity differs from the stable saved session ID: clean close removes
+  the lease row and permits fence one to recur, but an expired connection
+  must never match the replacement's owner-and-fence pair.
 - `client/serve.Booted` adds `served`, `token_path` and `bind_host` to an
   `Instance`. `boot` retains the current single-session entry point while
   sharing the same assembly. Listener setup failure closes the completed
