@@ -7,6 +7,13 @@ identity and behavior. Those pages identify unimplemented requirements.
 The replacement will become the default without a legacy protocol path;
 the lifecycle and wire sections below will be reconciled as it lands.
 
+The assembly has since been split: `client/serve.Instance` owns session
+resources, while `Booted` adds the listener. Internal `open_instance` calls
+can run several sessions in one VM without opening public ports. Composition
+services now use reclaimable reference addresses rather than process-name
+atoms. The launcher behavior below remains unchanged until daemon routing
+replaces it; see [the implemented boundary](sessions.md#implemented-assembly-boundary).
+
 A session is a supervision tree inside one BEAM node: a writer holding
 the session file's lease, one driver actor per strand, a broker with a
 pool of jailed helpers behind it. A person is none of those things. They
@@ -212,6 +219,15 @@ the replacement socket, closes the previous one, clears its projection,
 and consumes the new subscription's full snapshot. Each attempt has a
 separate terminal-owned inbox, so late frames and close notices from
 the previous connection cannot change the selected session.
+
+A Weft lifetime actor owns each Stratus socket link after handshake. It
+monitors the terminal that owns the inbox and the background connection
+attempt. Normal attempt completion leaves the socket available; attempt
+cancellation or terminal exit closes it. An abnormal socket exit becomes
+a `Closed` notice, not a process exit propagated into the terminal.
+`connection.adopt` checks liveness without adding that unsafe link.
+Cancellation initiates socket cleanup; the attempt's exit alone does
+not prove the socket has finished closing.
 
 Manual switching is separate from reconnecting after a dropped socket.
 The gateway supports sequence-based replay, documented below, but the

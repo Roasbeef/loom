@@ -30,10 +30,9 @@ import core/entry
 import core/ids
 import core/json
 import core/message.{type AgentMessage}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation
@@ -45,13 +44,17 @@ import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/hooks
+import runtime/writer
 import session/session
 import simplifile
 import storage/storage
+import support/addresses
 import support/provider as provider_test
 import support/tool_registry
 import tools/history as history_tool
 import tools/tool
+import weft/actor
+import weft/registry as address
 
 // The decision session A takes, and the word session B goes looking for.
 // Short, so compaction's keep-recent budget evicts it rather than
@@ -157,7 +160,7 @@ pub fn a_fresh_session_finds_a_compacted_away_decision_test() {
 // The registration gate, on the real boot path's own function: a host
 // with an index registers `history_search`, one without does not.
 pub fn the_tool_is_registered_only_when_the_index_opened_test() {
-  let name = process.new_name(prefix: "loom_recall_registry")
+  let name = addresses.new()
   let with_index =
     tool_registry.built_in(
       None,
@@ -177,7 +180,7 @@ type Live {
   Live(
     runtime: api.Runtime,
     session: session.Session,
-    holder: Name(history.Message),
+    holder: address.Address(history.Message),
     registry: tool.Registry,
   )
 }
@@ -202,8 +205,8 @@ fn open_session(
     }),
   )
   use entropy <- result.try(start_entropy(seed))
-  let holder = process.new_name(prefix: "loom_recall_holder")
-  let pulls = process.new_name(prefix: "loom_recall_pulls")
+  let holder = addresses.new()
+  let pulls = addresses.new()
   use config <- result.try(wiring_config(opened, index, holder))
   use turns <- result.try(start_turns())
   let effects_record =
@@ -238,7 +241,7 @@ fn open_session(
       ),
       // The whole sync path, in one line: the writer publishes, the
       // subscriber pokes, the holder pulls.
-      subscribers: [process.named_subject(pulls)],
+      subscribers: [writer.Routed(pulls)],
     ),
   ))
   use _holder <- result.try(
@@ -271,7 +274,7 @@ fn close_session(live: Live) -> Nil {
 fn wiring_config(
   opened: session.Session,
   index: String,
-  holder: Name(history.Message),
+  holder: address.Address(history.Message),
 ) -> Result(wiring.Config, String) {
   use broker_actor <- result.try(
     broker.start(
@@ -355,7 +358,7 @@ fn search(
 // is the assertion: nothing here forces a sync, so a hint that never
 // arrives is a term that never appears.
 fn await_indexed(
-  holder: Name(history.Message),
+  holder: address.Address(history.Message),
   term: String,
   left_ms: Int,
 ) -> Bool {

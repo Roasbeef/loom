@@ -124,7 +124,7 @@ pub type Options {
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
     after_commit: fn(Int) -> Nil,
-    subscribers: List(Subject(writer.Event)),
+    subscribers: List(writer.Subscriber),
     /// Where this session's strands log. Injected per §0.2 so a test
     /// captures records instead of emitting them; `log.discard()` is
     /// the default, so a runtime nobody configured is silent.

@@ -45,7 +45,6 @@ import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/string
 import machine/strand as machine_strand
 import provider/secret
@@ -54,10 +53,12 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import support/addresses
 import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
 import tools/tool
+import weft/actor
 
 // --- fixtures --------------------------------------------------------------
 
@@ -766,11 +767,7 @@ pub fn the_wait_ceiling_wins_the_race_test() {
   // finished, and the join would be cut short as well. The same shape as
   // `the_mcp_call_timeout_wins_the_race_test`, for the other capability
   // that answers on a bound of its own.
-  let config =
-    agency.default_config(
-      process.new_name(prefix: "loom_agency_ordering"),
-      clock.fixed(at: 0),
-    )
+  let config = agency.default_config(addresses.new(), clock.fixed(at: 0))
   assert config.max_wait_ms < codemode.default_call_timeout_ms
 }
 
@@ -1173,7 +1170,7 @@ fn start_runtime() -> Live {
     + process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
     * 104_729
   }
-  let name = process.new_name(prefix: "loom_codemode_agency")
+  let name = addresses.new()
   let config =
     agency.Config(
       ..agency.default_config(name, counting_clock(1_756_000_000_000, 3)),

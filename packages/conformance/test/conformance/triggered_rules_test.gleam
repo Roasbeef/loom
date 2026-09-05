@@ -38,11 +38,10 @@ import core/clock
 import core/json
 import core/message
 import core/register
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/static_supervisor as sup
 import gleam/string
 import machine/operation
@@ -58,8 +57,11 @@ import runtime/api
 import runtime/writer
 import session/session.{type Session}
 import storage/storage
+import support/addresses
 import support/rig
 import support/script
+import weft/actor
+import weft/registry as address
 
 const model_id = "loom-1"
 
@@ -183,7 +185,7 @@ type Rig {
   Rig(
     runtime: api.Runtime,
     session: Session,
-    scanner: Name(writer.Event),
+    scanner: address.Address(writer.Event),
     services: Pid,
     first_scanner: Result(Pid, Nil),
     sent: Subject(Sent),
@@ -194,7 +196,7 @@ type Rig {
 fn boot(rule_list: List(rules.Rule), answers: Answers) -> Rig {
   let sess = memory_session()
   let sent = recorder()
-  let scanner = process.new_name(prefix: "loom_ttsr_conformance")
+  let scanner = addresses.new()
   let effects =
     wiring.build_effects(wiring_config(
       routed_gateway(transport(answers, sess, scanner, sent)),
@@ -211,7 +213,7 @@ fn boot(rule_list: List(rules.Rule), answers: Answers) -> Rig {
         // By name, the way `client/serve` subscribes it: the writer skips
         // a subscriber whose name is momentarily unregistered, which is
         // exactly what makes the kill row survivable.
-        subscribers: [process.named_subject(scanner)],
+        subscribers: [writer.Routed(scanner)],
       ),
     )
     as "the session must open"
@@ -234,7 +236,7 @@ fn boot(rule_list: List(rules.Rule), answers: Answers) -> Rig {
     session: sess,
     scanner:,
     services: services.pid,
-    first_scanner: process.named(scanner),
+    first_scanner: addresses.owner(scanner),
     sent:,
     answers:,
   )
@@ -255,7 +257,7 @@ fn drive(rig: Rig, text: String) -> operation.LastResult {
 }
 
 fn current_scanner(rig: Rig) -> Result(Pid, Nil) {
-  process.named(rig.scanner)
+  addresses.owner(rig.scanner)
 }
 
 // --- the scripted transport ------------------------------------------------
@@ -273,7 +275,7 @@ fn current_scanner(rig: Rig) -> Result(Pid, Nil) {
 fn transport(
   answers: Answers,
   sess: Session,
-  scanner: Name(writer.Event),
+  scanner: address.Address(writer.Event),
   sent: Subject(Sent),
 ) -> http.Transport {
   script.owned_transport(fn(request: http.HttpRequest, subject) {
@@ -315,8 +317,8 @@ fn answer_of(turn: Int) -> String {
   "answer " <> int.to_string(turn)
 }
 
-fn kill_scanner(scanner: Name(writer.Event)) -> Nil {
-  case process.named(scanner) {
+fn kill_scanner(scanner: address.Address(writer.Event)) -> Nil {
+  case addresses.owner(scanner) {
     Ok(pid) -> process.kill(pid)
     Error(Nil) -> Nil
   }
@@ -512,8 +514,8 @@ fn await_mark(sess: Session, remaining_ms: Int) -> Nil {
   }
 }
 
-fn await_named(name: Name(writer.Event), remaining_ms: Int) -> Nil {
-  case process.named(name), remaining_ms <= 0 {
+fn await_named(name: address.Address(writer.Event), remaining_ms: Int) -> Nil {
+  case addresses.owner(name), remaining_ms <= 0 {
     Ok(_pid), _ | _, True -> Nil
     Error(Nil), False -> {
       process.sleep(5)

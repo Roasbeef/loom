@@ -284,44 +284,76 @@ fn plain(status: Int, text: String) -> Response(ResponseData) {
 // outbound frames arrive on (the gateway's sink sends into it; the
 // websocket process owns the socket write).
 type SocketState {
-  SocketState(connection: Int, outbound: Subject(String))
+  SocketState(connection: Result(Int, Nil), outbound: Subject(SocketEvent))
+}
+
+// A failed attachment closes the socket even if its peer sends nothing.
+type SocketEvent {
+  Outbound(frame: String)
+  GatewayUnavailable
 }
 
 fn upgrade(
   request: Request(Connection),
   gateway: Gateway,
 ) -> Response(ResponseData) {
-  mist.websocket(
-    request:,
-    on_init: fn(_websocket) {
-      let outbound = process.new_subject()
-      let connection =
-        gateway.attach(gateway, fn(frame) { process.send(outbound, frame) })
-      let selector =
-        process.new_selector()
-        |> process.select(outbound)
-      #(SocketState(connection:, outbound:), Some(selector))
-    },
-    handler: fn(state: SocketState, message, websocket) {
-      case message {
-        mist.Text(frame) -> {
-          gateway.handle_text(gateway, state.connection, frame)
-          mist.continue(state)
+  let refused = process.new_subject()
+  let response =
+    mist.websocket(
+      request:,
+      on_init: fn(_websocket) {
+        let outbound = process.new_subject()
+        let connection =
+          gateway.attach(gateway, fn(frame) {
+            process.send(outbound, Outbound(frame))
+          })
+        case connection {
+          Ok(_) -> Nil
+          Error(Nil) -> process.send(refused, outbound)
         }
-
-        // The protocol is text-frame JSON; a binary frame is answered
-        // with nothing and ignored.
-        mist.Binary(_) -> mist.continue(state)
-        mist.Custom(frame) ->
-          case mist.send_text_frame(websocket, frame) {
-            Ok(Nil) -> mist.continue(state)
-            Error(_) -> mist.stop()
+        let selector =
+          process.new_selector()
+          |> process.select(outbound)
+        #(SocketState(connection:, outbound:), Some(selector))
+      },
+      handler: fn(state: SocketState, message, websocket) {
+        case state.connection, message {
+          Error(Nil), _ -> mist.stop()
+          Ok(connection), mist.Text(frame) -> {
+            gateway.handle_text(gateway, connection, frame)
+            mist.continue(state)
           }
-        mist.Closed | mist.Shutdown -> mist.stop()
-      }
-    },
-    on_close: fn(state: SocketState) {
-      gateway.detach(gateway, state.connection)
-    },
-  )
+
+          // The protocol is text-frame JSON; a binary frame is answered
+          // with nothing and ignored.
+          Ok(_), mist.Binary(_) -> mist.continue(state)
+          Ok(_), mist.Custom(Outbound(frame)) ->
+            case mist.send_text_frame(websocket, frame) {
+              Ok(Nil) -> mist.continue(state)
+              Error(_) -> mist.stop()
+            }
+          Ok(_), mist.Custom(GatewayUnavailable)
+          | Ok(_), mist.Closed
+          | Ok(_), mist.Shutdown
+          -> mist.stop()
+        }
+      },
+      on_close: fn(state: SocketState) {
+        case state.connection {
+          Ok(connection) -> gateway.detach(gateway, connection)
+          Error(Nil) -> Nil
+        }
+      },
+    )
+
+  // Mist transfers TCP ownership only after on_init returns. A self-message
+  // from on_init could stop the new actor before that transfer and crash the
+  // HTTP handler. The request process releases a refusal after websocket has
+  // completed the transfer; on_init already queued it before acknowledging
+  // startup, so this receive does not wait for work or depend on a timer.
+  case process.receive(refused, within: 0) {
+    Ok(outbound) -> process.send(outbound, GatewayUnavailable)
+    Error(Nil) -> Nil
+  }
+  response
 }

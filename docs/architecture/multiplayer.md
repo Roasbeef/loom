@@ -6,6 +6,11 @@ identity, session roles, attributed turns, and presence remain implementation
 work. The two-client test below establishes the existing fan-out behavior;
 it does not establish the full multiplayer contract.
 
+The [session assembly](sessions.md#implemented-assembly-boundary) now runs
+independently of a listener and has same-VM isolation coverage. The existing
+two-client test still reaches one gateway; it does not yet exercise a shared
+daemon routing among those instances.
+
 This page is for implementers tracing a collaborator's command from
 authentication to its durable result and each client's rendered frame.
 The [brief](../design-notes/multiplayer.md) records the initial survey;

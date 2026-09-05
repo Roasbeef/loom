@@ -127,6 +127,11 @@ extended by the M3 runtime wave.
   every late delta produces.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
+- `runtime/writer.Subscriber` distinguishes `Direct(Subject(Event))`
+  observers from `Routed(Address(Event))` restartable services. Publication
+  sends a lossy hint without executing subscriber callbacks in the writer.
+  A routed destination is resolved afresh; an absent binding never fails a
+  commit or queues a hint for a future incarnation.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
 - `runtime/api.Options.logger` / `runtime/strand_runtime.Options.logger`
   — the injected `telemetry/log.Logger` every strand of the session
@@ -331,9 +336,9 @@ extended by the M3 runtime wave.
     handler; meanwhile an abort simply queues in the mailbox behind the
     barrier. Sender: `runtime/strand_runtime` through the closure the
     supervisor injects.
-  - `writer.Event.Committed` fan-out to subscribers — a simple typed
-    pub/sub over process subjects, which `events/bus.bridge` and
-    `client/gateway.commit_forwarder` adopt as their hint source.
+  - `writer.Event.Committed` fan-out uses `writer.Subscriber`: direct
+    subjects for incarnation-local observers, reference addresses for
+    restartable services such as `client/gateway.commit_forwarder`.
 - **Commits**: every post-boot `Tx` in the session flows through
   `writer.commit`, whose mailbox *is* the serialization order. The driver
   commits exactly what the planner hands it — `Transition`/`Finish`
@@ -650,7 +655,7 @@ extended by the M3 runtime wave.
   make the writer — and the whole rest-for-one tree beneath it — hostage
   to that subscriber's restart window. Events are hints and pulls are
   truth (design §3.6), so dropping one costs latency and nothing else.
-  `publish` resolves a named subscriber's pid **exactly once** — via
+  `publish_direct` resolves a named direct subscriber's pid **exactly once** — via
   `process.named`, straight into `ffi_sup.send_to_pid` — rather than
   resolving it a second time inside an ordinary `process.send`, which is
   what `process.send` does internally for a `NamedSubject` on every call.
@@ -658,6 +663,8 @@ extended by the M3 runtime wave.
   unregistered in the gap between them still crashed the writer for a
   hint nobody needed; a plain, pid-backed subject never had this problem
   at all; `process.send` on it never re-resolves anything.
+  Routed subscribers use Weft's reference lookup and send instead. The
+  destination survives service replacement, but missed hints are not replayed.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
   an idle timer at a third of the TTL. That timer targets a private subject

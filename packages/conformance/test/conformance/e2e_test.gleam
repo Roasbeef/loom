@@ -33,7 +33,6 @@ import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/string
 import machine/operation
 import runtime/api
@@ -41,10 +40,12 @@ import runtime/escalation as runtime_escalation
 import session/session.{type Session}
 import simplifile
 import storage/storage
+import support/addresses
 import support/jail
 import support/rig
 import support/script
 import tools/hashline
+import weft/actor
 
 pub fn jailed_end_to_end_test() {
   case jail.build_helper() {
@@ -294,7 +295,7 @@ fn run_escalation(helper_path: String) -> Nil {
   // opened (spec §0.2, "one clock per session"). It advances on every
   // read so an unapproved park still ends — the safety net under a test
   // whose approver is supposed to arrive first.
-  let escalate_name = process.new_name(prefix: "loom_e2e_escalate")
+  let escalate_name = addresses.new()
   let escalate_config =
     escalate.Config(
       ..escalate.default_config(escalate_name, ticking(1_700_000_010_000, 10)),

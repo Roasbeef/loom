@@ -10,6 +10,7 @@ import gleam/result
 import gleam/string
 import stratus
 import weft
+import weft/actor
 
 type Outbound {
   SendText(String)
@@ -73,6 +74,7 @@ pub fn connect(
   token: String,
   inbox: Subject(Message),
 ) -> Result(Connection, String) {
+  let caller = process.self()
   use websocket_request <- result.try(
     request.to(http_address(address))
     |> result.replace_error("the websocket address is invalid"),
@@ -112,21 +114,106 @@ pub fn connect(
       process.send(inbox, Closed(string.inspect(reason)))
     })
   use started <- result.try(
-    start_safely(fn() {
-      stratus.start(builder)
-      |> result.map_error(fn(error) { string.inspect(error) })
-    }),
+    start_safely(fn() { start_owned_socket(builder, inbox, caller) }),
   )
   use owner <- result.try(
-    process.subject_owner(started.data)
+    process.subject_owner(started)
     |> result.replace_error("the websocket actor exited during startup"),
   )
-  use Nil <- result.try(case process.link(owner) {
+  use Nil <- result.try(case process.is_alive(owner) {
     True -> Ok(Nil)
     False -> Error("the websocket actor exited during startup")
   })
   process.send(inbox, Connected)
-  Ok(Connection(started.data))
+  Ok(Connection(started))
+}
+
+// The socket may fail abnormally on an ordinary TCP disconnect. Its link
+// ends here, not at the terminal. Monitoring the inbox owner also closes the
+// socket if the terminal exits normally, which an ordinary link would ignore.
+type LifetimeMessage {
+  ReaderGone
+
+  AttemptGone(process.Down)
+
+  LinkedExit(process.ExitMessage)
+}
+
+fn start_owned_socket(
+  builder: stratus.Builder(Subject(Message), Outbound),
+  inbox: Subject(Message),
+  caller: process.Pid,
+) -> Result(Subject(stratus.InternalMessage(Outbound)), String) {
+  use reader <- result.try(
+    process.subject_owner(inbox)
+    |> result.replace_error("the connection inbox has no owner"),
+  )
+
+  // Keep blocking network startup in the untrapped worker. Its deadline
+  // kills the socket immediately instead of queuing cancellation behind a
+  // guardian initializer that is still waiting for the handshake.
+  use socket <- result.try(
+    stratus.start(builder)
+    |> result.map_error(string.inspect),
+  )
+  use _guardian <- result.try(
+    actor.new_with_initialiser(1000, fn(_subject) {
+      let reader_monitor = process.monitor(reader)
+      let attempt_monitor = process.monitor(caller)
+      let selector =
+        process.new_selector()
+        |> process.select_specific_monitor(reader_monitor, fn(_) { ReaderGone })
+        |> process.select_specific_monitor(attempt_monitor, AttemptGone)
+        |> process.select_trapped_exits(LinkedExit)
+
+      // Both owners retain links until the guardian acknowledges this start.
+      // There is no interval in which cancellation leaves the socket unowned.
+      use Nil <- result.try(case process.link(socket.pid) {
+        True -> Ok(Nil)
+        False -> Error("the websocket exited before guardian adoption")
+      })
+      actor.initialised(socket.pid)
+      |> actor.selecting(selector)
+      |> actor.returning(socket.data)
+      |> Ok
+    })
+    |> actor.trapping_exits(True)
+    |> actor.on_message(fn(socket, message) {
+      case message {
+        ReaderGone -> actor.stop()
+        AttemptGone(process.ProcessDown(reason: process.Normal, ..)) ->
+          actor.continue(socket)
+        AttemptGone(_) -> actor.stop()
+        LinkedExit(process.ExitMessage(pid:, reason:)) ->
+          socket_exit(socket, pid, reason, inbox)
+      }
+    })
+    |> actor.on_shutdown(fn(socket, _reason) { process.kill(socket) })
+    |> actor.start
+    |> result.map_error(string.inspect),
+  )
+  process.unlink(socket.pid)
+  Ok(socket.data)
+}
+
+fn socket_exit(
+  socket: process.Pid,
+  exited: process.Pid,
+  reason: process.ExitReason,
+  inbox: Subject(Message),
+) -> actor.Next(process.Pid, LifetimeMessage) {
+  case exited == socket, reason {
+    True, process.Normal -> actor.stop()
+    True, reason -> {
+      process.send(inbox, Closed(string.inspect(reason)))
+      actor.stop()
+    }
+
+    // The guarded startup worker exits normally after returning the handle.
+    // Cancellation is abnormal and must still close a half-started socket.
+    False, process.Normal -> actor.continue(socket)
+    False, process.Killed | False, process.Abnormal(_) -> actor.stop()
+  }
 }
 
 /// Runs connection startup outside the terminal process.
@@ -201,11 +288,12 @@ pub fn close(connection: Connection) -> Nil {
   process.send(subject, stratus.to_user_message(Stop))
 }
 
-/// Links an established websocket actor to the calling process.
+/// Checks that a replacement websocket actor is still available.
 ///
 /// Session resolution opens replacement sockets in an unlinked worker. The
-/// terminal adopts the successful actor before it replaces the active socket,
-/// restoring the same lifecycle ownership as an ordinary startup connection.
+/// terminal checks the successful actor before replacing the active socket.
+/// Its guardian already monitors the terminal-owned inbox, so no direct
+/// socket link or unowned handoff window is needed.
 ///
 /// ## Examples
 ///
@@ -218,7 +306,7 @@ pub fn adopt(connection: Connection) -> Result(Nil, String) {
     process.subject_owner(subject)
     |> result.replace_error("the websocket actor exited before adoption"),
   )
-  case process.link(owner) {
+  case process.is_alive(owner) {
     True -> Ok(Nil)
     False -> Error("the websocket actor exited before adoption")
   }

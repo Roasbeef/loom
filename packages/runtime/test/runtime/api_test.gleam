@@ -32,7 +32,7 @@ pub fn writer_publishes_committed_events_test() {
   let assert Ok(started) =
     writer.start(
       writer.Options(session: sess, after_commit: fn(_) { Nil }, subscribers: [
-        events,
+        writer.Direct(events),
       ]),
       name,
     )
@@ -57,7 +57,7 @@ pub fn writer_publishes_committed_events_test() {
     as "the subscriber must see the first committed event"
   // A late subscriber sees subsequent commits.
   let late = process.new_subject()
-  writer.subscribe(w, late)
+  writer.subscribe(w, writer.Direct(late))
   let second_tx =
     Tx(
       writes: [

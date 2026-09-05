@@ -150,18 +150,18 @@ import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bool
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import runtime/api
 import runtime/escalation as durable
-import runtime/internal/ffi_sup
 import tools/blob
 import tools/tool
+import weft/actor
 import weft/poll
+import weft/registry as address
 
 /// The holder's mailbox: one message, answered with a plain data value.
 pub type Message {
@@ -171,7 +171,7 @@ pub type Message {
 
 /// How this host escalates.
 ///
-/// Constructor invariants: `name` is the holder's process name, minted
+/// Constructor invariants: `name` is the holder's reference address, minted
 /// before `api.open` and never reused across sessions; `clock` shares the
 /// session's time base (spec §0.2, "one clock per session" — the park
 /// deadline is compared against a budget deadline computed on the tool
@@ -190,7 +190,7 @@ pub type Message {
 /// past which it stays terminal and its claimants settle in band.
 pub type Config {
   Config(
-    name: Name(Message),
+    name: address.Address(Message),
     clock: Clock,
     interactive: fn() -> Bool,
     park_timeout_ms: Int,
@@ -234,7 +234,7 @@ pub type Config {
 /// // escalate.default_config(name, clock)
 /// ```
 ///
-pub fn default_config(name: Name(Message), clock: Clock) -> Config {
+pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
   Config(
     name:,
     clock:,
@@ -283,7 +283,7 @@ pub fn start(
       }
     }
   })
-  |> actor.named(config.name)
+  |> actor.addressed(config.name)
   |> actor.start
 }
 
@@ -858,7 +858,8 @@ fn spend(
 // dead one, one that dies mid-answer, and one that is simply too slow
 // all arrive as `Error(Nil)` and settle in band.
 fn borrow(config: Config) -> Result(api.Runtime, Nil) {
-  ask(process.named_subject(config.name), config.holder_timeout_ms, Borrow)
+  use subject <- result.try(address.lookup(config.name))
+  ask(subject, config.holder_timeout_ms, Borrow)
 }
 
 fn ask(
@@ -866,14 +867,13 @@ fn ask(
   waiting timeout: Int,
   sending make_request: fn(Subject(reply)) -> message,
 ) -> Result(reply, Nil) {
-  use name <- result.try(process.subject_name(subject))
-  use owner <- result.try(process.named(name))
+  use owner <- result.try(process.subject_owner(subject))
   let monitor = process.monitor(owner)
   let reply_to = process.new_subject()
 
   // The monitor and request must name the same incarnation. A named send would
   // perform a second lookup and could either panic or reach a replacement.
-  ffi_sup.send_to_pid(owner, #(name, make_request(reply_to)))
+  process.send(subject, make_request(reply_to))
   let answer =
     process.new_selector()
     |> process.select_map(reply_to, Ok)

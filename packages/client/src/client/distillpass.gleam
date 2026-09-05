@@ -67,18 +67,18 @@ import client/distill
 import client/memory
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
-import runtime/internal/ffi_sup
 import telemetry/field
 import telemetry/log.{type Logger}
 import tom
 import weft
+import weft/registry as address
 import weft/state_machine as sm
 
 // --- the operator's configuration ------------------------------------------
@@ -296,7 +296,7 @@ pub type Pass {
 /// (`client/distill.target`); `wall_ms` is positive.
 pub type Config {
   Config(
-    name: Name(Message),
+    name: address.Address(Message),
     directory: String,
     distiller: distill.Distiller,
     clock: Clock,
@@ -394,7 +394,7 @@ pub fn start(config: Config) -> sm.StartResult(Subject(Message)) {
     |> sm.continuing(Begin)
     |> Ok
   })
-  |> sm.named(config.name)
+  |> sm.addressed(config.name)
   |> sm.on_event(handle)
   |> sm.start
 }
@@ -434,19 +434,23 @@ pub fn supervised(config: Config) -> ChildSpecification(Subject(Message)) {
 /// ```
 ///
 pub fn settled(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms timeout_ms: Int,
 ) -> Result(Pass, String) {
-  case process.named(name) {
+  case address.lookup(name) {
     Error(Nil) -> Error(no_worker)
-    Ok(pid) -> {
+    Ok(subject) -> {
+      use pid <- result.try(
+        process.subject_owner(subject)
+        |> result.replace_error(no_worker),
+      )
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
 
       // Sent to the pid the monitor describes, for the reason
       // `client/history.ask` gives: re-resolving the name could ask a
       // replacement while watching its predecessor.
-      ffi_sup.send_to_pid(pid, #(name, Awaited(reply_with: reply)))
+      process.send(subject, Awaited(reply_with: reply))
       let answered =
         process.new_selector()
         |> process.select_map(reply, Some)

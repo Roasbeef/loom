@@ -70,7 +70,7 @@ Numbered as the survey found them; **frozen** means spec Part 1 and a
 6. **Concurrent steers are silent about each other.** Both admit, both
    inject, neither operator learns of the other.
 7. **`deny` is not CAS-guarded** where `approve` is: compare `deny` at
-   `client/gateway.gleam:2294` with `approve` at `client/gateway.gleam:2219`.
+   `client/gateway.gleam:2294` with `approve` at `client/gateway.gleam:2209`.
    Two clients racing approve and deny have no ordering on the deny side.
    Not frozen.
 8. **Approvals record grants, not granters** (`client/gateway.gleam:2199-2215`).

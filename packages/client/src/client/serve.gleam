@@ -215,7 +215,7 @@ import core/clock.{type Clock}
 import core/ids
 import filepath
 import gleam/bool
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/io
 import gleam/list
@@ -247,6 +247,7 @@ import tools/history as history_tool
 import tools/remember
 import tools/tool
 import weft/poll
+import weft/registry as address
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
 /// the provider gateway built. `main` assembles this from the command
@@ -377,17 +378,30 @@ pub type Settings {
   )
 }
 
-/// A running server: everything `shutdown` needs to take it apart in
-/// order, plus the channel the host reports a stop on.
-///
-/// Constructor invariants: `services` is the supervisor over the
-/// restartable composition layer (commit forwarder, Agency holder,
-/// gateway hub); `stops` is owned by whichever process called `boot` and
-/// is the only process that may receive on it.
+/// A listener and the session it currently serves. Session assembly itself
+/// neither binds a port nor creates a token file.
 pub type Booted {
   Booted(
-    runtime: api.Runtime,
+    /// The database, runtime and services behind this listener.
+    instance: Instance,
+    /// The public transport, stopped before the session closes.
     served: server.Server,
+    /// The credential file published for this listener.
+    token_path: String,
+    /// The interface reported in the startup banner.
+    bind_host: String,
+  )
+}
+
+/// One resident session, independent of any public listener.
+///
+/// `services` supervises the restartable composition layer. `namespace`
+/// belongs to this session, spans those restarts, and is retired on close.
+/// Only the process that called `open_instance` or `boot` can receive `stops`.
+pub type Instance {
+  Instance(
+    /// The sole conversation writer and its supervised strands.
+    runtime: api.Runtime,
     broker: Broker,
     pool: Pool,
     /// The hub's stable address. Everything that talks to the hub — the
@@ -396,10 +410,10 @@ pub type Booted {
     /// under it.
     gateway: hub.Gateway,
     services: Pid,
+    /// Reclaimable addresses shared by this session's composition services.
+    namespace: address.Registry,
     stops: Subject(host.Stop),
     session_id: String,
-    token_path: String,
-    bind_host: String,
     prompt: system_prompt.Assembled,
     /// The `loom-exec` this boot's ladder settled on. Carried so the
     /// listening line can name it: it is the binary that enforces every
@@ -415,19 +429,19 @@ pub type Booted {
     /// configured no rules and therefore started no scanner. A name
     /// rather than a pid, because the scanner is a restartable service
     /// and a pid would go stale the first time it was replaced.
-    rulescan: Option(Name(writer.Event)),
+    rulescan: Option(address.Address(writer.Event)),
     /// The scheduled-heartbeat scanner's name, or `None` on a boot that
     /// configured no schedules and therefore started no scanner. Not a
     /// writer subscriber — it is driven by its own injected timer, never
     /// by a commit hint — so its name has nothing to do with
     /// `subscribers:` the way `rulescan`'s does.
-    schedulescan: Option(Name(schedulescan.Message)),
+    schedulescan: Option(address.Address(schedulescan.Message)),
     /// The distillation worker's name, or `None` on a boot that runs no
     /// pass — `memory.distill = "off"`, or a catalogue that routes
     /// nothing the pipeline could ask. A name for the reason
     /// `rulescan`'s is one, and the door `client/distillpass.settled`
     /// waits on.
-    memory_pass: Option(Name(distillpass.Message)),
+    memory_pass: Option(address.Address(distillpass.Message)),
   )
 }
 
@@ -484,7 +498,7 @@ fn run_server(settings: Settings, logger: Logger) -> Nil {
 }
 
 // The listening line, the signal wait, and either an orderly shutdown or
-// a fatal exit — whichever way `booted.stops` fires.
+// a fatal exit — whichever way `booted.instance.stops` fires.
 fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
   announce(booted)
 
@@ -494,16 +508,19 @@ fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
   // have to re-derive it, and a release smoke should not have to guess.
   log.info(logger, "server.listening", [
     field.count(key: "port", value: booted.served.port),
-    field.ident(key: "prompt_digest", value: booted.prompt.digest),
-    field.text(key: "helper", value: booted.helper_path),
+    field.ident(key: "prompt_digest", value: booted.instance.prompt.digest),
+    field.text(key: "helper", value: booted.instance.helper_path),
   ])
 
   // Only an entry point installs the signal handler: doing so replaces
   // the VM's default, whose answer to `SIGTERM` is an immediate
   // `init:stop()`. From here both ways the server can stop arrive on one
   // subject.
-  host.relay_sigterm(to: booted.stops, through: ffi_os.wait_for_sigterm)
-  case process.receive_forever(booted.stops) {
+  host.relay_sigterm(
+    to: booted.instance.stops,
+    through: ffi_os.wait_for_sigterm,
+  )
+  case process.receive_forever(booted.instance.stops) {
     host.Signalled -> {
       log.info(logger, "server.stopping", [
         field.text(key: "cause", value: "sigterm"),
@@ -534,7 +551,7 @@ fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
 fn announce(booted: Booted) -> Nil {
   io.println(
     "loomd: session "
-    <> booted.session_id
+    <> booted.instance.session_id
     <> " listening on ws://"
     <> booted.bind_host
     <> ":"
@@ -548,9 +565,9 @@ fn announce(booted: Booted) -> Nil {
   // is either a prompt change, which this line names, or a bug.
   io.println(
     "loomd: system prompt "
-    <> system_prompt.named(booted.prompt.origin)
+    <> system_prompt.named(booted.instance.prompt.origin)
     <> ", digest "
-    <> booted.prompt.digest,
+    <> booted.instance.prompt.digest,
   )
 }
 
@@ -1272,7 +1289,7 @@ fn env_catalog() -> catalog.Catalog {
 ///
 /// ```gleam
 /// // let assert Ok(booted) = serve.boot(settings)
-/// // ... booted.served.port is bound, booted.runtime is live ...
+/// // ... booted.served.port is bound, booted.instance.runtime is live ...
 /// // serve.shutdown(booted)
 /// ```
 ///
@@ -1302,6 +1319,34 @@ pub fn boot_with(
   )
 }
 
+/// Opens the session assembly without a listener or transport credential.
+///
+/// Each call creates its own runtime, gateway and reclaimable service
+/// namespace. It installs no signal handler and does not choose a daemon
+/// singleton. The caller must close the returned instance.
+///
+/// This is an assembly seam, not daemon admission: the host still lacks
+/// partial-boot and owner-death custody. A manager must not use it until
+/// those lifetimes have an independent cleanup owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(instance) = serve.open_instance(settings, log.discard())
+/// // serve.close_instance(instance)
+/// ```
+@internal
+pub fn open_instance(
+  settings: Settings,
+  logger: Logger,
+) -> Result(Instance, String) {
+  host.adopt(
+    boot: fn(stops) { assemble_instance(settings, logger, stops) },
+    fatal: instance_children,
+    teardown: close_instance,
+  )
+}
+
 /// The deaths that end the server, named for the log line, and the
 /// three that must be *monitored* because they unlink from their
 /// starter by design — the session tree, the `mist` listener, and the
@@ -1322,9 +1367,15 @@ pub fn boot_with(
 /// reaches this list.
 fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
   [
-    #("the session tree", booted.runtime.tree.supervisor),
     #("the websocket listener", booted.served.supervisor),
-    #("the service supervisor", booted.services),
+    ..instance_children(booted.instance)
+  ]
+}
+
+fn instance_children(instance: Instance) -> List(#(String, Pid)) {
+  [
+    #("the session tree", instance.runtime.tree.supervisor),
+    #("the service supervisor", instance.services),
   ]
 }
 
@@ -1828,6 +1879,65 @@ fn assemble(
   logger: Logger,
   stops: Subject(host.Stop),
 ) -> Result(Booted, String) {
+  use instance <- result.try(assemble_instance(settings, logger, stops))
+  use served <- result.try(
+    start_listener(settings, instance.gateway)
+    |> result.map_error(fn(error) {
+      close_instance(instance)
+      error
+    }),
+  )
+  Ok(Booted(
+    instance:,
+    served:,
+    token_path: settings.token_path,
+    bind_host: settings.bind_host,
+  ))
+}
+
+// Token setup follows session validation, so an invalid policy leaves no
+// directories. It is still outside session-only assembly, and any failure
+// returns to the completed instance's cleanup path above.
+fn start_listener(
+  settings: Settings,
+  gateway: hub.Gateway,
+) -> Result(server.Server, String) {
+  use Nil <- result.try(
+    create_directories(option.values([parent_directory(settings.token_path)])),
+  )
+  server.serve(server.Config(
+    gateway:,
+    bind: settings.bind_host,
+    port: settings.bind_port,
+    auth: server.LocalAuth(token_path: settings.token_path),
+    entropy: mixed_entropy(),
+  ))
+  |> result.map_error(fn(error) {
+    "the websocket server did not start: " <> string.inspect(error)
+  })
+}
+
+fn assemble_instance(
+  settings: Settings,
+  logger: Logger,
+  stops: Subject(host.Stop),
+) -> Result(Instance, String) {
+  use namespace <- result.try(address.start())
+  assemble_in(settings, logger, stops, namespace)
+  |> result.map_error(fn(error) {
+    let _stopped = address.stop(namespace)
+    error
+  })
+}
+
+// One namespace spans the composition services' restarts, but never a second
+// session. Boot failure retires routing; full partial-boot custody is separate.
+fn assemble_in(
+  settings: Settings,
+  logger: Logger,
+  stops: Subject(host.Stop),
+  namespace: address.Registry,
+) -> Result(Instance, String) {
   // The search index is protected before the policy is validated,
   // because it is part of the policy this server refuses to boot
   // without. See `protecting_index` for why a model-writable index is a
@@ -1890,13 +2000,13 @@ fn assemble(
   // The orchestration plane: runtime over the production wiring, with
   // the hub's two composition seams — commit hints in, provider deltas
   // teed out — threaded through before `api.open`.
-  let name = process.new_name(prefix: "loom_gateway")
+  let name = address.new_address(namespace)
 
   // The forwarder itself starts later, under the service supervisor.
   // Only its *name* is needed here, because that is what the writer
   // subscribes to — a subscription by name is what lets the forwarder be
   // restarted without the writer noticing.
-  let forwarder_name = process.new_name(prefix: "loom_forwarder")
+  let forwarder_name = address.new_address(namespace)
 
   // The triggered-rule scanner is the writer's second subscriber, and
   // reaches it the same way and for the same reason. A name is minted
@@ -1904,19 +2014,19 @@ fn assemble(
   // subscriber the writer skips, which costs the commit path nothing —
   // so the branch that matters is the one that decides whether to start
   // anything under it.
-  let rulescan_name = process.new_name(prefix: "loom_rulescan")
+  let rulescan_name = address.new_address(namespace)
 
   // The scheduled-heartbeat scanner is not a writer subscriber — it is
   // driven by its own injected timer, never by a commit hint, so its
   // name is minted for exactly one reason: the restartable-service tier
   // below needs an address that survives the scanner being replaced.
-  let schedulescan_name = process.new_name(prefix: "loom_schedulescan")
+  let schedulescan_name = address.new_address(namespace)
 
   // The distillation pass, on the same arrangement and for the same
   // reason: it is a supervised child, and `client/distillpass.settled`
   // asks it by name rather than holding a pid that a restart would
   // stale.
-  let distill_name = process.new_name(prefix: "loom_distill")
+  let distill_name = address.new_address(namespace)
 
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
@@ -1924,7 +2034,7 @@ fn assemble(
   // ordering problem. The seam closes over a *name* instead — the same
   // indirection `hub.commit_forwarder` uses four lines above — and the
   // holder is started under that name once the open has returned.
-  let agency_name = process.new_name(prefix: "loom_agency")
+  let agency_name = address.new_address(namespace)
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
@@ -1955,7 +2065,7 @@ fn assemble(
   // not hold a call open for a decision from a client that has gone.
   // Asking the hub by name (not by handle) keeps that true across a hub
   // restart.
-  let escalate_name = process.new_name(prefix: "loom_escalate")
+  let escalate_name = address.new_address(namespace)
   let escalate_config =
     escalate.Config(
       ..escalate.default_config(escalate_name, clock),
@@ -1973,7 +2083,7 @@ fn assemble(
   // configuration is assembled and the store starts under the service
   // supervisor further down — though the knot here is only ordering,
   // since the store closes over no runtime at all.
-  let scratch_name = process.new_name(prefix: "loom_scratch")
+  let scratch_name = address.new_address(namespace)
 
   // The scheduling plane is decided once, here, and reached two ways:
   // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
@@ -2033,8 +2143,8 @@ fn assemble(
   // hit from this session are named by), so the tool seam closes over
   // the name now and the holder starts under it further down. An index
   // that will not open registers no tool at all.
-  let history_name = process.new_name(prefix: "loom_history")
-  let history_pulls = process.new_name(prefix: "loom_history_pulls")
+  let history_name = address.new_address(namespace)
+  let history_pulls = address.new_address(namespace)
   let history_seam = history_seam(index_path, history_name, logger)
 
   // The memory door, gated the same way and for the same reason: a
@@ -2063,7 +2173,7 @@ fn assemble(
   // each installed extension contributes, which hook events it
   // subscribed to, and how its node is launched. The hook half is used
   // further down, after the effects record exists to compose it into.
-  let hosts_name = process.new_name(prefix: "loom_ext_hosts")
+  let hosts_name = address.new_address(namespace)
   let hosts_seam =
     extension_hosts.seam(
       hosts_name,
@@ -2255,8 +2365,8 @@ fn assemble(
         // restarts costs latency, never a row or a fire, because each
         // pulls from its own durable cursor.
         subscribers: [
-          process.named_subject(forwarder_name),
-          process.named_subject(rulescan_name),
+          writer.Routed(forwarder_name),
+          writer.Routed(rulescan_name),
           ..history_subscribers(history_seam, history_pulls)
         ],
         // Every strand of this session logs under the session's own
@@ -2380,29 +2490,15 @@ fn assemble(
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(services.pid)
-  use served <- result.try(
-    server.serve(server.Config(
-      gateway: hub.Gateway(name:),
-      bind: settings.bind_host,
-      port: settings.bind_port,
-      auth: server.LocalAuth(token_path: settings.token_path),
-      entropy:,
-    ))
-    |> result.map_error(fn(error) {
-      "the websocket server did not start: " <> string.inspect(error)
-    }),
-  )
-  Ok(Booted(
+  Ok(Instance(
     runtime:,
-    served:,
     broker: broker_actor,
     pool:,
     gateway: hub.Gateway(name:),
     services: services.pid,
+    namespace:,
     stops:,
     session_id: settings.session_id,
-    token_path: settings.token_path,
-    bind_host: settings.bind_host,
     prompt: assembled,
     helper_path: settings.helper_path,
     mcp: mcp_layer,
@@ -2455,17 +2551,34 @@ fn assemble(
 ///
 pub fn shutdown(booted: Booted) -> Nil {
   server.stop(booted.served)
-  let _closed = api.close(booted.runtime)
-  stop_services(booted.services)
-  broker.stop(booted.broker)
-  exec.stop_pool(booted.pool)
+  close_instance(booted.instance)
+}
+
+/// Closes one session without touching any public listener or other session.
+///
+/// The runtime closes before its broker and helper pool. This preserves the
+/// existing shutdown order, but does not yet return the drain outcome a
+/// daemon needs before releasing a session reservation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.close_instance(instance)
+/// ```
+@internal
+pub fn close_instance(instance: Instance) -> Nil {
+  let _closed = api.close(instance.runtime)
+  stop_services(instance.services)
+  let _stopped = address.stop(instance.namespace)
+  broker.stop(instance.broker)
+  exec.stop_pool(instance.pool)
 
   // Last, and after the runtime: an MCP client owns a child OS process,
   // and stopping one closes that child's stdin and kills it. Nothing can
   // still be calling by here — the drivers stopped with the runtime —
   // and the stop is a cast, so a client that has already died costs
   // nothing.
-  mcp_wiring.stop(booted.mcp)
+  mcp_wiring.stop(instance.mcp)
 }
 
 // The triggered-rule scanner, and the decision not to start one.
@@ -2481,7 +2594,7 @@ fn with_rule_scanner(
   builder: sup.Builder,
   settings: Settings,
   runtime: api.Runtime,
-  name: Name(writer.Event),
+  name: address.Address(writer.Event),
   logger: Logger,
 ) -> sup.Builder {
   case settings.rules {
@@ -2520,7 +2633,7 @@ fn with_schedule_scanner(
   builder: sup.Builder,
   settings: Settings,
   runtime: api.Runtime,
-  name: Name(schedulescan.Message),
+  name: address.Address(schedulescan.Message),
   logger: Logger,
 ) -> sup.Builder {
   let door_open = schedule.policy_opens_the_door(settings.schedule_policy)
@@ -2580,7 +2693,7 @@ fn with_schedule_scanner(
 fn with_distill_pass(
   builder: sup.Builder,
   settings: Settings,
-  name: Name(distillpass.Message),
+  name: address.Address(distillpass.Message),
   memory_store: String,
   clock: Clock,
   entropy: fn() -> Int,
@@ -3092,12 +3205,15 @@ fn prepare_directories(
 ) -> Result(Nil, String) {
   let wanted = [
     parent_directory(settings.session_path),
-    parent_directory(settings.token_path),
     Some(settings.workspace),
     Some(blob_root),
     Some(tmp_dir),
   ]
   let directories = list.append(option.values(wanted), tool_dirs)
+  create_directories(directories)
+}
+
+fn create_directories(directories: List(String)) -> Result(Nil, String) {
   list.try_each(directories, fn(directory) {
     simplifile.create_directory_all(directory)
     |> result.map_error(fn(error) {
@@ -3303,7 +3419,7 @@ fn parent_of(path: String) -> String {
 // indistinguishable from a host that never had one.
 fn history_seam(
   index_path: String,
-  name: process.Name(history.Message),
+  name: address.Address(history.Message),
   logger: Logger,
 ) -> Option(history_tool.History) {
   case history.probe(index_path) {
@@ -3372,11 +3488,11 @@ fn memory_seam(
 // index and none when there is not.
 fn history_subscribers(
   seam: Option(history_tool.History),
-  pulls: process.Name(writer.Event),
-) -> List(Subject(writer.Event)) {
+  pulls: address.Address(writer.Event),
+) -> List(writer.Subscriber) {
   case seam {
     None -> []
-    Some(_seam) -> [process.named_subject(pulls)]
+    Some(_seam) -> [writer.Routed(pulls)]
   }
 }
 
@@ -3386,7 +3502,7 @@ fn with_history(
   tree: sup.Builder,
   seam: Option(history_tool.History),
   config: history.Config,
-  pulls: process.Name(writer.Event),
+  pulls: address.Address(writer.Event),
 ) -> sup.Builder {
   case seam {
     None -> tree
@@ -3589,7 +3705,7 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
 fn schedule_wiring(
   settings: Settings,
   agency_config: agency.Config,
-  scanner: Name(schedulescan.Message),
+  scanner: address.Address(schedulescan.Message),
 ) -> Option(scheduleseam.Wiring) {
   case schedule.policy_opens_the_door(settings.schedule_policy) {
     False -> None

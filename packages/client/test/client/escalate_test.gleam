@@ -36,7 +36,6 @@ import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/string
 import machine/operation
 import machine/strand.{
@@ -52,9 +51,11 @@ import runtime/effects
 import runtime/escalation
 import session/session
 import simplifile
+import support/addresses
 import support/provider as provider_test
 import support/tool_registry
 import tools/codemode as codemode_tool
+import weft/actor
 
 // --- the harness -----------------------------------------------------------
 
@@ -209,7 +210,7 @@ fn start(setup: Setup) -> Harness {
   // number of slices taken so far, so a test can assert that a window
   // already closed was never polled at all.
   let rests = counter(0, 1)
-  let name = process.new_name(prefix: "loom_escalate_test")
+  let name = addresses.new()
   let escalations =
     shape(
       escalate.Config(
@@ -995,7 +996,7 @@ pub fn a_holder_that_never_answers_settles_the_refusal_in_band_test() {
   let assert Ok(_silent) =
     actor.new(Nil)
     |> actor.on_message(fn(state, _message) { actor.continue(state) })
-    |> actor.named(harness.escalations.name)
+    |> actor.addressed(harness.escalations.name)
     |> actor.start
     as "the silent holder must start"
   let impatient = escalate.Config(..harness.escalations, holder_timeout_ms: 50)

@@ -178,7 +178,7 @@ fn virtual_drive() -> Nil {
   let persisted = snapshot_text(booted)
   let detached =
     poll.until(within: 5000, every: 10, attempt: fn() {
-      case hub.attached(booted.gateway) == 0 {
+      case hub.attached(booted.instance.gateway) == 0 {
         True -> poll.Done(Nil)
         False -> poll.Retry
       }
@@ -416,7 +416,7 @@ fn drive(ready: Ready) -> Nil {
 
   // Nobody is attached yet, and the hub says so. This is the question
   // `client/serve` puts to the escalation seam on every park poll.
-  assert hub.attached(booted.gateway) == 0
+  assert hub.attached(booted.instance.gateway) == 0
     as "a server nobody has dialled must count no connections"
 
   // 2. The real binary, in a real terminal.
@@ -424,7 +424,7 @@ fn drive(ready: Ready) -> Nil {
 
   // 3. It attached — over a websocket, with the token from the file the
   //    boot minted. Until this holds nothing else is worth asserting.
-  case wait_until(fn() { hub.attached(booted.gateway) > 0 }, 150) {
+  case wait_until(fn() { hub.attached(booted.instance.gateway) > 0 }, 150) {
     True -> Nil
     False -> {
       let pane = result.unwrap(terminal.capture(term), "")
@@ -437,7 +437,8 @@ fn drive(ready: Ready) -> Nil {
       ))
     }
   }
-  assert hub.attached(booted.gateway) == 1 as "exactly one client is attached"
+  assert hub.attached(booted.instance.gateway) == 1
+    as "exactly one client is attached"
 
   // 4. The snapshot painted. This text is created only after the full
   //    snapshot arrives, so it is protocol traffic on screen rather than an
@@ -512,7 +513,7 @@ fn drive(ready: Ready) -> Nil {
       "the forked strand never reached the agent state",
     )
   let fork_is_durable = fn() {
-    api.strands(booted.runtime)
+    api.strands(booted.instance.runtime)
     |> result.map(fn(strands) { list.contains(strands, "main-fork") })
     |> result.unwrap(False)
   }
@@ -520,7 +521,7 @@ fn drive(ready: Ready) -> Nil {
     True -> Nil
     False -> {
       let pane = result.unwrap(terminal.capture(term), "")
-      let strands = api.strands(booted.runtime)
+      let strands = api.strands(booted.instance.runtime)
       terminal.stop(term)
       serve.shutdown(booted)
       give_up(terminal.framed(
@@ -535,7 +536,7 @@ fn drive(ready: Ready) -> Nil {
   //    the park loop re-asks on every poll.
   let assert Ok(Nil) = terminal.press(term, "C-c")
     as "the quit keystroke must reach the pane"
-  case wait_until(fn() { hub.attached(booted.gateway) == 0 }, 150) {
+  case wait_until(fn() { hub.attached(booted.instance.gateway) == 0 }, 150) {
     True -> Nil
     False -> {
       let pane = result.unwrap(terminal.capture(term), "")

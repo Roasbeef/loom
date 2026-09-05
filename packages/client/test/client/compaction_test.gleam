@@ -31,7 +31,6 @@ import core/tx.{SetRegister, Tx}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation
@@ -46,6 +45,7 @@ import session/session
 import storage/storage
 import support/provider as provider_test
 import support/tool_registry
+import weft/actor
 
 // Small enough that one scripted turn's reported usage crosses it.
 const window = 10_000

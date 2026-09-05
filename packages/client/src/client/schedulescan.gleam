@@ -181,11 +181,10 @@ import core/json.{type JsonValue}
 import core/message
 import core/register
 import gleam/bool
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
@@ -194,6 +193,8 @@ import runtime/lineage
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft/actor
+import weft/registry as address
 import weft/state_machine as sm
 import weft/timer
 
@@ -395,7 +396,7 @@ type ScheduleStatus {
 pub fn start(
   options: Options,
   runtime: Runtime,
-  name: Name(Message),
+  name: address.Address(Message),
 ) -> actor.StartResult(Subject(Message)) {
   builder(options, runtime, name) |> sm.start
 }
@@ -412,7 +413,7 @@ pub fn start(
 pub fn supervised(
   options: Options,
   runtime: Runtime,
-  name: Name(Message),
+  name: address.Address(Message),
 ) -> ChildSpecification(Subject(Message)) {
   sm.supervised(builder(options, runtime, name))
 }
@@ -430,7 +431,7 @@ pub fn supervised(
 fn builder(
   options: Options,
   runtime: Runtime,
-  name: Name(Message),
+  name: address.Address(Message),
 ) -> sm.Builder(Phase, State, Message, Subject(Message)) {
   sm.new_with_initialiser(5000, fn(subject) {
     sm.initialised(Watching, State(options:, runtime:))
@@ -438,7 +439,7 @@ fn builder(
     |> Ok
   })
   |> sm.with_timer_source(timer.Injected(after: runtime.effects.timers.after))
-  |> sm.named(name)
+  |> sm.addressed(name)
   |> sm.on_enter(entered)
   |> sm.on_event(handle)
 }
@@ -717,23 +718,11 @@ fn idle_rescan_ms() -> Int {
 /// // schedulescan.poke(scanner_name)
 /// ```
 ///
-pub fn poke(name: Name(Message)) -> Nil {
-  // Checked alive before sending, for the same reason `client/agency`
-  // checks its holder: a send to a name nothing is registered under
-  // raises, and the caller is a tool body whose crash would become a
-  // fault rather than an in-band result. An unregistered scanner is not
-  // even unusual here — it is exactly what a restart looks like from
-  // outside — and it costs nothing to miss, because a restarting scanner
-  // ticks immediately on the way back up and re-reads every cell.
-  let subject = process.named_subject(name)
-  case process.subject_owner(subject) {
-    Error(Nil) -> Nil
-    Ok(pid) ->
-      case process.is_alive(pid) {
-        False -> Nil
-        True -> process.send(subject, Rescan)
-      }
-  }
+pub fn poke(name: address.Address(Message)) -> Nil {
+  // Restart can lose this hint: the replacement immediately scans durable
+  // cells. Resolving once prevents a second lookup from changing the receiver.
+  let _sent = address.send(name, Rescan)
+  Nil
 }
 
 // --- interval schedules ------------------------------------------------

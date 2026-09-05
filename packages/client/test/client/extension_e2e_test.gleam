@@ -82,7 +82,6 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/strand as machine_strand
@@ -91,10 +90,13 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import support/addresses
 import support/extensions
 import support/origin
 import telemetry/log
 import tools/tool
+import weft/actor
+import weft/registry as address
 
 /// The value the operator's environment holds and nothing else may see.
 /// Distinctive enough that a substring search over a few thousand frame
@@ -163,7 +165,7 @@ fn drive(ready: Ready) -> Nil {
     Ok(installed_at) -> {
       let taps = process.new_subject()
       let specs = process.new_subject()
-      let hosts_name = process.new_name(prefix: "loom_e2e_hosts")
+      let hosts_name = addresses.new()
       let config =
         dispatch.Config(
           host: installed_at.host,
@@ -365,7 +367,7 @@ fn hooks_fire(installed_at: Installed) -> Nil {
   case install_beside(installed_at, extensions.gatekeeper(), "gatekeeper-src") {
     Error(reason) -> io.println("SKIP the gatekeeper extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
-      let hosts_name = process.new_name(prefix: "loom_e2e_gate")
+      let hosts_name = addresses.new()
       let seam = hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000)
       let config =
         dispatch.Config(
@@ -612,7 +614,7 @@ fn keepers_remember(
           // arrangement in which "it survived the reopen" is a claim
           // about the disk rather than about the node.
           let holder = start_holder(runtime)
-          let hosts_name = process.new_name(prefix: "loom_e2e_keepers")
+          let hosts_name = addresses.new()
           let registry =
             keeper_registry(
               installed_at,
@@ -723,7 +725,7 @@ fn keeper_call(
 // through, over one memory door.
 fn keeper_registry(
   installed_at: Installed,
-  hosts_name: process.Name(hosts.Message),
+  hosts_name: address.Address(hosts.Message),
   keepers: List(#(record.Record, extension_manifest.Manifest, String)),
   memory: extension_memory.Door,
 ) -> tool.Registry {
@@ -887,7 +889,7 @@ fn start_entropy() -> Result(fn() -> Int, String) {
 // leave a satellite the harness had stopped trusting still running.
 fn oversleeps(
   installed_at: Installed,
-  hosts_name: process.Name(hosts.Message),
+  hosts_name: address.Address(hosts.Message),
 ) -> Nil {
   case install_beside(installed_at, extensions.sleeper(), "sleeper-src") {
     Error(reason) -> io.println("SKIP the oversleeping extension: " <> reason)
@@ -901,7 +903,7 @@ fn oversleeps(
           launch: dispatch.jailed_node,
           memory: extension_memory.shut("this fixture has no session"),
         )
-      let sleeper_hosts_name = process.new_name(prefix: "loom_e2e_sleeper")
+      let sleeper_hosts_name = addresses.new()
       let assert Ok(_started) =
         hosts.start(sleeper_hosts_name, wall_clock(), [
           dispatch.hosting(

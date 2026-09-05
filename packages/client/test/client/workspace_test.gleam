@@ -24,12 +24,12 @@ import codemode/vet/policy as vet_policy
 import codemode/workspace
 import core/clock
 import core/ids
-import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/string
 import simplifile
+import support/addresses
 import tools/blob
 import tools/codemode as codemode_tool
 import tools/fs
@@ -352,7 +352,7 @@ pub fn the_kv_arms_come_from_the_configured_store_test() {
   // The seam's `kv.*` closures are the store's, not copies of them: a
   // value set through the seam is readable through the same seam and
   // through a second one built over the same name.
-  let name = process.new_name(prefix: "loom_scratch_ws")
+  let name = addresses.new()
   let assert Ok(_started) = scratch.start(name, scratch.default_bounds())
     as "the scratch store must start"
   let root = fresh("kv")

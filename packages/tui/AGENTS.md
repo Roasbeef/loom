@@ -68,9 +68,11 @@ that tree separately from the self-contained server.
 - `tui/connection.Connection` is a websocket-owning Stratus actor. The
   etui loop drains its mailbox on ticks, keeping networking out of `view` and
   out of keyboard handling. Startup runs as a one-task `weft` run with a
-  deadline — the worker belongs to weft's scope, so an initialiser crash
-  cannot reach the terminal and a timeout reaps the half-started actor; a
-  successful connection restores the runtime link.
+  deadline. After handshake, a Weft lifetime actor owns the Stratus link and
+  monitors both the connection attempt and the terminal-owned inbox. Network
+  failure becomes a `Closed` notice instead of killing the terminal. Terminal
+  death, including normal exit, or attempt cancellation closes the socket;
+  normal attempt completion leaves it available to the terminal.
 - `tui/bootstrap.Options` describes local-launch inputs, while
   `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
   connection path. `tui/bootstrap.SessionChoice` is the canonical workspace
@@ -353,13 +355,14 @@ that tree separately from the self-contained server.
   startup, and websocket startup run as one `weft` task under
   `weft.start_detached` with a 90-second deadline; the terminal pulls its
   outcome with a zero wait once per tick. Weft's deadline kills the task and
-  joins it before the outcome is delivered, so a timed-out attempt cannot
-  leak a result or socket into a later switch, and each attempt is its own
+  joins it before the outcome is delivered. Its socket guardian then closes
+  the cancelled attempt's socket; task exit alone is not a socket-drain proof.
+  Each attempt is its own
   run, so a stale outcome has no later attempt to land on. Failure leaves the
   old socket and model intact and discards any frames the attempt already
   queued. Success gives the replacement a fresh
-  connection inbox, the terminal process links to its socket actor, and only
-  then does it close the prior socket and await the new authoritative full
+  connection inbox. The terminal checks socket liveness before closing the
+  prior socket and awaiting the new authoritative full
   snapshot. Late frames and close notices from the abandoned inbox cannot
   mutate the replacement session.
 - **Every inbox the terminal reads is created by the terminal.** A `Subject`
@@ -369,9 +372,8 @@ that tree separately from the self-contained server.
   outcome that names no inbox, and `sessions.receive` attaches the terminal's
   own. The real-server lifecycle test drains the full snapshot from that inbox
   in the adopting process, which is the only check that catches a task-created
-  inbox. One window is accepted and documented in the module: between the
-  task returning its socket and `connection.adopt` linking it, the socket is
-  linked to nobody, inside the terminal's own tick handler.
+  inbox. The socket guardian monitors that inbox's owner before returning the
+  socket, so terminal death during handoff still triggers cleanup.
 - **Approval is not implied by visibility.** A pending escalation is rendered
   as a notice only. Until the exact action/grant echo contract is implemented,
   this client cannot approve or deny an action. The server still enforces the
