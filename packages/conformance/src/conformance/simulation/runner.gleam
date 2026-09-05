@@ -878,7 +878,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
       poll_interval_ms: 25,
       tolerance: supervisor.Tolerance(intensity: 10_000, period: 10),
       after_commit: fn(_ordinal) { post_commit(ctl, raw, script, schedule) },
-      subscribers: [events],
+      subscribers: [writer.Direct(events)],
     )
 
   // Seed the strand first, then arm: seeding commits happen before the

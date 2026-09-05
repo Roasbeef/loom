@@ -52,19 +52,19 @@ import core/codec
 import core/ids.{type SessionId}
 import core/json.{type JsonValue}
 import events/search.{type Search, type SearchError}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
-import runtime/internal/ffi_sup
 import runtime/writer
 import simplifile
 import storage/sqlite
 import storage/storage.{type Storage}
 import tools/history as history_tool
+import weft/actor
+import weft/registry as address
 
 /// The index database's file name. One file per repository, beside the
 /// session file rather than inside it: the index spans every session, and
@@ -144,7 +144,7 @@ fn probed(path: String) -> Result(Nil, String) {
 /// `pull` is total and does its own generation read.
 pub type Config {
   Config(
-    name: Name(Message),
+    name: address.Address(Message),
     path: String,
     session: SessionId,
     pull: fn(Search) -> Result(Nil, String),
@@ -171,7 +171,7 @@ pub type Config {
 /// ```
 ///
 pub fn over_session(
-  name name: Name(Message),
+  name name: address.Address(Message),
   path path: String,
   session session: SessionId,
   store store: Storage(handle),
@@ -298,7 +298,7 @@ pub fn start(
     |> actor.returning(subject)
     |> Ok
   })
-  |> actor.named(config.name)
+  |> actor.addressed(config.name)
   |> actor.on_message(handle)
   |> actor.start
 }
@@ -315,20 +315,16 @@ pub fn supervised(config: Config) -> ChildSpecification(Subject(Message)) {
 }
 
 /// Stops the holder and closes its connection.
-pub fn stop(name: Name(Message)) -> Nil {
-  case process.named(name) {
-    Error(Nil) -> Nil
-    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, Stop))
-  }
+pub fn stop(name: address.Address(Message)) -> Nil {
+  let _sent = address.send(name, Stop)
+  Nil
 }
 
 /// Hints the holder that something committed. A cast, and a lost one
 /// costs latency only.
-pub fn poke(name: Name(Message)) -> Nil {
-  case process.named(name) {
-    Error(Nil) -> Nil
-    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, Pull))
-  }
+pub fn poke(name: address.Address(Message)) -> Nil {
+  let _sent = address.send(name, Pull)
+  Nil
 }
 
 /// Pulls this session's new entries into the index and reports what
@@ -341,7 +337,7 @@ pub fn poke(name: Name(Message)) -> Nil {
 /// ```
 ///
 pub fn synchronize(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms timeout_ms: Int,
 ) -> Result(Nil, String) {
   ask(name, timeout_ms, Synchronize) |> result.flatten
@@ -366,7 +362,7 @@ pub fn synchronize(
 /// ```
 ///
 pub fn seam(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms timeout_ms: Int,
 ) -> history_tool.History {
   history_tool.History(
@@ -398,35 +394,34 @@ pub fn seam(
 /// post-commit publication into holder pulls, registered under
 /// `as_name`.
 ///
-/// Subscribe the writer to `process.named_subject(as_name)` rather than
-/// to the returned subject, exactly as `client/gateway.commit_forwarder`
-/// is subscribed: the subscriber holds no state, so it is restartable,
-/// and a subscription made by name survives the restart while one made
-/// to a pid does not.
+/// Subscribe the writer through `writer.Routed(as_name)`, just as for
+/// `client/gateway.commit_forwarder`. The reference spans restarts; the
+/// returned subject belongs only to this incarnation. Missed hints cost
+/// latency, not durable writes.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // api.Options(..options, subscribers: [process.named_subject(pulls)])
+/// // api.Options(..options, subscribers: [writer.Routed(pulls)])
 /// ```
 ///
 pub fn commit_pull(
-  to name: Name(Message),
-  as_name as_name: Name(writer.Event),
+  to name: address.Address(Message),
+  as_name as_name: address.Address(writer.Event),
 ) -> actor.StartResult(Subject(writer.Event)) {
   actor.new(Nil)
   |> actor.on_message(fn(_state, _event: writer.Event) {
     poke(name)
     actor.continue(Nil)
   })
-  |> actor.named(as_name)
+  |> actor.addressed(as_name)
   |> actor.start
 }
 
 /// The commit subscriber as a supervisable child.
 pub fn supervised_commit_pull(
-  to name: Name(Message),
-  as_name as_name: Name(writer.Event),
+  to name: address.Address(Message),
+  as_name as_name: address.Address(writer.Event),
 ) -> ChildSpecification(Subject(writer.Event)) {
   supervision.worker(fn() { commit_pull(to: name, as_name:) })
 }
@@ -541,20 +536,24 @@ fn query(
 // same reason: `process.call` exits its *caller*, and this runs inside a
 // live tool call.
 fn ask(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms: Int,
   message: fn(Subject(answer)) -> Message,
 ) -> Result(answer, String) {
-  case process.named(name) {
+  case address.lookup(name) {
     Error(Nil) -> Error(no_holder)
-    Ok(pid) -> {
+    Ok(subject) -> {
+      use pid <- result.try(
+        process.subject_owner(subject)
+        |> result.replace_error(no_holder),
+      )
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
 
       // Send to the PID the monitor describes. Re-resolving the name here could
       // panic during a restart or ask a replacement while watching its
       // predecessor.
-      ffi_sup.send_to_pid(pid, #(name, message(reply)))
+      process.send(subject, message(reply))
       let answered =
         process.new_selector()
         |> process.select_map(reply, Some)

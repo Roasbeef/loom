@@ -28,10 +28,9 @@ import core/json
 import core/message.{type AgentMessage}
 import core/register
 import core/tx
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
@@ -43,6 +42,9 @@ import runtime/lineage
 import runtime/writer
 import session/session
 import storage/storage
+import support/addresses
+import weft/actor
+import weft/registry as address
 
 const trigger = "ALTER TABLE"
 
@@ -129,7 +131,8 @@ pub fn a_restarted_scanner_does_not_inject_a_second_time_test() {
   let assert Ok(_first) = run_until_fired(rig) as "the rule must fire"
   // Kill the scanner. The supervisor restarts it under the same name,
   // with no memory of anything it had judged.
-  let assert Ok(pid) = process.named(rig.scanner) as "the scanner must be live"
+  let assert Ok(pid) = addresses.owner(rig.scanner)
+    as "the scanner must be live"
   process.kill(pid)
   await_replacement(rig.scanner, pid, 5000)
   // A run for the replacement to inject into, if it were going to.
@@ -287,7 +290,7 @@ type Rig {
   Rig(
     runtime: api.Runtime,
     session: session.Session,
-    scanner: Name(writer.Event),
+    scanner: address.Address(writer.Event),
     services: process.Pid,
   )
 }
@@ -323,7 +326,7 @@ fn harness(
   )
   use entropy <- result.try(start_entropy())
   use turns <- result.try(start_turns())
-  let scanner = process.new_name(prefix: "loom_rulescan_test")
+  let scanner = addresses.new()
   let effects_record =
     effects.Effects(
       clock: clock.stepping(from: 1_756_000_000_000, by: 3),
@@ -346,7 +349,7 @@ fn harness(
         // subscriber whose name is momentarily unregistered, which is
         // what lets the scanner be started after the runtime it watches
         // and restarted under it.
-        subscribers: [process.named_subject(scanner)],
+        subscribers: [writer.Routed(scanner)],
       ),
     )
     |> result.map_error(string.inspect),
@@ -467,14 +470,9 @@ fn write_corrupt_lineage(rig: Rig, strand: String) -> Nil {
 // A hint with nothing behind it: the scanner pulls its truth from the
 // store, so any commit event makes it look again.
 fn poke(rig: Rig) -> Nil {
-  case process.named(rig.scanner) {
-    Ok(_pid) ->
-      process.send(
-        process.named_subject(rig.scanner),
-        writer.Committed(ordinal: 0, seqs: [], ts: 0),
-      )
-    Error(Nil) -> Nil
-  }
+  let _sent =
+    address.send(rig.scanner, writer.Committed(ordinal: 0, seqs: [], ts: 0))
+  Nil
 }
 
 fn scripted_provider(
@@ -573,8 +571,8 @@ fn await_mark(opened: session.Session, remaining_ms: Int) -> Nil {
   }
 }
 
-fn await_named(name: Name(writer.Event), remaining_ms: Int) -> Nil {
-  case process.named(name), remaining_ms <= 0 {
+fn await_named(name: address.Address(writer.Event), remaining_ms: Int) -> Nil {
+  case addresses.owner(name), remaining_ms <= 0 {
     Ok(_pid), _ | _, True -> Nil
     Error(Nil), False -> {
       process.sleep(5)
@@ -586,11 +584,11 @@ fn await_named(name: Name(writer.Event), remaining_ms: Int) -> Nil {
 // Waits until the name resolves to a *different* process: the
 // supervisor's replacement, not the corpse.
 fn await_replacement(
-  name: Name(writer.Event),
+  name: address.Address(writer.Event),
   gone: process.Pid,
   remaining_ms: Int,
 ) -> Nil {
-  case process.named(name), remaining_ms <= 0 {
+  case addresses.owner(name), remaining_ms <= 0 {
     _, True -> Nil
     Ok(pid), False ->
       case pid == gone {

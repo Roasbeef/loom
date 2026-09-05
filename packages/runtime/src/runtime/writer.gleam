@@ -5,9 +5,10 @@
 //// (design §3.5). Reads also route through it in the runtime, keeping a
 //// single storage path and one instrumentation point. After each
 //// successful commit the writer publishes a `Committed` event to its
-//// subscribers (a simple typed pub/sub over process subjects — the
-//// `pg`-based EventBus proper is WP-K) and then invokes the injected
-//// `after_commit` observer.
+//// subscribers and then invokes the injected `after_commit` observer.
+//// Incarnation-local observers use subjects; restartable services use
+//// reclaimable reference addresses resolved for each lossy hint. Neither
+//// route executes subscriber code inside the writer.
 ////
 //// `after_commit` is the interleave harness's crash scheduler seam: it
 //// runs in the writer process after the commit is durable and published
@@ -60,6 +61,16 @@ pub type Event {
   Committed(ordinal: Int, seqs: List(Seq), ts: Int)
 }
 
+/// A commit-hint destination, either one incarnation or a restartable service.
+/// Publication only sends a message; no subscriber callback runs in the writer.
+pub type Subscriber {
+  /// An observer whose subject already exists, such as a test or event relay.
+  Direct(subject: Subject(Event))
+
+  /// A service whose current incarnation is resolved for each lossy hint.
+  Routed(address: address.Address(Event))
+}
+
 /// A transport-level availability failure or the writer's own storage answer.
 /// Keeping these separate lets callers retry an unsent request after restart
 /// without reclassifying a refused or ambiguous commit.
@@ -77,13 +88,14 @@ pub type Failure(cause) {
 /// becomes the sole committer for; `after_commit` is called with the
 /// commit ordinal after durability and publication, before the reply —
 /// it must be fast and may deliberately kill the writer (the crash
-/// scheduler); `subscribers` receive every `Committed` event from the
-/// writer's start.
+/// scheduler); `subscribers` receive `Committed` hints while their destination
+/// exists. A missed hint never fails the durable commit or queues for a later
+/// subscriber incarnation.
 pub type Options {
   Options(
     session: Session,
     after_commit: fn(Int) -> Nil,
-    subscribers: List(Subject(Event)),
+    subscribers: List(Subscriber),
   )
 }
 
@@ -114,7 +126,7 @@ pub opaque type Message {
     reply: Subject(Result(List(UsageRow), StorageError)),
   )
   Stats(reply: Subject(Result(storage.SessionStats, StorageError)))
-  Subscribe(subscriber: Subject(Event))
+  Subscribe(subscriber: Subscriber)
   RenewTick
 }
 
@@ -122,7 +134,7 @@ type State {
   State(
     session: Session,
     ordinal: Int,
-    subscribers: List(Subject(Event)),
+    subscribers: List(Subscriber),
     after_commit: fn(Int) -> Nil,
   )
 }
@@ -218,7 +230,17 @@ pub fn supervised(
 // Erlang's `!` to a pid that has already exited is a silent no-op, so
 // nothing past the name lookup can crash the caller and no aliveness
 // check is needed on either path.
-fn publish(subscriber: Subject(Event), event: Event) -> Nil {
+fn publish(subscriber: Subscriber, event: Event) -> Nil {
+  case subscriber {
+    Direct(subject) -> publish_direct(subject, event)
+    Routed(destination) -> {
+      let _sent = address.send(destination, event)
+      Nil
+    }
+  }
+}
+
+fn publish_direct(subscriber: Subject(Event), event: Event) -> Nil {
   case process.subject_name(subscriber) {
     Error(Nil) -> process.send(subscriber, event)
     Ok(name) ->
@@ -431,17 +453,17 @@ pub fn stats(
   process.call_forever(writer, Stats) |> result.map_error(Underlying)
 }
 
-/// Subscribes a subject to committed events (fire-and-forget).
+/// Subscribes an observer to committed events (fire-and-forget).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // writer.subscribe(subject, events_subject)
+/// // writer.subscribe(writer_address, Direct(events_subject))
 /// ```
 ///
 pub fn subscribe(
   writer: address.Address(Message),
-  subscriber: Subject(Event),
+  subscriber: Subscriber,
 ) -> Nil {
   let _sent = address.send(writer, Subscribe(subscriber))
   Nil

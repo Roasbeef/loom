@@ -32,6 +32,7 @@ import gleam/erlang/process.{
 import runtime/internal/ffi_sup
 import runtime/writer
 import session/session
+import weft/actor as routed_actor
 import weft/registry as address
 
 // --- the two resolution shapes, reproduced -------------------------------
@@ -218,7 +219,7 @@ pub fn writer_delivers_a_committed_event_to_a_named_subscriber_test() {
     fresh_named_subject("writer-publish-live-subscriber")
   let assert Ok(Nil) = process.register(process.self(), name)
     as "self-registration under a fresh name must succeed"
-  writer.subscribe(w, subscriber)
+  writer.subscribe(w, writer.Direct(subscriber))
 
   let assert Ok(_) = writer.commit(w, note_tx("hello"))
     as "the commit must apply"
@@ -235,7 +236,7 @@ pub fn writer_survives_a_subscriber_whose_name_is_already_unregistered_test() {
   // A subject built from a name nobody ever registered — the boundary
   // both the old and the new shape already handled without a race.
   let #(_name, ghost) = fresh_named_subject("writer-publish-ghost")
-  writer.subscribe(w, ghost)
+  writer.subscribe(w, writer.Direct(ghost))
 
   let assert Ok(_) = writer.commit(w, note_tx("first"))
     as "the commit must apply despite an unreachable subscriber"
@@ -246,4 +247,60 @@ pub fn writer_survives_a_subscriber_whose_name_is_already_unregistered_test() {
   let assert Ok(_) = writer.commit(w, note_tx("second"))
     as "the writer must still be responsive after publishing to a ghost subscriber"
   assert address.stop(namespace) == Ok(Nil)
+}
+
+pub fn routed_hints_survive_subscriber_replacement_test() {
+  let #(writer_address, namespace) = open_writer()
+  let destination = address.new_address(namespace)
+  let observed = process.new_subject()
+  writer.subscribe(writer_address, writer.Routed(destination))
+
+  // An absent service is a lost hint, never a failed commit.
+  let assert Ok(_) = writer.commit(writer_address, note_tx("before start"))
+    as "an unbound reference subscriber must not interrupt the writer"
+  let first = routed_subscriber(destination, observed)
+  let assert Ok(_) = writer.commit(writer_address, note_tx("first owner"))
+    as "the first subscriber must not interrupt the writer"
+  let assert Ok(writer.Committed(ordinal: 2, ..)) =
+    process.receive(observed, within: 1000)
+    as "the first binding must receive its own hint"
+
+  // Observe the old owner leaving before rebinding the same reference. A
+  // notification sent while no owner exists must not be replayed to its heir.
+  let down = process.monitor(first)
+  process.kill(first)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(down, fn(event) { event })
+    |> process.selector_receive(within: 1000)
+    as "the first subscriber must exit"
+  process.demonitor_process(down)
+  let assert Ok(_) = writer.commit(writer_address, note_tx("between owners"))
+    as "a missing incarnation must not interrupt the writer"
+  let replacement = routed_subscriber(destination, observed)
+  let assert Ok(_) = writer.commit(writer_address, note_tx("replacement"))
+    as "the same address must remain usable after replacement"
+  let assert Ok(writer.Committed(ordinal: 4, ..)) =
+    process.receive(observed, within: 1000)
+    as "the replacement must receive only its live hint"
+
+  process.kill(replacement)
+  assert address.stop(namespace) == Ok(Nil)
+}
+
+fn routed_subscriber(
+  destination: address.Address(writer.Event),
+  observed: Subject(writer.Event),
+) -> process.Pid {
+  let assert Ok(started) =
+    routed_actor.new(Nil)
+    |> routed_actor.addressed(destination)
+    |> routed_actor.on_message(fn(_, event) {
+      process.send(observed, event)
+      routed_actor.continue(Nil)
+    })
+    |> routed_actor.start
+    as "the routed subscriber must bind its reference"
+  process.unlink(started.pid)
+  started.pid
 }

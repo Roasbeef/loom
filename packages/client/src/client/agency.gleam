@@ -20,7 +20,7 @@
 //// `Runtime` cannot be built, in either order.
 ////
 //// The repo already ships the fix, four lines from where the knot is
-//// tied: `gateway.commit_forwarder(to: name)` mints a process name before
+//// tied: `gateway.commit_forwarder(to: name)` uses an address minted before
 //// the hub exists and closes over the *name*, not the process. The Agency
 //// does the same. `seam(config)` closes over `config.name` and nothing
 //// else, so it can be built before `api.open`; `start(config, runtime)`
@@ -121,11 +121,10 @@ import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation.{type LastResult}
@@ -140,7 +139,9 @@ import tools/agent.{
   type Refusal, type ResultSchema, type Spawned, type TerminalResult,
   type Waited, Aborted, Completed, Failed, Handle, Pending, Ready, Spawned,
 }
+import weft/actor
 import weft/poll
+import weft/registry as address
 
 /// The name prefix every minted subagent strand carries. It is what
 /// `api.Options.subagent` matches on to route a model-spawned strand into
@@ -171,7 +172,7 @@ pub const max_ancestor_walk = 32
 /// Everything the Agency needs that is not the runtime.
 ///
 /// Constructor invariants: `name` is minted before `api.open` and is the
-/// holder's process name; `clock` shares the session's time base (so a
+/// holder's reference address; `clock` shares the session's time base (so a
 /// simulated session waits on logical time); `depth_cap` is the deepest
 /// spawn allowed, counting the strand a human talks to as depth 0;
 /// `fan_out` bounds one strand's live children and `session_strands`
@@ -184,7 +185,7 @@ pub const max_ancestor_walk = 32
 /// `holder_timeout_ms` bounds the call that borrows the runtime.
 pub type Config {
   Config(
-    name: Name(Message),
+    name: address.Address(Message),
     clock: Clock,
     depth_cap: Int,
     fan_out: Int,
@@ -235,10 +236,10 @@ pub type Config {
 /// ## Examples
 ///
 /// ```gleam
-/// // agency.default_config(process.new_name(prefix: "loom_agency"), clock)
+/// // agency.default_config(address.new_address(namespace), clock)
 /// ```
 ///
-pub fn default_config(name: Name(Message), clock: Clock) -> Config {
+pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
   Config(
     name:,
     clock:,
@@ -294,7 +295,7 @@ pub fn start(
       }
     }
   })
-  |> actor.named(config.name)
+  |> actor.addressed(config.name)
   |> actor.start
 }
 
@@ -393,7 +394,7 @@ fn borrow(config: Config) -> Result(api.Runtime, Refusal) {
 /// ```
 ///
 pub fn borrow_runtime(config: Config) -> Result(api.Runtime, Nil) {
-  let subject = process.named_subject(config.name)
+  use subject <- result.try(address.lookup(config.name))
   use pid <- result.try(process.subject_owner(subject))
   use <- bool.guard(when: !process.is_alive(pid), return: Error(Nil))
   Ok(process.call(subject, config.holder_timeout_ms, Borrow))

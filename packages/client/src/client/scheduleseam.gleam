@@ -168,7 +168,7 @@ import core/clock
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/bool
-import gleam/erlang/process.{type Name}
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -179,6 +179,7 @@ import runtime/effects
 import runtime/lineage
 import tools/schedule as schedule_tool
 import tools/tool.{type Ctx}
+import weft/registry as address
 
 /// Everything the seam needs from the host, as one value rather than a
 /// growing parameter list.
@@ -204,7 +205,7 @@ pub type Wiring {
     runtime: fn() -> Result(Runtime, Nil),
     policy: Policy,
     operator_schedules: List(Schedule),
-    scanner: Name(schedulescan.Message),
+    scanner: address.Address(schedulescan.Message),
   )
 }
 

@@ -72,7 +72,7 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
     as "session A must boot"
   // The door is really registered on this host: the pinned system prompt
   // lists the session's tools, and `remember` is among them.
-  assert string.contains(first.prompt.text, remember.tool_name)
+  assert string.contains(first.instance.prompt.text, remember.tool_name)
   // The boot's probe is lease-free and creates nothing: a boot that
   // opened the store would take its writer lease, and one arriving
   // during a distillation run would steal that run's. The door is
@@ -118,7 +118,8 @@ pub fn a_remembered_preference_reaches_the_next_sessions_bytes_test() {
   let assert Ok(second) =
     serve.boot(settings(root, "b.db", recording_gateway(bodies)))
     as "session B must boot"
-  let assert Ok(_op) = api.prompt(second.runtime, [user("what do you know?")])
+  let assert Ok(_op) =
+    api.prompt(second.instance.runtime, [user("what do you know?")])
     as "the prompt must be accepted"
   let assert Ok(sent) = process.receive(bodies, within: 10_000)
     as "session B must dispatch one generation"
@@ -142,7 +143,7 @@ pub fn a_session_with_no_digest_beside_it_injects_nothing_test() {
   let assert Ok(booted) =
     serve.boot(settings(root, "a.db", recording_gateway(bodies)))
     as "the server must boot"
-  let assert Ok(_op) = api.prompt(booted.runtime, [user("hello")])
+  let assert Ok(_op) = api.prompt(booted.instance.runtime, [user("hello")])
     as "the prompt must be accepted"
   let assert Ok(sent) = process.receive(bodies, within: 10_000)
     as "the boot must dispatch one generation"

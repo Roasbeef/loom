@@ -98,11 +98,10 @@ import core/tx
 import events/bus
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
@@ -117,16 +116,17 @@ import runtime/api
 import runtime/effects
 import runtime/escalation as runtime_escalation
 import runtime/hooks
-import runtime/internal/ffi_sup
 import runtime/writer
 import session/session
 import storage/storage
 import tools/tool.{type Registry}
+import weft/actor
+import weft/registry as address
 
 /// A running gateway hub, addressed by name so the provider tap and the
 /// commit forwarder can reach it before it starts.
 pub type Gateway {
-  Gateway(name: Name(Message))
+  Gateway(name: address.Address(Message))
 }
 
 /// Hub configuration.
@@ -288,7 +288,7 @@ type Emit {
 ///
 pub fn start(
   options: Options,
-  name: Name(Message),
+  name: address.Address(Message),
 ) -> actor.StartResult(Gateway) {
   actor.new_with_initialiser(5000, fn(subject) {
     let selector = case options.bus {
@@ -340,7 +340,7 @@ pub fn start(
     |> actor.returning(Gateway(name:))
     |> Ok
   })
-  |> actor.named(name)
+  |> actor.addressed(name)
   |> actor.on_message(handle)
   |> actor.start
 }
@@ -355,12 +355,9 @@ pub fn start(
 /// // gateway.attach(gateway, fn(frame) { process.send(out, frame) })
 /// ```
 ///
-pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Int {
-  process.call(
-    process.named_subject(gateway.name),
-    waiting: 5000,
-    sending: Attach(sink, _),
-  )
+pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Result(Int, Nil) {
+  use subject <- result.try(address.lookup(gateway.name))
+  Ok(process.call(subject, waiting: 5000, sending: Attach(sink, _)))
 }
 
 /// How many connections are attached right now.
@@ -390,25 +387,25 @@ pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Int {
 /// ```
 ///
 pub fn attached(gateway: Gateway) -> Int {
-  case process.named(gateway.name) {
-    Error(Nil) -> 0
-    Ok(owner) -> {
-      let monitor = process.monitor(owner)
-      let reply_to = process.new_subject()
+  let observed = {
+    use subject <- result.try(address.lookup(gateway.name))
+    use owner <- result.map(process.subject_owner(subject))
+    let monitor = process.monitor(owner)
+    let reply_to = process.new_subject()
 
-      // The monitored PID is the incarnation this question belongs to. Sending
-      // through the name would resolve it again and could crash or ask a
-      // replacement which the monitor does not describe.
-      ffi_sup.send_to_pid(owner, #(gateway.name, Attached(reply: reply_to)))
-      let answer =
-        process.new_selector()
-        |> process.select(reply_to)
-        |> process.select_specific_monitor(monitor, fn(_down) { 0 })
-        |> process.selector_receive(within: 1000)
-      process.demonitor_process(monitor)
-      result.unwrap(answer, 0)
-    }
+    // The monitored PID is the incarnation this question belongs to. Sending
+    // through the name would resolve it again and could crash or ask a
+    // replacement which the monitor does not describe.
+    process.send(subject, Attached(reply: reply_to))
+    let answer =
+      process.new_selector()
+      |> process.select(reply_to)
+      |> process.select_specific_monitor(monitor, fn(_down) { 0 })
+      |> process.selector_receive(within: 1000)
+    process.demonitor_process(monitor)
+    result.unwrap(answer, 0)
   }
+  result.unwrap(observed, 0)
 }
 
 /// Removes a connection; a no-op for unknown ids.
@@ -438,31 +435,28 @@ pub fn handle_text(gateway: Gateway, connection: Int, text: String) -> Nil {
 /// Starts a forwarder that turns the runtime writer's post-commit
 /// publication into hub pull hints, registered under `as_name`.
 ///
-/// Subscribe the writer to `process.named_subject(as_name)` rather than
-/// to the returned subject: the forwarder holds no state worth keeping,
-/// so it is the one piece of the composition layer that can simply be
-/// restarted, and a subscription made by *name* survives that restart
-/// while one made to a pid does not. The writer skips a subscriber whose
-/// name is momentarily unregistered, so the restart window costs hints,
-/// never the commit path.
+/// Subscribe the writer through `writer.Routed(as_name)`, not the returned
+/// incarnation-local subject. A restarted forwarder binds the same reference
+/// address. A hint sent while it is absent is lost; it cannot interrupt a
+/// commit, and the replacement recovers through durable pulls.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // let assert Ok(_started) = gateway.commit_forwarder(to: name, as_name: forwarder)
-/// // api.Options(..options, subscribers: [process.named_subject(forwarder)])
+/// // api.Options(..options, subscribers: [writer.Routed(forwarder)])
 /// ```
 ///
 pub fn commit_forwarder(
-  to name: Name(Message),
-  as_name as_name: Name(writer.Event),
+  to name: address.Address(Message),
+  as_name as_name: address.Address(writer.Event),
 ) -> actor.StartResult(Subject(writer.Event)) {
   actor.new(Nil)
   |> actor.on_message(fn(_state, _event: writer.Event) {
     send_if_alive(name, CommitHint)
     actor.continue(Nil)
   })
-  |> actor.named(as_name)
+  |> actor.addressed(as_name)
   |> actor.start
 }
 
@@ -476,8 +470,8 @@ pub fn commit_forwarder(
 /// ```
 ///
 pub fn supervised_commit_forwarder(
-  to name: Name(Message),
-  as_name as_name: Name(writer.Event),
+  to name: address.Address(Message),
+  as_name as_name: address.Address(writer.Event),
 ) -> ChildSpecification(Subject(writer.Event)) {
   supervision.worker(fn() { commit_forwarder(to: name, as_name:) })
 }
@@ -497,7 +491,7 @@ pub fn supervised_commit_forwarder(
 ///
 pub fn tap_provider(
   surface: effects.ProviderSurface,
-  to name: Name(Message),
+  to name: address.Address(Message),
 ) -> effects.ProviderSurface {
   effects.PreparedProviderSurface(
     timeout_ms: effects.provider_timeout_ms(surface),
@@ -514,7 +508,7 @@ pub fn tap_provider(
 // the immediate facade and the prepared production path observationally
 // identical.
 fn observe_provider(
-  name: Name(Message),
+  name: address.Address(Message),
   spec: effects.RequestSpec,
 ) -> fn(stream.StreamEvent) -> Nil {
   let operation = case spec {
@@ -534,11 +528,9 @@ fn observe_provider(
 // Resolve the hub name once, then send the tagged envelope straight to that
 // PID. A second name lookup would leave an unregistration race which turns a
 // lost stream hint into an observer crash and provider cancellation.
-fn send_if_alive(name: Name(Message), message: Message) -> Nil {
-  case process.named(name) {
-    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, message))
-    Error(Nil) -> Nil
-  }
+fn send_if_alive(name: address.Address(Message), message: Message) -> Nil {
+  let _sent = address.send(name, message)
+  Nil
 }
 
 // --- the hub loop ----------------------------------------------------------
@@ -3354,8 +3346,5 @@ fn describe_api_error(
 /// ```
 ///
 pub fn is_alive(gateway: Gateway) -> Bool {
-  case process.subject_owner(process.named_subject(gateway.name)) {
-    Ok(pid) -> process.is_alive(pid)
-    Error(Nil) -> False
-  }
+  address.lookup(gateway.name) |> result.is_ok
 }

@@ -81,7 +81,7 @@ pub fn a_remembered_preference_survives_two_boots_test() {
   // --- session A, and the pass a boot runs with nothing to read -------
   let assert Ok(first) = serve.boot(settings(root, "a.db", quiet_gateway()))
     as "session A must boot"
-  let assert Some(worker) = first.memory_pass
+  let assert Some(worker) = first.instance.memory_pass
     as "a default boot must run a distillation pass"
 
   // The live-lease rule, measured: the only session file in the
@@ -111,7 +111,8 @@ pub fn a_remembered_preference_survives_two_boots_test() {
   let assert Ok(second) =
     serve.boot(settings(root, "b.db", recording_gateway(bodies)))
     as "session B must boot"
-  let assert Some(worker) = second.memory_pass as "session B must distil too"
+  let assert Some(worker) = second.instance.memory_pass
+    as "session B must distil too"
   let assert Ok(distillpass.Completed(report)) =
     distillpass.settled(worker, timeout_ms: 30_000)
     as "session B's pass must settle"
@@ -121,7 +122,8 @@ pub fn a_remembered_preference_survives_two_boots_test() {
   let assert Some(bytes) = report.digest as "the pass must write a digest"
   assert bytes > 0
 
-  let assert Ok(_op) = api.prompt(second.runtime, [user("what do you know?")])
+  let assert Ok(_op) =
+    api.prompt(second.instance.runtime, [user("what do you know?")])
     as "the prompt must be accepted"
   let assert Ok(sent) = process.receive(bodies, within: 10_000)
     as "session B must dispatch one generation"
@@ -138,7 +140,8 @@ pub fn a_remembered_preference_survives_two_boots_test() {
     as "the sidecar must be on disk"
   let assert Ok(third) = serve.boot(settings(root, "c.db", quiet_gateway()))
     as "session C must boot"
-  let assert Some(worker) = third.memory_pass as "session C must distil too"
+  let assert Some(worker) = third.instance.memory_pass
+    as "session C must distil too"
   let assert Ok(distillpass.Completed(report)) =
     distillpass.settled(worker, timeout_ms: 30_000)
     as "session C's pass must settle"
@@ -178,7 +181,8 @@ pub fn a_held_memory_lease_is_reported_and_retried_test() {
 
   let assert Ok(booted) = serve.boot(settings(root, "a.db", scripted_gateway()))
     as "the server must boot while the memory lease is held"
-  let assert Some(worker) = booted.memory_pass as "the pass must be started"
+  let assert Some(worker) = booted.instance.memory_pass
+    as "the pass must be started"
   let assert Ok(distillpass.Refused(reason)) =
     distillpass.settled(worker, timeout_ms: 30_000)
     as "a held lease must refuse the pass"
@@ -193,7 +197,8 @@ pub fn a_held_memory_lease_is_reported_and_retried_test() {
   memory.close(held)
   let assert Ok(again) = serve.boot(settings(root, "b.db", scripted_gateway()))
     as "the second server must boot"
-  let assert Some(worker) = again.memory_pass as "the second pass must start"
+  let assert Some(worker) = again.instance.memory_pass
+    as "the second pass must start"
   let assert Ok(distillpass.Completed(report)) =
     distillpass.settled(worker, timeout_ms: 30_000)
     as "the retry must settle"
@@ -218,7 +223,8 @@ pub fn a_provider_failure_is_logged_and_changes_nothing_test() {
       logger: log.new(sink: log.to_subject(records), threshold: level.Debug),
     )
     as "the server must boot against a refusing provider"
-  let assert Some(worker) = booted.memory_pass as "the pass must be started"
+  let assert Some(worker) = booted.instance.memory_pass
+    as "the pass must be started"
   let assert Ok(distillpass.Refused(_reason)) =
     distillpass.settled(worker, timeout_ms: 30_000)
     as "a refused provider must refuse the pass"
@@ -241,7 +247,8 @@ pub fn an_interrupted_pass_leaves_the_next_boot_a_consistent_store_test() {
   // flight when the shutdown reaps the worker.
   let assert Ok(booted) = serve.boot(settings(root, "a.db", hanging_gateway()))
     as "the server must boot"
-  let assert Some(worker) = booted.memory_pass as "the pass must be started"
+  let assert Some(worker) = booted.instance.memory_pass
+    as "the pass must be started"
 
   // The interruption, pinned. Every assertion below would hold just as
   // well if the pass had never started, so the test has to prove the
@@ -288,7 +295,8 @@ pub fn an_interrupted_pass_leaves_the_next_boot_a_consistent_store_test() {
   // interruption intact and consolidates when a pass can reach a model.
   let assert Ok(again) = serve.boot(settings(root, "b.db", scripted_gateway()))
     as "the next server must boot"
-  let assert Some(worker) = again.memory_pass as "the next pass must start"
+  let assert Some(worker) = again.instance.memory_pass
+    as "the next pass must start"
   let assert Ok(distillpass.Completed(report)) =
     distillpass.settled(worker, timeout_ms: 30_000)
     as "the next pass must settle"
@@ -310,7 +318,7 @@ pub fn an_opted_out_host_runs_no_pass_test() {
       memory: distillpass.no_pass(),
     )
   let assert Ok(booted) = serve.boot(configured) as "the server must boot"
-  assert booted.memory_pass == None
+  assert booted.instance.memory_pass == None
   serve.shutdown(booted)
 
   // No pass means no memory session was ever opened, so the store the

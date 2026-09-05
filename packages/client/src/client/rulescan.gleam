@@ -157,11 +157,10 @@ import core/message
 import core/register
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
@@ -172,6 +171,8 @@ import session/session
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
+import weft/actor
+import weft/registry as address
 
 /// The most new entries one strand contributes to one pass.
 ///
@@ -307,11 +308,11 @@ type State {
 pub fn start(
   options: Options,
   runtime: Runtime,
-  name: Name(writer.Event),
+  name: address.Address(writer.Event),
 ) -> actor.StartResult(Subject(writer.Event)) {
   actor.new(State(options:, runtime:, progress: dict.new()))
   |> actor.on_message(handle)
-  |> actor.named(name)
+  |> actor.addressed(name)
   |> actor.start
 }
 
@@ -327,7 +328,7 @@ pub fn start(
 pub fn supervised(
   options: Options,
   runtime: Runtime,
-  name: Name(writer.Event),
+  name: address.Address(writer.Event),
 ) -> ChildSpecification(Subject(writer.Event)) {
   supervision.worker(fn() { start(options, runtime, name) })
 }

@@ -46,6 +46,7 @@ import mcp/client as mcp_client
 import mcp/codegen
 import provider/secret
 import simplifile
+import support/addresses
 import support/fake_mcp
 import tools/agent
 import tools/blob
@@ -845,7 +846,7 @@ fn run_bridge(ready: Ready) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(rig.workspace <> "/" <> bridged_file, bridged_contents)
     as "the fixture file must be writable"
-  let store = process.new_name(prefix: "loom_scratch_e2e")
+  let store = addresses.new()
   let assert Ok(_started) = scratch.start(store, scratch.default_bounds())
     as "the scratch store must start"
   let seam =

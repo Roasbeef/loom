@@ -44,7 +44,6 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation
@@ -56,8 +55,11 @@ import provider/secret
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/writer
 import session/session
 import storage/storage
+import weft/actor
+import weft/registry as address
 
 import broker/escalation as broker_escalation
 import broker/policy
@@ -98,14 +100,21 @@ pub fn main() -> Nil {
 /// ```
 ///
 pub fn run() -> Result(Narrative, String) {
+  use namespace <- result.try(address.start())
+  let outcome = run_in(namespace)
+  let _stopped = address.stop(namespace)
+  outcome
+}
+
+fn run_in(namespace: address.Registry) -> Result(Narrative, String) {
   // --- a real session, a real runtime, scripted effects ------------------
   use session <- result.try(
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
     |> result.map_error(fn(_) { "the memory session did not open" }),
   )
   use entropy <- result.try(start_entropy())
-  let name = process.new_name(prefix: "loom_gateway_demo")
-  let forwarder_name = process.new_name(prefix: "loom_forwarder_demo")
+  let name = address.new_address(namespace)
+  let forwarder_name = address.new_address(namespace)
   use _forwarder <- result.try(
     gateway.commit_forwarder(to: name, as_name: forwarder_name)
     |> result.map_error(fn(_) { "the commit forwarder did not start" }),
@@ -138,7 +147,7 @@ pub fn run() -> Result(Narrative, String) {
     session,
     effects,
     api.Options(..options, poll_interval_ms: 25, subscribers: [
-      process.named_subject(forwarder_name),
+      writer.Routed(forwarder_name),
     ]),
   ))
 
@@ -181,7 +190,10 @@ fn drive(
   let recovery_ids = process.new_subject()
   process.send(observed_seq, 0)
   process.send(recovery_ids, 1_000_000)
-  let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+  use connection <- result.try(
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    |> result.replace_error("the gateway is unavailable"),
+  )
   let client =
     Client(hub:, connection:, inbox:, deferred:, observed_seq:, recovery_ids:)
   use lines <- result.try(acceptance_flow(client, runtime))
@@ -983,8 +995,10 @@ fn final_snapshot(client: Client) -> Result(protocol.Snapshot, String) {
   let recovery_ids = process.new_subject()
   process.send(observed_seq, 0)
   process.send(recovery_ids, 1_000_000)
-  let connection =
+  use connection <- result.try(
     gateway.attach(client.hub, fn(frame) { process.send(inbox, frame) })
+    |> result.replace_error("the gateway is unavailable"),
+  )
   let second =
     Client(
       hub: client.hub,

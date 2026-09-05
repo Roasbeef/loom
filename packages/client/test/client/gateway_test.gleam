@@ -19,7 +19,6 @@ import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/string
 import machine/strand as machine_strand
 import provider/model
@@ -27,10 +26,13 @@ import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/escalation as durable
+import runtime/writer
 import session/session
 import storage/storage
+import support/addresses
 import support/tool_registry
 import tools/tool
+import weft/actor
 
 // --- wiring ----------------------------------------------------------------
 
@@ -124,8 +126,8 @@ fn start_harness_full(
     + process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
     * 7919
   }
-  let name = process.new_name(prefix: "loom_gateway_test")
-  let forwarder_name = process.new_name(prefix: "loom_forwarder_test")
+  let name = addresses.new()
+  let forwarder_name = addresses.new()
   let assert Ok(_forwarder) =
     gateway.commit_forwarder(to: name, as_name: forwarder_name)
   let effects =
@@ -181,7 +183,7 @@ fn start_harness_full(
       session,
       effects,
       api.Options(..options, poll_interval_ms: 25, subscribers: [
-        process.named_subject(forwarder_name),
+        writer.Routed(forwarder_name),
       ]),
     )
   let options = gateway.default_options("sess-01", runtime)
@@ -200,7 +202,9 @@ fn start_harness_full(
   let assert Ok(_started) = gateway.start(options, name)
   let hub = gateway.Gateway(name:)
   let inbox = process.new_subject()
-  let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+  let assert Ok(connection) =
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    as "the live gateway must attach the test client"
   Harness(hub:, connection:, inbox:, runtime:)
 }
 
@@ -265,7 +269,8 @@ pub fn attached_counts_live_connections_test() {
   assert gateway.attached(harness.hub) == 1
     as "the harness's own connection counts"
 
-  let second = gateway.attach(harness.hub, fn(_frame) { Nil })
+  let assert Ok(second) = gateway.attach(harness.hub, fn(_frame) { Nil })
+    as "the live gateway must attach the second client"
   assert gateway.attached(harness.hub) == 2
   gateway.detach(harness.hub, second)
   assert gateway.attached(harness.hub) == 1
@@ -285,8 +290,18 @@ pub fn attached_counts_live_connections_test() {
 /// caller — a server without a gateway is by definition not being
 /// watched, and the only caller is a tool effect process.
 pub fn attached_without_a_hub_is_zero_test() {
-  let name = process.new_name(prefix: "loom_absent_hub")
+  let name = addresses.new()
   assert gateway.attached(gateway.Gateway(name:)) == 0
+}
+
+pub fn attach_without_a_hub_refuses_the_connection_test() {
+  let name = addresses.new()
+  let delivered = process.new_subject()
+  assert gateway.attach(gateway.Gateway(name:), fn(frame) {
+      process.send(delivered, frame)
+    })
+    == Error(Nil)
+  assert process.receive(delivered, within: 0) == Error(Nil)
 }
 
 /// A hub that is alive but does not answer in time counts as nobody
@@ -297,11 +312,11 @@ pub fn attached_without_a_hub_is_zero_test() {
 /// asked about, and the driver would report a death with no stated
 /// reason where the seam's doc promises an in-band policy refusal.
 pub fn attached_is_zero_when_the_hub_does_not_answer_test() {
-  let name = process.new_name(prefix: "loom_silent_hub")
+  let name = addresses.new()
   let assert Ok(_silent) =
     actor.new(Nil)
     |> actor.on_message(fn(state, _message) { actor.continue(state) })
-    |> actor.named(name)
+    |> actor.addressed(name)
     |> actor.start
     as "the silent hub must start"
   assert gateway.attached(gateway.Gateway(name:)) == 0
@@ -310,11 +325,11 @@ pub fn attached_is_zero_when_the_hub_does_not_answer_test() {
 /// And a hub that dies while being asked answers zero too, rather than
 /// taking the asker down with it.
 pub fn attached_is_zero_when_the_hub_dies_mid_question_test() {
-  let name = process.new_name(prefix: "loom_dying_hub")
+  let name = addresses.new()
   let assert Ok(started) =
     actor.new(Nil)
     |> actor.on_message(fn(_state, _message) { actor.stop() })
-    |> actor.named(name)
+    |> actor.addressed(name)
     |> actor.start
     as "the dying hub must start"
   let _pid = started.pid
@@ -1336,10 +1351,7 @@ fn prepared_provider(started: Subject(Nil)) -> effects.ProviderSurface {
 pub fn provider_tap_forwards_explicit_cancellation_once_test() {
   let cancelled = process.new_subject()
   let tapped =
-    gateway.tap_provider(
-      cancellable_provider(cancelled),
-      to: process.new_name(prefix: "loom_cancel_tap_test"),
-    )
+    gateway.tap_provider(cancellable_provider(cancelled), to: addresses.new())
   let handle = tapped.request(cancellation_spec())
 
   stream.cancel(handle)
@@ -1353,10 +1365,7 @@ pub fn provider_tap_forwards_explicit_cancellation_once_test() {
 pub fn provider_tap_cancel_before_begin_starts_no_inner_work_test() {
   let started = process.new_subject()
   let tapped =
-    gateway.tap_provider(
-      prepared_provider(started),
-      to: process.new_name(prefix: "loom_parked_tap_test"),
-    )
+    gateway.tap_provider(prepared_provider(started), to: addresses.new())
   let stream.PreparedStream(handle:, begin:) =
     effects.prepare_provider(tapped, cancellation_spec())
   let drain_witness = stream.watch_drain(handle)
@@ -1372,10 +1381,7 @@ pub fn provider_tap_cancels_when_its_consumer_dies_test() {
   let cancelled = process.new_subject()
   let ready = process.new_subject()
   let tapped =
-    gateway.tap_provider(
-      cancellable_provider(cancelled),
-      to: process.new_name(prefix: "loom_cancel_tap_death_test"),
-    )
+    gateway.tap_provider(cancellable_provider(cancelled), to: addresses.new())
   let consumer =
     process.spawn_unlinked(fn() {
       let handle = tapped.request(cancellation_spec())

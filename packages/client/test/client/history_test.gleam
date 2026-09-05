@@ -15,18 +15,20 @@ import core/ids.{type EntryId, type SessionId}
 import core/message.{UserMessage, UserText}
 import core/tx.{InsertEntry, Tx}
 import events/search
-import gleam/erlang/process.{type Name}
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import simplifile
 import storage/memory
 import storage/storage.{type Storage}
+import support/addresses
 import tools/fs
 import tools/history as history_tool
+import weft/registry as address
 
 pub fn missing_holder_casts_are_no_ops_test() {
-  let name = process.new_name(prefix: "missing-history-holder")
+  let name = addresses.new()
   history.poke(name)
   history.stop(name)
 }
@@ -168,7 +170,7 @@ pub fn a_fresh_index_opens_test() {
 // --- the seam --------------------------------------------------------------
 
 pub fn a_missing_holder_refuses_in_band_test() {
-  let name = process.new_name(prefix: "loom_history_absent")
+  let name = addresses.new()
   let seam = history.seam(name, timeout_ms: 200)
   let assert Error(history_tool.IndexUnavailable(reason:)) =
     seam.search("anything", 10, history_tool.Repository)
@@ -179,7 +181,7 @@ pub fn a_missing_holder_refuses_in_band_test() {
 pub fn a_synced_session_is_findable_through_the_seam_test() {
   let path = fresh_index("seam")
   let #(store, id) = a_store(1, ["the auth migration plan", "grocery list"])
-  let name = process.new_name(prefix: "loom_history_seam")
+  let name = addresses.new()
   let assert Ok(_started) = history.start(config(name, path, id, store))
     as "the holder must start"
   let assert Ok(Nil) = history.synchronize(name, timeout_ms: 5000)
@@ -198,7 +200,7 @@ pub fn a_synced_session_is_findable_through_the_seam_test() {
 pub fn a_malformed_query_refuses_in_band_test() {
   let path = fresh_index("malformed")
   let #(store, id) = a_store(2, ["something"])
-  let name = process.new_name(prefix: "loom_history_malformed")
+  let name = addresses.new()
   let assert Ok(_started) = history.start(config(name, path, id, store))
   let seam = history.seam(name, timeout_ms: 5000)
   let assert Error(history_tool.IndexRefused(..)) =
@@ -218,8 +220,8 @@ pub fn a_session_scope_excludes_the_other_sessions_rows_test() {
   let #(theirs, their_id) =
     a_store(4, ["the decision was sqlite over postgres"])
 
-  let my_name = process.new_name(prefix: "loom_history_scope_mine")
-  let their_name = process.new_name(prefix: "loom_history_scope_theirs")
+  let my_name = addresses.new()
+  let their_name = addresses.new()
   let assert Ok(_mine) = history.start(config(my_name, path, my_id, mine))
   let assert Ok(_theirs) =
     history.start(config(their_name, path, their_id, theirs))
@@ -249,7 +251,7 @@ pub fn a_session_scope_excludes_the_other_sessions_rows_test() {
 pub fn a_restarted_holder_reopens_the_index_test() {
   let path = fresh_index("restart")
   let #(store, id) = a_store(5, ["the fetcher grew a retry"])
-  let name = process.new_name(prefix: "loom_history_restart")
+  let name = addresses.new()
   let assert Ok(_first) = history.start(config(name, path, id, store))
   let assert Ok(Nil) = history.synchronize(name, timeout_ms: 5000)
   await_gone(name)
@@ -281,7 +283,7 @@ pub fn an_unopenable_index_starts_and_repairs_in_band_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(path)
     as "the obstruction must exist before the holder starts"
   let #(store, id) = a_store(7, ["a decision worth recalling"])
-  let name = process.new_name(prefix: "loom_history_unopenable")
+  let name = addresses.new()
   let assert Ok(_started) = history.start(config(name, path, id, store))
     as "an unopenable index must not fail the start"
   let seam = history.seam(name, timeout_ms: 5000)
@@ -311,7 +313,7 @@ pub fn an_unopenable_index_starts_and_repairs_in_band_test() {
 pub fn an_unreadable_generation_skips_the_sync_test() {
   let path = fresh_index("generation")
   let #(store, id) = a_store(6, ["never indexed"])
-  let name = process.new_name(prefix: "loom_history_generation")
+  let name = addresses.new()
   let unreadable =
     history.over_session(
       name:,
@@ -342,7 +344,7 @@ pub fn a_missing_session_file_has_no_generation_test() {
 // --- fixtures --------------------------------------------------------------
 
 fn config(
-  name: Name(history.Message),
+  name: address.Address(history.Message),
   path: String,
   session: SessionId,
   store: Storage(handle),
@@ -414,13 +416,16 @@ fn an_entry(id: EntryId, parent: Option(EntryId), text: String) -> Entry {
 
 // `stop` is a cast, so the name outlives the send by a moment; a
 // supervisor's restart waits for the exit signal, and so must this.
-fn await_gone(name: Name(history.Message)) -> Nil {
+fn await_gone(name: address.Address(history.Message)) -> Nil {
   history.stop(name)
   wait_for_unregistered(name, 200)
 }
 
-fn wait_for_unregistered(name: Name(history.Message), left: Int) -> Nil {
-  case process.named(name), left <= 0 {
+fn wait_for_unregistered(
+  name: address.Address(history.Message),
+  left: Int,
+) -> Nil {
+  case addresses.owner(name), left <= 0 {
     Error(Nil), _ -> Nil
     Ok(_pid), True -> Nil
     Ok(_pid), False -> {
@@ -443,7 +448,7 @@ fn fresh_index(lane: String) -> String {
 
 pub fn relative_sources_are_persisted_as_absolute_host_paths_test() {
   let #(store, session) = a_store(71, ["source locator"])
-  let name = process.new_name(prefix: "history-relative-source")
+  let name = addresses.new()
   let config =
     config(name, ":memory:", session, store)
     |> history.with_source("data/session.db")

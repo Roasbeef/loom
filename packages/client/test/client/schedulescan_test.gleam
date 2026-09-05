@@ -24,11 +24,10 @@ import core/clock.{type Clock}
 import core/ids
 import core/json.{type JsonValue}
 import core/message
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
@@ -40,6 +39,9 @@ import runtime/api
 import runtime/effects
 import runtime/lineage
 import session/session
+import support/addresses
+import weft/actor
+import weft/registry as address
 
 // --- a tiny deterministic timer wheel ---------------------------------------
 //
@@ -236,8 +238,11 @@ fn await_true(check: fn() -> Bool, remaining_ms: Int) -> Bool {
   }
 }
 
-fn await_named(name: Name(schedulescan.Message), remaining_ms: Int) -> Nil {
-  case process.named(name), remaining_ms <= 0 {
+fn await_named(
+  name: address.Address(schedulescan.Message),
+  remaining_ms: Int,
+) -> Nil {
+  case addresses.owner(name), remaining_ms <= 0 {
     Ok(_pid), _ | _, True -> Nil
     Error(Nil), False -> {
       process.sleep(5)
@@ -253,7 +258,7 @@ type Rig {
     runtime: api.Runtime,
     session: session.Session,
     fc: FakeClock,
-    scanner: Name(schedulescan.Message),
+    scanner: address.Address(schedulescan.Message),
     services: process.Pid,
   )
 }
@@ -322,7 +327,7 @@ fn harness_with(
     )
     |> result.map_error(string.inspect),
   )
-  let scanner = process.new_name(prefix: "loom_schedulescan_test")
+  let scanner = addresses.new()
   use services <- result.try(
     sup.new(sup.OneForOne)
     |> sup.add(schedulescan.supervised(options, runtime, scanner))
@@ -368,7 +373,7 @@ fn stop(rig: Rig) -> Nil {
 // `runtime/effects.Timers`'s own doc says must be harmless. `Rescan` is
 // what `poke` sends, and is the shape an out-of-band wake actually takes.
 fn replay_tick(rig: Rig) -> Nil {
-  process.send(process.named_subject(rig.scanner), schedulescan.Rescan)
+  process.send(addresses.subject(rig.scanner), schedulescan.Rescan)
 }
 
 // A provider whose every request parks forever: the returned handle

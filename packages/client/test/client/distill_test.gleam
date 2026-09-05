@@ -20,7 +20,6 @@ import core/tx.{InsertEntry, Tx}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/string
 import provider/gateway as provider_gateway
 import provider/http
@@ -32,6 +31,7 @@ import simplifile
 import storage/storage
 import support/provider as provider_test
 import tools/remember
+import weft/actor
 
 // What the scripted consolidation turn answers with. The exit criterion
 // downstream looks for this text, so it is stated once.
