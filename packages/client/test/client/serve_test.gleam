@@ -42,6 +42,7 @@ import provider/secret
 import runtime/api
 import session/session
 import simplifile
+import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
 import support/provider as provider_test
@@ -404,6 +405,58 @@ pub fn listener_failure_closes_the_opened_instance_test() {
     )
     as "a failed listener must close the instance and release its writer lease"
   assert session.close(reopened) == Ok(Nil)
+}
+
+pub fn reopened_instance_does_not_revive_an_expired_writer_test() {
+  let root = fresh_instance_root()
+  let settings = instance_settings(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(absolute(root))
+    as "the stale writer's database directory must exist"
+
+  // Retain an expired fence-one connection without a runtime renewing it.
+  // This is the old daemon's constant identity, not the new incarnation's.
+  let assert Ok(stale) =
+    session.open_sqlite(
+      path: settings.session_path,
+      owner: "loomd",
+      lease_ttl_ms: 1000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the stale writer must acquire the original fence"
+  let assert Ok(first) = serve.open_instance(settings, log.discard())
+    as "the first instance must take over the expired writer lease"
+  let first_owner = held_writer_owner(settings.session_path)
+  let session_id = api.session_id(first.runtime)
+  serve.close_instance(first)
+
+  // Closing removes the row. The next incarnation returns to fence one,
+  // which would make the stale connection authoritative under a fixed owner.
+  let assert Ok(second) = serve.open_instance(settings, log.discard())
+    as "a cleanly closed session must reopen"
+  let second_owner = held_writer_owner(settings.session_path)
+  assert result.is_error(stale.renew_lease())
+    as "reopening must not revive the expired fence-one writer"
+  assert first_owner != second_owner
+  assert api.session_id(second.runtime) == session_id
+
+  // A delayed close from the stale connection must not delete the current
+  // lease. A complete provider turn proves the current writer can still commit.
+  assert session.close(stale) == Ok(Nil)
+  assert held_writer_owner(settings.session_path) == second_owner
+  complete_instance_turn(second)
+  serve.close_instance(second)
+}
+
+fn held_writer_owner(path: String) -> String {
+  let assert Error(session.SqliteOpenFailed(sqlite.LeaseHeld(owner:, ..))) =
+    session.open_sqlite(
+      path:,
+      owner: "lease-identity-probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.from_function(ffi_os.system_time_ms),
+    )
+    as "a second connection must be refused with the live writer identity"
+  owner
 }
 
 type Counter {

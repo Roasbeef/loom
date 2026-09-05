@@ -214,6 +214,7 @@ import client/wiring
 import core/clock.{type Clock}
 import core/ids
 import filepath
+import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
@@ -1975,10 +1976,16 @@ fn assemble_in(
   // integration learned live (spec-gaps, M2 item 1).
   let clock = clock.from_function(ffi_os.system_time_ms)
   let entropy = mixed_entropy()
+
+  // Clean close deletes the lease row, so a later open starts again at
+  // fence one. A fresh owner prevents an older, expired connection with that
+  // fence from regaining authority after another incarnation opens and closes.
+  let random_bytes = token.production_entropy()
+  let lease_owner = "loomd-" <> bit_array.base16_encode(random_bytes(32))
   use opened <- result.try(
     session.open_sqlite(
       path: settings.session_path,
-      owner: "loomd",
+      owner: lease_owner,
       lease_ttl_ms: 60_000,
       clock:,
     )
