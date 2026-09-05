@@ -7,52 +7,70 @@ and how to verify a change. Rewrite it when you finish a body of work.
 
 **Active work: single daemon and multiplayer.** The owner selected one
 daemon across workspaces, no legacy compatibility path, and catalogue
-restoration followed by lazy session opening after restart. This branch
-has the [architecture target](architecture/sessions.md) and a
-[two-client test foundation](architecture/multiplayer.md#implemented-test-foundation).
-The foundation is [PR #227](https://github.com/Roasbeef/loom/pull/227).
-The address primitive landed in
-[Weft #11](https://github.com/Roasbeef/weft/pull/11) and the owner published
-v0.4.3. [PR #228](https://github.com/Roasbeef/loom/pull/228),
-`client/session-runtime`, uses that published version
-and replaces strand-name atoms with reference addresses. The two strand
-factories are unnamed and publish their typed handles in the runtime registry.
-Its local runtime suite passes 110 tests, including a 1,000-strand atom-growth
-check and repeated factory replacement without atom growth. CI for #228 is
-green at `3b257d2` in run `33931678251` (Linux, macOS, jail and soak).
-The service-address slice is
-[PR #229](https://github.com/Roasbeef/loom/pull/229), `client/session-custody`,
-stacked on #228 at `3b257d2`. Its head is `75c6bf8`; CI run `33933825546`
-is pending. Work continues on `client/session-services`, stacked on #229.
-The full local
-repository gate passed for the runtime slice, including 1,119 client and
-149 TUI tests. Independent review found an atom-test warm-up issue, fixed
-and reverified separately in fresh VMs; no review findings remain.
-The current slice also replaces the writer, registry and drain-ledger service
-names. Its runtime gate passes 112 tests, including 50 executed-and-closed
-sessions with zero atom growth, and its client gate passes 1,119 tests.
-The full local gate for this slice passes, including 69 conformance and
-149 TUI tests, with zero lint errors. The deterministic suffix-order test and
-repeated seed-33 case also pass separately in fresh VMs. Independent review
-caught the ordered-retry bug and verified the fix. Client composition-service names,
-partial-boot and owner-death cleanup custody, the daemon manager, routed
-multiplayer and live E2E remain unfinished. No evaluation path
-dependency remains. Foundation CI is green at `362d737` in run
-`33929462266` (Linux, macOS, jail and soak). Reclaimable runtime addresses
-and session cleanup custody precede the manager and routing changes. This
-paragraph records the active wave; it is not a fresh verification of the
-older project-wide handoff below. Rebaseline that handoff when the wave
-finishes.
+restoration followed by lazy session opening after restart. The target is
+documented in [sessions](architecture/sessions.md) and
+[multiplayer](architecture/multiplayer.md). The daemon replacement is not
+yet shipped.
 
-The next concrete assembly step replaces the 11 service names allocated by
-`client/serve` (gateway, two forwarders, rule/schedule/distillation scanners,
-Agency, escalation, scratch, history and extension hosts), plus the demo's two
-names. Writer subscriptions need a typed reference-address route while keeping
-direct subjects for incarnation-local observers. This work must preserve
-restart-safe lossy hints without executing arbitrary subscriber callbacks in
-the writer. Session extraction and cleanup custody then separate this assembly
-from the public listener. Do not call `serve.boot` from a manager and assume its
-current host process survives owner death or cleans partial boot.
+The foundation, [PR #227](https://github.com/Roasbeef/loom/pull/227),
+merged into `main` at `a6cea08`. The owner published Weft v0.4.3 after
+[Weft #11](https://github.com/Roasbeef/weft/pull/11). Loom uses the
+published release, not an evaluation path dependency.
+GitHub stack #231 is now `main → #228 → #229`, rebased with the native
+`gh stack` commands onto `main` at `5e2112b`.
+[PR #228](https://github.com/Roasbeef/loom/pull/228) replaces strand and
+factory names; its rebased head `d57438d` passed all four CI jobs in run
+`33936465271`.
+[PR #229](https://github.com/Roasbeef/loom/pull/229) replaces runtime
+service names and preserves ordered retries after writer replacement.
+Its rebased tests passed, but the documentation gate found one stale
+citation. That citation is corrected at `11035fb`; run `33937341782`
+is still running. No merge is implied by these results.
+
+Work continues on `client/session-services`, still based on the
+pre-rebase #229. The implementation is committed locally; move it onto
+the rebased parent and verify that combination before opening its PR.
+Its implemented changes are:
+
+- The eleven composition-service names and the demo's two names now use
+  reclaimable Weft addresses. Writer subscribers distinguish direct
+  subjects from routed addresses; hints remain lossy and execute no
+  caller-supplied callbacks in the writer.
+- `serve.Instance` owns session resources without a public listener.
+  `open_instance` can open two independent sessions in one VM;
+  `Booted` adds the listener. Tests execute real provider turns in both,
+  close one while the other remains usable, and measure zero atom growth
+  across warmed repeated assembly cycles.
+- Failed gateway attachment closes even an idle socket, after Mist
+  transfers TCP ownership. The TUI isolates abnormal socket exits behind
+  a Weft lifetime actor. Six focused real-socket tests pass, including
+  peer-observed cancellation while the HTTP handshake is withheld.
+  Independent review caught delayed handshake cancellation; moving
+  blocking startup back into the untrapped worker fixed it, and the
+  reviewer verified that correction.
+
+The corrected full gate passes 1,129 client, 149 TUI, 113 runtime and 69
+conformance tests, with zero lint errors. `make doc-check` and the real
+`make e2e-client-bootstrap` also pass. A final test-only TCP return-type
+correction compiles warning-free and its peer-closure regression passes
+separately. These results apply before rebasing onto the updated parent;
+they do not prove the rebased combination.
+
+**Next: surviving cleanup custody, then daemon admission.**
+`open_instance` still uses the old host and `close_instance` still
+discards its runtime drain result. Neither is ready for a daemon manager
+to call as a complete lifecycle boundary. Partial boot and owner death
+must leave resource handles with surviving custody before recovered work
+can execute. Runtime recovery currently starts drivers before
+`api.open` returns; publishing custody after that return is too late.
+An uncertain drain must retain the reservation and prevent replacement.
+
+After custody, implement the durable catalogue with restore-only startup,
+lazy authorized opening, one daemon listener and routed attachments, safe
+client startup and switching, multiplayer authorization and convergence,
+and internal plus live Herdr E2E. These remain required work, not
+follow-up scope. The older project-wide handoff below is not freshly
+verified by this active-wave checkpoint.
 
 It is deliberately not a history; the git log and the PR bodies carry how
 each change was reviewed. Re-baselined 2026-09-04 against `main` at

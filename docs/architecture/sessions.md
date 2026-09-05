@@ -9,6 +9,26 @@ The reader is an implementer tracing ownership from terminal startup to
 session shutdown. [The design note](../design-notes/single-daemon.md)
 records the alternatives and detailed failure analysis.
 
+## Implemented assembly boundary
+
+`client/serve.Instance` groups one session's database runtime, gateway,
+broker, helper pool and composition services. `open_instance` starts that
+assembly without a listener, token directory or token file. `close_instance`
+closes only that assembly. `Booted` adds the current single-session listener;
+the shipped launcher and wire protocol have not changed yet.
+
+Session services and writer subscriptions use reclaimable Weft reference
+addresses. A replacement service binds the same address; a hint sent while
+it is absent is lost without failing the durable commit. Each instance owns
+its namespace and retires it on close.
+
+`client/serve_test` opens two instances in one VM and completes a turn on
+one after closing the other. It also measures ten fresh SQLite session
+open/execute/close cycles with real helpers and no warmed atom growth.
+These checks establish the assembly boundary, not daemon recovery: the
+existing host still lacks partial-boot and owner-death custody, and close
+does not yet return the drain verdict needed to release a reservation.
+
 ## One process across workspaces
 
 One `loomd` process runs one BEAM VM and hosts the user's active sessions

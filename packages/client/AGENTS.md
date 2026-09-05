@@ -70,7 +70,9 @@ over one session file. WP-L.
   refused in band).
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
-  text, and nothing in the module knows about sockets.
+  text, and nothing in the module knows about sockets. `attach` returns
+  `Error(Nil)` when no hub incarnation is bound; the WebSocket transport
+  closes that attachment rather than retaining an invented connection ID.
 - `client/gateway.{commit_forwarder, supervised_commit_forwarder,
   tap_provider}` — the two composition-layer seams: the runtime writer's
   post-commit publication becomes a pull hint, and an injected
@@ -78,9 +80,9 @@ over one session file. WP-L.
   while the runtime's effect process consumes the stream unchanged. The
   wrapper forwards explicit cancellation and monitors that effect process;
   either cancellation or consumer death tears down the inner handle. The
-  forwarder registers under a name and the writer subscribes to that
-  name, which is what lets it be supervised and restarted without the
-  writer noticing.
+  forwarder binds a reclaimable Weft reference address. The writer's
+  `Routed` subscription resolves it for each hint, so a restart neither
+  requires resubscription nor interrupts the writer.
 - `client/provider_relay.{prepare, wrap}` — the shared provider-wrapper
   ownership seam: `prepare` returns a minimal public custodian before it
   releases the guard, while `wrap` is the prepare-and-begin compatibility
@@ -253,9 +255,9 @@ over one session file. WP-L.
   index_beside, probe, over_session, with_source, sqlite_generation, start, supervised,
   stop, poke, synchronize, seam, commit_pull, supervised_commit_pull}` —
   the one process that owns this repository's `events/search` index, and
-  the seams that reach it. Addressed by process name, like the Agency and
-  the scratch store, so the tool seam is built before the holder exists
-  and a restart under the same name reopens the index file. `probe` is
+  the seams that reach it. Addressed by a Weft reference, like the Agency
+  and scratch store, so the tool seam is built before the holder exists
+  and a replacement binds that address and reopens the index. `probe` is
   the boot question: an index that will not open registers no
   `history_search` tool and logs one worded line, never a boot refusal.
   `over_session` binds the holder to one open session's store and takes
@@ -478,7 +480,7 @@ over one session file. WP-L.
 - `client/rulescan.{Options, default_options, with_logger, start,
   supervised, default_scan_limit, default_checkpoint_every}` — the
   session-scoped scanner actor. Its mailbox *is* `runtime/writer.Event`,
-  so it is the writer's second named subscriber beside the commit
+  so it is a routed writer subscriber beside the commit
   forwarder; on each hint it re-reads the store above a durable cursor
   and never trusts the hint for anything. A fire is one
   `api.steer_marking` — the injection and the rule's write-once
@@ -1074,21 +1076,21 @@ over one session file. WP-L.
   until `boot` has built it. An unrecognised flag value is a usage
   error, not a fallback — a typo that quietly served the workspace seam
   would look exactly like a server ignoring the flag.
-- `client/serve.Booted` — what `shutdown` takes apart, plus three things
-  it is asked about: `prompt: system_prompt.Assembled`, the exact bytes
-  this boot handed the wiring (so a test can prove the pinned prompt is
-  the one on the wire and the startup line can name its digest);
-  `services`, the supervisor over the restartable composition layer;
-  `stops`, the subject the host reports a `SIGTERM` or a fatal fault on,
-  owned by whichever process called `boot`; `helper_path`, the
-  `loom-exec` the ladder settled on, carried so the listening line can
-  name the binary that will enforce every jail this session builds; and
-  `rulescan`, the triggered-rule scanner's *name* — `None` on a boot
-  that configured no rules and therefore started no scanner, which is
-  the `codemode.unavailable` posture applied to a second optional
-  plane; and `schedulescan`, the same posture applied to a third —
-  scheduled heartbeats — carried the same way for the same reason,
-  though this scanner answers to no writer subscription at all.
+- `client/serve.Instance` owns one session's runtime, broker, helper pool,
+  MCP layer, gateway and composition-service supervisor.
+  Its `namespace` owns the 11 reclaimable service addresses and is retired
+  after the services stop. `prompt` retains the exact assembled prompt;
+  `helper_path` identifies the executable used by this session. Optional
+  `rulescan`, `schedulescan` and `memory_pass` addresses exist only when
+  their services are configured. `stops` belongs to the caller that opened
+  the instance. `open_instance` and `close_instance` expose this assembly
+  without a listener, token file, token directory or signal handler.
+- `client/serve.Booted` adds `served`, `token_path` and `bind_host` to an
+  `Instance`. `boot` retains the current single-session entry point while
+  sharing the same assembly. Listener setup failure closes the completed
+  instance. This is not yet daemon admission: partial-boot and owner-death
+  custody remain unfinished, and `close_instance` still discards the runtime
+  drain result instead of returning a reservation-release verdict.
 - `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
   process tree. `adopt` runs a boot on a dedicated exit-trapping process
   so every link an `actor.start` forms lands there rather than on the
@@ -2429,12 +2431,12 @@ an install is under the extensions root.
   builder the threshold and overflow hooks use — against the run's own
   settings snapshot.
 - **The server has two supervision tiers, and the line between them is
-  reachability.** A child under `Booted.services` — the commit
+  reachability.** A child under `Instance.services` — the commit
   forwarder, the Agency holder, the escalation holder, the scratch
   store, the rule scanner, the scheduled-heartbeat scanner, the
   search-index holder and its commit subscriber, the gateway hub —
   is addressed by
-  *name*, so a replacement under that name is the same address and a
+  a reclaimable reference, so a replacement binds the same address and a
   crash costs hints and the sockets already attached to the old hub
   rather than the server. The helper pool, the broker, and the summary
   sink are captured *by value* into closures built during the boot, so a
