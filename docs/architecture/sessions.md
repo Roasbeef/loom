@@ -145,3 +145,20 @@ provider call, tool execution, or schedule starts. Then select one session
 from two clients concurrently: exactly one runtime opens, both clients
 attach to it, and the other session remains closed. A denied open request
 must leave both sessions closed when neither was already resident.
+
+## Implemented runtime prerequisite
+
+The runtime uses Weft v0.4.3 reference addresses for strand drivers and for
+the writer, registry and drain ledger. It allocates no dynamic process names.
+The two strand factories are unnamed and publish their current handles in the
+registry. Runtime close and root death reclaim service routing; the retained
+direct drain-ledger subject still governs whether the writer lease can be
+released.
+
+The runtime tests execute and close 50 sessions after warming the VM, assert
+zero atom growth, and check that old roots, drivers, namespaces and addresses
+are gone. A blocked-provider test kills the root and observes namespace death
+before close; close must still wait for the provider to drain before another
+writer can acquire the database. These tests establish runtime prerequisites,
+not the daemon or multiplayer experience above. Client service addressing and
+cleanup custody across owner death remain to be implemented.
