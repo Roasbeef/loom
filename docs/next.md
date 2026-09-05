@@ -399,6 +399,15 @@ this is the body of work, and its exit is a fixture tool that goes from
 agent-written source to an installed, vetted, jailed tool serving a live
 call with the approval recorded durably.
 
+`docs/design-notes/trace-driven-optimization.md` argues the other half of
+the question: how the harness would ever *propose* such a change. Its
+answer is that the session file is already the trace, the prompt pack was
+built as an optimization target, and an optimizer sub-agent produces
+candidates onto this same ladder (pack versions, description overlays,
+proposed rules, L1 skills, tier-J extensions, L4 pull requests) that are
+evaluated by live rollouts and applied only under a recorded decision.
+The tier-H loader stays deferred; nothing the optimizer emits is resident.
+
 ### 5. Decide #144 against the extension route
 
 **#144** (provider-backed web search as a core tool) is now the other
