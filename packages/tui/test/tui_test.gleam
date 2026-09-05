@@ -171,6 +171,20 @@ pub fn footer_status_preserves_transient_operator_feedback_test() {
     == "0 live / 3 agents · queued after main"
 }
 
+pub fn footer_project_label_grows_on_stacked_footers_test() {
+  // One row: the label shares its row with usage and the model, so the cap
+  // holds however wide the screen is.
+  assert tui.footer_project_limit(201) == 68
+  assert tui.footer_project_limit(300) == 68
+
+  // Two or three rows: the primary row holds only the label and the model,
+  // so the label takes every column the model's cap leaves, never less
+  // than its own cap.
+  assert tui.footer_project_limit(150) == 118
+  assert tui.footer_project_limit(100) == 68
+  assert tui.footer_project_limit(60) == 68
+}
+
 pub fn footer_status_grows_with_a_wide_terminal_test() {
   let notice = "steer captured; waiting for stop"
 
