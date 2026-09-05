@@ -1445,7 +1445,7 @@ fn footer_sections(
   let project =
     span.line_new([
       span.span_styled(
-        " " <> compact(project_text, 68) <> " ",
+        " " <> compact(project_text, footer_project_limit(model.width)) <> " ",
         theme.footer_text(),
       ),
     ])
@@ -1510,6 +1510,29 @@ pub fn footer_status(
   case string.starts_with(safe_notice, "model: ") {
     True -> compact(safe_summary, limit)
     False -> compact(safe_summary <> " · " <> safe_notice, limit)
+  }
+}
+
+/// The cells the footer's workspace label may take at a terminal width.
+///
+/// On one row the label shares the row with usage and the model, so its
+/// cap holds. On two or three rows it shares the primary row with the model
+/// alone, and every column past the two caps is otherwise idle: a long
+/// `path (branch)` cut to sixty-eight cells beside fifty blank ones was the
+/// same fixed cap outliving its reason that `footer_status_limit` retired.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.footer_project_limit(201) == 68
+/// assert tui.footer_project_limit(150) == 118
+/// ```
+@internal
+pub fn footer_project_limit(width: Int) -> Int {
+  let floor = footer_project_cells - 2
+  case footer_rows(width) {
+    1 -> floor
+    _ -> int.max(floor, width - footer_model_cells - 2)
   }
 }
 
