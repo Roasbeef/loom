@@ -1463,16 +1463,34 @@ pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
   assert !reversed(Position(x + 1, y))
   assert !reversed(Position(x + 5, y + 1))
 
-  // What was copied is what the frame showed under the highlight, read
-  // back from the same buffer. The transcript is tail-anchored with a
-  // spacer row above each line, so on twelve rows the press lands on the
-  // spacer and the release on the head of the last line, in the
+  // What was copied is what the frame showed under the selection the loop
+  // stored, read back from the same buffer. The transcript is tail-anchored
+  // with a spacer row above each line, so on twelve rows the press lands on
+  // the spacer and the release on the head of the last line, in the
   // transcript's own columns and without its border.
-  let selected =
-    tui.hit_area(run.final, Position(x + 2, y))
-    |> selection.start(Position(x + 2, y))
-    |> selection.extend(Position(x + 4, y + 1))
+  let assert Some(selected) = run.final.selection
   assert selection.text(last, selected) == "\n\u{25C7} gam"
+}
+
+pub fn a_resize_drops_a_settled_selection_test() {
+  let inbox = connection.new_inbox()
+  let model =
+    tui.Model(..quiet_model(inbox), transcript: [
+      tui.Line(tui.System, "alpha beta"),
+    ])
+  let Position(x, y) = transcript_origin
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [
+        virtual_backend.Input(backend.MousePress(x, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseRelease(x + 3, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.Resize(80, 20)),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  assert run.final.selection == None
 }
 
 pub fn escape_clears_a_selection_without_interrupting_test() {

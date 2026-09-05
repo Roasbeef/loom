@@ -317,8 +317,8 @@ pub type Model {
     recorder: Option(recording.Recorder),
     /// The mouse selection being dragged or left highlighted after a copy.
     /// Held in screen cells over the frame on display, so it is cleared by
-    /// the next key, wheel notch or paste rather than tracked through a
-    /// reflow.
+    /// the next key, wheel notch, paste or resize rather than tracked
+    /// through a reflow.
     selection: Option(selection.Selection),
     /// Whether a finished selection reaches the terminal's clipboard.
     clipboard: Clipboard,
@@ -2009,8 +2009,11 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
   recording.note_input(model.recorder, event)
 
   let updated = case event {
+    // A selection is screen cells over a layout the resize just replaced,
+    // so it goes with the old layout rather than surviving as a highlight
+    // over whatever now occupies those cells.
     backend.Resize(width, height) ->
-      Model(..model, width:, height:)
+      Model(..model, width:, height:, selection: None)
       |> mark_activity
       |> invalidate_frame
     backend.Tick -> update_tick(model)
