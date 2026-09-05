@@ -180,5 +180,6 @@ zero atom growth, and check that old roots, drivers, namespaces and addresses
 are gone. A blocked-provider test kills the root and observes namespace death
 before close; close must still wait for the provider to drain before another
 writer can acquire the database. These tests establish runtime prerequisites,
-not the daemon or multiplayer experience above. Client service addressing and
-cleanup custody across owner death remain to be implemented.
+not the daemon or multiplayer experience above. The assembly boundary also
+uses reference addresses for client services. Cleanup custody across owner
+death remains to be implemented.

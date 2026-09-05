@@ -23,14 +23,14 @@ factory names; its rebased head `d57438d` passed all four CI jobs in run
 `33936465271`.
 [PR #229](https://github.com/Roasbeef/loom/pull/229) replaces runtime
 service names and preserves ordered retries after writer replacement.
-Its rebased tests passed, but the documentation gate found one stale
-citation. That citation is corrected at `11035fb`; run `33937341782`
-is still running. No merge is implied by these results.
+Its first rebased run found one stale documentation citation. That
+citation is corrected at `11035fb`, which passed all four CI jobs in run
+`33937341782`. No merge is implied by these results.
 
-Work continues on `client/session-services`, still based on the
-pre-rebase #229. The implementation is committed locally; move it onto
-the rebased parent and verify that combination before opening its PR.
-Its implemented changes are:
+Work continues on `client/session-services`, rebased onto #229 at
+`11035fb`. The previous checkpoint's pending rebase and verification are
+complete. The implementation at `f3ca94b` passed the combined local gate;
+only documentation corrections follow it. Its implemented changes are:
 
 - The eleven composition-service names and the demo's two names now use
   reclaimable Weft addresses. Writer subscribers distinguish direct
@@ -49,12 +49,18 @@ Its implemented changes are:
   blocking startup back into the untrapped worker fixed it, and the
   reviewer verified that correction.
 
-The corrected full gate passes 1,129 client, 149 TUI, 113 runtime and 69
+The rebased `make check` passes 1,124 client, 164 TUI, 115 runtime and 69
 conformance tests, with zero lint errors. `make doc-check` and the real
-`make e2e-client-bootstrap` also pass. A final test-only TCP return-type
-correction compiles warning-free and its peer-closure regression passes
-separately. These results apply before rebasing onto the updated parent;
-they do not prove the rebased combination.
+`make e2e-client-bootstrap` also pass. The bootstrap target builds the
+server shipment and exercises startup, detach, reuse and cancelled
+connection attempts, followed by the hostile-environment cases.
+
+The first combined gate failed the existing crash/lease-theft simulation
+at seed 33 (`run/terminated`). It did not recur in 360 scheduled
+executions on this branch or 360 on the unchanged parent at `11035fb`.
+The parent's complete conformance gate and the branch's full rerun both
+passed. The original failure's cause remains unestablished; the rerun
+does not erase that observation.
 
 **Next: surviving cleanup custody, then daemon admission.**
 `open_instance` still uses the old host and `close_instance` still
