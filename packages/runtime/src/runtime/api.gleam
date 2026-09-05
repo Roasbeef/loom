@@ -259,6 +259,33 @@ pub fn open(
   effects: Effects,
   options: Options,
 ) -> Result(Runtime, String) {
+  open_published(session, effects, options, fn(_runtime) { Ok(Nil) })
+}
+
+/// Transfers cleanup custody before the session can recover unfinished work.
+///
+/// `publish` receives the runtime handle before its writer and drivers start.
+/// It must acknowledge surviving custody or refuse startup. The callback
+/// cannot perform runtime operations or synchronous close: the root is still
+/// starting. Publication happens once per root, not on its internal restarts.
+///
+/// This boundary does not create a custodian. The caller must retain the
+/// handle and original drain evidence independently of its opening worker.
+/// Invoke it from an exit-trapping resource owner: a failed OTP root also
+/// sends its shutdown exit along the startup link, as in ordinary `open`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.open_published(session, effects, options, publish_to_custodian)
+/// ```
+@internal
+pub fn open_published(
+  session: Session,
+  effects: Effects,
+  options: Options,
+  publish: fn(Runtime) -> Result(Nil, String),
+) -> Result(Runtime, String) {
   use Nil <- result.try(
     session.ensure_strand(session, options.strand, options.configuration)
     |> result.map_error(describe_session_error),
@@ -276,6 +303,16 @@ pub fn open(
     )
     |> result.map_error(describe_session_error),
   )
+  let describe_runtime = fn(tree) {
+    Runtime(
+      tree:,
+      session:,
+      session_id:,
+      effects:,
+      strand: options.strand,
+      settings: options.settings,
+    )
+  }
   let config =
     supervisor.Config(
       writer_options: writer.Options(
@@ -302,16 +339,12 @@ pub fn open(
       subagent_tolerance: options.subagent_tolerance,
     )
   use tree <- result.try(
-    supervisor.start(config) |> result.map_error(describe_start_error),
+    supervisor.start_published(config, fn(tree) {
+      publish(describe_runtime(tree))
+    })
+    |> result.map_error(describe_start_error),
   )
-  Ok(Runtime(
-    tree:,
-    session:,
-    session_id:,
-    effects:,
-    strand: options.strand,
-    settings: options.settings,
-  ))
+  Ok(describe_runtime(tree))
 }
 
 /// This session's canonical id (`protocol-change/008`), minted by `open`
