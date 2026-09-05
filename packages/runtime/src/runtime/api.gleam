@@ -278,17 +278,20 @@ pub fn open(
         after_commit: options.after_commit,
         subscribers: options.subscribers,
       ),
-      strand_options: strand_runtime.Options(
-        // Replaced by supervisor.start with the real writer name.
-        writer: process.new_name(prefix: "loom_writer_placeholder"),
-        strand: options.strand,
-        effects:,
-        stream_options: options.stream_options,
-        retry_policy: options.retry_policy,
-        poll_interval_ms: options.poll_interval_ms,
-        claim_reaper: fn(_strand, _reaper) { [] },
-        logger: options.logger,
-      ),
+      strand_options: fn(writer, claim_reaper) {
+        // Construct the template only after the supervisor has the real
+        // writer address. No placeholder can escape into a live driver.
+        strand_runtime.Options(
+          writer:,
+          strand: options.strand,
+          effects:,
+          stream_options: options.stream_options,
+          retry_policy: options.retry_policy,
+          poll_interval_ms: options.poll_interval_ms,
+          claim_reaper:,
+          logger: options.logger,
+        )
+      },
       tolerance: options.tolerance,
       subagent: options.subagent,
       subagent_tolerance: options.subagent_tolerance,

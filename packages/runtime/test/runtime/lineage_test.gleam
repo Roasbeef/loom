@@ -256,7 +256,7 @@ pub fn a_subagent_factory_death_leaves_the_primary_strand_alone_test() {
   // The two live under different factories.
   assert main_before != worker_before
   let assert Ok(factory) =
-    process.subject_owner(process.named_subject(runtime.tree.subagent_strands))
+    supervisor.factory_pid(runtime.tree, runtime.tree.subagent_strands)
   process.kill(factory)
   // The subagent's own driver goes down with its factory and the booter
   // brings it back. Waited on rather than slept through, so the test
@@ -302,7 +302,7 @@ pub fn the_default_routes_everything_to_the_primary_factory_test() {
     as "the strand must be created"
   let assert Ok(_pid) = strand_pid(runtime, "sub:worker")
   let assert Ok(factory) =
-    process.subject_owner(process.named_subject(runtime.tree.subagent_strands))
+    supervisor.factory_pid(runtime.tree, runtime.tree.subagent_strands)
   // The second factory exists and is empty; killing it disturbs no
   // strand's driver.
   let assert Ok(before) = strand_pid(runtime, "sub:worker")
