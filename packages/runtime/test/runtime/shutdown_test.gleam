@@ -11,7 +11,7 @@
 ////
 //// Provider drains add a second lifetime. The drain ledger may outlive an
 //// abnormally killed root while an old request still owns native work, so
-//// close must await that stable name independently before releasing the
+//// close must await that direct handle independently before releasing the
 //// writer lease. The final test kills the root first to pin that distinction.
 
 import core/clock
@@ -29,6 +29,7 @@ import simplifile
 import support/fake
 import support/harness
 import support/recorder
+import weft/registry as address
 
 fn fresh_path(name: String) -> String {
   let _ = simplifile.create_directory_all("build/test_db")
@@ -74,8 +75,9 @@ fn open_idle(name: String) -> #(String, api.Runtime) {
 }
 
 fn writer_pid(runtime: api.Runtime) -> Pid {
-  let assert Ok(pid) =
-    process.subject_owner(process.named_subject(runtime.tree.writer))
+  let assert Ok(subject) = address.lookup(runtime.tree.writer)
+    as "the writer address must resolve"
+  let assert Ok(pid) = process.subject_owner(subject)
     as "the writer must be registered"
   pid
 }
@@ -302,8 +304,14 @@ pub fn close_after_root_death_still_waits_for_provider_drain_test() {
   let assert Ok(_operation) = api.prompt(runtime, [fake.user("wait")])
   let assert Ok(#(owner, release)) = process.receive(started, within: 5000)
 
+  let namespace_monitor = process.monitor(address.owner(runtime.tree.namespace))
   process.kill(runtime.tree.supervisor)
   let assert Ok(Nil) = process.receive(cancelled, within: 5000)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(namespace_monitor, fn(down) { down })
+    |> process.selector_receive(5000)
+    as "root death must reclaim routing without waiting for provider drain"
   let closed = process.new_subject()
   let _closer =
     process.spawn_unlinked(fn() { process.send(closed, api.close(runtime)) })
@@ -332,13 +340,14 @@ pub fn close_after_root_death_still_waits_for_provider_drain_test() {
 /// leaves the writer lease held instead of authorizing an overlapping opener.
 pub fn close_fails_closed_when_the_drain_ledger_dies_test() {
   let #(path, runtime) = open_idle("close_rejects_dead_drain_ledger")
-  let assert Ok(ledger) =
-    process.subject_owner(process.named_subject(runtime.tree.drains))
+  let assert Ok(ledger) = process.subject_owner(runtime.tree.drains)
     as "the live tree must publish its drain ledger"
   process.kill(ledger)
 
   let assert Error(_) = api.close(runtime)
     as "an abnormal ledger death cannot attest a clean drain"
+  assert !process.is_alive(address.owner(runtime.tree.namespace))
+    as "failed drain proof must not leak the routing namespace"
   let assert Error(_) =
     session.open_sqlite(
       path:,

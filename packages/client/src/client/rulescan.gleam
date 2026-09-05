@@ -611,7 +611,7 @@ fn classify(admitted: Result(EntryId, api.ApiError)) -> Fire {
     // fired this rule on this strand, which is exactly what the
     // write-once expectation was asked to find out.
     Error(api.FactConflict(..)) -> AlreadyFired
-    Error(api.QueueRejected(..)) -> Held
+    Error(api.QueueRejected(..)) | Error(api.RuntimeUnavailable) -> Held
     Error(api.AcceptRejected(..))
     | Error(api.ReadFailed(..))
     | Error(api.CommitFailed(..))

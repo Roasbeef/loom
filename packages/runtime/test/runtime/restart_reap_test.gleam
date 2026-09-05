@@ -863,7 +863,8 @@ fn live_strand_pid(rt: api.Runtime, strand: String) -> Result(Pid, Nil) {
 // The name registry is deliberately restartable. Killing it exercises the
 // rest-for-one path while the earlier drain ledger and old reapers stay live.
 fn kill_registry(rt: api.Runtime) -> Nil {
-  let subject = process.named_subject(rt.tree.registry)
+  let assert Ok(subject) = address.lookup(rt.tree.registry)
+    as "the runtime registry address must resolve"
   let assert Ok(pid) = process.subject_owner(subject)
     as "the strand registry must be alive"
   process.kill(pid)
@@ -1037,9 +1038,11 @@ pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
       fn(_run) { fake.ToolHang },
     )
   let observed = process.new_subject()
+  let assert Ok(names) = address.start()
+    as "the strand address namespace must start"
   let options =
     strand_runtime.Options(
-      writer: process.new_name(prefix: "loom_writer_unused"),
+      writer: address.new_address(names),
       strand: "main",
       effects:,
       stream_options: json.Object([]),
@@ -1054,8 +1057,6 @@ pub fn reaper_claim_outlives_a_driver_killed_mid_claim_test() {
       },
       logger: log.discard(),
     )
-  let assert Ok(names) = address.start()
-    as "the strand address namespace must start"
   let assert Ok(started) =
     strand_runtime.start(options, address.new_address(names))
     as "the driver must start"

@@ -665,7 +665,7 @@ fn commit_assistant_on(
         tx.Expect(ns: register.StrandLeaf, key: strand, seq: Some(leaf_seq)),
       ],
     )
-  writer.commit(process.named_subject(rig.runtime.tree.writer), commit)
+  writer.commit(rig.runtime.tree.writer, commit)
   |> result.replace(Nil)
   |> result.map_error(string.inspect)
 }

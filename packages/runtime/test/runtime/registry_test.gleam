@@ -26,13 +26,15 @@ type Counter {
 fn system_count(counter: Counter) -> Int
 
 pub fn allocating_strand_addresses_does_not_grow_atoms_test() {
-  let name = process.new_name("runtime-address-catalogue")
+  let assert Ok(services) = address.start()
+    as "the service namespace must start"
+  let name = address.new_address(services)
   let assert Ok(started) = registry.start(name)
     as "the runtime registry must start"
 
   // Warm allocation, lookup, and the loop's integer helpers before measuring.
   // Otherwise a fresh VM counts library module loading as strand atom growth.
-  // The service's legacy name is also outside the measured strand count.
+  // The service namespace is also outside the measured strand count.
   let warm = "warm-" <> int.to_string(0)
   let first = registry.ensure(started.data, warm)
   int.range(from: 0, to: 1, with: Nil, run: fn(_, _) {
@@ -48,10 +50,13 @@ pub fn allocating_strand_addresses_does_not_grow_atoms_test() {
   assert system_count(AtomCount) == before
   assert registry.known(started.data) |> list.length == 1001
   kill_and_join(started.pid)
+  assert address.stop(services) == Ok(Nil)
 }
 
 pub fn registry_death_invalidates_routing_not_recipient_lifetime_test() {
-  let name = process.new_name("runtime-address-owner")
+  let assert Ok(services) = address.start()
+    as "the service namespace must start"
+  let name = address.new_address(services)
   let assert Ok(started) = registry.start(name)
     as "the runtime registry must start"
   let key = registry.ensure(started.data, "main")
@@ -70,6 +75,7 @@ pub fn registry_death_invalidates_routing_not_recipient_lifetime_test() {
     })
     == poll.Answered(Nil)
   assert process.subject_owner(recipient) == Ok(process.self())
+  assert address.stop(services) == Ok(Nil)
 }
 
 fn kill_and_join(pid: process.Pid) -> Nil {
@@ -85,7 +91,9 @@ fn kill_and_join(pid: process.Pid) -> Nil {
 }
 
 pub fn factory_replacements_use_live_handles_without_new_atoms_test() {
-  let name = process.new_name("runtime-factory-catalogue")
+  let assert Ok(services) = address.start()
+    as "the service namespace must start"
+  let name = address.new_address(services)
   let assert Ok(started) = registry.start(name)
     as "the runtime registry must start"
   assert registry.factory(started.data, registry.Primary) == Error(Nil)
@@ -107,6 +115,7 @@ pub fn factory_replacements_use_live_handles_without_new_atoms_test() {
   kill_and_join(primary.pid)
   assert registry.factory(started.data, registry.Primary) == Error(Nil)
   kill_and_join(started.pid)
+  assert address.stop(services) == Ok(Nil)
 }
 
 fn start_factory() -> registry.Factory {

@@ -2210,15 +2210,18 @@ fn commit_approval(
       ],
       expected: [tx.Expect(ns: register.FactCustom, key:, seq: Some(seq))],
     )
-  case
-    writer.commit(process.named_subject(state.runtime.tree.writer), plan_tx)
-  {
+  case writer.commit(state.runtime.tree.writer, plan_tx) {
     Ok(_) -> Ok(Nil)
 
     // The record moved under the answer that named it. Not a retry:
     // committing against a re-read would approve a record nobody read.
-    Error(tx.StaleExpectation(..)) ->
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
       Error(moved_under_the_answer(state, record.id))
+    Error(writer.Unavailable) ->
+      Error(refusal(
+        protocol.code_conflict,
+        "the session writer is restarting; try again",
+      ))
     Error(_other) ->
       Error(refusal(protocol.code_internal, "the approval commit was refused"))
   }
@@ -3136,9 +3139,7 @@ fn update_configuration(
             tx.Expect(ns: register.StrandConfig, key: strand, seq: Some(seq)),
           ],
         )
-      case
-        writer.commit(process.named_subject(state.runtime.tree.writer), plan_tx)
-      {
+      case writer.commit(state.runtime.tree.writer, plan_tx) {
         Ok(_) -> Ok(state)
         Error(_) -> Error("the configuration commit was refused")
       }
@@ -3287,6 +3288,10 @@ fn describe_api_error(
   strand: String,
 ) -> #(String, String) {
   case error {
+    api.RuntimeUnavailable -> #(
+      protocol.code_conflict,
+      "the session writer is restarting; try again",
+    )
     api.AcceptRejected(reason:) -> describe_reject(reason)
     api.QueueRejected(reason: queue.NoActiveRun) -> #(
       protocol.code_conflict,

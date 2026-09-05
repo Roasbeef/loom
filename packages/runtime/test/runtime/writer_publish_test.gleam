@@ -32,6 +32,7 @@ import gleam/erlang/process.{
 import runtime/internal/ffi_sup
 import runtime/writer
 import session/session
+import weft/registry as address
 
 // --- the two resolution shapes, reproduced -------------------------------
 
@@ -180,11 +181,12 @@ fn string_of(reason: ExitReason) -> String {
 
 // --- the real writer, through a named subscriber -------------------------
 
-fn open_writer() -> Subject(writer.Message) {
+fn open_writer() -> #(address.Address(writer.Message), address.Registry) {
   let assert Ok(sess) = session.open_memory(clock.fixed(at: 2000))
     as "the memory session must open"
-  let name = process.new_name(prefix: "writer-publish-integration")
-  let assert Ok(started) =
+  let assert Ok(namespace) = address.start() as "the namespace must start"
+  let name = address.new_address(namespace)
+  let assert Ok(_started) =
     writer.start(
       writer.Options(
         session: sess,
@@ -194,7 +196,7 @@ fn open_writer() -> Subject(writer.Message) {
       name,
     )
     as "the writer must start"
-  started.data
+  #(name, namespace)
 }
 
 fn note_tx(text: String) -> Tx {
@@ -211,7 +213,7 @@ fn note_tx(text: String) -> Tx {
 }
 
 pub fn writer_delivers_a_committed_event_to_a_named_subscriber_test() {
-  let w = open_writer()
+  let #(w, namespace) = open_writer()
   let #(name, subscriber) =
     fresh_named_subject("writer-publish-live-subscriber")
   let assert Ok(Nil) = process.register(process.self(), name)
@@ -225,11 +227,11 @@ pub fn writer_delivers_a_committed_event_to_a_named_subscriber_test() {
     as "the named subscriber must receive the committed event"
 
   let _ = process.unregister(name)
-  Nil
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 pub fn writer_survives_a_subscriber_whose_name_is_already_unregistered_test() {
-  let w = open_writer()
+  let #(w, namespace) = open_writer()
   // A subject built from a name nobody ever registered — the boundary
   // both the old and the new shape already handled without a race.
   let #(_name, ghost) = fresh_named_subject("writer-publish-ghost")
@@ -243,4 +245,5 @@ pub fn writer_survives_a_subscriber_whose_name_is_already_unregistered_test() {
   // the actor that is supposed to survive it.
   let assert Ok(_) = writer.commit(w, note_tx("second"))
     as "the writer must still be responsive after publishing to a ghost subscriber"
+  assert address.stop(namespace) == Ok(Nil)
 }

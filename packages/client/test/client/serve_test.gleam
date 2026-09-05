@@ -536,8 +536,7 @@ pub fn a_fatal_drain_ledger_death_keeps_the_lease_test() {
   // The significant ledger is fatal by policy. Killing it directly makes the
   // absent-witness condition deterministic instead of racing the ledger's
   // orderly exit after a separately killed root.
-  let assert Ok(ledger) =
-    process.subject_owner(process.named_subject(booted.runtime.tree.drains))
+  let assert Ok(ledger) = process.subject_owner(booted.runtime.tree.drains)
   process.kill(ledger)
 
   let assert Ok(host.Faulted(child:, ..)) =

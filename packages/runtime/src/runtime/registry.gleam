@@ -19,7 +19,7 @@
 //// liveness check from being mistaken for proof that descendants drained.
 
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/otp/factory_supervisor
 import gleam/otp/supervision.{type ChildSpecification}
@@ -75,7 +75,7 @@ type State {
   )
 }
 
-/// Starts a registry registered under `name`.
+/// Starts a registry bound to its reclaimable service address.
 ///
 /// ## Examples
 ///
@@ -83,7 +83,9 @@ type State {
 /// // registry.start(name)
 /// ```
 ///
-pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
+pub fn start(
+  name: address.Address(Message),
+) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(1000, fn(inbox) {
     // The reference namespace shares this registry's restart boundary, not
     // the earlier drain ledger's. Losing routing cannot erase effect custody.
@@ -96,7 +98,7 @@ pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
     |> actor.returning(inbox)
     |> Ok
   })
-  |> actor.named(name)
+  |> actor.addressed(name)
   |> actor.on_message(handle)
   |> actor.on_shutdown(fn(state, _reason) {
     let _stopped = address.stop(state.namespace)
@@ -113,7 +115,9 @@ pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
 /// // supervisor.add(builder, registry.supervised(name))
 /// ```
 ///
-pub fn supervised(name: Name(Message)) -> ChildSpecification(Subject(Message)) {
+pub fn supervised(
+  name: address.Address(Message),
+) -> ChildSpecification(Subject(Message)) {
   supervision.worker(fn() { start(name) })
 }
 

@@ -404,7 +404,8 @@ fn create(
 fn claim_refused(error: api.ApiError, name: String) -> schedule_tool.Refusal {
   case error {
     api.FactConflict(..) -> schedule_tool.NameTaken(name:)
-    api.AcceptRejected(..)
+    api.RuntimeUnavailable
+    | api.AcceptRejected(..)
     | api.QueueRejected(..)
     | api.ReadFailed(..)
     | api.CommitFailed(..)

@@ -1183,7 +1183,7 @@ fn report_of(runtime: api.Runtime, last: LastResult) -> String {
 }
 
 fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
-  case writer.get_entries(process.named_subject(runtime.tree.writer), [id]) {
+  case writer.get_entries(runtime.tree.writer, [id]) {
     Error(_error) -> ""
     Ok(found) ->
       case dict.get(found, id) {
@@ -1578,6 +1578,7 @@ fn clamp(value: Int, low: Int, high: Int) -> Int {
 
 fn describe_api(error: api.ApiError) -> String {
   case error {
+    api.RuntimeUnavailable -> "the target writer is restarting; try again"
     api.AcceptRejected(reason: _) -> "the target refused the admission"
     api.QueueRejected(reason: _) -> "the target's queue refused the admission"
     api.ReadFailed(reason:) -> reason
