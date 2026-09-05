@@ -46,6 +46,7 @@ import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
+import tui/selection
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
@@ -169,6 +170,23 @@ pub type Peer {
   /// strand submitting, set the notice — and waits for the recorded
   /// server events like the live client did.
   Replaying
+}
+
+/// Where a finished mouse selection is copied to.
+///
+/// A copy is an escape sequence written to the terminal, and only a real
+/// terminal should receive one: a scripted run under the virtual backend
+/// shares stdout with the test runner, and an OSC 52 printed there would
+/// overwrite the developer's clipboard with a fixture. The interactive
+/// launch is the one place that turns this on.
+@internal
+pub type Clipboard {
+  /// Write OSC 52 to the terminal etui is drawing on.
+  TerminalClipboard
+
+  /// Discard the copy. The selection and its notice still happen, so a
+  /// replay draws the same frames the live client drew.
+  NoClipboard
 }
 
 /// One held instruction, waiting for the operation it interrupted to settle.
@@ -297,6 +315,13 @@ pub type Model {
     /// drained inside `update_tick`, so there is no other point at which
     /// both a websocket message and the recording are in scope.
     recorder: Option(recording.Recorder),
+    /// The mouse selection being dragged or left highlighted after a copy.
+    /// Held in screen cells over the frame on display, so it is cleared by
+    /// the next key, wheel notch or paste rather than tracked through a
+    /// reflow.
+    selection: Option(selection.Selection),
+    /// Whether a finished selection reaches the terminal's clipboard.
+    clipboard: Clipboard,
   )
 }
 
@@ -553,6 +578,8 @@ pub fn new_model_with_clock(
     activity_revision: 0,
     quiet_for_ms: quiet_after_ms,
     recorder: None,
+    selection: None,
+    clipboard: NoClipboard,
   )
 }
 
@@ -594,7 +621,11 @@ fn interactive(launch: Launch, record: String) -> Nil {
     Remote(address, session, token) ->
       connect_remote(base, inbox, address, session, token)
   }
-  let initial = open_recording(launched, record)
+
+  // Only here does a copy reach a terminal: every other way of running the
+  // loop shares stdout with something that is not one.
+  let initial =
+    open_recording(Model(..launched, clipboard: TerminalClipboard), record)
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
@@ -1070,6 +1101,13 @@ fn render_frame(
         selected,
       )
     SessionSelector(selector) -> sessions.render(base, screen, selector)
+  }
+
+  // The highlight is the last paint, over overlays too: it marks cells of
+  // the frame as shown, and those are what a copy reads back.
+  let rendered = case model.selection {
+    Some(selected) -> selection.highlight(rendered, selected)
+    None -> rendered
   }
   let cursor = case model.overlay {
     NoOverlay -> text_area.cursor_screen_pos(input_view, editor_area)
@@ -1977,20 +2015,38 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
       |> invalidate_frame
     backend.Tick -> update_tick(model)
     backend.KeyPress(key) ->
-      update_key(keys.match(key), model)
+      update_key_over_selection(keys.match(key), model)
       |> mark_activity
       |> invalidate_frame
     backend.Paste(text) ->
-      handle_paste(model, text)
+      handle_paste(clear_selection(model), text)
       |> mark_activity
       |> invalidate_frame
     backend.MouseScroll(_, _, up) ->
-      scroll_transcript(model, up, 3)
+      scroll_transcript(clear_selection(model), up, 3)
       |> mark_activity
       |> invalidate_frame
-    backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..)
+
+    // The left button is the selection button, as in every terminal. The
+    // other two are listed so a new etui button is a compile error here.
+    backend.MousePress(x, y, backend.MouseLeft) ->
+      begin_selection(model, geometry.Position(x, y))
+      |> mark_activity
+      |> invalidate_frame
+    backend.MouseDrag(x, y, backend.MouseLeft) ->
+      extend_selection(model, geometry.Position(x, y))
+      |> mark_activity
+      |> invalidate_frame
+    backend.MouseRelease(x, y, backend.MouseLeft) ->
+      finish_selection(model, geometry.Position(x, y))
+      |> mark_activity
+      |> invalidate_frame
+    backend.MousePress(_, _, backend.MouseMiddle)
+    | backend.MousePress(_, _, backend.MouseRight)
+    | backend.MouseDrag(_, _, backend.MouseMiddle)
+    | backend.MouseDrag(_, _, backend.MouseRight)
+    | backend.MouseRelease(_, _, backend.MouseMiddle)
+    | backend.MouseRelease(_, _, backend.MouseRight)
     | backend.MouseMove(..) -> model
   }
   refresh_render_cache(model, updated)
@@ -3652,6 +3708,111 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
 // Transcript movement has one definition for keyboard and wheel input. The
 // offset is measured backward from the newest wrapped row, so moving toward
 // the present clamps at zero and resumes tail following.
+// A key while a selection is on screen: Escape only dismisses it, the way it
+// closes any other surface before it reaches the interrupt; every other key
+// dismisses it and is then handled as usual.
+fn update_key_over_selection(key: keys.Key, model: Model) -> Model {
+  case model.selection, key {
+    Some(_), keys.Escape ->
+      Model(..model, selection: None, notice: "selection cleared")
+    Some(_), _ | None, _ -> update_key(key, clear_selection(model))
+  }
+}
+
+fn clear_selection(model: Model) -> Model {
+  Model(..model, selection: None)
+}
+
+// A press starts over: whatever was highlighted is replaced by a fresh
+// selection in the area the press landed in.
+fn begin_selection(model: Model, at: geometry.Position) -> Model {
+  Model(..model, selection: Some(selection.start(hit_area(model, at), at)))
+}
+
+// A drag without a press this client saw, which a terminal that started
+// reporting mid-gesture can produce, selects nothing.
+fn extend_selection(model: Model, at: geometry.Position) -> Model {
+  case model.selection {
+    Some(selected) ->
+      Model(..model, selection: Some(selection.extend(selected, at)))
+    None -> model
+  }
+}
+
+// The release is where the copy happens. A click, which selects nothing,
+// dismisses a settled highlight; a drag copies the cells as the frame on
+// display shows them and leaves the highlight up as confirmation until the
+// next key or wheel notch.
+fn finish_selection(model: Model, at: geometry.Position) -> Model {
+  case model.selection {
+    None -> model
+    Some(selected) -> {
+      let selected = selection.extend(selected, at)
+      case selection.is_click(selected) {
+        True -> Model(..model, selection: None)
+        False -> {
+          let text = selection.text(frame_on_display(model), selected)
+          write_clipboard(model.clipboard, text)
+          Model(
+            ..model,
+            selection: Some(selected),
+            notice: selection.copied_notice(
+              list.length(selection.rows(selected)),
+            ),
+          )
+        }
+      }
+    }
+  }
+}
+
+// The frame the terminal is showing is the cached one, stale or not: a copy
+// takes what the hand highlighted, not what a fresh render would draw.
+fn frame_on_display(model: Model) -> buffer.Buffer {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  case model.frame_cache {
+    Some(FrameCache(rendered: #(shown, _), ..)) -> shown
+    None -> render_frame(model, screen).0
+  }
+}
+
+// Etui draws its frames with `io:put_chars`, so a sequence printed the same
+// way lands on the same terminal in order with them.
+fn write_clipboard(clipboard: Clipboard, text: String) -> Nil {
+  case clipboard {
+    TerminalClipboard -> io.print(selection.clipboard_sequence(text))
+    NoClipboard -> Nil
+  }
+}
+
+/// The area a press at this cell selects within.
+///
+/// The panels are tried innermost first, so a press on the transcript's text
+/// selects transcript rows without the border glyphs; a press anywhere else,
+/// a border or the header or footer, selects across the whole screen the way
+/// a terminal would.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.hit_area(model, geometry.Position(2, 2))
+///   == tui.panel_inner(transcript_panel)
+/// ```
+@internal
+pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body_area, input_area, _) = layout(screen, model)
+  let #(transcript_panel, agent_panel) =
+    body_layout(body_area, model.width, model.agent_rail_visible)
+  [
+    panel_inner(transcript_panel),
+    panel_inner(agent_panel),
+    panel_inner(input_area),
+  ]
+  |> list.find(fn(area) { geometry.contains(area, at) })
+  |> result.unwrap(screen)
+}
+
 fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
   let scroll_offset =
     scroll_offset(model.scroll_offset, older, rows)

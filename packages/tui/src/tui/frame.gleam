@@ -81,9 +81,28 @@ fn range_down(start: Int, offset: Int, collected: List(Int)) -> List(Int) {
   }
 }
 
-// One row, left to right, with continuation cells folded into the glyph
-// that owns them and the trailing blank run removed.
-fn row_text(buffer: Buffer, left: Int, y: Int, width: Int) -> String {
+/// One span of one row as text: `width` cells starting at column `left`.
+///
+/// Continuation cells fold into the glyph that owns them and the trailing
+/// blank run is removed, exactly as `buffer_to_lines` does for a whole row,
+/// so a mouse selection copied through here matches the golden file of the
+/// same frame. A span starting on a continuation cell drops it: the glyph
+/// it belongs to lies outside the span and was not selected.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let screen = geometry.rect_new(0, 0, 8, 1)
+/// let buf =
+///   buffer.set_string(
+///     buffer.buffer_new(screen),
+///     Position(0, 0),
+///     "ab cd  ",
+///     style.default_style(),
+///   )
+/// assert frame.row_text(buf, 3, 0, 5) == "cd"
+/// ```
+pub fn row_text(buffer: Buffer, left: Int, y: Int, width: Int) -> String {
   range_from(left, width)
   |> list.fold("", fn(text, x) {
     let cell = buffer.get_cell(buffer, Position(x, y))

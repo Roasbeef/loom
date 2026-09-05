@@ -757,10 +757,10 @@ terminal host needs compatible Erlang/OTP 29 on `PATH`.
 ## Recording and replaying a session
 
 `--record <path>` qualifies any interactive launch and writes one JSON line
-per event as it arrives: every key, paste, resize and wheel notch, and every
-message the websocket inbox delivered, each with its monotonic offset from
-the start of the run. Ticks and the mouse events `update` ignores are left
-out, because replaying them would change nothing. A gateway frame is stored
+per event as it arrives: every key, paste, resize, wheel notch, button
+press, drag and release, and every message the websocket inbox delivered,
+each with its monotonic offset from the start of the run. Ticks and plain
+mouse motion are left out, because replaying them would change nothing. A gateway frame is stored
 as the gateway's own bytes; the three connection lifecycle messages, which
 are not wire frames, carry a tag of their own.
 

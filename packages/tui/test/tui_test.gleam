@@ -32,6 +32,7 @@ import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
+import tui/selection
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
@@ -1353,6 +1354,18 @@ pub fn a_recording_line_round_trips_test() {
       37,
       recording.Scrolled(x: 0, y: 0, direction: recording.ScrollDown),
     ),
+    recording.Moment(
+      38,
+      recording.Pressed(x: 2, y: 3, button: backend.MouseLeft),
+    ),
+    recording.Moment(
+      39,
+      recording.Dragged(x: 9, y: 3, button: backend.MouseMiddle),
+    ),
+    recording.Moment(
+      40,
+      recording.Released(x: 9, y: 4, button: backend.MouseRight),
+    ),
     recording.Moment(41, recording.Arrived(connection.Connected)),
     recording.Moment(
       43,
@@ -1377,7 +1390,12 @@ pub fn a_recording_line_round_trips_test() {
 pub fn only_events_that_move_the_model_are_recorded_test() {
   assert recording.of_input(backend.Tick) == None
   assert recording.of_input(backend.MouseMove(1, 2)) == None
-  assert recording.of_input(backend.MousePress(1, 2, backend.MouseLeft)) == None
+  assert recording.of_input(backend.MousePress(1, 2, backend.MouseLeft))
+    == Some(recording.Pressed(x: 1, y: 2, button: backend.MouseLeft))
+  assert recording.of_input(backend.MouseDrag(3, 2, backend.MouseRight))
+    == Some(recording.Dragged(x: 3, y: 2, button: backend.MouseRight))
+  assert recording.of_input(backend.MouseRelease(3, 2, backend.MouseMiddle))
+    == Some(recording.Released(x: 3, y: 2, button: backend.MouseMiddle))
   assert recording.of_input(backend.KeyPress("q"))
     == Some(recording.Key(text: "q"))
   assert recording.of_input(backend.MouseScroll(3, 4, True))
@@ -1397,6 +1415,127 @@ pub fn a_malformed_recording_line_is_a_worded_error_test() {
     == Error("scroll needs a boolean \"up\"")
   assert recording.decode_line("{\"at\":1,\"t\":\"wheel\"}")
     == Error("unknown recording event \"wheel\"")
+  assert recording.decode_line(
+      "{\"at\":1,\"t\":\"press\",\"x\":1,\"y\":2,\"button\":\"fourth\"}",
+    )
+    == Error("unknown mouse button \"fourth\"")
+}
+
+// The transcript's inner area on a 60x12 screen: one header row, then the
+// panel border, so text starts at row 2, column 1.
+const transcript_origin = Position(1, 2)
+
+pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
+  let inbox = connection.new_inbox()
+  let model =
+    tui.Model(..quiet_model(inbox), transcript: [
+      tui.Line(tui.System, "alpha beta"),
+      tui.Line(tui.System, "gamma delta"),
+    ])
+  let Position(x, y) = transcript_origin
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [
+        virtual_backend.Input(backend.MousePress(x + 2, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseDrag(x + 4, y + 1, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseRelease(
+          x + 4,
+          y + 1,
+          backend.MouseLeft,
+        )),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  let assert Ok(last) = list.last(run.frames)
+  let shown = frame.buffer_to_text(last)
+  assert string.contains(shown, "copied 2 lines")
+
+  // The highlight is on the cells the hand covered, and on no others: the
+  // cell before the press is plain, the pressed cell and the released cell
+  // are reversed.
+  let reversed = fn(at) {
+    style.has(buffer.cell_modifier(buffer.get_cell(last, at)), style.reverse())
+  }
+  assert reversed(Position(x + 2, y))
+  assert reversed(Position(x + 4, y + 1))
+  assert !reversed(Position(x + 1, y))
+  assert !reversed(Position(x + 5, y + 1))
+
+  // What was copied is what the frame showed under the highlight, read
+  // back from the same buffer. The transcript is tail-anchored with a
+  // spacer row above each line, so on twelve rows the press lands on the
+  // spacer and the release on the head of the last line, in the
+  // transcript's own columns and without its border.
+  let selected =
+    tui.hit_area(run.final, Position(x + 2, y))
+    |> selection.start(Position(x + 2, y))
+    |> selection.extend(Position(x + 4, y + 1))
+  assert selection.text(last, selected) == "\n\u{25C7} gam"
+}
+
+pub fn escape_clears_a_selection_without_interrupting_test() {
+  let inbox = connection.new_inbox()
+  let model =
+    tui.Model(..quiet_model(inbox), transcript: [
+      tui.Line(tui.System, "alpha beta"),
+    ])
+  let Position(x, y) = transcript_origin
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [
+        virtual_backend.Input(backend.MousePress(x, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseRelease(x + 3, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.KeyPress("esc")),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  let assert Ok(last) = list.last(run.frames)
+  assert run.final.selection == None
+  assert string.contains(frame.buffer_to_text(last), "selection cleared")
+  assert !style.has(
+    buffer.cell_modifier(buffer.get_cell(last, Position(x, y))),
+    style.reverse(),
+  )
+}
+
+pub fn a_click_dismisses_a_settled_selection_test() {
+  let inbox = connection.new_inbox()
+  let model =
+    tui.Model(..quiet_model(inbox), transcript: [
+      tui.Line(tui.System, "alpha beta"),
+    ])
+  let Position(x, y) = transcript_origin
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [
+        virtual_backend.Input(backend.MousePress(x, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseRelease(x + 3, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.MousePress(x, y, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseRelease(x, y, backend.MouseLeft)),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+  assert run.final.selection == None
+}
+
+pub fn a_press_outside_every_panel_selects_across_the_screen_test() {
+  let inbox = connection.new_inbox()
+  let model = tui.Model(..quiet_model(inbox), width: 60, height: 12)
+  let screen = geometry.rect_new(0, 0, 60, 12)
+
+  // The header row belongs to no panel; a transcript cell belongs to the
+  // transcript's inner area, which excludes its border.
+  assert tui.hit_area(model, Position(5, 0)) == screen
+  let inner = tui.hit_area(model, transcript_origin)
+  assert inner != screen
+  assert geometry.contains(inner, transcript_origin)
+  assert !geometry.contains(inner, Position(0, 1))
 }
 
 pub fn a_recording_file_decodes_in_order_test() {
