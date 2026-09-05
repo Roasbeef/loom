@@ -244,8 +244,15 @@ type ActorState {
     owner: String,
     fence: Int,
     lease_ttl_ms: Int,
-    closed: Bool,
+    phase: ConnectionPhase,
   )
+}
+
+// A sealed connection retains its first close result. In particular, a
+// failed lease deletion cannot become successful merely by closing twice.
+type ConnectionPhase {
+  OpenConnection
+  ClosedConnection(outcome: Result(Nil, StorageError))
 }
 
 // Failures inside a transaction, mapped to `CommitError` or
@@ -362,7 +369,7 @@ fn initialize(
     // The lease was claimed but this open cannot deliver a usable handle;
     // release the claim so the file is not locked out for a whole TTL.
     Error(open_error) -> {
-      let _ = abandon_lease(conn, config.owner, fence)
+      let _ = release_lease(conn, config.owner, fence)
       Error(open_error)
     }
   }
@@ -642,16 +649,15 @@ fn claim_lease(
   |> result.replace(fence)
 }
 
-// Best-effort release of a lease this open claimed but cannot use (a
-// migration or journal-mode failure after admission committed). Scoped to
-// our own (owner, fence) pair like `Close`, and issued through `exec` —
-// the busy-total path — with the owner quoted as a SQL literal, because
-// no transaction protects this statement from cross-process contention.
-fn abandon_lease(
+// Both close and failed-open cleanup can contend with another connection.
+// Use the binding's busy-total exec path: a query can throw on SQLITE_BUSY
+// instead of returning its error. The quoted owner and exact fence keep a
+// stale connection from deleting its replacement's lease.
+fn release_lease(
   conn: Connection,
   owner: String,
   fence: Int,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, Fail) {
   sqlight.exec(
     "DELETE FROM writer_lease WHERE owner_id = "
       <> sql_quote(owner)
@@ -659,8 +665,7 @@ fn abandon_lease(
       <> int.to_string(fence),
     on: conn,
   )
-  |> result.replace(Nil)
-  |> result.replace_error(Nil)
+  |> result.map_error(FailSql)
 }
 
 const schema_sql = "
@@ -708,7 +713,7 @@ fn start_actor(
       owner: config.owner,
       fence:,
       lease_ttl_ms: config.lease_ttl_ms,
-      closed: False,
+      phase: OpenConnection,
     )
   let started =
     actor.new(state)
@@ -1723,18 +1728,19 @@ fn handle_message(
   state: ActorState,
   message: Message,
 ) -> actor.Next(ActorState, Message) {
-  case state.closed {
-    True -> handle_closed(state, message)
-    False -> handle_open(state, message)
+  case state.phase {
+    ClosedConnection(outcome) -> handle_closed(state, message, outcome)
+    OpenConnection -> handle_open(state, message)
   }
 }
 
 fn handle_closed(
   state: ActorState,
   message: Message,
+  close_outcome: Result(Nil, StorageError),
 ) -> actor.Next(ActorState, Message) {
   case message {
-    Close(reply:) -> process.send(reply, Ok(Nil))
+    Close(reply:) -> process.send(reply, close_outcome)
     Commit(reply:, ..) ->
       process.send(reply, Error(Faulted(reason: "storage handle closed")))
     GetEntries(reply:, ..) -> process.send(reply, Error(HandleClosed))
@@ -1816,13 +1822,7 @@ fn handle_open(
       // owner that lost the lease to a steal cannot delete its
       // replacement's row on the way out (module doc: close is scoped to
       // the writer's own pair).
-      let released =
-        run(
-          state.conn,
-          "DELETE FROM writer_lease WHERE owner_id = ?1 AND fence = ?2",
-          [sqlight.text(state.owner), sqlight.int(state.fence)],
-          decode.dynamic,
-        )
+      let released = release_lease(state.conn, state.owner, state.fence)
       let closed = sqlight.close(state.conn)
       let outcome = case released, closed {
         Ok(_), Ok(Nil) -> Ok(Nil)
@@ -1833,7 +1833,7 @@ fn handle_open(
           ))
       }
       process.send(reply, outcome)
-      actor.continue(ActorState(..state, closed: True))
+      actor.continue(ActorState(..state, phase: ClosedConnection(outcome)))
     }
   }
 }
