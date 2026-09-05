@@ -75,7 +75,9 @@ witness before starting the writer or recovered drivers. The runtime
 gate passes 118 tests. Three focused tests cover paused publication,
 refusal and scope-holder death; moving publication after startup makes
 the ordering regression fail. Independent source review found no issue.
-The full combined gate has not yet run for this ownership slice.
+The combined `make check` and `make e2e-client-bootstrap` pass at
+`31ba8ac`: 1,124 client, 164 TUI, 118 runtime and 69 conformance tests,
+with zero lint errors. `make doc-check` also passes.
 
 Weft v0.4.3 keeps a raw managed-worker crash outcome pending while an
 adopted owner remains alive; it does not automatically cancel that owner
@@ -91,6 +93,13 @@ must leave resource handles with surviving custody before recovered work
 can execute. Ordinary `api.open` still resumes drivers before it returns;
 the assembly must use the new publication hook to establish custody first.
 An uncertain drain must retain the reservation and prevent replacement.
+
+Resource retirement needs its own checks: SQLite `Close` releases the
+lease and closes the connection but leaves its actor alive for idempotent
+calls. The pool and MCP stop APIs send asynchronous requests. Closing a
+lease or sending those requests alone does not prove bounded process
+counts or complete external-process teardown. Measure those lifetimes
+when integrating the typed close outcome.
 
 After custody, implement the durable catalogue with restore-only startup,
 lazy authorized opening, one daemon listener and routed attachments, safe
