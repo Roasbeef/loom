@@ -20,8 +20,11 @@ factories are unnamed and publish their typed handles in the runtime registry.
 Its local runtime suite passes 110 tests, including a 1,000-strand atom-growth
 check and repeated factory replacement without atom growth. CI for #228 is
 green at `3b257d2` in run `33931678251` (Linux, macOS, jail and soak).
-Work continues on
-`client/session-custody`, stacked on #228 at `3b257d2`. The full local
+The service-address slice is
+[PR #229](https://github.com/Roasbeef/loom/pull/229), `client/session-custody`,
+stacked on #228 at `3b257d2`. Its head is `75c6bf8`; CI run `33933825546`
+is pending. Work continues on `client/session-services`, stacked on #229.
+The full local
 repository gate passed for the runtime slice, including 1,119 client and
 149 TUI tests. Independent review found an atom-test warm-up issue, fixed
 and reverified separately in fresh VMs; no review findings remain.
@@ -40,6 +43,16 @@ and session cleanup custody precede the manager and routing changes. This
 paragraph records the active wave; it is not a fresh verification of the
 older project-wide handoff below. Rebaseline that handoff when the wave
 finishes.
+
+The next concrete assembly step replaces the 11 service names allocated by
+`client/serve` (gateway, two forwarders, rule/schedule/distillation scanners,
+Agency, escalation, scratch, history and extension hosts), plus the demo's two
+names. Writer subscriptions need a typed reference-address route while keeping
+direct subjects for incarnation-local observers. This work must preserve
+restart-safe lossy hints without executing arbitrary subscriber callbacks in
+the writer. Session extraction and cleanup custody then separate this assembly
+from the public listener. Do not call `serve.boot` from a manager and assume its
+current host process survives owner death or cleans partial boot.
 
 It is deliberately not a history; the git log and the PR bodies carry how
 each change was reviewed. Re-baselined 2026-09-04 against `main` at
