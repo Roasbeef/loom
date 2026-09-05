@@ -179,7 +179,11 @@ that tree separately from the self-contained server.
   accept only regular files up to 4 KiB, and keep displayed refs shape- and
   length-bounded. When all sections
   cannot share one row, usage and agent status move to a second row; if those
-  collide, status takes a third row so the usage tail remains visible.
+  collide, status takes a third row so the usage tail remains visible. The
+  row count comes from fixed caps so it cannot flap with the notice text,
+  but the status section grows into every column a wider terminal has past
+  the single-row threshold (`footer_status_limit`), so a long notice is cut
+  only when the screen is actually short of room.
 - **Terminal hygiene**: server and tool text loses complete ANSI CSI and OSC
   formatting sequences before markdown creates spans. Lone or incomplete
   controls remain visibly inert rather than becoming terminal instructions.

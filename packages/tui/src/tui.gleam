@@ -1445,17 +1445,59 @@ fn footer_sections(
 }
 
 fn model_footer_status(model: Model) -> String {
-  footer_status(model.agent_summary, model.notice)
+  footer_status(
+    model.agent_summary,
+    model.notice,
+    footer_status_limit(model.width),
+  )
 }
 
-/// Preserves transient operator feedback beside the agent summary.
+/// Preserves transient operator feedback beside the agent summary, within
+/// the cells the footer's layout leaves it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.footer_status("0 live", "copied 2 lines", 40)
+///   == "0 live · copied 2 lines"
+/// ```
 @internal
-pub fn footer_status(agent_summary: String, notice: String) -> String {
+pub fn footer_status(
+  agent_summary: String,
+  notice: String,
+  limit: Int,
+) -> String {
   let safe_summary = text_hygiene.single_line(agent_summary)
   let safe_notice = text_hygiene.single_line(notice)
   case string.starts_with(safe_notice, "model: ") {
-    True -> compact(safe_summary, 40)
-    False -> compact(safe_summary <> " · " <> safe_notice, 40)
+    True -> compact(safe_summary, limit)
+    False -> compact(safe_summary <> " · " <> safe_notice, limit)
+  }
+}
+
+/// The cells the footer status may take at a terminal width.
+///
+/// The row count is decided from fixed caps so it cannot flap with the
+/// notice text, and the status keeps the cap's forty cells as a floor. A
+/// terminal wider than the single row needs hands the status every spare
+/// cell, because a notice such as `steer captured; waiting for stop` cut
+/// to forty cells on a 234-column screen was the fixed cap outliving its
+/// reason. On two rows the status shares its row with usage; on three it
+/// has the row to itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.footer_status_limit(201) == 40
+/// assert tui.footer_status_limit(234) == 73
+/// ```
+@internal
+pub fn footer_status_limit(width: Int) -> Int {
+  let floor = footer_status_cells - 2
+  case footer_rows(width) {
+    1 -> floor + width - footer_single_row_cells()
+    2 -> int.max(floor, width - footer_usage_cells - 2)
+    _ -> int.max(floor, width - 2)
   }
 }
 
@@ -1473,6 +1515,16 @@ const footer_model_cells = 30
 const footer_usage_cells = 58
 
 const footer_status_cells = 42
+
+// Every section plus one separating cell: the width at which the footer
+// fits on one row. A function because a Gleam constant cannot add.
+fn footer_single_row_cells() -> Int {
+  footer_project_cells
+  + footer_model_cells
+  + footer_usage_cells
+  + footer_status_cells
+  + 1
+}
 
 /// The rows the footer takes at a terminal width — one, two or three —
 /// decided from the width and the sections' fixed caps, never from what
@@ -1496,12 +1548,7 @@ const footer_status_cells = 42
 ///
 @internal
 pub fn footer_rows(width: Int) -> Int {
-  let single =
-    footer_project_cells
-    + footer_model_cells
-    + footer_usage_cells
-    + footer_status_cells
-    + 1
+  let single = footer_single_row_cells()
   let pair =
     int.max(
       footer_project_cells + footer_model_cells,

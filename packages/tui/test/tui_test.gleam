@@ -166,17 +166,36 @@ pub fn workspace_metadata_read_is_descriptor_bounded_test() {
 }
 
 pub fn footer_status_preserves_transient_operator_feedback_test() {
-  assert tui.footer_status("0 live / 3 agents", "queued after main")
+  assert tui.footer_status("0 live / 3 agents", "queued after main", 40)
     == "0 live / 3 agents · queued after main"
 }
 
+pub fn footer_status_grows_with_a_wide_terminal_test() {
+  let notice = "steer captured; waiting for stop"
+
+  // At the single-row threshold the fixed cap holds and the notice is cut;
+  // every column past it goes to the status, so a wide screen shows it all.
+  assert tui.footer_status_limit(201) == 40
+  assert tui.footer_status("2 live / 3 agents", notice, 40)
+    == "2 live / 3 agents · steer captured; wai…"
+  assert tui.footer_status_limit(234) == 73
+  assert tui.footer_status("2 live / 3 agents", notice, 73)
+    == "2 live / 3 agents · steer captured; waiting for stop"
+
+  // Stacked layouts give the status its shared or whole row, never less
+  // than the floor.
+  assert tui.footer_status_limit(150) == 90
+  assert tui.footer_status_limit(60) == 58
+  assert tui.footer_status_limit(30) == 40
+}
+
 pub fn footer_status_sanitizes_untrusted_server_text_test() {
-  assert tui.footer_status("0 live", "\u{1b}[31mhostile\nnotice")
+  assert tui.footer_status("0 live", "\u{1b}[31mhostile\nnotice", 40)
     == "0 live · hostile notice"
 }
 
 pub fn footer_status_omits_the_dedicated_model_label_test() {
-  assert tui.footer_status("0 live / 3 agents", "model: baseten-kimi-k3")
+  assert tui.footer_status("0 live / 3 agents", "model: baseten-kimi-k3", 40)
     == "0 live / 3 agents"
 }
 
