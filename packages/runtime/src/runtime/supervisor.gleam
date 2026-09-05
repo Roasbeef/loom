@@ -59,15 +59,16 @@
 //// (`api.create_strand`) seed their registers first, so every reboot
 //// finds them.
 ////
-//// The writer still uses a stable process name. Strand drivers bind typed
-//// reference addresses owned by the registry, so their callers resolve the
-//// current incarnation without allocating permanent atoms per strand.
+//// Services bind reference addresses in a session-local namespace. Strand
+//// drivers bind addresses owned by the restartable registry. Neither path
+//// allocates permanent atoms. The drain ledger's direct subject is retained
+//// separately, so losing routing cannot erase the shutdown witness.
 
 import core/register
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/erlang/atom
-import gleam/erlang/process.{type Monitor, type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Monitor, type Pid, type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
@@ -80,6 +81,7 @@ import runtime/internal/ffi_sup
 import runtime/registry
 import runtime/strand_runtime
 import runtime/writer
+import weft
 import weft/registry as address
 
 /// Restart-tolerance settings for the supervisors in the tree.
@@ -110,25 +112,29 @@ pub type Tolerance {
 pub type Config {
   Config(
     writer_options: writer.Options,
-    strand_options: fn(Name(writer.Message), fn(String, Pid) -> List(Pid)) ->
-      strand_runtime.Options,
+    strand_options: fn(
+      address.Address(writer.Message),
+      fn(String, Pid) -> List(Pid),
+    ) -> strand_runtime.Options,
     tolerance: Tolerance,
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
   )
 }
 
-/// A running session tree: its root, service names, and factory registry slots.
+/// A running session tree: its root, service addresses, and factory slots.
 pub type SessionTree {
   SessionTree(
     /// The root supervisor whose death ends ordinary session liveness.
     supervisor: Pid,
-    /// The stable drain-ledger name retained across abnormal root death.
-    drains: Name(drain_registry.Message),
-    /// The stable name of the session's sole durable writer.
-    writer: Name(writer.Message),
-    /// The stable logical-strand address and factory-handle registry.
-    registry: Name(registry.Message),
+    /// The direct drain-ledger handle retained across root and namespace death.
+    drains: Subject(drain_registry.Message),
+    /// The reclaimable address of the session's sole durable writer.
+    writer: address.Address(writer.Message),
+    /// The address of the logical-strand and factory-handle registry.
+    registry: address.Address(registry.Message),
+    /// The service namespace, reclaimed when its runtime root exits.
+    namespace: address.Registry,
     /// The primary-strand dynamic supervisor's registry slot.
     strands: registry.FactoryKind,
     /// The separately budgeted subagent factory's registry slot.
@@ -150,17 +156,25 @@ pub type SessionTree {
 /// ```
 ///
 pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
-  let drains_name = process.new_name(prefix: "loom_drains")
-  let registry_name = process.new_name(prefix: "loom_registry")
-  let writer_name = process.new_name(prefix: "loom_writer")
-  let drains_subject = process.named_subject(drains_name)
-  let template =
-    config.strand_options(writer_name, fn(strand, reaper) {
-      drain_registry.claim(drains_subject, strand, reaper)
-    })
+  use namespace <- result.try(
+    address.start() |> result.map_error(actor.InitFailed),
+  )
+  let drains_name = address.new_address(namespace)
+  let registry_name = address.new_address(namespace)
+  let writer_name = address.new_address(namespace)
   let factory = fn(strand_name) {
-    let name =
-      registry.ensure(process.named_subject(registry_name), strand_name)
+    use reg <- result.try(registry_subject(registry_name))
+    use drains <- result.try(
+      address.lookup(drains_name)
+      |> result.replace_error(actor.InitFailed(
+        "the drain ledger is unavailable",
+      )),
+    )
+    let template =
+      config.strand_options(writer_name, fn(strand, reaper) {
+        drain_registry.claim(drains, strand, reaper)
+      })
+    let name = registry.ensure(reg, strand_name)
     strand_runtime.start(
       strand_runtime.Options(..template, strand: strand_name),
       name,
@@ -209,19 +223,56 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
       // harness's kills) take the tree down without taking the owner
       // with it. A serving layer that wants to hear about the tree's
       // death monitors `SessionTree.supervisor` — `client/host` does.
+      use drains <- result.try(
+        address.lookup(drains_name)
+        |> result.map_error(fn(_missing) {
+          // No live handle may escape from a partially failed boot. Stopping
+          // the root does not certify drain or release the caller's lease.
+          process.unlink(started.pid)
+          let _drained = stop_root(started.pid, Error(Nil), 5000)
+          let _stopped = address.stop(namespace)
+          actor.InitFailed("the drain ledger died during startup")
+        }),
+      )
+      retain_namespace(namespace, started.pid)
       process.unlink(started.pid)
       Ok(SessionTree(
         supervisor: started.pid,
-        drains: drains_name,
+        drains:,
         writer: writer_name,
         registry: registry_name,
+        namespace:,
         strands: registry.Primary,
         subagent_strands: registry.Subagent,
         subagent: config.subagent,
       ))
     }
-    Error(error) -> Error(error)
+    Error(error) -> {
+      let _stopped = address.stop(namespace)
+      Error(error)
+    }
   }
+}
+
+// Routing owns no effects. The root's death therefore ends this namespace's
+// useful lifetime even when the direct drain-ledger handle still witnesses
+// external work. A Weft leaf task performs that cleanup without a custom
+// monitor loop, including roots killed outside the ordinary close path.
+fn retain_namespace(namespace: address.Registry, root: Pid) -> Nil {
+  let _custody =
+    weft.new_prepared([
+      weft.prepared_leaf(
+        owner: address.owner(namespace),
+        cancel: fn() {
+          let _stopped = address.stop(namespace)
+          Nil
+        },
+        begin: fn() { Ok(Nil) },
+      ),
+    ])
+    |> weft.cancel_when_exits(root)
+    |> weft.start_witnessed
+  Nil
 }
 
 // Publishing inside the child start callback orders discovery before the
@@ -229,15 +280,16 @@ pub fn start(config: Config) -> Result(SessionTree, actor.StartError) {
 // before them when rest-for-one restarts its own boundary.
 fn registered_factory(
   builder: factory_supervisor.Builder(String, Subject(strand_runtime.Message)),
-  registry_name: Name(registry.Message),
+  registry_name: address.Address(registry.Message),
   kind: registry.FactoryKind,
 ) -> supervision.ChildSpecification(
   factory_supervisor.Supervisor(String, Subject(strand_runtime.Message)),
 ) {
   supervision.supervisor(fn() {
+    use reg <- result.try(registry_subject(registry_name))
     use started <- result.try(factory_supervisor.start(builder))
     registry.publish_factory(
-      process.named_subject(registry_name),
+      reg,
       kind,
       registry.Factory(started.pid, started.data),
     )
@@ -271,18 +323,36 @@ fn registered_factory(
 /// ```
 ///
 pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Result(Nil, Nil) {
-  let drains = process.named_subject(tree.drains)
+  let witness = watch_drains(tree.drains)
+  let drained = stop_root(tree.supervisor, witness, grace_ms)
+  let _stopped = address.stop(tree.namespace)
+  drained
+}
+
+// Capture the ledger before shutdown, but keep an absent witness as a failed
+// proof rather than using it to skip the root's teardown and routing cleanup.
+fn watch_drains(
+  drains: Subject(drain_registry.Message),
+) -> Result(DrainWitness, Nil) {
   use drain_owner <- result.try(process.subject_owner(drains))
   use <- bool.guard(when: !process.is_alive(drain_owner), return: Error(Nil))
-  let witness = register_drain_witness(drain_owner)
-  case process.is_alive(tree.supervisor) {
+  Ok(register_drain_witness(drain_owner))
+}
+
+fn stop_root(
+  root: Pid,
+  witness: Result(DrainWitness, Nil),
+  grace_ms: Int,
+) -> Result(Nil, Nil) {
+  case process.is_alive(root) {
     True -> {
-      let _termination = ffi_sup.terminate_supervisor(tree.supervisor, grace_ms)
+      let _termination = ffi_sup.terminate_supervisor(root, grace_ms)
       Nil
     }
     False -> Nil
   }
-  await_death(tree.supervisor)
+  await_death(root)
+  use witness <- result.try(witness)
   await_drain_witness(witness)
 }
 
@@ -367,7 +437,8 @@ pub fn factory_pid(
   tree: SessionTree,
   kind: registry.FactoryKind,
 ) -> Result(Pid, Nil) {
-  registry.factory(process.named_subject(tree.registry), kind)
+  use reg <- result.try(address.lookup(tree.registry))
+  registry.factory(reg, kind)
   |> result.map(fn(factory) { factory.pid })
 }
 
@@ -383,7 +454,8 @@ pub fn strand_subject(
   tree: SessionTree,
   strand: String,
 ) -> Result(Subject(strand_runtime.Message), Nil) {
-  case registry.lookup(process.named_subject(tree.registry), strand) {
+  use reg <- result.try(address.lookup(tree.registry))
+  case registry.lookup(reg, strand) {
     Ok(name) -> address.lookup(name)
     Error(Nil) -> Error(Nil)
   }
@@ -397,8 +469,8 @@ pub fn strand_subject(
 // re-runs under supervision whenever the children after the writer
 // restart.
 fn booter_start(
-  writer_name: Name(writer.Message),
-  registry_name: Name(registry.Message),
+  writer_name: address.Address(writer.Message),
+  registry_name: address.Address(registry.Message),
   subagent: fn(String) -> Bool,
 ) -> actor.StartResult(Subject(Nil)) {
   case boot_strands(writer_name, registry_name, subagent) {
@@ -411,13 +483,12 @@ fn booter_start(
 }
 
 fn boot_strands(
-  writer_name: Name(writer.Message),
-  registry_name: Name(registry.Message),
+  writer_name: address.Address(writer.Message),
+  registry_name: address.Address(registry.Message),
   subagent: fn(String) -> Bool,
 ) -> Result(Nil, String) {
-  let w = process.named_subject(writer_name)
   use cells <- result.try(
-    writer.list_registers(w, register.StrandConfig, None)
+    writer.list_registers(writer_name, register.StrandConfig, None)
     |> result.replace_error("the strand booter could not list strand configs"),
   )
   list.try_each(cells, fn(cell) {
@@ -434,11 +505,11 @@ fn boot_strands(
 }
 
 fn ensure_strand_running(
-  registry_name: Name(registry.Message),
+  registry_name: address.Address(registry.Message),
   kind: registry.FactoryKind,
   strand: String,
 ) -> Result(Nil, actor.StartError) {
-  let reg = process.named_subject(registry_name)
+  use reg <- result.try(registry_subject(registry_name))
   let name = registry.ensure(reg, strand)
   use <- bool.guard(when: alive(name), return: Ok(Nil))
 
@@ -464,4 +535,13 @@ fn ensure_strand_running(
 
 fn alive(name: address.Address(strand_runtime.Message)) -> Bool {
   address.lookup(name) |> result.is_ok
+}
+
+fn registry_subject(
+  name: address.Address(registry.Message),
+) -> Result(Subject(registry.Message), actor.StartError) {
+  address.lookup(name)
+  |> result.replace_error(actor.InitFailed(
+    "the runtime registry is unavailable",
+  ))
 }

@@ -36,6 +36,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/operation.{
   type ReplayPolicy, BranchSummaryPreparation, CompactionPreparation,
@@ -54,6 +55,7 @@ import runtime/supervisor
 import session/session.{type Session}
 import storage/storage
 import weft
+import weft/registry as address
 
 /// The api name every simulated response carries; a deferred handle must
 /// match it to be structurally valid.
@@ -815,7 +817,9 @@ fn kill_tree(ctl: Control) -> Nil {
   case control.runtime(ctl) {
     None -> Nil
     Some(runtime) ->
-      case process.subject_owner(process.named_subject(runtime.tree.writer)) {
+      case
+        address.lookup(runtime.tree.writer) |> result.try(process.subject_owner)
+      {
         Ok(pid) -> process.kill(pid)
         Error(Nil) -> Nil
       }
@@ -972,8 +976,9 @@ fn apply_all(
 }
 
 // Each admission reports whether it landed, and a refusal that should
-// not have happened is recorded rather than dropped. Every `api.ApiError`
-// reaches the caller having written nothing, so a refused steer is a
+// not have happened is recorded rather than dropped. A writer that is between
+// incarnations has not received a request, so its availability error is retried
+// through the same reconciliation as a lost reply. An actual refused steer is a
 // turn the transcript has permanently lost: from there the faulted run
 // is a different conversation from the fault-free one, and the runner
 // would report it one check later as an unexplained one-turn divergence
@@ -1049,28 +1054,60 @@ fn admit_claimed(
         }
       })
     list.append(admissions, aborts)
-    |> list.map(fn(intervention) {
-      #(intervention, perform(runtime, intervention))
-    })
+    |> perform_ordered(runtime, _, [])
   }
   case control.attempt(ctl, at: "intervene", action:, within_ms: 2000) {
-    control.Answered(outcomes) -> settle_answered(ctl, raw, outcomes)
+    control.Answered(#(outcomes, deferred)) -> {
+      settle_answered(ctl, raw, outcomes)
+      let unresolved = settle_durable(ctl, raw, deferred)
+      retry_unresolved(ctl, raw, runtime, unresolved)
+    }
     control.Raised | control.Expired -> {
       let unresolved = settle_durable(ctl, raw, claimed)
-      case unresolved, process.is_alive(runtime.tree.supervisor) {
-        [], _ -> Nil
-        [_, ..], True -> {
-          // A reply-losing crash can be followed by a full rest-for-one tree
-          // rebuild. The root supervisor is the readiness boundary: while it
-          // lives, its permanent writer must either return or make the root
-          // fail. Retry until one of those process facts occurs rather than
-          // spending a wall-clock budget whose result depends on runner load.
-          process.sleep(intervention_retry_delay_ms)
-          admit_claimed(ctl, raw, runtime, unresolved)
-        }
-        [_, ..], False -> control.mark(ctl, "admission-unobserved")
-      }
+      retry_unresolved(ctl, raw, runtime, unresolved)
     }
+  }
+}
+
+// Stop at the first unavailable writer. Executing the remaining admissions
+// or aborts before retrying that item would change this logical moment's
+// order merely because the writer happened to restart between two calls.
+fn perform_ordered(
+  runtime: api.Runtime,
+  remaining: List(script.Intervention),
+  answered: List(#(script.Intervention, Result(Nil, String))),
+) -> #(
+  List(#(script.Intervention, Result(Nil, String))),
+  List(script.Intervention),
+) {
+  case remaining {
+    [] -> #(list.reverse(answered), [])
+    [intervention, ..rest] ->
+      case perform(runtime, intervention) {
+        WriterUnavailable -> #(list.reverse(answered), remaining)
+        Settled(verdict) ->
+          perform_ordered(runtime, rest, [#(intervention, verdict), ..answered])
+      }
+  }
+}
+
+// A rest-for-one rebuild can temporarily remove the writer address. While the
+// root lives, its permanent writer must either return or make the root fail.
+// Reuse the lost-reply retry boundary; adding a new simulated step would alter
+// the fault schedule rather than test the original conversation.
+fn retry_unresolved(
+  ctl: Control,
+  raw: Session,
+  runtime: api.Runtime,
+  unresolved: List(script.Intervention),
+) -> Nil {
+  case unresolved, process.is_alive(runtime.tree.supervisor) {
+    [], _ -> Nil
+    [_, ..], True -> {
+      process.sleep(intervention_retry_delay_ms)
+      admit_claimed(ctl, raw, runtime, unresolved)
+    }
+    [_, ..], False -> control.mark(ctl, "admission-unobserved")
   }
 }
 
@@ -1124,7 +1161,7 @@ fn intervention_admitted(
 fn perform(
   runtime: api.Runtime,
   intervention: script.Intervention,
-) -> Result(Nil, String) {
+) -> Admission {
   case intervention {
     script.Steer(text:, ..) ->
       landed(
@@ -1142,7 +1179,7 @@ fn perform(
     // transcript as a race rather than a convergence claim.
     script.Abort(..) -> {
       api.abort(runtime)
-      Ok(Nil)
+      Settled(Ok(Nil))
     }
   }
 }
@@ -1212,23 +1249,26 @@ fn landing(intervention: script.Intervention) -> Landing {
   }
 }
 
+// Availability means no request reached a writer. Keep it separate from a
+// refusal so callers reconcile and retry without hiding a dropped admission.
+type Admission {
+  WriterUnavailable
+  Settled(Result(Nil, String))
+}
+
 // One admission's verdict, worded as the note the runner would print.
-// Every `api.ApiError` reaches here having written nothing, so a refusal
-// is always a wholly lost turn and never a partial one.
-fn landed(
-  what: String,
-  outcome: Result(a, api.ApiError),
-) -> Result(Nil, String) {
+fn landed(what: String, outcome: Result(a, api.ApiError)) -> Admission {
   case outcome {
-    Ok(_) -> Ok(Nil)
+    Ok(_) -> Settled(Ok(Nil))
+    Error(api.RuntimeUnavailable) -> WriterUnavailable
     Error(error) ->
-      Error(
+      Settled(Error(
         "admission/"
         <> what
         <> ": refused with "
         <> string.inspect(error)
         <> ", so the transcript lost a turn",
-      )
+      ))
   }
 }
 

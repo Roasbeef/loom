@@ -1,10 +1,11 @@
 # Design note: one daemon, many sessions
 
-Status: **ruling, pre-code.** The owner selected one daemon and one VM
+Status: **ruling, implementation in progress.** The owner selected one daemon and one VM
 across workspaces on 2026-09-04, with multiplayer and no backwards
 compatibility requirement. Implementation starts from `f019322`.
 The compatibility discussion below records an earlier proposal; the
-execution ruling supersedes it. No runtime behavior has changed yet.
+execution ruling supersedes it. Reclaimable runtime addressing is implemented
+as a prerequisite; the daemon replacement is not yet shipped.
 The current lifecycle is documented in
 [the client architecture](../architecture/client.md).
 

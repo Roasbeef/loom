@@ -13,13 +13,27 @@ has the [architecture target](architecture/sessions.md) and a
 The foundation is [PR #227](https://github.com/Roasbeef/loom/pull/227).
 The address primitive landed in
 [Weft #11](https://github.com/Roasbeef/weft/pull/11) and the owner published
-v0.4.3. The next branch, `client/session-runtime`, uses that published version
+v0.4.3. [PR #228](https://github.com/Roasbeef/loom/pull/228),
+`client/session-runtime`, uses that published version
 and replaces strand-name atoms with reference addresses. The two strand
 factories are unnamed and publish their typed handles in the runtime registry.
 Its local runtime suite passes 110 tests, including a 1,000-strand atom-growth
-check and repeated factory replacement without atom growth. The writer,
-registry and drain-ledger service names, cleanup
-custody, and the daemon itself remain unfinished. No evaluation path
+check and repeated factory replacement without atom growth. CI for #228 is
+green at `3b257d2` in run `33931678251` (Linux, macOS, jail and soak).
+Work continues on
+`client/session-custody`, stacked on #228 at `3b257d2`. The full local
+repository gate passed for the runtime slice, including 1,119 client and
+149 TUI tests. Independent review found an atom-test warm-up issue, fixed
+and reverified separately in fresh VMs; no review findings remain.
+The current slice also replaces the writer, registry and drain-ledger service
+names. Its runtime gate passes 112 tests, including 50 executed-and-closed
+sessions with zero atom growth, and its client gate passes 1,119 tests.
+The full local gate for this slice passes, including 69 conformance and
+149 TUI tests, with zero lint errors. The deterministic suffix-order test and
+repeated seed-33 case also pass separately in fresh VMs. Independent review
+caught the ordered-retry bug and verified the fix. Client composition-service names,
+partial-boot and owner-death cleanup custody, the daemon manager, routed
+multiplayer and live E2E remain unfinished. No evaluation path
 dependency remains. Foundation CI is green at `362d737` in run
 `33929462266` (Linux, macOS, jail and soak). Reclaimable runtime addresses
 and session cleanup custody precede the manager and routing changes. This

@@ -27,8 +27,9 @@ extended by the M3 runtime wave.
   `validate` + `seed_strand` + `adopt_strand`; `adopt_strand` is exposed
   on its own because a crash between the seed commit and the brief commit
   leaves a strand nothing else can finish.
-- `runtime/api.ApiError` — why an operation failed, and the two variants
-  worth telling apart are `CommitFailed(error:)` and
+- `runtime/api.ApiError` — why an operation failed. `RuntimeUnavailable`
+  means the writer address had no live binding before a request was sent;
+  a caller can retry later. This differs from `CommitFailed(error:)` and
   `SessionStolen(held_by:)`. The second is `tx.LeaseLost` classified at
   the admission surface (`commit_failure`): another writer owns the
   session, so nothing this runtime commits can land and the remedy is to
@@ -72,7 +73,10 @@ extended by the M3 runtime wave.
   second factory with its own tolerance, for strands a host's `subagent`
   predicate names), and the **strand booter** (a worker whose start lists
   the `strand.*` registers and starts a driver for every strand found,
-  routing each to its factory).
+  routing each to its factory). The writer, registry and drain ledger bind
+  reference addresses in `SessionTree.namespace`; its routing-only lifetime
+  ends when the root exits. `SessionTree.drains` retains the ledger's direct
+  subject independently, because routing death cannot certify effect drain.
 - `runtime/supervisor.shutdown(tree, grace_ms:)` — the orderly stop
   `api.close` is built on: children terminated in reverse start order
   with reason `shutdown`. The grace bounds the `sys:terminate` handshake, but
@@ -439,9 +443,9 @@ extended by the M3 runtime wave.
   closed. A reaper the ledger meets as `noproc` is the one exception, and
   retires: the pid is gone, and a weft scope cannot be gone with effects
   still running. `SessionTree`
-  retains the ledger's stable name, so
+  retains the ledger's direct subject, so
   `shutdown` waits it independently even when the root supervisor was killed
-  abnormally. This transitive drain barrier, rather than scheduler
+  abnormally and the service namespace has stopped. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.
 - **Internal events are addressed to one incarnation, not one logical
   strand.** Public `Nudge` and external abort requests resolve the logical
@@ -657,20 +661,24 @@ extended by the M3 runtime wave.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
   an idle timer at a third of the TTL. That timer targets a private subject
-  bound to the current writer PID; the public registered name remains only
-  the caller address. Otherwise each predecessor timer would resolve the name
+  bound to the current writer PID; the public reference address is only
+  for callers. Otherwise each predecessor timer would resolve the address
   to the replacement and add another permanent renewal cadence after every
   restart. A commit that races the renewal loses too, and arrives as
   `tx.LeaseLost`: `runtime/api` turns it into `SessionStolen`, and
   `runtime/strand_runtime` halts the strand on it rather than reloading,
   because reloading reads the same file and meets the same fence.
 - **Logical addresses, not cached pids, identify restartable services.** The
-  writer still uses a process name; strand drivers bind reclaimable reference
-  addresses. Loss-tolerant public strand messages resolve the address once and
+  writer and strand drivers bind reclaimable reference addresses.
+  Loss-tolerant public strand messages resolve the address once and
   send the tagged envelope directly to the resolved PID; checking and then
   sending through the name would leave an unregistration race between two
-  lookups. Removing the remaining session-service names is the next part of
-  the single-daemon port; this change removes per-strand atom allocation only.
+  lookups. Writer calls also resolve once: an absent binding yields
+  `writer.Unavailable`, while a reply carries `writer.Underlying(cause)` on
+  failure. Death after sending is still an unknown outcome, not a safe retry.
+  The runtime allocates no dynamic process names. A 50-cycle test executes a
+  turn per session, closes it, checks root/driver/namespace death and stale
+  address failure, and asserts zero atom growth after a fresh-VM warm-up.
 - **Log context reaches an effect process because the closure carries
   it, not because anything is inherited.** `spawn_effect` takes the
   step-scoped logger as an argument, and the body that runs on the new

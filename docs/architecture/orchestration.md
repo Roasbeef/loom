@@ -323,7 +323,7 @@ the run still completes with the steer in context.
 ```
   SessionSupervisor              rest-for-one
     ├── 1. DrainLedger           live reaper generations
-    ├── 2. StrandRegistry        logical names to process names
+    ├── 2. StrandRegistry        logical names to reference addresses
     ├── 3. StorageWriter         every commit, and every driver read
     ├── 4. strand factory        simple-one-for-one; ordinary strands
     ├── 5. subagent factory      simple-one-for-one; own tolerance
@@ -332,12 +332,14 @@ the run still completes with the steer in context.
 
 Rest-for-one over those six is the whole recovery policy, and the order
 *is* the blast radius, as `runtime/supervisor.gleam` builds it. A writer
-crash restarts the writer and every child after it, because a strand
-holding a subject to a dead writer has nothing to say — and the booter,
+crash restarts the writer and every child after it, so drivers restore
+against the replacement writer — and the booter,
 sitting last, repopulates the factories the restart just emptied. A crash
 in one strand restarts only that strand, because each factory supervises its own
-children simple-one-for-one. Every child registers under a process name
-rather than a pid, so restarts keep them addressable. The separate drain
+children simple-one-for-one. The writer and strand drivers bind reclaimable
+reference addresses, so callers resolve the current incarnation without
+allocating permanent atoms. The unnamed factories publish their typed handles
+in the registry before the booter runs. The separate drain
 ledger sits first because its ordering fact must also outlive a restart of the
 name registry itself. It stores every still-live effect reaper per logical
 strand. A replacement publishes its new reaper and waits for every predecessor
@@ -349,6 +351,18 @@ cannot overlap a replay with an effect that has received cancellation but whose
 descendants have not yet exited. The ledger is a significant temporary child:
 its own death stops the session tree rather than silently restarting with an
 empty history.
+
+The writer, registry and drain ledger share a session-local service namespace,
+separate from the strand-address namespace owned by the registry. Root death
+reclaims service routing, but `SessionTree.drains` retains the ledger's direct
+subject. Closing a runtime therefore still waits for external effects after
+abnormal root death; losing the drain witness refuses lease release rather
+than treating a missing address as proof that the work stopped.
+
+Writer calls resolve an address once. If no writer is bound, the runtime returns
+`RuntimeUnavailable` before sending and the caller can try later. A writer that
+dies after receiving a request presents a different problem: the commit may
+already be durable. Callers must reconcile that outcome before retrying.
 
 The two factories are one restart budget each, and the split is what buys
 the separation. `supervisor.start_strand` asks `Config.subagent` which

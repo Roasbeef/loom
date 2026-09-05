@@ -859,7 +859,8 @@ fn unclaimed_since(
     // `now_s` this tick proposed.
     api.FactConflict(..) -> reclaimed_since(state, key, now_s)
 
-    api.AcceptRejected(..)
+    api.RuntimeUnavailable
+    | api.AcceptRejected(..)
     | api.QueueRejected(..)
     | api.ReadFailed(..)
     | api.CommitFailed(..)
@@ -1270,7 +1271,7 @@ fn classify_error(error: api.ApiError) -> Fire {
     // fired this occurrence, which is exactly what the write-once
     // expectation was asked to find out.
     api.FactConflict(..) -> AlreadyFired
-    api.QueueRejected(..) -> Held
+    api.QueueRejected(..) | api.RuntimeUnavailable -> Held
     api.AcceptRejected(..)
     | api.ReadFailed(..)
     | api.CommitFailed(..)

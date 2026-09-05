@@ -1477,12 +1477,7 @@ fn accept_directly(
       case plan {
         Error(_reason) -> Error("acceptance refused")
         Ok(acceptance.AcceptancePlan(operation:, tx: plan_tx, ..)) ->
-          case
-            writer.commit(
-              process.named_subject(ctx.runtime.tree.writer),
-              plan_tx,
-            )
-          {
+          case writer.commit(ctx.runtime.tree.writer, plan_tx) {
             Ok(_) -> Ok(operation.id)
             Error(_) -> Error("acceptance commit refused")
           }

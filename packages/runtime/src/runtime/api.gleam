@@ -71,6 +71,7 @@ import session/session.{type Session}
 import storage/storage
 import telemetry/log.{type Logger}
 import weft/poll
+import weft/registry as address
 
 /// One blackboard cell as a compare-and-set caller sees it: the stored
 /// value and the seq of the write that put it there, which is what
@@ -186,6 +187,10 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
 
 /// Why an api operation failed.
 pub type ApiError {
+  /// No writer incarnation could be reached before sending the request.
+  /// This is retryable availability, not an admission refusal or lost reply.
+  RuntimeUnavailable
+
   /// Acceptance refused the request; nothing was written.
   AcceptRejected(reason: RejectReason)
 
@@ -533,9 +538,7 @@ fn target_exists(
     Some(entry) ->
       writer.get_entries(writer_subject(runtime), [entry])
       |> result.map(dict.has_key(_, entry))
-      |> result.map_error(fn(error) {
-        ReadFailed(reason: describe_storage(error))
-      })
+      |> result.map_error(fn(error) { read_failure(error) })
   }
 }
 
@@ -1022,7 +1025,7 @@ fn validate_fork_point(
       use found <- result.try(
         writer.get_entries(writer_subject(runtime), [entry])
         |> result.map_error(fn(error) {
-          SeedFailed(reason: describe_storage(error))
+          SeedFailed(reason: describe_writer_read(error))
         }),
       )
       use <- bool.guard(when: dict.has_key(found, entry), return: Ok(Nil))
@@ -1068,15 +1071,19 @@ fn seed_strand(
     )
   case writer.commit(writer_subject(runtime), seed) {
     Ok(_) -> Ok(Nil)
-    Error(tx.StaleExpectation(..)) -> Error(StrandExists(name:))
-    Error(tx.Corruption(report:)) -> Error(SeedFailed(reason: report.boundary))
-    Error(tx.Faulted(reason:)) -> Error(SeedFailed(reason:))
+    Error(writer.Unavailable) ->
+      Error(SeedFailed("the session writer is unavailable"))
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      Error(StrandExists(name:))
+    Error(writer.Underlying(tx.Corruption(report:))) ->
+      Error(SeedFailed(reason: report.boundary))
+    Error(writer.Underlying(tx.Faulted(reason:))) -> Error(SeedFailed(reason:))
 
     // `CreateStrandError` already flattens every backend refusal into a
     // reason, and its one consumer renders it as text; the distinction
     // that has to survive as a value is the one at the admission
     // surface, where a caller can act on it.
-    Error(tx.LeaseLost(held_by:)) ->
+    Error(writer.Underlying(tx.LeaseLost(held_by:))) ->
       Error(SeedFailed(reason: tx.describe_lease_loss(held_by)))
   }
 }
@@ -1203,7 +1210,7 @@ pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
   case
     writer.list_registers(writer_subject(runtime), register.StrandConfig, None)
   {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(cells) ->
       cells
       |> list.map(fn(pair) { pair.0 })
@@ -1268,7 +1275,7 @@ pub fn fact_cell(
   key: String,
 ) -> Result(Option(FactCell), ApiError) {
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, seq:))) ->
       Ok(Some(FactCell(value: value.payload, seq:)))
@@ -1332,7 +1339,8 @@ fn commit_fact_expecting(
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(tx.CommitResult(first_seq:, ..)) -> Ok(first_seq)
-    Error(tx.StaleExpectation(..)) -> Error(FactConflict(key:))
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      Error(FactConflict(key:))
     Error(error) -> Error(commit_failure(error))
   }
 }
@@ -1375,7 +1383,7 @@ pub fn fact(
   key: String,
 ) -> Result(Option(JsonValue), ApiError) {
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, ..))) -> Ok(Some(value.payload))
   }
@@ -1397,9 +1405,7 @@ pub fn facts(
 ) -> Result(List(#(String, JsonValue)), ApiError) {
   use cells <- result.try(
     writer.list_registers(writer_subject(runtime), register.FactCustom, prefix)
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   Ok(
     list.filter_map(cells, fn(pair) {
@@ -1723,9 +1729,7 @@ pub fn reserved_facts(
       register.FactCustom,
       Some(prefix),
     )
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   Ok(
     list.map(cells, fn(pair) {
@@ -1916,7 +1920,7 @@ pub fn escalations_below(runtime: Runtime, cap: Int) -> Result(Bool, ApiError) {
     Some(escalation.key_prefix),
   )
   |> result.map(fn(cells) { cap > 0 && list.drop(cells, cap - 1) == [] })
-  |> result.map_error(fn(error) { ReadFailed(reason: describe_storage(error)) })
+  |> result.map_error(fn(error) { read_failure(error) })
 }
 
 /// Records a raised escalation with no call attribution. Deliberately
@@ -1963,7 +1967,8 @@ fn commit_raised(
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
-    Error(tx.StaleExpectation(..)) -> Error(EscalationExists(id:))
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      Error(EscalationExists(id:))
     Error(error) -> Error(commit_failure(error))
   }
 }
@@ -1983,9 +1988,7 @@ pub fn escalations(runtime: Runtime) -> Result(List(Escalation), ApiError) {
       register.FactCustom,
       Some(escalation.key_prefix),
     )
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   list.try_map(cells, fn(pair) {
     let #(_key, storage.Register(value:, ..)) = pair
@@ -2160,7 +2163,7 @@ pub fn consume_escalation_at(
 
     // The record moved under the decision that named it. Not a retry:
     // re-reading would consume a record the caller never checked.
-    Error(tx.StaleExpectation(..)) -> Error(RaceLost)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
     Error(error) -> Error(commit_failure(error))
   }
 }
@@ -2225,7 +2228,7 @@ fn read_escalation_cell(
 ) -> Result(Option(#(Seq, Escalation)), ApiError) {
   let key = escalation.register_key(id)
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, seq:))) ->
       case escalation.decode(value.payload) {
@@ -2244,19 +2247,18 @@ type Attempt(value) {
   Retry
 }
 
-// Classifies a commit failure for a caller. Only one of them is a
-// condition rather than a fault: a lost lease means another writer owns
-// this session, so nothing this runtime commits can ever land and the
-// remedy is to reopen (or stop), never to reload and retry. Everything
-// else stays an undifferentiated `CommitFailed` on purpose — a caller
+// Availability permits a later retry because no request was sent. A lost
+// lease instead means another writer owns this session, so the remedy is to
+// reopen (or stop), never to reload and retry. Other failures stay an
+// undifferentiated `CommitFailed` on purpose — a caller
 // that cannot act differently on a full disk than on a corrupt page
 // gains nothing from being told which it was, and the reason string is
 // there for the human.
-fn commit_failure(error: CommitError) -> ApiError {
+fn commit_failure(error: writer.Failure(CommitError)) -> ApiError {
   case error {
-    tx.LeaseLost(held_by:) -> SessionStolen(held_by:)
-    tx.StaleExpectation(..) | tx.Corruption(..) | tx.Faulted(..) ->
-      CommitFailed(error:)
+    writer.Unavailable -> RuntimeUnavailable
+    writer.Underlying(tx.LeaseLost(held_by:)) -> SessionStolen(held_by:)
+    writer.Underlying(error) -> CommitFailed(error:)
   }
 }
 
@@ -2305,12 +2307,12 @@ fn or_rejected(
 // spending the ladder's attempts against a fence that refuses all of
 // them would report `RaceLost` and name the wrong cause.
 fn commit_or_retry(
-  result: Result(tx.CommitResult, CommitError),
+  result: Result(tx.CommitResult, writer.Failure(CommitError)),
   on_ok on_ok: value,
 ) -> Result(Attempt(value), ApiError) {
   case result {
     Ok(_) -> Ok(Done(Ok(on_ok)))
-    Error(tx.StaleExpectation(..)) -> Ok(Retry)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Ok(Retry)
     Error(error) -> Ok(Done(Error(commit_failure(error))))
   }
 }
@@ -2348,7 +2350,7 @@ fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
 // the problem and then report `RaceLost`, which names the wrong cause —
 // the same mistake the lease branch was written to avoid.
 fn commit_admission(
-  result: Result(tx.CommitResult, CommitError),
+  result: Result(tx.CommitResult, writer.Failure(CommitError)),
   mark: Option(Mark),
   on_ok on_ok: value,
 ) -> Result(Attempt(value), ApiError) {
@@ -2360,24 +2362,27 @@ fn commit_admission(
 
 // The mark's key, when this commit failed on the mark's own expectation.
 fn conflicted_key(
-  result: Result(tx.CommitResult, CommitError),
+  result: Result(tx.CommitResult, writer.Failure(CommitError)),
   mark: Option(Mark),
 ) -> Option(String) {
   case result, mark {
-    Error(tx.StaleExpectation(failed:)), Some(Mark(key:, ..)) ->
+    Error(writer.Underlying(tx.StaleExpectation(failed:))), Some(Mark(key:, ..))
+    ->
       case failed {
         tx.Expect(ns: register.FactCustom, key: failed_key, seq: _)
           if failed_key == key
         -> Some(key)
         tx.Expect(..) -> None
       }
-    Error(tx.StaleExpectation(..)), None
-    | Error(tx.Corruption(..)), Some(_)
-    | Error(tx.Corruption(..)), None
-    | Error(tx.Faulted(..)), Some(_)
-    | Error(tx.Faulted(..)), None
-    | Error(tx.LeaseLost(..)), Some(_)
-    | Error(tx.LeaseLost(..)), None
+    Error(writer.Underlying(tx.StaleExpectation(..))), None
+    | Error(writer.Underlying(tx.Corruption(..))), Some(_)
+    | Error(writer.Underlying(tx.Corruption(..))), None
+    | Error(writer.Underlying(tx.Faulted(..))), Some(_)
+    | Error(writer.Underlying(tx.Faulted(..))), None
+    | Error(writer.Underlying(tx.LeaseLost(..))), Some(_)
+    | Error(writer.Underlying(tx.LeaseLost(..))), None
+    | Error(writer.Unavailable), Some(_)
+    | Error(writer.Unavailable), None
     | Ok(_), Some(_)
     | Ok(_), None
     -> None
@@ -2422,13 +2427,13 @@ fn read_op_state(
 }
 
 fn require(
-  read: Result(Option(value), String),
+  read: Result(Option(value), ApiError),
   missing: String,
 ) -> Result(value, ApiError) {
   case read {
     Ok(Some(value)) -> Ok(value)
     Ok(None) -> Error(ReadFailed(reason: missing))
-    Error(reason) -> Error(ReadFailed(reason:))
+    Error(error) -> Error(error)
   }
 }
 
@@ -2441,9 +2446,7 @@ fn read_leaf(
   let w = writer_subject(runtime)
   use cell <- result.try(
     writer.get_register(w, register.StrandLeaf, runtime.strand)
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   case cell {
     None -> Ok(#(None, None))
@@ -2460,9 +2463,7 @@ fn read_pending(
   let w = writer_subject(runtime)
   use cells <- result.try(
     writer.list_registers(w, register.PendingEntry, None)
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   cells
   |> list.try_map(fn(pair) {
@@ -2479,10 +2480,10 @@ fn read_decoded(
   ns: register.RegisterNs,
   key: String,
   decode: fn(json.JsonValue) -> Result(payload, corruption_report),
-) -> Result(Option(#(Int, payload)), String) {
+) -> Result(Option(#(Int, payload)), ApiError) {
   let w = writer_subject(runtime)
   use cell <- result.try(
-    writer.get_register(w, ns, key) |> result.map_error(describe_storage),
+    writer.get_register(w, ns, key) |> result.map_error(read_failure),
   )
   case cell {
     None -> Ok(None)
@@ -2493,7 +2494,7 @@ fn read_decoded(
       decode(value.payload)
       |> result.map(fn(payload) { Some(#(seq, payload)) })
       |> result.map_error(fn(_) {
-        "a stored register payload failed to decode: " <> key
+        ReadFailed("a stored register payload failed to decode: " <> key)
       })
   }
 }
@@ -2503,8 +2504,8 @@ fn mint_context(runtime: Runtime) -> #(Int, ids.Generator) {
   #(now, ids.generator(clock.fixed(at: now), seed: runtime.effects.entropy()))
 }
 
-fn writer_subject(runtime: Runtime) -> Subject(writer.Message) {
-  process.named_subject(runtime.tree.writer)
+fn writer_subject(runtime: Runtime) -> address.Address(writer.Message) {
+  runtime.tree.writer
 }
 
 fn describe_storage(error: storage.StorageError) -> String {
@@ -2513,6 +2514,20 @@ fn describe_storage(error: storage.StorageError) -> String {
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
     storage.HandleClosed -> "storage handle closed"
+  }
+}
+
+fn read_failure(error: writer.Failure(storage.StorageError)) -> ApiError {
+  case error {
+    writer.Unavailable -> RuntimeUnavailable
+    writer.Underlying(error) -> ReadFailed(describe_storage(error))
+  }
+}
+
+fn describe_writer_read(error: writer.Failure(storage.StorageError)) -> String {
+  case error {
+    writer.Unavailable -> "the session writer is unavailable"
+    writer.Underlying(error) -> describe_storage(error)
   }
 }
 

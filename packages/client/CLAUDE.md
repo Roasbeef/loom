@@ -1615,7 +1615,10 @@ an install is under the extensions root.
   creation); `compact` and `navigate`, which have no api entry point yet,
   build a `machine/acceptance` plan and commit it through
   `runtime/writer` — the same pattern the conformance simulation runner
-  uses. Nothing bypasses the writer.
+  uses. Nothing bypasses the writer. An absent runtime writer is a typed
+  `api.RuntimeUnavailable`, rendered as a retryable `conflict` by the gateway;
+  the rule and schedule scanners hold the attempted admission for a later
+  scan. This is distinct from a lost reply, whose commit may already exist.
 - **Registers**: reads `strand.*` (configuration, leaf, state, last
   result) and `op.meta`/`op.state` through the session's typed accessors
   to build snapshots and detect terminals; reads the runtime's escalation

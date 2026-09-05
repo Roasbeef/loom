@@ -47,7 +47,7 @@ import core/register
 import core/tx
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Pid, type Subject, type Timer}
+import gleam/erlang/process.{type Pid, type Subject, type Timer}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
@@ -84,7 +84,7 @@ import weft/registry as address
 /// Driver configuration.
 ///
 /// Constructor invariants: `writer` names the session's StorageWriter
-/// (a name, not a subject, so restarts re-resolve it); `stream_options`
+/// (a reference address, resolved for each call); `stream_options`
 /// is the runtime-owned opaque options bag snapshotted into generation
 /// steps; `retry_policy` is the normalized policy snapshotted likewise;
 /// `poll_interval_ms` is the checkpoint-poll period (positive);
@@ -94,7 +94,7 @@ import weft/registry as address
 /// scopes it to the strand it is starting.
 pub type Options {
   Options(
-    writer: Name(writer.Message),
+    writer: address.Address(writer.Message),
     strand: String,
     effects: Effects,
     stream_options: JsonValue,
@@ -208,7 +208,7 @@ type State {
     // timers report here so their messages disappear with the process that
     // dispatched them instead of crossing a restart boundary.
     internal: Subject(Message),
-    writer: Subject(writer.Message),
+    writer: address.Address(writer.Message),
     strand: String,
     effects: Effects,
     clock: Clock,
@@ -326,7 +326,7 @@ pub fn start(
     // therefore enter its receive loop without weakening the claim handshake.
     actor.initialised(State(
       internal:,
-      writer: process.named_subject(options.writer),
+      writer: options.writer,
       strand: options.strand,
       effects: options.effects,
       clock: options.effects.clock,
@@ -814,14 +814,18 @@ fn commit_abort_marker(
 ) -> AbortAttempt {
   case writer.commit(state.writer, plan_tx) {
     Ok(_) -> AbortDurable(state)
-    Error(tx.StaleExpectation(..)) -> abort_commit(state, attempts - 1)
-    Error(tx.Corruption(report:)) -> AbortFailed(corruption.describe(report))
-    Error(tx.Faulted(reason:)) -> AbortFailed(reason)
+    Error(writer.Unavailable) ->
+      AbortFailed("the session writer is unavailable")
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      abort_commit(state, attempts - 1)
+    Error(writer.Underlying(tx.Corruption(report:))) ->
+      AbortFailed(corruption.describe(report))
+    Error(writer.Underlying(tx.Faulted(reason:))) -> AbortFailed(reason)
 
     // Fenced out: another writer owns the session, so the cancellation
     // marker cannot be made durable here and retrying would meet the
     // same fence.
-    Error(tx.LeaseLost(held_by:)) ->
+    Error(writer.Underlying(tx.LeaseLost(held_by:))) ->
       AbortFailed(tx.describe_lease_loss(held_by))
   }
 }
@@ -954,21 +958,24 @@ fn commit_then(
 
     // A concurrent admission won the seq race: reload and re-plan with
     // the observation preserved.
-    Error(tx.StaleExpectation(..)) -> {
+    Error(writer.Unavailable) -> Halt("the session writer is unavailable")
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> {
       let state = case observation {
         NoObservation -> state
         other -> push_observation_front(state, other)
       }
       drive_loop(state, fuel - 1)
     }
-    Error(tx.Corruption(report:)) ->
+    Error(writer.Underlying(tx.Corruption(report:))) ->
       Halt("commit corruption: " <> corruption.describe(report))
-    Error(tx.Faulted(reason:)) -> Halt("storage faulted: " <> reason)
+    Error(writer.Underlying(tx.Faulted(reason:))) ->
+      Halt("storage faulted: " <> reason)
 
     // Not a fault to reload past: this process is no longer the
     // session's writer, so the strand stops and the tree's reopen path
     // is the only thing that can resolve it.
-    Error(tx.LeaseLost(held_by:)) -> Halt(tx.describe_lease_loss(held_by))
+    Error(writer.Underlying(tx.LeaseLost(held_by:))) ->
+      Halt(tx.describe_lease_loss(held_by))
   }
 }
 
@@ -2435,10 +2442,13 @@ fn consume_escalations(
       )
     case writer.commit(state.writer, plan_tx) {
       Ok(_) -> Ok(list.append(won, record.grants))
-      Error(tx.StaleExpectation(..)) -> Ok(won)
-      Error(tx.Corruption(report:)) -> Error(corruption.describe(report))
-      Error(tx.Faulted(reason:)) -> Error(reason)
-      Error(tx.LeaseLost(held_by:)) -> Error(tx.describe_lease_loss(held_by))
+      Error(writer.Unavailable) -> Error("the session writer is unavailable")
+      Error(writer.Underlying(tx.StaleExpectation(..))) -> Ok(won)
+      Error(writer.Underlying(tx.Corruption(report:))) ->
+        Error(corruption.describe(report))
+      Error(writer.Underlying(tx.Faulted(reason:))) -> Error(reason)
+      Error(writer.Underlying(tx.LeaseLost(held_by:))) ->
+        Error(tx.describe_lease_loss(held_by))
     }
   })
 }
@@ -2574,7 +2584,14 @@ fn read_clock(state: State) -> #(Int, State) {
   #(now, State(..state, clock:))
 }
 
-fn describe_read_error(error: storage.StorageError) -> String {
+fn describe_read_error(error: writer.Failure(storage.StorageError)) -> String {
+  case error {
+    writer.Unavailable -> "the session writer is unavailable"
+    writer.Underlying(error) -> describe_storage_error(error)
+  }
+}
+
+fn describe_storage_error(error: storage.StorageError) -> String {
   case error {
     storage.CorruptRow(report:) -> corruption.describe(report)
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)

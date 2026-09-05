@@ -31,21 +31,24 @@
 //// instead. A weft periodic timeout fires into a subject weft creates
 //// inside the actor's own process and never registers under a name, so
 //// there is no address a successor could inherit and nothing left to
-//// defend: the writer selects only on its registered subject again.
+//// defend. The writer's public reference address resolves to the current
+//// incarnation, while periodic work remains bound to the actor that armed it.
 
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type EntryId, type Seq}
 import core/register.{type RegisterNs}
 import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
+import gleam/result
 import runtime/internal/ffi_sup
 import session/session.{type Session}
 import storage/storage.{type StorageError}
 import weft/actor
+import weft/registry as address
 
 /// A committed-transaction event published to subscribers post-commit.
 /// Events are hints; pulls are truth (design §3.6) — a subscriber that
@@ -55,6 +58,17 @@ pub type Event {
   /// successful commits from 1 (it restarts with the process); `seqs`
   /// are the storage-assigned write seqs.
   Committed(ordinal: Int, seqs: List(Seq), ts: Int)
+}
+
+/// A transport-level availability failure or the writer's own storage answer.
+/// Keeping these separate lets callers retry an unsent request after restart
+/// without reclassifying a refused or ambiguous commit.
+pub type Failure(cause) {
+  /// No writer incarnation was resolved, so no request was sent.
+  Unavailable
+
+  /// The resolved writer answered with the underlying error.
+  Underlying(cause)
 }
 
 /// Writer configuration.
@@ -113,7 +127,7 @@ type State {
   )
 }
 
-/// Starts a writer registered under `name` (so a supervisor restart keeps
+/// Starts a writer bound to `name` (so a supervisor restart keeps
 /// the address stable for the strands that call it).
 ///
 /// ## Examples
@@ -124,7 +138,7 @@ type State {
 ///
 pub fn start(
   options: Options,
-  name: Name(Message),
+  name: address.Address(Message),
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
     actor.initialised(State(
@@ -136,7 +150,7 @@ pub fn start(
     |> actor.returning(subject)
     |> Ok
   })
-  |> actor.named(name)
+  |> actor.addressed(name)
   |> actor.on_message(handle)
   |> renewing(options.session)
   |> actor.start
@@ -175,7 +189,7 @@ fn renewing(
 ///
 pub fn supervised(
   options: Options,
-  name: Name(Message),
+  name: address.Address(Message),
 ) -> ChildSpecification(Subject(Message)) {
   supervision.worker(fn() { start(options, name) })
 }
@@ -295,9 +309,10 @@ fn describe_storage_error(error: StorageError) -> String {
 
 // --- calling wrappers -----------------------------------------------------
 
-/// Commits one transaction through the writer. Panics if the writer is
-/// dead — under supervision a crashed caller beats one holding an
-/// unobserved commit.
+/// Commits one transaction through the current writer incarnation. An
+/// unavailable address returns `Unavailable` without sending. If the writer dies
+/// after the call begins, the caller still crashes rather than treating an
+/// unobserved commit as a refusal; the durable store decides whether it landed.
 ///
 /// ## Examples
 ///
@@ -306,10 +321,14 @@ fn describe_storage_error(error: StorageError) -> String {
 /// ```
 ///
 pub fn commit(
-  writer: Subject(Message),
+  writer: address.Address(Message),
   tx: Tx,
-) -> Result(CommitResult, CommitError) {
-  process.call_forever(writer, Commit(tx, _))
+) -> Result(CommitResult, Failure(CommitError)) {
+  use writer <- result.try(
+    address.lookup(writer)
+    |> result.replace_error(Unavailable),
+  )
+  process.call_forever(writer, Commit(tx, _)) |> result.map_error(Underlying)
 }
 
 /// Batch entry fetch through the writer.
@@ -321,10 +340,12 @@ pub fn commit(
 /// ```
 ///
 pub fn get_entries(
-  writer: Subject(Message),
+  writer: address.Address(Message),
   ids: List(EntryId),
-) -> Result(Dict(EntryId, Entry), StorageError) {
+) -> Result(Dict(EntryId, Entry), Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
   process.call_forever(writer, GetEntries(ids, _))
+  |> result.map_error(Underlying)
 }
 
 /// One register point-lookup through the writer.
@@ -336,11 +357,13 @@ pub fn get_entries(
 /// ```
 ///
 pub fn get_register(
-  writer: Subject(Message),
+  writer: address.Address(Message),
   ns: RegisterNs,
   key: String,
-) -> Result(Option(storage.Register), StorageError) {
+) -> Result(Option(storage.Register), Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
   process.call_forever(writer, GetRegister(ns, key, _))
+  |> result.map_error(Underlying)
 }
 
 /// A namespace listing through the writer.
@@ -352,11 +375,13 @@ pub fn get_register(
 /// ```
 ///
 pub fn list_registers(
-  writer: Subject(Message),
+  writer: address.Address(Message),
   ns: RegisterNs,
   key_prefix: Option(String),
-) -> Result(List(#(String, storage.Register)), StorageError) {
+) -> Result(List(#(String, storage.Register)), Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
   process.call_forever(writer, ListRegisters(ns, key_prefix, _))
+  |> result.map_error(Underlying)
 }
 
 /// A branch scan through the writer.
@@ -368,10 +393,11 @@ pub fn list_registers(
 /// ```
 ///
 pub fn scan_branch(
-  writer: Subject(Message),
+  writer: address.Address(Message),
   q: storage.BranchScan,
-) -> Result(List(Entry), StorageError) {
-  process.call_forever(writer, ScanBranch(q, _))
+) -> Result(List(Entry), Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
+  process.call_forever(writer, ScanBranch(q, _)) |> result.map_error(Underlying)
 }
 
 /// A usage-ledger read through the writer.
@@ -383,10 +409,11 @@ pub fn scan_branch(
 /// ```
 ///
 pub fn scan_usage(
-  writer: Subject(Message),
+  writer: address.Address(Message),
   q: storage.UsageScan,
-) -> Result(List(UsageRow), StorageError) {
-  process.call_forever(writer, ScanUsage(q, _))
+) -> Result(List(UsageRow), Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
+  process.call_forever(writer, ScanUsage(q, _)) |> result.map_error(Underlying)
 }
 
 /// The stats projection through the writer.
@@ -398,9 +425,10 @@ pub fn scan_usage(
 /// ```
 ///
 pub fn stats(
-  writer: Subject(Message),
-) -> Result(storage.SessionStats, StorageError) {
-  process.call_forever(writer, Stats)
+  writer: address.Address(Message),
+) -> Result(storage.SessionStats, Failure(StorageError)) {
+  use writer <- result.try(resolve(writer))
+  process.call_forever(writer, Stats) |> result.map_error(Underlying)
 }
 
 /// Subscribes a subject to committed events (fire-and-forget).
@@ -411,6 +439,17 @@ pub fn stats(
 /// // writer.subscribe(subject, events_subject)
 /// ```
 ///
-pub fn subscribe(writer: Subject(Message), subscriber: Subject(Event)) -> Nil {
-  process.send(writer, Subscribe(subscriber))
+pub fn subscribe(
+  writer: address.Address(Message),
+  subscriber: Subject(Event),
+) -> Nil {
+  let _sent = address.send(writer, Subscribe(subscriber))
+  Nil
+}
+
+fn resolve(
+  writer: address.Address(Message),
+) -> Result(Subject(Message), Failure(StorageError)) {
+  address.lookup(writer)
+  |> result.replace_error(Unavailable)
 }
