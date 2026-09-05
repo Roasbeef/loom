@@ -13,13 +13,19 @@ has the [architecture target](architecture/sessions.md) and a
 The foundation is [PR #227](https://github.com/Roasbeef/loom/pull/227).
 The address primitive landed in
 [Weft #11](https://github.com/Roasbeef/weft/pull/11) and the owner published
-v0.4.3. The next branch, `client/session-runtime`, uses that published version
+v0.4.3. [PR #228](https://github.com/Roasbeef/loom/pull/228),
+`client/session-runtime`, uses that published version
 and replaces strand-name atoms with reference addresses. The two strand
 factories are unnamed and publish their typed handles in the runtime registry.
 Its local runtime suite passes 110 tests, including a 1,000-strand atom-growth
 check and repeated factory replacement without atom growth. The writer,
 registry and drain-ledger service names, cleanup
-custody, and the daemon itself remain unfinished. No evaluation path
+custody, and the daemon itself remain unfinished. Work continues on
+`client/session-custody`, stacked on #228 at `3b257d2`. The full local
+repository gate passed for the runtime slice, including 1,119 client and
+149 TUI tests. Independent review found an atom-test warm-up issue, fixed
+and reverified separately in fresh VMs; no review findings remain. CI for
+#228 is still pending. No evaluation path
 dependency remains. Foundation CI is green at `362d737` in run
 `33929462266` (Linux, macOS, jail and soak). Reclaimable runtime addresses
 and session cleanup custody precede the manager and routing changes. This
