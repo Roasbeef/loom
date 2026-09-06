@@ -487,24 +487,36 @@ fn live_tool_switches(
 
   // Receipt of the marker and the credited tools phase are independent
   // observations: neither a provider response nor a painted label is enough.
-  let _ =
+  let submitted =
     tui_driver.play(alice.data, [
       backend.Paste("hold A tool"),
       backend.KeyPress("enter"),
     ])
   let started =
-    poll.until(within: 15_000, every: 10, attempt: fn() {
-      case simplifile.read(filepath.join(workspace, "live-started")) {
-        Ok("started") -> poll.Done(Nil)
-        Ok(_) | Error(simplifile.Enoent) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: 15_000,
+      every: poll.Fixed(10),
+      from: submitted,
+      attempt: fn(last) {
+        case simplifile.read(filepath.join(workspace, "live-started")) {
+          Ok("started") -> poll.Settled(Nil)
+
+          // Refreshes complete asynchronously. Drive the ordinary terminal
+          // throughout this wait so expiry retains an observed result rather
+          // than initiating its first refresh after the deadline.
+          Ok(_) | Error(simplifile.Enoent) ->
+            poll.Pending(tui_driver.play(alice.data, []))
+          Error(reason) -> poll.Broken(#(reason, last))
+        }
+      },
+    )
   case started {
-    poll.Answered(Nil) -> Nil
-    _ -> marker_diagnostic(tui_driver.play(alice.data, []))
+    poll.Answer(Nil) -> Nil
+    poll.RanOut(last) -> marker_diagnostic(last)
+    poll.Failure(#(_, last)) -> marker_diagnostic(last)
   }
-  let assert poll.Answered(Nil) = started
+  let assert poll.Answer(Nil) = started
     as "the ordinary shipped bash command actually starts"
   let observed_start = native.monotonic_time_ms()
   list.each([alice, peer, reader], fn(driver) {
