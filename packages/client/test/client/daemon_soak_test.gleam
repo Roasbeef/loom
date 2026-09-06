@@ -26,6 +26,7 @@ import core/message
 import core/tx
 import filepath
 import gleam/bit_array
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/erlang/process
@@ -66,7 +67,34 @@ type SnapshotTiming {
     subscribed: Int,
     completed: Int,
     credit_timings: List(#(Int, Int)),
+    probes: List(Probe),
+    probe_end: ProbeEnd,
   )
+}
+
+// This call site selects a fixed allowlist; the underlying FFI is unrestricted.
+// Formatting happens after transfer timing, never between its credits. The
+// 25 ms cadence targets coarse stalls; tighter sampling would add perturbation.
+// Queue, reduction and GC trends narrow the next investigation, not its verdict.
+// Heap growth alone is not a collection, and coarse samples neither measure GC
+// pause duration nor distinguish host descheduling from waiting on native I/O.
+type Probe {
+  Probe(
+    started: Int,
+    completed: Int,
+    owners: List(#(String, List(#(String, Dynamic)))),
+  )
+}
+
+type Observation {
+  Probes(List(Probe), ProbeEnd)
+}
+
+type ProbeEnd {
+  Complete
+  SampleLimit
+  TimeLimit
+  NotStarted
 }
 
 fn settings() {
@@ -214,7 +242,103 @@ fn attach(serving: daemon_main.Serving(serve.Instance), token, id) {
 // Each prior turn adds entry credits, so a fixed total deadline would conflate
 // growing history with interference from A. Individual receives and the total
 // credit count retain their existing finite limits.
-fn measure_snapshot(serving: daemon_main.Serving(serve.Instance), token, id) {
+fn measure_snapshot(
+  serving: daemon_main.Serving(serve.Instance),
+  token,
+  id,
+  owners,
+) {
+  let worker = process.self()
+  let ready = process.new_subject()
+  let replies = process.new_subject()
+
+  // Both conditions pay the same diagnostic overhead. A shared-test-VM sampler
+  // perturbs scheduling; it supplies hypotheses, not a correction to latency.
+  // Caller death cancels the linked relay's scope; AllDelivered witnesses the
+  // sampler's retirement on success. Measurement keeps its original process.
+  let _relay =
+    weft.new([
+      fn() {
+        let stopped = process.new_subject()
+        process.send(ready, stopped)
+        let result =
+          poll.fold_until(
+            clock: poll.monotonic(),
+            within: 3200,
+            every: poll.Fixed(25),
+            from: #(0, []),
+            attempt: fn(state) {
+              let #(count, probes) = state
+              case process.receive(stopped, 0), count >= 128 {
+                Ok(Nil), True | Ok(Nil), False ->
+                  poll.Settled(Probes(list.reverse(probes), Complete))
+                Error(Nil), True ->
+                  poll.Settled(Probes(list.reverse(probes), SampleLimit))
+                Error(Nil), False -> {
+                  // Bracket the complete batch so observation cost is visible.
+                  let began = bootstrap.monotonic_time_ms()
+                  let values =
+                    list.map([#("measurement", worker), ..owners], fn(owner) {
+                      let #(name, pid) = owner
+                      #(
+                        name,
+                        list.map(
+                          [
+                            "status",
+                            "current_function",
+                            "reductions",
+                            "message_queue_len",
+                            "garbage_collection",
+                            "total_heap_size",
+                          ],
+                          fn(item) {
+                            #(
+                              item,
+                              ffi_soak.process_info(pid, atom.create(item)),
+                            )
+                          },
+                        ),
+                      )
+                    })
+                  poll.Pending(
+                    #(count + 1, [
+                      Probe(began, bootstrap.monotonic_time_ms(), values),
+                      ..probes
+                    ]),
+                  )
+                }
+              }
+            },
+          )
+
+        // Cooperative limits retain the bounded prefix and name its truncation.
+        case result {
+          poll.Answer(value) -> Ok(value)
+          poll.RanOut(#(_, probes)) ->
+            Ok(Probes(list.reverse(probes), TimeLimit))
+          poll.Failure(reason) -> Error(reason)
+        }
+      },
+    ])
+    |> weft.deadline(5000)
+    |> weft.start_relayed(replies)
+  let assert Ok(stopped) = process.receive(ready, 1000)
+    as "the sampler publishes its own stop inbox before timing begins"
+  let #(timing, entries) = snapshot_measurement(serving, token, id)
+  process.send(stopped, Nil)
+  let assert Ok(weft.PulledOutcome(weft.Completed(0, Probes(probes, ended)))) =
+    process.receive(replies, 6000)
+    as "the bounded sampler completes without losing its observation"
+  let assert Ok(weft.AllDelivered) = process.receive(replies, 1000)
+    as "the sampler has retired before the pair is evaluated"
+  #(SnapshotTiming(..timing, probes:, probe_end: ended), entries)
+}
+
+fn snapshot_measurement(
+  serving: daemon_main.Serving(serve.Instance),
+  token,
+  id,
+) {
   let began = bootstrap.monotonic_time_ms()
   let #(socket, headers) =
     wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
@@ -242,6 +366,8 @@ fn measure_snapshot(serving: daemon_main.Serving(serve.Instance), token, id) {
       subscribed,
       completed,
       credit_timings,
+      [],
+      NotStarted,
     )
   let entries =
     chunks
@@ -304,6 +430,43 @@ fn timing_json(timing: SnapshotTiming) {
     #("connected_monotonic_ms", json.Int(timing.connected)),
     #("subscribed_monotonic_ms", json.Int(timing.subscribed)),
     #("completed_monotonic_ms", json.Int(timing.completed)),
+    #(
+      "probe_end",
+      json.String(case timing.probe_end {
+        Complete -> "completed"
+        SampleLimit -> "sample_limit"
+        TimeLimit -> "time_limit"
+        NotStarted -> "not_started"
+      }),
+    ),
+    #(
+      "probes",
+      json.Array(
+        list.map(timing.probes, fn(probe) {
+          json.Object([
+            #("started_monotonic_ms", json.Int(probe.started)),
+            #("completed_monotonic_ms", json.Int(probe.completed)),
+            #(
+              "owners",
+              json.Object(
+                list.map(probe.owners, fn(owner) {
+                  let #(name, values) = owner
+                  #(
+                    name,
+                    json.Object(
+                      list.map(values, fn(value) {
+                        let #(key, observed) = value
+                        #(key, json.String(string.inspect(observed)))
+                      }),
+                    ),
+                  )
+                }),
+              ),
+            ),
+          ])
+        }),
+      ),
+    ),
     #(
       "credit_timings",
       json.Array(
@@ -626,8 +789,17 @@ fn drive(
         as "one explicit open begins the next A incarnation"
       let a = resident(serving.ready.registry, a_id)
       let helper_owner = helper(a)
+      let assert Ok(a_gateway) = addresses.owner(a.gateway.name)
+        as "the sampler pins A's original gateway"
+      let assert Ok(b_gateway) = addresses.owner(b.gateway.name)
+        as "the sampler pins B's original gateway"
+      let owners = [
+        #("registry", manager.pid(serving.ready.registry)),
+        #("a_gateway", a_gateway),
+        #("b_gateway", b_gateway),
+      ]
       let #(unstalled, baseline_entries) =
-        measure_snapshot(serving, token, b_id)
+        measure_snapshot(serving, token, b_id, owners)
       let #(slow, snapshot) = attach(serving, token, a_id)
       stall_entry(slow, snapshot, 0, 32)
       let assert Ok(gateway_pid) = addresses.owner(a.gateway.name)
@@ -635,7 +807,8 @@ fn drive(
       let queue = mailbox(gateway_pid)
       assert queue <= 2
         as "the unread peer cannot build a gateway request backlog"
-      let #(stressed, stressed_entries) = measure_snapshot(serving, token, b_id)
+      let #(stressed, stressed_entries) =
+        measure_snapshot(serving, token, b_id, owners)
       report_pair(directory, cycle, unstalled, stressed)
       assert stressed_entries == baseline_entries
         as "both measurements transfer the same immutable B history"
