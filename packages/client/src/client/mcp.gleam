@@ -499,6 +499,21 @@ fn prepared_clients(prepared: Prepared) -> List(mcp_client.Client) {
   list.filter_map(prepared.entries, fn(entry) { entry.1 })
 }
 
+// How much longer the collecting scope lives than the proof each of its
+// tasks is allowed to wait for.
+//
+// Without a margin the two budgets are the same instant: a server whose
+// native exit lands close to `within` returns a definite verdict at
+// exactly the moment the scope reaps the worker holding it, and every
+// non-`Completed` outcome folds into one error string — so a confirmed
+// retirement is reported as an unconfirmed one, and an unconfirmed
+// cleanup retains custody and occupancy for the session. The margin is
+// the same arrangement `broker/exec`'s `handshake_wait` makes over its
+// own handshake timeout, and for the same reason: the outer bound is
+// there to catch a task that is stuck, not to race the answer of one
+// that is finishing.
+const collector_margin_ms = 1000
+
 fn close_clients(
   clients: List(mcp_client.Client),
   within: Int,
@@ -513,7 +528,7 @@ fn close_clients(
       }),
     )
     |> weft.limit(int.max(list.length(clients), 1))
-    |> weft.deadline(int.max(within, 1))
+    |> weft.deadline(int.max(within, 1) + collector_margin_ms)
     |> weft.start
   use _ <- result.try(
     list.try_map(outcomes, fn(outcome) {

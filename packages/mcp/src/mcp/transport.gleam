@@ -107,6 +107,20 @@ pub type TransportEvent {
 /// single-process SIGKILL policy runs. Querying its current PID narrows stale
 /// targeting but does not eliminate the lookup-to-signal race or contain
 /// descendants and remote effects.
+///
+/// **The policy is SIGKILL only, and stdin EOF is deliberately not part
+/// of it.** A stdio server's documented shutdown signal is EOF on its
+/// stdin, and the only way a BEAM port can deliver that is
+/// `erlang:port_close/1`, which destroys the port — and with it the
+/// `exit_status` message that is this transport's *sole* witness that
+/// the child process is gone (`mcp/client.shutdown` waits for exactly
+/// that event and answers `RetirementUnconfirmed` without it). A polite
+/// EOF and a retirement witness are therefore mutually exclusive here,
+/// and custody wins: an unconfirmed cleanup keeps a session's
+/// occupancy, while a server denied its graceful path is killed a few
+/// milliseconds earlier than it would have chosen. The alternative
+/// would be an FFI shim that half-closes the child's stdin, which
+/// `erlang:open_port/2` has no supported way to do.
 pub type Connection {
   Connection(send: fn(String) -> Result(Nil, Nil), close: fn() -> Nil)
 }
@@ -186,6 +200,10 @@ pub fn open(
                 // current PID avoids retaining a stale PID across closure;
                 // the lookup-to-signal race remains best-effort, not a stable
                 // OS process handle or a descendant-containment guarantee.
+                //
+                // Closing the port here would send the child the stdin EOF
+                // its protocol asks for and destroy the exit-status witness
+                // in the same call. See `Connection` for why custody wins.
                 case ffi_port.port_os_pid(opened) {
                   Ok(pid) -> ffi_port.kill_os_process(pid)
                   Error(Nil) -> Nil

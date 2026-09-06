@@ -12,7 +12,6 @@
 -export([
     open_stdio/4,
     port_send/2,
-    close_port/1,
     port_os_pid/1,
     kill_os_process/1,
     port_event/1
@@ -93,18 +92,6 @@ port_send(Port, Line) ->
         {ok, nil}
     catch
         _:_ -> {error, nil}
-    end.
-
-%% erlang:port_close/1 — closes the server's stdio, which is the stdio
-%% transport's shutdown signal (EOF on the server's stdin). Already
-%% closed ports raise badarg; closing is idempotent from the caller's
-%% view.
-close_port(Port) ->
-    try
-        erlang:port_close(Port),
-        nil
-    catch
-        _:_ -> nil
     end.
 
 %% erlang:port_info/2 with os_pid, queried immediately before termination.

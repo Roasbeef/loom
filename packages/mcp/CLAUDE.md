@@ -108,9 +108,11 @@ built out of.
 - **FFI**: `mcp/internal/ffi_port` over `src/mcp_ffi.erl` — the package's
   complete inventory of impurity. `erlang:open_port/2` with
   `spawn_executable` (binary stream mode, `exit_status`, deliberately no
-  `stderr_to_stdout`), `port_command/2`, `port_close/1`, `port_info/2`
+  `stderr_to_stdout`), `port_command/2`, `port_info/2`
   for the OS pid, `os:cmd` running `kill -KILL`, and the shim that takes
   a raw port message apart into `PortBytes | PortClosed | PortJunk`.
+  There is deliberately **no** `port_close/1` here, where `broker`'s
+  sibling module has one: see the SIGKILL-only invariant below.
 
 ## Traffic
 
@@ -164,6 +166,16 @@ built out of.
   MCP servers are operator-trusted: PID lookup and SIGKILL have a TOCTOU
   window, and native exit proves neither descendant drain nor rollback of
   remote effects. This is not the sandbox helper's containment contract.
+- **Shutdown is SIGKILL only, and the missing stdin EOF is the price of
+  the witness.** A stdio server's documented shutdown signal is EOF on
+  its stdin, and `erlang:port_close/1` is the only way a BEAM port can
+  deliver one — but it destroys the port, and with it the `exit_status`
+  message the invariant above rests on. The two cannot both be had
+  without an FFI shim that half-closes the child's stdin, which
+  `open_port/2` has no supported way to do, so custody wins and
+  `mcp/transport.Connection`'s doc carries the argument. The package
+  therefore declares no port-closing external at all: an unused one
+  would read as an oversight and invite its restoration.
 - **Every decoder is total.** Wrong `jsonrpc`, missing fields, wrong
   types anywhere, a float or null id, `result` and `error` both present
   or both absent, a non-object list entry, an oversized line — each

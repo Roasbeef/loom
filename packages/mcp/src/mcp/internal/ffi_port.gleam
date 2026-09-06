@@ -6,6 +6,14 @@
 //// behind its `Transport` seam, so the client actor stays testable with
 //// in-process fakes that never touch a real port — the same arrangement
 //// as `broker/internal/ffi_port` and its exec pool.
+////
+//// There is deliberately no port-closing external here, where its
+//// sibling in `broker` has one. Closing a port destroys the
+//// `exit_status` message `mcp/transport` retains it for, so this
+//// package's shutdown policy is SIGKILL on the child's pid with the
+//// port left open; `mcp/transport.Connection` carries the whole
+//// argument. An unused external would invite the next reader to restore
+//// the shutdown that costs the witness.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/port.{type Port}
@@ -56,14 +64,6 @@ pub fn open_stdio(
 /// dead port into `Error(Nil)`.
 @external(erlang, "mcp_ffi", "port_send")
 pub fn port_send(port: Port, line: String) -> Result(Nil, Nil)
-
-/// Closes the port, idempotently. Closing the port closes the server's
-/// stdin, which is the stdio transport's shutdown signal.
-///
-/// Uses `erlang:port_close/1` via a shim that absorbs the badarg an
-/// already-closed port raises.
-@external(erlang, "mcp_ffi", "close_port")
-pub fn close_port(port: Port) -> Nil
 
 /// Reports the OS pid of the port's child process, when it is running.
 ///
