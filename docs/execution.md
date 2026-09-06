@@ -298,6 +298,19 @@ The next reader will find the filing before they find the commit.
 
 ## 7. Advisors
 
+### Protocol changes during the single-daemon work
+
+The owner delegated protocol acceptance on September 5, 2026. Keep the
+numbered proposal before implementation. Use primary review for a small,
+local addition and independent adversarial critique when the change carries
+meaningful cross-layer or concurrency risk. Verify findings against the code
+and accept the proposal with the necessary corrections. Record the review and disposition in the
+proposal so the owner can follow the decision afterward. A protocol change
+within the approved work does not need another owner approval round.
+
+This delegation does not authorize unrelated scope changes, new product
+features or external coordination beyond the requested work.
+
 For a contested or security-sensitive design decision, dispatch a
 **read-only advisor** before any code is written. Give it the required
 reading, the real constraints, and a numbered list of questions — and demand

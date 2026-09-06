@@ -9,7 +9,7 @@ BEAM mailbox lives only in a process's heap, and a strand's supervisor
 restarts that process on any crash. A message sitting unread in the
 mailbox at that instant is gone: never in the transcript, invisible to
 recovery, and believed delivered by whoever sent it. An unread "found
-the bug at auth.gleam:42" becomes ghost state — exactly the failure the
+the bug in the authentication module" becomes ghost state — exactly the failure the
 durability plane exists to eliminate.
 
 So strands do not message each other through their mailboxes. They

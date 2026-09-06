@@ -58,6 +58,11 @@ changes, migration, and the tests required before enabling the default.
 
 ## What the tree already decides
 
+**Historical inventory.** The table records the pre-daemon implementation that
+motivated this proposal. Its atom-allocation and single-session startup claims
+are not descriptions of the current tree. The as-built boundaries and scoped
+acceptance results are in [sessions](../architecture/sessions.md).
+
 | Existing boundary | Evidence | Consequence |
 |---|---|---|
 | One served database per entry point | `client/serve.gleam:1874` opens SQLite once; `assemble` constructs one runtime and hub. | Split daemon boot from session boot. |
@@ -622,6 +627,11 @@ including their credentials, failure state, and teardown.
 
 ## Migration without two writers
 
+**Superseded proposal.** The execution ruling above rejects the opt-in legacy
+mode, endpoint import and automated rollback described in this section. The
+paragraphs remain as the considered alternative, not implementation tasks.
+The prohibition on deleting unknown user data still applies.
+
 Keep the current explicit `loomd --session` mode while the new daemon
 mode is opt-in. New clients can still attach explicitly to a legacy
 endpoint; they must not try to adopt its BEAM process as an in-VM
@@ -642,6 +652,14 @@ session storage version; fail clearly on newer versions. Catalogue
 metadata does not justify a silent conversation schema migration.
 
 ## Work sequence and exit criteria
+
+The seven phases below are the original plan, not a completion checklist.
+The execution ruling supersedes phase 5's legacy migration and rollback scope.
+Phases 0 through 5 have implementations and targeted acceptance evidence;
+phase 6 still requires final resource, dependency and platform verification.
+See [sessions](../architecture/sessions.md#verification-required-before-release)
+and [multiplayer](../architecture/multiplayer.md#end-to-end-proof) for the tested
+scenarios and their limits.
 
 | Phase | Main work | Exit criterion |
 |---|---|---|
@@ -666,6 +684,12 @@ Do not combine those into one refactor or claim that a green dispatcher
 unit test establishes the daemon's lifecycle guarantees.
 
 ## The acceptance drive
+
+The legacy-import cases below are historical and superseded by the execution
+ruling. The remaining scenarios describe required observations, not claims
+that every permutation has passed. Passing local client, release and smoke
+gates do not establish Linux enforcement or resolve the SQLite descriptor
+growth found by the measured soak.
 
 Use the shipped daemon and native clients, real SQLite files, real
 jailed tools, and a deterministic streaming provider. Put two saved
@@ -715,6 +739,16 @@ Removing each must fail its intended test. Local source inspection of
 this proposal establishes none of those runtime results.
 
 ## Decisions still open
+
+**Historical questions, amended on 2026-09-06.** The paragraphs below record
+questions from the proposal. Restart is settled by the execution ruling;
+protocols 015 and 016 settle membership, revocation boundaries, activation
+authority and human origin. The accepted domain addendum to protocol 015
+settles owner-private workspace sharing, explicit session isolation and
+maintenance configuration ownership. Those choices are not awaiting another
+design decision. Measured limits, final dependency adoption and platform
+acceptance remain open; see [ADR-002](../adr/002-sqlite-binding.md) for the
+SQLite retirement correction.
 
 Restart behavior is settled by the execution ruling above.
 The multiplayer and daemon proposals must agree on session membership,

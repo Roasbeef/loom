@@ -127,7 +127,7 @@ only Go module.
 
 - **Wire (stdio)** — the same frozen kinds the broker sends and receives:
   `hello`, `exec_start`, `exec_stdin`, `exec_out`, `exec_exit`,
-  `cap_call`, `cap_result`, `cancel`, `heartbeat`, `error`.
+  `cap_call`, `cap_result`, `cancel`, `shutdown`, `heartbeat`, `error`.
 - **fd 3** — the base `SandboxPolicyV1`, required at spawn in both server
   mode and stage 2. The broker delivers it as a mode-0600 file opened by a
   shell wrapper, because Erlang ports cannot map arbitrary descriptors.
@@ -292,6 +292,14 @@ only Go module.
 - **One execution at a time per helper**; a second `exec_start` gets a
   `busy` error. Concurrency lives in the broker's pool, which keeps "the
   pgroup" in the cancel contract unambiguous.
+- **Shutdown preserves the native exit witness.** After the hello exchange,
+  `shutdown` with an empty map body stops command dispatch, cancels the active
+  jail, and joins its existing `Wait` path before the helper exits with status
+  zero. The broker keeps stdin open and drains stdout until the port reports
+  native exit; there is no shutdown acknowledgement. A deadline, port closure,
+  or nonzero exit does not prove an orderly join. The join retains the existing
+  platform limits, including Darwin's sampled descendant cleanup, and does not
+  certify successful scratch-directory or cgroup removal.
 - **The TERM rung is addressed to the payload; only the KILL rung takes
   the pgroup.** Under bwrap the helper's direct child is a *supervisor*
   which is also the group leader, with a second bwrap as the PID
@@ -582,6 +590,8 @@ only Go module.
 
 ## Deep Docs
 
+- [protocol-change/014-helper-shutdown-witness.md](../../protocol-change/014-helper-shutdown-witness.md):
+  shutdown framing, native exit evidence, and uncertain cleanup.
 - [docs/adr/006-macos-seatbelt-boundary.md](../../docs/adr/006-macos-seatbelt-boundary.md):
   the Seatbelt boundary, Darwin's resource semantics, and the explicit
   descendant-lifecycle limit.

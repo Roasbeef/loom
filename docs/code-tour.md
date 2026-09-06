@@ -1,5 +1,16 @@
 # A tour of the code
 
+The transport walkthrough below predates the managed v2 daemon. The
+startup section, sections 1 through 3, and section 10 describe the
+historical anonymous host/test path, not the shipped network entrypoint.
+Current `loom` connects to one multi-session daemon, authenticates against
+v2 control, and attaches to an explicitly opened resident session. Its
+conversation transfer is bounded and request-driven, not the broadcast
+and full-history pull described here. Read
+[the current client lifecycle](architecture/client.md#current-default-one-daemon-multiple-sessions)
+first; the later durability and effect walkthrough remains useful for
+following an admitted run.
+
 Someone types `fix the flaky test in auth_test.gleam` into `loom` and
 presses enter. Between that key press and an answer appearing on their
 screen, the request crosses a native Gleam terminal process, a websocket, a
@@ -21,7 +32,8 @@ relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
 ## The shape of the thing
 
-Twenty packages, nineteen Gleam and one Go, split across three planes.
+The packages split across three planes, with shared host primitives below
+the client and terminal boundaries.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -60,6 +72,9 @@ property-testable with no processes involved and the system prompt
 byte-stable for a whole session.
 
 ## Before the key press
+
+This section describes historical per-session startup. The current daemon
+restores catalogue metadata without opening conversation stores.
 
 By the time anyone can type, `client/serve.boot` has already assembled
 the whole stack in one function, and its order is the dependency graph
@@ -113,6 +128,8 @@ websocket listener. The token file is written `0600` before the listener
 binds.
 
 ## 1. The key press
+
+This and the next two sections follow the historical host/test protocol.
 
 Etui hands each key to `update_key` in
 `packages/tui/src/tui.gleam`. Modal keys stay with the open
@@ -180,7 +197,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1214`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:2448`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -588,12 +605,16 @@ Atomic. The window is closed.
 
 ## 10. Back to the screen
 
+This is the historical host/test delivery path. Authenticated v2 uses the
+credited snapshot reader and explicit reconciliation instead; it does not
+subscribe the gateway to these unbounded commit or bus hints.
+
 The writer published `Committed` before it replied. A tiny forwarder
 actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:349`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:585`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:1728`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -621,7 +642,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1813`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:3138`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -781,7 +802,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1930`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2201`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1170,7 +1191,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:946`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:957`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1181,7 +1202,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1225`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1236`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3656`). Keying

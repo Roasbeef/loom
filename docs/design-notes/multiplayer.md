@@ -1,9 +1,12 @@
 # Design note: multiplayer — several operators on one session
 
-Status: **brief, not built.** Written from a cited survey of the gateway
-as it stands (2026-09-04), so the gaps below are measured rather than
-assumed. Where this note and the code disagree once work lands, the code
-is right and this note should say so at the top.
+Status: **historical survey, superseded by protocols 015 and 016.** The
+observations below describe the gateway at `f019322` on 2026-09-04, not
+the current implementation or its remaining gaps. The managed daemon now
+has per-principal credentials, membership, attributed writes, exact-cell
+decisions, and bounded credited delivery. See
+[the client architecture](../architecture/client.md) and
+[session ownership](../architecture/sessions.md) for the current behavior.
 
 ## What already holds
 
@@ -25,7 +28,8 @@ peers, a fleet routes clients by session id (`docs/loom-design.md`
   produced the event, one strictly increasing space per session
   (`client/gateway.gleam:14-22`). N clients get one total order for free, and
   resync is `subscribe{from_seq}` or `catch_up` replaying
-  `[from_seq, high_water]` from storage (`client/gateway.gleam:1382-1481`).
+  `[from_seq, high_water]` from storage
+  ([historical subscribe implementation](https://github.com/Roasbeef/loom/blob/f019322/packages/client/src/client/gateway.gleam#L1382-L1481)).
 - **Serialised writes.** The hub is one actor and every write goes
   through the session's single writer, so two clients' commands queue in
   mailbox order and never race at the store. A second prompt on a live
@@ -70,7 +74,8 @@ Numbered as the survey found them; **frozen** means spec Part 1 and a
 6. **Concurrent steers are silent about each other.** Both admit, both
    inject, neither operator learns of the other.
 7. **`deny` is not CAS-guarded** where `approve` is: compare `deny` at
-   `client/gateway.gleam:2294` with `approve` at `client/gateway.gleam:2209`.
+   `client/gateway.gleam:2294` with the
+   [historical approval CAS](https://github.com/Roasbeef/loom/blob/f019322/packages/client/src/client/gateway.gleam#L2203-L2220).
    Two clients racing approve and deny have no ordering on the deny side.
    Not frozen.
 8. **Approvals record grants, not granters** (`client/gateway.gleam:2199-2215`).

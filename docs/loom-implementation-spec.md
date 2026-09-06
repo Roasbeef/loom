@@ -195,7 +195,7 @@ frame    := u32_be length ++ msgpack(map)
 map keys := "v":1, "id":u64, "kind":str, "body":map
 kinds    : hello, exec_start, exec_stdin, exec_out, exec_exit,
            cap_call, cap_result, hook_call, hook_result, cancel,
-           heartbeat, error
+           heartbeat, shutdown, error
 ```
 
 - `hello` carries `{proto: 1, peer: "exec-helper"|"satellite"|..., features: [..]}`; version mismatch → close.
@@ -203,6 +203,7 @@ kinds    : hello, exec_start, exec_stdin, exec_out, exec_exit,
 - `cap_call.body`: `{token, cap: "fs.read"|..., args: msgpack, deadline_ms}`; `cap_result`: `{ok|err, value|error, usage?}`.
 - `hook_call.body`: `{token, kind: "tool"|"event", name, args: msgpack, deadline_ms}`, harness → satellite; `hook_result`: `{ok, value|error}`, satellite → harness with the same frame `id`. The one pair that flows in that direction, added by `protocol-change/012-hook-call.md` for the persistent extension satellite. At most one `hook_call` is outstanding per satellite; the token is the invocation's, so a `cap_call` made outside an open invocation presents a revoked one. These frames cross only the capability socket, never the exec channel.
 - `cancel` is idempotent; receiver must kill its pgroup within 2s or the broker escalates to SIGKILL of the whole helper.
+- `shutdown.body` is an empty map, harness → exec-helper after hello. The helper stops accepting commands, cancels and joins its active jail, then exits without an acknowledgement frame. The broker retains the port until native exit status; a send, timeout, closed port, or dead BEAM owner does not prove retirement. Added by [protocol-change/014](../protocol-change/014-helper-shutdown-witness.md); the platform's existing containment limits remain unchanged.
 - **Tokens** are 32-byte random values minted by the broker, valid for one `{op_id, step_id}`, transmitted only over the channel they authorize, checked on every `cap_call`. Revocation list is broker-local.
 
 `SandboxPolicyV1` (msgpack map, versioned):

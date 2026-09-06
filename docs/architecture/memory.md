@@ -1,15 +1,13 @@
 # Memory
 
-A session that has learned something and then ended has learned it for
-nobody. Memory is what Loom does about that: a store beside the session
-files, a two-turn pipeline that reads closed sessions and consolidates
-what they settled, a sidecar the next run of every session injects, and
-one model-facing door (`remember`) for the things a model is told
-outright. For most of memory stage M2's life the consumer ran in the
-server and the *producer* did not — an operator had to run the pipeline
-from a source checkout, out of cron or by hand, and a release had
-neither. Issue #149 closed that: the pass is now a supervised child of
-every ordinary boot, and this page is memory as built.
+Memory carries settled knowledge between sessions: a durable store, a
+two-turn extraction and consolidation pipeline, a rendered digest injected
+at run start, and a `remember` tool for explicit notes. The managed daemon
+owns these resources per admitted domain, not per session or daemon boot.
+Workspace-private domains preserve the owner's aggregate memory; an
+explicit session-only domain has separate destinations and sources. See
+[session ownership](sessions.md) for the persisted mapping and isolation
+rules. Isolation does not sanitize an existing transcript.
 
 Memory sits in the durability plane by construction — it is an ordinary
 session file, with the same write-once rows, the same leases and the
@@ -25,16 +23,16 @@ here.
 
 ```mermaid
 flowchart TB
-    subgraph session["a live session (loomd)"]
+    subgraph session["sessions in one admitted domain"]
         REM["remember tool<br/>one open per call, short lease"]
         HOOK["run_start hook<br/>reads the sidecar every run"]
-        PASS["client/distillpass<br/>supervised worker, one pass per boot"]
     end
 
-    subgraph store["the session directory"]
+    PASS["domain-owned cadence<br/>initial admission and clean-close triggers"]
+    subgraph store["persisted domain destinations and authorized sources"]
         DB[("loom-memory.db<br/>rows, head, cursors, notes")]
         SIDE["loom-memory.digest<br/>rendered head"]
-        SRC[("other sessions' .db files")]
+        SRC[("catalogue-mapped saved sessions")]
     end
 
     MODEL["summarize route<br/>extract, then consolidate"]
@@ -51,39 +49,42 @@ flowchart TB
     class DB,SIDE,SRC durable
 ```
 
-**The store** is `loom-memory.db`, an ordinary session file beside the
-repository's session files rather than inside the workspace — models
-edit the workspace, and memory a model can write is durable prompt
-injection with a delivery mechanism. Distillates are `CustomEntry` rows
+**The store** is an ordinary session file at the domain's persisted memory
+path, outside the editable workspace. Models edit the workspace; writable
+aggregate memory would let one session inject durable instructions into
+others. Distillates are `CustomEntry` rows
 under three registered types (`memory/fact`, `memory/lesson`,
 `memory/preference`), each carrying provenance: the source sessions and
 entry ids it was derived from. The head is a register naming the rows
 currently in force; per-source cursors and the notes cursor are
 registers too.
 
-**The pipeline** is `client/distill.gleam:501` (`run`): walk the session
-directory, extract per source on a cheap model, consolidate the
-candidates and the outstanding `remember` notes against the current head
-in one more turn, then re-render the sidecar.
+**The pipeline** is `client/distill.gleam:612` (`prepare`) on the managed
+path: resolve explicit catalogue sources after cleanup ownership is
+published, extract per source on a cheap model, consolidate the candidates
+and outstanding notes against the current head, then render the sidecar.
+The standalone `run` adapter can still scan a directory; it is not the
+managed daemon's source authority.
 
-**The lifecycle worker** is `client/distillpass.gleam:380` (`start`),
-new in #149: a supervised child that runs exactly one pass per boot and
-then idles.
+**The lifecycle worker** is parked by
+`client/distillpass.gleam:748` (`prepare_domain`) before publication, then
+started through `begin_domain`. It coalesces authorized triggers while a
+pass runs and retains the original cleanup witness.
 
-**The injection** is `client/memory.gleam:1651` (`digest_hooks`), which
+**The injection** is `client/memory.gleam:1675` (`digest_hooks`), which
 appends the fenced, attributed digest to every accepted run's opening
 messages.
 
 ## Which sessions a pass reads, and how it skips the live ones
 
-The rule is one line of code and no heuristics: every candidate source
-is opened with the ordinary writer lease, and a file whose lease is held
-is skipped (`client/distill.gleam:1002`, `harvest_one`). A live server
-holds its own session's lease for the whole of its life, so *the pass
-can never read the session it is running inside* — no idle timer, no
-clock arithmetic, no second read path. The memory store itself and the
-search index are excluded by name (`client/distill.gleam:932`,
-`source_files`).
+Managed passes resolve at most 512 saved, catalogue-mapped sources in the
+domain; overflow is refused. Reserved registrations are not sources, and
+the resolver never falls back to scanning a directory. Each source opens
+under its ordinary writer lease (`client/distill.gleam:1261`,
+`harvest_one`), with its canonical session identity checked. A resident
+session holds that lease until its effects retire, so extraction skips it.
+Shared history has a separate read-only path for live sources; its reads
+are not distillation and do not take over the writer lease.
 
 Per-source progress is a `{seq, rewrite generation}` cursor in the
 memory session. A generation that no longer matches voids the seq and
@@ -91,7 +92,7 @@ the source is read from zero again, because a precise rewrite renumbers
 every entry.
 
 What extraction may read is structural rather than textual
-(`client/distill.gleam:240`, `extractable`): settled assistant text and
+(`client/distill.gleam:257`, `extractable`): settled assistant text and
 compaction or branch summaries contribute; a **user** message
 contributes nothing, which is what permanently excludes an injected
 digest from being re-ingested, and a `CustomEntry` contributes nothing,
@@ -102,9 +103,9 @@ rule, and it is a rule about types so that no string can defeat it.
 
 | Lease | TTL | Who takes it | Why that length |
 |---|---|---|---|
-| The source session's | the server's own | `loomd`, for its whole life | It is what makes "skip the live session" exact. |
-| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:253`) | `remember_seam` (`client/memory.gleam:1277`) | One open per call, one commit; nothing slow between. |
-| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:276`) | `client/distill.gleam:501` (`run`) | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
+| The source session's | the session owner's | The resident instance, through confirmed retirement | It is what makes "skip the live session" exact. |
+| The memory session's, per `remember` call | `lease_ttl_ms`, 30 s (`client/memory.gleam:253`) | `remember_seam` (`client/memory.gleam:1298`) | One open per call, one commit; nothing slow between. |
+| The memory session's, per pass | `run_lease_ttl_ms`, 600 s (`client/memory.gleam:276`) | The owned distillation pass | Its commits are separated by whole provider turns, and a lease that expired between them would be stolen mid-run. |
 
 There is deliberately **no new lease type** for the lifecycle worker.
 The pass takes the memory session's ordinary writer lease, which is what
@@ -114,70 +115,54 @@ in band by the same mechanism, and each is told which owner holds it.
 
 ## The lifecycle worker
 
-`client/distillpass.gleam` is a `weft/state_machine` with two states —
-`Running` while the pass is in flight, `Idle(pass)` for the rest of the
-boot — started under the host's restartable service tier beside the
-search-index holder (`client/serve.gleam:2537`, `with_distill_pass`).
-Three things about it are load-bearing:
+The managed worker is a `weft/state_machine` owned by the domain host.
+Publication precedes `begin_domain`; beginning a parked worker starts its
+initial pass without making session admission wait for model turns. Each
+pass has a bounded Weft scope and an original retirement witness. A pass
+result describes pipeline work, not proof that every resource has closed.
 
-- **It starts after the boot, not inside it.** The pass dispatches model
-  turns, and a repository with ten closed sessions would otherwise delay
-  the server's first turn by however long extraction takes. Starting it
-  as a supervised child also buys the ordering for free: by the time the
-  service tier starts, the host has held its own session's writer lease
-  since early in `assemble`, so the live session is guaranteed to be
-  skipped.
-- **The pass runs on its own weft scope, bounded by a wall deadline**
-  (`client/distillpass.gleam:511`, `begin`). The machine relays the
-  outcome onto its own subject rather than blocking on it, which is what
-  lets `settled` answer while a pass is still running. All seven
-  `weft.Outcome` variants are matched (`client/distillpass.gleam:540`,
-  `reported`).
-- **It never re-arms itself.** One pass per boot is the whole cadence:
-  there is no timer and no per-turn hook, because the material a pass
-  can read — the sessions closed since the last boot, and the notes the
-  `remember` door wrote — does not change while this server runs. The
-  one way a boot sees two passes is a *supervisor restart* of the worker,
-  which re-runs `Begin` in the replacement; that costs one more pass,
-  which the pipeline is idempotent about, and it takes a crash in the
-  worker itself to happen, since the pass runs on a weft scope whose
-  death is an outcome rather than an exit.
+Clean session retirement sends `notify_domain`
+(`client/distillpass.gleam:848`). An active pass retains at most one
+follow-up, so several closes do not create an unbounded work queue. There
+is no periodic timer. A failed pass discards the pending follow-up rather
+than retrying automatically; a later authorized trigger may start again.
 
-A question asked while the pass is in flight is *postponed* by the state
-machine and answered on the transition, which is what makes
-`client/distillpass.gleam:433` (`settled`) a wait rather than a poll,
-and what lets a black-box test drive the whole lifecycle deterministically.
+When the last session retires, the manager sends the final close hint and
+then `request_quiesce` (`client/distillpass.gleam:910`) in order. Quiescence
+fences new triggers and waits for the current pass and any already
+coalesced follow-up. Only then does the manager cancel the domain host.
+Its original normal retirement, not the quiescence reply alone, reclaims
+the domain slot. Lost cleanup proof keeps that slot blocked. Normal daemon
+shutdown drains sessions before domains.
+
+The old `start`/`settled` one-pass adapter remains for standalone and
+internal callers. Its per-session boot cadence is not the managed path.
 
 ## Retry, stated in full
 
-**A failed pass is not retried in this session. The next boot reads the
-same material again.** That is the entire policy, and it is safe because
-nothing moves until the pass succeeds: the write order is rows first,
-then the head-and-cursors CAS, then the sidecar
-— `client/memory.gleam:690` (`append_distillates`), then
-`client/memory.gleam:874` (`advance_head`), then
-`client/memory.gleam:1164` (`reconcile_digest`) — so a pass that dies
-anywhere leaves every cursor where it was and the previous head
-standing.
+The write order is rows first, then the head-and-cursors CAS, then the
+sidecar: `client/memory.gleam:717` (`append_distillates`),
+`client/memory.gleam:901` (`advance_head`), and
+`client/memory.gleam:1185` (`reconcile_digest`). Failure before the CAS
+leaves the previous head and cursors intact; appended orphan rows are not
+visible through that head. Failure after the CAS retains the new durable
+progress even if sidecar publication or cleanup fails. A later authorized
+pass resumes from that committed state, not from an assumed rollback.
 
-The one cost of an interruption is a lease, not a row. A pass killed
-mid-flight — a shutdown, a fatal child, `SIGKILL` — cannot release the
-memory session's lease, which it holds under the ten-minute run TTL. The
-store is consistent, but a boot arriving inside that window finds the
-lease held and logs `memory.distill.failed` rather than distilling.
-There is deliberately no machinery to shorten it: releasing a lease from
-outside the process that took it is exactly the theft the run-scale TTL
-exists to prevent, and the cost is memory freshness measured in minutes.
+Cancellation asks the owned resources to close in order. A close failure
+or missing original retirement proof retains custody and can block domain
+reclamation; neither a caller timeout nor an expired lease proves that an
+old native owner has stopped. Lease expiry remains a recovery boundary for
+an abandoned store, not a substitute for the live daemon's cleanup proof.
 
 ## When a new digest becomes visible
 
 The sidecar is read at **run start**, once per accepted run, by the hook
-`client/serve.gleam` installs over `client/memory.gleam:1377`
+`client/serve.gleam` installs over `client/memory.gleam:1565`
 (`read_digest`). Two consequences:
 
-- A digest a pass writes is carried by the **next run** of any session
-  on the repository, including later runs of the session whose own
-  worker wrote it. It never reaches a run already open — injection
+- A digest a pass writes is carried by the **next run** of a session
+  mapped to that domain. It never reaches a run already open — injection
   happens once, when a run is accepted, and nothing in the pipeline
   touches a live prompt.
 - The digest rides *messages*, never the pinned system prompt. A changed
@@ -195,10 +180,10 @@ digest was never in it — and the anti-feedback exclusion is structural
 rather than temporal, so a digest injected earlier in the same session
 still contributes nothing to any later extraction.
 
-The digest body is rendered from the head (`client/memory.gleam:1282`,
+The digest body is rendered from the head (`client/memory.gleam:1448`,
 `render_digest`) — scrubbed, byte-capped, truncation marked — and the
 fence and attribution are built at injection time
-(`client/memory.gleam:1696`, `wrapped`) so that the file cannot forge
+(`client/memory.gleam:1721`, `wrapped`) so that the file cannot forge
 its own provenance.
 
 The read is bounded before it happens, because it is a read of an
@@ -212,12 +197,15 @@ could plausibly have produced.
 
 ## Configuration, cost and cadence
 
-The `[memory]` table in the same `loom.toml` the catalogue comes from,
-decoded by `client/distillpass.gleam:188` (`parse`):
+The domain's persisted configuration reference supplies its maintenance
+catalogue and `[memory]` table, decoded by
+`client/distillpass.gleam:205` (`parse`). This is independent of each
+session's runtime configuration; an explicit empty domain reference does
+not fall back to a later daemon default.
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
-| `distill` | `"on-boot"`, `"off"` | `"on-boot"` | Whether a pass runs at all. `"off"` starts no worker, logs `memory.distill.off`, and leaves notes accumulating for a hand-run `loom-distill`. |
+| `distill` | `"on-boot"`, `"off"` | `"on-boot"` | The retained configuration spelling enables initial domain admission and clean-close triggers. `"off"` disables maintenance, not shared history or explicit notes. |
 | `distill_wall_ms` | a positive integer, at most `600000` | `600000` | How long one whole pass may take before the deadline reaps it. The ceiling is the memory session's run lease: nothing renews that lease but a commit, so a pass cannot outlive it, and a larger value is refused rather than clamped. |
 
 An unknown key in the table is refused, because an opt-out that distils
@@ -229,7 +217,7 @@ this document's table names are checked.
 source session plus one consolidation turn — unchanged by #149, and
 routed exactly as the hand-run command routes it: the `summarize` role
 when the catalogue declares one, and the resolved main model when it
-does not (`client/distill.gleam:1268`, `target`). Both turns' usage rows
+does not (`client/distill.gleam:1568`, `target`). Both turns' usage rows
 land in the memory session's own ledger, so memory's cost is visible
 rather than folded into a session's. A pass with nothing to read
 dispatches **no** turn at all: extraction runs over zero harvests and
@@ -238,15 +226,15 @@ repository commits a cursors-only transaction and asks nothing.
 
 ## What an operator sees
 
-Every pass logs through the session's own logger, under stable names:
+Managed passes use the domain's logger, under stable names:
 
 | Event | Level | When |
 |---|---|---|
-| `memory.distill.started` | info | The pass begins; carries the directory and the wall deadline. |
+| `memory.distill.started` | info | The managed pass begins; carries the memory destination. |
 | `memory.distill.completed` | info | The pass ran; carries `sources`, `skipped`, `candidates`, `rows`, and `digest` as `written:<bytes>`, `emptied` or `unchanged`. |
-| `memory.distill.failed` | warn | The pipeline refused — a held lease, a provider failure, a dead worker — with the reason and the retry note. Also logged at boot when the catalogue routes nothing the pipeline could ask. A restarted worker whose predecessor's scope was killed before `memory.close` finds the run lease still held and logs this naming `loom-distill` — itself, one incarnation ago — as the holder. |
+| `memory.distill.failed` | warn | The pipeline or cleanup refused, with its reason and the note that committed progress is retained. This does not promise rollback or an automatic retry. |
 | `memory.distill.expired` | warn | The wall deadline reaped the pass. |
-| `memory.distill.off` | info | This host is configured not to distil. |
+| `memory.distill.off` | info | Maintenance is disabled for this configuration. |
 | `memory.digest_oversize` | warn | A run met a sidecar too large to be a digest and injected nothing; carries the size, the limit and what to do about it. Not a pass event — it is the *consumer* refusing. |
 
 The pipeline's own lines keep the `distill.*` names they have always
@@ -266,7 +254,7 @@ cursor") and, already at `warn`, `distill.source_unreadable` and
 ## The `remember` door
 
 The one model-initiated write path, and the reason the store exists
-before any pass has run. `client/memory.gleam:1277` (`remember_seam`)
+before any pass has run. `client/memory.gleam:1298` (`remember_seam`)
 opens the store per call under the short lease, scrubs and caps the
 note, and refuses in band when a pass holds the run-scale lease, naming
 the owner. Notes are a separate entry type from the pipeline's three, so
@@ -276,11 +264,11 @@ outstanding notes in and the notes cursor advances with the head CAS.
 ## Erasure, and the rebuild it schedules
 
 The erasure cascade is the second command behind the pipeline's entry
-point, `client/distill.gleam:880` (`cascade`): after `session/repo` has
+point, `client/distill.gleam:1019` (`cascade`): after `session/repo` has
 rewritten a source session, it drops from the head every distillate
-whose provenance names that session (`client/memory.gleam:670`,
+whose provenance names that session (`client/memory.gleam:694`,
 `names_source`) and re-renders the sidecar without them, through a head
-CAS and no new rows (`client/memory.gleam:1052`, `replace_head`). It needs no
+CAS and no new rows (`client/memory.gleam:1076`, `replace_head`). It needs no
 catalogue and dispatches no model turn.
 
 One limit is named rather than hidden: the cascade is **first-order**. A
@@ -314,7 +302,7 @@ rewind is earned by a drop, and the no-op stays a no-op.
 
 **What the rebuild costs**, and it is the only rebuild there is: one
 extraction request per readable source plus one consolidation, at the
-next boot's lifecycle pass or at the operator's next manual one. The
+next authorized domain pass or at the operator's next manual one. The
 dropped rows stay in the store as orphans nothing reads again.
 `loom-distill --cascade <session> --dry-run` opens the store under the
 short lease, computes the same answer — what would be dropped, kept and

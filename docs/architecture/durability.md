@@ -281,11 +281,37 @@ entries, seq on the ledger, three on the branch index, and a unique index
 giving a tip entry at most one segment. The single `session` row carries
 both the seq allocator and the statistics projection.
 
-Two operational settings are not negotiable. The journal mode is WAL, so
-readers never block the writer. And every transaction opens with `BEGIN
-IMMEDIATE`, because allocating a seq range reads `session.next_seq` before
-writing it: a deferred `BEGIN` would take a read snapshot it might be
-unable to upgrade, and a busy timeout cannot rescue that.
+Session databases use WAL so ordinary snapshot readers can coexist with
+the writer. Every session write transaction opens with `BEGIN IMMEDIATE`,
+because allocating a seq range reads `session.next_seq` before writing it.
+A deferred transaction could take a read snapshot it cannot upgrade;
+waiting longer for a lock would not repair that stale snapshot.
+
+### Shared SQLite tuning and transaction intent
+
+`storage/sqlite_policy` is the common tuning point for session, catalogue
+and search databases. Its defaults select WAL and a five-second busy
+timeout. Typed record overrides select a database-specific journal mode,
+foreign-key policy, busy timeout or optional cache target in KiB. The
+catalogue enables foreign keys for its principal and membership tables;
+the existing conversation and search schemas retain their prior policy.
+
+Connection-local settings apply before admission. Journal configuration
+runs separately because changing the journal can write the file header.
+A session opener validates the stored version and claims its lease before
+that step. Schema identity/version PRAGMAs and the rewrite's WAL checkpoint
+remain with their database lifecycle code; they are not tuning defaults.
+PRAGMA execution uses the binding's busy-total command path so contention
+returns an error instead of crashing a query decoder.
+
+The sqlc/parrot layer distinguishes result shapes, not transaction intent.
+`:one` and `:many` produce row decoders; `:exec` produces a command. A write
+can return rows, so those annotations cannot select read versus write
+transactions. The owning DAL makes that choice: catalogue pages and
+compound default reads use deferred snapshots, while creation, membership
+changes and other read-then-write operations use immediate transactions.
+A contention test holds an independent write reservation and verifies
+that metadata reads still succeed while a mutation reports `Busy`.
 
 ### The segmented branch index
 
@@ -445,6 +471,9 @@ rather than a history.
 | `storage/storage.gleam` | The backend-agnostic handle, the scan query types, the commit rules. |
 | `storage/memory.gleam` | The pure `MemoryState` model plus its actor wrapper. |
 | `storage/sqlite.gleam` | Schema, lease, commit path, segmented index, plan introspection. |
+| `storage/sqlite_policy.gleam` | Shared tuning defaults and typed per-database overrides, split around ownership admission. |
+| `storage/catalogue.gleam` | Daemon registrations, defaults and membership-filtered metadata pages. |
+| `storage/access.gleam` | Stable principals, credential digests and session membership. |
 | `storage/internal/branch.gleam` | The shared stop/filter/cursor/limit pipeline. |
 | `conformance/storage_suite.gleam` | The suite that defines correctness. |
 

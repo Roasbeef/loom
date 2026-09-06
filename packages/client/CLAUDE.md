@@ -2,8 +2,8 @@
 
 ## Purpose
 
-The ClientGateway and the session server: the outward face of a live
-session. It owns the Part 1.6 websocket protocol as total Gleam codecs,
+The single daemon and ClientGateway: one listener manages independently
+owned sessions. It owns the Part 1.6 websocket protocol as total Gleam codecs,
 a per-session hub actor that speaks it to any number of attached
 connections, the `mist` websocket transport under that hub, the bridge
 that decodes stored escalation JSON back into typed broker grants, the
@@ -16,11 +16,90 @@ repository's own history and a memory that outlives a session
 (`client/agency`, `client/codemode`, `client/history`, `client/memory`),
 the distillation pipeline that fills that memory
 (`client/distill`, a second entry point), plus the
-`loomd` entry point (`client/serve`) that boots the whole stack
-over one session file. WP-L.
+`loomd` entry point (`client/daemon/main`). Startup restores the private
+catalogue without opening runtimes. Explicit admission invokes
+`serve.resolve_managed` and `serve.assemble_in_domain` for one saved registration.
 
 ## Key Types
 
+- `client/daemon/admin.Request` is the one-shot `loomd access` command.
+  It reads existing private endpoint/owner-token records, verifies the hello
+  epoch, and sends one control mutation through `host/websocket`. It never
+  starts a daemon or opens a conversation. The caller's bounded principal ID
+  is printed before sending; only explicit successful invitation/rotation
+  output contains a bearer. A timeout does not trigger a retry.
+- `client/daemon/manager.Administration` carries digest-only invitation,
+  membership, and principal-scoped credential changes. `administer` checks
+  phase, current owner credential, and epoch in the same serialized dispatch
+  as the DAL mutation. Existing IDs conflict, revoked digests stay tombstoned,
+  and owner credentials are excluded from member rotation/revocation.
+  Invitation and membership-upserting role changes also require the persisted
+  `storage/domain.SessionOnly` scope. `isolate` checks owner, epoch, and absence
+  of every retained runtime slot before changing metadata; the wire requires
+  explicit acknowledgement that the existing transcript will be shared.
+  The domain record captures configuration at creation, not first admission.
+  These metadata checks do not substitute for mapped resource and recall
+  admission in the assembly layer.
+- `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
+  binding, capacity, and lazy session defaults. The binary rejects the removed
+  per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
+  Production startup reserves its OS PID/birth through `host/endpoint` before
+  opening the catalogue, then publishes the actual port and epoch only after
+  listener readiness. Shutdown retains the endpoint until the VM departs.
+- `client/daemon/root.Root` retains the private catalogue, stable `owner.token`,
+  kernel lock, registry witness, and original listener-owner monitor. Its
+  `start_listener` publishes a parked `client/daemon/listener.Listener` before
+  `begin` releases socket acquisition. `control_state` permits existing control
+  sockets to inspect drain progress without widening `ready` or new admission.
+  Connection admission caps 64 owners and 160MiB of accounted payload:
+  inbound message limits plus 8MiB of bounded delivery allowance per session
+  connection, with no exact BEAM heap/RSS claim. Only the original socket DOWN
+  releases a transferred reservation.
+- `client/daemon/listener.Bound` carries the selected port and original Mist
+  supervisor. `terminate_supervisor` only requests shutdown; the original
+  supervisor DOWN supplies retirement evidence. Root shutdown retires sessions
+  before closing control sockets and the listener. Lost listener proof retains
+  the root's recovery-blocked lock.
+- `serve.Settings.domain_paths` carries exact persisted memory and index paths,
+  including imported filenames and session-only mappings. The manager captures
+  the immutable `Domain` before `instance_host.prepare`, then passes it through
+  `Assembly.build` without exposing the catalogue connection. Managed resolution
+  uses the session registration's runtime configuration independently of the
+  domain's maintenance configuration. `None` preserves embedded fixtures' beside-session
+  layout. `serve.build_domain` resolves maintenance configuration independently;
+  `serve.assemble_in_domain` receives the original shared services capability.
+- `client/daemon/domain.Services` retains one original `history.Shared` and an
+  optional parked `distillpass.DomainMessage` owner. `build` publishes Services
+  cleanup before starting history and Runtime cleanup before starting cadence.
+  The registry's capacity-bounded domain book includes closing and blocked slots;
+  waiting sessions consume session slots. `DomainOpened`, `DomainFailed`,
+  `DomainRetired`, and `DomainSettled` carry exact domain incarnation identities.
+  A normal `DomainRetired` stops remaining dependents and remains authoritative
+  even if a late builder result or fault arrives.
+- `client/internal/shared_history` prepares a parked original coordinator,
+  then owns its search index and at most one read-only history source. Source
+  metadata and bounded descriptor/fragment reads advance between actor turns.
+  `history.seam_for` binds calls to the current session, while
+  `supervised_shared_commit_pull` forwards session-bound commit hints. Fresh
+  source authorization precedes ranking and exact reads; stored index locators
+  do not grant access. Retirement succeeds only after actual close results and
+  the original owner exits normally. Failed close retains the owner and handles.
+- `manager.Summary` reports session occupancy separately from `domain_capacity`,
+  `domain_occupied`, and `domain_blocked`. Saved session metadata does not prove
+  domain retirement. After the last clean session retirement, `notify_closed`
+  precedes `quiesce` from the same sender; the registry cancels the domain host
+  only after current and coalesced maintenance settles. Failed cleanup retains
+  admission capacity and prevents normal daemon shutdown.
+
+- `client/internal/instance_owner.{Owner, Part, CloseOutcome}` retains
+  published cleanup independently of a builder. Weft orders builder exit
+  before the holder's cleanup run; `StillClosing` and `RecoveryBlocked`
+  retain reservations rather than authorizing replacement.
+- `client/internal/instance_host.Host` separates parked preparation from
+  assembly. The long-lived registry must call `prepare`, retain the witness
+  and monitor it before `begin`; Weft scope lifetime includes its creator.
+  The builder remains alive after a successful open. The daemon entrypoint
+  uses these owners through `manager.Assembly` and `serve.assemble_in_domain`.
 - `client/protocol.{CommandEnvelope, Command}` — the client→server
   envelope `{v, id, cmd, body}` and its seventeen commands (`Subscribe`,
   `CatchUp`, `Prompt`, `PromptContent`, `Steer`, `FollowUp`, `Abort`,
@@ -1537,7 +1616,8 @@ an install is under the extensions root.
 
 ## Relationships
 
-- **Depends on**: `core` (json, codec, entries, messages), `session`,
+- **Depends on**: `host` (shared daemon OS bootstrap and WebSocket transport),
+  `core` (json, codec, entries, messages), `session`,
   `runtime` (`api`, `effects`, `escalation`, `supervisor`, `writer`),
   `events` (the bus as a hint source), `storage` (catch-up scans),
   `machine` (`acceptance`, `queue`, `codec` — the commands with no api
