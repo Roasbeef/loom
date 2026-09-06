@@ -1631,13 +1631,23 @@ fn ensure_domain(book: Book(instance), selected: domain.Domain) {
       DomainSlot(phase: DomainQuiescing(Idle, services), operation:, ..) as slot,
     ) ->
       case domain_service.resume(services) {
+        // The withdrawn fence's account, if it is ever sent, must not be
+        // taken for a later fence's settle. The worker sends a reply from its
+        // own turn, so one decided before this revival can still reach this
+        // registry after a second quiesce has been issued. A fresh subject
+        // per fence makes that account unselectable: the selector is rebuilt
+        // from the book every step, and only the current subject is in it.
         Ok(Nil) -> #(
           Book(
             ..book,
             domains: dict.insert(
               book.domains,
               selected.id,
-              DomainSlot(..slot, phase: DomainRunning(services)),
+              DomainSlot(
+                ..slot,
+                phase: DomainRunning(services),
+                settled: process.new_subject(),
+              ),
             ),
           ),
           Ok(operation),

@@ -1177,21 +1177,10 @@ fn domain_trigger(
   }
 }
 
-// Parks a quiesce reply until the pass it fenced has settled.
-//
-// The registry reuses one settled subject per domain slot across every
-// quiesce and revival, so a workspace that closes and reopens repeatedly
-// during one long pass would park the same subject once per cycle and the
-// book would grow with the number of cycles, which nothing else bounds. An
-// already parked subject is therefore left where it is: one answer per
-// caller is what the fence promises, and a second copy would only send a
-// duplicate account.
+// Parks a quiesce reply until the pass it fenced has settled. A resume
+// empties the park, so at most one fence's reply is ever held here.
 fn parking(book: DomainBook, reply: Subject(Pass)) -> DomainBook {
-  case list.contains(book.quiesce_waiters, reply) {
-    True -> book
-    False ->
-      DomainBook(..book, quiesce_waiters: [reply, ..book.quiesce_waiters])
-  }
+  DomainBook(..book, quiesce_waiters: [reply, ..book.quiesce_waiters])
 }
 
 // Answers every parked quiesce with the account the domain came to.
@@ -1212,9 +1201,17 @@ fn answer_quiesces(book: DomainBook, pass: Pass) -> DomainBook {
 // only producer and it has already asked the cancellation witness to exit, so
 // the retirement it began is under way and is not withdrawable. `Accepting`
 // is already open, which is what makes a duplicate or late resume harmless.
+//
+// A resume also withdraws the fence's parked reply. The registry that asked
+// for that fence has moved on: it listens for a settle on a fresh subject
+// once it revives the domain, so an account of the withdrawn fence could
+// only arrive as a stranger, and answering it later would hand the registry
+// a settle for a fence it did not issue. Dropping it here is also what keeps
+// the park bounded when a workspace closes and reopens many times during
+// one long pass.
 fn resumed(book: DomainBook) -> DomainBook {
   case book.admission {
-    Quiescing -> DomainBook(..book, admission: Accepting)
+    Quiescing -> DomainBook(..book, admission: Accepting, quiesce_waiters: [])
     Accepting | Stopping -> book
   }
 }

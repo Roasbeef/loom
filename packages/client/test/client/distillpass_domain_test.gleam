@@ -141,10 +141,10 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
     as "the resumed domain runs the pass the revived session asked for"
   assert process.receive(fenced, 0) == Error(Nil)
   process.send(second, Ok([]))
-  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
-    as "the fence's own answer arrives once nothing more is owed"
+  assert process.receive(fenced, 100) == Error(Nil)
+    as "the resume withdrew the fence, so its subject is never answered"
 
-  // The late answer must leave admission exactly where the resume put it.
+  // The withdrawn fence must leave admission exactly where the resume put it.
   assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
   let assert Ok(third) = process.receive(arrivals, 2000)
     as "a resumed domain still schedules after its stale fence is answered"
@@ -156,8 +156,9 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
   assert address.stop(names) == Ok(Nil)
 }
 
-/// The registry reuses one settled subject per slot, so repeated fence and
-/// revival cycles during one pass must not accumulate parked copies of it.
+/// A resume withdraws the fence it lifts, so a workspace that closes and
+/// reopens many times during one pass leaves one parked reply, and the fence
+/// standing at settle time is the only one answered.
 pub fn domain_cadence_repeated_fences_park_one_reply_per_caller_test() {
   let assert Ok(names) = address.start() as "registry must start"
   let name = address.new_address(names)
@@ -168,23 +169,48 @@ pub fn domain_cadence_repeated_fences_park_one_reply_per_caller_test() {
   let assert Ok(first) = process.receive(arrivals, 1000)
     as "first admission must run immediately"
 
-  // A workspace that closes and reopens five times while the pass is parked
-  // fences and revives with the same settled subject each time.
+  // Five close-and-reopen cycles while the pass is parked, then the fence
+  // that finally stands, all on the registry's one subject for the slot.
   let fenced = process.new_subject()
   list.each(list.repeat(Nil, 5), fn(_) {
     assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
     assert distillpass.request_resume(name) == Ok(Nil)
   })
-  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
 
   process.send(first, Ok([]))
-  let assert Ok(second) = process.receive(arrivals, 2000)
-    as "the resumed domain runs the pass the revived session asked for"
-  process.send(second, Ok([]))
   let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
-    as "the fence is answered once nothing more is owed"
+    as "the standing fence is answered once nothing more is owed"
   assert process.receive(fenced, 100) == Error(Nil)
-    as "one caller gets one account, however many times it fenced"
+    as "the withdrawn fences left no parked replies behind"
+  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert address.stop(names) == Ok(Nil)
+}
+
+/// A fence withdrawn by a resume is never answered, so the registry that
+/// listens on a fresh subject after revival cannot take an older fence's
+/// account for the one it issued afterwards.
+pub fn domain_cadence_withdrawn_fence_is_never_answered_test() {
+  let assert Ok(names) = address.start() as "registry must start"
+  let name = address.new_address(names)
+  let arrivals = process.new_subject()
+  let assert Ok(_) =
+    distillpass.start_domain(config(name, arrivals, "resume-withdraw"))
+    as "domain must start"
+  let assert Ok(first) = process.receive(arrivals, 1000)
+    as "first admission must run immediately"
+
+  let withdrawn = process.new_subject()
+  assert distillpass.request_quiesce(name, withdrawn) == Ok(Nil)
+  assert distillpass.request_resume(name) == Ok(Nil)
+  let standing = process.new_subject()
+  assert distillpass.request_quiesce(name, standing) == Ok(Nil)
+
+  process.send(first, Ok([]))
+  let assert Ok(distillpass.Completed(_)) = process.receive(standing, 1000)
+    as "the fence issued after revival is the one answered"
+  assert process.receive(withdrawn, 100) == Error(Nil)
+    as "the fence the resume withdrew receives no account"
   assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
