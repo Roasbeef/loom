@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `57788e76`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `5ab802b9`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The seven daemon
 phases are in the [single-daemon plan](design-notes/single-daemon.md), with
@@ -23,8 +23,8 @@ release goal is not complete.
 |---|---|
 | Contracts and ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
-| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitation boundaries, presence recovery, live revocation and A-to-B-to-A switching with four HTTP turns. |
-| Default and release acceptance, phase 6 | Published `00076858` passes Linux, jailed E2E and the 200-seed job. macOS fails the unchanged paired-latency assertion. SQLite adoption, confinement and the remaining combined drive remain open. |
+| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitations, presence, revocation and switching. Its eight-exchange drive now keeps an actual jailed tool in A1 while A2 and B progress. |
+| Default and release acceptance, phase 6 | Published `37726c23` passes both platform check and bootstrap steps, jailed E2E and the 200-seed job. Both later platform gates fail on Hex HTTP 502. SQLite adoption, confinement and the remaining combined drive remain open. |
 
 The plan numbers its seven phases 0 through 6. Backwards compatibility and
 legacy import were explicitly excluded; do not revive their historical cases.
@@ -60,8 +60,9 @@ evidence below names the head each run tested.
 
 Commit `94894253` adds reviewed, finite HTTP tool-use/result script steps;
 `57788e76` adds B's original snapshot-reader PID to the diagnostic sampler.
-Both have focused local evidence below. The shipped live-tool consumer is
-the next implementation step, not coverage supplied by the helper alone.
+Both were published with docs at `37726c23`. Commit `5ab802b9` adds the
+reviewed shipped live-tool consumer. Local and hosted evidence remain
+separate below; the helper alone did not supply that execution coverage.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -96,6 +97,24 @@ them. `.claude/worktrees/daemon-candidate` is the integration tree; its
 dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
+
+The live-tool candidate passed the full client gate with all **1,337 tests**;
+the test command exited 0 in **290.84 seconds**. All three shipped fixtures
+were enabled, and the strict local census accepted only the declared macOS
+`/proc` prerequisite. After the independent review's small diagnostic and
+prose corrections, final `5ab802b9` passed the focused shipped fixture in
+**7.76 seconds**, under a 180-second outer deadline. Format and client lint
+also exited 0. The full gate preceded those corrections; the focused run
+verifies their final form.
+
+This sequence holds a real bash invocation in A1, refuses a revoked A2
+selection without losing A1, then completes independent A2 and B turns
+before release. A2 shares A1's workspace; B has its own. Owner and Reader
+remain attached to A1, whose exact invocation, successful result and final
+answer converge with Alice's records after her return. Fresh A2/B cuts retain
+their separate histories. The final run observed 950 ms from the start marker
+to release. The bounded shell and single completion marker prove this benign
+execution, not an approval decision or filesystem confinement.
 
 The reviewed HTTP helper passed all 13 tests in **0.97 seconds** under an
 independent run. The existing shipped multiplayer fixture passed in
@@ -322,6 +341,22 @@ do not time them. These observations do not assign the delay to host
 scheduling, BEAM scheduling or a particular collection. No timing waiver,
 threshold change or blind rerun followed.
 
+Published `37726c23` failed the later platform gates in
+[run 34050399218](https://github.com/Roasbeef/loom/actions/runs/34050399218)
+on Hex HTTP 502 responses: Linux during code-mode seed dependency resolution,
+macOS during `make e2e` dependency resolution. Both platforms had passed
+`make check` and bootstrap; neither final census was reached. Jailed E2E and
+the 200-seed job passed. No test assertion failed in this run, and no rerun
+preceded the live-tool follow-up.
+
+Each current platform JSONL retained all 18 pairs and all five process probes,
+with every sampler completed. No baseline or stressed phase or credit
+exceeded 250 ms. Linux maxima were HTTP 11, subscribe 25, drain 91 and credit
+9 ms; macOS maxima were 7, 27, 74 and 12 ms respectively. Sample batches cost
+0–4 ms on Linux and 0–6 ms on macOS. Six cached Linux files and two cached
+macOS files predated the run and were excluded. These passing observations
+do not diagnose the earlier intermittent latency failure.
+
 The new shipped recovery fixture fills runtime capacity, receives the exact
 capacity refusal after durable reservation, then kills the birth-verified
 fixture VM. Restart must preserve the reservation and domain mapping without
@@ -397,10 +432,12 @@ crash-at-every-publication-step sweep.
 
 ### 1. Continue joined acceptance and classify platform timing
 
-The reviewed joined-client follow-up is published to #239 at `00076858`;
-the reviewer received its exact head and gate evidence. Native stack 231
-already places it above #238. Keep the PR draft while release acceptance is
-incomplete. The latest macOS failure still needs a measured diagnosis.
+The helper and diagnostic follow-up is published to #239 at `37726c23`.
+The reviewed live-tool follow-up is committed at `5ab802b9`; publish it with
+the updated documentation and send the exact head and gate evidence to the
+reviewer. Native stack 231 already places #239 above #238. Keep the PR draft
+while release acceptance is incomplete. The intermittent macOS latency
+failure still needs a measured diagnosis; the latest failures are Hex 502s.
 
 Both platform artifacts now retain process observations beside the paired
 soak, including when it passes. Attribute only files created by the current
@@ -424,13 +461,10 @@ that work only when joining it into the complete drive. Successful switching
 with an in-process daemon and the owner-only live drive remain separate
 evidence from these distinct-principal shipped observations.
 
-The next live-tool increment must use the shipped daemon's ordinary provider
-and jailed execution paths. An exact scripted tool call can publish a started
-marker, wait for an explicit release and return fixed output under a finite
-tool deadline. Witness both the marker and captured running state before
-switching, then complete an independent session turn before release. Exact
-tool-result content and final records must distinguish the sessions. This
-establishes survival across switching, not filesystem confinement.
+The live-tool increment now uses the shipped daemon's ordinary provider and
+jailed execution paths. Its exact result and final records establish custody
+across successful and refused switches. Continue with the remaining combined
+drive rather than repeating this case or treating it as confinement proof.
 
 The existing approval-effect fixture cannot supply the shipped approval trigger
 unchanged. It injects `wall_s: 1` in `tui_approval_effect_test.gleam` and asks

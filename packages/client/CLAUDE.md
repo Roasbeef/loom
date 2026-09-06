@@ -323,6 +323,13 @@ catalogue without opening runtimes. Explicit admission invokes
   on A. Two further provider turns establish independent histories, and Alice
   returns to A's original epoch/incarnation with records equal to both peers.
   The turns are sequenced; simultaneous provider execution is not claimed.
+  Its later live-tool stage creates A2 in A1's workspace. An ordinary bash
+  invocation remains held while Alice first fails to select A2, then completes
+  separate A2 and B turns. Host release follows both turns. Exact invocation,
+  result and final-answer records converge on the two A1 peers and Alice after
+  her return; fresh A2/B captures retain their own histories. This uses all
+  eight provider script steps and preserves the original cleanup deadlines.
+  Workspace markers prove benign execution, not filesystem confinement.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

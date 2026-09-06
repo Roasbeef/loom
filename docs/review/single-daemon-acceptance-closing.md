@@ -423,3 +423,38 @@ order-insensitive normalization. The result requires a present, false
 script keys fail loudly in decoding rather than requiring more fixture logic.
 The helper preserves its eight-step cap, body limits and original cleanup.
 It establishes no shipped tool execution until a consumer drives that path.
+
+## Held jailed tool across session switches
+
+A fresh, report-only review examined the live-tool consumer against
+`37726c23`. It found no high- or medium-severity issue. The final implementation
+is `5ab802b9`; no production, protocol, dependency or native-policy code changed.
+
+The review traced the tools phase to the gateway's durable operation-state
+projection, not a local terminal label. The invocation and phase commit in
+one planner transaction. The script admits exactly one tool-use response,
+and A1's attached peers require its exact invocation, result and final answer.
+The single append-mode completion marker detects repeated execution. A2 and B
+turns finish before host release, so the test establishes continued execution
+custody rather than a tool that happened to finish before selection.
+
+Five low-severity corrections were accepted: marker reads now fail on errors
+other than absence, result assertions identify their individual failures,
+the start poll allows 15 seconds for cold jail startup, the owner-peer setup
+has its own explanatory stanza, and the post-B phase comment no longer claims
+fresh liveness. That phase observation alone can be stale; successful result
+delivery after release supplies the completion evidence. The diagnostic now
+names the measured interval. Outer cleanup and test deadlines are unchanged.
+
+Before these corrections, the full client gate passed 1,337 tests with all
+three shipped fixtures enabled; its test command exited 0 in 290.84 seconds.
+The strict local census accepted only the declared macOS prerequisite. The
+final independent focused run exited 0 in 7.76 seconds and observed 950 ms
+from start marker to release. Format and client lint exited 0. The small
+corrections did not require a second review pass.
+
+This covers actual benign jailed execution with A1 and A2 in one workspace
+and B in another. It does not establish an approval race, application
+filesystem confinement or the entire combined acceptance drive. The hosted
+run at `37726c23` predates the live-tool consumer; its later Hex 502 failures
+are recorded separately in the [handoff](../next.md).

@@ -219,10 +219,29 @@ her complete records must equal those of both terminals that stayed on A.
 The provider requests are deliberately sequenced; this is concurrent session
 residency and independent progress, not simultaneous provider execution.
 
+The live-tool stage creates A2 in A1's workspace, alongside the existing B
+session. An ordinary provider response starts a fixed bash tool in A1.
+The fixture requires both its workspace marker and the server's `tools` phase
+before Alice highlights A2. Revoking A2 access before Enter must preserve
+Alice's original A1 identity, records, inbox and socket while the tool is live.
+Restoring that membership permits a real switch and a completed A2 turn.
+Alice then selects B and completes its own turn before the host releases A1.
+
+The script uses exactly eight exchanges, including the four earlier turns.
+No further A1 input can merge with its tool result. A1's complete records must
+contain the original user author, exact invocation, successful result and
+final answer in order, with one completion marker. Reader and an independent
+owner terminal remain on A1 and converge before Alice returns. Fresh owner
+attachments then compare A2 and B against their pre-release histories.
+The markers prove this benign tool ran; they do not prove filesystem
+confinement or an approval decision.
+
 This shipped-artifact fixture has a bounded body and a separate native
 cleanup check, including on assertion failure. The loopback provider retains
 its original listener witness outside the bounded callback. The composed
-fixture does not establish live-tool switching or the entire acceptance matrix.
+fixture covers live-tool switching, but not the entire acceptance matrix.
+The [handoff](../next.md#verified-results-and-their-limits) records which
+revision passed each local and hosted gate.
 
 Each driver creates its inbox and runs its terminal loop in the same
 process. Sharing a model or constructing both inboxes in the coordinator
