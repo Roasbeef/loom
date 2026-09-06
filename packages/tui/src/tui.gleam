@@ -1177,40 +1177,7 @@ fn attach_daemon(
   }
 }
 
-/// Runs `proceed` with a model whose daemon control has a living owner.
-///
-/// Every control action goes through here because a control request that times
-/// out retires its owner, and `daemon_host` is otherwise written only during
-/// startup: without this the first slow registry read would leave `/sessions`,
-/// open and create failing for the rest of the process's life. Rebuilding is
-/// deliberate rather than automatic — it happens when the operator asks for a
-/// control action, and its handshake cost is that action's.
-///
-/// An absent host is passed through untouched, because "no daemon at all" is a
-/// different situation from "the owner retired" and each caller words it
-/// itself.
-fn with_live_control(model: Model, proceed: fn(Model) -> Model) -> Model {
-  case model.daemon_host {
-    None -> proceed(model)
-    Some(host) ->
-      case process.is_alive(daemon.owner(daemon_selection.control(host))) {
-        True -> proceed(model)
-
-        // The retired owner's route is still good; only its connection is
-        // gone. A failed rebuild keeps that route in the model so the next
-        // control action can try again rather than losing the daemon.
-        False ->
-          case daemon_selection.reconnect(host, process.self()) {
-            Ok(host) -> proceed(Model(..model, daemon_host: Some(host)))
-            Error(reason) ->
-              append_error(model, "reconnect daemon control: " <> reason)
-          }
-      }
-  }
-}
-
 fn begin_open(model: Model, session: String) -> Model {
-  use model <- with_live_control(model)
   let model = cancel_pending(model, "target change from " <> model.session)
   case attachment.busy(model.candidate), model.daemon_host {
     True, _ -> append_error(model, "a session switch is already in progress")
@@ -1221,7 +1188,10 @@ fn begin_open(model: Model, session: String) -> Model {
         overlay: NoOverlay,
         next_attempt: model.next_attempt + 1,
         candidate: attachment.start_recorded(
-          fn() { daemon_selection.open(host, session) },
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            daemon_selection.open(host, session)
+          },
           90_000,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
         ),
@@ -1231,7 +1201,6 @@ fn begin_open(model: Model, session: String) -> Model {
 }
 
 fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
-  use model <- with_live_control(model)
   case model.catalogue_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -1250,6 +1219,7 @@ fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
       let _relay =
         weft.new([
           fn() {
+            use host <- daemon_selection.with_live_control(host)
             use reply <- result.try(
               daemon.request(
                 daemon_selection.control(host),
@@ -1384,7 +1354,6 @@ fn finish_catalogue(model, result) {
 }
 
 fn create_session(model: Model) -> Model {
-  use model <- with_live_control(model)
   let model = cancel_pending(model, "target change from " <> model.session)
   case model.creation_key, model.daemon_host, attachment.busy(model.candidate) {
     Some(key), _, _ ->
@@ -1422,7 +1391,10 @@ fn create_session(model: Model) -> Model {
         next_id: model.next_id + 1,
         next_attempt: model.next_attempt + 1,
         candidate: attachment.start_recorded(
-          fn() { daemon_selection.create(host, key, workspace, config) },
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            daemon_selection.create(host, key, workspace, config)
+          },
           90_000,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
         ),

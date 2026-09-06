@@ -76,6 +76,33 @@ pub fn reconnect(host: Host, owner: process.Pid) -> Result(Host, String) {
   Host(..host, control:)
 }
 
+/// Borrows live control or owns a replacement for one explicit worker action.
+///
+/// Call this inside the action's managed worker, never from the frame loop.
+/// A replacement monitors that worker, so cancellation closes even a socket
+/// still waiting for hello. Normal completion closes it here. The terminal
+/// retains the route, not this temporary owner, and no failed action is retried.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.with_live_control(host, fn(host) { selection.open(host, id) })
+/// ```
+pub fn with_live_control(
+  host: Host,
+  action: fn(Host) -> Result(a, String),
+) -> Result(a, String) {
+  case process.is_alive(daemon.owner(host.control)) {
+    True -> action(host)
+    False -> {
+      use replacement <- result.try(reconnect(host, process.self()))
+      let outcome = action(replacement)
+      daemon.close(replacement.control)
+      outcome
+    }
+  }
+}
+
 /// Sends one explicit open and waits only on its returned operation.
 ///
 /// The caller supplies a surrounding Weft deadline covering this request and
