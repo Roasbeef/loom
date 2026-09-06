@@ -60,3 +60,37 @@ Shipping dependency adoption of the SQLite retirement repair, excluded
 filesystem confinement, the whole-VM publication crash sweep and the rest
 of the combined shipped acceptance drive remain open. A reviewed follow-up
 and green local gates do not complete those requirements.
+## Shipped reservation recovery follow-up
+
+The separate test-only follow-up received one fresh adversarial review.
+The reviewer traced capacity refusal through committed reservation, the
+birth-qualified SIGKILL, native departure and stale-endpoint takeover,
+metadata-only restoration, and same-key recovery of the original SQLite
+identity. No false-pass path was found. Production behavior was unchanged.
+
+The review identified an assumption rather than a missing safety check:
+VM departure does not itself prove that the separate lifetime-lock holder
+has consumed port EOF. The fixture now documents that the holder should
+exit while the replacement VM boots. A delayed holder makes startup fail
+visibly; no lock-probe loop or retry was added.
+
+Accepted corrections fix the cleanup-budget arithmetic, use `result.try`
+while preserving close-before-assert ordering, separate the retirement
+stanza and explain the slot-less `Saved` projection. Existing assertions
+and deadlines remain unchanged. A larger launch budget was not justified
+by an observed timeout. The fixture explicitly excludes the later
+identity-before-confirmation crash boundary.
+
+The corrected fixture passed in 1.98 seconds against the shipped daemon.
+Before the prose/combinator corrections, two fresh runs passed, the full
+extended bootstrap target passed in 28.26 seconds, and both enabled shipped
+fixtures passed together in the package runner. The complete local client
+suite passed 1,323 tests in 219.35 seconds; conditional shipped cases in
+that ordinary run were separately exercised by the enabled gates.
+
+CI at the earlier `e829a2a0` remains a failure: Linux's strict census caught
+the unset shipped prerequisite during ordinary check; macOS's paired soak
+took 2,062 ms against 346 ms. The CI repair supplies the built executable
+before both platform gates, without declaring or hiding a skip. Five
+isolated soak reproductions and the full local suite passed, but the
+macOS delay's cause is unestablished and its bound remains unchanged.

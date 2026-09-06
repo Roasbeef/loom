@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `5b37627c`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `816a18b2`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The plan remains
 [issue-plan.md](issue-plan.md), with required observations in the
@@ -34,7 +34,10 @@ Draft [#237](https://github.com/Roasbeef/loom/pull/237) remains frozen at
 `3ec78b9e`, above [#235](https://github.com/Roasbeef/loom/pull/235).
 Draft [#238](https://github.com/Roasbeef/loom/pull/238) is published at
 `33387530`, based on #237. Native GitHub stack 231 contains that chain.
-The next reviewed slice is `client/daemon-acceptance`, based on #238.
+Draft [#239](https://github.com/Roasbeef/loom/pull/239) publishes
+`client/daemon-acceptance`, based on #238. Its first published head was
+`e829a2a0`; the follow-up adds a CI prerequisite repair and whole-VM
+reservation recovery. All remain unmerged.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -100,19 +103,49 @@ passed. The cause is unestablished; per-credit timestamps now accompany the
 unchanged assertion. Neither a local pass nor a rejected review hypothesis
 makes the remote failure green.
 
+The new shipped recovery fixture fills runtime capacity, receives the exact
+capacity refusal after durable reservation, then kills the birth-verified
+fixture VM. Restart must preserve the reservation and domain mapping without
+opening a runtime or creating the target file. Ordinary open is refused;
+retrying the same creation key initializes the original SQLite identity.
+The reviewed fixture passed in 1.98 seconds. The complete extended
+`e2e-client-bootstrap` target passed in 28.26 seconds, and both shipped
+fixtures ran together under the package runner's executable environment.
+
+At `e829a2a0`, [run 34035552410](https://github.com/Roasbeef/loom/actions/runs/34035552410)
+passed Linux jail and 200-seed jobs. Linux passed its substantive checks but
+failed the skip census: the shipped multiplayer prerequisite was unset in
+ordinary `make check`. Commit `f17d9875` builds the shipped prerequisites
+first and supplies their absolute executable path to both platform gates.
+It adds no skip waiver; both shipped fixtures run in ordinary check and in
+the dedicated target.
+
+That run's macOS gate failed the unchanged paired soak: cycle five took
+2,062 ms against 346 ms. Five focused local reproductions passed, and the
+full local client suite passed 1,323 tests in 219.35 seconds, including the
+same soak. The latter omitted the executable environment; the dedicated
+shipped runs above establish those conditional cases. Source inspection
+does not establish the CI delay's cause. A's unread piece was already
+serialized; shared registry, history and scheduler/native-I/O contention
+remain candidates, not diagnoses. Do not weaken the bound or call the local
+passes a repair. The follow-up needs its own remote results.
+
 The earlier six mutation gates remain documented in
 [mutation evidence](review/single-daemon-mutation-gates.md). The two new
-durable tests kill builders and registries, not the whole VM. They are not
-an exhaustive crash-at-every-publication-step sweep.
+in-process durable tests kill builders and registries. The shipped fixture
+adds whole-VM loss before assembly, not an exhaustive crash-at-every-
+publication-step sweep. Identity-before-confirmation remains uncovered in
+the shipped executable.
 
 ## What to do next
 
-### 1. Publish this acceptance slice and verify its platforms
+### 1. Publish the follow-up and verify its platforms
 
-Publish above #238 using native `gh stack`, send the exact head and gate
-evidence for review, and monitor both platform jobs. Keep the PR draft while
-release acceptance is incomplete. Re-baseline this handoff after new CI
-evidence; do not carry the parent's failure as the new branch's result.
+Push the reviewed follow-up to #239, send its exact head and gate evidence,
+and monitor both platform jobs. Native stack 231 already places it above
+#238. Keep the PR draft while release acceptance is incomplete. Re-baseline
+this handoff after new CI evidence; do not carry an earlier run's result
+as the new head's result.
 
 Exit: the reviewed follow-up is correctly stacked and its own platform
 results are known and triaged. This does not authorize merging the Loom
