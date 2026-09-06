@@ -36,6 +36,16 @@ fn gate_of(path: String, code: String) -> #(Int, Int) {
   |> finding.gate(finding.error_by_default())
 }
 
+/// Every R1 detail a run produced, as one blob to assert over. A rendering
+/// test over the empty blob fails its positive assertion rather than passing
+/// vacuously, so this does not have to check that the rule fired.
+fn eager_details(findings: List(Finding)) -> String {
+  findings
+  |> list.filter(fn(found) { found.rule == finding.EagerFallback })
+  |> list.map(fn(found) { found.detail })
+  |> string.join("\n")
+}
+
 fn catch_all_details(code: String) -> List(String) {
   findings(code)
   |> list.filter(fn(found) { found.rule == finding.CatchAll })
@@ -419,6 +429,51 @@ fn f(value, key) {
   |> list.map(fn(found) { found.rule })
   |> list.contains(finding.EagerFallback)
   |> should.be_false
+}
+
+/// The `require` row is the one whose advice is a sentence rather than the
+/// name of a lazy variant, because there is no `fs.lazy_require` to name.
+/// Wrapping it in a code span the way every other row's advice is wrapped
+/// rendered spans inside spans, in nine of the census's R1 lines (issue #73,
+/// report quality). The sentence sets its own spans and must arrive
+/// unwrapped.
+pub fn r1_does_not_nest_code_spans_in_the_require_advice_test() {
+  let detail =
+    lint.check(
+      "packages/tools/src/tools/fs.gleam",
+      "fn require(optional, when_absent) {
+  case optional {
+    Ok(Some(value)) -> Ok(value)
+    Ok(None) -> Error(when_absent)
+    Error(reason) -> Error(reason)
+  }
+}
+
+fn decode_ref(value, key) {
+  require(optional_int(value, \"line\"), when_absent: \"missing \" <> key)
+}
+",
+      policy.default(),
+    )
+    |> eager_details
+
+  detail
+  |> string.contains("so use a thunk: change `when_absent`")
+  |> should.be_true
+
+  detail
+  |> string.contains("so use `a thunk")
+  |> should.be_false
+}
+
+/// The other side of the same rendering rule: a row whose advice *is* a
+/// name still arrives in a code span, so the fix cannot be "stop wrapping".
+pub fn r1_sets_a_named_lazy_variant_in_a_code_span_test() {
+  module("fn f(value, name) { option.unwrap(value, \"no \" <> name) }")
+  |> findings
+  |> eager_details
+  |> string.contains("so use `option.lazy_unwrap`")
+  |> should.be_true
 }
 
 // --- R2: nesting depth ------------------------------------------------------
