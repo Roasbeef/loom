@@ -100,8 +100,8 @@ import core/ids.{type EntryId, type OpId, type Seq, type UsageId}
 import core/json.{type JsonValue}
 import core/message.{
   type AgentMessage, type DeferredHandle, type ToolCall, type Usage, Aborted,
-  AssistantMessage, AssistantText, AssistantThinking, AssistantToolCall, Errored,
-  Length, ToolResultMessage, ToolResultText,
+  AssistantMessage, AssistantText, AssistantThinking, AssistantToolCall,
+  CustomMessage, Errored, Length, ToolResultMessage, ToolResultText, UserMessage,
 }
 import core/tx.{type Tx, type Write, Tx}
 import gleam/bool
@@ -704,7 +704,21 @@ pub fn next_action(
       )
     NavigationState(control:, navigation:), NavigationIntent(..) ->
       navigation_action(op, in, control, navigation)
-    _, _ ->
+
+    // The six off-diagonal cells of the 3×3, written out rather than
+    // left to `_, _`. A fourth operation kind arriving as a `_, _`
+    // would land its own *diagonal* — the one cell that must be
+    // handled — in this fault and every operation of the new kind
+    // would fail at runtime with the compiler silent. Enumerated, the
+    // build stops on the day the kind is added, which is the point of
+    // a frozen entry point.
+    RunState(..), CompactionIntent(..)
+    | RunState(..), NavigationIntent(..)
+    | CompactionState(..), RunIntent(..)
+    | CompactionState(..), NavigationIntent(..)
+    | NavigationState(..), RunIntent(..)
+    | NavigationState(..), CompactionIntent(..)
+    ->
       Fault(report: corruption.report(
         at: "machine/planner.next_action",
         on: build.op_key(op.id),
@@ -4154,10 +4168,36 @@ fn message_api(message: AgentMessage) -> String {
   }
 }
 
-fn message_stop_reason(message: AgentMessage) -> message.StopReason {
+/// The provider stop reason a batch source settled with.
+///
+/// Only an assistant message has one. The other three constructors are
+/// spelled out rather than swept into a catch-all because the answer
+/// given for them is a *specific* stop reason and not an admission of
+/// ignorance — `message_usage` and `message_api` above can say "zero"
+/// and "unknown", and this return type has no such word. `Stop` is
+/// therefore load-bearing: the sole caller distinguishes `Length` from
+/// everything else, so answering `Stop` for a source that is not an
+/// assistant message is the claim "this response was not truncated".
+/// That claim is right for all three today, and a fourth constructor
+/// able to carry a token limit would make it wrong silently. Naming
+/// them makes the compiler ask.
+///
+/// Not part of the planner's API: exported only so a test can pin the
+/// mapping constructor by constructor.
+@internal
+pub fn message_stop_reason(message: AgentMessage) -> message.StopReason {
   case message {
     AssistantMessage(stop_reason:, ..) -> stop_reason
-    _ -> message.Stop
+
+    // A user turn and a tool result are never provider responses: no
+    // token limit applied to them, so nothing about them is truncated
+    // and `Stop` is the honest answer rather than a benign default.
+    UserMessage(..) | ToolResultMessage(..) -> message.Stop
+
+    // A custom message is application data under a registered schema.
+    // The harness treats the payload as opaque, so it cannot be
+    // reporting a provider truncation either.
+    CustomMessage(..) -> message.Stop
   }
 }
 
