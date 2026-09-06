@@ -425,6 +425,88 @@ pub fn a_fenced_idle_domain_is_revived_by_the_next_open_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+/// A revival withdraws the fence it lifts, and the account of that fence
+/// must not settle the next one. The worker sends its reply from its own
+/// turn, so nothing at the registry orders a reply decided before the
+/// revival against the revival itself; the registry instead listens for
+/// each fence on a fresh subject. This fixture holds the earlier subject and
+/// delivers an account on it after the second fence stands.
+pub fn a_withdrawn_fences_late_account_does_not_settle_the_next_fence_test() {
+  let settings = owned_assembly_test.settings()
+  let directory = filepath.directory_name(settings.session_path)
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+    as "the joined fixture owns a private domain directory"
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let arrivals = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      cadenced_assembly(arrivals, "manager-withdraw"),
+      epoch: "domain-withdrawal",
+      limit: 2,
+    )
+    as "registry starts"
+  let admit = fn(key) {
+    manager.create_scoped(
+      registry,
+      manager.Creation(int.to_string(key), settings.workspace, "Session", ""),
+      directory: directory <> "/sessions",
+      generator: ids.generator(clock.fixed(1), key),
+      scope: domain.WorkspacePrivate,
+      configuration: "",
+    )
+  }
+  let assert Ok(first) = admit(60) as "the first session is admitted"
+  resident(registry, first.registration.id)
+  let assert Ok(withdrawn) =
+    manager.settle_subject(registry, first.registration.id)
+    as "the fixture holds the subject the first fence will be issued on"
+  let assert Ok(initial) = process.receive(arrivals, 2000)
+    as "the domain's first pass parks inside its finite source resolver"
+
+  let assert Ok(_) = manager.stop_session(registry, first.registration.id)
+    as "the only session closes cleanly, fencing the domain on that subject"
+  saved(registry, first.registration.id)
+  let assert Ok(second) = admit(61)
+    as "a new session in the same workspace revives the fenced domain"
+  resident(registry, second.registration.id)
+  let assert Ok(standing) =
+    manager.settle_subject(registry, second.registration.id)
+    as "the revived domain reports the subject its next fence will use"
+  assert withdrawn != standing
+    as "a revival listens for its next fence on a fresh subject"
+  let assert Ok(_) = manager.stop_session(registry, second.registration.id)
+    as "the revived session closes cleanly, fencing the domain again"
+  saved(registry, second.registration.id)
+
+  // The withdrawn fence's account arrives now, after the second fence was
+  // issued. A negative needs a window: an account the registry took would
+  // cancel the host and retire the slot within microseconds, so a slot still
+  // retained after this pause was not retired by it.
+  process.send(withdrawn, distillpass.Refused("decided before the revival"))
+  process.sleep(300)
+  let assert Ok(manager.Summary(occupied: 0, domain_occupied: 1, ..)) =
+    manager.summary(registry)
+    as "a withdrawn fence's account does not retire the domain"
+
+  // The worker finishes the parked pass and the follow-up the two closes
+  // coalesced, then answers the standing fence, which retires the domain.
+  process.send(initial, Ok([]))
+  let assert Ok(follow_up) = process.receive(arrivals, 2000)
+    as "the coalesced close pass still runs"
+  process.send(follow_up, Ok([]))
+  assert poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.summary(registry) {
+        Ok(manager.Summary(domain_occupied: 0, ..)) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+    == poll.Answered(Nil)
+  manager.shutdown(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 // A real domain: live shared history plus a real distillation cadence whose
 // pass parks inside a finite source resolver, so a test decides when a fenced
 // domain settles instead of racing it.

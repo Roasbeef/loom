@@ -342,6 +342,10 @@ type Message(instance) {
     Subject(Result(access.Principal, AdminError)),
   )
   Census(Subject(Summary))
+
+  /// Answers the subject a session's domain currently settles on. Fixtures
+  /// only; see `settle_subject`.
+  SettleSubject(String, Subject(Result(Subject(distillpass.Pass), Error)))
   AuthorizedPage(
     access.Digest,
     String,
@@ -903,6 +907,29 @@ pub fn summary(manager: Manager(instance)) -> Result(Summary, Error) {
   |> result.replace_error(Unavailable)
 }
 
+/// Reports the subject on which a resident session's domain will settle.
+///
+/// This exists for one registry fixture: a revival replaces the slot's
+/// settle subject so that an account of the fence it withdrew cannot be
+/// taken for the next fence's settle, and the only way a test can deliver
+/// such an account is to hold the earlier subject. Nothing in production
+/// reads a settle subject back out; the registry issues it with each fence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.settle_subject(registry, session_id)
+/// ```
+@internal
+pub fn settle_subject(
+  manager: Manager(instance),
+  id: String,
+) -> Result(Subject(distillpass.Pass), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: SettleSubject(id, _))
+  |> result.replace_error(Unavailable)
+  |> result.flatten
+}
+
 /// Resolves only a resident instance; lookup never implicitly opens one.
 ///
 /// ## Examples
@@ -1039,6 +1066,20 @@ fn handle(
     }
     Census(reply) -> {
       process.send(reply, census(phase, book))
+      sm.keep(book)
+    }
+    SettleSubject(id, reply) -> {
+      let answer = {
+        use slot <- result.try(
+          dict.get(book.slots, id) |> result.replace_error(Unavailable),
+        )
+        use domain <- result.try(
+          dict.get(book.domains, slot.domain_id)
+          |> result.replace_error(Unavailable),
+        )
+        Ok(domain.settled)
+      }
+      process.send(reply, answer)
       sm.keep(book)
     }
     AuthorizedPage(digest, after, reply) -> {
