@@ -522,20 +522,16 @@ fn drive(ready: Ready) -> Nil {
   assert string.contains(snapshot_text(booted), assistant_marker)
     as "a fresh subscribe must serve the assistant entry the pane showed"
 
-  // 6. A named fork through the slash surface. The next coherent metadata cut
-  //    includes the name, and the durable runtime list independently proves
-  //    it was more than local display state.
+  // 6. A named fork through the slash surface. The authoritative metadata cut
+  //    replaces the local "fork queued" notice while preserving the active
+  //    strand. Inspect the actual agent list after that cut, so a transient
+  //    command echo can neither pass this check nor race its observation.
   let assert Ok(Nil) = terminal.type_text(term, "/fork main-fork")
     as "the slash command must be typed"
   let assert Ok(Nil) = terminal.press(term, "Enter")
     as "Enter must reach the pane"
-  let _forked =
-    must_show(
-      term,
-      "main-fork",
-      10_000,
-      "the forked strand never reached the agent state",
-    )
+  let _metadata =
+    must_show(term, "0 live / 2 agents", 10_000, "fork metadata never painted")
   let fork_is_durable = fn() {
     api.strands(booted.instance.runtime)
     |> result.map(fn(strands) { list.contains(strands, "main-fork") })
@@ -549,12 +545,25 @@ fn drive(ready: Ready) -> Nil {
       terminal.stop(term)
       shutdown(booted)
       give_up(terminal.framed(
-        "the fork was drawn but never became durable; the runtime returned "
+        "the fork count painted but its identity was not durable; runtime returned "
           <> string.inspect(strands),
         pane,
       ))
     }
   }
+  let assert Ok(Nil) = terminal.type_text(term, "/agents")
+    as "the normal slash command opens the authoritative agent list"
+  let assert Ok(Nil) = terminal.press(term, "Enter")
+    as "Enter must open the agent inspector"
+  let _forked =
+    must_show(
+      term,
+      "main-fork",
+      10_000,
+      "the durable fork never reached the agent inspector",
+    )
+  let assert Ok(Nil) = terminal.press(term, "Escape")
+    as "the agent inspector closes before the terminal quit command"
 
   // 7. And leaving is observable too, the other half of the question
   //    the park loop re-asks on every poll.
