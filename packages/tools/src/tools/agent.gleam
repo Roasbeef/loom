@@ -781,7 +781,6 @@ pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
       Error("`properties` must be an object, not `" <> type_name(other) <> "`")
     Error(Nil) -> Error("must carry a `properties` object")
   })
-  use required <- result.try(required_names(fields))
 
   // The bound sits above the walk, and that ordering is the whole of its
   // protection: `list.drop` answers a question about the first
@@ -799,6 +798,15 @@ pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
         <> " properties",
       )
   })
+
+  // `required` is read after that refusal because it is the second
+  // model-supplied list in the envelope and it is read three times over:
+  // once to collect the names, once by the `try_each` below to check each
+  // against the declared properties, and once per declared field by the
+  // `list.contains` that decides which fields are required. Bounding it
+  // is `required_names`' own job, on the same argument and above its own
+  // walk.
+  use required <- result.try(required_names(fields))
   use declared <- result.try(list.try_map(properties, parse_property))
   use Nil <- result.try(case declared {
     [] -> Error("must declare at least one property to be worth demanding")
@@ -964,7 +972,25 @@ fn required_names(
 ) -> Result(List(String), String) {
   case list.key_find(fields, "required") {
     Error(Nil) -> Ok([])
-    Ok(json.Array(items:)) ->
+    Ok(json.Array(items:)) -> {
+      // The length is settled before a single entry is read, for the
+      // reason the properties bound is: `list.drop` looks no further than
+      // the bound, so an array a model padded to a frame's worth of names
+      // costs the bound rather than its own size. The cap is the property
+      // cap because every name here has to name a declared property, and
+      // there are at most that many of those — so no schema this harness
+      // would have accepted needs a longer `required` than one bounded
+      // here.
+      use Nil <- result.try(case list.drop(items, max_result_fields) {
+        [] -> Ok(Nil)
+        [_, ..] ->
+          Error(
+            "may list at most "
+            <> int.to_string(max_result_fields)
+            <> " names in `required`",
+          )
+      })
+
       list.try_map(items, fn(item) {
         case item {
           json.String(value:) -> Ok(value)
@@ -976,6 +1002,7 @@ fn required_names(
             )
         }
       })
+    }
     Ok(other) ->
       Error("`required` must be an array, not `" <> type_name(other) <> "`")
   }
