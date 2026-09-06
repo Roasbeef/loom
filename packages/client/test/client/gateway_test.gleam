@@ -2317,16 +2317,37 @@ pub fn provider_relay_consumer_death_observes_nothing_test() {
     })
   let assert Ok(handle) = process.receive(handles, within: 1000)
     as "the relay must be running before its consumer is killed"
+  let assert Some(owner) = handle.owner
+    as "the relay exposes its original custodian"
+  assert !monitored_by_test(owner)
+    as "no earlier test-owned monitor can satisfy the drain-witness barrier"
   let drain_witness = stream.watch_drain(handle)
 
+  // Monitoring the custodian and killing its consumer target different PIDs.
+  // Observe this test's monitor at the custodian before releasing that kill;
+  // creating the local reference alone is not the fixture's acknowledgement.
+  assert monitored_by_test(owner)
+    as "the custodian has installed this test's original drain monitor"
   process.kill(consumer)
 
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
     as "consumer death must cancel the inner stream"
-  assert stream.await_drain_forever(drain_witness) == stream.Drained
+  assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
     as "the custodian retires once the guard and observer are gone"
   assert process.receive(seen, within: 0) == Error(Nil)
     as "a terminal produced by consumer death must never reach the observer"
+}
+
+// Compare trusted OTP PID identities without an unchecked cast or new FFI.
+fn monitored_by_test(owner: process.Pid) -> Bool {
+  let assert Ok(watchers) =
+    decode.run(
+      test_process_info(owner, atom.create("monitored_by")),
+      decode.at([1], decode.list(decode.dynamic)),
+    )
+    as "the original live custodian reports its incoming monitors"
+  let current = string.inspect(process.self())
+  list.any(watchers, fn(watcher) { string.inspect(watcher) == current })
 }
 
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
