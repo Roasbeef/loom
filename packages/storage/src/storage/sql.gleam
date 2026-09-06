@@ -695,19 +695,22 @@ pub type SnapshotRegisterHeaders {
 pub fn snapshot_register_headers(
   namespace namespace: String,
   prefix prefix: String,
+  prefix_upper prefix_upper: String,
   field field: String,
   expected expected: String,
 ) {
   let sql =
     "SELECT key, seq, length(value) AS value_bytes
 FROM registers
-WHERE ns = ?1 AND substr(key, 1, length(CAST(?2 AS TEXT))) = ?2
+WHERE ns = ?1 AND key >= ?2 AND key <
+  CASE WHEN CAST(?3 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?3 AS TEXT) END
 AND CASE
-  WHEN CAST(?3 AS TEXT) = '' THEN 1
+  WHEN CAST(?4 AS TEXT) = '' THEN 1
   WHEN length(value) > 1048576 THEN 1
   WHEN NOT json_valid(CAST(value AS TEXT)) THEN 1
-  WHEN json_type(CAST(value AS TEXT), '$.' || ?3) IS NOT 'text' THEN 1
-  ELSE json_extract(CAST(value AS TEXT), '$.' || ?3) = CAST(?4 AS TEXT)
+  WHEN json_type(CAST(value AS TEXT), '$.' || ?4) IS NOT 'text' THEN 1
+  ELSE json_extract(CAST(value AS TEXT), '$.' || ?4) = CAST(?5 AS TEXT)
 END
 ORDER BY key LIMIT 1025"
   #(
@@ -715,6 +718,7 @@ ORDER BY key LIMIT 1025"
     [
       dev.ParamString(namespace),
       dev.ParamString(prefix),
+      dev.ParamString(prefix_upper),
       dev.ParamString(field),
       dev.ParamString(expected),
     ],
@@ -738,6 +742,7 @@ pub type SnapshotRegisterBudget {
 pub fn snapshot_register_budget(
   namespace namespace: String,
   prefix prefix: String,
+  prefix_upper prefix_upper: String,
   field field: String,
   expected expected: String,
 ) {
@@ -745,19 +750,22 @@ pub fn snapshot_register_budget(
     "SELECT COUNT(*) AS cell_count,
   CAST(COALESCE(SUM(length(value) + length(CAST(key AS BLOB)) + length(CAST(ns AS BLOB)) + 65), 0) AS INTEGER) AS total_bytes
 FROM registers
-WHERE ns = ?1 AND substr(key, 1, length(CAST(?2 AS TEXT))) = ?2
+WHERE ns = ?1 AND key >= ?2 AND key <
+  CASE WHEN CAST(?3 AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(?3 AS TEXT) END
 AND CASE
-  WHEN CAST(?3 AS TEXT) = '' THEN 1
+  WHEN CAST(?4 AS TEXT) = '' THEN 1
   WHEN length(value) > 1048576 THEN 1
   WHEN NOT json_valid(CAST(value AS TEXT)) THEN 1
-  WHEN json_type(CAST(value AS TEXT), '$.' || ?3) IS NOT 'text' THEN 1
-  ELSE json_extract(CAST(value AS TEXT), '$.' || ?3) = CAST(?4 AS TEXT)
+  WHEN json_type(CAST(value AS TEXT), '$.' || ?4) IS NOT 'text' THEN 1
+  ELSE json_extract(CAST(value AS TEXT), '$.' || ?4) = CAST(?5 AS TEXT)
 END"
   #(
     sql,
     [
       dev.ParamString(namespace),
       dev.ParamString(prefix),
+      dev.ParamString(prefix_upper),
       dev.ParamString(field),
       dev.ParamString(expected),
     ],
