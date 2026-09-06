@@ -4,6 +4,8 @@
 //// member credentials. Only Alice's terminal changes configuration; Bob and
 //// the observer must receive its value and server-assigned origin over their
 //// own sockets. No provider request or fixture-written register is involved.
+//// Bob then leaves and rejoins; every remaining terminal must observe both
+//// presence transitions without confusing principal and attachment identity.
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting failure.
 
@@ -32,6 +34,7 @@ import tui/daemon/selection
 import tui/session_channel
 import tui/snapshot
 import weft
+import weft/actor
 import weft/poll
 
 pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> EunitTest {
@@ -184,18 +187,91 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) {
   assert string.contains(reader_view.frame, "changed by Alice")
   assert !writable(reader_view)
 
+  // Driver exit is not a server detach barrier. Wait for both surviving
+  // terminals to lose Bob before reusing his credential on a fresh socket.
+  let old_bob = attachment_of(bob_view).connection_id
+  stop_driver(bob)
+  list.each([alice, reader], fn(driver) {
+    let detached =
+      tui_v2_test.await(driver.data, fn(sample) {
+        has_principals(sample, ["alice", "reader"])
+      })
+    assert configuration_of(detached) == configuration_of(alice_view)
+  })
+  let assert Ok(rejoined) = tui_driver.start(address, bob_token, id)
+    as "Bob rejoins the same session with his unchanged member credential"
+  let bob_returned =
+    tui_v2_test.await(rejoined.data, fn(sample) {
+      writable(sample) && has_principals(sample, ["alice", "bob", "reader"])
+    })
+  let new_bob = attachment_of(bob_returned).connection_id
+  assert new_bob != old_bob
+
+  // The principal survives reconnection, but its old attachment must not.
+  // Compare exact presence identities and roles at each terminal's own cut.
+  list.each([alice, rejoined, reader], fn(driver) {
+    let returned =
+      tui_v2_test.await(driver.data, fn(sample) {
+        has_principals(sample, ["alice", "bob", "reader"])
+        && list.any(peers_of(sample), fn(peer) {
+          peer.origin.principal == "bob" && peer.connection_id == new_bob
+        })
+      })
+    let peers = peers_of(returned)
+    assert !list.any(peers, fn(peer) { peer.connection_id == old_bob })
+    assert dict.size(
+        dict.from_list(list.map(peers, fn(peer) { #(peer.connection_id, Nil) })),
+      )
+      == 3
+    list.each(peers, fn(peer) {
+      let expected = case peer.origin.principal {
+        "reader" -> snapshot.Observer
+        _ -> snapshot.Operator
+      }
+      assert peer.role == expected
+    })
+    assert configuration_of(returned) == configuration_of(alice_view)
+  })
+
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
-  list.each([alice, bob, reader], fn(driver) {
-    let monitor = process.monitor(driver.pid)
-    tui_driver.stop(driver.data)
-    let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
-      process.new_selector()
-      |> process.select_specific_monitor(monitor, fn(down) { down })
-      |> process.selector_receive(2000)
-      as "the native terminal closes normally before daemon teardown"
-  })
+  list.each([alice, rejoined, reader], stop_driver)
   daemon.close(connected.control)
+}
+
+fn stop_driver(driver: actor.Started(process.Subject(tui_driver.Message))) {
+  let monitor = process.monitor(driver.pid)
+  tui_driver.stop(driver.data)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the native terminal closes normally before daemon teardown"
+  Nil
+}
+
+fn attachment_of(sample: tui_driver.Sample) {
+  let assert Some(#(cut, _)) = sample.model.captured
+    as "attachment identity comes from the terminal's authenticated capture"
+  cut.attachment
+}
+
+fn peers_of(sample: tui_driver.Sample) {
+  let assert Some(#(_, view)) = sample.model.captured
+    as "presence comes from the terminal's coherent capture"
+  view.peers
+}
+
+fn has_principals(sample: tui_driver.Sample, principals: List(String)) {
+  case sample.model.captured {
+    Some(#(_, view)) ->
+      list.length(view.peers) == list.length(principals)
+      && list.all(principals, fn(principal) {
+        list.count(view.peers, fn(peer) { peer.origin.principal == principal })
+        == 1
+      })
+    None -> False
+  }
 }
 
 fn invite(address, owner, epoch, session, principal, role, name) {
