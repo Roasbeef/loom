@@ -3,7 +3,10 @@
 //// may-finish checkpoint, awaiting a result the strand register has
 //// since moved past, and the two blackboard write doors — including
 //// `steer_marking`, which is a queue admission and a write-once claim in
-//// one transaction.
+//// one transaction. The last section is about what an admission reads
+//// rather than what it writes: the pending queue is scanned only for
+//// the admission that consumes it, so a corrupt queue payload refuses a
+//// run and leaves every other strand's structural admission alone.
 
 import core/clock
 import core/ids
@@ -671,4 +674,98 @@ pub fn delete_reserved_fact_removes_the_cell_test() {
   let assert Error(api.UnreservedFactKey(key: "review/findings")) =
     api.delete_reserved_fact(rt, "review/findings")
   process.kill(rt.tree.supervisor)
+}
+
+// --- the queue read's blast radius -----------------------------------------
+
+// `pending.entry` registers are keyed by entry id alone, with no strand
+// in the key, so the admission path's queue read is a session-wide scan
+// and one undecodable payload spoils the whole of it. Only a run
+// consumes the queue — `accept_run` places the captured next-run items
+// from those payloads — so a compaction or a navigation that read it
+// would refuse on another strand's corruption over a value it never
+// looks at (issue #70).
+pub fn a_corrupt_queue_payload_only_refuses_a_run_admission_test() {
+  let rt = answering_runtime()
+
+  // One driven run, so the tree has an entry for the sibling strand to
+  // fork at and `main` is idle again by the time the assertions run.
+  let assert Ok(op) = api.prompt(rt, [fake.user("Hello")])
+    as "the first prompt must be accepted"
+  let assert Ok(outcome) = api.await_result(rt, op, within_ms: 5000)
+    as "the run must complete"
+  harness.assert_completed(outcome)
+  let assert Ok(Some(anchor)) = api.leaf(rt)
+    as "the completed run must leave a leaf to fork at"
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      rt,
+      named: "sub:1",
+      configuration: harness.configuration(),
+      at: Some(anchor),
+    )
+    as "the sibling strand must seed"
+
+  // A queue payload no decoder can read. Nothing in the register names
+  // the strand it belongs to, which is exactly why the read's failure
+  // used to travel.
+  let assert Ok(_committed) =
+    writer.commit(
+      rt.tree.writer,
+      Tx(
+        writes: [
+          SetRegister(
+            ns: register.PendingEntry,
+            key: "corrupt-pending-item",
+            value: register.value(json.String("not a pending entry")),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the corrupt queue payload must land"
+
+  // The run admission is the one that consumes the queue, so it must
+  // still refuse rather than place a next-run item it cannot read.
+  let assert Error(api.ReadFailed(reason: _)) =
+    api.accept_quietly(rt, [fake.user("Again")])
+    as "a run admission must still report the corrupt payload"
+
+  // The sibling's navigation never reads the queue, and so is not the
+  // corruption's business. Before the read was scoped this returned
+  // `ReadFailed` too.
+  let assert Ok(_navigation) =
+    api.navigate(
+      api.on_strand(rt, "sub:1"),
+      to: None,
+      summarize: False,
+      label: None,
+      custom_instructions: None,
+      preparation: None,
+    )
+    as "a structural admission must not fail on another strand's queue"
+  process.kill(rt.tree.supervisor)
+}
+
+// A runtime whose provider answers whatever it is asked, so a run
+// accepted here reaches a terminal result and leaves the strand idle.
+fn answering_runtime() -> api.Runtime {
+  let rec = recorder.start()
+  let assert Ok(sess) =
+    session.open_memory(clock.stepping(from: 1_000_000, by: 7))
+    as "the memory session must open"
+  let eff =
+    fake.effects(
+      rec,
+      clock.stepping(from: 2_000_000, by: 25),
+      [],
+      fn(_spec) { fake.Reply(fake.answer("answered", 3)) },
+      fn(_run) {
+        fake.ToolReply(text: "unused", is_error: False, terminate: False)
+      },
+    )
+  let assert Ok(rt) =
+    api.open(sess, eff, api.default_options(harness.configuration()))
+    as "the session tree must boot"
+  rt
 }
