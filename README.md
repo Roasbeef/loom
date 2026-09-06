@@ -447,17 +447,17 @@ tree part company. Each line names the issue that tracks it.
 - **The chaos runner is unbuilt.** `make soak` is the deterministic seed
   soak; random process kills under load are not tested.
 - **Distribution is single-platform and unpublished.** `make dist` builds
-  server and client tarballs for the host it runs on; only a Linux x86_64
-  artifact has been produced.
+  server and client tarballs for the host it runs on. The daemon candidate
+  has local macOS arm64 packaging evidence; its Linux acceptance remains
+  pending. See `docs/next.md` for the current verification record.
 
 ## Running Loom
 
-Two downloads, per platform: the **server** (`loomd`), a tarball carrying
-the BEAM runtime system and the sandbox helper that needs nothing
-installed, and the **client** (`loom`), a native Erlang shipment that
-needs a compatible Erlang/OTP 29 on its host. `make dist` builds both;
-`docs/distribution.md` is the whole argument, with every size and how it
-was measured.
+The **server** (`loomd`) and the default **client** (`loom`) each carry
+the BEAM runtime system, so neither needs Erlang installed on its host.
+An optional slim client uses the host's Erlang/OTP 29 instead. `make dist`
+builds all three tarballs for the current platform;
+`docs/distribution.md` describes their contents and measured sizes.
 
 The server tarball unpacks to `bin/loomd`, `bin/loom-exec` (the sandbox
 helper, a file beside it — Loom never extracts an executable at run
@@ -477,60 +477,80 @@ cd ~/src/myproj
 loom
 ```
 
-`loom` on its own is the whole local loop. It maps the canonical workspace
-to private state under `~/.loom`, reuses a compatible authenticated
-loopback server if one is already up, or starts `loomd` itself and waits
-for a real session snapshot before attaching. A second `loom` in the same
-workspace reconnects to the same server. The process boundary remains:
-one daemon owns the session file and its writer lease, and any number of
-clients subscribe over the gateway protocol.
+`loom` authenticates the daemon recorded under `~/.loom`, or starts
+`loomd` after checking that it can claim the private endpoint. An
+uncertain process identity or malformed endpoint blocks auto-start.
+The daemon is shared across workspaces. The client opens a session picker:
+press Enter to open
+the selected saved session, or choose New session to create one. Starting
+the daemon and listing its catalogue open no session runtimes; a daemon
+restart restores saved metadata until you explicitly open a session.
 
-The launcher's own options are `--workspace`, `--session-file`, `--server`
+Several terminals can attach to the same session or use independent
+sessions in that daemon. `/sessions` opens the catalogue picker again.
+Switching replaces that terminal's attachment after validating the new
+session's snapshot; it leaves the previous session running for other
+clients.
+
+The launcher's options are `--workspace`, `--session <id>`, `--server`
 (`LOOM_SERVER` is the environment form), `--state-dir`, and
-`--config <loom.toml>`, which hands the server a model catalogue you name
-explicitly. It never loads a `loom.toml` found in the workspace and never
-runs the server from the workspace, because repository content is not
-launch authority; it also ignores relative `PATH` entries when looking for
-`loomd`. `loom --demo` renders a self-contained preview from a canned
-local model — no server, no network, a fine first thing to try.
+`--config <loom.toml>`. An explicit `--session` selects and opens that
+saved session without the picker. `--config` supplies the model catalogue
+when launching a daemon; without it, the launcher uses
+`<state-dir>/loom.toml` if present. It never loads workspace configuration
+implicitly or runs the server from the workspace, because repository
+content is not launch authority. It also ignores relative `PATH` entries
+when looking for `loomd`. `loom --demo` renders a canned preview without a
+server or network connection.
 
-A manually managed or remote server uses the explicit form:
+To manage the daemon yourself, use the same state directory in both
+terminals:
 
+```sh
+# Terminal 1: one daemon for all sessions in this catalogue.
+loomd --state-dir "$HOME/.loom-dev" --bind 127.0.0.1:44123
+
+# Terminal 2: authenticate that daemon and open its session picker.
+loom --state-dir "$HOME/.loom-dev" --workspace "$HOME/src/myproj"
 ```
-# terminal 1 — the server owns the session
-loomd --session ~/sessions/myproj.db --workspace ~/src/myproj
-# prints: loomd: session myproj listening on ws://127.0.0.1:44123/v1/ws
-#         (token file ~/sessions/myproj.db.token)
 
-# terminal 2 — a client attaches
-loom --addr ws://127.0.0.1:44123/v1/ws --session myproj \
-  --token-file ~/sessions/myproj.db.token
+The daemon stores its catalogue and session databases under the private
+state directory. Its owner credential is `owner.token`, a `0600` file
+reused across daemon restarts, not a token per session. Session IDs come
+from the catalogue, not database filenames.
+
+For a direct attachment, first open the session through the picker, then
+replace `SESSION_ID` below with its catalogue ID:
+
+```sh
+loom --addr ws://127.0.0.1:44123/v2/sessions/SESSION_ID/ws \
+  --session SESSION_ID --token-file "$HOME/.loom-dev/owner.token"
 ```
 
-The session file is created if absent; the session name is the file's
-base name. The bearer token is minted at startup into a `0600` file next
-to the session: reading it proves you are the same user, and remote
-clients get the same header over their own transport.
+The direct route attaches only to an already-open session. For a remote
+host, carry the connection through a secure tunnel or TLS proxy and use a
+credential authorized for that session. The daemon itself binds only to
+loopback; do not expose bearer credentials over plaintext remote traffic.
 
 ### The server
 
-`loomd` opens or creates one SQLite session, stands up the whole stack over
-it — helper pool, ToolBroker, tool registry, provider gateway, runtime,
-gateway hub, and the websocket transport — prints where it is listening,
-and serves until `SIGTERM`, then closes the runtime so the session lease
-is released rather than left to expire. Its flags:
+`loomd` opens the catalogue and owner credential, then publishes one
+authenticated WebSocket listener. Each explicit session open assembles
+that session's SQLite store, helper pool, ToolBroker, provider, runtime,
+and gateway behind the shared listener. `SIGTERM` drains the sessions and
+shared domain services before closing the listener. Its flags:
 
 ```
---session <path>       the sqlite session file (required; created if absent)
---bind host:port       listen address (default 127.0.0.1:0 — port printed)
---token-file <path>    bearer token file (default <session>.token, mode 0600)
---workspace <dir>      the jail's writable root (default: current directory)
+--state-dir <path>     private daemon state (default ~/.loom)
+--bind host:port       loopback listen address (default 127.0.0.1:0; port printed)
+--capacity <n>         maximum retained session instances (default 8)
+--owner-name <name>    initial owner display name (default Owner)
 --helper <path>        loom-exec location (default: beside the server, then PATH, then ./bin)
 --config <loom.toml>   model catalogue file (default: the LOOM_* env vars)
 --codemode-seed <dir>  the offline build seed (default <workspace>/build/codemode-seed, then the bundled one)
 --codemode-seams <s>   workspace, orchestration, or both (default workspace)
 --full-enforcement     require every layer, including the ones Darwin cannot provide
---best-effort          accept a degraded jail (dev kernels); default refuses
+--best-effort          accept broader sandbox degradation for development
 ```
 
 **Models.** `--config` points at a catalogue: named entries (`dialect`,
@@ -540,8 +560,9 @@ commented example — it carries all three dialects, `anthropic`, `openai`
 and `gemini` — and `docs/examples/loom-baseten.toml` wires four
 OpenAI-dialect models with per-role chains. Precedence is flags > config
 file > environment > defaults: with `--config` the catalogue is the whole
-model surface, and the launcher supplies `~/.loom/loom.toml` when the flag
-is absent and that file exists; without either `LOOM_MODEL` (default `claude-opus-5`),
+model surface, and the launcher supplies `<state-dir>/loom.toml` when the
+flag is absent and that file exists (`~/.loom/loom.toml` by default).
+Without either, `LOOM_MODEL` (default `claude-opus-5`),
 `LOOM_BASE_URL`, `LOOM_CONTEXT_WINDOW`, `LOOM_MAX_OUTPUT_TOKENS` and
 `LOOM_SYSTEM_PROMPT` shape a one-entry catalogue. API keys never live in
 the file — each entry's `api_key_env` names the variable read at dispatch,
@@ -595,13 +616,13 @@ make lint             # the house rules on their own (lint-<package> narrows it)
 make binaries         # bin/loom-exec plus the native TUI shipment and launcher
 make install          # seed, server and client releases under ~/.local; then just `loom`
                       # INSTALL_CLIENT=slim for a client on the host's own Erlang
-make dev              # build, start a server on a scratch session, attach the TUI
+make dev              # build a scratch daemon and open its session picker
 make selftest         # build the helper, then report ENFORCED/SKIPPED per probe
 make e2e              # the jailed end-to-end against a freshly built helper
 make codemode-seed    # the offline package cache a code-mode build clones
 make e2e-codemode     # code mode for real: jailed build, real satellite, real cap call
 make release          # the self-contained server into build/release/loom (needs rebar3)
-make dist             # dist/: separate server and native-client tarballs, SHA256SUMS
+make dist             # dist/: server, bundled client, slim client, SHA256SUMS
 make soak             # the long simulation run (SOAK_SEEDS=n SOAK_FROM=n)
 make doc-check        # the doc graph: coverage, the AGENTS.md mirrors, citations
 make help             # everything else
@@ -621,24 +642,35 @@ into `packages/tools/src/tools/prelude.gleam` and `make prelude-check`
 is the digest comparison `make check` runs; `make gen-sql` is the same
 arrangement for the generated SQL modules.
 
-`make dev` is the interactive loop: build, start a server on a scratch
-session (or `$SESSION`), attach the TUI, tear the server down when the
-TUI exits; `scripts/dev.sh --smoke` is the non-interactive variant. `make
-run-server SESSION=path` runs the server from source and `make run-tui
-ADDR=... SESSION=...` attaches to it. `make server-shipment` and `make
-tui-shipment` export the two Erlang shipments behind thin `bin/loomd` and
-`bin/loom` launchers; shipments carry BEAM files but no runtime system,
-which is the gap `make release` closes for the server. The only Go build
-is the sandbox helper, built through `scripts/go-build.sh` with the same
-flags everywhere, so `bin/loom-exec` and the helper inside a release are
-byte-identical.
+`make dev` builds, starts a daemon with fresh state under `build/dev.*`,
+opens the session picker, and stops that daemon when the TUI exits. The
+state and logs remain for inspection. Set `STATE_DIR` to reuse development
+state, `WORKSPACE` to select a workspace, or `SESSION` to open a saved
+session ID. `SESSION` is not a database path. `scripts/dev.sh --smoke`
+checks startup, authentication refusal, and clean shutdown without a TUI;
+`--shipment-smoke` runs those checks through the exported daemon.
+
+`make run-server STATE_DIR=build/dev/state` runs the daemon from source.
+In another terminal, `make run-tui STATE_DIR=build/dev/state` opens its
+picker. Both targets default to that isolated development state;
+`run-tui` also builds the daemon launcher for local auto-start. A direct
+attachment uses `make run-tui ADDR=... SESSION=... TOKEN_FILE=...` with the
+v2 session URL shown above.
+
+`make server-shipment` and `make tui-shipment` export BEAM files behind
+thin `bin/loomd` and `bin/loom` launchers that use the host's Erlang.
+`make release` and `make release-client` bundle the runtime system for
+the server and client respectively. The sandbox helper is built through
+`scripts/go-build.sh` with the same flags everywhere, so `bin/loom-exec`
+and the helper inside a release are byte-identical.
 
 ## Reading further
 
 - `docs/architecture/` — the system as built: `durability.md`,
   `orchestration.md`, `effects.md` for the three planes; then
-  `messaging.md`, `events.md`, `client.md`, `models.md`, `compaction.md`,
-  `code-mode.md`, `mcp.md`, `extensions.md`, `simulation.md`. Start here
+  `messaging.md`, `events.md`, `client.md`, `sessions.md`, `multiplayer.md`,
+  `models.md`, `compaction.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
+  `simulation.md`. Start here
   to understand the code that exists.
 - `docs/weft.md` — when and why a process is built on weft, the in-tree
   ports to copy from, and how the library is extended.

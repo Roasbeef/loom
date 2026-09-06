@@ -2,8 +2,8 @@
 
 ## Current default: one daemon, multiple sessions
 
-The working-tree default on September 5, 2026 is one `loomd` per private state
-root, shared across workspaces. The daemon opens its catalogue and stable owner
+The current implementation runs one `loomd` per private state root, shared
+across workspaces. The daemon opens its catalogue and stable owner
 credential at startup; it restores session metadata without opening every
 conversation. Explicit create/open requests admit independent session assemblies.
 Each assembly owns one conversation database, runtime, gateway, broker, and helper
@@ -57,7 +57,15 @@ choices, not files selected by the workspace.
 ### The authenticated v2 boundary
 
 The loopback listener serves `/v2/control` and
-`/v2/sessions/<session-id>/ws`. Each upgrade hashes the bearer and authenticates
+`/v2/sessions/<session-id>/ws`. Both use text WebSocket frames with `v: 2`
+JSON envelopes. Control handles catalogue and lifecycle requests; the session
+socket carries conversation commands and credited transfers. The conversation
+vocabulary retains commands such as `prompt`, `steer`, and `fork`, but the v1
+envelopes and full-snapshot exchange shown in the historical sections below
+are not the current wire contract. [Protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
+defines that contract and its accepted transfer amendments.
+
+Each upgrade hashes the bearer and authenticates
 its current principal through the manager. The session route resolves an already
 resident incarnation; it never implicitly opens a saved session. Owner, Operator,
 and Observer are distinct authorities. A role change, credential revocation, or
@@ -145,9 +153,11 @@ database under `~/.loom/sessions` into one server. Each locally managed
 session has its own daemon, gateway, and bearer token; `/sessions`
 discovers their launcher records and switches the terminal's connection.
 
-There are two entry paths:
+The old implementation had two entry paths. These commands document that
+baseline; use the current launch examples above for the default daemon.
 
 ```sh
+# Historical commands, not supported launch instructions for the default daemon.
 # Discover or start the default session for this workspace.
 loom --workspace /work/project
 
@@ -201,8 +211,9 @@ publishes endpoint records atomically as private files. Endpoint and
 token reads are bounded to 16 KiB; token reads also require a private,
 user-owned regular file. Reuse checks the record against the expected
 canonical workspace, database, derived session name, token/log paths,
-versions, and local address. Only `ws://127.0.0.1:<port>/v1/ws` is
-accepted by this automatic path.
+versions, and local address. That historical automatic path accepted only
+`ws://127.0.0.1:<port>/v1/ws`. Default daemon discovery instead probes
+`/v2/control`, as described under safe startup above.
 
 ### Safe auto-start
 
@@ -499,11 +510,12 @@ leaving connections attached to a corpse.
 
 ## Historical: the wire
 
-Transport is websocket, text frames, one JSON envelope per frame, at
-`/v1/ws`. The envelope is frozen by the implementation spec Part 1.6;
+The historical transport used WebSocket text frames, one JSON envelope per
+frame, at `/v1/ws`. Its envelope was frozen by the implementation spec Part 1.6;
 the bodies under it are defined by
-[`packages/client/protocol.md`](../../packages/client/protocol.md), which both
-the gateway and native client build to.
+[`packages/client/protocol.md`](../../packages/client/protocol.md). That v1 body
+reference and its golden fixtures preserve the earlier contract; the default
+daemon and terminal use the v2 amendment linked above.
 
 ```
 c→s  {"v":1, "id":<uint>, "cmd":<name>, "body":{...}}
@@ -835,11 +847,12 @@ is a default and a documented invariant on
 caller binding a public interface under `LocalAuth`. And the token is
 all-or-nothing: whoever holds it holds the session.
 
-The pre-auth surface is deliberately bare. `/v1/ws` runs the bearer
-check before the upgrade, so a `401` is emitted with no websocket state
-in existence; `/healthz` answers a static `ok` with no session, version,
-or build information in it; every other path is a static `404`. No path
-reaches the websocket handler without passing the check.
+The historical pre-auth surface was deliberately bare. `/v1/ws` ran the bearer
+check before the upgrade, so a `401` was emitted with no WebSocket state
+in existence; `/healthz` answered a static `ok` with no session, version,
+or build information in it; every other path was a static `404`. The default
+daemon returns `404` for both of those retired routes. Its two v2 route families
+authenticate against the manager before upgrading.
 
 ## Historical: the terminal client
 
