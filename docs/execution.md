@@ -180,6 +180,20 @@ The watchdog's fault tests run under their own 20-second deadline in
 interrupts, invalid deadlines and exit-status preservation. Go tests retain
 their own ten-minute timeout and run under the outer process deadline too.
 
+### Keep prerequisite skips visible
+
+EUnit captures a passing test's stdout, even with verbose progress. Emit
+prerequisite `SKIP` diagnostics through `io.println_error`, as the native TUI
+fixture does. Otherwise the skip census cannot distinguish an executed test
+from a skipped one. `scripts/test_skip_reporting.py` checks those emitters and
+runs a real passing EUnit fixture through the census: undeclared skips fail,
+declared skips pass, and unused declarations fail. A stale-declaration error
+does not justify deleting its waiver until the actual prerequisite and output
+path have been checked.
+
+Keep the leading `SKIP` literal in the emitting call. The source guard checks
+that convention; it does not follow a marker assembled into a variable first.
+
 ### A long-lived tree's incremental build cache can lie
 
 A deterministic test failure in a package the diff does not touch is not

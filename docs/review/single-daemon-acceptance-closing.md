@@ -183,3 +183,52 @@ the dedicated target. The documentation gate reported zero errors and 137
 warnings. The separate helper suite passed eight cases, including actual
 socket closure after callback failure. The final focused correction results
 are recorded in the handoff; no second review pass was needed.
+
+## Shipped invitation boundaries
+
+The next increment checks one invitation against a second resident session
+in another workspace. A fresh review found no high- or medium-severity issue.
+Both invited principals receive exact foreign-access refusals. The owner
+then reads the same incarnation and operation and upgrades the same route,
+so an absent target cannot explain those refusals. A raw observer mutation
+reaches the gateway independently of the terminal's local guard.
+
+Accepted corrections replace string dispatch with typed roles, separate the
+test's stages, and describe invitations as owner-only. The invitation probe
+uses the already-shared session because its guard does not consult the target.
+The observer guard also refuses unknown command names; Alice's successful
+configuration command is the positive control for the probe's wire name.
+The per-principal checks remain in one loop. Splitting that loop would add
+structure without preserving a different property.
+
+The pre-correction combined gate exited 0 in 499.78 seconds. The final
+focused drive at `d3a647b9` exited 0 in 3.87 seconds. Those results establish
+the named acceptance observations, not the validity of earlier skip counts.
+
+## Visible skip diagnostics
+
+Published `0bc46d32` reached the final macOS skip census, which failed on an
+apparently stale `/proc` declaration. Source inspection showed that the
+prerequisite still existed. A direct EUnit reproduction explained the missing
+marker: a passing test's stdout is captured, while stderr remains visible.
+The test did not acquire process-observation coverage on macOS. Its existing
+declaration remains necessary.
+
+The repair follows the native TUI fixture's existing stderr convention.
+Thirty-five emitters in ten Gleam test files change only from `io.println`
+to `io.println_error`, with ordinary formatting. Marker text, prerequisites,
+assertions and declarations remain unchanged. No reporter, new Erlang module
+or EUnit capture change is introduced.
+
+Direct review approved the repair. The new regression runs stock EUnit and
+feeds its visible marker through the actual census: an undeclared skip fails,
+a declared skip passes, and an unused declaration fails. Its source guard
+recognizes multiline and shared emitters without treating comments or string
+examples as calls. The documented literal-first convention bounds that check;
+it does not track values stored in variables. All twelve Python deadline and
+reporting tests passed in 3.53 seconds under the existing twenty-second bound.
+
+Earlier census results on both platforms are unverified until the repaired
+reporting path runs there. A test command's zero exit status is distinct from
+proof that all its conditional cases executed. The handoff records the first
+completed rerun and its remaining declared skips.

@@ -158,6 +158,20 @@ shipped daemon's ordinary provider transport, not an injected transport.
 credential for this fixture; ordinary package
 tests explicitly skip it when `LOOM_BOOTSTRAP_E2E_SERVER` is unset.
 
+The owner also creates an uninvited session in a separate workspace. An
+operator and observer can list only their invited session. Their requests
+for the foreign session's metadata, open and lifecycle operation return
+`not_found`; owner-only mutations return `forbidden`. Both credentials fail
+the foreign WebSocket upgrade. The owner then reads the same resident
+incarnation and operation and successfully upgrades that route, so a missing
+target cannot stand in for authorization enforcement.
+
+An observer's valid `set_config` frame also reaches the shipped gateway
+directly and receives a correlated `forbidden` reply. This bypasses the
+terminal's local read-only guard. The gateway checks the role before
+subscription state; the probe does not join presence. These checks establish
+API authority, not filesystem confinement or revocation of a queued command.
+
 The same fixture stops Bob's terminal and waits for Alice and the observer
 to see his presence disappear. Bob rejoins with the same credential; all
 three terminals must see the exact principal set, a new Bob attachment ID,

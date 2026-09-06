@@ -302,6 +302,10 @@ catalogue without opening runtimes. Explicit admission invokes
   exact durable records, authors, rendered answers and idle completion across
   two turns and an operator's detach/rejoin. No fixture writes the answers
   into the session store or injects a transport into the shipped VM.
+  The same fixture checks invitation boundaries against a second resident
+  session in another workspace. Owner-positive metadata, operation and upgrade
+  checks distinguish authorization refusal from a missing target. A raw valid
+  observer `set_config` frame checks the gateway independently of the TUI guard.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

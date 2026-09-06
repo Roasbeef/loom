@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `df960471`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `e2480830`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The plan remains
 [issue-plan.md](issue-plan.md), with required observations in the
@@ -38,8 +38,10 @@ Draft [#239](https://github.com/Roasbeef/loom/pull/239) publishes
 `client/daemon-acceptance`, based on #238. Its first published head was
 `e829a2a0`; published `34323df1` includes the CI prerequisite repair and both
 whole-VM recovery boundaries. The reviewed follow-up through `df960471` adds
-presence recovery and two real HTTP turns across Bob's reconnect. All remain
-unmerged.
+presence recovery and two real HTTP turns across Bob's reconnect, published
+at `0bc46d32`. The reviewed follow-up through `e2480830` adds shipped
+invitation boundaries and repairs hidden prerequisite diagnostics. All
+remain unmerged.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -75,6 +77,34 @@ dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
 
+The final combined `make check dist e2e-client-bootstrap e2e-multiplayer
+soak-daemon` gate exited 0 in **563.63 seconds** at `e2480830`. It reported
+1,332 client tests and 206 TUI tests. The executable and public dummy
+provider key were supplied to ordinary check as well as the dedicated
+target, enabling all three shipped fixtures in both runs. The strict local
+macOS census then exited 0: one existing `/proc` prerequisite skip and no
+undeclared skips. That prerequisite skips the real-MCP fixture before
+setup; its passing EUnit result does not establish that fixture's coverage.
+
+The shipped multiplayer fixture now also creates a real second workspace.
+Alice and Reader cannot list, inspect, open, stop or upgrade to its session;
+owner probes subsequently verify that the same runtime remains live. Reader
+cannot open even the invited session. Both members are denied owner-only
+invitation and shutdown operations, and a raw observer connection is denied
+the same configuration mutation Alice later completes. The reviewed focused
+fixture passed in **3.87 seconds** before the combined gate. These are
+authority checks, not application filesystem-confinement proof.
+
+Commit `e2480830` sends prerequisite diagnostics to stderr, following the
+existing TUI harness convention. EUnit captures stdout from passing tests,
+which previously hid conditional skips from the census. Twelve bounded
+Python regressions passed in **3.53 seconds**, including actual EUnit output
+and declared, undeclared and stale census cases. No prerequisite, assertion,
+skip declaration or runner capture behavior changed. Earlier remote census
+results on both platforms under-counted skips and remain unverified until
+the repaired reporting runs there. The local census above is not remote
+platform acceptance.
+
 The provider/ordering candidate's combined `make check dist
 e2e-client-bootstrap e2e-multiplayer soak-daemon` gate exited 0 in
 **497.05 seconds**. It covered 1,332 client tests and 206 TUI tests, packaging
@@ -83,7 +113,7 @@ review corrections add type annotations, equivalent decoded-model capture
 and explanatory prose; the final eight helper tests passed in **0.65 seconds**
 and the final shipped integration at `df960471` passed in **3.46 seconds**.
 No safety assertion or per-terminal await deadline was removed or widened.
-The documentation gate exited 0 with zero errors and 137 warnings.
+The latest documentation gate exited 0 with zero errors and 136 warnings.
 
 Ordinary local package runs explicitly skip the shipped fixtures without
 their executable environment variable; CI supplies it before ordinary check.
@@ -121,6 +151,14 @@ took 399 ms against a 372 ms allowance. Five exact local reproductions
 passed. The cause is unestablished; per-credit timestamps now accompany the
 unchanged assertion. Neither a local pass nor a rejected review hypothesis
 makes the remote failure green.
+
+At `0bc46d32`, [run 34041432159](https://github.com/Roasbeef/loom/actions/runs/34041432159)
+passed Linux, jail and 200-seed jobs. macOS test commands also returned zero,
+but its final skip census failed because the still-required `/proc`
+declaration matched no visible diagnostic. This exposed the stdout capture
+problem above; deleting the declaration would hide it. That run had neither
+a Hex failure nor a paired-soak assertion failure. The next published head
+must rerun both platform censuses with the reporting repair.
 
 The new shipped recovery fixture fills runtime capacity, receives the exact
 capacity refusal after durable reservation, then kills the birth-verified
@@ -197,8 +235,9 @@ crash-at-every-publication-step sweep.
 
 ### 1. Publish the follow-up and verify its platforms
 
-Push the reviewed follow-up to #239, send its exact head and gate evidence,
-and monitor both platform jobs. Native stack 231 already places it above
+Push the reviewed authority and skip-reporting follow-up to #239, send its
+exact head and gate evidence, and monitor both platform jobs, including
+their repaired skip censuses. Native stack 231 already places it above
 #238. Keep the PR draft while release acceptance is incomplete. Re-baseline
 this handoff after new CI evidence; do not carry an earlier run's result
 as the new head's result.
@@ -283,7 +322,10 @@ were not re-audited for this slice.
 ## How to verify
 
 ```sh
-LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key LOOM_TEST_TIMEOUT_SECONDS=600 python3 scripts/with_timeout.py 900 -- make check dist e2e-client-bootstrap e2e-multiplayer soak-daemon
+LOOM_BOOTSTRAP_E2E_SERVER="$PWD/bin/loomd" \
+LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
+LOOM_TEST_TIMEOUT_SECONDS=600 \
+python3 scripts/with_timeout.py 900 -- make check dist e2e-client-bootstrap e2e-multiplayer soak-daemon
 make doc-check
 ```
 
