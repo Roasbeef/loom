@@ -61,6 +61,11 @@ type SnapshotTiming {
     subscribe: Int,
     drain: Int,
     credits: Int,
+    started: Int,
+    connected: Int,
+    subscribed: Int,
+    completed: Int,
+    credit_timings: List(#(Int, Int)),
   )
 }
 
@@ -220,7 +225,8 @@ fn measure_snapshot(serving: daemon_main.Serving(serve.Instance), token, id) {
   assert field(begin, "session_id") == json.String(id)
   assert field(begin, "epoch") == json.String(serving.ready.epoch)
 
-  let chunks = transfer.drain(socket, snapshot, 0, [], 64)
+  let #(chunks, credit_timings) =
+    timed_drain(socket, snapshot, 0, #([], []), 64)
   let completed = bootstrap.monotonic_time_ms()
   assert chunks != []
   let _ = ffi_ws.tcp_close(socket)
@@ -231,12 +237,60 @@ fn measure_snapshot(serving: daemon_main.Serving(serve.Instance), token, id) {
       subscribed - connected,
       completed - subscribed,
       list.length(chunks) + 1,
+      began,
+      connected,
+      subscribed,
+      completed,
+      credit_timings,
     )
   let entries =
     chunks
     |> list.filter(fn(chunk) { field(chunk, "kind") == json.String("entry") })
     |> list.map(fn(chunk) { field(chunk, "record_id") })
   #(timing, entries)
+}
+
+// This is the shared wire driver's drain with two clock reads per credit.
+// Keep its request sequence, frame assertion and finite budget unchanged.
+// Retain raw times until the transfer ends so JSON formatting cannot delay
+// the next credit. The final sample includes the snapshot_end exchange.
+fn timed_drain(socket, snapshot_id, index, accumulated, remaining) {
+  assert remaining > 0 as "the fixture supplies a finite credit budget"
+  let began = bootstrap.monotonic_time_ms()
+  let frame =
+    wire.send(
+      socket,
+      index + 2,
+      "snapshot_next",
+      json.Object([
+        #("snapshot_id", json.String(snapshot_id)),
+        #("index", json.Int(index)),
+      ]),
+    )
+  let completed = bootstrap.monotonic_time_ms()
+  assert string.byte_size(json.to_string(frame)) <= 65_536
+  let #(chunks, timings) = accumulated
+  let timings = [#(began, completed), ..timings]
+
+  case field(frame, "event") {
+    json.String("snapshot_chunk") ->
+      timed_drain(
+        socket,
+        snapshot_id,
+        index + 1,
+        #([field(frame, "body"), ..chunks], timings),
+        remaining - 1,
+      )
+    json.String("snapshot_end") -> #(
+      list.reverse(chunks),
+      list.reverse(timings),
+    )
+    other ->
+      panic as {
+        "a credited transfer yields a chunk or its end, not "
+        <> string.inspect(other)
+      }
+  }
 }
 
 fn timing_json(timing: SnapshotTiming) {
@@ -246,6 +300,23 @@ fn timing_json(timing: SnapshotTiming) {
     #("subscribe_ms", json.Int(timing.subscribe)),
     #("drain_ms", json.Int(timing.drain)),
     #("credits", json.Int(timing.credits)),
+    #("started_monotonic_ms", json.Int(timing.started)),
+    #("connected_monotonic_ms", json.Int(timing.connected)),
+    #("subscribed_monotonic_ms", json.Int(timing.subscribed)),
+    #("completed_monotonic_ms", json.Int(timing.completed)),
+    #(
+      "credit_timings",
+      json.Array(
+        list.map(timing.credit_timings, fn(sample) {
+          let #(started, completed) = sample
+          json.Object([
+            #("started_monotonic_ms", json.Int(started)),
+            #("completed_monotonic_ms", json.Int(completed)),
+            #("roundtrip_ms", json.Int(completed - started)),
+          ])
+        }),
+      ),
+    ),
   ])
 }
 
