@@ -86,11 +86,11 @@ func TestServerModeEndToEnd(t *testing.T) {
 	if f.Kind != framing.KindHello || framing.DecodeBody(f.Body, &hello) != nil {
 		t.Fatalf("first frame: %+v", f)
 	}
-	if hello.Proto != 1 || hello.Peer != "exec-helper" {
+	if hello.Proto != framing.ExecProtocolVersion || hello.Peer != "exec-helper" {
 		t.Fatalf("hello: %+v", hello)
 	}
 
-	if err := conn.Write(1, framing.KindHello, framing.Hello{Proto: 1, Peer: "broker"}); err != nil {
+	if err := conn.Write(1, framing.KindHello, framing.Hello{Proto: framing.ExecProtocolVersion, Peer: "broker"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Write(2, framing.KindExecStart, framing.ExecStart{

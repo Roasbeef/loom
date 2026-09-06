@@ -380,11 +380,14 @@ pub fn wrong_proto_kills_handshake_test() {
     )
   let assert Ok(helper) = exec.start(config)
   process.send(inbox, fake_helper.Attach(wire: exec.wire(helper)))
-  // The envelope version is fine, so the frame decodes; the hello
-  // body's proto mismatch is a protocol violation that kills the
-  // handshake in-band.
-  let assert Error(exec.ProtocolViolation(kind: "hello")) =
+  // The envelope version is fine, so the frame decodes and the broker
+  // can read what the peer claims to speak. Both numbers survive into
+  // the failure: without them the caller is back to issue #61, holding
+  // a dead channel and no account of why.
+  let assert Error(exec.ProtocolVersionMismatch(helper: spoken, broker: wanted)) =
     exec.await_ready(helper, waiting: 2000)
+  assert spoken == 99
+  assert wanted == framing.exec_protocol_version
   exec.shutdown(helper)
 }
 

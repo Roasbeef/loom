@@ -26,7 +26,25 @@ type shutdownHelper struct {
 	waitErr error
 }
 
+// startShutdownHelper spawns the helper and completes the handshake at
+// this build's exec protocol version, which is what every test below the
+// version check wants.
 func startShutdownHelper(t *testing.T) *shutdownHelper {
+	t.Helper()
+	h := startHelperProcess(t)
+	if err := h.conn.Write(1, framing.KindHello, framing.Hello{
+		Proto: framing.ExecProtocolVersion, Peer: "broker",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// startHelperProcess spawns the helper and consumes its hello, stopping
+// short of answering it. Split out from startShutdownHelper so a test can
+// answer with a version of its own choosing; every other caller wants the
+// handshake finished and says so by using the wrapper above.
+func startHelperProcess(t *testing.T) *shutdownHelper {
 	t.Helper()
 	bin := testbin.Helper(t)
 	pipe := func() (*os.File, *os.File) {
@@ -89,11 +107,19 @@ func startShutdownHelper(t *testing.T) *shutdownHelper {
 			t.Error("helper did not exit after its independent process deadline")
 		}
 	})
-	if f := h.read(t); f.Kind != framing.KindHello {
+	f := h.read(t)
+	if f.Kind != framing.KindHello {
 		t.Fatalf("first frame = %+v, want hello", f)
 	}
-	if err := h.conn.Write(1, framing.KindHello, framing.Hello{Proto: 1, Peer: "broker"}); err != nil {
-		t.Fatal(err)
+
+	// The helper announces its own version before it is told anything, so
+	// a broker can name both numbers without having spoken first.
+	var hello framing.Hello
+	if err := framing.DecodeBody(f.Body, &hello); err != nil {
+		t.Fatalf("decode hello: %v", err)
+	}
+	if hello.Proto != framing.ExecProtocolVersion {
+		t.Fatalf("hello proto = %d, want %d", hello.Proto, framing.ExecProtocolVersion)
 	}
 	return h
 }

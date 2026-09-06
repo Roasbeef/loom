@@ -1033,11 +1033,33 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
       "the sandbox helper exited with status " <> int.to_string(status)
     exec.ProtocolViolation(kind:) ->
       "the sandbox helper sent a forbidden frame: " <> kind
+
+    // Both numbers and which side is behind. A stale `bin/loom-exec` was
+    // the whole of issue #61 and cost an hour of wrong diagnosis; the
+    // remedy differs by direction, so the text names the direction rather
+    // than reporting a symmetric disagreement.
+    exec.ProtocolVersionMismatch(helper:, broker:) ->
+      "the sandbox helper speaks exec protocol "
+      <> int.to_string(helper)
+      <> " and this build speaks "
+      <> int.to_string(broker)
+      <> "; "
+      <> behind_side_text(helper, broker)
     exec.SendFailed -> "writing to the sandbox helper failed"
     exec.CancelEscalated ->
       "the execution did not stop on cancel and was killed"
     exec.HeartbeatMissed -> "the sandbox helper stopped responding"
     exec.HelperUnresponsive -> "the sandbox helper did not answer"
+  }
+}
+
+// Which side of a protocol-version disagreement is behind, and what to
+// rebuild. The lower number is the older build by construction: the
+// constant only ever moves forward, one step per protocol change.
+fn behind_side_text(helper: Int, broker: Int) -> String {
+  case helper < broker {
+    True -> "the helper is older than this build; run `make binaries`"
+    False -> "this build is older than the helper; rebuild the harness"
   }
 }
 

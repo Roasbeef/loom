@@ -230,6 +230,20 @@ pub type ExecFailure {
   /// the channel was closed.
   ProtocolViolation(kind: String)
 
+  /// The helper's `hello` announced a different exec-protocol version
+  /// than this build speaks, so the two cannot agree on what a frame
+  /// body means. `helper` is what it said and `broker` is
+  /// `framing.exec_protocol_version`; the smaller of the two names the
+  /// side that is behind, which is the difference between "rebuild the
+  /// helper" and "rebuild the harness".
+  ///
+  /// Distinct from `ProtocolViolation` because nothing was violated: the
+  /// peer spoke its protocol correctly and it is the wrong one. That
+  /// distinction is the whole of issue #61, where a helper predating
+  /// `protocol-change/006` surfaced as an anonymous decode failure on a
+  /// later frame instead of as a version disagreement at the handshake.
+  ProtocolVersionMismatch(helper: Int, broker: Int)
+
   /// Writing to the helper's stdin failed (helper died mid-frame).
   SendFailed
 
@@ -1772,11 +1786,23 @@ fn handle_hello(
   features: List(String),
 ) -> Machine {
   case machine.phase {
+    // A version disagreement is not a malformed frame: the hello parsed,
+    // and the two numbers in it are the diagnosis. Carrying both is what
+    // turns "the sandbox channel broke protocol" into a sentence naming
+    // the stale binary and its remedy.
     AwaitingHello ->
-      case proto == framing.protocol_version {
-        False -> mark_dead(machine, ProtocolViolation(kind: "hello"))
+      case proto == framing.exec_protocol_version {
+        False ->
+          mark_dead(
+            machine,
+            ProtocolVersionMismatch(
+              helper: proto,
+              broker: framing.exec_protocol_version,
+            ),
+          )
         True -> complete_handshake(machine, features)
       }
+
     Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
       mark_dead(machine, ProtocolViolation(kind: "hello"))
   }
@@ -1800,7 +1826,7 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
       framing.Frame(
         id:,
         body: framing.Hello(
-          proto: framing.protocol_version,
+          proto: framing.exec_protocol_version,
           peer: "broker",
           features: [],
         ),

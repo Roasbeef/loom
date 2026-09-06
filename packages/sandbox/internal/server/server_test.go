@@ -95,7 +95,7 @@ func expectHello(t *testing.T, h *harness) framing.Hello {
 	if err := framing.DecodeBody(f.Body, &hello); err != nil {
 		t.Fatalf("decode hello: %v", err)
 	}
-	if hello.Proto != framing.ProtoVersion || hello.Peer != "exec-helper" {
+	if hello.Proto != framing.ExecProtocolVersion || hello.Peer != "exec-helper" {
 		t.Fatalf("hello = %+v", hello)
 	}
 	return hello
@@ -103,7 +103,7 @@ func expectHello(t *testing.T, h *harness) framing.Hello {
 
 func sendHello(t *testing.T, h *harness) {
 	t.Helper()
-	if err := h.conn.Write(1, framing.KindHello, framing.Hello{Proto: 1, Peer: "broker"}); err != nil {
+	if err := h.conn.Write(1, framing.KindHello, framing.Hello{Proto: framing.ExecProtocolVersion, Peer: "broker"}); err != nil {
 		t.Fatalf("send hello: %v", err)
 	}
 }

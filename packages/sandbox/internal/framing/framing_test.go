@@ -33,7 +33,7 @@ func TestRoundtripAllKinds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Read: %v", err)
 			}
-			if f.V != ProtoVersion || f.ID != 7 || f.Kind != tc.kind {
+			if f.V != EnvelopeVersion || f.ID != 7 || f.Kind != tc.kind {
 				t.Fatalf("envelope mismatch: %+v", f)
 			}
 			// Decode the body back into a fresh value of the same type

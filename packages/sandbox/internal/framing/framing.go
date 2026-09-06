@@ -20,8 +20,25 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// ProtoVersion is the frame/hello protocol version this helper speaks.
-const ProtoVersion = 1
+// EnvelopeVersion is the frame envelope's own version, stamped as "v" on
+// every frame and rejected on sight when it differs. It describes the
+// container — the length prefix around a map of exactly v, id, kind, body
+// — and nothing inside body, which is why no protocol change has moved it.
+// The Gleam side pins the same literal as broker/framing.envelope_version.
+const EnvelopeVersion = 1
+
+// ExecProtocolVersion is the version of the exec channel's body
+// vocabulary, sent as hello.proto and compared against the broker's.
+//
+// A protocol-change that adds, removes, or makes-required a key on a
+// frame this helper sends or receives — or adds a kind to this channel —
+// bumps this constant and broker/framing.exec_protocol_version in the
+// same commit. 1 was the vocabulary as first frozen; 2 is
+// protocol-change/006's required exec_exit "cancelled" key; 3 is
+// protocol-change/014's shutdown frame. The Gleam constant's doc comment
+// carries the full mapping, and broker's protocol_version_test reads this
+// file to prove the two literals have not drifted apart.
+const ExecProtocolVersion = 3
 
 // MaxFrameLen caps a frame's payload. The helper's own frames are small
 // (output is chunked well below this); the cap exists so a corrupt or
@@ -185,7 +202,7 @@ func DecodePayload(payload []byte) (Frame, error) {
 	if _, err := dec.PeekCode(); err != io.EOF {
 		return Frame{}, fmt.Errorf("framing: trailing bytes after frame map")
 	}
-	if f.V != ProtoVersion {
+	if f.V != EnvelopeVersion {
 		return Frame{}, fmt.Errorf("framing: unsupported frame version %d", f.V)
 	}
 	if f.Kind == "" {
@@ -240,7 +257,7 @@ func (c *Conn) Write(id uint64, kind string, body any) error {
 	if err != nil {
 		return err
 	}
-	buf, err := EncodeFrame(Frame{V: ProtoVersion, ID: id, Kind: kind, Body: raw})
+	buf, err := EncodeFrame(Frame{V: EnvelopeVersion, ID: id, Kind: kind, Body: raw})
 	if err != nil {
 		return err
 	}

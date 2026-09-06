@@ -911,7 +911,7 @@ fn pool_of(features: List(String)) -> exec.Pool {
         framing.encode(framing.Frame(
           id: 1,
           body: framing.Hello(
-            proto: framing.protocol_version,
+            proto: framing.exec_protocol_version,
             peer: "helper",
             features:,
           ),
