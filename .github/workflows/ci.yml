@@ -96,7 +96,14 @@ jobs:
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 
+      # Shipped fixtures also belong to the ordinary package census. Supply
+      # their executable before that gate instead of excusing its skip marker.
+      - name: Build native bootstrap prerequisites
+        run: make binaries server-shipment
+
       - name: make check
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
         run: set -o pipefail; make check 2>&1 | tee check.log
 
       - name: make e2e-client-bootstrap
@@ -208,7 +215,12 @@ jobs:
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 
+      - name: Build native bootstrap prerequisites
+        run: make binaries server-shipment
+
       - name: make check
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
         run: set -o pipefail; make check 2>&1 | tee check-macos.log
 
       - name: make e2e-client-bootstrap
