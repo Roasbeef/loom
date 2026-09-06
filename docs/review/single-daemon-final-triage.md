@@ -17,11 +17,32 @@ passing results.
 
 ## Where this stands
 
-The corrected client gate passes 1,298 tests in 213.88 seconds. A fresh release
-build and release smoke pass in 18.93 and 2.80 seconds, respectively. The smoke
-observes normal daemon exit, two explicit sessions and bundled runtime startup;
-it does not prove a model turn or populated-catalogue restart. These local
-results predate adoption of the SQLite repair.
+The reviewed working tree passed 1,298 client tests in 213.88 seconds. Clean
+verification then exposed three fixture-ordering defects. The provider relay
+must install its original witness before beginning an immediately completing
+request. The terminal fixture must acknowledge monitor delivery before another
+process triggers owner shutdown. The native fork test must observe the durable
+agent identity rather than a temporary notice overwritten by reconciliation.
+
+The relay's late-witness negative fails with `ProofLost`; the corrected group
+passes nine tests. A trace captured the terminal control owner's `Normal` exit
+with a `noproc` monitor event for the same PID. An acknowledged OTP system
+request establishes delivery before shutdown; 250 untraced repetitions and the
+independent 11-test module pass. The untraced negative did not reproduce.
+Requiring the authoritative two-agent snapshot reproduced the old fork
+assertion failure; the corrected native E2E passes in 6.09 seconds. These are
+test corrections, not relaxed retirement or production guarantees.
+
+The clean release build and smoke at `e9b46e1f` passed in 30.99 and 2.82
+seconds. At its docs/test-only descendant `d2597a6c`, distribution and real
+client bootstrap E2E passed in 49.12 and 35.15 seconds. The smoke observes
+normal daemon exit, two explicit sessions and bundled runtime startup; it does
+not prove a model turn or populated-catalogue restart. Both developer startup
+smokes pass at `46312646`. Its full clean gate passed in 377.69 seconds,
+including 1,298 client tests, 204 TUI tests, 69 conformance tests, native Go
+checks and lint (zero errors, 615 warnings). The documentation-only descendant
+`5af17a7e` passed `make doc-check`. These results all predate adoption of the
+SQLite repair.
 
 The original soak adds 192 database/WAL descriptors over 16 measured cycles.
 An explicit evaluation of the repaired binding holds the count at 68 across
