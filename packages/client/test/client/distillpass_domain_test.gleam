@@ -141,11 +141,15 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
     as "the resumed domain runs the pass the revived session asked for"
   assert process.receive(fenced, 0) == Error(Nil)
   process.send(second, Ok([]))
-  assert process.receive(fenced, 100) == Error(Nil)
-    as "the resume withdrew the fence, so its subject is never answered"
 
   // The withdrawn fence must leave admission exactly where the resume put it.
+  // The trigger is a synchronous call answered after the worker has handled
+  // the second finish, so once it returns any answer that finish could have
+  // sent to the withdrawn fence is already in this mailbox, and the check
+  // below is exact rather than a wait.
   assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  assert process.receive(fenced, 0) == Error(Nil)
+    as "the resume withdrew the fence, so its subject is never answered"
   let assert Ok(third) = process.receive(arrivals, 2000)
     as "a resumed domain still schedules after its stale fence is answered"
   process.send(third, Ok([]))

@@ -912,8 +912,11 @@ pub fn summary(manager: Manager(instance)) -> Result(Summary, Error) {
 /// This exists for one registry fixture: a revival replaces the slot's
 /// settle subject so that an account of the fence it withdrew cannot be
 /// taken for the next fence's settle, and the only way a test can deliver
-/// such an account is to hold the earlier subject. Nothing in production
-/// reads a settle subject back out; the registry issues it with each fence.
+/// such an account is to hold the earlier subject. The holder of a settle
+/// subject can forge a settle, so this is a capability handed out on purpose
+/// to fixtures alone: it is internal, has no wire route, and nothing in
+/// production reads a settle subject back out. The registry issues each
+/// subject with its fence.
 ///
 /// ## Examples
 ///
