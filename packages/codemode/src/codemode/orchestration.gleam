@@ -99,6 +99,8 @@ import codemode/satellite.{
 import core/ids
 import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
+import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -433,14 +435,38 @@ fn schema_arg(
   case fields {
     [] -> Ok(None)
     [_, ..] -> {
+      // Both of the harness's size bounds are asked here, above the walk
+      // rather than below it. `parse_result_schema` applies the same two
+      // — this is the count, and `field_type_json` carries the depth —
+      // but it can only apply them to a schema that already exists, and
+      // building that schema is the walk: `try_map` decodes every
+      // descriptor a program sent and recurses into every `items` it
+      // nested. Refusing on the length first means the descriptors past
+      // the bound are never decoded at all.
+      use Nil <- result.try(case list.drop(fields, agent.max_result_fields) {
+        [] -> Ok(Nil)
+        [_, ..] ->
+          Error(schema_refusal(
+            "may declare at most "
+            <> int.to_string(agent.max_result_fields)
+            <> " properties",
+          ))
+      })
+
       use declared <- result.try(list.try_map(fields, decode_field))
       agent.parse_result_schema(schema_json(declared))
       |> result.map(Some)
-      |> result.map_error(fn(reason) {
-        decode.invalid("the result shape you asked for " <> reason)
-      })
+      |> result.map_error(schema_refusal)
     }
   }
+}
+
+// A schema refusal in the one voice, whether this seam decided it or
+// `agent.parse_result_schema` did. Moving a check to the near side of the
+// walk is meant to change when a shape is refused and not what a program
+// hears about it, and sharing the sentence is what holds that.
+fn schema_refusal(reason: String) -> CapDenial {
+  decode.invalid("the result shape you asked for " <> reason)
 }
 
 // One field descriptor, as `cap/strand.encode_schema` sends it.
@@ -451,15 +477,29 @@ type Declared {
 fn decode_field(value: MsgPackValue) -> Result(Declared, CapDenial) {
   use name <- result.try(decode.string(value, "name"))
   use required <- result.try(bool_arg(value, "required"))
-  use expects <- result.try(field_type_json(value))
+  use expects <- result.try(field_type_json(value, 0))
   Ok(Declared(name:, expects:, required:))
 }
 
 // A field's type as the schema dialect spells it. An array's element type
-// nests through `items`, and the recursion is bounded by the sender's own
-// nesting: a descriptor with no `items` ends it, and `parse_result_schema`
-// refuses anything deeper than `agent.max_schema_depth` afterwards.
-fn field_type_json(value: MsgPackValue) -> Result(JsonValue, CapDenial) {
+// nests through `items`, and the recursion carries the depth so it is
+// bounded by the harness rather than by the sender: `depth` counts the
+// `items` levels descended so far, exactly as `parse_field_type` counts
+// them on the far side, and a descriptor nested past
+// `agent.max_schema_depth` is refused on the way down instead of
+// materialized and refused afterwards.
+fn field_type_json(
+  value: MsgPackValue,
+  depth: Int,
+) -> Result(JsonValue, CapDenial) {
+  use <- bool.lazy_guard(when: depth > agent.max_schema_depth, return: fn() {
+    Error(schema_refusal(
+      "nests `items` deeper than "
+      <> int.to_string(agent.max_schema_depth)
+      <> " levels",
+    ))
+  })
+
   use declared <- result.try(decode.string(value, "type"))
   case declared {
     "any" -> Ok(json.Object([]))
@@ -468,7 +508,7 @@ fn field_type_json(value: MsgPackValue) -> Result(JsonValue, CapDenial) {
     "array" -> {
       use items <- result.try(case decode.field(value, "items") {
         Error(_) | Ok(msgpack.NilValue) -> Ok(json.Object([]))
-        Ok(nested) -> field_type_json(nested)
+        Ok(nested) -> field_type_json(nested, depth + 1)
       })
       Ok(json.Object([#("type", json.String("array")), #("items", items)]))
     }
