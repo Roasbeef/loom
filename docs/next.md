@@ -5,7 +5,8 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `816a18b2`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `563f3573`
+and its reviewed storage-refusal assertion.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The plan remains
 [issue-plan.md](issue-plan.md), with required observations in the
@@ -36,8 +37,9 @@ Draft [#238](https://github.com/Roasbeef/loom/pull/238) is published at
 `33387530`, based on #237. Native GitHub stack 231 contains that chain.
 Draft [#239](https://github.com/Roasbeef/loom/pull/239) publishes
 `client/daemon-acceptance`, based on #238. Its first published head was
-`e829a2a0`; the follow-up adds a CI prerequisite repair and whole-VM
-reservation recovery. All remain unmerged.
+`e829a2a0`; published `ffacaa5b` adds the CI prerequisite repair and whole-VM
+reservation recovery. The next follow-up adds whole-VM recovery after
+identity publication but before catalogue confirmation. All remain unmerged.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -71,13 +73,19 @@ dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
 
-At `ebe0f96c`, the combined `make check dist e2e-client-bootstrap
-e2e-multiplayer soak-daemon` gate exited 0 in **431.65 seconds**. It covered
-1,322 client tests and 206 TUI tests, packaging and the enabled shipped
-multiplayer fixture. Ordinary package runs explicitly skip that fixture
-without its executable environment variable; the shipped target runs it.
-The paired soak bound was unchanged. The documentation gate exited 0 with
-zero errors and 136 warnings.
+At `563f3573`, the combined `make check dist e2e-client-bootstrap
+e2e-multiplayer soak-daemon` gate exited 0 in **494.21 seconds**. It covered
+1,324 client tests and 206 TUI tests, packaging and all three enabled shipped
+fixtures in the dedicated target. Ordinary local package runs explicitly
+skip those fixtures without their executable environment variable; CI
+supplies it before ordinary check. The paired soak bound was unchanged.
+The documentation gate exited 0 with zero errors and 137 warnings.
+
+The small subsequent review correction adds a session-correlated
+`storage_open_failed` observation to the immediate recovery retry. Its
+focused shipped fixture passed in **61.59 seconds**. The assertion excludes
+earlier configuration/helper failures, but does not identify the exact
+storage error. The unchanged original lease remains the safety assertion.
 
 The subsequent delta through `9cc115c5` changes test ordering and prose,
 not implementation behavior. Its cadence tests passed 14 cases in 1.71
@@ -128,14 +136,27 @@ shipped runs above establish those conditional cases. Source inspection
 does not establish the CI delay's cause. A's unread piece was already
 serialized; shared registry, history and scheduler/native-I/O contention
 remain candidates, not diagnoses. Do not weaken the bound or call the local
-passes a repair. The follow-up needs its own remote results.
+passes a repair.
+
+At `ffacaa5b`, [run 34036856149](https://github.com/Roasbeef/loom/actions/runs/34036856149)
+again failed. Linux check, bootstrap and documentation passed; later server
+shipment failed on a Hex API rate limit. macOS failed paired soak cycle nine:
+498 ms against 370 ms. Both then-enabled shipped fixtures ran and passed in
+ordinary check, validating the prerequisite repair. The timing failure's
+cause remains unestablished. Production client and server sockets already
+enable TCP_NODELAY; a raw fixture option difference is not a causal finding.
+The identity-recovery follow-up still needs its own remote results.
 
 The earlier six mutation gates remain documented in
 [mutation evidence](review/single-daemon-mutation-gates.md). The two new
-in-process durable tests kill builders and registries. The shipped fixture
-adds whole-VM loss before assembly, not an exhaustive crash-at-every-
-publication-step sweep. Identity-before-confirmation remains uncovered in
-the shipped executable.
+in-process durable tests kill builders and registries. The shipped fixtures
+now cover whole-VM loss both before assembly and after SQLite identity
+publication, before catalogue confirmation. The latter observes actual MCP
+initialize, kills only the birth-qualified VM, verifies durable identity and
+reservation after death, and waits for the original writer's natural
+60-second lease expiry before same-key recovery. It changes no timestamps
+and uses no production test hook. These two cases are not an exhaustive
+crash-at-every-publication-step sweep.
 
 ## What to do next
 

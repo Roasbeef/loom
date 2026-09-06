@@ -94,3 +94,38 @@ took 2,062 ms against 346 ms. The CI repair supplies the built executable
 before both platform gates, without declaring or hiding a skip. Five
 isolated soak reproductions and the full local suite passed, but the
 macOS delay's cause is unestablished and its bound remains unchanged.
+
+## Shipped identity recovery follow-up
+
+The second shipped crash fixture received a separate fresh adversarial
+review. It covers identity publication before catalogue confirmation using
+an actual MCP initialize barrier, VM-only loss and postmortem durable
+assertions. Recovery waits for the unchanged writer lease to expire
+naturally; it never rewrites a lease timestamp or forces garbage collection.
+
+The review found no high-severity issue. Its medium finding was a coverage
+weakness: `Saved` and an unchanged lease alone could also follow an earlier
+configuration or helper failure. The accepted correction requires the same
+session's `storage_open_failed` event, with a bounded wait for log flushing.
+That establishes the refusal stage, not the exact storage error. Original
+lease identity and the later higher fence remain explicit assertions.
+
+Other accepted corrections reuse `endpoint.observe`, make result patterns
+explicit and explain the lock-holder and retirement ordering. Safety
+assertions and the helper's independent watchdog remain. No additional PID
+tracker was added for orderly MCP shutdown: the existing transport retains
+the native port until exit is observed, and session retirement retains that
+custody. VM departure alone is not that proof. These small corrections did
+not warrant another full review pass.
+
+The combined check, distribution, shipped bootstrap, multiplayer and soak
+gate at `563f3573` exited 0 in 494.21 seconds, including 1,324 client tests,
+206 TUI tests and all three enabled shipped fixtures in the dedicated
+target. After the review correction, the focused identity fixture exited 0
+in 61.59 seconds; most of that time is intentional natural lease expiry.
+
+Remote CI at the earlier `ffacaa5b` failed independently: Linux passed check,
+bootstrap and documentation before a Hex API rate limit broke shipment;
+macOS failed the unchanged paired soak at 498 ms against 370 ms. Both shipped
+fixtures available at that head passed in ordinary check. Neither a causal
+timing fix nor green platform acceptance is claimed by this follow-up.
