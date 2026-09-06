@@ -235,7 +235,7 @@ fn wait_attach(script: Script, inbox: Subject(FakeMsg)) -> Nil {
             framing.Frame(
               id: 1,
               body: framing.Hello(
-                proto: 99,
+                proto: 1,
                 peer: "exec-helper",
                 features: features(script),
               ),

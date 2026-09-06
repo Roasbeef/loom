@@ -677,6 +677,12 @@ pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
     // unknown is not a denial: inventing one would put a policy
     // question to a human that no execution ever asked.
     exec.HelperUnresponsive -> None
+
+    // The two ends of the exec wire disagree on what they speak, so the
+    // channel was closed before any execution and nothing was weakened.
+    // The remedy is a rebuild on one side, which the rendered failure
+    // already names; a human approval has nothing to grant.
+    exec.ProtocolVersionMismatch(..) -> None
   }
 }
 
