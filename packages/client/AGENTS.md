@@ -310,6 +310,10 @@ catalogue without opening runtimes. Explicit admission invokes
   terminal attachments. Surviving clients receive Alice's next configuration;
   Bob retains his old cut and cannot reattach, although control authentication
   still succeeds. This is distinct from the scripted admission/delivery race.
+  The real `/sessions` selector also retains the original adopted channel when
+  membership in its highlighted target is revoked before Enter. An owner
+  attachment proves the target still works; Alice's next shared configuration
+  update proves the original attachment and socket still carry traffic.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

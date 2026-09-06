@@ -262,3 +262,50 @@ The pre-correction combined gate exited 0 in 566.05 seconds. Final focused
 the existing macOS `/proc` skip. No second independent pass was needed for
 these small corrections. The earlier published `33aa9ef1` independently
 passed both remote platform censuses and all four jobs in run 34043916766.
+
+## Failed selector preservation
+
+A fresh pass over the next shipped selector increment found no high- or
+medium-severity issue. The model's actual highlighted row supplies Enter's
+target; a consumed owner acknowledgement orders target-only revocation before
+selection. The exact refusal cannot be an earlier notice or a transport error.
+Structural identity and socket comparisons, an owner-positive target attachment,
+and later configuration traffic cover both sides of the failed replacement.
+
+Accepted cleanups correct the previous paragraph's stage name, add stanza
+boundaries and remove two redundant assertions already guaranteed by the
+returned sample's await predicate. The correct repeated retirement setup stays
+local instead of mixing a refactor into the assertion change. The exact notice
+could be overwritten by future metadata traffic, but this stage deliberately
+changes no original-session metadata until after the refusal is observed.
+No workaround or wider timeout was added for that hypothetical false failure.
+
+The package gate exited 0 in 290.78 seconds with 1,332 tests and all shipped
+fixtures enabled. Its strict local census passed. Final focused `e8ec249e`
+passed in 4.78 seconds after the small cleanups; no second review was needed.
+The separate published revocation head's macOS soak failure is recorded in
+the handoff and is not presented as a green platform result for this increment.
+
+## Paired-latency observations
+
+Direct independent review approved a bounded sampler after the recurring
+macOS soak failure. The original caller still measures the wire operations.
+A linked Weft run publishes its own stop inbox, samples four fixed original
+PIDs, and returns its bounded observation before `AllDelivered` witnesses
+worker retirement. Caller-failure cleanup follows that existing Weft ownership
+contract; this increment did not independently inject that failure.
+
+The call site selects six process-info fields and never reads messages,
+arguments or process dictionaries. Formatting follows the measurement.
+Both conditions use the same sampler, with 25 ms spacing, 128 samples, a
+3.2-second observation horizon and a separate five-second worker deadline.
+Termination reasons are typed and serialized explicitly. No production code,
+FFI, workload, latency bound or VM-global monitoring flag changed.
+
+Accepted review cleanups clarify the call-site allowlist and coarse resolution,
+type the completion reason and separate the sampling stanzas. The first run
+reported one to three observations per condition, with measured batch durations
+of 0–3 ms, not all zero as the initial review summary said. Those durations
+include the sampler's own scheduling; they do not establish zero perturbation.
+Heap growth is not itself a collection, and no sampled state establishes a
+host or native-I/O cause. Final focused `4744fe7a` passed in 11.75 seconds.

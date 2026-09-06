@@ -181,7 +181,7 @@ the server's updated presence. This covers presence recovery, not ordered
 replay beyond the two scripted turns or admission of a command queued before
 revocation.
 
-The final stage revokes Bob's session membership while his terminal and a
+The revocation stage revokes Bob's session membership while his terminal and a
 separate credited socket are attached. The coordinator consumes the owner's
 revocation acknowledgement before submitting a valid mutation on Bob's raw
 socket. That socket must receive a WebSocket close and actual TCP closure;
@@ -196,6 +196,15 @@ revocation from credential revocation. The shipped check establishes the
 post-acknowledgement admission boundary, not the narrow race between admission
 and delivery. `session_authorization_test` covers that interval separately
 with scripted authority; already admitted work is not required to cancel.
+
+The selector stage grants Alice access to the second session, then obtains
+and highlights its real `/sessions` row through terminal input. The owner
+revokes only that target membership before Alice presses Enter. The exact
+refusal must leave Alice's original session identity, records, inbox and
+socket intact. An authorized owner can still attach to the target, while
+Alice's original connection sends another configuration change to Reader.
+This covers refusal before replacement attachment, not every failure during
+an already-started snapshot transfer or switching during a live tool.
 
 This shipped-artifact fixture has a bounded body and a separate native
 cleanup check, including on assertion failure. The loopback provider retains
