@@ -256,6 +256,16 @@ work and preserves its database. Shutting down the daemon drains every
 session. A caller's timeout stops its wait, not the server's cleanup, and
 cannot release a capacity reservation whose work may still be alive.
 
+Stopping a session is not the same as aborting its operation. Runtime close
+retires the tree and drains its effects at a durable commit boundary without
+writing a cancelled or terminal operation state. An explicit later open can
+therefore resume the admitted operation. For an interrupted provider request,
+recovery records the unknown outcome before continuing; a second HTTP request
+does not imply a second user admission. The client still must not resend a
+mutation whose acknowledgement was lost. These are different responsibilities:
+the runtime recovers durable intent, while the terminal preserves uncertainty
+about whether its command was admitted.
+
 After a whole-daemon restart, restore the catalogue and leave every
 session closed. Open a session lazily when an authorized operator selects
 it or explicitly requests an open. Catalogue listing and metadata preview

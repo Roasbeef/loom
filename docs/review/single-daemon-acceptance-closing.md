@@ -458,3 +458,77 @@ and B in another. It does not establish an approval race, application
 filesystem confinement or the entire combined acceptance drive. The hosted
 run at `37726c23` predates the live-tool consumer; its later Hex 502 failures
 are recorded separately in the [handoff](../next.md).
+
+## HTTP response ownership
+
+Published `b0b4013a` exposed `Badarg` in Mist's socket transfer. Source review
+confirmed a fixture race: the response actor self-sent its work during
+initialization, then could finish before the request handler transferred the
+socket to it. Commit `ee7b5617` parks that actor until the handler returns from
+the transfer. Its readiness subject belongs to the handler; the start message
+is sent only afterward. No timer, retry or dependency patch is involved.
+
+The direct independent review approved this ordering. A concern that the
+diagnostic selected the oldest tool result was rejected after checking the
+terminal's newest-first record order. A short comment documents that worker
+startup failure cannot satisfy readiness. Typed response labels and clipped
+phase, notice and tool-result text exclude model dumps, credentials, headers
+and image bytes.
+
+Root independently passed all 13 HTTP helper tests in 0.82 seconds and the
+shipped multiplayer fixture in 7.51 seconds, with all eight response labels
+and no `Badarg` in either log. The final edit only documents failed startup;
+format passes. The race was established by source ordering, not a deterministic
+negative scheduling test.
+
+A deliberate exit-7 tool command then tested the marker diagnostic itself.
+The expected marker assertion failed, but the diagnostic reported a starting
+phase and no result. A read-only check of that fixture's session database
+found the exact tool error at sequence 80. The terminal capture was stale:
+the filesystem-only wait had not driven its asynchronous credited refresh,
+and one sample after expiry could start that refresh without observing its
+response. The repair retains a real terminal sample during the existing
+15-second marker wait; it adds no post-deadline wait. Repeating the negative
+failed in 21.22 seconds and printed the expected stderr and exit code 7.
+The original successful script was restored, and the positive fixture then
+exited 0 in 7.68 seconds.
+
+Linux also missed the tool-start marker, but its artifact contains no native
+tool result establishing the cause. macOS logged the same `Badarg` and passed
+the shipped fixture, then failed the separate paired latency bound. Neither
+local absence of the error nor its proximity to Linux's failure proves
+causation. The [handoff](../next.md) records both failures and the current
+five-process latency evidence without attributing collection or scheduling
+duration to sampled counters.
+
+## Shipped stop and operation recovery
+
+A fresh report-only review of the three new stop-fixture files and their
+Makefile invocation found one medium and five low-severity findings. The
+review traced actual socket closure, daemon retirement, interrupted-operation
+recovery, receiver-owned replies and nested cleanup deadlines. No production
+or native-policy code changed. The final test commit is `5d1decf2`.
+
+The medium finding was reachable: a driver restart before the requested stop
+could produce the same interrupted settlement and recovered answer. A latched
+closure alone did not establish that the original request remained held up to
+the stop. The helper now records validated request counts, and the fixture
+checks count and closure immediately before stop, before explicit reopen and
+after recovery. These observations reject evidence already recorded too early;
+they are not a cross-sender linearization guarantee. This also replaces the
+helper's presence-only request field with a count that has domain meaning.
+
+The timeout-scaling explanation and ownership stanzas were added. The bounded
+byte-at-a-time header reader remains deliberately narrow: it serves two known
+requests, not arbitrary HTTP traffic. Real socket negatives require successful
+connection and send before rejection, while pure negatives pin exact causes.
+Neither optional helper generalization nor a weaker negative was introduced.
+
+The independent reviewer approved the small corrective delta without another
+full review wave. Root then independently passed the shipped fixture in
+3.72 seconds and all five negative controls in 0.97 seconds. The earlier full
+client gate passed 1,343 tests in 294.19 seconds with all four shipped fixtures
+enabled, before these review corrections. Final format, client lint and
+documentation checks exited 0. The fixture proves cooperative stop and durable
+operation recovery with an unaffected peer, not a forced process kill or the
+entire acceptance drive.

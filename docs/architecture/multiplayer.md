@@ -243,6 +243,22 @@ fixture covers live-tool switching, but not the entire acceptance matrix.
 The [handoff](../next.md#verified-results-and-their-limits) records which
 revision passed each local and hosted gate.
 
+A separate shipped stop/reopen fixture holds A's actual HTTP response while
+B completes a turn. Owner control requests A's stop, the original provider
+socket must close, and that same control connection must observe `Saved`.
+B then completes another exact turn without replacing its attachment or socket.
+Explicitly reopening A creates a new incarnation and resumes its admitted
+operation. Its second HTTP request matches the first, while its durable history
+contains one user message, the required interrupted settlement and the final
+answer. The fixture does not confuse recovered execution with duplicate client
+admission. Its helper distinguishes actual closure from timeout or stray bytes
+and rejects malformed or oversized framing before reading a body.
+
+That is cooperative stop and recovery, not a process-kill test or an
+uncooperative drain held past a caller timeout. The latter remains separate
+injected-transport coverage. Each native fixture retains its endpoint witness
+outside the bounded body so failed assertions still trigger cleanup.
+
 Each driver creates its inbox and runs its terminal loop in the same
 process. Sharing a model or constructing both inboxes in the coordinator
 would bypass the ownership rules that the shipped client relies on.

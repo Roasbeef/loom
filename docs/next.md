@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `5ab802b9`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `5d1decf2`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The seven daemon
 phases are in the [single-daemon plan](design-notes/single-daemon.md), with
@@ -24,7 +24,7 @@ release goal is not complete.
 | Contracts and ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
 | TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitations, presence, revocation and switching. Its eight-exchange drive now keeps an actual jailed tool in A1 while A2 and B progress. |
-| Default and release acceptance, phase 6 | Published `37726c23` passes both platform check and bootstrap steps, jailed E2E and the 200-seed job. Both later platform gates fail on Hex HTTP 502. SQLite adoption, confinement and the remaining combined drive remain open. |
+| Default and release acceptance, phase 6 | Published `b0b4013a` fails Linux's live-tool marker assertion and macOS's paired latency bound. Jail and 200 seeds pass; both censuses are skipped. SQLite adoption, confinement and the remaining combined drive remain open. |
 
 The plan numbers its seven phases 0 through 6. Backwards compatibility and
 legacy import were explicitly excluded; do not revive their historical cases.
@@ -63,6 +63,13 @@ Commit `94894253` adds reviewed, finite HTTP tool-use/result script steps;
 Both were published with docs at `37726c23`. Commit `5ab802b9` adds the
 reviewed shipped live-tool consumer. Local and hosted evidence remain
 separate below; the helper alone did not supply that execution coverage.
+That consumer and its docs were published at `b0b4013a`; the reviewer fetched
+and verified the exact head. Commit `ee7b5617` then repairs a separately
+verified HTTP fixture ownership race and adds bounded failure diagnostics.
+It is locally verified, not a claimed repair of either hosted assertion.
+Commit `d8a128d2` verifies and repairs stale marker-failure captures. Commit
+`5d1decf2` adds the reviewed shipped stop/reopen fixture and its held-provider
+negative controls. Both remain local pending the next authorized hosted cycle.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -97,6 +104,41 @@ them. `.claude/worktrees/daemon-candidate` is the integration tree; its
 dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
+
+The HTTP fixture previously self-started its response actor during
+initialization. That actor could finish before Mist transferred the socket,
+causing `Badarg` in the request handler. It now remains parked until the
+handler returns from the transfer and sends its start message. The handler
+owns the readiness subject. No timer, retry, dependency or production change
+was needed. The independent review approved that ordering; chronological
+record-order concerns were rejected because terminal records are newest first.
+
+The repaired helper passed all 13 tests in **0.82 seconds** and the shipped
+multiplayer fixture passed in **7.51 seconds**. All eight typed response labels
+were visible and neither log contained `Badarg`. Marker failure now reports
+clipped phase, notice and tool-result text, not credentials or a full model.
+An intentional exit-7 command exposed a stale diagnostic capture: its result
+was durable, but the single terminal sample after expiry had not applied the
+asynchronous refresh. The marker wait now refreshes and retains the real
+terminal sample within its unchanged 15-second budget. Repeating the negative
+control failed in **21.22 seconds** and printed the actual exit-7 tool error.
+After restoring the ordinary command, the fixture passed in **7.68 seconds**.
+These local results do not establish why Linux missed its marker.
+
+The subsequent full client gate passed all **1,343 tests** in **294.19 seconds**,
+with all four shipped fixtures enabled. Its strict local prerequisite census
+and client lint independently exited 0. That full gate includes the new
+stop/reopen fixture but precedes its final review corrections and the marker
+diagnostic refresh above; their focused results must be recorded separately.
+
+The final reviewed stop/reopen fixture independently passed in **3.72 seconds**;
+all five held-provider negatives passed in **0.97 seconds**. Review added
+request-count and closure observations before stop, before reopen and after
+the recovered answer, rejecting evidence already recorded before the owner
+action. Those snapshots do not claim cross-sender linearization. The final
+delta was independently approved; format, lint and the documentation gate
+exited 0. The [review record](review/single-daemon-acceptance-closing.md)
+records the accepted finding and the intentionally limited helper.
 
 The live-tool candidate passed the full client gate with all **1,337 tests**;
 the test command exited 0 in **290.84 seconds**. All three shipped fixtures
@@ -357,6 +399,31 @@ exceeded 250 ms. Linux maxima were HTTP 11, subscribe 25, drain 91 and credit
 macOS files predated the run and were excluded. These passing observations
 do not diagnose the earlier intermittent latency failure.
 
+Published `b0b4013a` failed both platform checks in
+[run 34051513588](https://github.com/Roasbeef/loom/actions/runs/34051513588).
+Linux's live-tool marker did not appear within its 15-second deadline; the
+client command exited 1 in 330.77 seconds, with 1,336 passes and one failure.
+The log also contains the HTTP fixture's `Badarg`, but retains no native
+daemon log or tool result that could establish the missing marker's cause.
+macOS logged the same fixture error and still passed shipped multiplayer in
+18.302 seconds. Do not infer causation from proximity in the Linux log.
+
+macOS failed the unchanged paired bound in cycle five: 506 ms against 342 ms.
+Its client command exited 1 in 377.53 seconds, with 1,336 passes and one
+failure. Both final censuses were skipped; jail and the 200-seed job passed.
+The bounded CI monitor ended its fifth cycle without convergence. No blind
+rerun followed; the user was asked about one further measured cycle after
+locally verified repairs.
+
+The failing pair's baseline was 46 ms: HTTP 7, subscribe 20 and drain 19.
+Stressed was HTTP 88, subscribe 397 and drain 21; its twelve credit waits
+were at most 6 ms. B's storage actor appeared inside SQLite step during
+several subscribe samples while the registry was mostly waiting. Counter
+changes and sampling gaps do not time garbage collection, native calls or
+host scheduling. All current samplers completed with all five owners: six
+macOS pairs and 18 Linux pairs. No current credit exceeded 250 ms. The 397 ms
+subscribe was the only phase above 250 ms. Older cached files were excluded.
+
 The new shipped recovery fixture fills runtime capacity, receives the exact
 capacity refusal after durable reservation, then kills the birth-verified
 fixture VM. Restart must preserve the reservation and domain mapping without
@@ -432,12 +499,12 @@ crash-at-every-publication-step sweep.
 
 ### 1. Continue joined acceptance and classify platform timing
 
-The helper and diagnostic follow-up is published to #239 at `37726c23`.
-The reviewed live-tool follow-up is committed at `5ab802b9`; publish it with
-the updated documentation and send the exact head and gate evidence to the
-reviewer. Native stack 231 already places #239 above #238. Keep the PR draft
-while release acceptance is incomplete. The intermittent macOS latency
-failure still needs a measured diagnosis; the latest failures are Hex 502s.
+The reviewed live-tool follow-up is published to #239 at `b0b4013a`, and the
+reviewer verified its exact head. The HTTP fixture repair is committed at
+`ee7b5617`; it has focused local evidence, not a new hosted pass. Native stack
+231 already places #239 above #238. Keep the PR draft while release acceptance
+is incomplete. The Linux marker failure and intermittent macOS latency failure
+still need measured diagnoses; the latest run failed assertions, not Hex.
 
 Both platform artifacts now retain process observations beside the paired
 soak, including when it passes. Attribute only files created by the current
@@ -502,10 +569,23 @@ unresolved. Authorization tests do not prove that a model in workspace A
 cannot read daemon credentials or alter B's database through overlap. Do
 not retry restricted native implementation through another worker or tool.
 
-The remaining joined acceptance includes live-tool switching, failure
-containment, whole-VM publication crash boundaries and resource pressure
-against the shipped daemon and clients. Preserve distinct-principal checks
-and report platform skips explicitly.
+Live-tool switching is covered. The remaining observations below distinguish
+existing component proof from the additional shipped evidence still required.
+
+| Observation | Existing proof and remaining work |
+|---|---|
+| Approval race and effect | Native multiplayer rendering and the injected-policy `tui_approval_effect_test` cover resolution and the effect. A reachable shipped approval trigger remains open. |
+| Queued revocation boundary | Shipped live revocation closes Bob's socket. `session_authorization_test` covers revocation between admission and delivery through scripted authority; that exact race is not a shipped observation. |
+| Fault and drain containment | Runtime restart, owned assembly, listener and `daemon_fault_containment_test` cover focused ownership barriers. Joined shipped faults remain incomplete; cooperative stop is not an uncooperative drain or a process kill. |
+| Publication crashes | Two shipped fixtures cover reservation before assembly and identity before catalogue confirmation. Other publication-step crash permutations remain unverified. |
+| Pressure | The shared-VM soak covers unread records, repeated incarnations and peer measurements. Shipped maximum-image, rapid-switch and resource-load observations remain open, including the final SQLite dependency graph. |
+| Restart, schedules and uncertain prompts | Shipped recovery covers pending selection. `daemon_schedule_residency_test` covers detach, Saved inactivity and overdue resumption; uncertain-submission tests are separate. Joined shipped schedule and ambiguous-prompt observations remain open. |
+| Memory off | Shipped fixtures configure distillation off. That setting alone is not an explicit no-maintenance observation. |
+
+Concurrent startup convergence, distinct-principal ordering, invitations,
+observer refusal and the six requested mutation controls already have named
+evidence. Do not restart those as wholly missing tasks. Preserve their coverage
+when composing the remaining drive and report platform skips explicitly.
 
 Exit: every remaining required observation in the
 [acceptance drive](design-notes/single-daemon.md#the-acceptance-drive) has

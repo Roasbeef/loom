@@ -330,6 +330,14 @@ catalogue without opening runtimes. Explicit admission invokes
   her return; fresh A2/B captures retain their own histories. This uses all
   eight provider script steps and preserves the original cleanup deadlines.
   Workspace markers prove benign execution, not filesystem confinement.
+  `daemon_shipped_stop_test` holds a real HTTP response in A while B completes
+  turns before and after A's stop. Exact provider-socket closure precedes the
+  owner's `Saved` observation. Explicit reopen resumes A in a new incarnation:
+  two equal HTTP requests correspond to one durable user admission, an
+  interrupted settlement and a final answer. The fixed held peer owns its
+  sockets in one managed worker and routes observations through an actor's
+  reply protocol. Framing and closure negatives exercise its actual boundaries.
+  This proves cooperative stop/recovery, not an uncooperative drain or a kill.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent
