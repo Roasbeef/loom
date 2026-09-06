@@ -86,7 +86,7 @@ const missing_executable = "enoent"
 // pass while spawning nothing at all.
 fn skip_only_if_absent(name: String, reason: String) -> Nil {
   case string.contains(reason, missing_executable) {
-    True -> io.println("SKIP " <> name <> ": " <> reason)
+    True -> io.println_error("SKIP " <> name <> ": " <> reason)
     False -> panic as { "the port transport failed: " <> reason }
   }
 }

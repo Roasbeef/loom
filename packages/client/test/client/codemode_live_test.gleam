@@ -83,7 +83,9 @@ pub fn program_source() -> String {
 pub fn a_submitted_program_runs_and_reports_through_the_tool_test() {
   case prerequisites() {
     Error(reason) ->
-      io.println("SKIP a_submitted_program_runs_through_the_tool: " <> reason)
+      io.println_error(
+        "SKIP a_submitted_program_runs_through_the_tool: " <> reason,
+      )
     Ok(ready) -> run_live(ready)
   }
 }
@@ -170,7 +172,7 @@ const unallowed_env = "LOOM_ESCALATION_PROBE"
 pub fn a_narrowed_base_mints_an_approval_the_retry_spends_test() {
   case prerequisites() {
     Error(reason) ->
-      io.println(
+      io.println_error(
         "SKIP a_narrowed_base_mints_an_approval_the_retry_spends: " <> reason,
       )
     Ok(ready) -> run_escalating(ready)
@@ -271,7 +273,9 @@ pub fn mcp_program_source() -> String {
 pub fn a_program_calls_a_configured_mcp_server_test() {
   case prerequisites() {
     Error(reason) ->
-      io.println("SKIP a_program_calls_a_configured_mcp_server: " <> reason)
+      io.println_error(
+        "SKIP a_program_calls_a_configured_mcp_server: " <> reason,
+      )
     Ok(ready) -> run_mcp(ready)
   }
 }
@@ -468,7 +472,9 @@ pub fn mcp_process_program_source() -> String {
 pub fn a_program_reaches_a_real_mcp_server_process_test() {
   case mcp_process_rig() {
     Error(reason) ->
-      io.println("SKIP a_program_reaches_a_real_mcp_server_process: " <> reason)
+      io.println_error(
+        "SKIP a_program_reaches_a_real_mcp_server_process: " <> reason,
+      )
     Ok(rig) -> run_mcp_process(rig)
   }
 }
@@ -822,7 +828,7 @@ fn bridged_artifact_literal() -> String {
 pub fn a_program_reaches_the_harness_side_capability_bridge_test() {
   case prerequisites() {
     Error(reason) ->
-      io.println(
+      io.println_error(
         "SKIP a_program_reaches_the_harness_side_capability_bridge: " <> reason,
       )
     Ok(ready) -> run_bridge(ready)
@@ -1082,7 +1088,7 @@ fn replacement(find: String, replace_with: String) -> String {
 pub fn a_program_writes_edits_and_is_refused_a_protected_path_test() {
   case prerequisites() {
     Error(reason) ->
-      io.println(
+      io.println_error(
         "SKIP a_program_writes_edits_and_is_refused_a_protected_path: "
         <> reason,
       )
@@ -1197,7 +1203,9 @@ pub fn orchestration_emit_program_source() -> String {
 pub fn an_orchestration_program_emits_an_artifact_test() {
   case prerequisites() {
     Error(reason) ->
-      io.println("SKIP an_orchestration_program_emits_an_artifact: " <> reason)
+      io.println_error(
+        "SKIP an_orchestration_program_emits_an_artifact: " <> reason,
+      )
     Ok(ready) -> run_orchestration_emit(ready)
   }
 }

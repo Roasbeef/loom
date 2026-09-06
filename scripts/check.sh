@@ -8,8 +8,9 @@ packages=(host core storage session machine prompt telemetry runtime provider br
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
+  # Exercise deadlines and visible skip reporting before trusting package gates.
   python3 scripts/with_timeout.py 20 -- \
-    python3 -m unittest discover -s scripts -p test_with_timeout.py
+    python3 -m unittest discover -s scripts -p 'test_*.py'
 fi
 
 # The `code_mode` description carries the capability prelude's public

@@ -148,7 +148,7 @@ fn jailed(body: fn() -> Nil) -> EunitTest {
 pub fn code_mode_end_to_end_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
-      Error(reason) -> io.println("SKIP code_mode_end_to_end: " <> reason)
+      Error(reason) -> io.println_error("SKIP code_mode_end_to_end: " <> reason)
       Ok(prerequisites) -> run_end_to_end(prerequisites)
     }
   })
@@ -158,7 +158,7 @@ pub fn hermetic_build_refuses_a_transitive_import_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
       Error(reason) ->
-        io.println(
+        io.println_error(
           "SKIP hermetic_build_refuses_a_transitive_import: " <> reason,
         )
       Ok(prerequisites) -> run_transitive_import(prerequisites)
@@ -170,7 +170,9 @@ pub fn a_runaway_program_dies_at_its_deadline_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
       Error(reason) ->
-        io.println("SKIP a_runaway_program_dies_at_its_deadline: " <> reason)
+        io.println_error(
+          "SKIP a_runaway_program_dies_at_its_deadline: " <> reason,
+        )
       Ok(prerequisites) -> run_deadline(prerequisites)
     }
   })
@@ -180,7 +182,7 @@ pub fn an_approved_escalation_widens_an_execution_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
       Error(reason) ->
-        io.println(
+        io.println_error(
           "SKIP an_approved_escalation_widens_an_execution: " <> reason,
         )
       Ok(prerequisites) -> run_widened(prerequisites)
@@ -192,7 +194,7 @@ pub fn a_type_error_comes_back_in_band_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
       Error(reason) ->
-        io.println("SKIP a_type_error_comes_back_in_band: " <> reason)
+        io.println_error("SKIP a_type_error_comes_back_in_band: " <> reason)
       Ok(prerequisites) -> run_type_error(prerequisites)
     }
   })

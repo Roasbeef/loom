@@ -84,7 +84,7 @@ fn base_policy(work_dir: String) -> policy.SandboxPolicy {
 
 fn with_real_helper(name: String, run: fn(exec.Helper) -> Nil) -> Nil {
   case helper_config() {
-    Error(reason) -> io.println("SKIP " <> name <> ": " <> reason)
+    Error(reason) -> io.println_error("SKIP " <> name <> ": " <> reason)
     Ok(config) ->
       case exec.spawn_helper(config) {
         Error(spawn_error) ->
@@ -148,7 +148,7 @@ pub fn real_helper_orderly_running_retirement_test() {
 pub fn real_pool_orderly_borrowed_retirement_test() {
   case helper_config() {
     Error(reason) ->
-      io.println("SKIP real_pool_orderly_borrowed_retirement: " <> reason)
+      io.println_error("SKIP real_pool_orderly_borrowed_retirement: " <> reason)
     Ok(config) -> {
       let assert Ok(pool) =
         exec.start_pool(size: 2, spawn: fn() { exec.prepare_helper(config) })
@@ -320,7 +320,8 @@ pub fn real_helper_policy_file_unlinked_test() {
 // dropped on the way.
 pub fn helper_args_reach_the_helper_test() {
   case helper_config() {
-    Error(reason) -> io.println("SKIP helper_args_reach_the_helper: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP helper_args_reach_the_helper: " <> reason)
     Ok(config) -> {
       let bogus = exec.SpawnConfig(..config, helper_args: ["--not-a-real-flag"])
       let assert Error(_spawn_error) = exec.spawn_helper(bogus)
@@ -337,7 +338,7 @@ means the extra arguments never reached its command line"
 pub fn allow_unenforced_arg_is_harmless_where_a_jail_exists_test() {
   case helper_config() {
     Error(reason) ->
-      io.println("SKIP allow_unenforced_arg_is_harmless: " <> reason)
+      io.println_error("SKIP allow_unenforced_arg_is_harmless: " <> reason)
     Ok(config) -> {
       let args = exec.unenforced_helper_args(exec.host_platform())
       // On a jailed host there is nothing to pass, so pass it anyway:
@@ -411,7 +412,7 @@ fn layer_applied_or_skipped(result: exec.ExecResult, layer: String) -> Bool {
 pub fn full_enforcement_never_accepts_unenforced_ceilings_test() {
   case helper_config() {
     Error(reason) ->
-      io.println(
+      io.println_error(
         "SKIP full_enforcement_never_accepts_unenforced_ceilings: " <> reason,
       )
     Ok(config) -> {

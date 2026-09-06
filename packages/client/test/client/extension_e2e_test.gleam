@@ -138,7 +138,9 @@ pub fn an_installed_extension_reaches_the_network_test_() -> EunitTest {
 fn run_e2e() -> Nil {
   case prerequisites() {
     Error(reason) ->
-      io.println("SKIP an_installed_extension_reaches_the_network: " <> reason)
+      io.println_error(
+        "SKIP an_installed_extension_reaches_the_network: " <> reason,
+      )
     Ok(ready) -> drive(ready)
   }
 }
@@ -159,7 +161,9 @@ fn drive(ready: Ready) -> Nil {
   case install_fixture(ready, host) {
     Error(reason) -> {
       origin.stop(server)
-      io.println("SKIP an_installed_extension_reaches_the_network: " <> reason)
+      io.println_error(
+        "SKIP an_installed_extension_reaches_the_network: " <> reason,
+      )
     }
 
     Ok(installed_at) -> {
@@ -365,7 +369,8 @@ fn drive(ready: Ready) -> Nil {
 // list crossed the capability channel and came back.
 fn hooks_fire(installed_at: Installed) -> Nil {
   case install_beside(installed_at, extensions.gatekeeper(), "gatekeeper-src") {
-    Error(reason) -> io.println("SKIP the gatekeeper extension: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP the gatekeeper extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
       let hosts_name = addresses.new()
       let seam = hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000)
@@ -574,13 +579,13 @@ fn a_user_message(text: String) -> message.AgentMessage {
 // record, and no argument on the channel contributes to it.
 fn memory_persists(installed_at: Installed) -> Nil {
   case install_beside(installed_at, extensions.keeper(first_keeper), "k1-src") {
-    Error(reason) -> io.println("SKIP the keeper extensions: " <> reason)
+    Error(reason) -> io.println_error("SKIP the keeper extensions: " <> reason)
     Ok(one) ->
       case
         install_beside(installed_at, extensions.keeper(second_keeper), "k2-src")
       {
         Error(reason) ->
-          io.println("SKIP the second keeper extension: " <> reason)
+          io.println_error("SKIP the second keeper extension: " <> reason)
         Ok(two) -> keepers_remember(installed_at, one, two)
       }
   }
@@ -600,12 +605,12 @@ fn keepers_remember(
 ) -> Nil {
   let path = installed_at.live_root <> "/keeper-session.db"
   case open_session(path) {
-    Error(reason) -> io.println("SKIP the keeper session: " <> reason)
+    Error(reason) -> io.println_error("SKIP the keeper session: " <> reason)
     Ok(first) ->
       case open_runtime(first) {
         Error(reason) -> {
           let _sealed = session.close(first)
-          io.println("SKIP the keeper runtime: " <> reason)
+          io.println_error("SKIP the keeper runtime: " <> reason)
         }
 
         Ok(runtime) -> {
@@ -668,12 +673,12 @@ fn keepers_prove(
   let _sealed = session.close(first)
 
   case open_session(path) {
-    Error(reason) -> io.println("SKIP the keeper reopen: " <> reason)
+    Error(reason) -> io.println_error("SKIP the keeper reopen: " <> reason)
     Ok(second) ->
       case open_runtime(second) {
         Error(reason) -> {
           let _closed = session.close(second)
-          io.println("SKIP the reopened keeper runtime: " <> reason)
+          io.println_error("SKIP the reopened keeper runtime: " <> reason)
         }
 
         Ok(reopened) -> {
@@ -893,7 +898,8 @@ fn oversleeps(
   hosts_name: address.Address(hosts.Message),
 ) -> Nil {
   case install_beside(installed_at, extensions.sleeper(), "sleeper-src") {
-    Error(reason) -> io.println("SKIP the oversleeping extension: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP the oversleeping extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
       let config =
         dispatch.Config(
