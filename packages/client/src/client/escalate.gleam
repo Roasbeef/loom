@@ -420,10 +420,34 @@ pub fn record_id(strand: String, tool: String, wanted: List(Grant)) -> String {
 // Every other grant keeps its whole encoded form: the rest of a tool's
 // requirements are static, declared in its `call_spec` rather than
 // derived from arguments.
+//
+// That last sentence is an invariant nothing else enforces, so the five
+// are named one by one instead of swept up by a final `other ->`. A
+// seventh `Grant` carrying a magnitude — or an existing one that starts
+// deriving its payload from tool arguments — would otherwise join the
+// unbounded-key-space side with no diff to read and no compiler
+// complaint. Written out, it cannot: the build stops and the judgment
+// above has to be made again for the new variant.
 fn dedup_key(grant: Grant) -> String {
   case grant {
+    // The field, never the number. See the argument above.
     policy.GrantLimit(field:, value: _) -> "limit:" <> limit_field(field)
-    other -> json.to_string(grants.encode(other))
+
+    // Roots and environment names come from the tool's `call_spec`, so
+    // the same tool asking twice asks with the same string and the key
+    // space is bounded by the spec rather than by the model. The whole
+    // encoded form is right here: which path or which variable is the
+    // substance of the question a human is being asked.
+    policy.GrantWritableRoot(..)
+    | policy.GrantReadableRoot(..)
+    | policy.GrantEnv(..) -> json.to_string(grants.encode(grant))
+
+    // Network and scratch are lattice points and a small closed choice,
+    // not magnitudes: "reach registry.npmjs.org" and "reach anything"
+    // are different questions and must dedupe apart. Neither can be
+    // stepped to mint a fresh record the way an integer can.
+    policy.GrantNetwork(..) | policy.GrantScratch(..) ->
+      json.to_string(grants.encode(grant))
   }
 }
 
