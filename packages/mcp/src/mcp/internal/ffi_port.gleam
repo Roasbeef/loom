@@ -67,16 +67,16 @@ pub fn close_port(port: Port) -> Nil
 
 /// Reports the OS pid of the port's child process, when it is running.
 ///
-/// Uses `erlang:port_info/2`; kept so `stop` can kill a server that does
-/// not exit when its stdin closes.
+/// Uses `erlang:port_info/2` immediately before requesting termination.
+/// The caller retains the port for its later native exit-status event.
 @external(erlang, "mcp_ffi", "port_os_pid")
 pub fn port_os_pid(port: Port) -> Result(Int, Nil)
 
 /// Sends SIGKILL to an OS process by pid. No-op for pids `<= 1`.
 ///
 /// Uses `os:cmd/1` running `kill -KILL`; the BEAM offers no direct
-/// kill(2) without a NIF. Belt-and-braces after the stdin close — a
-/// well-behaved MCP server exits on EOF and is gone before this runs.
+/// kill(2) without a NIF. This is best-effort single-process signaling:
+/// the pid lookup and signal are not atomic, and descendants are not joined.
 @external(erlang, "mcp_ffi", "kill_os_process")
 pub fn kill_os_process(os_pid: Int) -> Nil
 

@@ -36,7 +36,16 @@
 //// other half of that bargain — the only writer is `sync`, and `sync`
 //// only ever copies text that is already durable in a session file.
 ////
-//// # Two accepted gaps
+//// # Shared daemon domains
+////
+//// The shared adapter below uses one original, custody-published coordinator
+//// per workspace domain. It reads fresh catalogue sources without their writer
+//// leases, indexes bounded pages after commit hints, and filters current domain
+//// membership before ranking. Its original owner is not automatically replaced
+//// after a failed retirement. The named holder described above remains the
+//// standalone adapter; its accepted gaps below do not describe shared domains.
+////
+//// # Two accepted standalone gaps
 ////
 //// **No backfill.** A session's rows enter the index while it runs. The
 //// holder syncs once at start, so reopening a pre-wiring session indexes
@@ -48,6 +57,8 @@
 //// that are already durable, and the structural anti-feedback exclusion
 //// belongs to memory stage M2 rather than here.
 
+import client/distill
+import client/internal/shared_history
 import core/codec
 import core/ids.{type SessionId}
 import core/json.{type JsonValue}
@@ -65,6 +76,108 @@ import storage/storage.{type Storage}
 import tools/history as history_tool
 import weft/actor
 import weft/registry as address
+
+/// The domain's original shared index owner, independent of session restarts.
+@internal
+pub type Shared =
+  shared_history.Shared
+
+/// Policy and catalogue source selection supplied by domain admission.
+@internal
+pub type SharedConfig {
+  SharedConfig(
+    /// Canonical domain-exclusive search database path.
+    index_path: String,
+    /// Fresh domain records; never a directory scanner or cached locator.
+    sources: fn() -> Result(List(distill.Source), String),
+    /// Finite request and connection busy bound, at most five seconds.
+    timeout_ms: Int,
+    /// At most one hundred descriptors per source refresh.
+    batch_entries: Int,
+  )
+}
+
+/// Parked owner whose cleanup must be published before beginning effects.
+@internal
+pub type PreparedShared {
+  PreparedShared(
+    /// Original PID retained by domain fatal-child monitoring.
+    pid: process.Pid,
+    /// Called after publication and creator unlinking.
+    begin: fn() -> Result(Shared, String),
+    /// Normal original retirement after native close, or explicit refusal.
+    retire: fn() -> Result(Nil, String),
+  )
+}
+
+/// Prepares the domain-owned coordinator without opening the index.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history.prepare_shared(config)
+/// ```
+@internal
+pub fn prepare_shared(config: SharedConfig) -> Result(PreparedShared, String) {
+  shared_history.prepare(shared_history.Config(
+    config.index_path,
+    config.sources,
+    config.timeout_ms,
+    config.batch_entries,
+  ))
+  |> result.map(fn(prepared) {
+    PreparedShared(prepared.pid, prepared.begin, prepared.retire)
+  })
+}
+
+/// Binds recall to an immutable session identity within the shared domain.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history.seam_for(shared, session_id)
+/// ```
+@internal
+pub fn seam_for(shared: Shared, session: SessionId) -> history_tool.History {
+  shared_history.seam(shared, session)
+}
+
+/// Coalesces a commit hint without waiting in a session writer or manager.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history.notify(shared, session_id)
+/// ```
+@internal
+pub fn notify(shared: Shared, session: SessionId) -> Nil {
+  shared_history.notify(shared, session)
+}
+
+/// Retains the existing per-session commit forwarder with a shared target.
+/// The session owns only this subscriber; domain custody owns the index actor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history.supervised_shared_commit_pull(shared, session, as_name: pulls)
+/// ```
+@internal
+pub fn supervised_shared_commit_pull(
+  shared: Shared,
+  session: SessionId,
+  as_name name: address.Address(writer.Event),
+) -> ChildSpecification(Subject(writer.Event)) {
+  supervision.worker(fn() {
+    actor.new(Nil)
+    |> actor.on_message(fn(_state, _event: writer.Event) {
+      notify(shared, session)
+      actor.continue(Nil)
+    })
+    |> actor.addressed(name)
+    |> actor.start
+  })
+}
 
 /// The index database's file name. One file per repository, beside the
 /// session file rather than inside it: the index spans every session, and

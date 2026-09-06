@@ -247,6 +247,7 @@ pub fn a_subagent_factory_death_leaves_the_primary_strand_alone_test() {
         message.UserMessage(
           content: [message.UserText(text: "work", text_signature: None)],
           timestamp: 1_000_000,
+          origin: None,
         ),
       ],
     )
@@ -296,6 +297,7 @@ pub fn the_default_routes_everything_to_the_primary_factory_test() {
         message.UserMessage(
           content: [message.UserText(text: "work", text_signature: None)],
           timestamp: 1_000_000,
+          origin: None,
         ),
       ],
     )

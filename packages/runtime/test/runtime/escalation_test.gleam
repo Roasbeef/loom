@@ -6,11 +6,13 @@
 import core/clock
 import core/ids.{type OpId}
 import core/json
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/result
 import machine/operation.{ReplaySafe}
 import runtime/api
 import runtime/effects
@@ -640,6 +642,64 @@ pub fn a_consume_at_a_stale_seq_loses_to_the_claim_that_moved_it_test() {
   assert survivor.status == escalation.Approved
   assert survivor.scope == Some(b)
   process.kill(rt.tree.supervisor)
+}
+
+pub fn exact_decision_origin_survives_consumption_and_clears_on_reopen_test() {
+  let rt = quiet_runtime()
+  let author = Some(message.Origin("alice", "Alice before rename"))
+  let assert Ok(escalation.Claimed(_)) =
+    claim(rt, denial(), action("true"), scope_for("a"), max_asks: 8)
+    as "question is pending"
+  let assert Ok(cell) = api.escalation_cell(rt, "esc-1")
+    as "human observes exact question"
+  let assert Ok(approved) =
+    api.approve_escalation_at(rt, cell, [grant()], author)
+    as "one exact-cell approval wins"
+  assert approved.origin == author
+  assert escalation.decode(escalation.encode(approved)) == Ok(approved)
+  assert api.deny_escalation_at(rt, cell, Some(message.Origin("bob", "Bob")))
+    == Error(api.RaceLost)
+  let assert Ok(escalation.Claimed(moved)) =
+    claim(rt, denial(), action("true"), scope_for("b"), max_asks: 8)
+    as "same action transfers the unspent grant"
+  assert moved.origin == author
+  let assert Ok(current) = api.escalation_cell(rt, "esc-1")
+    as "consume uses the transferred exact cell"
+  assert api.consume_escalation_at(rt, current) == Ok([grant()])
+  let assert Ok(consumed) = api.escalation(rt, "esc-1")
+    as "winning author remains after consumption"
+  assert consumed.origin == author
+  let assert Ok(escalation.Claimed(reopened)) =
+    claim(rt, denial(), action("true"), scope_for("c"), max_asks: 8)
+    as "another execution asks a new question"
+  assert reopened.origin == None
+  assert api.approve_escalation_at(rt, cell, [grant()], author)
+    == Error(api.RaceLost)
+  assert api.deny_escalation_at(rt, cell, author) == Error(api.RaceLost)
+  let assert Ok(fresh) = api.escalation_cell(rt, "esc-1")
+    as "fresh question has its own sequence"
+  let assert Ok(rejected) =
+    api.deny_escalation_at(rt, fresh, Some(message.Origin("bob", "Bob")))
+    as "new decision has a new author"
+  assert rejected.origin == Some(message.Origin("bob", "Bob"))
+  let assert Ok(Nil) = api.close(rt) as "fixture drains normally"
+}
+
+pub fn escalation_origin_decoder_preserves_history_and_refuses_corruption_test() {
+  let record =
+    escalation.raised("origin-codec", denial(), action: None, scope: None)
+  let assert json.Object(fields) = escalation.encode(record)
+    as "escalation encodes as one payload"
+  let historical =
+    json.Object(list.filter(fields, fn(field) { field.0 != "origin" }))
+  assert escalation.decode(historical) == Ok(record)
+  let malformed =
+    escalation.approve(
+      record,
+      [grant()],
+      Some(message.Origin("bad principal", "Name")),
+    )
+  assert result.is_error(escalation.decode(escalation.encode(malformed)))
 }
 
 // The claim door as this suite calls it: the labels spelled once.

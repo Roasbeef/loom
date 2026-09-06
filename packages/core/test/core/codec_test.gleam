@@ -142,6 +142,7 @@ pub fn user_message_accepts_bare_string_content_test() {
     == Ok(message.UserMessage(
       content: [message.UserText(text: "hi", text_signature: None)],
       timestamp: 5,
+      origin: None,
     ))
 }
 
@@ -176,7 +177,7 @@ pub fn message_entry_terminate_defaults_to_false_test() {
       parent: None,
       seq: 3,
       ts: 9,
-      message: message.UserMessage(content: [], timestamp: 9),
+      message: message.UserMessage(content: [], timestamp: 9, origin: None),
       terminate: False,
     )
   let assert json.Object(fields) = codec.encode_entry(entry_value)

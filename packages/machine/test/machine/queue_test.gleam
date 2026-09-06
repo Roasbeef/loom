@@ -2,7 +2,11 @@
 
 import core/clock
 import core/ids
-import gleam/option.{None}
+import core/message
+import core/tx
+import gleam/list
+import gleam/option.{None, Some}
+import machine/codec
 import machine/operation.{
   CancelRequested, Checkpoint, CheckpointPhase, Inbox, MayFinish, NeedAssistant,
   Operation, PendingMessage, RunIntent, RunState, Running,
@@ -62,6 +66,23 @@ pub fn steer_enqueues_on_running_run_test() {
   let assert RunState(inbox: Inbox(steer: [queued], ..), ..) = next
   assert queued == entry
   assert scenario.write_names(plan_tx) == ["set:pending.entry", "set:op.state"]
+}
+
+pub fn both_durable_queues_keep_the_admitted_human_origin_test() {
+  let payload =
+    PendingMessage(message.UserMessage(
+      [message.UserText("queued human input", None)],
+      1,
+      Some(message.Origin("alice", "Alice before rename")),
+    ))
+  list.each([queue.enqueue_steer, queue.enqueue_follow_up], fn(enqueue) {
+    let assert Ok(QueuePlan(tx: plan, ..)) =
+      enqueue(op(), running_run(empty_inbox()), 7, generator(), payload)
+      as "queue accepts the complete attributed message"
+    let assert [tx.SetRegister(value:, ..), ..] = plan.writes
+      as "the first write owns the durable pending payload"
+    assert codec.decode_pending_entry(value.payload) == Ok(payload)
+  })
 }
 
 pub fn steer_refused_under_cancellation_test() {

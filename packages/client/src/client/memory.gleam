@@ -441,9 +441,33 @@ fn open_fault(error: session.OpenError) -> MemoryFault {
 }
 
 /// Closes an open memory session, releasing its lease.
+///
+/// The standalone adapter discards close errors. Managed callers retain their
+/// separate cleanup capability and must not use this as retirement proof.
 pub fn close(opened: Opened) -> Nil {
   let _closed = session.close(opened.session)
   Nil
+}
+
+/// Initializes memory bookkeeping on a session whose retirement is already owned.
+/// The caller keeps cleanup on both success and failure; this function opens and
+/// closes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.from_owned_session(session, generator)
+/// ```
+@internal
+pub fn from_owned_session(
+  opened: Session,
+  generator: Generator,
+) -> Result(Opened, MemoryFault) {
+  session.ensure_id(opened, generator)
+  |> result.map(fn(pair) {
+    Opened(session: opened, id: pair.0, generator: pair.1)
+  })
+  |> result.map_error(fn(error) { MemoryFailed(reason: string.inspect(error)) })
 }
 
 /// Whether the memory plane is reachable at `path` at all, asked once at
@@ -1674,6 +1698,7 @@ fn non_empty_injection(body: String, clock: Clock) -> List(AgentMessage) {
         message.UserMessage(
           content: [message.UserText(text: wrapped(text), text_signature: None)],
           timestamp: now,
+          origin: None,
         ),
       ]
     }

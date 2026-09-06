@@ -375,7 +375,7 @@ pub fn compact(id: Int, strand: String) -> String {
 
 fn command(id: Int, name: String, body: List(#(String, JsonValue))) -> String {
   json.Object([
-    #("v", json.Int(1)),
+    #("v", json.Int(2)),
     #("id", json.Int(id)),
     #("cmd", json.String(name)),
     #("body", json.Object(body)),
@@ -391,14 +391,42 @@ fn command(id: Int, name: String, body: List(#(String, JsonValue))) -> String {
 /// let assert Error(_) = protocol.decode_event("not json")
 /// ```
 pub fn decode_event(text: String) -> Result(Event, String) {
+  decode_version(text, 1)
+}
+
+/// Decodes a bounded auxiliary response after live v2 correlation checks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.decode_v2_presentation(text)
+/// ```
+@internal
+pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
+  use event <- result.try(decode_version(text, 2))
+  case event {
+    ModelsSnapshot(_) | SchedulesSnapshot(_) | ServerError(..) -> Ok(event)
+    FullSnapshot(..)
+    | StrandsSnapshot(_)
+    | ConfigSnapshot(_)
+    | EntryAdded(_)
+    | StreamDelta(..)
+    | OperationChanged(..)
+    | UsageChanged(_)
+    | EscalationPending(..)
+    | Ignored(_) -> Error("unexpected live presentation response")
+  }
+}
+
+fn decode_version(text: String, version: Int) -> Result(Event, String) {
   use value <- result.try(
     json.parse(text)
     |> result.map_error(fn(report) { report.expected }),
   )
   use fields <- result.try(object_fields(value, "event envelope"))
   use Nil <- result.try(case list.key_find(fields, "v") {
-    Ok(json.Int(1)) -> Ok(Nil)
-    _ -> Error("event envelope needs v = 1")
+    Ok(json.Int(found)) if found == version -> Ok(Nil)
+    _ -> Error("event envelope has the wrong protocol version")
   })
   use name <- result.try(required_string(fields, "event"))
   let body = case list.key_find(fields, "body") {

@@ -1,14 +1,10 @@
 //// The real TUI against the real server, in a terminal (issue #7).
 ////
-//// Every other end-to-end in this tree has a fake on one side. The
-//// protocol conformance suite pins the gateway to one fixture corpus;
-//// `packages/tui` has model-level tests; `client/demo` drives the
-//// real gateway with a protocol client. A fake on both sides of a protocol
-//// proves the fixture, not the protocol, so this one has a fake on *neither*:
+//// This fixture crosses the native executable and terminal boundary as well
+//// as the real daemon's control and credited conversation routes:
 ////
-////  - the server is `client/serve.boot`, the same boot `gleam run -m
-////    client/serve` performs, on an ephemeral port with a real `mist`
-////    listener, a real SQLite session and a real minted bearer token;
+////  - one daemon restores its private catalogue before the fixture explicitly
+////    creates a session, then owns its real SQLite runtime and one v2 listener;
 ////  - the client is the native `tui` shipment, exported by this test
 ////    so the artifact under test cannot be stale, running under a real
 ////    terminal in `tmux` and driven only by keystrokes;
@@ -18,8 +14,8 @@
 ////
 //// What that buys is an assertion no other test can make: the words
 //// typed into a terminal become a `prompt` command, a durable entry, a
-//// provider request whose body carries them, an assistant entry, an
-//// `entry` event, and finally pixels in a pane. The answer text is
+//// provider request whose body carries them, an assistant entry, a completed
+//// credited capture, and finally pixels in a pane. The answer text is
 //// *conditional on the request body* — the scripted transport answers
 //// with the marker only when the typed prompt is in the request it was
 //// handed — so the marker appearing in the pane is proof of the whole
@@ -30,7 +26,7 @@
 //// ## The failures this must be able to tell apart
 ////
 //// A terminal test that can only time out is not worth having. Each
-//// stage here fails in its own voice: `serve.boot` returning an error
+//// stage here fails in its own voice: daemon assembly returning an error
 //// is "the server never started"; `gateway.attached` staying at zero is
 //// "the TUI never attached", reported with the TUI's own stderr; a
 //// second, independent websocket subscribe that cannot see the assistant
@@ -40,25 +36,35 @@
 ////
 //// ## What this still does not reach
 ////
-//// The *jailed* half and approval input. Nothing here proves an approved
-//// call goes on to run under a widened sandbox; that is `make e2e`'s job.
-//// The native client renders escalation records but does not yet send the
-//// exact action-and-grant echo, so the old Go-only keystroke approval leg is
-//// not claimed by this replacement test.
+//// Nothing here proves an approved call runs under a widened sandbox; that
+//// is `make e2e`'s job. Domain maintenance is explicitly inert in this scripted
+//// fixture. The separate three-principal native-driver test covers exact
+//// approval inspection, action/grant/sequence echo, winning author and observer
+//// authority; this PTY fixture does not substitute for that evidence.
 
 import broker/exec
+import broker/policy
 import client/catalog
 import client/codemode
+import client/daemon/domain as domain_service
+import client/daemon/main as daemon_main
+import client/daemon/manager
+import client/daemon/root as daemon_root
+import client/daemon/session_socket
+import client/daemon_server_test as wire
 import client/distillpass
 import client/gateway as hub
 import client/internal/ffi_os
-import client/protocol
 import client/schedule
 import client/serve
+import client/session_socket_test
 import core/clock
 import core/entry
+import core/ids
+import core/json
 import core/message
 import etui/backend
+import filepath
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -67,6 +73,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
@@ -80,6 +87,8 @@ import support/internal/ffi_ws
 import support/provider as provider_test
 import support/terminal.{type Terminal}
 import support/tui_driver
+import telemetry/log
+import tui/session_channel
 import weft/poll
 
 // A home directory that does not exist, so a server booted here never
@@ -89,8 +98,6 @@ import weft/poll
 const empty_home = Some("build/no-operator-home")
 
 const root = "build/tui-e2e"
-
-const session_id = "session"
 
 /// What is typed into the terminal, and what the scripted transport
 /// looks for in the provider request before it will answer with the
@@ -148,16 +155,23 @@ pub fn the_real_tui_drives_the_real_server_test_() -> EunitTest {
       // not captured and reaches the log either way.
       Error(reason) ->
         io.println_error("SKIP the_real_tui_drives_the_real_server: " <> reason)
-      Ok(ready) -> drive(ready)
+      Ok(tools) -> {
+        // Once the required tools exist, compilation is part of the test, not
+        // an optional prerequisite. The enclosing test deadline covers export.
+        case build_tui(tools.gleam, tools.workdir) {
+          Ok(tui_path) -> drive(Ready(tools.tmux, tui_path, tools.workdir))
+          Error(reason) -> give_up(reason)
+        }
+      }
     }
   })
 }
 
 /// Two independent clients share the real server without a terminal binary.
 ///
-/// This is a fan-out foundation, not the complete multiplayer acceptance:
-/// principals, roles, shared configuration, and lazy session opening remain
-/// separate scenarios once the daemon serves those contracts.
+/// This preserves the prompt-conditioned two-turn foundation. The separate
+/// multiplayer and persisted fixtures cover principals, roles, configuration,
+/// exact approvals and lazy session opening through the same daemon contracts.
 pub fn two_virtual_tuis_share_one_real_session_test_() -> EunitTest {
   Timeout(60 / gleeunit_timeout_scale, virtual_drive)
 }
@@ -170,11 +184,11 @@ fn virtual_drive() -> Nil {
     <> int.to_string(ffi_os.unique_positive_integer())
   let assert Ok(Nil) = simplifile.create_directory_all(test_root <> "/work")
     as "the independent clients need an isolated workspace"
-  let assert Ok(booted) = serve.boot(settings_at(test_root))
+  let assert Ok(booted) = boot(settings_at(test_root))
     as "the server must boot for the virtual client pair"
   let address =
-    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v1/ws"
-  let outcome = virtual_pair(address, booted.served.token)
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v2/control"
+  let outcome = virtual_pair(address, booted.served.token, booted.session_id)
   let persisted = snapshot_text(booted)
   let detached =
     poll.until(within: 5000, every: 10, attempt: fn() {
@@ -185,7 +199,7 @@ fn virtual_drive() -> Nil {
     })
 
   // Teardown precedes assertions so a failed frame check releases the lease.
-  serve.shutdown(booted)
+  shutdown(booted)
   case outcome {
     Error(reason) -> io.println_error(reason)
     Ok(Nil) -> Nil
@@ -199,7 +213,11 @@ fn virtual_drive() -> Nil {
     as "a fresh subscriber must recover both completed turns"
 }
 
-fn virtual_pair(address: String, token: String) -> Result(Nil, String) {
+fn virtual_pair(
+  address: String,
+  token: String,
+  session_id: String,
+) -> Result(Nil, String) {
   use alice <- result.try(
     tui_driver.start(address, token, session_id)
     |> result.map_error(string.inspect),
@@ -207,7 +225,7 @@ fn virtual_pair(address: String, token: String) -> Result(Nil, String) {
   let outcome = case tui_driver.start(address, token, session_id) {
     Error(reason) -> Error(string.inspect(reason))
     Ok(bob) -> {
-      let outcome = virtual_turns(alice.data, bob.data)
+      let outcome = virtual_turns(alice.data, bob.data, session_id)
       tui_driver.stop(bob.data)
       outcome
     }
@@ -219,11 +237,14 @@ fn virtual_pair(address: String, token: String) -> Result(Nil, String) {
 fn virtual_turns(
   alice: process.Subject(tui_driver.Message),
   bob: process.Subject(tui_driver.Message),
+  session_id: String,
 ) -> Result(Nil, String) {
   use Nil <- result.try(
     await_pair(alice, bob, "both initial snapshots", fn(a, b) {
-      string.contains(a.frame, "attached to session " <> session_id)
-      && string.contains(b.frame, "attached to session " <> session_id)
+      a.model.session == session_id
+      && b.model.session == session_id
+      && writable(a)
+      && writable(b)
     }),
   )
   let _ =
@@ -233,7 +254,7 @@ fn virtual_turns(
     ])
   use Nil <- result.try(
     await_pair(alice, bob, "Alice's shared turn", fn(a, b) {
-      shared_turns(a, b, 1)
+      shared_turns(a, b, 1) && writable(b)
     }),
   )
   let _ =
@@ -295,6 +316,13 @@ fn shared_turns(
   })
 }
 
+fn writable(sample: tui_driver.Sample) {
+  case sample.model.channel {
+    Some(channel) -> session_channel.mutation_available(channel)
+    None -> False
+  }
+}
+
 fn await_pair(
   alice: process.Subject(tui_driver.Message),
   bob: process.Subject(tui_driver.Message),
@@ -337,13 +365,16 @@ type Ready {
   Ready(tmux: String, tui_path: String, workdir: String)
 }
 
+type Tools {
+  Tools(tmux: String, gleam: String, workdir: String)
+}
+
 // `tmux`, Gleam and Erlang are feature-detected before the native shipment is
-// exported. The
-// build is done here rather than depended upon (`make binaries`) on
+// exported. The build is done here rather than depended upon (`make binaries`) on
 // purpose: a prerequisite a developer must remember is a prerequisite
 // `make check` will skip, and a skipped end-to-end is exactly the
 // vacuous pass this test exists to replace.
-fn prerequisites() -> Result(Ready, String) {
+fn prerequisites() -> Result(Tools, String) {
   use tmux <- result.try(terminal.available())
   use gleam <- result.try(
     ffi_proc.which("gleam")
@@ -357,8 +388,7 @@ fn prerequisites() -> Result(Ready, String) {
     simplifile.current_directory()
     |> result.replace_error("the working directory is unreadable"),
   )
-  use tui_path <- result.try(build_tui(gleam, workdir))
-  Ok(Ready(tmux:, tui_path:, workdir:))
+  Ok(Tools(tmux:, gleam:, workdir:))
 }
 
 fn build_tui(gleam: String, workdir: String) -> Result(String, String) {
@@ -403,16 +433,16 @@ fn build_tui(gleam: String, workdir: String) -> Result(String, String) {
 // --- the drive -------------------------------------------------------------
 
 fn drive(ready: Ready) -> Nil {
-  let _stale = simplifile.delete(root <> "/session.db")
-  let _stale = simplifile.delete(root <> "/session.db.token")
-  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/work")
+  let test_root = root <> "/" <> int.to_string(ffi_os.system_time_ms())
+  let assert Ok(Nil) = simplifile.create_directory_all(test_root <> "/work")
     as "the workspace must exist"
 
   // 1. The server. A boot failure is its own failure, with its own
   //    message, before any terminal exists to blame.
-  let assert Ok(booted) = serve.boot(settings())
+  let assert Ok(booted) = boot(settings_at(test_root))
     as "the server must boot on an ephemeral port"
-  let addr = "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v1/ws"
+  let addr =
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v2/control"
 
   // Nobody is attached yet, and the hub says so. This is the question
   // `client/serve` puts to the escalation seam on every park poll.
@@ -420,16 +450,16 @@ fn drive(ready: Ready) -> Nil {
     as "a server nobody has dialled must count no connections"
 
   // 2. The real binary, in a real terminal.
-  let term = launch(ready, addr, booted.served.token)
+  let term = launch(ready, addr, booted.served.token, booted.session_id)
 
-  // 3. It attached — over a websocket, with the token from the file the
-  //    boot minted. Until this holds nothing else is worth asserting.
+  // 3. It attached over the session route after authenticating to the daemon
+  //    control route with its stable owner credential.
   case wait_until(fn() { hub.attached(booted.instance.gateway) > 0 }, 150) {
     True -> Nil
     False -> {
       let pane = result.unwrap(terminal.capture(term), "")
       terminal.stop(term)
-      serve.shutdown(booted)
+      shutdown(booted)
       give_up(terminal.framed(
         "the TUI never attached: the hub still counts 0 connections."
           <> tui_diagnosis(),
@@ -440,16 +470,11 @@ fn drive(ready: Ready) -> Nil {
   assert hub.attached(booted.instance.gateway) == 1
     as "exactly one client is attached"
 
-  // 4. The snapshot painted. This text is created only after the full
-  //    snapshot arrives, so it is protocol traffic on screen rather than an
+  // 4. The snapshot painted. This text is created only after the bounded
+  //    initial capture ends, so it is protocol traffic on screen rather than an
   //    echo of a flag the client was given.
   let _painted =
-    must_show(
-      term,
-      "attached to session " <> session_id,
-      15_000,
-      "the snapshot never painted",
-    )
+    must_show(term, "Owner · owner", 15_000, "the snapshot never painted")
 
   // 5. A turn, typed. The marker can only come back if the words
   //    reached the provider request, so this one assertion covers the
@@ -464,10 +489,9 @@ fn drive(ready: Ready) -> Nil {
   // hammering the listener with a subscribe every hundred milliseconds
   // on the way to a pass.
   //
-  // "the marker, and no longer streaming" rather than just the marker:
-  // the ephemeral `stream_delta` events carry no seq and reach the pane
-  // by a different path from the durable `entry` that supersedes them,
-  // so a client that painted the deltas and dropped every entry would
+  // "the marker, and no longer responding" rather than just the marker:
+  // the sampled stream preview is not a durable entry, so a client that
+  // painted the preview and dropped every credited entry would
   // satisfy a bare marker check. Only a settled assistant entry clears
   // the strand's live stream.
   case terminal.settled(term, answered, within_ms: 20_000) {
@@ -475,13 +499,13 @@ fn drive(ready: Ready) -> Nil {
     Error(pane) -> {
       let served = string.contains(snapshot_text(booted), assistant_marker)
       terminal.stop(term)
-      serve.shutdown(booted)
+      shutdown(booted)
       give_up(terminal.framed(
         case served {
           True ->
             "the assistant entry never settled in the pane, though an "
-            <> "independent websocket subscribe can see it: the `entry` "
-            <> "event or its rendering is the fault."
+            <> "independent websocket subscribe can see it: credited entry "
+            <> "delivery or its rendering is the fault."
           False ->
             "the server never committed the assistant reply: an independent "
             <> "websocket subscribe cannot see it either, so this is the "
@@ -498,8 +522,8 @@ fn drive(ready: Ready) -> Nil {
   assert string.contains(snapshot_text(booted), assistant_marker)
     as "a fresh subscribe must serve the assistant entry the pane showed"
 
-  // 6. A named fork through the slash surface. The server returns the name in
-  //    a strands snapshot, and the durable runtime list independently proves
+  // 6. A named fork through the slash surface. The next coherent metadata cut
+  //    includes the name, and the durable runtime list independently proves
   //    it was more than local display state.
   let assert Ok(Nil) = terminal.type_text(term, "/fork main-fork")
     as "the slash command must be typed"
@@ -523,7 +547,7 @@ fn drive(ready: Ready) -> Nil {
       let pane = result.unwrap(terminal.capture(term), "")
       let strands = api.strands(booted.instance.runtime)
       terminal.stop(term)
-      serve.shutdown(booted)
+      shutdown(booted)
       give_up(terminal.framed(
         "the fork was drawn but never became durable; the runtime returned "
           <> string.inspect(strands),
@@ -541,7 +565,7 @@ fn drive(ready: Ready) -> Nil {
     False -> {
       let pane = result.unwrap(terminal.capture(term), "")
       terminal.stop(term)
-      serve.shutdown(booted)
+      shutdown(booted)
       give_up(terminal.framed(
         "the hub still counts the client after it quit: a detach that is "
           <> "never noticed would park a call for a human who has gone",
@@ -551,7 +575,7 @@ fn drive(ready: Ready) -> Nil {
   }
 
   terminal.stop(term)
-  serve.shutdown(booted)
+  shutdown(booted)
 }
 
 // --- the terminal ----------------------------------------------------------
@@ -564,7 +588,12 @@ const tmux_session = "loom"
 // the TUI's stderr lands in a file worth reading and its exit status
 // outlives it. The trailing sleep holds the pane open after a crash: a
 // dead pane tmux has already reaped has nothing left to capture.
-fn launch(ready: Ready, addr: String, token: String) -> Terminal {
+fn launch(
+  ready: Ready,
+  addr: String,
+  token: String,
+  session_id: String,
+) -> Terminal {
   let script = ready.workdir <> "/" <> root <> "/run-tui.sh"
   let _stale = simplifile.delete(root <> "/tui.status")
   let _stale = simplifile.delete(root <> "/tui.err")
@@ -632,7 +661,10 @@ fn tui_diagnosis() -> String {
 // the live stream gone, which happens only when a settled assistant
 // entry supersedes it.
 fn answered(pane: String) -> Bool {
-  string.contains(pane, assistant_marker) && !string.contains(pane, "streaming")
+  string.contains(pane, assistant_marker)
+  && !string.contains(pane, "responding")
+  && !string.contains(pane, "thinking")
+  && !string.contains(pane, "starting")
 }
 
 fn must_show(
@@ -662,30 +694,38 @@ fn must_show(
 // A second, independent websocket connection subscribing from scratch:
 // the honest answer to "does the *server* have it", asked without going
 // through the client under test.
-fn snapshot_text(booted: serve.Booted) -> String {
-  let subscribe =
-    protocol.encode_command(protocol.CommandEnvelope(
-      id: 1,
-      command: protocol.Subscribe(session: session_id, from_seq: None),
-    ))
-  ffi_ws.ws_roundtrip(
-    "127.0.0.1",
-    booted.served.port,
-    booted.served.token,
-    subscribe,
-  )
+fn snapshot_text(booted: Booted) -> String {
+  let #(socket, _) =
+    wire.connect(
+      booted.served.port,
+      booted.served.token,
+      "/v2/sessions/" <> booted.session_id <> "/ws",
+    )
+  let #(_, capture) = session_socket_test.begin(socket, booted.session_id)
+  let chunks = session_socket_test.drain(socket, capture, 0, [], 32)
+  ffi_ws.tcp_close(socket)
+  chunks
+  |> list.filter_map(fn(chunk) {
+    let assert json.Object(fields) = chunk as "each credited chunk is an object"
+    case list.key_find(fields, "kind"), list.key_find(fields, "data") {
+      Ok(json.String("entry")), Ok(json.String(data)) ->
+        bit_array.base64_decode(data)
+      _, _ -> Error(Nil)
+    }
+  })
+  |> bit_array.concat
+  |> bit_array.to_string
   |> result.unwrap("")
 }
 
 fn wait_until(condition: fn() -> Bool, attempts: Int) -> Bool {
-  case condition(), attempts <= 0 {
-    True, _ -> True
-    False, True -> False
-    False, False -> {
-      process.sleep(100)
-      wait_until(condition, attempts - 1)
+  poll.until(within: attempts * 100, every: 100, attempt: fn() {
+    case condition() {
+      True -> poll.Done(Nil)
+      False -> poll.Retry
     }
-  }
+  })
+  == poll.Answered(Nil)
 }
 
 // eunit truncates a panic message, and the pane is the whole point of
@@ -765,6 +805,108 @@ fn sse_event(name: String, data: String) -> String {
 
 // --- the boot ---------------------------------------------------------------
 
+type Served {
+  Served(port: Int, token: String)
+}
+
+type Booted {
+  Booted(
+    serving: daemon_main.Serving(serve.Instance),
+    instance: serve.Instance,
+    served: Served,
+    session_id: String,
+  )
+}
+
+// The manager owns the runtime and its real SQLite store. Domain maintenance is
+// explicitly inert in this scripted terminal fixture; separate domain tests
+// cover shared services, and no provider work is fabricated by the TUI itself.
+fn boot(settings: serve.Settings) -> Result(Booted, String) {
+  let state_root =
+    absolute(filepath.directory_name(settings.session_path)) <> "/daemon"
+  let assert Ok(config) = daemon_main.parse(["--state-dir", state_root])
+    as "the terminal fixture has a private absolute daemon root"
+  let assert Ok(daemon) =
+    daemon_root.start(
+      daemon_root.Config(config.state_root, "Owner", 4),
+      manager.Assembly(
+        fn(_, _, _) { Ok(domain_service.inert()) },
+        fn(record, selected_domain, _services, owner) {
+          let assert Ok(id) = ids.parse_session_id(record.id)
+            as "the manager reserves a canonical session identity"
+          assert bootstrap.ensure_private_directory(filepath.directory_name(
+              selected_domain.memory_path,
+            ))
+            == Ok(Nil)
+          let base = serve.base_policy(record.workspace)
+          serve.assemble_owned(
+            serve.Settings(
+              ..settings,
+              session_id: record.id,
+              session_path: record.path,
+              workspace: record.workspace,
+              domain_paths: Some(serve.DomainPaths(
+                selected_domain.memory_path,
+                selected_domain.index_path,
+              )),
+              base_policy: policy.SandboxPolicy(..base, protected: [
+                config.state_root,
+                ..base.protected
+              ]),
+            ),
+            id,
+            log.discard(),
+            owner,
+          )
+        },
+        serve.instance_children,
+      ),
+    )
+    as "the one daemon owns the catalogue before any runtime opens"
+  let assert Ok(serving) =
+    daemon_main.listen(config, daemon, fn(request, attachment) {
+      session_socket.upgrade(
+        daemon,
+        request,
+        attachment,
+        attachment.instance.gateway,
+      )
+    })
+    as "the production v2 listener owns both control and conversation routes"
+  let assert Ok(created) =
+    manager.create(
+      serving.ready.registry,
+      manager.Creation("terminal-fixture", settings.workspace, "terminal", ""),
+      directory: serving.ready.sessions_directory,
+      generator: ids.generator(
+        clock.from_function(ffi_os.system_time_ms),
+        ffi_os.unique_positive_integer(),
+      ),
+    )
+    as "the fixture explicitly creates one session through the registry"
+  let assert poll.Answered(instance) =
+    poll.until(within: 15_000, every: 5, attempt: fn() {
+      case manager.resolve(serving.ready.registry, created.registration.id) {
+        Ok(instance) -> poll.Done(instance)
+        Error(_) -> poll.Retry
+      }
+    })
+    as "the original managed assembly becomes resident within its deadline"
+  let assert Ok(token) = daemon_root.listener_credential(daemon)
+    as "the only bearer is the daemon owner credential"
+  Ok(Booted(
+    serving,
+    instance,
+    Served(serving.listener.port, token),
+    created.registration.id,
+  ))
+}
+
+fn shutdown(booted: Booted) {
+  assert daemon_root.shutdown(booted.serving.daemon, within: 30_000) == Ok(Nil)
+    as "the original root confirms native, storage and listener retirement"
+}
+
 fn scripted_catalog() -> catalog.Catalog {
   catalog.Catalog(
     models: [
@@ -794,13 +936,10 @@ fn absolute(path: String) -> String {
   here <> "/" <> path
 }
 
-fn settings() -> serve.Settings {
-  settings_at(root)
-}
-
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
     session_path: test_root <> "/session.db",
+    domain_paths: option.None,
     bind_host: "127.0.0.1",
     bind_port: 0,
     token_path: test_root <> "/session.db.token",
@@ -808,9 +947,9 @@ fn settings_at(test_root: String) -> serve.Settings {
     base_policy: serve.base_policy(absolute(test_root) <> "/work"),
     // No tool is dispatched in this protocol round trip, so the terminal
     // boundary stays independent of whichever jail layers the host offers.
-    helper_path: "/bin/sh",
+    helper_path: absolute("../../bin/loom-exec"),
     helper_pool_size: 2,
-    session_id:,
+    session_id: "",
     demand: exec.BestEffort,
     gateway: catalog.gateway(
       scripted_catalog(),

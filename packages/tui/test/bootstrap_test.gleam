@@ -3,14 +3,22 @@ import filepath
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import host/endpoint
 import simplifile
+import tui/attachment
 import tui/bootstrap
 import tui/connection
+import tui/daemon
+import tui/daemon/protocol as control
+import tui/daemon/selection
 import tui/internal/ffi_bootstrap
-import tui/protocol
+import tui/session_channel
 import tui/sessions
+import weft
+import weft/poll
 
 pub fn workspace_names_are_stable_and_distinct_test() {
   let first = bootstrap.workspace_name("/work/alpha")
@@ -262,6 +270,35 @@ pub fn launch_lock_is_released_when_its_owner_dies_test() {
   let _ = simplifile.delete(root)
 }
 
+pub fn launch_lock_keeps_one_inode_across_reacquisition_test() {
+  let root = test_root("launch-lock-inode")
+  let path = filepath.join(root, "session.lock")
+  let anchor = filepath.join(root, "anchor.lock")
+  let _ = simplifile.delete(root)
+  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(first) = ffi_bootstrap.try_launch_lock(path)
+  let assert Ok(original) = simplifile.file_info(path)
+
+  // Keep the original inode allocated even if a faulty unlock unlinks the
+  // pathname. Otherwise inode reuse could hide that the lock was replaced.
+  let assert Ok(Nil) = simplifile.create_link(to: path, from: anchor)
+  ffi_bootstrap.release_launch_lock(first)
+  let assert Ok(second) = acquire_lock_eventually(path, 20)
+  let assert Ok(reacquired) = simplifile.file_info(path)
+  assert reacquired.inode == original.inode
+  assert ffi_bootstrap.try_launch_lock(anchor) == Error("busy")
+
+  // Acquiring through the retained alias must exclude the public pathname
+  // too, after another release and acquisition in the opposite direction.
+  ffi_bootstrap.release_launch_lock(second)
+  let assert Ok(third) = acquire_lock_eventually(anchor, 20)
+  assert ffi_bootstrap.try_launch_lock(path) == Error("busy")
+  let assert Ok(retained) = simplifile.file_info(path)
+  assert retained.inode == original.inode
+  ffi_bootstrap.release_launch_lock(third)
+  let _ = simplifile.delete(root)
+}
+
 pub fn process_identity_distinguishes_one_process_lifetime_test() {
   let root = test_root("process-identity")
   let log = filepath.join(root, "sleep.log")
@@ -326,50 +363,55 @@ pub fn bootstrap_real_server_lifecycle_test() {
 fn run_real_server_lifecycle(server: String) -> Nil {
   let root = test_root("real-server")
   let workspace = filepath.join(root, "workspace")
-  let session_directory = filepath.join(root, "session")
-  let session = filepath.join(session_directory, "multi.part.db")
   let state = filepath.join(root, "state")
   let other_workspace = filepath.join(root, "other-workspace")
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(other_workspace)
-  let assert Ok(Nil) = simplifile.create_directory_all(session_directory)
-  let options = bootstrap.Options(workspace, session, server, state, "")
-  let answers = process.new_subject()
-  list.each([1, 2], fn(_) {
-    process.spawn_unlinked(fn() {
-      process.send(answers, bootstrap.resolve(options))
-    })
-  })
-  let assert Ok(Ok(first)) = process.receive(answers, 40_000)
-  let assert Ok(Ok(second)) = process.receive(answers, 40_000)
-  assert first.address == second.address
-  assert first.session == "multi"
-  assert first.session == second.session
-  assert first.token == second.token
-  let assert Ok([choice]) = bootstrap.discover_sessions(options)
-  assert choice.session == first.session
-  let switch = sessions.start(choice, options)
-  let assert Ok(sessions.Ready(
-    target: switched,
-    inbox: switched_inbox,
-    socket: switched_socket,
-    ..,
-  )) = wait_for_switch(switch, 40_000)
-    as "session switch should connect"
-  assert switched.session == first.session
-  assert connection.adopt(switched_socket) == Ok(Nil)
-
-  // Adoption is only real if the replacement session's frames reach the
-  // process that adopted it: the worker's subscribe must produce a full
-  // snapshot that this process, not the worker, can drain from the inbox.
-  let assert Ok(connection.Connected) = process.receive(switched_inbox, 10_000)
-    as "the adopted inbox should report the handshake"
-  let assert Ok(protocol.FullSnapshot(session: snapshot_session, ..)) =
-    receive_snapshot(switched_inbox, 20_000)
-    as "the adopted inbox should deliver the replacement snapshot"
-  assert snapshot_session == first.session
-  connection.close(switched_socket)
+  let assert Ok(workspace) = ffi_bootstrap.canonical_directory(workspace)
+    as "wire workspace paths are absolute, not relative to the daemon cwd"
+  let assert Ok(other_workspace) =
+    ffi_bootstrap.canonical_directory(other_workspace)
+  let configuration = filepath.join(root, "fixture.toml")
+  let assert Ok(Nil) =
+    simplifile.write(
+      configuration,
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+    )
+    as "a deterministic launch never uses environment-backed maintenance"
+  let assert Ok(configuration) = ffi_bootstrap.absolute_path(configuration)
+  let options = bootstrap.Options(workspace, "", server, state, configuration)
+  let terminal = process.self()
+  let launched =
+    weft.new(
+      list.map([1, 2], fn(_) {
+        fn() { bootstrap.resolve_daemon(options, terminal, 40_000) }
+      }),
+    )
+    |> weft.deadline(45_000)
+    |> weft.start
+  let assert [first, second] = weft.values(launched)
+    as "both bounded concurrent launchers authenticate the same daemon"
+  assert first.record == second.record
+  assert daemon.hello(first.control).epoch == daemon.hello(second.control).epoch
+  let assert Ok(control.SessionsReply(empty)) =
+    daemon.request(first.control, control.ListSessions("", None), 5000)
+    as "bootstrap restores only catalogue metadata"
+  assert empty.sessions == []
+  let assert Ok(address) = endpoint.address(first.record)
+  let assert Ok(token) = simplifile.read(first.paths.token)
+  assert first.paths.token == filepath.join(first.paths.root, "owner.token")
+  let assert Ok(host) =
+    selection.host(first.control, address, string.trim(token))
+  let assert Ok(target) =
+    selection.create(host, "bootstrap-fixture", workspace, configuration)
+    as "an explicit create reserves and opens a canonical session"
+  let switched =
+    wait_for_attachment(attachment.start(fn() { Ok(target) }, 20_000), 20_000)
+  let assert attachment.Adopted(channel, cut, _, _, _, _) = switched
+    as "the terminal validates the bounded capture before actual adoption"
+  assert cut.attachment.expected == target.expected
+  session_channel.close(channel)
 
   // A cancelled attempt must take its unadopted socket down. Two paths
   // cover it: a task that has returned its socket but whose outcome nobody
@@ -377,11 +419,12 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   // its socket killed through the link. Both attempts publish the socket's
   // pid on the side so the proof never pulls the outcome itself.
   let told = process.new_subject()
+  let choice = bootstrap.SessionChoice(target.expected.session, workspace, "")
   let returned =
     sessions.start_with(
       choice.session,
       fn(frames) {
-        let opened = sessions.resolve_and_connect(choice, options, frames)
+        let opened = open_fixture_socket(choice, options, target, frames)
         process.send(told, socket_owner(opened))
         opened
       },
@@ -396,7 +439,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     sessions.start_with(
       choice.session,
       fn(frames) {
-        let opened = sessions.resolve_and_connect(choice, options, frames)
+        let opened = open_fixture_socket(choice, options, target, frames)
         process.send(told, socket_owner(opened))
         process.sleep_forever()
         opened
@@ -408,74 +451,137 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert process.is_alive(running_pid)
   sessions.cancel(running)
   assert_process_exits(running_pid, 100)
-  let assert Ok(pid) = endpoint_pid(state)
-  let assert Ok(token_file) = endpoint_string(state, "token_file")
-  let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
-  assert string.starts_with(
-    token_file,
-    filepath.join(canonical_state, "tokens") <> "/",
-  )
-  let incompatible =
-    bootstrap.resolve(bootstrap.Options(
-      other_workspace,
-      session,
-      server,
-      state,
-      "",
-    ))
-  let assert Error(reason) = incompatible
-  assert string.contains(reason, "cached endpoint is incompatible")
-  let assert Ok(preserved_pid) = endpoint_pid(state)
-  assert preserved_pid == pid
-  let assert Ok(third) = bootstrap.resolve(options)
-  assert third.address == first.address
+  daemon.close(second.control)
+
+  // Workspace selection does not select a daemon. Detaching both terminals
+  // leaves the same native lifetime available to another workspace.
+  daemon.close(first.control)
+  let assert Ok(third) =
+    bootstrap.resolve_daemon(
+      bootstrap.Options(..options, workspace: other_workspace),
+      terminal,
+      40_000,
+    )
+    as "another workspace reuses the same daemon after terminal detach"
+  assert third.record == first.record
+  assert simplifile.read(third.paths.token) == Ok(token)
+  let pid = first.record.fence.pid
   let assert Ok(ffi_bootstrap.ProcessPresent(identity)) =
     ffi_bootstrap.process_identity(pid)
+  assert identity == first.record.fence.birth
   assert ffi_bootstrap.process_identity(pid)
     == Ok(ffi_bootstrap.ProcessPresent(identity))
+  daemon.close(third.control)
   ffi_bootstrap.terminate_process_group(pid)
-  assert_process_stops(pid, 20)
-  let assert Ok(restarted) = bootstrap.resolve(options)
-  assert restarted.session == first.session
-  let assert Ok(restarted_pid) = endpoint_pid(state)
-  let assert Ok(restarted_birth) = endpoint_string(state, "server_birth")
+  assert_process_stops(pid, 200)
+  let assert Ok(restarted) = bootstrap.resolve_daemon(options, terminal, 40_000)
+    as "an observed departed native owner permits a new daemon epoch"
+  assert daemon.hello(restarted.control).epoch
+    != daemon.hello(first.control).epoch
+  assert simplifile.read(restarted.paths.token) == Ok(token)
+  let assert Ok(control.SessionsReply(restored)) =
+    daemon.request(restarted.control, control.ListSessions("", None), 5000)
+    as "restart restores the saved catalogue without executing a session"
+  let assert [saved] = restored.sessions
+    as "the single explicitly created session survives daemon restart"
+  assert saved.session_id == target.expected.session
+  assert saved.status == control.Saved
+  let assert Ok(restarted_address) = endpoint.address(restarted.record)
+  let assert Ok(restarted_host) =
+    selection.host(restarted.control, restarted_address, string.trim(token))
+  let reopened =
+    wait_for_attachment(
+      attachment.start(
+        fn() { selection.open(restarted_host, saved.session_id) },
+        20_000,
+      ),
+      20_000,
+    )
+  let assert attachment.Adopted(reopened_channel, reopened_cut, _, _, _, _) =
+    reopened
+    as "only an explicit reopen obtains a new incarnation and credited cut"
+  assert reopened_cut.attachment.expected.session == saved.session_id
+  assert reopened_cut.attachment.expected.epoch != target.expected.epoch
+  session_channel.close(reopened_channel)
+  daemon.close(restarted.control)
+  let restarted_pid = restarted.record.fence.pid
   assert ffi_bootstrap.process_identity(restarted_pid)
-    == Ok(ffi_bootstrap.ProcessPresent(restarted_birth))
+    == Ok(ffi_bootstrap.ProcessPresent(restarted.record.fence.birth))
   ffi_bootstrap.terminate_process_group(restarted_pid)
-  assert_process_stops(restarted_pid, 20)
+  assert_process_stops(restarted_pid, 200)
   let _ = simplifile.delete(root)
   Nil
+}
+
+// Only the existing generic cancellation harness remains here. Its callback
+// opens the already-authorized v2 target; no legacy discovery or protocol runs.
+fn open_fixture_socket(choice, options, target: attachment.Target, frames) {
+  use socket <- result.map(connection.connect(
+    target.address,
+    target.token,
+    frames,
+  ))
+  sessions.Opened(
+    choice,
+    options,
+    bootstrap.Target(target.address, target.expected.session, target.token),
+    socket,
+  )
+}
+
+fn wait_for_attachment(status, within) {
+  case
+    poll.fold_until(
+      clock: poll.monotonic(),
+      within: within,
+      every: poll.Fixed(5),
+      from: status,
+      attempt: fn(status) {
+        case attachment.poll(status) {
+          #(_, Some(outcome)) -> poll.Settled(outcome)
+          #(next, None) -> poll.Pending(next)
+        }
+      },
+    )
+  {
+    poll.Answer(outcome) -> outcome
+    poll.RanOut(pending) -> {
+      attachment.cancel(pending)
+      panic as "the bounded credited attachment did not settle"
+    }
+    poll.Failure(reason) -> panic as string.inspect(reason)
+  }
 }
 
 fn acquire_lock_eventually(
   path: String,
   attempts: Int,
 ) -> Result(ffi_bootstrap.LaunchLock, String) {
-  case ffi_bootstrap.try_launch_lock(path), attempts {
-    Ok(lock), _ -> Ok(lock)
-    Error("busy"), attempts if attempts > 0 -> {
-      process.sleep(25)
-      acquire_lock_eventually(path, attempts - 1)
-    }
-    Error(reason), _ -> Error(reason)
+  case
+    poll.until(within: attempts * 25, every: 25, attempt: fn() {
+      case ffi_bootstrap.try_launch_lock(path) {
+        Ok(lock) -> poll.Done(lock)
+        Error("busy") -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+  {
+    poll.Answered(lock) -> Ok(lock)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> Error("busy")
   }
 }
 
 fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
-  case ffi_bootstrap.process_identity(pid), attempts {
-    Ok(ffi_bootstrap.ProcessAbsent), _ -> Nil
-    Ok(ffi_bootstrap.ProcessPresent(_)), 0 ->
-      panic as "detached server did not stop"
-    Error(_), 0 -> panic as "could not establish that detached server stopped"
-    Ok(ffi_bootstrap.ProcessPresent(_)), _ -> {
-      process.sleep(50)
-      assert_process_stops(pid, attempts - 1)
-    }
-    Error(_), _ -> {
-      process.sleep(50)
-      assert_process_stops(pid, attempts - 1)
-    }
-  }
+  let observed =
+    poll.until(within: attempts * 50, every: 50, attempt: fn() {
+      case ffi_bootstrap.process_identity(pid) {
+        Ok(ffi_bootstrap.ProcessAbsent) -> poll.Done(Nil)
+        Ok(ffi_bootstrap.ProcessPresent(_)) | Error(_) -> poll.Retry
+      }
+    })
+  assert observed == poll.Answered(Nil)
+    as "the native process must be observed absent before replacement"
 }
 
 fn socket_owner(
@@ -488,94 +594,15 @@ fn socket_owner(
 }
 
 fn assert_process_exits(pid: process.Pid, attempts: Int) -> Nil {
-  case process.is_alive(pid), attempts <= 0 {
-    False, _ -> Nil
-    True, True -> panic as "the abandoned socket actor should have exited"
-    True, False -> {
-      process.sleep(10)
-      assert_process_exits(pid, attempts - 1)
-    }
-  }
-}
-
-fn receive_snapshot(
-  inbox: process.Subject(connection.Message),
-  remaining_ms: Int,
-) -> Result(protocol.Event, Nil) {
-  let started = ffi_bootstrap.monotonic_time_ms()
-  case process.receive(inbox, remaining_ms) {
-    Error(Nil) -> Error(Nil)
-    Ok(connection.Incoming(text)) ->
-      case protocol.decode_event(text) {
-        Ok(protocol.FullSnapshot(..) as event) -> Ok(event)
-        _ ->
-          receive_snapshot(
-            inbox,
-            remaining_ms - { ffi_bootstrap.monotonic_time_ms() - started },
-          )
+  let observed =
+    poll.until(within: attempts * 10, every: 10, attempt: fn() {
+      case process.is_alive(pid) {
+        False -> poll.Done(Nil)
+        True -> poll.Retry
       }
-    Ok(_) ->
-      receive_snapshot(
-        inbox,
-        remaining_ms - { ffi_bootstrap.monotonic_time_ms() - started },
-      )
-  }
-}
-
-fn wait_for_switch(
-  status: sessions.SwitchStatus,
-  remaining_ms: Int,
-) -> Result(sessions.Message, Nil) {
-  case sessions.receive(status), remaining_ms <= 0 {
-    Ok(message), _ -> Ok(message)
-    Error(Nil), True -> Error(Nil)
-    Error(Nil), False -> {
-      process.sleep(10)
-      wait_for_switch(status, remaining_ms - 10)
-    }
-  }
-}
-
-fn endpoint_pid(state: String) -> Result(Int, String) {
-  use fields <- result.try(endpoint_fields(state))
-  case list.key_find(fields, "server_pid") {
-    Ok(json.Int(pid)) -> Ok(pid)
-    _ -> Error("endpoint record has no server pid")
-  }
-}
-
-fn endpoint_string(state: String, key: String) -> Result(String, String) {
-  use fields <- result.try(endpoint_fields(state))
-  case list.key_find(fields, key) {
-    Ok(json.String(value)) -> Ok(value)
-    _ -> Error("endpoint record has no " <> key)
-  }
-}
-
-fn endpoint_fields(
-  state: String,
-) -> Result(List(#(String, json.JsonValue)), String) {
-  let directory = filepath.join(state, "endpoints")
-  use names <- result.try(
-    simplifile.read_directory(directory)
-    |> result.map_error(fn(error) { string.inspect(error) }),
-  )
-  use name <- result.try(case names {
-    [name] -> Ok(name)
-    _ -> Error("expected exactly one endpoint record")
-  })
-  use contents <- result.try(
-    simplifile.read(filepath.join(directory, name))
-    |> result.map_error(fn(error) { string.inspect(error) }),
-  )
-  use value <- result.try(
-    json.parse(contents)
-    |> result.map_error(fn(report) { report.expected }),
-  )
-  case value {
-    json.Object(fields) -> Ok(fields)
-    _ -> Error("endpoint record is not an object")
-  }
+    })
+  assert observed == poll.Answered(Nil)
+    as "the abandoned socket actor should have exited"
 }
 
 fn test_root(name: String) -> String {

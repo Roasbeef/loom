@@ -274,6 +274,8 @@ pub fn failed_close_is_not_reported_as_success_on_retry_test() {
     as "the blocker connection must close"
   assert storage.close(store) == Error(failure)
     as "a repeated close must retain the original failed outcome"
+  assert sqlite.retire_closed(store.handle) == Error(failure)
+    as "actor retirement cannot erase a failed lease release"
   assert storage.stats(store) == Error(storage.HandleClosed)
   let assert Error(sqlite.LeaseHeld(owner: "closing-writer", ..)) =
     sqlite.open(
@@ -300,6 +302,27 @@ pub fn quoted_writer_identity_closes_idempotently_test() {
     )
     as "the quoted owner's successful close must release its lease"
   assert storage.close(replacement) == Ok(Nil)
+}
+
+pub fn owned_actor_retires_only_after_successful_close_test() {
+  let store = open_store("owned_retirement", "owned-writer")
+  let assert Ok(pid) = process.subject_owner(store.handle)
+    as "store has a local owner"
+  let watch = process.monitor(pid)
+  let assert Error(storage.BackendFault(_)) = sqlite.retire_closed(store.handle)
+    as "retirement cannot bypass live storage ownership"
+  let assert Ok(_) = storage.stats(store)
+    as "refused retirement leaves reads available"
+  assert storage.close(store) == Ok(Nil)
+  assert storage.close(store) == Ok(Nil)
+  assert sqlite.retire_closed(store.handle) == Ok(Nil)
+
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "successful retirement includes normal actor exit"
+  assert !process.is_alive(pid)
 }
 
 // How one racer in the concurrent-create test ended: an opened (and then

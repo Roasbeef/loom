@@ -929,6 +929,7 @@ fn brief_message(
       ),
     ],
     timestamp: now,
+    origin: None,
   )
 }
 
@@ -1251,6 +1252,7 @@ fn send(
         ),
       ],
       timestamp: now,
+      origin: None,
     )
   case api.send_to_strand(runtime, to:, message: payload) {
     Error(error) -> Error(agent.PlaneFailed(reason: describe_api(error)))

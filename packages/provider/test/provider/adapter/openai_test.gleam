@@ -347,6 +347,7 @@ pub fn build_request_shape_test() {
         message.UserMessage(
           content: [message.UserText(text: "hi", text_signature: None)],
           timestamp: 1,
+          origin: None,
         ),
       ],
       tools: [
@@ -423,6 +424,7 @@ pub fn the_request_carries_no_cache_breakpoints_test() {
         message.UserMessage(
           content: [message.UserText(text: "hi", text_signature: None)],
           timestamp: 1,
+          origin: None,
         ),
       ],
       tools: [

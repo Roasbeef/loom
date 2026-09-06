@@ -237,7 +237,11 @@ pub fn sse_three_byte_chunks_test() {
 // --- settled message smart constructor ----------------------------------
 
 pub fn settle_rejects_user_message_test() {
-  assert stream.settle(message.UserMessage(content: [], timestamp: 0))
+  assert stream.settle(message.UserMessage(
+      content: [],
+      timestamp: 0,
+      origin: None,
+    ))
     == Error(Nil)
 }
 

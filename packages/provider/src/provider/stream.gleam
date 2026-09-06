@@ -101,7 +101,7 @@ pub opaque type SettledAssistantMessage {
 ///
 /// ```gleam
 /// let assert Error(Nil) =
-///   stream.settle(message.UserMessage(content: [], timestamp: 0))
+///   stream.settle(message.UserMessage(content: [], timestamp: 0, origin: None))
 /// ```
 ///
 pub fn settle(message: AgentMessage) -> Result(SettledAssistantMessage, Nil) {

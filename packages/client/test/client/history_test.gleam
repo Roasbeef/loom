@@ -409,6 +409,7 @@ fn an_entry(id: EntryId, parent: Option(EntryId), text: String) -> Entry {
     message: UserMessage(
       content: [UserText(text:, text_signature: None)],
       timestamp: 0,
+      origin: None,
     ),
     terminate: False,
   )

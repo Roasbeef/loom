@@ -38,6 +38,8 @@ fn record(
     preview:,
     asked:,
     denial: None,
+    seq: 0,
+    origin: None,
   )
 }
 
@@ -71,7 +73,7 @@ fn escalation_fields(
 pub fn approve_without_grants_is_refused_test() {
   let assert Error(protocol.BadBody(id: 6, cmd: "approve", reason:)) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":6,\"cmd\":\"approve\","
+      "{\"v\":2,\"id\":6,\"cmd\":\"approve\","
       <> "\"body\":{\"escalation_id\":\"esc-1\",\"action\":\"d-1\"}}",
     )
     as "an approve with no grants must not decode"
@@ -83,7 +85,7 @@ pub fn approve_without_grants_is_refused_test() {
 pub fn approve_without_an_action_is_refused_test() {
   let assert Error(protocol.BadBody(id: 6, cmd: "approve", reason:)) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":6,\"cmd\":\"approve\","
+      "{\"v\":2,\"id\":6,\"cmd\":\"approve\","
       <> "\"body\":{\"escalation_id\":\"esc-1\",\"grants\":[]}}",
     )
     as "an approve with no action must not decode"
@@ -92,14 +94,45 @@ pub fn approve_without_an_action_is_refused_test() {
 
 /// An empty action is a statement, not an absence: it is what a client
 /// echoes for a record that names no action.
+pub fn v2_decisions_require_the_displayed_nonnegative_sequence_test() {
+  list.each(["approve", "deny"], fn(command) {
+    list.each(
+      ["", ",\"expected_seq\":-1", ",\"expected_seq\":\"12\""],
+      fn(sequence) {
+        let frame =
+          "{\"v\":2,\"id\":1,\"cmd\":\""
+          <> command
+          <> "\",\"body\":{\"escalation_id\":\"esc-1\",\"grants\":[],\"action\":\"\""
+          <> sequence
+          <> "}}"
+        let assert Error(protocol.BadBody(..)) = protocol.decode_command(frame)
+          as "missing, negative and mistyped revisions are refused"
+      },
+    )
+  })
+}
+
+pub fn prior_conversation_version_is_not_a_v2_fallback_test() {
+  let assert Error(protocol.BadEnvelope(reason: "protocol version 2", ..)) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":1,\"cmd\":\"subscribe\",\"body\":{\"session\":\"s\"}}",
+    )
+    as "the new listener cannot silently speak v1"
+}
+
 pub fn approve_may_echo_an_empty_action_test() {
   let assert Ok(protocol.CommandEnvelope(
     id: 6,
-    command: protocol.Approve(escalation_id: "esc-1", grants: [], action: ""),
+    command: protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [],
+      action: "",
+      expected_seq: 0,
+    ),
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":6,\"cmd\":\"approve\","
-      <> "\"body\":{\"escalation_id\":\"esc-1\",\"grants\":[],\"action\":\"\"}}",
+      "{\"v\":2,\"id\":6,\"cmd\":\"approve\","
+      <> "\"body\":{\"escalation_id\":\"esc-1\",\"grants\":[],\"action\":\"\",\"expected_seq\":0}}",
     )
 }
 
@@ -109,6 +142,7 @@ pub fn approve_round_trips_its_echo_test() {
       escalation_id: "esc-1",
       grants: [network_grant()],
       action: "9f2c1a7b4e0d63859ac41d2f7b6e8035",
+      expected_seq: 0,
     )
   let encoded =
     protocol.encode_command(protocol.CommandEnvelope(id: 6, command:))
@@ -165,9 +199,9 @@ pub fn a_body_without_the_action_fields_decodes_test() {
     ..,
   )) =
     protocol.decode_event(
-      "{\"v\":1,\"event\":\"escalation\",\"seq\":11,\"body\":{"
+      "{\"v\":2,\"event\":\"escalation\",\"seq\":11,\"body\":{"
       <> "\"escalation_id\":\"esc-1\",\"op\":\"op-1\",\"strand\":\"main\","
-      <> "\"status\":\"pending\"}}",
+      <> "\"status\":\"pending\",\"seq\":0}}",
     )
     as "a legacy escalation body must still decode"
   assert decoded == record("", "", "", 0)
@@ -179,7 +213,7 @@ pub fn a_body_without_the_action_fields_decodes_test() {
 pub fn a_non_string_preview_is_malformed_test() {
   let assert Error(_fault) =
     protocol.decode_event(
-      "{\"v\":1,\"event\":\"escalation\",\"seq\":11,\"body\":{"
+      "{\"v\":2,\"event\":\"escalation\",\"seq\":11,\"body\":{"
       <> "\"escalation_id\":\"esc-1\",\"op\":\"op-1\",\"strand\":\"main\","
       <> "\"status\":\"pending\",\"preview\":42}}",
     )
@@ -231,7 +265,7 @@ pub fn schedules_command_round_trips_test() {
       id: 19,
       command: protocol.ListSchedules,
     ))
-  assert encoded == "{\"v\":1,\"id\":19,\"cmd\":\"schedules\",\"body\":{}}"
+  assert encoded == "{\"v\":2,\"id\":19,\"cmd\":\"schedules\",\"body\":{}}"
   assert protocol.decode_command(encoded)
     == Ok(protocol.CommandEnvelope(id: 19, command: protocol.ListSchedules))
 }
@@ -254,7 +288,7 @@ pub fn schedule_cancel_round_trips_its_pair_test() {
 pub fn schedule_cancel_needs_both_halves_of_the_pair_test() {
   let assert Error(protocol.BadBody(id: 21, cmd: "schedule_cancel", reason:)) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":21,\"cmd\":\"schedule_cancel\","
+      "{\"v\":2,\"id\":21,\"cmd\":\"schedule_cancel\","
       <> "\"body\":{\"target\":\"main\"}}",
     )
     as "a cancel with no name must not decode"
@@ -266,7 +300,7 @@ pub fn schedule_cancel_needs_both_halves_of_the_pair_test() {
     reason: "target is required",
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":22,\"cmd\":\"schedule_cancel\","
+      "{\"v\":2,\"id\":22,\"cmd\":\"schedule_cancel\","
       <> "\"body\":{\"name\":\"heartbeat\"}}",
     )
     as "a cancel with no target must not decode"
@@ -280,7 +314,7 @@ pub fn the_schedule_commands_ignore_unknown_fields_test() {
     command: protocol.ListSchedules,
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":23,\"cmd\":\"schedules\","
+      "{\"v\":2,\"id\":23,\"cmd\":\"schedules\","
       <> "\"body\":{\"only_wakers\":true}}",
     )
   let assert Ok(protocol.CommandEnvelope(
@@ -288,7 +322,7 @@ pub fn the_schedule_commands_ignore_unknown_fields_test() {
     command: protocol.CancelSchedule(target: "main", name: "poll"),
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":24,\"cmd\":\"schedule_cancel\",\"body\":{"
+      "{\"v\":2,\"id\":24,\"cmd\":\"schedule_cancel\",\"body\":{"
       <> "\"target\":\"main\",\"name\":\"poll\",\"because\":\"tidying\"}}",
     )
 }
@@ -332,7 +366,7 @@ pub fn the_wake_flag_is_the_wires_only_boolean_test() {
   // silently defaulted one.
   let assert Error(protocol.BadEnvelope(reason:, id: None)) =
     protocol.decode_event(
-      "{\"v\":1,\"event\":\"snapshot\",\"body\":{\"mode\":\"schedules\","
+      "{\"v\":2,\"event\":\"snapshot\",\"body\":{\"mode\":\"schedules\","
       <> "\"schedules\":[{\"name\":\"n\",\"target\":\"main\",\"owner\":\"main\","
       <> "\"when\":\"once\",\"wake\":\"yes\",\"fired\":0,\"body\":\"b\"}]}}",
     )

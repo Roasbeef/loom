@@ -72,6 +72,8 @@ pub fn instrument(
       }
     })
   Session(
+    // Snapshot fault injection is separate from this commit-schedule wrapper.
+    snapshot_reader: session.snapshot_reader,
     store: storage.Storage(
       handle: Nil,
       commit: fn(_handle, transaction) {

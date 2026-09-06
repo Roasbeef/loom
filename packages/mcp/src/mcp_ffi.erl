@@ -107,8 +107,8 @@ close_port(Port) ->
         _:_ -> nil
     end.
 
-%% erlang:port_info/2 with os_pid — the server's OS pid, kept so `stop`
-%% can kill a server that ignores EOF on its stdin.
+%% erlang:port_info/2 with os_pid, queried immediately before termination.
+%% The caller retains the port to observe its native exit-status event.
 port_os_pid(Port) ->
     try erlang:port_info(Port, os_pid) of
         {os_pid, Pid} when is_integer(Pid) -> {ok, Pid};
@@ -118,8 +118,8 @@ port_os_pid(Port) ->
     end.
 
 %% os:cmd/1 running kill(1) — the BEAM has no direct kill(2) binding
-%% without a NIF; belt-and-braces after the stdin close, for a server
-%% that does not exit on EOF.
+%% without a NIF. Lookup and signal are not atomic; this does not join
+%% descendants or undo effects the trusted server already performed.
 kill_os_process(Pid) when is_integer(Pid), Pid > 1 ->
     _ = os:cmd("kill -KILL " ++ integer_to_list(Pid)),
     nil;

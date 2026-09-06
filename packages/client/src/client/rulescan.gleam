@@ -601,6 +601,7 @@ fn injection(state: State, rule: Rule) -> message.AgentMessage {
       message.UserText(text: rules.injection(rule), text_signature: None),
     ],
     timestamp: now,
+    origin: None,
   )
 }
 

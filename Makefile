@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := core storage session machine prompt telemetry runtime provider \
+PACKAGES := host core storage session machine prompt telemetry runtime provider \
 	broker mcp tools cap ext codemode events client conformance tui lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
@@ -158,7 +158,7 @@ release: ## Build the self-contained server into build/release/loom (needs rebar
 
 .PHONY: release-smoke
 release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serves code mode
-	@scripts/release.sh --smoke
+	@python3 scripts/with_timeout.py 180 -- bash scripts/release.sh --smoke
 
 # The client gets the same treatment as the server: an OTP release with
 # the runtime system copied in, so `loom` runs on a machine with no

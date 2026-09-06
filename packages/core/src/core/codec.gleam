@@ -29,6 +29,7 @@ import core/message.{
   Pending, Stop, ToolCall, ToolResultImage, ToolResultMessage, ToolResultText,
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
+import core/origin
 import core/register.{type RegisterValue, RegisterValue}
 import gleam/int
 import gleam/list
@@ -120,17 +121,18 @@ fn decode_usage_cost(value: JsonValue) -> Result(UsageCost, CorruptionReport) {
 /// ## Examples
 ///
 /// ```gleam
-/// let msg = message.UserMessage([message.UserText("hi", None)], 0)
+/// let msg = message.UserMessage([message.UserText("hi", None)], 0, origin: None)
 /// assert codec.decode_message(codec.encode_message(msg)) == Ok(msg)
 /// ```
 ///
 pub fn encode_message(message: AgentMessage) -> JsonValue {
   case message {
-    UserMessage(content:, timestamp:) ->
+    UserMessage(content:, timestamp:, origin:) ->
       object_of([
         #("role", Some(json.String("user"))),
         #("content", Some(json.Array(list.map(content, encode_user_block)))),
         #("timestamp", Some(json.Int(timestamp))),
+        #("origin", Some(origin.encode(origin))),
       ])
     AssistantMessage(
       content:,
@@ -256,7 +258,8 @@ fn decode_user_message(
         context: json.to_string(other),
       ))
   })
-  Ok(UserMessage(content:, timestamp:))
+  use origin <- result.try(origin.decode_field(fields))
+  Ok(UserMessage(content:, timestamp:, origin:))
 }
 
 fn decode_assistant_message(

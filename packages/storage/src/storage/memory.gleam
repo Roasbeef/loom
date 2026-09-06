@@ -37,6 +37,9 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import storage/internal/branch
+import storage/internal/snapshot_call
+import storage/internal/snapshot_memory
+import storage/snapshot
 import storage/storage.{
   type BranchScan, type EntryScan, type Register, type SessionStats,
   type Storage, type StorageError, type UsageScan, BackendFault, CorruptRow,
@@ -609,6 +612,27 @@ pub opaque type Message {
   /// Stats projection read.
   Stats(reply: Subject(Result(SessionStats, StorageError)))
 
+  /// Capture a bounded projection from one immutable state value.
+  SnapshotCapture(
+    plan: snapshot.Plan,
+    reply: Subject(Result(snapshot.Cut, snapshot.Error)),
+  )
+
+  /// Return only bounded immutable entry descriptors.
+  SnapshotPage(
+    after: Int,
+    before: Int,
+    limit: Int,
+    reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
+  )
+
+  /// Return one bounded serialized entry fragment.
+  SnapshotFragment(
+    descriptor: snapshot.Descriptor,
+    offset: Int,
+    reply: Subject(Result(BitArray, snapshot.Error)),
+  )
+
   /// Seal the handle. Idempotent.
   Close(reply: Subject(Result(Nil, StorageError)))
 }
@@ -679,11 +703,99 @@ fn start_error_reason(error: actor.StartError) -> String {
   }
 }
 
+/// Borrows a reader from the existing memory actor, without another process.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let reader = memory.snapshot_reader(store.handle)
+/// ```
+@internal
+pub fn snapshot_reader(handle: Subject(Message)) -> snapshot.Reader {
+  snapshot.Reader(
+    capture: fn(plan, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotCapture(
+        plan,
+        _,
+      ))
+    },
+    page: fn(after, before, limit, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotPage(
+        after,
+        before,
+        limit,
+        _,
+      ))
+    },
+    fragment: fn(descriptor, offset, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotFragment(
+        descriptor,
+        offset,
+        _,
+      ))
+    },
+  )
+}
+
+fn snapshot_view(state: MemoryState) -> snapshot_memory.View {
+  snapshot_memory.View(
+    state.entries,
+    state.registers,
+    state.next_seq,
+    state.stats,
+  )
+}
+
 fn handle_message(
   actor_state: ActorState,
   message: Message,
 ) -> actor.Next(ActorState, Message) {
   case message, actor_state.closed {
+    SnapshotCapture(reply:, ..), True ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        Error(snapshot.StorageFailure(HandleClosed)),
+      )
+    SnapshotPage(reply:, ..), True ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        Error(snapshot.StorageFailure(HandleClosed)),
+      )
+    SnapshotFragment(reply:, ..), True ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        Error(snapshot.StorageFailure(HandleClosed)),
+      )
+    SnapshotCapture(plan, reply), False ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        snapshot_memory.capture(snapshot_view(actor_state.state), plan),
+      )
+    SnapshotPage(after, before, limit, reply), False ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        snapshot_memory.page(
+          snapshot_view(actor_state.state),
+          after,
+          before,
+          limit,
+        ),
+      )
+    SnapshotFragment(descriptor, offset, reply), False ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        snapshot_memory.fragment(
+          snapshot_view(actor_state.state),
+          descriptor,
+          offset,
+        ),
+      )
     Close(reply:), _ -> {
       process.send(reply, Ok(Nil))
       actor.continue(ActorState(..actor_state, closed: True))
@@ -762,4 +874,13 @@ fn handle_message(
       actor.continue(actor_state)
     }
   }
+}
+
+fn snapshot_answer(
+  state: ActorState,
+  reply: Subject(a),
+  value: a,
+) -> actor.Next(ActorState, Message) {
+  process.send(reply, value)
+  actor.continue(state)
 }

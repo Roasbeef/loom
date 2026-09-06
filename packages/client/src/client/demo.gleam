@@ -11,6 +11,11 @@
 //// command line (`cd packages/client && gleam run -m client/demo`) and
 //// prints the narrative.
 ////
+//// This historical M3 demo uses the explicit internal HostOnly gateway seam.
+//// Its anonymous callback attachment and event replay are not the managed
+//// daemon's authenticated, credited v2 transport. Starting a Network gateway
+//// here would correctly refuse that attachment's asynchronous commands.
+////
 //// The effect surface follows the conformance simulation's shape —
 //// generation requests are answered by the *content and phase of the
 //// projected context*, tools settle scripted results, compaction
@@ -153,7 +158,10 @@ fn run_in(namespace: address.Registry) -> Result(Narrative, String) {
 
   // --- the served gateway -------------------------------------------------
   use _gateway <- result.try(
-    gateway.start(gateway.default_options(session_id, runtime), name)
+    gateway.start_host_fixture(
+      gateway.default_options(session_id, runtime),
+      name,
+    )
     |> result.map_error(fn(_) { "the gateway did not start" }),
   )
   let hub = gateway.Gateway(name:)
@@ -284,6 +292,7 @@ fn acceptance_flow(
         message: message.UserMessage(
           content: [message.UserText(text: report_text, text_signature: None)],
           timestamp: 0,
+          origin: None,
         ),
       )
     {
@@ -325,7 +334,7 @@ fn acceptance_flow(
     )
     |> result.map_error(fn(_) { "raising the escalation failed" }),
   )
-  use _pending <- result.try(await(
+  use pending <- result.try(await(
     client,
     escalation_status(_, "esc-1", "pending"),
     "escalation surfaced as pending",
@@ -336,7 +345,12 @@ fn acceptance_flow(
     5,
     // Raised through the unscoped door, so the record names no action
     // and the echo the gateway checks is the empty one.
-    protocol.Approve(escalation_id: "esc-1", grants: [wanted], action: ""),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wanted],
+      action: "",
+      expected_seq: option.unwrap(pending.seq, 0),
+    ),
     escalation_reply(_, "esc-1", "approved"),
     "approve esc-1",
   ))

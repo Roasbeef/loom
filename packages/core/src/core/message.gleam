@@ -26,6 +26,17 @@
 import core/json.{type JsonValue}
 import gleam/option.{type Option}
 
+/// Historical human attribution captured by the authenticated admission host.
+/// This carries no credential or authority; `core/origin` validates its bounds.
+pub type Origin {
+  Origin(
+    /// Stable principal identity, independent of connections and display names.
+    principal: String,
+    /// Display name at admission, preserved after later renames.
+    name: String,
+  )
+}
+
 /// One message in a conversation, in provider-request shape.
 ///
 /// Constructor invariants:
@@ -44,7 +55,12 @@ import gleam/option.{type Option}
 ///   `payload` meaning; the harness treats the payload as opaque data.
 pub type AgentMessage {
   /// A user-authored turn.
-  UserMessage(content: List(UserBlock), timestamp: Int)
+  UserMessage(
+    content: List(UserBlock),
+    timestamp: Int,
+    /// Admitted author; absent for historical and system-generated turns.
+    origin: Option(Origin),
+  )
 
   /// A provider response.
   AssistantMessage(

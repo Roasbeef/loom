@@ -32,6 +32,7 @@ pub fn user_entry(strand: String, text: String, seq: Int) -> String {
     message.UserMessage(
       content: [message.UserText(text:, text_signature: None)],
       timestamp: 0,
+      origin: None,
     ),
   )
 }

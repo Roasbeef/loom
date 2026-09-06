@@ -962,6 +962,8 @@ fn handle_frame(state: State, frame: framing.Frame) -> FrameStep {
     framing.CapCall(token:, cap:, args:, deadline_ms: _) ->
       handle_cap_call(state, frame.id, token, cap, args)
     framing.Cancel -> FrameContinue(handle_cancel(state, frame.id))
+    framing.Shutdown ->
+      FrameDone(state, Error(ChannelFaulted("shutdown on capability channel")))
     framing.Heartbeat ->
       FrameContinue(send_frame(
         state,
@@ -2659,6 +2661,11 @@ fn read_frame(
 
     framing.Cancel, _ ->
       Ok(carrying(reading, cancel_inflight(hosting, frame.id)))
+
+    // Shutdown belongs only to the exec helper's stdio protocol. A
+    // satellite cannot use it to request host or helper retirement.
+    framing.Shutdown, _ ->
+      Error(perish(hosting, HostFaulted("shutdown on capability channel")))
 
     framing.Heartbeat, _ ->
       Ok(carrying(

@@ -37,7 +37,8 @@
 import core/clock
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId}
 import core/json.{type JsonValue}
-import core/message.{type AgentMessage}
+import core/message.{type AgentMessage, type Origin}
+import core/origin
 import core/register
 import core/tx.{type CommitError}
 import gleam/bool
@@ -534,6 +535,7 @@ fn accept_request(
     ))
     use #(leaf_seq, leaf) <- result.try(read_leaf(runtime))
     use pending <- result.try(read_pending(runtime))
+    use defaults <- result.try(run_defaults_cell(runtime))
     let #(now, generator) = mint_context(runtime)
     let ctx =
       AcceptCtx(
@@ -544,7 +546,7 @@ fn accept_request(
         strand_state_seq:,
         leaf:,
         leaf_seq:,
-        settings: runtime.settings,
+        settings: defaults.settings,
         pending:,
       )
     use acceptance.AcceptancePlan(operation:, state: _, tx: plan_tx) <- or_rejected(
@@ -552,7 +554,16 @@ fn accept_request(
       fn(reason) { AcceptRejected(reason:) },
     )
     commit_admission(
-      writer.commit(w, marked(plan_tx, mark)),
+      writer.commit(
+        w,
+        marked(
+          tx.Tx(..plan_tx, expected: [
+            tx.Expect(register.FactCustom, "client/run_settings", defaults.seq),
+            ..plan_tx.expected
+          ]),
+          mark,
+        ),
+      ),
       mark,
       on_ok: operation.id,
     )
@@ -1315,6 +1326,84 @@ pub fn fact_cell(
   }
 }
 
+/// Shared run defaults carry their original sequence so admission can compare
+/// the complete value in the same transaction that creates the run.
+@internal
+pub type RunDefaults {
+  RunDefaults(settings: RunSettings, origin: Option(Origin), seq: Option(Seq))
+}
+
+/// Reads shared defaults without replacing malformed state with host settings.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.run_defaults_cell(runtime)
+/// ```
+@internal
+pub fn run_defaults_cell(runtime: Runtime) -> Result(RunDefaults, ApiError) {
+  use cell <- result.try(fact_cell(runtime, "client/run_settings"))
+  case cell {
+    None -> Ok(RunDefaults(runtime.settings, None, None))
+    Some(FactCell(json.Object(fields), seq)) -> {
+      use queue <- result.try(case list.key_find(fields, "queue_mode") {
+        Ok(json.String("consume_all")) -> Ok(operation.ConsumeAll)
+        Ok(json.String("one_at_a_time")) -> Ok(operation.OneAtATime)
+        _ -> Error(ReadFailed("invalid shared queue mode"))
+      })
+      use execution <- result.try(case list.key_find(fields, "tool_execution") {
+        Ok(json.String("parallel")) -> Ok(operation.Parallel)
+        Ok(json.String("sequential")) -> Ok(operation.Sequential)
+        _ -> Error(ReadFailed("invalid shared tool execution"))
+      })
+      use author <- result.try(
+        origin.decode_field(fields)
+        |> result.map_error(fn(_) {
+          ReadFailed("invalid shared settings origin")
+        }),
+      )
+      Ok(RunDefaults(
+        RunSettings(
+          ..runtime.settings,
+          steering_mode: queue,
+          follow_up_mode: queue,
+          tool_execution: execution,
+        ),
+        author,
+        Some(seq),
+      ))
+    }
+    Some(_) -> Error(ReadFailed("invalid shared run settings"))
+  }
+}
+
+/// Encodes the complete shared value and its author in one register payload.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.encode_run_defaults(settings, author)
+/// ```
+@internal
+pub fn encode_run_defaults(
+  settings: RunSettings,
+  author: Option(Origin),
+) -> JsonValue {
+  let queue = case settings.steering_mode {
+    operation.ConsumeAll -> "consume_all"
+    operation.OneAtATime -> "one_at_a_time"
+  }
+  let execution = case settings.tool_execution {
+    operation.Parallel -> "parallel"
+    operation.Sequential -> "sequential"
+  }
+  json.Object([
+    #("queue_mode", json.String(queue)),
+    #("tool_execution", json.String(execution)),
+    #("origin", origin.encode(author)),
+  ])
+}
+
 /// Writes one `fact.custom` cell only if it is still at the seq the
 /// caller read — the compare-and-set `put_fact` is not, and the only way
 /// a read-modify-write over a shared cell is expressible.
@@ -1556,7 +1645,8 @@ pub const ext_fact_prefix = "ext/"
 /// ```
 ///
 pub fn reserved_fact_key(key: String) -> Bool {
-  string.starts_with(key, escalation.key_prefix)
+  string.starts_with(key, "client/")
+  || string.starts_with(key, escalation.key_prefix)
   || string.starts_with(key, operation.result_fact_prefix)
   || string.starts_with(key, lineage.key_prefix)
   || string.starts_with(key, prompt_fact_prefix)
@@ -2098,9 +2188,9 @@ pub fn approve_escalation(
   id: String,
   grants: List(JsonValue),
 ) -> Result(Nil, ApiError) {
-  decide_escalation(runtime, id, escalation.Approved, fn(record) {
-    escalation.approve(record, grants)
-  })
+  use cell <- result.try(escalation_cell(runtime, id))
+  approve_escalation_at(runtime, cell, grants, None)
+  |> result.replace(Nil)
 }
 
 /// Rejects a pending escalation. No re-execution will run under its
@@ -2113,7 +2203,89 @@ pub fn approve_escalation(
 /// ```
 ///
 pub fn deny_escalation(runtime: Runtime, id: String) -> Result(Nil, ApiError) {
-  decide_escalation(runtime, id, escalation.Rejected, escalation.reject)
+  use cell <- result.try(escalation_cell(runtime, id))
+  deny_escalation_at(runtime, cell, None)
+  |> result.replace(Nil)
+}
+
+/// Approves exactly the pending question the caller observed, once.
+///
+/// The supplied origin is resolved by the authenticated host, never by model
+/// arguments. A stale cell returns `RaceLost`; it cannot approve a reopened
+/// question by rereading and retrying the same human answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.approve_escalation_at(runtime, cell, grants, Some(author))
+/// ```
+pub fn approve_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  grants: List(JsonValue),
+  origin: Option(Origin),
+) -> Result(Escalation, ApiError) {
+  decide_escalation_at(
+    runtime,
+    cell,
+    escalation.Approved,
+    escalation.approve(cell.record, grants, origin),
+  )
+}
+
+/// Rejects exactly the pending question the caller observed, once.
+///
+/// A presentation layer may reread after a conflict to show the winning record,
+/// but that read never becomes another decision attempt or an invented author.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.deny_escalation_at(runtime, cell, Some(author))
+/// ```
+pub fn deny_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  origin: Option(Origin),
+) -> Result(Escalation, ApiError) {
+  decide_escalation_at(
+    runtime,
+    cell,
+    escalation.Rejected,
+    escalation.reject(cell.record, origin),
+  )
+}
+
+fn decide_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  to: escalation.Status,
+  next: Escalation,
+) {
+  let record = cell.record
+  use <- bool.guard(
+    when: !escalation.may_become(record.status, to),
+    return: Error(EscalationWrongStatus(id: record.id, status: record.status)),
+  )
+  let key = escalation.register_key(record.id)
+  let plan =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          register.FactCustom,
+          key,
+          register.value(escalation.encode(next)),
+        ),
+      ],
+      expected: [tx.Expect(register.FactCustom, key, Some(cell.seq))],
+    )
+
+  // This sequence is the question the human answered, not a retry hint.
+  case writer.commit(writer_subject(runtime), plan) {
+    Ok(_) -> Ok(next)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
+    Error(error) -> Error(commit_failure(error))
+  }
 }
 
 /// Explicitly consumes an approved escalation, returning its grants —
@@ -2199,16 +2371,6 @@ pub fn consume_escalation_at(
     Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
     Error(error) -> Error(commit_failure(error))
   }
-}
-
-fn decide_escalation(
-  runtime: Runtime,
-  id: String,
-  to: escalation.Status,
-  change: fn(Escalation) -> Escalation,
-) -> Result(Nil, ApiError) {
-  decide_escalation_value(runtime, id, to, change)
-  |> result.map(fn(_record) { Nil })
 }
 
 fn decide_escalation_value(

@@ -15,12 +15,75 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+import host/endpoint as daemon_endpoint
 import tui/connection
+import tui/daemon/bootstrap as daemon_bootstrap
 import tui/internal/ffi_bootstrap
 import tui/protocol
 import weft/poll
 
 const endpoint_version = 2
+
+/// Resolves the per-user daemon independently of workspace/session selection.
+///
+/// The returned terminal-owned control connection has authenticated protocol
+/// two and the endpoint epoch. No session is created, restored, or opened here.
+/// Executable/configuration discovery runs only for a proven vacant endpoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.resolve_daemon(options, terminal_pid, 30_000)
+/// ```
+pub fn resolve_daemon(
+  options: Options,
+  owner: process.Pid,
+  within_ms: Int,
+) -> Result(daemon_bootstrap.Connected, String) {
+  use state <- result.try(state_directory(options.state_directory))
+  use paths <- result.try(daemon_endpoint.paths(state))
+  daemon_bootstrap.resolve(
+    paths,
+    owner,
+    fn() {
+      use server <- result.try(find_server(options.server))
+      use config <- result.try(resolve_config(options.config, paths.root))
+      Ok(daemon_bootstrap.Launch(
+        server,
+        daemon_launch_arguments(paths.root, server, config),
+      ))
+    },
+    within_ms,
+  )
+}
+
+/// Builds only global daemon flags from trusted launcher configuration.
+///
+/// Port zero is resolved by the daemon's listener before Ready publication;
+/// workspace paths and per-session credentials never enter these arguments.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.daemon_launch_arguments("/private/loom", "/usr/local/bin/loomd", "")
+/// ```
+@internal
+pub fn daemon_launch_arguments(
+  state: String,
+  server: String,
+  config: String,
+) -> List(String) {
+  let arguments = ["--state-dir", state, "--bind", "127.0.0.1:0"]
+  let arguments = case config {
+    "" -> arguments
+    path -> list.append(arguments, ["--config", path])
+  }
+  let helper = filepath.join(filepath.directory_name(server), "loom-exec")
+  case ffi_bootstrap.is_executable_file(helper) {
+    True -> list.append(arguments, ["--helper", helper])
+    False -> arguments
+  }
+}
 
 const gateway_protocol = 1
 

@@ -358,6 +358,7 @@ fn live_layer() -> mcp_wiring.Layer {
       mcp_wiring.Server(name: "alpha", client:, generated:, tools: 1),
     ],
     call_timeout_ms: 30_000,
+    custody: [client],
   )
 }
 

@@ -434,6 +434,7 @@ fn settings(
 ) -> serve.Settings {
   serve.Settings(
     session_path: root <> "/" <> file,
+    domain_paths: option.None,
     bind_host: "127.0.0.1",
     bind_port: 0,
     token_path: root <> "/" <> file <> ".token",
@@ -611,6 +612,7 @@ fn user(text: String) -> message.AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
+    origin: None,
   )
 }
 

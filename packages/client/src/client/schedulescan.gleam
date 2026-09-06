@@ -1237,6 +1237,7 @@ fn injected_message(
       ),
     ],
     timestamp: now,
+    origin: None,
   )
 }
 

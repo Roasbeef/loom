@@ -1,178 +1,29 @@
-//// The session server: the production host the wiring adapter was
-//// promoted for. `gleam run -m client/serve -- --session path.db`
-//// (or the erlang shipment's `bin/loomd`) opens or creates one
-//// SQLite session, stands up the whole stack over it — helper pool,
-//// ToolBroker, tool registry, provider gateway, runtime with the
-//// `client/wiring` effects, gateway hub, and the `client/server`
-//// websocket transport — prints where it is listening, and serves any
-//// number of thin clients until `SIGTERM` or a fatal fault, then closes
-//// the runtime so the session lease is released rather than left to
-//// expire.
+//// Session assembly under either daemon custody or an embedded test host.
 ////
-//// ## Flags
+//// The default binary enters client/daemon/main. This module resolves one
+//// admitted registration and assembles its durable writer, runtime, broker,
+//// helper pool, composition services, and gateway. assemble_owned neither binds
+//// a listener nor creates a bearer token; all sessions use the daemon listener.
 ////
-//// - `--session <path>` (required) — the SQLite session file, created
-////   if absent.
-//// - `--bind <host:port>` — listen interface; default `127.0.0.1:0`
-////   (an ephemeral port, printed at startup). Keep it loopback: auth
-////   is `LocalAuth`'s token file, whose protection is file permissions.
-//// - `--token-file <path>` — where the startup-minted bearer token is
-////   written (`0600`); default `<session>.token`, printed at startup.
-//// - `--workspace <dir>` — the agent's workspace root; default the
-////   current directory.
-//// - `--helper <path>` — the `loom-exec` sandbox helper; default the
-////   first of `loom-exec` on `PATH` and `./bin/loom-exec`.
-//// - `--config <loom.toml>` — a model catalogue file (`client/catalog`;
-////   `docs/examples/loom.toml` is the worked example). A file that does
-////   not parse or validate refuses the boot with a worded message —
-////   the documented halt path, never a partial start.
-//// - `--codemode-seed <dir>` — the prepared code-mode build seed
-////   (`make codemode-seed`); default `<workspace>/build/codemode-seed`.
-////   Code mode also needs `gleam` and `erl` on `PATH`. A host missing any
-////   of the three says so once on stderr and registers no `code_mode`
-////   tool at all, rather than shipping a definition in the provider's
-////   cached prefix that can only ever refuse.
-//// - `--codemode-seams <workspace|orchestration|both>` — which code-mode
-////   seams this server offers; default `workspace`. `orchestration` and
-////   `both` need a messaging plane, which this boot always wires, and
-////   `both` is what lets a submission choose per program
-////   (`docs/architecture/code-mode.md`, "Two seams").
-//// - `--full-enforcement` — require every requested resource and lifecycle
-////   layer, including the ones current Darwin kernels cannot provide. The
-////   default is platform enforcement: it still refuses a missing jail or
-////   any unexpected skip, while admitting the three Darwin gaps ADR-006
-////   documents when the helper reports them explicitly.
-//// - `--best-effort` — accept any degraded sandbox helper (development
-////   kernels without bwrap/Landlock). This is weaker than the default and
-////   remains an explicit opt-in. Run `make selftest` to learn which posture
-////   your kernel supports.
-//// - `LOOM_HELPER_POOL` — how many `loom-exec` helpers may run at
-////   once (not a flag: it is a property of the host, not of the
-////   session). Default `exec.default_pool_size()`, the node's
-////   scheduler count clamped to `[4, 16]`. This is the real ceiling on
-////   how wide a parallel tool batch runs: helpers are OS processes
-////   running bwrap and a jail, and a batch wider than the pool waits
-////   for a slot rather than failing. An override is clamped to that
-////   same range, so a memory-tight host can come down to four and no
-////   further: below two code mode cannot run at all, and anywhere below
-////   the default a batch that no longer fits simply queues, so the
-////   smaller pool buys latency rather than headroom.
+//// The daemon invokes resolve_managed only on explicit create/open. It reloads
+//// the saved configuration reference and uses the saved canonical workspace,
+//// never the daemon's working directory. Model configuration and helper lookup
+//// reuse the same resolver as the embedded host. Credentials remain environment
+//// references in configuration and are read only at provider dispatch.
 ////
-//// ## Model configuration and precedence
+//// domain_paths preserves the exact catalogue-selected memory and index paths,
+//// including session-only and imported mappings. None retains beside-session
+//// files for embedded hosts. Shared coordinator ownership is an additional
+//// daemon composition requirement, not a consequence of selecting these paths.
 ////
-//// Flags beat the config file, the config file beats the environment,
-//// and built-in defaults fill whatever remains. Concretely: with
-//// `--config` the catalogue file is the whole model surface — the
-//// `LOOM_MODEL`/`LOOM_BASE_URL`/`LOOM_CONTEXT_WINDOW`/
-//// `LOOM_MAX_OUTPUT_TOKENS` variables are not consulted — and without
-//// it those variables shape a one-entry catalogue named `anthropic`
-//// (model `claude-opus-5`, the built-in default) so the zero-config
-//// boot keeps working unchanged. Either way `LOOM_SYSTEM_PROMPT` is
-//// read from the environment, and API keys *only* ever come from the
-//// environment: the catalogue names the variable per model
-//// (`api_key_env`; `ANTHROPIC_API_KEY` in the env fallback), and the
-//// gateway reads it at dispatch. A keyless environment still boots and
-//// serves — generation requests then fail in-band with the
-//// missing-secret error, exactly as the effect doctrine prescribes.
-//// The env fallback's thinking level is off, which sends no thinking
-//// field at all — on current Anthropic models that means server-chosen
-//// adaptive thinking, and it sidesteps the adapter's `budget_tokens`
-//// vocabulary, which newer models reject.
+//// Resources are published before effects begin. assemble_owned transfers
+//// runtime, service, helper, MCP, and storage retirement capabilities to the
+//// surviving instance custodian. Failed construction keeps those capabilities
+//// retained; it cannot release storage before earlier effects prove retirement.
 ////
-//// ## The system prompt
-////
-//// Assembled at the first open of a session and pinned into the reserved
-//// `prompt/` blackboard cells; later boots send the pinned bytes rather
-//// than deriving them again while the enforcement demand is unchanged.
-//// Changing that demand deliberately re-renders and re-pins once, because
-//// a byte-stable prompt that describes a stronger sandbox than the broker
-//// demands would be a lie. `client/system_prompt` owns the whole story,
-//// including why every other re-derivation would be expensive. Two
-//// environment variables reach it:
-////
-//// - `LOOM_DISABLE_TOOLS` — a comma-separated list of built-in tools
-////   this server does not register. The way an extension's tool comes
-////   to stand in for a built-in of the same name; see
-////   `client/contributions`. It frees a *name* and is not a capability
-////   control: `code_mode`'s prelude still reaches `cap/proc.run`,
-////   `cap/fs.write` and `cap/fs.edit` through the broker whatever this
-////   list says, so narrowing what a session may do is the base policy's
-////   job and never this variable's.
-//// - `LOOM_PROMPT_PACK` — a pack file to render instead of the one
-////   shipped in `prompt/default`. A file that cannot be read, or does not
-////   decode, or renders to nothing, refuses the boot with a worded
-////   message naming the file; a pack that merely renders *incompletely*
-////   warns on stderr and serves.
-//// - `LOOM_SYSTEM_PROMPT` — a literal prompt that bypasses the pack
-////   entirely, still pinned, and taking precedence over an existing pin
-////   because setting it is a deliberate act. Whitespace is not an
-////   override: the pack renders as usual.
-////
-//// Everything the pack renders comes from a real source — the workspace
-//// root, the VM's platform, the jail's shell, the registry's sorted tool
-//// names, the demanded enforcement paired with a helper's `degraded`
-//// hello, the base policy's network posture and protected paths, and the
-//// workspace's own `CLAUDE.md`. Nothing volatile may join them: the
-//// string sits behind a one-hour cache breakpoint and must be identical
-//// for every strand and every turn of the session.
-////
-//// ## Failure and shutdown
-////
-//// This module is an entry point, so §0.2's no-panic rule is honored
-//// by construction rather than by supervision: every boot step returns
-//// a `Result`, `main` prints the first failure and exits nonzero via
-//// the documented halt in `client/internal/ffi_os`. A boot that fails
-//// has started nothing worth keeping and leaves nothing behind.
-////
-//// A boot that *succeeds* is rooted on a host process — `client/host` —
-//// that traps exits, so every link an `actor.start` forms during the
-//// boot lands there rather than on the caller. The server then stops
-//// exactly two ways, and both arrive on one subject (`Booted.stops`):
-////
-//// - **`SIGTERM`.** `main` runs `shutdown` and exits 0.
-//// - **A fatal child died.** The host runs `shutdown` *first* — so the
-////   listener is closed and the session lease is released, not left to
-////   its sixty-second TTL — and only then reports what died. `main`
-////   prints it and exits 1, leaving the restart to whatever runs
-////   `loomd`.
-////
-//// Either way `shutdown` is the same path, front to back: listener,
-//// then the service supervisor, then the runtime (whose close stops the
-//// strand drivers before the writer they commit through and releases
-//// the lease), then broker and pool.
-////
-//// ## Which deaths are fatal, and which restart
-////
-//// Two tiers, and the difference is whether a replacement process would
-//// be *reachable*.
-////
-//// **Restartable** — the commit forwarder, the Agency holder, the
-//// escalation holder, the scratch store, the search holder, and the
-//// gateway hub, under `Booted.services` (one-for-one, three restarts in
-//// five seconds). None of them is addressed by pid: each registers
-//// under a name and every caller reaches it through that name, so a
-//// replacement is the same address, and a crash costs a moment of
-//// hints, an evicted scratch cache, or the sockets attached to the old
-//// hub — never the server. A spent restart budget is fatal, in order.
-////
-//// **Fatal** — the helper pool, the broker, the session tree, the
-//// listener, and the service supervisor. Each of the first two is
-//// captured *by value* into closures built during the boot (the broker
-//// into the wiring effects and the code-mode seam, the pool into the
-//// broker's checkout), so
-//// a replacement would be unreachable by everything already holding the
-//// old handle: restarting one leaves a server that looks alive and
-//// refuses every call. That is also the posture the effect plane wants
-//// — a harness that cannot broker capabilities or jail a helper must
-//// not keep serving. The session tree is fatal because it is itself a
-//// supervisor whose own restart budget is already spent by the time it
-//// dies.
-////
-//// One case is neither: the storage actor's death. It *is* the
-//// connection that would delete the lease row, so when it goes the
-//// lease can only expire. Everything else releases it.
+//// boot and open_instance remain internal host/test seams. They are not CLI
+//// compatibility modes: invoking this module's main refuses per-session serving.
 
-import argv
 import broker/broker.{type Broker}
 import broker/egress
 import broker/exec.{type EnforcementDemand, type Pool}
@@ -183,6 +34,7 @@ import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
 import client/contributions
+import client/daemon/domain as domain_service
 import client/distill
 import client/distillpass
 import client/escalate
@@ -198,6 +50,7 @@ import client/history
 import client/host
 import client/install
 import client/internal/ffi_os
+import client/internal/instance_owner as custody
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -215,16 +68,19 @@ import core/clock.{type Clock}
 import core/ids
 import filepath
 import gleam/bit_array
-import gleam/bool
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
 import gleam/otp/static_supervisor as sup
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import host/bootstrap
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
@@ -236,19 +92,31 @@ import provider/model
 import provider/secret
 import runtime/api
 import runtime/effects
+import runtime/supervisor as runtime_supervisor
 import runtime/writer
 import session/session
 import simplifile
-import telemetry/context
+import storage/catalogue
+import storage/domain
 import telemetry/field
-import telemetry/handler
 import telemetry/log.{type Logger}
 import tools/agent.{type Agency}
 import tools/history as history_tool
 import tools/remember
 import tools/tool
+import weft/actor as owned_actor
 import weft/poll
 import weft/registry as address
+
+/// Exact domain paths, independent of session filename or admission order.
+pub type DomainPaths {
+  DomainPaths(
+    /// The exact persisted memory database path, including imported filenames.
+    memory: String,
+    /// The exact persisted history index path, possibly in another directory.
+    index: String,
+  )
+}
 
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
 /// the provider gateway built. `main` assembles this from the command
@@ -275,6 +143,9 @@ pub type Settings {
     token_path: String,
     /// The agent's workspace root.
     workspace: String,
+    /// Exact catalogue-selected memory and index paths. None is the internal
+    /// embedded-host layout beside the session, not a managed-domain fallback.
+    domain_paths: Option(DomainPaths),
     /// The session's base policy — the ceiling every tool call is
     /// composed against, and the thing an escalation widens. `main`
     /// fills it with `base_policy(workspace)`; it is a field rather than
@@ -403,6 +274,8 @@ pub type Instance {
   Instance(
     /// The sole conversation writer and its supervised strands.
     runtime: api.Runtime,
+    /// The original storage actor, monitored before another writer call.
+    storage_owner: Pid,
     broker: Broker,
     pool: Pool,
     /// The hub's stable address. Everything that talks to the hub — the
@@ -446,138 +319,21 @@ pub type Instance {
   )
 }
 
-/// Parses flags, boots the stack, prints the startup lines, and serves
-/// until `SIGTERM`. Usage failures print to stderr; everything after
-/// the flags parse is logged. Either way a failure exits nonzero.
-///
-/// Two output channels, deliberately (spec §3.4). **stdout** carries the
-/// startup banner and nothing else: it is this process's contract with
-/// whoever launched it — the ephemeral port, the token file, the prompt
-/// digest — and a supervisor script reads it with `head -1`. **The log
-/// stream** carries everything about the running system, as JSON, one
-/// event per line. A usage error is on neither side of that split: it
-/// belongs to the person who mistyped a flag, before there is a session
-/// to correlate anything to, so it stays on stderr with the usage text.
+/// Refuses the removed per-session entrypoint without creating any resource.
+/// Use the package entrypoint for the daemon or the explicit embedded host API.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // gleam run -m client/serve -- --session ./loom.db --best-effort
+/// // gleam run -m client -- --state-dir /private/loom
 /// ```
-///
 pub fn main() -> Nil {
-  // Installed before anything can fail, so no line of this boot lands on
-  // the VM's default text formatter.
-  let logger =
-    handler.install(
-      threshold: handler.threshold_named(env_text(handler.level_variable)),
-    )
-  case parse(argv.load().arguments) |> result.try(resolve) {
-    // A flag error is a message to a human at a terminal, and it carries
-    // the usage text: stderr, not the log stream.
-    Error(reason) -> {
-      io.println_error("loomd: " <> reason)
-      ffi_os.halt(1)
-    }
-    Ok(settings) -> run_server(settings, logger)
-  }
-}
-
-// Boots `settings` and, on success, serves until stopped. A boot failure
-// is a log line and a nonzero exit.
-fn run_server(settings: Settings, logger: Logger) -> Nil {
-  let logger = log.scoped(logger, context.for_session(settings.session_id))
-  case boot_with(settings, logger:) {
-    Error(reason) -> {
-      log.error(logger, "boot.failed", [
-        field.text(key: "reason", value: reason),
-      ])
-      ffi_os.halt(1)
-    }
-    Ok(booted) -> serve_until_stopped(logger, booted)
-  }
-}
-
-// The listening line, the signal wait, and either an orderly shutdown or
-// a fatal exit — whichever way `booted.instance.stops` fires.
-fn serve_until_stopped(logger: Logger, booted: Booted) -> Nil {
-  announce(booted)
-
-  // The helper path is on this line because it is the answer to "which
-  // binary enforced this session's sandbox", and the ladder that picked
-  // it has four rungs. An operator auditing a running server should not
-  // have to re-derive it, and a release smoke should not have to guess.
-  log.info(logger, "server.listening", [
-    field.count(key: "port", value: booted.served.port),
-    field.ident(key: "prompt_digest", value: booted.instance.prompt.digest),
-    field.text(key: "helper", value: booted.instance.helper_path),
-  ])
-
-  // Only an entry point installs the signal handler: doing so replaces
-  // the VM's default, whose answer to `SIGTERM` is an immediate
-  // `init:stop()`. From here both ways the server can stop arrive on one
-  // subject.
-  host.relay_sigterm(
-    to: booted.instance.stops,
-    through: ffi_os.wait_for_sigterm,
+  io.println_error(
+    "loomd: use the client entrypoint; per-session server mode was removed",
   )
-  case process.receive_forever(booted.instance.stops) {
-    host.Signalled -> {
-      log.info(logger, "server.stopping", [
-        field.text(key: "cause", value: "sigterm"),
-      ])
-      shutdown(booted)
-      log.info(logger, "server.stopped", [])
-    }
-
-    // The host already tore the stack down, lease included, before it
-    // said anything. All that is left is to say what died and exit
-    // nonzero so whatever runs `loomd` restarts it.
-    host.Faulted(child:, reason:) -> {
-      log.error(logger, "server.faulted", [
-        field.text(key: "child", value: child),
-        field.text(key: "reason", value: reason),
-      ])
-      ffi_os.halt(1)
-    }
-  }
+  ffi_os.halt(1)
 }
 
-// The banner, and the only thing on stdout. It stays plain text rather
-// than becoming a log line because it is this process's contract with
-// whoever launched it: a supervisor script reads the port and the token
-// path off `head -1`, and a JSON envelope would break every such reader
-// for no diagnostic gain. The log stream gets its own `server.listening`
-// record; the one fact they share is the port.
-fn announce(booted: Booted) -> Nil {
-  io.println(
-    "loomd: session "
-    <> booted.instance.session_id
-    <> " listening on ws://"
-    <> booted.bind_host
-    <> ":"
-    <> int.to_string(booted.served.port)
-    <> "/v1/ws (token file "
-    <> booted.token_path
-    <> ")",
-  )
-
-  // The digest is what makes a cache miss attributable: a changed head
-  // is either a prompt change, which this line names, or a bug.
-  io.println(
-    "loomd: system prompt "
-    <> system_prompt.named(booted.instance.prompt.origin)
-    <> ", digest "
-    <> booted.instance.prompt.digest,
-  )
-}
-
-// --- the effect plane, on its own -------------------------------------------
-//
-// `loom ext install` runs a jailed, network-off `gleam build` and needs
-// exactly what a boot needs to do that: a helper it can find, a pool of
-// them, the broker over the pool, and a verified toolchain and seed. It
-// needs none of the rest of a boot — no session, no runtime, no listener
 // — and it must not grow a second copy of any of it, because a divergence
 // between the two would mean an extension built under a policy no session
 // would have granted.
@@ -603,6 +359,18 @@ pub fn start_effect_plane(
   size size: Int,
   clock clock: Clock,
 ) -> Result(#(Pool, Broker), String) {
+  start_effect_plane_in(helper, base_policy, tmp_dir, size, clock, None)
+}
+
+// The owned path publishes parked helper custody before the first checkout.
+fn start_effect_plane_in(
+  helper: String,
+  base_policy: policy.SandboxPolicy,
+  tmp_dir: String,
+  size: Int,
+  clock: Clock,
+  owner: Option(custody.Owner),
+) -> Result(#(Pool, Broker), String) {
   let spawn_config =
     exec.SpawnConfig(
       helper_path: helper,
@@ -618,10 +386,20 @@ pub fn start_effect_plane(
       heartbeat_interval_ms: 0,
     )
   use pool <- result.try(
-    exec.start_pool(size:, spawn: fn() { exec.spawn_helper(spawn_config) })
+    exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
     |> result.map_error(fn(error) {
       "the helper pool did not start: " <> string.inspect(error)
     }),
+  )
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Helpers,
+      fn() {
+        exec.close_pool(pool, waiting: 5000) |> result.map_error(string.inspect)
+      },
+      fn() { process.unlink(exec.pool_pid(pool)) },
+    ),
   )
   use broker_actor <- result.try(
     broker.start(
@@ -635,6 +413,18 @@ pub fn start_effect_plane(
     |> result.map_error(fn(error) {
       "the broker did not start: " <> string.inspect(error)
     }),
+  )
+  use broker_pid <- result.try(
+    broker.pid(broker_actor)
+    |> result.replace_error("the broker died during startup"),
+  )
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Broker,
+      fn() { stop_broker_owned(broker_actor, broker_pid) },
+      fn() { process.unlink(broker_pid) },
+    ),
   )
   Ok(#(pool, broker_actor))
 }
@@ -782,6 +572,167 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
   )
 }
 
+/// Resolves one durable registration when explicit admission starts its builder.
+/// Host defaults contain only helper/configuration/enforcement flags; this seam
+/// reuses the ordinary provider/configuration resolver without boot-time opens.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.resolve_managed(defaults, registration, selected_domain, canonical_state_root)
+/// ```
+@internal
+pub fn resolve_managed(
+  defaults: List(String),
+  registration: catalogue.Registration,
+  selected: domain.Domain,
+  state_root: String,
+) -> Result(Settings, String) {
+  use flags <- result.try(parse(defaults))
+  let configuration = case registration.configuration {
+    "" -> flags.config
+    path -> Some(path)
+  }
+  use settings <- result.try(resolve(
+    Flags(
+      ..flags,
+      session: Some(registration.path),
+      workspace: Some(registration.workspace),
+      config: configuration,
+    ),
+  ))
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(filepath.directory_name(
+      selected.memory_path,
+    )),
+  )
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(filepath.directory_name(
+      selected.index_path,
+    )),
+  )
+  Ok(
+    Settings(
+      ..settings,
+      session_id: registration.id,
+      domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
+      base_policy: policy.SandboxPolicy(..settings.base_policy, protected: [
+        state_root,
+        ..settings.base_policy.protected
+      ]),
+    ),
+  )
+}
+
+/// Builds domain services from their stored maintenance configuration only.
+/// Session provider/tool settings never choose this shared owner's credentials.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.build_domain(selected, sources, logger, owner)
+/// ```
+@internal
+pub fn build_domain(
+  selected: domain.Domain,
+  sources: fn() -> Result(List(distill.Source), String),
+  logger: Logger,
+  owner: custody.Owner,
+) -> Result(domain_service.Services, String) {
+  let configuration = case selected.configuration {
+    "" -> None
+    path -> Some(path)
+  }
+  use #(catalogue, _rules, _schedules, _policy, options, _tools) <- result.try(
+    load_config(configuration),
+  )
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(filepath.directory_name(
+      selected.memory_path,
+    )),
+  )
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(filepath.directory_name(
+      selected.index_path,
+    )),
+  )
+  let clock = clock.from_function(ffi_os.system_time_ms)
+  let gateway =
+    catalog.gateway(
+      catalogue,
+      transport: http.httpc_transport(),
+      secrets: secret.env(),
+      clock:,
+    )
+  domain_service.build(
+    domain_service.Config(
+      history: history.SharedConfig(
+        index_path: selected.index_path,
+        sources:,
+        timeout_ms: history.default_timeout_ms,
+        batch_entries: 100,
+      ),
+      maintenance: fn(name) {
+        case options.cadence {
+          distillpass.DistillsOff -> Ok(None)
+          distillpass.DistillsOnBoot -> {
+            use target <- result.try(distill.target(gateway))
+            let pipeline =
+              distill.config_for(
+                filepath.directory_name(selected.memory_path),
+                distill.no_distiller(),
+                clock:,
+                entropy: mixed_entropy(),
+              )
+            Ok(
+              Some(distillpass.DomainConfig(
+                name:,
+                pipeline: distill.Config(
+                  ..pipeline,
+                  memory_path: selected.memory_path,
+                  digest_path: domain.digest_beside(selected.memory_path),
+                  logger:,
+                ),
+                sources:,
+                gateway:,
+                target:,
+                request_timeout_ms: distill.default_timeout_ms,
+                options:,
+              )),
+            )
+          }
+        }
+      },
+    ),
+    owner,
+  )
+}
+
+/// Derives one stable workspace domain, independent of session filename and cwd.
+/// This separates paths; ownership of simultaneous workspace writers remains a
+/// daemon composition responsibility rather than a property of the hash.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.workspace_data_root("/private/loom", "/work/project")
+/// ```
+@internal
+pub fn workspace_data_root(
+  state_root: String,
+  canonical_workspace: String,
+) -> String {
+  state_root
+  <> "/workspaces/"
+  <> {
+    canonical_workspace
+    |> bit_array.from_string
+    |> bootstrap.sha256
+    |> bit_array.base16_encode
+    |> string.lowercase
+  }
+}
+
 fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
   case arguments {
     [] -> Ok(flags)
@@ -893,6 +844,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     bind_port:,
     token_path: option.unwrap(flags.token_file, session_path <> ".token"),
     workspace:,
+    domain_paths: None,
     base_policy: base_policy(workspace),
     helper_path:,
     helper_pool_size:,
@@ -1373,10 +1325,24 @@ fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
   ]
 }
 
-fn instance_children(instance: Instance) -> List(#(String, Pid)) {
+/// Lists the original fatal roots, whose handles cannot be replaced in place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // instance_host.prepare(build:, fatal: serve.instance_children, ..)
+/// ```
+@internal
+pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
   [
     #("the session tree", instance.runtime.tree.supervisor),
     #("the service supervisor", instance.services),
+    #("the session storage", instance.storage_owner),
+    #("the helper pool", exec.pool_pid(instance.pool)),
+    ..case broker.pid(instance.broker) {
+      Ok(pid) -> [#("the capability broker", pid)]
+      Error(Nil) -> []
+    }
   ]
 }
 
@@ -1400,7 +1366,8 @@ fn code_mode_seam(
   agency_seam: Agency,
   scratch_seam: codemode_wiring.Scratch,
   schedule_door: Option(scheduleseam.Door),
-) -> #(Option(codemode_wiring.Config), mcp_wiring.Layer) {
+  owner: Option(custody.Owner),
+) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
   case codemode_wiring.discover(settings.codemode_seed) {
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
@@ -1412,7 +1379,7 @@ fn code_mode_seam(
         "MCP servers are reached from code-mode programs only, and this "
           <> "host registers no code_mode tool, so none was started",
       )
-      #(None, mcp_wiring.none())
+      Ok(#(None, mcp_wiring.none()))
     }
     Ok(toolchain) -> {
       // Which `gleam`, which `erl`, which seed — because the ladder now
@@ -1423,9 +1390,13 @@ fn code_mode_seam(
         field.text(key: "erl", value: toolchain.erl_path),
         field.text(key: "seed", value: toolchain.seed_root),
       ])
-      let layer =
-        start_mcp(settings.codemode_seams, settings.catalog.mcp_servers, logger)
-      #(
+      use layer <- result.try(start_mcp(
+        settings.codemode_seams,
+        settings.catalog.mcp_servers,
+        logger,
+        owner,
+      ))
+      Ok(#(
         Some(
           codemode_wiring.default_config(
             broker: broker_actor,
@@ -1453,7 +1424,7 @@ fn code_mode_seam(
           |> codemode_wiring.over_mcp(layer),
         ),
         layer,
-      )
+      ))
     }
   }
 }
@@ -1829,9 +1800,10 @@ fn start_mcp(
   seams: codemode_wiring.Seams,
   servers: List(catalog.McpServer),
   logger: Logger,
-) -> mcp_wiring.Layer {
+  owner: Option(custody.Owner),
+) -> Result(mcp_wiring.Layer, String) {
   case mcp_reachable(seams) {
-    True -> started_mcp(servers, logger)
+    True -> started_mcp(servers, logger, owner)
     False -> {
       skipped_mcp(
         servers,
@@ -1839,7 +1811,7 @@ fn start_mcp(
         "MCP servers are reached from the workspace seam only, and this "
           <> "host serves the orchestration seam alone, so none was started",
       )
-      mcp_wiring.none()
+      Ok(mcp_wiring.none())
     }
   }
 }
@@ -1847,10 +1819,26 @@ fn start_mcp(
 fn started_mcp(
   servers: List(catalog.McpServer),
   logger: Logger,
-) -> mcp_wiring.Layer {
-  use <- bool.lazy_guard(when: servers == [], return: mcp_wiring.none)
-  let #(layer, refusals) =
-    mcp_wiring.start(servers, mcp_wiring.default_options())
+  owner: Option(custody.Owner),
+) -> Result(mcp_wiring.Layer, String) {
+  let prepared = case owner {
+    None -> mcp_wiring.prepare(servers, mcp_wiring.default_options())
+    Some(owner) ->
+      mcp_wiring.prepare_owned(
+        servers,
+        mcp_wiring.default_options(),
+        custodian: custody.owner(owner),
+      )
+  }
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Mcp,
+      fn() { mcp_wiring.close_prepared(prepared, within: 5000) },
+      fn() { Nil },
+    ),
+  )
+  let #(layer, refusals) = mcp_wiring.start_prepared(prepared)
   list.each(refusals, fn(refusal) {
     log.warn(logger, "mcp.unavailable", [
       field.text(key: "server", value: refusal.server),
@@ -1872,7 +1860,7 @@ fn started_mcp(
         ),
       ])
   }
-  layer
+  Ok(layer)
 }
 
 fn assemble(
@@ -1924,11 +1912,72 @@ fn assemble_instance(
   stops: Subject(host.Stop),
 ) -> Result(Instance, String) {
   use namespace <- result.try(address.start())
-  assemble_in(settings, logger, stops, namespace)
+  assemble_in(settings, logger, stops, namespace, None, None)
   |> result.map_error(fn(error) {
     let _stopped = address.stop(namespace)
     error
   })
+}
+
+/// Assembles one reserved session under the manager's existing custody owner.
+///
+/// The manager prepares and monitors its instance host before invoking this
+/// function on that host. Each effect boundary is published before work begins;
+/// failures leave cleanup and the writer lease with the surviving custodian.
+/// This function neither binds a listener nor confirms catalogue initialization.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.assemble_owned(settings, reserved_id, logger, owner)
+/// ```
+@internal
+pub fn assemble_owned(
+  settings: Settings,
+  reserved: ids.SessionId,
+  logger: Logger,
+  owner: custody.Owner,
+) -> Result(Instance, String) {
+  assemble_owned_with(settings, reserved, logger, owner, None)
+}
+
+/// Assembles one session using already-published shared domain capabilities.
+/// The session owns forwarding only; it cannot close shared stores or cadence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.assemble_in_domain(settings, id, logger, owner, services)
+/// ```
+@internal
+pub fn assemble_in_domain(
+  settings: Settings,
+  reserved: ids.SessionId,
+  logger: Logger,
+  owner: custody.Owner,
+  services: domain_service.Services,
+) -> Result(Instance, String) {
+  assemble_owned_with(settings, reserved, logger, owner, Some(services))
+}
+
+fn assemble_owned_with(settings, reserved, logger, owner, services) {
+  use namespace <- result.try(address.start())
+  use Nil <- result.try(
+    retain(
+      Some(owner),
+      custody.Namespace,
+      fn() { address.stop(namespace) },
+      fn() { process.unlink(address.owner(namespace)) },
+    ),
+  )
+  assemble_in(
+    settings,
+    logger,
+    process.new_subject(),
+    namespace,
+    Some(#(owner, reserved)),
+    services,
+  )
 }
 
 // One namespace spans the composition services' restarts, but never a second
@@ -1938,7 +1987,12 @@ fn assemble_in(
   logger: Logger,
   stops: Subject(host.Stop),
   namespace: address.Registry,
+  ownership: Option(#(custody.Owner, ids.SessionId)),
+  services: Option(domain_service.Services),
 ) -> Result(Instance, String) {
+  let owner = option.map(ownership, fn(pair) { pair.0 })
+  let builder = process.self()
+
   // The search index is protected before the policy is validated,
   // because it is part of the policy this server refuses to boot
   // without. See `protecting_index` for why a model-writable index is a
@@ -1982,8 +2036,8 @@ fn assemble_in(
   // fence from regaining authority after another incarnation opens and closes.
   let random_bytes = token.production_entropy()
   let lease_owner = "loomd-" <> bit_array.base16_encode(random_bytes(32))
-  use opened <- result.try(
-    session.open_sqlite(
+  use #(opened, retire, transfer) <- result.try(
+    session.open_sqlite_custody(
       path: settings.session_path,
       owner: lease_owner,
       lease_ttl_ms: 60_000,
@@ -1994,29 +2048,44 @@ fn assemble_in(
       <> string.inspect(error)
     }),
   )
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Storage,
+      fn() { retire() |> result.map_error(string.inspect) },
+      fn() { Nil },
+    ),
+  )
+  use storage_owner <- result.try(
+    transfer() |> result.map_error(string.inspect),
+  )
+  use Nil <- result.try(case ownership {
+    None -> {
+      process.link(storage_owner)
+      Ok(Nil)
+    }
+    Some(#(_custodian, reserved)) -> {
+      session.ensure_reserved_id(opened, reserved)
+      |> result.replace(Nil)
+      |> result.map_error(string.inspect)
+    }
+  })
 
   // The effect plane: a pool of jailed helpers behind the one broker.
-  use #(pool, broker_actor) <- result.try(start_effect_plane(
-    helper: settings.helper_path,
-    base_policy:,
-    tmp_dir:,
-    size: settings.helper_pool_size,
-    clock:,
+  use #(pool, broker_actor) <- result.try(start_effect_plane_in(
+    settings.helper_path,
+    base_policy,
+    tmp_dir,
+    settings.helper_pool_size,
+    clock,
+    owner,
   ))
 
-  // The orchestration plane: runtime over the production wiring, with
-  // the hub's two composition seams — commit hints in, provider deltas
-  // teed out — threaded through before `api.open`.
+  // Network delivery is credit-driven. Only bounded optional provider previews
+  // enter the gateway; durable state is read when a client requests a cut.
   let name = address.new_address(namespace)
 
-  // The forwarder itself starts later, under the service supervisor.
-  // Only its *name* is needed here, because that is what the writer
-  // subscribes to — a subscription by name is what lets the forwarder be
-  // restarted without the writer noticing.
-  let forwarder_name = address.new_address(namespace)
-
-  // The triggered-rule scanner is the writer's second subscriber, and
-  // reaches it the same way and for the same reason. A name is minted
+  // The triggered-rule scanner is a named writer subscriber. A name is minted
   // whether or not any rule is configured — an unregistered name is a
   // subscriber the writer skips, which costs the commit path nothing —
   // so the branch that matters is the one that decides whether to start
@@ -2114,16 +2183,16 @@ fn assemble_in(
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
   // view of it.
-  let #(code_mode_host, mcp_layer) =
-    code_mode_seam(
-      settings,
-      logger,
-      broker_actor,
-      clock,
-      agency_seam,
-      scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
-      schedule_door,
-    )
+  use #(code_mode_host, mcp_layer) <- result.try(code_mode_seam(
+    settings,
+    logger,
+    broker_actor,
+    clock,
+    agency_seam,
+    scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
+    schedule_door,
+    owner,
+  ))
   let code_mode = option.map(code_mode_host, codemode_wiring.seam)
 
   // The environment every jailed child of this session inherits, tool
@@ -2152,7 +2221,17 @@ fn assemble_in(
   // that will not open registers no tool at all.
   let history_name = address.new_address(namespace)
   let history_pulls = address.new_address(namespace)
-  let history_seam = history_seam(index_path, history_name, logger)
+  use history_seam <- result.try(case services, ownership {
+    None, _ -> Ok(history_seam(index_path, history_name, logger))
+    Some(shared), Some(#(_, identity)) ->
+      Ok(
+        option.map(domain_service.history(shared), fn(shared) {
+          history.seam_for(shared, identity)
+        }),
+      )
+    Some(_), None ->
+      Error("shared domain assembly requires owned session identity")
+  })
 
   // The memory door, gated the same way and for the same reason: a
   // `remember` definition renders into the provider's cached byte prefix
@@ -2309,7 +2388,7 @@ fn assemble_in(
   let effects_record =
     effects.Effects(
       ..built,
-      provider: hub.tap_provider(built.provider, to: name),
+      provider: hub.tap_preview_provider(built.provider, to: name),
       // The only work this adds on the driver process is one
         // `process.spawn_unlinked`; everything a reap actually does
         // happens on that spawned process. See `client/agency`. The notes
@@ -2351,7 +2430,7 @@ fn assemble_in(
     with_extension_hooks(effects_record, extensions, opened, clock, logger)
   let options = api.default_options(configuration)
   use runtime <- result.try(
-    api.open(
+    api.open_published(
       opened,
       effects_record,
       api.Options(
@@ -2363,16 +2442,14 @@ fn assemble_in(
           ..options.settings,
           compaction: settings.compaction,
         ),
-        // Three subscribers, all by name, all restartable: the hub's
-        // hint forwarder; the rule scanner, whose name the writer
-        // safely skips on a host with no rules; and — when this host
-        // has an index — the poke that drives search sync. The latter
-        // two are what make triggered rules and recall *commit*-driven
+        // The rule scanner and optional search index remain commit-driven.
+        // Network gateways reconcile only on client credit, so no writer hint
+        // is sent to a gateway mailbox. These subscribers make rules and recall
+        // commit-driven
         // rather than scheduled; a hint lost while a subscriber
         // restarts costs latency, never a row or a fire, because each
         // pulls from its own durable cursor.
         subscribers: [
-          writer.Routed(forwarder_name),
           writer.Routed(rulescan_name),
           ..history_subscribers(history_seam, history_pulls)
         ],
@@ -2385,6 +2462,20 @@ fn assemble_in(
         // budget protecting `main`.
         subagent: agency.is_subagent,
       ),
+      fn(runtime) {
+        retain(
+          owner,
+          custody.Runtime,
+          fn() {
+            runtime_supervisor.shutdown(
+              runtime.tree,
+              grace_ms: service_grace_ms,
+            )
+            |> result.replace_error("runtime drain was not confirmed")
+          },
+          fn() { process.unlink(builder) },
+        )
+      },
     )
     |> result.map_error(fn(error) {
       "the runtime did not open: " <> string.inspect(error)
@@ -2411,14 +2502,11 @@ fn assemble_in(
   // through a name.
   let services_tree =
     sup.new(sup.OneForOne)
+    |> with_service_custody(owner, builder)
     |> sup.restart_tolerance(
       intensity: service_restart_intensity,
       period: service_restart_period,
     )
-    |> sup.add(hub.supervised_commit_forwarder(
-      to: name,
-      as_name: forwarder_name,
-    ))
     |> sup.add(
       supervision.worker(fn() { agency.start(agency_config, runtime) }),
     )
@@ -2447,7 +2535,8 @@ fn assemble_in(
     // model turns, and this tier starts after the session's own writer
     // lease is held — which is what makes the live session the one file
     // the pass is guaranteed to skip.
-    |> with_distill_pass(
+    |> with_instance_distill_pass(
+      services,
       settings,
       distill_name,
       memory_store,
@@ -2472,9 +2561,10 @@ fn assemble_in(
   // connection to a rebuildable projection that a restart reopens. Its
   // canonical session id comes from the runtime, which is why it is
   // added here rather than in the pipeline above.
-  use services <- result.try(
+  use started_services <- result.try(
     services_tree
-    |> with_history(
+    |> with_instance_history(
+      services,
       history_seam,
       history.over_session(
         name: history_name,
@@ -2496,13 +2586,14 @@ fn assemble_in(
   // The host owns this supervisor through the record and a monitor, not
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
-  process.unlink(services.pid)
+  process.unlink(started_services.pid)
   Ok(Instance(
     runtime:,
+    storage_owner:,
     broker: broker_actor,
     pool:,
     gateway: hub.Gateway(name:),
-    services: services.pid,
+    services: started_services.pid,
     namespace:,
     stops:,
     session_id: settings.session_id,
@@ -2528,12 +2619,125 @@ fn assemble_in(
     // The same question `with_distill_pass` starts one on, asked in the
     // same order and of the same two facts, so the field cannot say
     // `None` while a worker runs under that name.
-    memory_pass: case settings.memory.cadence, distiller(settings) {
-      distillpass.DistillsOff, _routed -> None
-      distillpass.DistillsOnBoot, Error(_unroutable) -> None
-      distillpass.DistillsOnBoot, Ok(_distiller) -> Some(distill_name)
+    memory_pass: case services, settings.memory.cadence, distiller(settings) {
+      Some(_), _, _ -> None
+      None, distillpass.DistillsOff, _routed -> None
+      None, distillpass.DistillsOnBoot, Error(_unroutable) -> None
+      None, distillpass.DistillsOnBoot, Ok(_distiller) -> Some(distill_name)
     },
   ))
+}
+
+// Acknowledgement transfers startup custody before any resource can begin work.
+// Legacy assembly keeps its original links until the listener path is migrated.
+fn retain(
+  owner: Option(custody.Owner),
+  part: custody.Part,
+  cleanup: fn() -> Result(Nil, String),
+  transfer: fn() -> Nil,
+) -> Result(Nil, String) {
+  case owner {
+    None -> Ok(Nil)
+    Some(owner) -> {
+      use Nil <- result.map(custody.publish(owner, part, cleanup))
+      transfer()
+    }
+  }
+}
+
+// A temporary first child publishes the services root exactly once. Wrapping
+// the permanent forwarder would repeat publication every time it restarted.
+fn with_service_custody(
+  tree: sup.Builder,
+  owner: Option(custody.Owner),
+  builder: Pid,
+) -> sup.Builder {
+  case owner {
+    None -> tree
+    Some(owner) -> {
+      let publication =
+        supervision.worker(fn() {
+          let root = process.self()
+          use Nil <- result.try(
+            custody.publish(owner, custody.Services, fn() {
+              stop_services_owned(root)
+            })
+            |> result.map_error(actor.InitFailed),
+          )
+          process.unlink(builder)
+
+          // This child owns no effects or mutable state. The supervisor retains
+          // it solely to make its one-time publication precede all service starts.
+          owned_actor.new(Nil)
+          |> owned_actor.on_message(fn(state, _message: Nil) {
+            owned_actor.continue(state)
+          })
+          |> owned_actor.start
+        })
+        |> supervision.restart(supervision.Temporary)
+      sup.add(tree, publication)
+    }
+  }
+}
+
+// Capture the original actor before requesting stop; absence is not drain proof.
+fn stop_broker_owned(broker_actor: Broker, pid: Pid) -> Result(Nil, String) {
+  let watch = process.monitor(pid)
+  broker.stop(broker_actor)
+
+  // The broker is a leaf: its death forbids further lending. The pool's
+  // independent inventory still proves every native helper's retirement.
+  let outcome =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(_down) { Nil })
+    |> process.selector_receive(5000)
+  process.demonitor_process(watch)
+  outcome |> result.replace_error("the broker did not retire")
+}
+
+fn stop_services_owned(pid: Pid) -> Result(Nil, String) {
+  // A late monitor cannot recover a transitive root's original exit verdict.
+  // Missing or killed services therefore retain custody, even if descendants
+  // later disappear; this seam does not promise recovery after that proof loss.
+  let watch = process.monitor(pid)
+  let requested = ffi_os.terminate_supervisor(pid, service_grace_ms)
+  case requested {
+    Ok(Nil) -> owned_retirement(watch, service_grace_ms)
+    Error(Nil) -> {
+      process.demonitor_process(watch)
+      Error("service shutdown did not acknowledge complete retirement")
+    }
+  }
+}
+
+fn owned_retirement(
+  watch: process.Monitor,
+  within: Int,
+) -> Result(Nil, String) {
+  let outcome =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) {
+      case down.reason {
+        process.Normal -> Ok(Nil)
+        process.Abnormal(reason) -> {
+          use reason <- result.try(
+            decode.run(reason, atom.decoder())
+            |> result.replace_error("resource retirement was abnormal"),
+          )
+          case atom.to_string(reason) == "shutdown" {
+            True -> Ok(Nil)
+            False -> Error("resource retirement was abnormal")
+          }
+        }
+        other ->
+          Error("resource retirement was not normal: " <> string.inspect(other))
+      }
+    })
+    |> process.selector_receive(within)
+  process.demonitor_process(watch)
+  outcome
+  |> result.replace_error("resource retirement timed out")
+  |> result.flatten
 }
 
 /// Takes a booted server apart, front to back: the listener first so no
@@ -2697,6 +2901,31 @@ fn with_schedule_scanner(
 // that instead of standing up a worker that could only fail. Both lines
 // exist because memory that silently never fills is the failure #149 was
 // filed about.
+fn with_instance_distill_pass(
+  tree,
+  services,
+  settings,
+  name,
+  memory_store,
+  clock,
+  entropy,
+  logger,
+) {
+  case services {
+    Some(_) -> tree
+    None ->
+      with_distill_pass(
+        tree,
+        settings,
+        name,
+        memory_store,
+        clock,
+        entropy,
+        logger,
+      )
+  }
+}
+
 fn with_distill_pass(
   builder: sup.Builder,
   settings: Settings,
@@ -3255,7 +3484,21 @@ fn index_path(settings: Settings) -> Result(String, String) {
 // and a relative protected entry is refused by the jail and covers
 // nothing in the harness's own path checks.
 fn beside_session(settings: Settings, file: String) -> Result(String, String) {
-  let path = case parent_directory(settings.session_path) {
+  case settings.domain_paths, file {
+    Some(paths), file if file == memory.memory_file -> Ok(paths.memory)
+    Some(paths), file if file == history.index_file -> Ok(paths.index)
+    Some(paths), other ->
+      Ok(filepath.directory_name(paths.memory) <> "/" <> other)
+    None, file -> beside_session_file(settings, file)
+  }
+}
+
+fn beside_session_file(
+  settings: Settings,
+  file: String,
+) -> Result(String, String) {
+  let directory = parent_directory(settings.session_path)
+  let path = case directory {
     Some(directory) -> directory <> "/" <> file
     None -> file
   }
@@ -3505,6 +3748,25 @@ fn history_subscribers(
 
 // The holder and its commit subscriber, added to the service tree only
 // when this host has an index for them to serve.
+fn with_instance_history(tree, services, seam, config: history.Config, pulls) {
+  case services {
+    None -> with_history(tree, seam, config, pulls)
+    Some(services) ->
+      case domain_service.history(services) {
+        None -> tree
+        Some(shared) ->
+          sup.add(
+            tree,
+            history.supervised_shared_commit_pull(
+              shared,
+              config.session,
+              as_name: pulls,
+            ),
+          )
+      }
+  }
+}
+
 fn with_history(
   tree: sup.Builder,
   seam: Option(history_tool.History),

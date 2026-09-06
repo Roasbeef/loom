@@ -1,0 +1,15 @@
+# Empty smoke conversations require no inference. Any unexpected request must
+# fail against this local endpoint, not reach an operator's configured provider.
+[models.smoke]
+dialect = "anthropic"
+base_url = "http://127.0.0.1:1"
+api_key_env = "LOOM_RELEASE_SMOKE_UNUSED_KEY"
+model_id = "smoke"
+context_window = 100000
+max_output_tokens = 4096
+
+[roles]
+main = ["smoke"]
+
+[memory]
+distill = "on-boot"

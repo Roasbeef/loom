@@ -9,13 +9,18 @@
 # pinned in parrot's source; `sqlc version` must match) and the download
 # step becomes a no-op.
 #
-# Requirements: gleam, sqlite3 (parrot shells out to `sqlite3 <db>
+# Requirements: gleam, python3, sqlite3 (parrot shells out to `sqlite3 <db>
 # .schema` to pull the schema).
 #
 # Currently generated surfaces:
 #   packages/events — sql/schema.sql (DDL, hand-written)
 #                     src/events/sql/search.sql (named queries)
 #                     -> src/events/sql.gleam   (generated, committed)
+#   packages/storage — separate sql/schema.sql and sql/session.sql schemas,
+#                     and src/storage/sql/*.sql named queries
+#                     -> src/storage/sql.gleam, sql_schema.gleam and
+#                        session_schema.gleam. Runtime catalogue creation
+#                        embeds only schema.sql, never the session tables.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
@@ -40,8 +45,18 @@ gen_package() {
   tmpdb="$(mktemp -t loom-gen-sql-XXXXXX.db)"
   trap 'rm -f "$tmpdb"' RETURN
   sqlite3 "$tmpdb" < "packages/$pkg/sql/schema.sql"
+  if [[ "$pkg" == storage ]]; then
+    sqlite3 "$tmpdb" < packages/storage/sql/session.sql
+  fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
 }
 
 gen_package events
+gen_package storage
+python3 scripts/embed-sql-schema.py packages/storage/sql/schema.sql \
+  packages/storage/src/storage/sql_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/session.sql \
+  packages/storage/src/storage/session_schema.gleam
+gleam format packages/storage/src/storage/sql_schema.gleam
+gleam format packages/storage/src/storage/session_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"

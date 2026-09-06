@@ -44,6 +44,15 @@ pub type Command {
   /// Choose another locally managed session.
   Sessions
 
+  /// Show captured decisions, or explicitly load one exact historical decision.
+  Approvals(id: Option(String))
+
+  /// Approve the exact displayed action and requested grants at its captured seq.
+  Approve(id: String)
+
+  /// Reject the displayed pending action at its captured seq.
+  Deny(id: String)
+
   /// Browse the active strand's injected agent-note digest.
   Notes
 
@@ -214,6 +223,9 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/fork", "fork the active strand", True),
     Suggestion("/compact", "compact the active strand", False),
     Suggestion("/abort", "abort the live operation", False),
+    Suggestion("/approvals", "show captured approval decisions", False),
+    Suggestion("/approve", "approve an exact displayed request", True),
+    Suggestion("/deny", "reject an exact displayed request", True),
     Suggestion("/steer", "inject into the live operation", True),
     Suggestion("/queue", "run after the live operation", True),
     Suggestion("/clear", "clear this local transcript", False),
@@ -262,6 +274,9 @@ pub fn parse(input: String) -> Command {
     "/unschedule" -> MissingArgument("unschedule")
     "/agents" -> Agents
     "/sessions" -> Sessions
+    "/approvals" -> Approvals(None)
+    "/approve" -> MissingArgument("approve")
+    "/deny" -> MissingArgument("deny")
     "/notes" -> Notes
     "/details" -> Details
     "/effort" -> MissingArgument("effort")
@@ -274,6 +289,10 @@ pub fn parse(input: String) -> Command {
     "/strand" -> MissingArgument("strand")
     "/fork" -> MissingArgument("fork")
     "/model " <> rest -> required_argument("model", rest, Model)
+    "/approvals " <> rest ->
+      required_argument("approvals", rest, fn(id) { Approvals(Some(id)) })
+    "/approve " <> rest -> required_argument("approve", rest, Approve)
+    "/deny " <> rest -> required_argument("deny", rest, Deny)
     "/strand " <> rest -> required_argument("strand", rest, Strand)
     "/fork " <> rest -> required_argument("fork", rest, Fork)
     "/effort " <> rest -> required_argument("effort", rest, Effort)

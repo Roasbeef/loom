@@ -50,6 +50,7 @@ import core/message.{
   Length, Stop, ToolCall, ToolResultImage, ToolResultMessage, ToolResultText,
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
+import core/origin
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -179,11 +180,17 @@ fn encode_messages(request: ProviderRequest) -> List(JsonValue) {
 
 fn encode_message(message: AgentMessage) -> Result(JsonValue, Nil) {
   case message {
-    UserMessage(content:, timestamp: _) ->
+    UserMessage(content:, origin:, ..) ->
       Ok(
         json.Object([
           #("role", json.String("user")),
-          #("content", json.Array(list.map(content, encode_user_block))),
+          #(
+            "content",
+            json.Array(list.map(
+              origin.project(content, origin),
+              encode_user_block,
+            )),
+          ),
         ]),
       )
     AssistantMessage(content:, ..) -> {

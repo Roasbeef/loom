@@ -51,6 +51,7 @@ pub fn message_entry(
       message: UserMessage(
         content: [UserText(text:, text_signature: None)],
         timestamp: 0,
+        origin: None,
       ),
       terminate: False,
     )

@@ -159,7 +159,11 @@ pub fn attempt(spec: effects.RequestSpec) -> Int {
 
 /// A user message with one text block.
 pub fn user(text: String) -> AgentMessage {
-  UserMessage(content: [UserText(text:, text_signature: None)], timestamp: 0)
+  UserMessage(
+    content: [UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin: None,
+  )
 }
 
 /// A settled final assistant answer carrying `tokens` of usage.

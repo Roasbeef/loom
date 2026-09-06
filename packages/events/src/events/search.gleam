@@ -19,6 +19,11 @@
 //// write lock instead of both reading the same stale cursor and both
 //// inserting the same rows.
 ////
+//// `sync_batch` is the bounded-entry alternative for shared coordinators. It
+//// fetches outside the index transaction, then compares the captured cursor
+//// under the write lock before publishing. A competing commit returns `Stale`;
+//// scheduling another attempt belongs to the caller, not this database layer.
+////
 //// **Rewrite invalidation.** A precise rewrite swaps a session's store
 //// and may renumber seqs, so the cursor is stored with the session's
 //// store *generation*. `sync` compares the caller-supplied generation
@@ -43,6 +48,7 @@
 
 import core/entry.{type Entry}
 import core/ids.{type SessionId}
+import core/json
 import core/message.{type AgentMessage}
 import events/sql
 import gleam/bool
@@ -54,12 +60,14 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
+import storage/sqlite_policy
 import storage/storage.{type Storage, type StorageError}
 
 /// An open search service over one index database file.
 ///
-/// Constructor invariants: `db` is an open connection whose schema has
-/// been ensured; exactly the discipline SQLite always needs applies for
+/// Constructor invariants: `db` is an open connection. `open` initializes it;
+/// owned callers use `acquire`, publish custody, then `initialize`. Queries
+/// require initialization. Exactly the discipline SQLite always needs applies for
 /// sharing the file between processes (WAL, busy timeout, idempotent
 /// batches) — writers serialize.
 pub opaque type Search {
@@ -87,6 +95,134 @@ pub type SearchError {
 /// marking matched terms.
 pub type Hit {
   Hit(session: String, entry: String, snippet: String)
+}
+
+/// Whether another bounded read may find more entries.
+pub type Continuation {
+  /// The batch filled its limit; an additional read establishes exhaustion.
+  MorePossible
+
+  /// The source returned fewer entries than requested at this read.
+  CaughtUp
+}
+
+/// One bounded indexing attempt, with no internal retry.
+pub type Batch {
+  /// Rows and cursor committed together, including non-indexable entries.
+  Advanced(
+    /// Highest consumed source sequence number.
+    high_water: Int,
+    /// Entries read, not merely entries containing searchable text.
+    scanned: Int,
+    /// Whether another batch may be needed.
+    continuation: Continuation,
+  )
+
+  /// Another writer changed the cursor after the source read was planned.
+  Stale
+}
+
+/// Maximum entries fetched by one batch; this is not a byte or time bound.
+pub const max_batch_entries = 512
+
+/// A captured index cursor, not a held writer transaction.
+@internal
+pub opaque type BatchPlan {
+  BatchPlan(
+    session: String,
+    generation: Int,
+    expected: Option(sql.GetCursor),
+    after: Int,
+  )
+}
+
+/// Captures the optimistic publication fence before a separately owned read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.plan_batch(index, session_id, generation)
+/// ```
+@internal
+pub fn plan_batch(search: Search, session: SessionId, generation: Int) {
+  let session = ids.session_id_to_string(session)
+  use expected <- result.map(read_cursor(search, session))
+  let after = case expected {
+    Some(sql.GetCursor(generation: stored, high_water:))
+      if stored == generation
+    -> high_water
+    Some(_) | None -> 0
+  }
+  BatchPlan(session, generation, expected, after)
+}
+
+/// The first unseen entry has a sequence strictly greater than this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.batch_after(plan)
+/// ```
+@internal
+pub fn batch_after(plan: BatchPlan) -> Int {
+  plan.after
+}
+
+/// Commits separately fetched entries only if the captured cursor still matches.
+/// Bounds entry count, not total decoded bytes; callers bound their source read.
+/// Empty batches still invalidate rewritten source generations atomically.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.commit_batch(index, plan, entries, requested: 10)
+/// ```
+@internal
+pub fn commit_batch(
+  search: Search,
+  plan: BatchPlan,
+  entries: List(Entry),
+  requested requested: Int,
+) -> Result(Batch, SearchError) {
+  use <- bool.guard(
+    when: requested <= 0
+      || requested > max_batch_entries
+      || list.length(entries) > requested,
+    return: Error(IndexFault("invalid search publication batch size")),
+  )
+  use high_water <- result.try(
+    list.try_fold(entries, plan.after, fn(after, entry) {
+      case entry.seq > after {
+        True -> Ok(entry.seq)
+        False ->
+          Error(IndexFault("search batch must advance in sequence order"))
+      }
+    }),
+  )
+  let invalidate = case plan.expected {
+    Some(sql.GetCursor(generation:, ..)) -> generation != plan.generation
+    None -> True
+  }
+  let rows = list.filter_map(entries, index_row)
+  let scanned = list.length(entries)
+  let continuation = case scanned == requested {
+    True -> MorePossible
+    False -> CaughtUp
+  }
+
+  // Source work has finished before acquiring the index writer reservation.
+  use <- in_transaction(search)
+  use current <- result.try(read_cursor(search, plan.session))
+  use <- bool.guard(when: current != plan.expected, return: Ok(Stale))
+  use Nil <- result.try(write_index(
+    search,
+    plan.session,
+    plan.generation,
+    invalidate,
+    rows,
+    high_water,
+  ))
+  Ok(Advanced(high_water:, scanned:, continuation:))
 }
 
 // The schema DDL, hand-written per ADR-004 (parrot covers named static
@@ -133,23 +269,50 @@ pub fn schema() -> List(String) {
 /// ```
 ///
 pub fn open(path: String) -> Result(Search, SearchError) {
-  use db <- result.try(
-    sqlight.open(path)
-    |> result.map_error(index_fault),
-  )
+  use search <- result.try(acquire(path))
+  case initialize(search) {
+    Ok(Nil) -> Ok(search)
+    Error(error) -> {
+      let _closed = close(search)
+      Error(error)
+    }
+  }
+}
 
-  // Pragmas return a result row each, so run them as queries and
-  // discard the rows (same discipline as storage/sqlite).
-  use _ <- result.try(
-    sqlight.query("PRAGMA busy_timeout = 5000", on: db, with: [], expecting: {
-      decode.success(Nil)
-    })
+/// Acquires the connection without schema or tuning effects.
+/// An owned caller retains this handle before beginning initialization and
+/// propagates close failure instead of treating it as confirmed retirement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.acquire(path)
+/// ```
+@internal
+pub fn acquire(path: String) -> Result(Search, SearchError) {
+  sqlight.open(path)
+  |> result.map(Search)
+  |> result.map_error(index_fault)
+}
+
+/// Initializes an already retained connection; failure leaves custody intact.
+/// Search has no conversation writer lease. Tuning uses the shared policy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.initialize(acquired)
+/// ```
+@internal
+pub fn initialize(search: Search) -> Result(Nil, SearchError) {
+  let db = search.db
+  let options = sqlite_policy.defaults()
+  use Nil <- result.try(
+    sqlite_policy.configure_connection(db, options)
     |> result.map_error(index_fault),
   )
-  use _ <- result.try(
-    sqlight.query("PRAGMA journal_mode = WAL", on: db, with: [], expecting: {
-      decode.success(Nil)
-    })
+  use Nil <- result.try(
+    sqlite_policy.configure_database(db, options)
     |> result.map_error(index_fault),
   )
   use Nil <- result.try(
@@ -164,7 +327,7 @@ pub fn open(path: String) -> Result(Search, SearchError) {
     sqlight.exec(create_search_source, on: db)
     |> result.map_error(index_fault),
   )
-  Ok(Search(db:))
+  Ok(Nil)
 }
 
 /// Registers a host-owned source path for exact reads by canonical identity.
@@ -305,6 +468,49 @@ pub fn sync(
   })
 }
 
+/// Reads and commits at most `limit` entries without holding the index writer
+/// while waiting on the source. Limits outside `1..max_batch_entries` are refused
+/// before any read. The caller owns scheduling, source deadlines, and a source
+/// handle paired with its current rewrite generation. A full batch may require
+/// a final empty read; `CaughtUp` says nothing about later source commits.
+///
+/// The optimistic cursor comparison prevents a delayed batch from overwriting
+/// another writer's progress. `Stale` changes nothing and requests no retry on
+/// its own. One oversized entry remains oversized: this API bounds entry count,
+/// not decoded bytes, and the ordinary Storage read has no deadline argument.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.sync_batch(index, store, session: id, generation: 0, limit: 100)
+/// ```
+pub fn sync_batch(
+  search: Search,
+  store: Storage(handle),
+  session session: SessionId,
+  generation generation: Int,
+  limit limit: Int,
+) -> Result(Batch, SearchError) {
+  use <- bool.guard(
+    when: limit <= 0 || limit > max_batch_entries,
+    return: Error(IndexFault("search batch limit must be between 1 and 512")),
+  )
+  use plan <- result.try(plan_batch(search, session, generation))
+
+  // No index transaction spans this potentially slow source actor call.
+  use entries <- result.try(
+    storage.scan_entries(
+      store,
+      storage.entry_scan()
+        |> storage.entry_seq_range(Some(plan.after + 1), None)
+        |> storage.entry_order(storage.OldestFirst)
+        |> storage.entry_limit(limit),
+    )
+    |> result.map_error(SessionReadFault),
+  )
+  commit_batch(search, plan, entries, requested: limit)
+}
+
 /// The text an entry contributes to the index, or `Error(Nil)` for one
 /// that indexes to nothing (its seq still advances the cursor).
 fn index_row(entry: Entry) -> Result(#(String, String), Nil) {
@@ -441,6 +647,44 @@ pub fn query(
       let sql.SearchEntries(session_id:, entry_id:, snippet:) = row
       Hit(session: session_id, entry: entry_id, snippet:)
     }),
+  )
+}
+
+/// Filters current authorized source identities before FTS ranking and LIMIT.
+/// Stale indexed rows never become authority merely because a locator exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.query_authorized(index, [session_id], "migration", 10)
+/// ```
+@internal
+pub fn query_authorized(
+  search: Search,
+  sessions: List(SessionId),
+  text: String,
+  limit: Int,
+) -> Result(List(Hit), SearchError) {
+  use <- bool.guard(
+    when: limit < 1 || limit > 50 || list.length(list.take(sessions, 513)) > 512,
+    return: Error(IndexFault("authorized search bounds exceeded")),
+  )
+  let sessions =
+    sessions
+    |> list.map(fn(id) { json.String(ids.session_id_to_string(id)) })
+    |> json.Array
+    |> json.to_string
+  let #(statement, params, decoder) =
+    sql.search_authorized_entries(text, sessions, limit)
+  sqlight.query(
+    statement,
+    search.db,
+    list.map(params, param_to_sqlight),
+    decoder,
+  )
+  |> result.map_error(index_fault)
+  |> result.map(
+    list.map(_, fn(row) { Hit(row.session_id, row.entry_id, row.snippet) }),
   )
 }
 
@@ -606,16 +850,17 @@ fn run_statement(
 /// and cursor land together or not at all.
 fn in_transaction(
   search: Search,
-  body: fn() -> Result(Nil, SearchError),
-) -> Result(Nil, SearchError) {
+  body: fn() -> Result(value, SearchError),
+) -> Result(value, SearchError) {
   use Nil <- result.try(
     sqlight.exec("BEGIN IMMEDIATE", on: search.db)
     |> result.map_error(index_fault),
   )
   case body() {
-    Ok(Nil) ->
+    Ok(value) ->
       sqlight.exec("COMMIT", on: search.db)
       |> result.map_error(index_fault)
+      |> result.replace(value)
     Error(error) -> {
       // Best-effort rollback; the original error is the one reported.
       let _ = sqlight.exec("ROLLBACK", on: search.db)

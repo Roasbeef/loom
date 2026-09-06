@@ -19,6 +19,14 @@
 //// The synchronous `wrap` facade waits only until the inner owner is adopted,
 //// preserving the older promise that cancellation is usable when it returns.
 ////
+//// The preview mode forwards every authoritative delta immediately, but gives
+//// its optional observer only one outstanding delta. While that callback is
+//// busy, later preview observations are omitted. The terminal remains ordered
+//// behind that callback and is never dropped. This bounds observation retention,
+//// not the separate provider-to-guard mailbox. Blocking observation still sees
+//// every event before forwarding it for non-preview consumers, such as durable
+//// summaries and internal fixtures.
+////
 //// ## The guard is a `weft/state_machine`
 ////
 //// `Parked → Forwarding → Cancelling → Proving*`. `Parked` is the wait for
@@ -58,8 +66,9 @@
 ////
 //// ## Why observation is data rather than a sub-state
 ////
-//// One event is with the observer at a time, and inner events that arrive
-//// behind it wait. weft's `postpone` is the usual way to write that, but it
+//// One event is with the observer at a time. Blocking observation queues inner
+//// events behind it; preview mode queues only its terminal. Weft's `postpone`
+//// is the usual way to write a queue, but it
 //// replays only on a change of *state*, and a change of state out of
 //// `Cancelling` would void the grace this module is required to keep fixed.
 //// So the outstanding observation and the events queued behind it live in
@@ -107,10 +116,22 @@ type Startup {
   Startup(
     surface: effects.ProviderSurface,
     spec: effects.RequestSpec,
-    observe: fn(stream.StreamEvent) -> Nil,
+    observe: fn() -> ObservationCallback,
+    mode: ObservationMode,
     consumer: Pid,
     outer: Subject(stream.StreamEvent),
   )
+}
+
+/// An observer-owned continuation, so refusal permanently disables that source.
+pub type ObservationCallback {
+  /// Runs one observation and returns the callback for its next event.
+  ObservationCallback(next: fn(stream.StreamEvent) -> ObservationCallback)
+}
+
+type ObservationMode {
+  BlockingObservation
+  PreviewObservation
 }
 
 type ObserverMessage {
@@ -274,6 +295,7 @@ type Relay {
     request_timeout_ms: Int,
     drain: Drain,
     observation: Observation,
+    mode: ObservationMode,
   )
 }
 
@@ -326,9 +348,43 @@ pub fn prepare(
   spec: effects.RequestSpec,
   observe: fn(stream.StreamEvent) -> Nil,
 ) -> stream.PreparedStream {
+  prepare_observed(
+    surface,
+    spec,
+    fn() { repeated_observer(observe) },
+    BlockingObservation,
+  )
+}
+
+/// Prepares lossy preview observation without delaying the authoritative deltas.
+///
+/// The factory runs in the existing observer process. At most one delta is
+/// offered while that callback is busy; subsequent previews are omitted, while
+/// the consumer still receives every delta in order. Terminals are never lost.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // prepare_preview(surface, request, fn() { callback })
+/// ```
+@internal
+pub fn prepare_preview(surface, spec, observe: fn() -> ObservationCallback) {
+  prepare_observed(surface, spec, observe, PreviewObservation)
+}
+
+fn repeated_observer(
+  observe: fn(stream.StreamEvent) -> Nil,
+) -> ObservationCallback {
+  ObservationCallback(fn(event) {
+    observe(event)
+    repeated_observer(observe)
+  })
+}
+
+fn prepare_observed(surface, spec, observe, mode) {
   let consumer = process.self()
   let outer = process.new_subject()
-  let startup = Startup(surface:, spec:, observe:, consumer:, outer:)
+  let startup = Startup(surface:, spec:, observe:, mode:, consumer:, outer:)
   case start_guard(startup) {
     Ok(started) -> published(started, outer, consumer)
 
@@ -470,12 +526,12 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
     | Parked, Awaiting(..), InnerRetired(..)
     -> sm.keep(data)
 
-    // An inner event joins the observation queue in every live state; the
-    // observer sees the stream in order and the guard forwards nothing it has
-    // not seen first.
+    // Preview mode forwards authoritative deltas without waiting for optional
+    // observation. Cancelling still discards later deltas, while preserving
+    // the original owner's terminal and the fixed cancellation grace.
     Forwarding, Relaying(relay:), Inner(event:)
     | Cancelling, Relaying(relay:), Inner(event:)
-    -> sm.keep(Relaying(observe(relay, event)))
+    -> sm.keep(Relaying(observe(relay, event, phase)))
 
     Forwarding, Relaying(relay:), Observed -> forwarded(relay)
 
@@ -699,6 +755,7 @@ fn open_inner(
       request_timeout_ms: effects.provider_timeout_ms(startup.surface) + 100,
       drain:,
       observation: Idle,
+      mode: startup.mode,
     )
   let selector =
     relay_selector(
@@ -797,7 +854,7 @@ fn drain_proof(down: process.Down) -> DrainProof {
 }
 
 fn start_observer(
-  observe: fn(stream.StreamEvent) -> Nil,
+  observe: fn() -> ObservationCallback,
   creator: Pid,
 ) -> #(Pid, Observer) {
   let ready = process.new_subject()
@@ -805,7 +862,7 @@ fn start_observer(
     process.spawn_unlinked(fn() {
       let control = process.new_subject()
       process.send(ready, control)
-      observer_loop(control, observe, process.monitor(creator))
+      observer_loop(control, observe(), process.monitor(creator))
     })
   let control = process.receive_forever(ready)
   #(observer, Observer(control:, monitor: process.monitor(observer)))
@@ -813,7 +870,7 @@ fn start_observer(
 
 fn observer_loop(
   control: Subject(ObserverMessage),
-  observe: fn(stream.StreamEvent) -> Nil,
+  observe: ObservationCallback,
   creator_monitor: Monitor,
 ) -> Nil {
   let event =
@@ -823,7 +880,8 @@ fn observer_loop(
     |> process.selector_receive_forever()
   case event {
     ObserverCommand(Observe(event, acknowledged:)) -> {
-      observe(event)
+      let ObservationCallback(next) = observe
+      let observe = next(event)
       process.send(acknowledged, Nil)
       observer_loop(control, observe, creator_monitor)
     }
@@ -900,7 +958,21 @@ fn already_retired(relay: Relay) -> sm.Enter(Phase, Data, Msg) {
 // to protect: weft replays a postponed event only on a change of state, and
 // the change of state that would replay it is exactly the one that would void
 // the cancellation grace.
-fn observe(relay: Relay, event: stream.StreamEvent) -> Relay {
+fn observe(relay: Relay, event: stream.StreamEvent, phase: Phase) -> Relay {
+  case phase, relay.mode, event {
+    Forwarding, PreviewObservation, stream.Delta(..) ->
+      process.send(relay.outer, event)
+    _, _, _ -> Nil
+  }
+  case relay.mode, relay.observation, event {
+    PreviewObservation, Observing(..), stream.Delta(..) -> relay
+    _, _, _ -> queue_observation(relay, event)
+  }
+}
+
+// Only the legacy blocking mode queues deltas. Preview mode retains at most
+// its one outstanding observation and the terminal that follows it.
+fn queue_observation(relay: Relay, event: stream.StreamEvent) -> Relay {
   case relay.observation {
     Idle -> {
       process.send(
@@ -961,7 +1033,10 @@ fn forward_observed(
     -> abandon(relay)
 
     ConsumerAlive, stream.Delta(..) -> {
-      process.send(relay.outer, event)
+      case relay.mode {
+        BlockingObservation -> process.send(relay.outer, event)
+        PreviewObservation -> Nil
+      }
       keep_forwarding(advance(relay, queued))
     }
 

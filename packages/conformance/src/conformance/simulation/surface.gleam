@@ -1208,6 +1208,7 @@ pub fn intervention_user(
       ),
     ],
     timestamp: 0,
+    origin: None,
   )
 }
 
@@ -1281,7 +1282,11 @@ fn landed(what: String, outcome: Result(a, api.ApiError)) -> Admission {
 /// ```
 ///
 pub fn user(text: String) -> AgentMessage {
-  UserMessage(content: [UserText(text:, text_signature: None)], timestamp: 0)
+  UserMessage(
+    content: [UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin: None,
+  )
 }
 
 // --- hooks ----------------------------------------------------------------

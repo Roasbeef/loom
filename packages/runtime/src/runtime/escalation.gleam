@@ -78,6 +78,8 @@
 import core/corruption.{type CorruptionReport}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import core/message.{type Origin}
+import core/origin
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -186,6 +188,8 @@ pub type Escalation {
     action: Option(String),
     preview: Option(String),
     asked: Int,
+    /// Historical author of the winning decision, cleared when reopened.
+    origin: Option(Origin),
   )
 }
 
@@ -224,6 +228,7 @@ pub fn encode(escalation: Escalation) -> JsonValue {
     #("action", encode_optional_string(escalation.action)),
     #("preview", encode_optional_string(escalation.preview)),
     #("asked", json.Int(escalation.asked)),
+    #("origin", origin.encode(escalation.origin)),
   ])
 }
 
@@ -281,6 +286,7 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
       use action <- result.try(optional_string(fields, "action", where))
       use preview <- result.try(optional_string(fields, "preview", where))
       use asked <- result.try(optional_int(fields, "asked", where))
+      use origin <- result.try(origin.decode_field(fields))
       Ok(Escalation(
         id:,
         denial:,
@@ -291,6 +297,7 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
         action:,
         preview:,
         asked:,
+        origin:,
       ))
     }
     other ->
@@ -546,6 +553,7 @@ pub fn raised(
     action: digest,
     preview:,
     asked: 1,
+    origin: None,
   )
 }
 
@@ -689,11 +697,15 @@ pub fn bound_to(record: Escalation, action: String) -> Bool {
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.approve(record, grants)
+/// // escalation.approve(record, grants, Some(author))
 /// ```
 ///
-pub fn approve(record: Escalation, grants: List(JsonValue)) -> Escalation {
-  Escalation(..record, grants:, status: Approved)
+pub fn approve(
+  record: Escalation,
+  grants: List(JsonValue),
+  origin: Option(Origin),
+) -> Escalation {
+  Escalation(..record, grants:, status: Approved, origin:)
 }
 
 /// The record after a rejection.
@@ -701,11 +713,11 @@ pub fn approve(record: Escalation, grants: List(JsonValue)) -> Escalation {
 /// ## Examples
 ///
 /// ```gleam
-/// // escalation.reject(record)
+/// // escalation.reject(record, Some(author))
 /// ```
 ///
-pub fn reject(record: Escalation) -> Escalation {
-  Escalation(..record, status: Rejected)
+pub fn reject(record: Escalation, origin: Option(Origin)) -> Escalation {
+  Escalation(..record, status: Rejected, origin:)
 }
 
 /// The bare escalation id when the register key carries the escalation

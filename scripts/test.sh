@@ -5,7 +5,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 package="${1:?usage: scripts/test.sh package [--match module-or-function]}"
 shift
 case "$package" in
-  core|storage|session|machine|prompt|telemetry|runtime|provider|broker|mcp|tools|cap|ext|codemode|events|client|conformance|tui|lint) ;;
+  host|core|storage|session|machine|prompt|telemetry|runtime|provider|broker|mcp|tools|cap|ext|codemode|events|client|conformance|tui|lint) ;;
   *) echo "unknown test package: $package" >&2; exit 2 ;;
 esac
 match=""

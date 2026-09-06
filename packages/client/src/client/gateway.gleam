@@ -1,7 +1,17 @@
-//// The ClientGateway hub: one actor per served session that speaks the
-//// Part 1.6 protocol to any number of attached connections.
+//// One gateway actor per resident session, with original-handle v2 attachment.
 ////
-//// ## Shape
+//// ## Authenticated network delivery
+////
+//// A socket supplies one request and waits for one bounded reply. Coherent
+//// metadata and descriptors come from the bounded storage reader; raw records
+//// and metadata are fragmented under explicit client credit. No writer or bus
+//// hint subscription feeds this path. Optional provider previews use sixteen
+//// original observer leases and one bounded, explicitly discontinuous sample.
+//// Authentication is rechecked before admission and delivery. A failed reader
+//// permanently poisons this actor and invokes its exact incarnation's stop
+//// capability, without waiting for the requesting gateway itself to retire.
+////
+//// ## Internal host fixture mode
 ////
 //// The hub is transport-agnostic: a connection is a sink function the
 //// transport registers with `attach` (the websocket server sends each
@@ -10,7 +20,7 @@
 //// every reply and broadcast leaves through the sinks. Nothing in this
 //// module knows about sockets.
 ////
-//// ## The durable event stream (protocol.md open question 4)
+//// ## Legacy host fixture event stream
 ////
 //// The envelope `seq` **is the storage seq** of the write that produced
 //// the event. Storage assigns strictly increasing seqs to every write —
@@ -45,7 +55,7 @@
 //// writer, the same pattern the conformance simulation runner uses.
 //// Nothing bypasses the writer.
 ////
-//// ## Deliberate v1 interpretations (see the WP-L report)
+//// ## Conversation command semantics retained from WP-L
 ////
 //// - `fork` (both scopes) forks **in place**: a new strand whose leaf
 ////   is the source strand's current leaf. The protocol's reply is a
@@ -68,7 +78,7 @@
 ////   reaches the client with both fields empty; nothing is inferred
 ////   from which strand happens to be busy.
 ////
-//// ## Stream deltas
+//// ## Internal host fixture stream deltas
 ////
 //// `tap_provider` wraps an injected `runtime/effects.ProviderSurface`
 //// so provider deltas are teed to the hub (broadcast as ephemeral
@@ -77,8 +87,10 @@
 //// lives entirely in the composition seam — the runtime is untouched.
 
 import broker/escalation as broker_escalation
+import broker/internal/call
 import broker/policy.{type Grant}
 import client/catalog
+import client/daemon/transfer
 import client/grants
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
@@ -89,13 +101,16 @@ import client/schedule
 import client/scheduleadmin
 import client/wiring
 import core/clock
+import core/codec as core_codec
 import core/entry.{type Entry, type UsageRow}
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage, type UserBlock}
+import core/origin
 import core/register
 import core/tx
 import events/bus
+import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -105,6 +120,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
+import host/bootstrap
 import machine/acceptance
 import machine/codec as machine_codec
 import machine/operation
@@ -118,6 +134,8 @@ import runtime/escalation as runtime_escalation
 import runtime/hooks
 import runtime/writer
 import session/session
+import storage/access
+import storage/snapshot
 import storage/storage
 import tools/tool.{type Registry}
 import weft/actor
@@ -127,6 +145,41 @@ import weft/registry as address
 /// commit forwarder can reach it before it starts.
 pub type Gateway {
   Gateway(name: address.Address(Message))
+}
+
+/// Immutable server-resolved identity of one authenticated session attachment.
+pub type Binding {
+  Binding(
+    /// Canonical session identity, independent of names chosen by commands.
+    session_id: String,
+    /// Daemon lifetime identity captured by the upgrade router.
+    epoch: String,
+    /// Resident instance identity captured by the upgrade router.
+    incarnation: String,
+    /// Fresh connection identity for presence and restart fencing.
+    connection_id: String,
+    /// Principal identity and name authenticated at upgrade.
+    principal: access.Principal,
+    /// Role whose parser reservation was admitted at upgrade.
+    authority: access.Authority,
+    /// Credential digest, never plaintext bearer material.
+    digest: access.Digest,
+  )
+}
+
+/// A connection addresses its original gateway process, never a replacement.
+pub opaque type ConnectionHandle {
+  ConnectionHandle(subject: Subject(Message), id: Int, pid: process.Pid)
+}
+
+type Authentication {
+  HostFixture
+  Authenticated(
+    binding: Binding,
+    check: fn() -> Result(#(access.Principal, access.Authority), String),
+    close: fn() -> Nil,
+    watch: process.Monitor,
+  )
 }
 
 /// Hub configuration.
@@ -236,7 +289,22 @@ pub fn with_schedules(options: Options, admin: scheduleadmin.Admin) -> Options {
 /// wrapper functions below (the constructors are exported only through
 /// them).
 pub opaque type Message {
+  Request(connection: Int, text: String, reply: Subject(Result(String, String)))
+  MaintainTransfers
+  LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
+  Preview(Int, String, String, Subject(Result(Nil, String)))
+  ReleasePreview(Int, Subject(Nil))
   Attach(sink: fn(String) -> Nil, reply: Subject(Int))
+  AttachAuthenticated(
+    Binding,
+    fn() -> Result(#(access.Principal, access.Authority), String),
+    fn(String) -> Nil,
+    fn() -> Nil,
+    fn() -> Nil,
+    process.Pid,
+    Subject(Result(ConnectionHandle, String)),
+  )
+  SocketDown(process.Down)
   Attached(reply: Subject(Int))
   Detach(connection: Int)
   FromClient(connection: Int, text: String)
@@ -246,11 +314,27 @@ pub opaque type Message {
 }
 
 type Connection {
-  Connection(sink: fn(String) -> Nil, subscribed: Bool)
+  Connection(
+    sink: fn(String) -> Nil,
+    subscribed: Bool,
+    authentication: Authentication,
+    origin: Option(message.Origin),
+    transfer: Option(transfer.Transfer),
+    response: Option(Subject(Result(String, String))),
+    read_failed: fn() -> Nil,
+  )
 }
 
 type State {
   State(
+    subject: Subject(Message),
+    delivery: Delivery,
+    health: Health,
+    next_transfer: Int,
+    preview_sources: Dict(Int, process.Monitor),
+    next_preview_source: Int,
+    preview: Option(JsonValue),
+    preview_revision: Int,
     session_id: String,
     runtime: api.Runtime,
     recent_entries: Int,
@@ -268,6 +352,18 @@ type State {
     // The operator's scheduling door, when this host has one.
     schedules: Option(scheduleadmin.Admin),
   )
+}
+
+// A poisoned reader is terminal in this actor. It cannot service another peer
+// while the exact incarnation's original storage custody is still draining.
+type Health {
+  Reading
+  ReaderPoisoned
+}
+
+type Delivery {
+  Network
+  HostOnly
 }
 
 // One materialized durable event: its storage seq plus the wire event.
@@ -290,9 +386,32 @@ pub fn start(
   options: Options,
   name: address.Address(Message),
 ) -> actor.StartResult(Gateway) {
+  start_with_delivery(options, name, Network)
+}
+
+/// Retains the historical unbounded materializer for internal host fixtures.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.start_host_fixture(options, name)
+/// ```
+@internal
+pub fn start_host_fixture(
+  options: Options,
+  name: address.Address(Message),
+) -> actor.StartResult(Gateway) {
+  start_with_delivery(options, name, HostOnly)
+}
+
+fn start_with_delivery(
+  options: Options,
+  name: address.Address(Message),
+  delivery: Delivery,
+) {
   actor.new_with_initialiser(5000, fn(subject) {
-    let selector = case options.bus {
-      Some(bus) -> {
+    let selector = case delivery, options.bus {
+      HostOnly, Some(bus) -> {
         // Keyed by the session's *canonical* id, never by the
         // caller-supplied display name. The two key spaces are disjoint
         // by construction (`protocol-change/008`), so a hub keyed by
@@ -313,12 +432,20 @@ pub fn start(
         |> process.select(subject)
         |> bus.select_published(BusHint)
       }
-      None ->
+      Network, _ | HostOnly, None ->
         process.new_selector()
         |> process.select(subject)
     }
     let state =
       State(
+        subject:,
+        delivery:,
+        health: Reading,
+        next_transfer: 1,
+        preview_sources: dict.new(),
+        next_preview_source: 1,
+        preview: None,
+        preview_revision: 0,
         session_id: options.session_id,
         runtime: options.runtime,
         recent_entries: options.recent_entries,
@@ -334,18 +461,23 @@ pub fn start(
 
     // Prime: advance past everything already in the store, and learn
     // the live operations so the next pull sees changes, not history.
-    let #(state, _emits) = pull(state)
+    let state = case delivery {
+      Network -> state
+      HostOnly -> pull(state).0
+    }
     actor.initialised(state)
-    |> actor.selecting(selector)
+    |> actor.selecting(process.select_monitors(selector, SocketDown))
     |> actor.returning(Gateway(name:))
     |> Ok
   })
   |> actor.addressed(name)
   |> actor.on_message(handle)
+  |> actor.periodic(every: 1000, sending: MaintainTransfers)
   |> actor.start
 }
 
-/// Registers a connection sink and returns its connection id. The sink
+/// Registers a trusted host/test sink, never an anonymous network connection.
+/// Network listeners must use `attach_authenticated`. The sink
 /// is called from the hub process with each encoded frame; it must not
 /// block (send to the transport process, do not write sockets inline).
 ///
@@ -355,9 +487,98 @@ pub fn start(
 /// // gateway.attach(gateway, fn(frame) { process.send(out, frame) })
 /// ```
 ///
+@internal
 pub fn attach(gateway: Gateway, sink: fn(String) -> Nil) -> Result(Int, Nil) {
   use subject <- result.try(address.lookup(gateway.name))
   Ok(process.call(subject, waiting: 5000, sending: Attach(sink, _)))
+}
+
+/// Attaches an authenticated socket to the original gateway incarnation.
+///
+/// The check capability resolves current membership at each admission. The
+/// original socket monitor removes presence even when `on_close` cannot run.
+/// Anonymous `attach` exists only for trusted host fixtures, never this path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.attach_authenticated(gateway, binding, check, sink, close, socket_pid)
+/// ```
+pub fn attach_authenticated(
+  gateway: Gateway,
+  binding: Binding,
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  sink: fn(String) -> Nil,
+  close: fn() -> Nil,
+  read_failed: fn() -> Nil,
+  socket: process.Pid,
+) -> Result(ConnectionHandle, String) {
+  use subject <- result.try(
+    address.lookup(gateway.name) |> result.replace_error("gateway unavailable"),
+  )
+  call.try_call(subject, waiting: 5000, sending: AttachAuthenticated(
+    binding,
+    check,
+    sink,
+    close,
+    read_failed,
+    socket,
+    _,
+  ))
+  |> result.unwrap(Error("gateway unavailable"))
+}
+
+/// Returns the original gateway PID for the transport's lifetime monitor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // process.monitor(gateway.connection_pid(connection))
+/// ```
+pub fn connection_pid(connection: ConnectionHandle) -> process.Pid {
+  connection.pid
+}
+
+/// Sends an admitted socket frame only to its original gateway process.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.connection_text(connection, frame)
+/// ```
+pub fn connection_text(connection: ConnectionHandle, frame: String) -> Nil {
+  process.send(connection.subject, FromClient(connection.id, frame))
+}
+
+/// Waits for one bounded response before the socket admits another full frame.
+/// A timeout is an unknown command outcome, never permission to retry it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.connection_request(connection, frame)
+/// ```
+pub fn connection_request(
+  connection: ConnectionHandle,
+  frame: String,
+) -> Result(String, String) {
+  call.try_call(connection.subject, waiting: 6000, sending: Request(
+    connection.id,
+    frame,
+    _,
+  ))
+  |> result.unwrap(Error("gateway response unavailable"))
+}
+
+/// Detaches from the original process; a replacement never sees the old ID.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.connection_detach(connection)
+/// ```
+pub fn connection_detach(connection: ConnectionHandle) -> Nil {
+  process.send(connection.subject, Detach(connection.id))
 }
 
 /// How many connections are attached right now.
@@ -525,6 +746,137 @@ fn observe_provider(
   }
 }
 
+/// Adds bounded, explicitly discontinuous previews to a network gateway.
+///
+/// Each existing relay observer resolves one original hub and acquires one of
+/// sixteen source leases. Refusal or timeout disables that source permanently;
+/// it never retries against a replacement actor. Authoritative deltas still
+/// reach the runtime consumer even when optional observations are omitted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.tap_preview_provider(surface, to: gateway_name)
+/// ```
+@internal
+pub fn tap_preview_provider(surface: effects.ProviderSurface, to name) {
+  let prepare = fn(spec) {
+    provider_relay.prepare_preview(surface, spec, fn() {
+      let operation = case spec {
+        effects.GenerationRequest(operation:, ..)
+        | effects.PollRequest(operation:, ..)
+        | effects.SummaryRequest(operation:, ..) ->
+          ids.op_id_to_string(operation)
+      }
+      let lease = {
+        use subject <- result.try(
+          address.lookup(name) |> result.replace_error("hub absent"),
+        )
+        let expires = bootstrap.monotonic_time_ms() + 200
+        use source <- result.try(
+          call.try_call(subject, waiting: 200, sending: LeasePreview(
+            process.self(),
+            expires,
+            _,
+          ))
+          |> result.replace_error("preview admission timed out")
+          |> result.flatten,
+        )
+        Ok(#(subject, source))
+      }
+      preview_observer(lease, operation)
+    })
+  }
+  effects.PreparedProviderSurface(
+    timeout_ms: effects.provider_timeout_ms(surface),
+    request: fn(spec) { prepare(spec) |> stream.start_prepared },
+    prepare:,
+  )
+}
+
+fn preview_observer(
+  lease,
+  operation: String,
+) -> provider_relay.ObservationCallback {
+  provider_relay.ObservationCallback(fn(event) {
+    case lease, event {
+      Ok(#(subject, source)), stream.Delta(delta) -> {
+        let text = case delta {
+          stream.TextDelta(_, text) -> text
+          stream.ThinkingDelta(_, text) -> text
+          stream.ToolCallDelta(_, _, _, text) -> text
+        }
+        let sent =
+          call.try_call(subject, waiting: 200, sending: Preview(
+            source,
+            operation,
+            preview_text(text),
+            _,
+          ))
+          |> result.replace_error("preview delivery timed out")
+          |> result.flatten
+        case sent {
+          Ok(Nil) -> preview_observer(lease, operation)
+          Error(_) -> ignored_preview(lease)
+        }
+      }
+      _, stream.Settled(..) | _, stream.Failed(..) -> {
+        release_preview(lease)
+        ignored_preview(Error("stream ended"))
+      }
+      Error(_), stream.Delta(_) -> ignored_preview(lease)
+    }
+  })
+}
+
+// A timed-out payload still occupies its original source lease until terminal
+// release or original observer DOWN. No later delta can enqueue another one.
+fn ignored_preview(lease) -> provider_relay.ObservationCallback {
+  provider_relay.ObservationCallback(fn(event) {
+    case event {
+      stream.Delta(_) -> ignored_preview(lease)
+      stream.Settled(..) | stream.Failed(..) -> {
+        release_preview(lease)
+        ignored_preview(Error("stream ended"))
+      }
+    }
+  })
+}
+
+fn release_preview(lease) {
+  case lease {
+    Error(_) -> Nil
+    Ok(#(subject, source)) -> {
+      let _ =
+        call.try_call(subject, waiting: 200, sending: ReleasePreview(source, _))
+      Nil
+    }
+  }
+}
+
+// Reconstructing only the bounded prefix makes a small owned string, not a
+// sub-binary retaining an entire provider chunk. The wire labels every sample
+// discontinuous, so neither clipping nor skipped observations imply adjacency.
+fn preview_text(text: String) -> String {
+  let bytes = bit_array.from_string(text)
+  preview_prefix(bytes, int.min(bit_array.byte_size(bytes), 24_576), 4)
+}
+
+fn preview_prefix(bytes: BitArray, size: Int, attempts: Int) -> String {
+  case attempts {
+    0 -> ""
+    _ -> {
+      let prefix =
+        bit_array.slice(bytes, 0, size) |> result.try(bit_array.to_string)
+      case prefix {
+        Ok(text) ->
+          text |> string.to_utf_codepoints |> string.from_utf_codepoints
+        Error(_) -> preview_prefix(bytes, int.max(0, size - 1), attempts - 1)
+      }
+    }
+  }
+}
+
 // Resolve the hub name once, then send the tagged envelope straight to that
 // PID. A second name lookup would leave an unregistration race which turns a
 // lost stream hint into an observer crash and provider cancellation.
@@ -537,6 +889,18 @@ fn send_if_alive(name: address.Address(Message), message: Message) -> Nil {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    LeasePreview(pid, expires, reply) ->
+      actor.continue(lease_preview(state, pid, expires, reply))
+    Preview(source, operation, text, reply) ->
+      actor.continue(record_preview(state, source, operation, text, reply))
+    ReleasePreview(source, reply) -> {
+      let state = forget_preview(state, source)
+      process.send(reply, Nil)
+      actor.continue(state)
+    }
+    Request(connection, text, reply) ->
+      actor.continue(request_frame(state, connection, text, reply))
+    MaintainTransfers -> actor.continue(expire_transfers(revalidate_all(state)))
     Attach(sink:, reply:) -> {
       let id = state.next_connection
       process.send(reply, id)
@@ -546,25 +910,86 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           connections: dict.insert(
             state.connections,
             id,
-            Connection(sink:, subscribed: False),
+            Connection(
+              sink:,
+              subscribed: False,
+              authentication: HostFixture,
+              origin: None,
+              transfer: None,
+              response: None,
+              read_failed: fn() { Nil },
+            ),
           ),
           next_connection: id + 1,
         ),
       )
     }
+    AttachAuthenticated(binding, check, sink, close, read_failed, socket, reply) -> {
+      let admitted = case
+        binding.session_id
+        == ids.session_id_to_string(api.session_id(state.runtime))
+        && state.health == Reading
+      {
+        True -> check_binding(binding, check)
+        False -> Error("attachment names a different session")
+      }
+      case admitted {
+        Error(reason) -> {
+          process.send(reply, Error(reason))
+          actor.continue(state)
+        }
+        Ok(principal) -> {
+          let id = state.next_connection
+          let link =
+            Connection(
+              sink:,
+              subscribed: False,
+              authentication: Authenticated(
+                binding,
+                check,
+                close,
+                process.monitor(socket),
+              ),
+              origin: Some(message.Origin(principal.id, principal.display_name)),
+              transfer: None,
+              response: None,
+              read_failed:,
+            )
+          let state =
+            State(
+              ..state,
+              connections: dict.insert(state.connections, id, link),
+              next_connection: id + 1,
+            )
+          process.send(
+            reply,
+            Ok(ConnectionHandle(state.subject, id, process.self())),
+          )
+          actor.continue(state)
+        }
+      }
+    }
+    SocketDown(down) -> actor.continue(remove_socket(state, down))
     Attached(reply:) -> {
       process.send(reply, dict.size(state.connections))
       actor.continue(state)
     }
-    Detach(connection:) ->
-      actor.continue(
-        State(..state, connections: dict.delete(state.connections, connection)),
-      )
+    Detach(connection:) -> actor.continue(remove_connection(state, connection))
     FromClient(connection:, text:) ->
-      actor.continue(dispatch(state, connection, text))
-    CommitHint -> actor.continue(pull_and_broadcast(state))
-    BusHint(published: _) -> actor.continue(pull_and_broadcast(state))
+      case state.delivery {
+        HostOnly ->
+          actor.continue(dispatch(
+            revalidate(state, connection),
+            connection,
+            text,
+          ))
+        Network -> actor.continue(remove_connection(state, connection))
+      }
+    CommitHint -> actor.continue(pull_and_broadcast(revalidate_all(state)))
+    BusHint(published: _) ->
+      actor.continue(pull_and_broadcast(revalidate_all(state)))
     ProviderDelta(operation:, delta:) -> {
+      let state = revalidate_all(state)
       broadcast_delta(state, operation, delta)
       actor.continue(state)
     }
@@ -573,7 +998,725 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 // --- materializing the durable stream --------------------------------------
 
+// A network request owns exactly one reply destination. No unsolicited durable
+// payload is sent to its socket; the next request supplies the next credit.
+fn request_frame(
+  state: State,
+  connection: Int,
+  text: String,
+  response: Subject(Result(String, String)),
+) -> State {
+  let state = expire_transfers(revalidate(state, connection))
+  case state.health, dict.get(state.connections, connection) {
+    Reading, Ok(Connection(authentication: Authenticated(..), ..) as link) -> {
+      let state =
+        put_connection(
+          state,
+          connection,
+          Connection(..link, response: Some(response)),
+        )
+      let state = network_dispatch(state, connection, text)
+      case dict.get(state.connections, connection) {
+        Ok(link) ->
+          put_connection(state, connection, Connection(..link, response: None))
+        Error(Nil) -> state
+      }
+    }
+    _, _ -> {
+      process.send(response, Error("attachment is closed"))
+      state
+    }
+  }
+}
+
+fn put_connection(state: State, id: Int, link: Connection) -> State {
+  State(..state, connections: dict.insert(state.connections, id, link))
+}
+
+fn expire_transfers(state: State) -> State {
+  let now = bootstrap.monotonic_time_ms()
+  list.fold(dict.to_list(state.connections), state, fn(state, pair) {
+    let #(id, link) = pair
+    case link.transfer {
+      Some(current) ->
+        case transfer.expired(current, now) {
+          True -> put_connection(state, id, Connection(..link, transfer: None))
+          False -> state
+        }
+      None -> state
+    }
+  })
+}
+
+fn network_dispatch(state: State, connection: Int, text: String) -> State {
+  case protocol.decode_command(text) {
+    Error(_) -> {
+      reply_error(
+        state,
+        connection,
+        0,
+        protocol.code_bad_request,
+        "invalid v2 command",
+      )
+      state
+    }
+    Ok(protocol.CommandEnvelope(id, command)) ->
+      network_command(state, connection, id, command)
+  }
+}
+
+fn network_command(
+  state: State,
+  connection: Int,
+  id: Int,
+  command: Command,
+) -> State {
+  case command {
+    protocol.Subscribe(session_id, _) -> {
+      let canonical = ids.session_id_to_string(api.session_id(state.runtime))
+      case session_id == canonical {
+        True ->
+          begin_transfer(
+            mark_subscribed(state, connection),
+            connection,
+            id,
+            transfer.Recent,
+          )
+        False -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            "wrong_session",
+            "attachment identity cannot change",
+          )
+          state
+        }
+      }
+    }
+    protocol.SnapshotNext(snapshot_id, index) ->
+      advance_transfer(state, connection, id, snapshot_id, index)
+    protocol.CatchUp(from_seq) ->
+      begin_transfer(state, connection, id, transfer.Reconcile(from_seq))
+    protocol.History(after, before) ->
+      begin_transfer(state, connection, id, transfer.History(after, before))
+    protocol.EscalationsGet(ids) ->
+      begin_transfer(state, connection, id, transfer.Escalations(ids))
+    _ -> run_command(state, connection, id, command)
+  }
+}
+
+fn snapshot_plan(recent: Int) -> snapshot.Plan {
+  snapshot.Plan(
+    [
+      snapshot.Selection(register.StrandConfig, "", snapshot.All),
+      snapshot.Selection(register.StrandLeaf, "", snapshot.All),
+      snapshot.Selection(register.StrandState, "", snapshot.All),
+      snapshot.Selection(register.StrandLastResult, "", snapshot.All),
+      snapshot.Selection(register.FactCustom, "client/", snapshot.All),
+      snapshot.Selection(
+        register.FactCustom,
+        runtime_escalation.key_prefix,
+        snapshot.StringFieldEquals("status", "pending"),
+      ),
+    ],
+    [
+      snapshot.FromField(
+        register.StrandState,
+        "currentOperationId",
+        register.OpState,
+      ),
+      snapshot.FromField(
+        register.StrandState,
+        "currentOperationId",
+        register.OpMeta,
+      ),
+    ],
+    recent,
+  )
+}
+
+fn begin_transfer(
+  state: State,
+  connection: Int,
+  id: Int,
+  window: transfer.Window,
+) -> State {
+  use link <- or_reply(
+    result.replace_error(dict.get(state.connections, connection), #(
+      "closed",
+      "attachment is closed",
+    )),
+    state,
+    connection,
+    id,
+  )
+  use <- bool.lazy_guard(link.transfer != None || !link.subscribed, fn() {
+    reply_error(
+      state,
+      connection,
+      id,
+      "stale_snapshot",
+      "finish the current transfer or subscribe first",
+    )
+    state
+  })
+  let recent = case window {
+    transfer.Recent -> int.min(100, state.recent_entries)
+    _ -> 0
+  }
+  let now = bootstrap.monotonic_time_ms()
+  let plan = case window {
+    transfer.Escalations(ids) ->
+      snapshot.Plan(
+        list.map(ids, fn(id) {
+          snapshot.ExactKey(
+            register.FactCustom,
+            runtime_escalation.register_key(id),
+          )
+        }),
+        [],
+        0,
+      )
+    _ -> snapshot_plan(recent)
+  }
+  case state.runtime.session.snapshot_reader.capture(plan, 5000) {
+    Error(error) -> reader_failed(state, connection, id, error)
+    Ok(cut) -> captured_transfer(state, connection, id, link, cut, window, now)
+  }
+}
+
+fn captured_transfer(
+  state: State,
+  connection: Int,
+  id: Int,
+  link: Connection,
+  cut: snapshot.Cut,
+  window: transfer.Window,
+  now: Int,
+) -> State {
+  let snapshot_id =
+    int.to_string(connection) <> ":" <> int.to_string(state.next_transfer)
+  let metadata =
+    json.Object([
+      #(
+        "missing",
+        json.Array(case window {
+          transfer.Escalations(ids) ->
+            list.filter_map(ids, fn(id) {
+              case
+                list.any(cut.cells, fn(cell) {
+                  cell.key == runtime_escalation.register_key(id)
+                })
+              {
+                True -> Error(Nil)
+                False -> Ok(json.String(id))
+              }
+            })
+          _ -> []
+        }),
+      ),
+      #(
+        "cells",
+        json.Array(
+          list.map(cut.cells, fn(cell) {
+            json.Object([
+              #("namespace", json.String(register.ns_to_string(cell.namespace))),
+              #("key", json.String(cell.key)),
+              #("seq", json.Int(cell.register.seq)),
+              #("value", cell.register.value.payload),
+            ])
+          }),
+        ),
+      ),
+      #("usage", core_codec.encode_usage(cut.stats.usage)),
+      #("message_count", json.Int(cut.stats.message_count)),
+      #(
+        "host_run_settings",
+        api.encode_run_defaults(state.runtime.settings, None),
+      ),
+      #("peers", json.Array(roster(state))),
+      #(
+        "stream_preview",
+        option.map(state.preview, fn(value) { value })
+          |> option.unwrap(json.Null),
+      ),
+    ])
+  use current <- or_reply(
+    transfer.start(cut, metadata, snapshot_id, window, now)
+      |> result.map_error(fn(reason) { #("snapshot_limit", reason) }),
+    state,
+    connection,
+    id,
+  )
+  let state =
+    put_connection(
+      State(..state, next_transfer: state.next_transfer + 1),
+      connection,
+      Connection(..link, transfer: Some(current)),
+    )
+  let identity = case link.authentication {
+    Authenticated(binding, ..) -> [
+      #("session_id", json.String(binding.session_id)),
+      #("epoch", json.String(binding.epoch)),
+      #("incarnation", json.String(binding.incarnation)),
+      #("connection_id", json.String(binding.connection_id)),
+      #("origin", origin.encode(link.origin)),
+      #("role", json.String(role_text(binding.authority))),
+    ]
+    HostFixture -> []
+  }
+  let window_name = case window {
+    transfer.Recent -> "recent"
+    transfer.Reconcile(_) -> "catch_up"
+    transfer.History(..) -> "history"
+    transfer.Escalations(_) -> "escalations"
+  }
+  reply(
+    state,
+    connection,
+    id,
+    protocol.SnapshotBegin(
+      json.Object([
+        #("snapshot_id", json.String(snapshot_id)),
+        #("next_seq", json.Int(cut.next_seq)),
+        #("window", json.String(window_name)),
+        #("complete_history", json.Bool(False)),
+        #("record_bytes_limit", json.Int(snapshot.record_bytes_limit)),
+        #("fragment_bytes_limit", json.Int(transfer.piece_bytes)),
+        #("oldest_seq", case cut.recent {
+          [first, ..] -> json.Int(first.seq)
+          [] -> json.Null
+        }),
+        ..identity
+      ]),
+    ),
+  )
+  state
+}
+
+fn advance_transfer(
+  state: State,
+  connection: Int,
+  id: Int,
+  snapshot_id: String,
+  index: Int,
+) -> State {
+  let current = {
+    use link <- result.try(dict.get(state.connections, connection))
+    option.to_result(link.transfer, Nil)
+  }
+  case current {
+    Ok(current) ->
+      case
+        transfer.matches(
+          current,
+          snapshot_id,
+          index,
+          bootstrap.monotonic_time_ms(),
+        )
+      {
+        True -> drive_transfer(state, connection, id, current, 2)
+        False -> stale_transfer(state, connection, id)
+      }
+    Error(Nil) -> stale_transfer(state, connection, id)
+  }
+}
+
+fn stale_transfer(state: State, connection: Int, id: Int) -> State {
+  reply_error(
+    state,
+    connection,
+    id,
+    "stale_snapshot",
+    "transfer expired or continuation does not match",
+  )
+  state
+}
+
+fn drive_transfer(
+  state: State,
+  connection: Int,
+  id: Int,
+  current: transfer.Transfer,
+  reads: Int,
+) -> State {
+  use <- bool.lazy_guard(
+    transfer.expired(current, bootstrap.monotonic_time_ms()),
+    fn() { stale_transfer(state, connection, id) },
+  )
+  case transfer.step(current) {
+    transfer.Emit(event, next) -> {
+      let state = retain_transfer(state, connection, Some(next))
+      reply(state, connection, id, event)
+      state
+    }
+    transfer.End(event) -> {
+      let state = retain_transfer(state, connection, None)
+      reply(state, connection, id, event)
+      state
+    }
+    transfer.Refused(reason) -> {
+      reply_error(state, connection, id, "snapshot_failed", reason)
+      retain_transfer(state, connection, None)
+    }
+    transfer.ReadPage(after, before) if reads > 0 -> {
+      let outcome =
+        state.runtime.session.snapshot_reader.page(
+          after,
+          before,
+          100,
+          transfer.waiting(current, bootstrap.monotonic_time_ms()),
+        )
+      continue_read(
+        state,
+        connection,
+        id,
+        current,
+        reads,
+        outcome,
+        transfer.accept_page,
+      )
+    }
+    transfer.ReadFragment(descriptor, offset) if reads > 0 -> {
+      let outcome =
+        state.runtime.session.snapshot_reader.fragment(
+          descriptor,
+          offset,
+          transfer.waiting(current, bootstrap.monotonic_time_ms()),
+        )
+      continue_read(
+        state,
+        connection,
+        id,
+        current,
+        reads,
+        outcome,
+        transfer.accept_fragment,
+      )
+    }
+    transfer.ReadPage(..) | transfer.ReadFragment(..) ->
+      stale_transfer(state, connection, id)
+  }
+}
+
+fn continue_read(
+  state: State,
+  connection: Int,
+  id: Int,
+  current: transfer.Transfer,
+  reads: Int,
+  outcome: Result(a, snapshot.Error),
+  accept: fn(transfer.Transfer, a) -> Result(transfer.Transfer, String),
+) -> State {
+  case outcome {
+    Error(error) -> reader_failed(state, connection, id, error)
+    Ok(value) -> {
+      use next <- or_reply(
+        accept(current, value)
+          |> result.map_error(fn(reason) { #("snapshot_failed", reason) }),
+        state,
+        connection,
+        id,
+      )
+      drive_transfer(state, connection, id, next, reads - 1)
+    }
+  }
+}
+
+fn retain_transfer(
+  state: State,
+  connection: Int,
+  current: Option(transfer.Transfer),
+) -> State {
+  case dict.get(state.connections, connection) {
+    Error(Nil) -> state
+    Ok(link) ->
+      put_connection(state, connection, Connection(..link, transfer: current))
+  }
+}
+
+fn reader_failed(
+  state: State,
+  connection: Int,
+  id: Int,
+  error: snapshot.Error,
+) -> State {
+  case error {
+    snapshot.ReadTimedOut | snapshot.ReaderUnavailable -> {
+      // Timeout does not cancel the original query. Fence this actor before
+      // requesting exact-incarnation cleanup; never synchronously await it.
+      let poisoned = State(..state, health: ReaderPoisoned)
+      list.each(dict.values(state.connections), fn(link) {
+        case link.authentication {
+          Authenticated(_, _, close, _) -> close()
+          HostFixture -> Nil
+        }
+      })
+      case dict.get(state.connections, connection) {
+        Ok(link) -> link.read_failed()
+        Error(Nil) -> Nil
+      }
+      State(
+        ..poisoned,
+        connections: dict.map_values(poisoned.connections, fn(_, link) {
+          Connection(..link, transfer: None)
+        }),
+      )
+    }
+    snapshot.StorageFailure(_)
+    | snapshot.InvalidRequest
+    | snapshot.MetadataTooLarge
+    | snapshot.RecordTooLarge(..)
+    | snapshot.MissingRecord -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        "snapshot_failed",
+        "bounded snapshot read refused",
+      )
+      retain_transfer(state, connection, None)
+    }
+  }
+}
+
+// Membership resolution is the admission ordering point. Work already admitted
+// may finish, but the next command or outbound batch must resolve access again.
+fn check_binding(
+  binding: Binding,
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+) {
+  use #(principal, authority) <- result.try(check())
+  case principal.id == binding.principal.id && authority == binding.authority {
+    True -> Ok(principal)
+    False -> Error("attachment authority changed")
+  }
+}
+
+fn revalidate(state: State, id: Int) -> State {
+  case dict.get(state.connections, id) {
+    Error(Nil) | Ok(Connection(authentication: HostFixture, ..)) -> state
+    Ok(
+      Connection(authentication: Authenticated(binding, check, close, _), ..) as link,
+    ) ->
+      case check_binding(binding, check) {
+        Error(_) -> {
+          close()
+          remove_connection(state, id)
+        }
+        Ok(principal) ->
+          State(
+            ..state,
+            connections: dict.insert(
+              state.connections,
+              id,
+              Connection(
+                ..link,
+                origin: Some(message.Origin(
+                  principal.id,
+                  principal.display_name,
+                )),
+              ),
+            ),
+          )
+      }
+  }
+}
+
+fn revalidate_all(state: State) -> State {
+  list.fold(dict.keys(state.connections), state, revalidate)
+}
+
+fn remove_socket(state: State, down: process.Down) -> State {
+  let state =
+    State(
+      ..state,
+      preview_sources: dict.filter(state.preview_sources, fn(_, watch) {
+        watch != down.monitor
+      }),
+    )
+  list.fold(dict.to_list(state.connections), state, fn(state, pair) {
+    let #(id, link) = pair
+    case link.authentication {
+      Authenticated(_, _, _, watch) if watch == down.monitor ->
+        remove_connection(state, id)
+      Authenticated(..) | HostFixture -> state
+    }
+  })
+}
+
+fn lease_preview(state: State, pid, expires, reply) -> State {
+  case
+    state.health == Reading
+    && bootstrap.monotonic_time_ms() < expires
+    && dict.size(state.preview_sources) < 16
+    && !list.is_empty(roster(state))
+  {
+    False -> {
+      process.send(reply, Error("preview source unavailable"))
+      state
+    }
+    True -> {
+      let source = state.next_preview_source
+      let watch = process.monitor(pid)
+      process.send(reply, Ok(source))
+      State(
+        ..state,
+        next_preview_source: source + 1,
+        preview_sources: dict.insert(state.preview_sources, source, watch),
+      )
+    }
+  }
+}
+
+fn record_preview(
+  state: State,
+  source,
+  operation,
+  text: String,
+  reply,
+) -> State {
+  case
+    state.health == Reading
+    && dict.has_key(state.preview_sources, source)
+    && bit_array.byte_size(bit_array.from_string(text)) <= 24_576
+  {
+    False -> {
+      process.send(reply, Error("preview source refused"))
+      state
+    }
+    True -> {
+      process.send(reply, Ok(Nil))
+      let revision = state.preview_revision + 1
+      State(
+        ..state,
+        preview_revision: revision,
+        preview: Some(
+          json.Object([
+            #("revision", json.Int(revision)),
+            #("operation", json.String(operation)),
+            #("text", json.String(text)),
+            #("discontinuous", json.Bool(True)),
+          ]),
+        ),
+      )
+    }
+  }
+}
+
+fn forget_preview(state: State, source) -> State {
+  case dict.get(state.preview_sources, source) {
+    Error(Nil) -> state
+    Ok(watch) -> {
+      process.demonitor_process(watch)
+      State(
+        ..state,
+        preview_sources: dict.delete(state.preview_sources, source),
+      )
+    }
+  }
+}
+
+fn remove_connection(state: State, id: Int) -> State {
+  case dict.get(state.connections, id) {
+    Error(Nil) -> state
+    Ok(link) -> {
+      case link.authentication {
+        Authenticated(_, _, _, watch) -> process.demonitor_process(watch)
+        HostFixture -> Nil
+      }
+      let state =
+        State(..state, connections: dict.delete(state.connections, id))
+      publish_presence(state)
+      state
+    }
+  }
+}
+
+fn role_text(authority: access.Authority) {
+  case authority {
+    access.Owner -> "owner"
+    access.Participant(access.Operator) -> "operator"
+    access.Participant(access.Observer) -> "observer"
+  }
+}
+
+fn roster(state: State) {
+  dict.values(state.connections)
+  |> list.filter_map(fn(link) {
+    case link.authentication, link.subscribed {
+      Authenticated(binding, _, _, _), True ->
+        Ok(
+          json.Object([
+            #("connection_id", json.String(binding.connection_id)),
+            #("origin", origin.encode(link.origin)),
+            #("role", json.String(role_text(binding.authority))),
+          ]),
+        )
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+fn publish_presence(state: State) {
+  let event = protocol.PresenceEvent(roster(state))
+  dict.each(state.connections, fn(id, link) {
+    case link.authentication, link.subscribed {
+      Authenticated(..), True ->
+        send_to(state, id, EventEnvelope(None, None, event))
+      _, _ -> Nil
+    }
+  })
+}
+
+fn connection_origin(state: State, connection: Int) {
+  dict.get(state.connections, connection)
+  |> result.map(fn(link) { link.origin })
+  |> result.unwrap(None)
+}
+
+fn observer(state: State, connection: Int) {
+  case dict.get(state.connections, connection) {
+    Ok(Connection(
+      authentication: Authenticated(
+        Binding(authority: access.Participant(access.Observer), ..),
+        ..,
+      ),
+      ..,
+    )) -> True
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
+fn read_only(command: Command) {
+  case command {
+    protocol.Subscribe(..)
+    | protocol.CatchUp(..)
+    | protocol.SnapshotNext(..)
+    | protocol.History(..)
+    | protocol.EscalationsGet(..)
+    | protocol.ListModels
+    | protocol.ListSchedules -> True
+    protocol.Prompt(..)
+    | protocol.PromptContent(..)
+    | protocol.Steer(..)
+    | protocol.FollowUp(..)
+    | protocol.Abort(..)
+    | protocol.Approve(..)
+    | protocol.Deny(..)
+    | protocol.Fork(..)
+    | protocol.Navigate(..)
+    | protocol.Compact(..)
+    | protocol.CreateStrand(..)
+    | protocol.SetConfig(..)
+    | protocol.CancelSchedule(..)
+    | protocol.UnknownCommand(..) -> False
+  }
+}
+
 fn pull_and_broadcast(state: State) -> State {
+  use <- bool.guard(state.delivery == Network, state)
   let #(state, emits) = pull(state)
   broadcast(state, emits)
   state
@@ -935,15 +2078,18 @@ fn escalation_events(state: State, hw: Int) -> List(Emit) {
           True ->
             case runtime_escalation.decode(value.payload) {
               Error(_) -> Error(Nil)
-              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record)))
+              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record, seq)))
             }
         }
       })
   }
 }
 
-fn escalation_event(record: runtime_escalation.Escalation) -> WireEvent {
-  protocol.EscalationEvent(record: escalation_view(record))
+fn escalation_event(
+  record: runtime_escalation.Escalation,
+  seq: Int,
+) -> WireEvent {
+  protocol.EscalationEvent(record: escalation_view(record, seq))
 }
 
 // One durable record as the protocol carries it — the single place the
@@ -955,10 +2101,13 @@ fn escalation_event(record: runtime_escalation.Escalation) -> WireEvent {
 // would be inviting an answer to a closed question.
 fn escalation_view(
   record: runtime_escalation.Escalation,
+  seq: Int,
 ) -> protocol.EscalationRecord {
   let #(op, strand) = escalation_attribution(record)
   protocol.EscalationRecord(
     escalation_id: record.id,
+    seq:,
+    origin: record.origin,
     op:,
     strand:,
     status: escalation_status(record.status),
@@ -1128,9 +2277,50 @@ fn broadcast(state: State, emits: List(Emit)) -> Nil {
 // Sends one event to one connection.
 fn send_to(state: State, connection: Int, envelope: EventEnvelope) -> Nil {
   case dict.get(state.connections, connection) {
-    Ok(link) -> link.sink(protocol.encode_event(envelope))
+    Ok(link) ->
+      case state.delivery, link.authentication {
+        Network, Authenticated(binding, check, close, _) ->
+          send_response(link.response, envelope, binding, check, close)
+        _, _ -> deliver(link, protocol.encode_event(envelope))
+      }
     Error(Nil) -> Nil
   }
+}
+
+// A network attachment has one reply capability, held only during its request.
+// Authorization is checked again at this last boundary before delivery.
+fn send_response(response, envelope: EventEnvelope, binding, check, close) {
+  case response, envelope.reply_to {
+    Some(response), Some(_) -> {
+      let outcome = {
+        use _ <- result.try(check_binding(binding, check))
+        bounded_response(envelope)
+      }
+      process.send(response, outcome)
+      case outcome {
+        Error(_) -> close()
+        Ok(_) -> Nil
+      }
+    }
+    _, _ -> Nil
+  }
+}
+
+fn bounded_response(envelope: EventEnvelope) -> Result(String, String) {
+  let event = case envelope.event {
+    protocol.EntryEvent(_) | protocol.OpTransitionEvent(..) ->
+      mutation_outcome("admitted")
+    protocol.SnapshotEvent(protocol.ConfigSnapshot(_)) ->
+      mutation_outcome("committed")
+    other -> other
+  }
+  let value = protocol.event_value(EventEnvelope(..envelope, event:))
+  use _ <- result.try(transfer.encoded_size(value, 65_536))
+  Ok(json.to_string(value))
+}
+
+fn mutation_outcome(status: String) -> WireEvent {
+  protocol.MutationOutcome(json.Object([#("status", json.String(status))]))
 }
 
 fn reply(state: State, connection: Int, id: Int, event: WireEvent) -> Nil {
@@ -1139,6 +2329,18 @@ fn reply(state: State, connection: Int, id: Int, event: WireEvent) -> Nil {
     connection,
     EventEnvelope(reply_to: Some(id), seq: None, event:),
   )
+}
+
+// Each output batch resolves membership before entering the socket mailbox.
+fn deliver(link: Connection, frame: String) {
+  case link.authentication {
+    HostFixture -> link.sink(frame)
+    Authenticated(binding, check, close, _) ->
+      case check_binding(binding, check) {
+        Ok(_) -> link.sink(frame)
+        Error(_) -> close()
+      }
+  }
 }
 
 fn reply_error(
@@ -1157,6 +2359,7 @@ fn reply_error(
 }
 
 fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
+  use <- bool.guard(state.delivery == Network, Nil)
   let op_text = ids.op_id_to_string(operation)
   let strand = case
     dict.to_list(state.live)
@@ -1205,7 +2408,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
     protocol.encode_event(EventEnvelope(reply_to: None, seq: None, event:))
   dict.each(state.connections, fn(_id, link: Connection) {
     case link.subscribed {
-      True -> link.sink(frame)
+      True -> deliver(link, frame)
       False -> Nil
     }
   })
@@ -1297,6 +2500,19 @@ fn run_command(
   id: Int,
   command: Command,
 ) -> State {
+  use <- bool.lazy_guard(
+    when: observer(state, connection) && !read_only(command),
+    return: fn() {
+      reply_error(
+        state,
+        connection,
+        id,
+        "forbidden",
+        "observer attachments are read-only",
+      )
+      state
+    },
+  )
   let subscribed = case dict.get(state.connections, connection) {
     Ok(Connection(subscribed:, ..)) -> subscribed
     Error(Nil) -> False
@@ -1339,6 +2555,19 @@ fn run_command(
       replay(state, connection, id, from_seq)
       state
     }
+    protocol.SnapshotNext(..), True
+    | protocol.History(..), True
+    | protocol.EscalationsGet(..), True
+    -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_unsupported,
+        "bounded transfer requires the authenticated transport",
+      )
+      state
+    }
     protocol.Prompt(strand:, text:), True ->
       prompt(state, connection, id, strand, text)
     protocol.PromptContent(strand:, content:), True ->
@@ -1348,10 +2577,18 @@ fn run_command(
     protocol.FollowUp(strand:, text:), True ->
       follow_up(state, connection, id, strand, text)
     protocol.Abort(strand:), True -> abort(state, connection, id, strand)
-    protocol.Approve(escalation_id:, grants:, action:), True ->
-      approve(state, connection, id, escalation_id, grants, action)
-    protocol.Deny(escalation_id:), True ->
-      deny(state, connection, id, escalation_id)
+    protocol.Approve(escalation_id:, grants:, action:, expected_seq:), True ->
+      approve(
+        state,
+        connection,
+        id,
+        escalation_id,
+        grants,
+        action,
+        expected_seq,
+      )
+    protocol.Deny(escalation_id:, expected_seq:), True ->
+      deny(state, connection, id, escalation_id, expected_seq)
     protocol.Fork(strand:, scope: _, name:), True ->
       fork(state, connection, id, strand, name)
     protocol.Navigate(strand:, to_entry:), True ->
@@ -1378,7 +2615,12 @@ fn subscribe(
   session_name: String,
   from_seq: Option(Int),
 ) -> State {
-  use <- bool.lazy_guard(when: session_name != state.session_id, return: fn() {
+  let expected_session = case dict.get(state.connections, connection) {
+    Ok(Connection(authentication: Authenticated(binding, ..), ..)) ->
+      binding.session_id
+    Ok(_) | Error(Nil) -> state.session_id
+  }
+  use <- bool.lazy_guard(when: session_name != expected_session, return: fn() {
     reply_error(
       state,
       connection,
@@ -1390,6 +2632,31 @@ fn subscribe(
   })
   let state = pull_and_broadcast(state)
   let state = mark_subscribed(state, connection)
+  case dict.get(state.connections, connection) {
+    Ok(Connection(authentication: Authenticated(binding, _, _, _), origin:, ..)) -> {
+      send_to(
+        state,
+        connection,
+        EventEnvelope(
+          None,
+          None,
+          protocol.AttachmentEvent(
+            json.Object([
+              #("session_id", json.String(binding.session_id)),
+              #("epoch", json.String(binding.epoch)),
+              #("incarnation", json.String(binding.incarnation)),
+              #("connection_id", json.String(binding.connection_id)),
+              #("origin", origin.encode(origin)),
+              #("role", json.String(role_text(binding.authority))),
+              #("peers", json.Array(roster(state))),
+            ]),
+          ),
+        ),
+      )
+      publish_presence(state)
+    }
+    Ok(_) | Error(Nil) -> Nil
+  }
   case from_seq {
     Some(from) if from > 0 && from <= state.high_water + 1 -> {
       reply(
@@ -1404,7 +2671,7 @@ fn subscribe(
       state
     }
     _ -> {
-      reply(state, connection, id, full_snapshot(state))
+      reply(state, connection, id, connection_snapshot(state, connection))
       state
     }
   }
@@ -1441,7 +2708,8 @@ fn replay(state: State, connection: Int, id: Int, from_seq: Int) -> Nil {
       )
       replay_events(state, connection, from_seq)
     }
-    False -> reply(state, connection, id, full_snapshot(state))
+    False ->
+      reply(state, connection, id, connection_snapshot(state, connection))
   }
 }
 
@@ -1622,7 +2890,7 @@ fn replay_escalation_emits(
           True ->
             case runtime_escalation.decode(value.payload) {
               Error(_) -> Error(Nil)
-              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record)))
+              Ok(record) -> Ok(Emit(seq:, event: escalation_event(record, seq)))
             }
         }
       })
@@ -1668,6 +2936,17 @@ fn entry_in_branch(
       }
     _ -> False
   }
+}
+
+// This legacy materializer remains unbounded. The bounded reader integration
+// replaces this seam; authentication alone does not establish transfer bounds.
+fn connection_snapshot(state: State, connection: Int) -> WireEvent {
+  let session_id = case dict.get(state.connections, connection) {
+    Ok(Connection(authentication: Authenticated(binding, ..), ..)) ->
+      binding.session_id
+    _ -> state.session_id
+  }
+  full_snapshot(State(..state, session_id:))
 }
 
 fn full_snapshot(state: State) -> WireEvent {
@@ -1753,7 +3032,13 @@ fn pending_escalations(state: State) -> List(protocol.EscalationRecord) {
     Ok(records) ->
       records
       |> list.filter(fn(record) { record.status == runtime_escalation.Pending })
-      |> list.map(escalation_view)
+      |> list.filter_map(fn(record) {
+        use cell <- result.try(
+          api.escalation_cell(state.runtime, record.id)
+          |> result.replace_error(Nil),
+        )
+        Ok(escalation_view(cell.record, cell.seq))
+      })
   }
 }
 
@@ -1766,13 +3051,23 @@ fn strand_exists(state: State, strand: String) -> Bool {
   }
 }
 
-fn user_message(state: State, text: String) -> AgentMessage {
-  content_message(state, [message.UserText(text:, text_signature: None)])
+fn user_message(state: State, connection: Int, text: String) -> AgentMessage {
+  content_message(state, connection, [
+    message.UserText(text:, text_signature: None),
+  ])
 }
 
-fn content_message(state: State, content: List(UserBlock)) -> AgentMessage {
+fn content_message(
+  state: State,
+  connection: Int,
+  content: List(UserBlock),
+) -> AgentMessage {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
-  message.UserMessage(content:, timestamp: now)
+  message.UserMessage(
+    content:,
+    timestamp: now,
+    origin: connection_origin(state, connection),
+  )
 }
 
 fn prompt(
@@ -1782,7 +3077,13 @@ fn prompt(
   strand: String,
   text: String,
 ) -> State {
-  prompt_message(state, connection, id, strand, user_message(state, text))
+  prompt_message(
+    state,
+    connection,
+    id,
+    strand,
+    user_message(state, connection, text),
+  )
 }
 
 fn prompt_content(
@@ -1792,7 +3093,13 @@ fn prompt_content(
   strand: String,
   content: List(UserBlock),
 ) -> State {
-  prompt_message(state, connection, id, strand, content_message(state, content))
+  prompt_message(
+    state,
+    connection,
+    id,
+    strand,
+    content_message(state, connection, content),
+  )
 }
 
 fn prompt_message(
@@ -1834,6 +3141,10 @@ fn reply_with_matched(
   id: Int,
   matcher: fn(Emit) -> Bool,
 ) -> State {
+  use <- bool.lazy_guard(state.delivery == Network, fn() {
+    reply(state, connection, id, mutation_outcome("admitted"))
+    state
+  })
   let #(state, emits) = pull(state)
   let matched =
     list.fold(emits, None, fn(found, emit) {
@@ -1885,7 +3196,7 @@ fn broadcast_except(
     dict.each(state.connections, fn(link_id, link: Connection) {
       let suppressed = link_id == connection && Some(emit) == matched
       case link.subscribed && !suppressed {
-        True -> link.sink(frame)
+        True -> deliver(link, frame)
         False -> Nil
       }
     })
@@ -1923,7 +3234,7 @@ fn steer(
 ) -> State {
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
-  let message = user_message(state, text)
+  let message = user_message(state, connection, text)
   use entry_id <- or_reply(
     result.map_error(api.steer(target, message), steer_error(_, strand)),
     state,
@@ -1988,7 +3299,7 @@ fn follow_up(
 ) -> State {
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
-  let message = user_message(state, text)
+  let message = user_message(state, connection, text)
   case api.follow_up(target, message) {
     Ok(entry_id) -> {
       reply(state, connection, id, queued_entry(strand, entry_id, message))
@@ -2068,9 +3379,10 @@ fn approve(
   escalation_id: String,
   echoed: List(Grant),
   action: String,
+  expected_seq: Int,
 ) -> State {
   use cell <- or_refuse(
-    pending_escalation_cell(state, escalation_id),
+    pending_escalation_cell(state, escalation_id, expected_seq),
     state,
     connection,
     id,
@@ -2078,29 +3390,29 @@ fn approve(
   let api.EscalationCell(record:, seq:) = cell
   use wanted <- or_refuse(wanted_diff(record), state, connection, id)
   use Nil <- or_refuse(
-    echo_matches(record, wanted, echoed, action),
+    echo_matches(record, seq, wanted, echoed, action),
     state,
     connection,
     id,
   )
   use Nil <- or_refuse(
-    commit_approval(state, record, seq, echoed),
+    commit_approval(state, connection, cell, echoed),
     state,
     connection,
     id,
   )
-  reply_with_matched(state, connection, id, fn(emit) {
+  reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "approved")
   })
 }
 
-// The record and the seq it was read at, refused unless it is still
-// pending. The point read, not the listing `deny` uses: the seq of
-// *this* record is what the commit has to assert, and a listing throws
-// every seq away.
+// Both decisions compare the exact question the client displayed. This point
+// read retains the sequence for the final CAS; a same-action reopen is a new
+// question even though its action digest has not changed.
 fn pending_escalation_cell(
   state: State,
   escalation_id: String,
+  expected_seq: Int,
 ) -> Result(api.EscalationCell, WireEvent) {
   use cell <- result.try(
     api.escalation_cell(state.runtime, escalation_id)
@@ -2111,6 +3423,13 @@ fn pending_escalation_cell(
       )
     }),
   )
+  use <- bool.lazy_guard(when: cell.seq != expected_seq, return: fn() {
+    Error(stale_approval(
+      cell.record,
+      cell.seq,
+      "the displayed question has changed",
+    ))
+  })
   use <- bool.lazy_guard(
     when: cell.record.status != runtime_escalation.Pending,
     return: fn() {
@@ -2154,6 +3473,7 @@ fn wanted_diff(
 // the grants the human read and no others.
 fn echo_matches(
   record: runtime_escalation.Escalation,
+  seq: Int,
   wanted: List(Grant),
   echoed: List(Grant),
   action: String,
@@ -2163,6 +3483,7 @@ fn echo_matches(
     return: fn() {
       Error(stale_approval(
         record,
+        seq,
         "the action this approval names is not the one the record now "
           <> "carries; the request changed between the prompt and the answer",
       ))
@@ -2173,6 +3494,7 @@ fn echo_matches(
     Some(_grant) ->
       Error(stale_approval(
         record,
+        seq,
         "the approved grants are not a subset of the denial's wanted diff",
       ))
   }
@@ -2184,38 +3506,24 @@ fn echo_matches(
 // a value the commit never saw.
 fn commit_approval(
   state: State,
-  record: runtime_escalation.Escalation,
-  seq: Int,
+  connection: Int,
+  cell: api.EscalationCell,
   echoed: List(Grant),
 ) -> Result(Nil, WireEvent) {
-  let key = runtime_escalation.register_key(record.id)
-  let approved =
-    runtime_escalation.approve(record, list.map(echoed, grants.encode))
-  let plan_tx =
-    tx.Tx(
-      writes: [
-        tx.SetRegister(
-          ns: register.FactCustom,
-          key:,
-          value: register.value(runtime_escalation.encode(approved)),
-        ),
-      ],
-      expected: [tx.Expect(ns: register.FactCustom, key:, seq: Some(seq))],
+  case
+    api.approve_escalation_at(
+      state.runtime,
+      cell,
+      list.map(echoed, grants.encode),
+      connection_origin(state, connection),
     )
-  case writer.commit(state.runtime.tree.writer, plan_tx) {
+  {
     Ok(_) -> Ok(Nil)
-
-    // The record moved under the answer that named it. Not a retry:
-    // committing against a re-read would approve a record nobody read.
-    Error(writer.Underlying(tx.StaleExpectation(..))) ->
-      Error(moved_under_the_answer(state, record.id))
-    Error(writer.Unavailable) ->
-      Error(refusal(
-        protocol.code_conflict,
-        "the session writer is restarting; try again",
-      ))
-    Error(_other) ->
-      Error(refusal(protocol.code_internal, "the approval commit was refused"))
+    Error(api.RaceLost) -> Error(moved_under_the_answer(state, cell.record.id))
+    Error(error) -> {
+      let #(code, text) = describe_api_error(error, "")
+      Error(refusal(code, text))
+    }
   }
 }
 
@@ -2228,12 +3536,13 @@ fn refusal(code: String, message: String) -> WireEvent {
 // pull to catch up.
 fn stale_approval(
   record: runtime_escalation.Escalation,
+  seq: Int,
   message: String,
 ) -> WireEvent {
   protocol.ErrorEvent(
     code: protocol.code_stale_approval,
     message:,
-    details: Some(protocol.stale_approval_details(escalation_view(record))),
+    details: Some(protocol.stale_approval_details(escalation_view(record, seq))),
   )
 }
 
@@ -2244,8 +3553,8 @@ fn stale_approval(
 fn moved_under_the_answer(state: State, escalation_id: String) -> WireEvent {
   let message =
     "the escalation record changed while this approval was being committed"
-  case api.escalation(state.runtime, escalation_id) {
-    Ok(record) -> stale_approval(record, message)
+  case api.escalation_cell(state.runtime, escalation_id) {
+    Ok(cell) -> stale_approval(cell.record, cell.seq, message)
     Error(_error) -> refusal(protocol.code_stale_approval, message)
   }
 }
@@ -2278,23 +3587,34 @@ fn deny(
   connection: Int,
   id: Int,
   escalation_id: String,
+  expected_seq: Int,
 ) -> State {
-  use _record <- or_reply(
-    find_escalation(state, escalation_id),
+  use cell <- or_refuse(
+    pending_escalation_cell(state, escalation_id, expected_seq),
     state,
     connection,
     id,
   )
-  use Nil <- or_reply(
-    result.map_error(
-      api.deny_escalation(state.runtime, escalation_id),
-      describe_api_error(_, ""),
-    ),
+  let outcome =
+    api.deny_escalation_at(
+      state.runtime,
+      cell,
+      connection_origin(state, connection),
+    )
+  use _record <- or_refuse(
+    case outcome {
+      Ok(record) -> Ok(record)
+      Error(api.RaceLost) -> Error(moved_under_the_answer(state, escalation_id))
+      Error(error) -> {
+        let #(code, text) = describe_api_error(error, "")
+        Error(refusal(code, text))
+      }
+    },
     state,
     connection,
     id,
   )
-  reply_with_matched(state, connection, id, fn(emit) {
+  reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "rejected")
   })
 }
@@ -2311,40 +3631,17 @@ fn escalation_emitted(
   }
 }
 
-fn find_escalation(
-  state: State,
-  escalation_id: String,
-) -> Result(runtime_escalation.Escalation, #(String, String)) {
-  use records <- result.try(
-    result.map_error(api.escalations(state.runtime), fn(_error) {
-      #(protocol.code_internal, "the escalation records are unreadable")
-    }),
-  )
-  use record <- result.try(
-    result.map_error(
-      list.find(records, fn(record) { record.id == escalation_id }),
-      fn(_nil) {
-        #(
-          protocol.code_unknown_escalation,
-          "unknown escalation: " <> escalation_id,
-        )
-      },
-    ),
-  )
-  case record.status {
-    runtime_escalation.Pending -> Ok(record)
-    _ ->
-      Error(#(
-        protocol.code_not_pending,
-        "escalation "
-          <> escalation_id
-          <> " is "
-          <> escalation_status(record.status),
-      ))
+// A decision acknowledgement follows its exact-cell CAS, unlike a prompt's
+// admission acknowledgement. The credited cut carries the durable result.
+fn reply_with_committed(state: State, connection, id, matcher) {
+  case state.delivery {
+    Network -> {
+      reply(state, connection, id, mutation_outcome("committed"))
+      state
+    }
+    HostOnly -> reply_with_matched(state, connection, id, matcher)
   }
 }
-
-// --- strand management -----------------------------------------------------
 
 fn fork(
   state: State,
@@ -2523,6 +3820,9 @@ fn entry_in_force(
 }
 
 fn strands_snapshot(state: State) -> WireEvent {
+  use <- bool.lazy_guard(state.delivery == Network, fn() {
+    mutation_outcome("committed")
+  })
   case full_snapshot(state) {
     protocol.SnapshotEvent(protocol.FullSnapshot(strands:, ..)) ->
       protocol.SnapshotEvent(protocol.StrandsSnapshot(strands:))
@@ -2838,10 +4138,11 @@ fn set_config(
   config: JsonValue,
 ) -> State {
   use fields <- or_reply(config_fields(config), state, connection, id)
-  use state <- or_reply(
-    result.map_error(apply_config(state, strand, fields), fn(message) {
-      #(protocol.code_bad_request, message)
-    }),
+  use #(state, committed) <- or_reply(
+    result.map_error(
+      apply_config(state, strand, fields, connection_origin(state, connection)),
+      fn(message) { #(protocol.code_bad_request, message) },
+    ),
     state,
     connection,
     id,
@@ -2850,10 +4151,15 @@ fn set_config(
     state,
     connection,
     id,
-    protocol.SnapshotEvent(
-      protocol.ConfigSnapshot(config: effective_config(state, strand)),
-    ),
+    protocol.SnapshotEvent(protocol.ConfigSnapshot(config: committed)),
   )
+  let event = protocol.SnapshotEvent(protocol.ConfigSnapshot(committed))
+  dict.each(state.connections, fn(other, link) {
+    case other != connection && link.subscribed {
+      True -> send_to(state, other, EventEnvelope(None, None, event))
+      False -> Nil
+    }
+  })
   state
 }
 
@@ -2870,20 +4176,133 @@ fn apply_config(
   state: State,
   strand: Option(String),
   fields: List(#(String, JsonValue)),
-) -> Result(State, String) {
+  author: Option(message.Origin),
+) -> Result(#(State, JsonValue), String) {
   // Validate everything before applying anything: a refused key must
   // leave no partial effect.
   use changes <- result.try(
     list.try_map(fields, fn(field) { validate_config_key(state, strand, field) }),
   )
-  list.fold(changes, Ok(state), fn(state, change) {
-    use state <- result.try(state)
-    change(state)
+  use defaults <- result.try(
+    api.run_defaults_cell(state.runtime)
+    |> result.map_error(fn(_) { "shared run settings could not be read" }),
+  )
+  let state =
+    State(
+      ..state,
+      runtime: api.Runtime(..state.runtime, settings: defaults.settings),
+    )
+  use <- bool.lazy_guard(fields == [], fn() {
+    Ok(#(state, effective_config(state, strand)))
   })
+
+  let initial = ConfigPlan(state, dict.new(), defaults, None)
+  use plan <- result.try(
+    list.fold(changes, Ok(initial), fn(plan, change) {
+      use plan <- result.try(plan)
+      change(plan)
+    }),
+  )
+
+  // All reads and validation finish before this one compare-and-set. Neither
+  // a later strand failure nor a conflicting defaults write can leave a prefix.
+  let transaction =
+    list.fold(dict.to_list(plan.cells), tx.Tx([], []), fn(transaction, pair) {
+      let #(strand, cell) = pair
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            register.StrandConfig,
+            strand,
+            register.value(machine_codec.encode_configuration(cell.value)),
+          ),
+          tx.SetRegister(
+            register.FactCustom,
+            "client/config_origin/" <> strand,
+            register.value(json.Object([#("origin", origin.encode(author))])),
+          ),
+          ..transaction.writes
+        ],
+        expected: [
+          tx.Expect(register.StrandConfig, strand, Some(cell.seq)),
+          ..transaction.expected
+        ],
+      )
+    })
+  let transaction = case plan.settings {
+    None -> transaction
+    Some(settings) ->
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            register.FactCustom,
+            "client/run_settings",
+            register.value(api.encode_run_defaults(settings, author)),
+          ),
+          ..transaction.writes
+        ],
+        expected: [
+          tx.Expect(register.FactCustom, "client/run_settings", defaults.seq),
+          ..transaction.expected
+        ],
+      )
+  }
+  let settings = option.unwrap(plan.settings, defaults.settings)
+  let updated = State(..state, runtime: api.Runtime(..state.runtime, settings:))
+  use target <- result.try(case strand {
+    None -> Ok([])
+    Some(name) ->
+      staged_configuration(plan, name)
+      |> result.map(fn(cell) { strand_config_fields(updated, cell.value) })
+  })
+  use _ <- result.try(
+    writer.commit(state.runtime.tree.writer, transaction)
+    |> result.map_error(fn(_) { "the configuration commit was refused" }),
+  )
+  let changed =
+    dict.to_list(plan.cells)
+    |> list.map(fn(pair) {
+      let #(name, cell) = pair
+      #(
+        name,
+        json.Object([
+          #("origin", origin.encode(author)),
+          ..strand_config_fields(updated, cell.value)
+        ]),
+      )
+    })
+  let defaults_origin = case plan.settings {
+    None -> defaults.origin
+    Some(_) -> author
+  }
+  Ok(#(
+    updated,
+    json.Object(
+      list.flatten([
+        base_config_fields(updated),
+        target,
+        [
+          #("origin", origin.encode(defaults_origin)),
+          #("strands", json.Object(changed)),
+        ],
+      ]),
+    ),
+  ))
+}
+
+// Staging retains each original cell sequence across multiple changes to it.
+// The closures below can only alter this value; they cannot commit a prefix.
+type ConfigPlan {
+  ConfigPlan(
+    context: State,
+    cells: Dict(String, session.Cell(machine_strand.StrandConfiguration)),
+    defaults: api.RunDefaults,
+    settings: Option(operation.RunSettings),
+  )
 }
 
 type ConfigChange =
-  fn(State) -> Result(State, String)
+  fn(ConfigPlan) -> Result(ConfigPlan, String)
 
 fn validate_config_key(
   state: State,
@@ -3088,70 +4507,82 @@ fn config_string(
 }
 
 fn set_queue_mode(
-  state: State,
+  plan: ConfigPlan,
   mode: operation.QueueMode,
-) -> Result(State, String) {
-  let settings =
-    operation.RunSettings(
-      ..state.runtime.settings,
-      steering_mode: mode,
-      follow_up_mode: mode,
-    )
-  Ok(State(..state, runtime: api.Runtime(..state.runtime, settings: settings)))
+) -> Result(ConfigPlan, String) {
+  let settings = option.unwrap(plan.settings, plan.defaults.settings)
+  Ok(
+    ConfigPlan(
+      ..plan,
+      settings: Some(
+        operation.RunSettings(
+          ..settings,
+          steering_mode: mode,
+          follow_up_mode: mode,
+        ),
+      ),
+    ),
+  )
 }
 
 fn set_tool_execution(
-  state: State,
+  plan: ConfigPlan,
   mode: operation.ToolExecution,
-) -> Result(State, String) {
-  let settings =
-    operation.RunSettings(..state.runtime.settings, tool_execution: mode)
-  Ok(State(..state, runtime: api.Runtime(..state.runtime, settings: settings)))
+) -> Result(ConfigPlan, String) {
+  let settings = option.unwrap(plan.settings, plan.defaults.settings)
+  Ok(
+    ConfigPlan(
+      ..plan,
+      settings: Some(operation.RunSettings(..settings, tool_execution: mode)),
+    ),
+  )
 }
 
 fn update_configuration(
-  state: State,
+  plan: ConfigPlan,
   strand: String,
   change: fn(machine_strand.StrandConfiguration) ->
     machine_strand.StrandConfiguration,
-) -> Result(State, String) {
-  case session.strand_configuration(state.runtime.session, strand) {
-    Ok(Some(session.Cell(value:, seq:))) -> {
-      let updated = change(value)
-      let plan_tx =
-        tx.Tx(
-          writes: [
-            tx.SetRegister(
-              ns: register.StrandConfig,
-              key: strand,
-              value: register.value(machine_codec.encode_configuration(updated)),
-            ),
-          ],
-          expected: [
-            tx.Expect(ns: register.StrandConfig, key: strand, seq: Some(seq)),
-          ],
-        )
-      case writer.commit(state.runtime.tree.writer, plan_tx) {
-        Ok(_) -> Ok(state)
-        Error(_) -> Error("the configuration commit was refused")
-      }
+) -> Result(ConfigPlan, String) {
+  use cell <- result.try(staged_configuration(plan, strand))
+  Ok(
+    ConfigPlan(
+      ..plan,
+      cells: dict.insert(
+        plan.cells,
+        strand,
+        session.Cell(..cell, value: change(cell.value)),
+      ),
+    ),
+  )
+}
+
+// A second field targeting the same strand sees the staged value, not a fresh
+// read which could discard the first field or replace its original expectation.
+fn staged_configuration(
+  plan: ConfigPlan,
+  strand: String,
+) -> Result(session.Cell(machine_strand.StrandConfiguration), String) {
+  case dict.get(plan.cells, strand) {
+    Ok(cell) -> Ok(cell)
+    Error(Nil) -> {
+      use cell <- result.try(
+        session.strand_configuration(plan.context.runtime.session, strand)
+        |> result.map_error(fn(_) { "configuration could not be read" }),
+      )
+      option.to_result(cell, "unknown strand: " <> strand)
     }
-    _ -> Error("unknown strand: " <> strand)
   }
 }
 
-// The session-wide variant: the same durable update applied to every
-// strand with a configuration register. Validation ran before any
-// change (apply_config's contract), so a mid-fold commit refusal is a
-// writer-level failure, reported as such.
 fn update_all_configurations(
-  state: State,
+  plan: ConfigPlan,
   change: fn(machine_strand.StrandConfiguration) ->
     machine_strand.StrandConfiguration,
-) -> Result(State, String) {
-  list.fold(strand_names(state), Ok(state), fn(state, strand) {
-    use state <- result.try(state)
-    update_configuration(state, strand, change)
+) -> Result(ConfigPlan, String) {
+  list.fold(strand_names(plan.context), Ok(plan), fn(plan, strand) {
+    use plan <- result.try(plan)
+    update_configuration(plan, strand, change)
   })
 }
 

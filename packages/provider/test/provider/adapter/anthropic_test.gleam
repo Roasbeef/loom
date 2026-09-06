@@ -517,6 +517,7 @@ pub fn build_request_shape_test() {
         message.UserMessage(
           content: [message.UserText(text: "hi", text_signature: None)],
           timestamp: 1,
+          origin: None,
         ),
       ],
       tools: [
@@ -643,6 +644,7 @@ fn user(text: String) -> message.AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 1,
+    origin: None,
   )
 }
 

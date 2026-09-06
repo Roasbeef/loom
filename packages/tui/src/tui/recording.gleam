@@ -57,6 +57,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
+import tui/attempt
 import tui/connection
 import tui/internal/ffi_bootstrap
 import tui/virtual_backend
@@ -77,6 +78,12 @@ pub type ScrollDirection {
 /// client acts on, and nothing else. Adding a variant here is the same
 /// decision as deciding a new event changes what the client shows.
 pub type Recorded {
+  /// The explicit local version-two header; it is not a gateway wire version.
+  LocalFormatTwo
+
+  /// A bounded, attempt-tagged lifetime or protocol fact.
+  Attempt(event: attempt.Event)
+
   /// A key press, as the exact string etui's backend produced.
   Key(text: String)
 
@@ -132,11 +139,29 @@ pub opaque type Recorder {
 /// let assert Ok(recorder) = recording.start("/tmp/session.jsonl")
 /// ```
 pub fn start(path: String) -> Result(Recorder, String) {
-  case simplifile.write(path, "") {
+  case simplifile.write(path, encode_line(Moment(0, LocalFormatTwo)) <> "\n") {
     Ok(Nil) ->
       Ok(Recorder(path:, started_ms: ffi_bootstrap.monotonic_time_ms()))
     Error(reason) ->
       Error("cannot open recording " <> path <> ": " <> string.inspect(reason))
+  }
+}
+
+/// Binds attempt identity to this optional recorder without copying credentials.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let trace = recording.trace(recorder, attempt.Id(1))
+/// ```
+pub fn trace(
+  recorder: Option(Recorder),
+  id: attempt.Id,
+) -> Option(attempt.Trace) {
+  case recorder {
+    Some(recorder) ->
+      Some(attempt.Trace(id, fn(event) { append(recorder, Attempt(event)) }))
+    None -> None
   }
 }
 
@@ -214,6 +239,8 @@ pub fn of_input(event: backend.InputEvent) -> Option(Recorded) {
 /// ```
 pub fn to_step(event: Recorded) -> virtual_backend.Step {
   case event {
+    LocalFormatTwo -> virtual_backend.Input(backend.Tick)
+    Attempt(event) -> virtual_backend.Attempt(event)
     Key(text:) -> virtual_backend.Input(backend.KeyPress(text))
     Pasted(text:) -> virtual_backend.Input(backend.Paste(text))
     Resized(width:, height:) ->
@@ -296,17 +323,51 @@ pub fn decode_file(path: String) -> Result(List(Moment), String) {
       "cannot read recording " <> path <> ": " <> string.inspect(reason)
     }),
   )
-  text
-  |> string.split("\n")
-  |> list.index_map(fn(line, index) { #(index + 1, line) })
-  |> list.filter(fn(numbered) { string.trim(numbered.1) != "" })
-  |> list.try_map(fn(numbered) {
-    let #(number, line) = numbered
-    decode_line(line)
-    |> result.map_error(fn(reason) {
-      path <> " line " <> int.to_string(number) <> ": " <> reason
-    })
-  })
+  decode_text(text)
+  |> result.map_error(fn(reason) { path <> " " <> reason })
+}
+
+/// Decodes a complete local log and refuses mixed tagged/untagged traffic.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert recording.decode_text("") == Ok([])
+/// ```
+pub fn decode_text(text: String) -> Result(List(Moment), String) {
+  use moments <- result.try(
+    text
+    |> string.split("\n")
+    |> list.index_map(fn(line, index) { #(index + 1, line) })
+    |> list.filter(fn(numbered) { string.trim(numbered.1) != "" })
+    |> list.try_map(fn(numbered) {
+      let #(number, line) = numbered
+      decode_line(line)
+      |> result.map_error(fn(reason) {
+        "line " <> int.to_string(number) <> ": " <> reason
+      })
+    }),
+  )
+  let valid = case moments {
+    [Moment(_, LocalFormatTwo), ..rest] ->
+      !list.any(rest, fn(moment) {
+        case moment.event {
+          LocalFormatTwo | Arrived(_) -> True
+          _ -> False
+        }
+      })
+    _ ->
+      !list.any(moments, fn(moment) {
+        case moment.event {
+          LocalFormatTwo | Attempt(_) -> True
+          _ -> False
+        }
+      })
+  }
+  case valid {
+    True -> Ok(moments)
+    False -> Error("mixed local recording formats are not replayable")
+  }
 }
 
 // One append per event. A recording is written by a person's hand or by a
@@ -325,6 +386,12 @@ fn append(recorder: Recorder, event: Recorded) -> Nil {
 
 fn encode_event(event: Recorded) -> List(#(String, json.JsonValue)) {
   case event {
+    LocalFormatTwo -> [#("t", json.String("format")), #("version", json.Int(2))]
+    Attempt(event) ->
+      case attempt.encode(event) {
+        json.Object(fields) -> fields
+        _ -> []
+      }
     Key(text:) -> [#("t", json.String("key")), #("key", json.String(text))]
     Pasted(text:) -> [
       #("t", json.String("paste")),
@@ -401,6 +468,22 @@ fn decode_event(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(Recorded, String) {
   case tag {
+    "format" ->
+      case required_int(fields, "version") {
+        Ok(2) -> Ok(LocalFormatTwo)
+        Ok(_) | Error(_) -> Error("unsupported local recording format")
+      }
+    "attempt_started"
+    | "attempt_requested"
+    | "attempt_frame"
+    | "attempt_connected"
+    | "attempt_disconnected"
+    | "attempt_fault"
+    | "attempt_adopted"
+    | "attempt_closed" ->
+      attempt.decode(json.Object(fields)) |> result.map(Attempt)
+    "attempt_failed" ->
+      attempt.decode(json.Object(fields)) |> result.map(Attempt)
     "key" -> result.map(required_string(fields, "key"), Key)
     "paste" -> result.map(required_string(fields, "text"), Pasted)
     "resize" -> decode_resize(fields)

@@ -296,6 +296,11 @@ fn loop(state: FakeState) -> Nil {
 fn react(state: FakeState, frame: framing.Frame) -> FakeState {
   case frame.body {
     framing.Hello(..) -> state
+    framing.Shutdown -> {
+      process.send(state.wire, exec.WireClosed(status: 0))
+      process.send(state.inbox, PeerClosed)
+      state
+    }
     framing.Heartbeat ->
       case state.script {
         DeafHeartbeat -> state

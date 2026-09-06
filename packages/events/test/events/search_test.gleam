@@ -447,6 +447,7 @@ pub fn sqlite_rewrite_invalidates_index_test() {
                 message.UserText(text: "[erased]", text_signature: None),
               ],
               timestamp: 0,
+              origin: None,
             ),
           )),
         )
@@ -491,5 +492,179 @@ pub fn source_locator_registration_and_replacement_test() {
   assert search.source(service, sid(92)) == Ok(None)
   assert search.remove(service, session: sid(91)) == Ok(Nil)
   assert search.source(service, sid(91)) == Ok(None)
+  assert search.close(service) == Ok(Nil)
+}
+
+/// Count limits apply to all entries, so invisible rows still advance progress.
+pub fn bounded_batches_cover_entries_once_and_advance_invisible_rows_test() {
+  let store = fixtures.open_store()
+  let #(first, ctx) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "batch alpha")
+  let #(hidden, ctx) = fixtures.custom_entry(ctx, Some(first.id), "invisible")
+  let #(last, _) = fixtures.message_entry(ctx, Some(hidden.id), "batch beta")
+  fixtures.commit_entries(store, [first, hidden, last])
+  let service = open_search()
+  assert search.sync_batch(
+      service,
+      store,
+      session: sid(101),
+      generation: 0,
+      limit: 2,
+    )
+    == Ok(search.Advanced(2, 2, search.MorePossible))
+  assert search.sync_batch(
+      service,
+      store,
+      session: sid(101),
+      generation: 0,
+      limit: 2,
+    )
+    == Ok(search.Advanced(3, 1, search.CaughtUp))
+  assert search.sync_batch(
+      service,
+      store,
+      session: sid(101),
+      generation: 0,
+      limit: 2,
+    )
+    == Ok(search.Advanced(3, 0, search.CaughtUp))
+  let assert Ok(hits) = search.query(service, text: "batch", limit: 10)
+    as "indexed entries must be queryable"
+  assert list.length(hits) == 2
+  assert search.close(service) == Ok(Nil)
+}
+
+/// Source retrieval permits another connection to commit before it returns.
+/// That commit makes the original batch stale rather than duplicating rows.
+pub fn bounded_batch_source_read_holds_no_writer_and_stale_cannot_publish_test() {
+  let path = fresh_index_path("bounded-stale")
+  let assert Ok(slow) = search.open(path) as "first index must open"
+  let assert Ok(fast) = search.open(path) as "second index must open"
+  let store = fixtures.open_store()
+  let #(first, ctx) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "racing first")
+  fixtures.commit_entries(store, [first])
+  assert search.sync(slow, store, session: sid(102), generation: 0) == Ok(Nil)
+  let #(second, _) =
+    fixtures.message_entry(ctx, Some(first.id), "racing second")
+  fixtures.commit_entries(store, [second])
+  let interleaved =
+    storage.Storage(..store, scan_entries: fn(handle, query: storage.EntryScan) {
+      assert query.limit == Some(1)
+
+      // A BEGIN IMMEDIATE held by the first connection would block this writer
+      // until its finite SQLite busy deadline and fail the assertion.
+      assert search.sync(fast, store, session: sid(102), generation: 0)
+        == Ok(Nil)
+      store.scan_entries(handle, query)
+    })
+  assert search.sync_batch(
+      slow,
+      interleaved,
+      session: sid(102),
+      generation: 0,
+      limit: 1,
+    )
+    == Ok(search.Stale)
+  assert search.sync_batch(
+      slow,
+      store,
+      session: sid(102),
+      generation: 0,
+      limit: 1,
+    )
+    == Ok(search.Advanced(2, 0, search.CaughtUp))
+  let assert Ok(hits) = search.query(slow, text: "racing", limit: 10)
+    as "racing rows must be queryable"
+  assert list.length(hits) == 2
+  assert search.close(fast) == Ok(Nil)
+  assert search.close(slow) == Ok(Nil)
+}
+
+/// Generation mismatch replaces old rows, even when a restored generation is lower.
+pub fn bounded_batch_generation_race_preserves_rewritten_rows_test() {
+  let path = fresh_index_path("bounded-generation-race")
+  let assert Ok(slow) = search.open(path) as "first index must open"
+  let assert Ok(fast) = search.open(path) as "second index must open"
+  let old = fixtures.open_store()
+  let #(secret, _) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "obsolete secret")
+  fixtures.commit_entries(old, [secret])
+  assert search.sync(slow, old, session: sid(104), generation: 0) == Ok(Nil)
+  let replacement = fixtures.open_store()
+  let #(kept, _) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "current public")
+  fixtures.commit_entries(replacement, [kept])
+  let interleaved =
+    storage.Storage(..old, scan_entries: fn(handle, query) {
+      assert search.sync(fast, replacement, session: sid(104), generation: 1)
+        == Ok(Nil)
+      old.scan_entries(handle, query)
+    })
+
+  // Both cursors have high_water=1; generation must also participate in equality.
+  assert search.sync_batch(
+      slow,
+      interleaved,
+      session: sid(104),
+      generation: 0,
+      limit: 1,
+    )
+    == Ok(search.Stale)
+  assert search.query(slow, text: "secret", limit: 10) == Ok([])
+  let assert Ok([_]) = search.query(slow, text: "public", limit: 10)
+    as "the newer generation must survive"
+  assert search.close(fast) == Ok(Nil)
+  assert search.close(slow) == Ok(Nil)
+}
+
+/// Invalid limits refuse before source reads; lower restored generations rebuild.
+pub fn bounded_batch_generation_invalidation_and_invalid_limit_test() {
+  let service = open_search()
+  let old = fixtures.open_store()
+  let #(secret, _) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "erased secret")
+  fixtures.commit_entries(old, [secret])
+  assert search.sync_batch(
+      service,
+      old,
+      session: sid(103),
+      generation: 2,
+      limit: 1,
+    )
+    == Ok(search.Advanced(1, 1, search.MorePossible))
+  let replacement = fixtures.open_store()
+  let #(kept, _) =
+    fixtures.message_entry(fixtures.new_ctx(), None, "retained public")
+  fixtures.commit_entries(replacement, [kept])
+  assert search.sync_batch(
+      service,
+      replacement,
+      session: sid(103),
+      generation: 1,
+      limit: 2,
+    )
+    == Ok(search.Advanced(1, 1, search.CaughtUp))
+  assert search.query(service, text: "secret", limit: 10) == Ok([])
+  let assert Ok([_]) = search.query(service, text: "public", limit: 10)
+    as "replacement must be indexed"
+  let refused_reads = process.new_subject()
+  let guarded =
+    storage.Storage(..replacement, scan_entries: fn(handle, query) {
+      process.send(refused_reads, Nil)
+      replacement.scan_entries(handle, query)
+    })
+  list.each([0, -1, search.max_batch_entries + 1], fn(limit) {
+    let assert Error(search.IndexFault(_)) =
+      search.sync_batch(
+        service,
+        guarded,
+        session: sid(103),
+        generation: 1,
+        limit:,
+      )
+      as "invalid limits must be refused"
+  })
+  assert process.receive(refused_reads, within: 0) == Error(Nil)
   assert search.close(service) == Ok(Nil)
 }

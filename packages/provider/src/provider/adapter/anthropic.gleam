@@ -49,6 +49,7 @@ import core/message.{
   Length, Stop, ToolCall, ToolResultImage, ToolResultMessage, ToolResultText,
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
+import core/origin
 import gleam/bit_array
 import gleam/bool
 import gleam/list
@@ -194,8 +195,8 @@ fn encode_messages(messages: List(AgentMessage)) -> List(JsonValue) {
 
 fn to_turn(message: AgentMessage) -> Result(#(String, List(JsonValue)), Nil) {
   case message {
-    UserMessage(content:, timestamp: _) ->
-      Ok(#("user", list.map(content, encode_user_block)))
+    UserMessage(content:, origin:, ..) ->
+      Ok(#("user", list.map(origin.project(content, origin), encode_user_block)))
     AssistantMessage(content:, ..) ->
       Ok(#("assistant", list.filter_map(content, encode_assistant_block)))
     ToolResultMessage(

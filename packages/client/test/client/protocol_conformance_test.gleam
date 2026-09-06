@@ -1,11 +1,14 @@
-//// Golden-fixture conformance: the gateway must accept every command
-//// fixture and emit byte-identical encodings of every event fixture
-//// from the gateway's normative corpus (`packages/client/testdata/protocol`).
+//// Golden-fixture conformance for the v2 conversation codecs in
+//// `packages/client/testdata/protocol`. Historical push and full-snapshot
+//// bodies remain covered for the internal HostOnly fixture seam; their
+//// presence here does not authorize them on the credited network path.
 //// Each fixture is decoded
 //// with the typed protocol codecs and re-encoded canonically; the
 //// output must equal the file byte for byte, which pins both the
 //// envelope and every nested body (entries, messages, usage in the
-//// core codec vocabulary) to the frozen protocol document.
+//// core codec vocabulary) to the protocol and its approved amendments.
+//// Protocol 016 adds exact approval sequences and nullable human origins;
+//// null in a historical fixture does not invent an authenticated author.
 
 import client/protocol
 import gleam/list
@@ -98,18 +101,27 @@ pub fn corpus_is_complete_test() {
 // --- strictness and tolerance ----------------------------------------------
 
 pub fn wrong_version_refused_test() {
-  let assert Error(protocol.BadEnvelope(..)) =
-    protocol.decode_command("{\"v\":2,\"id\":1,\"cmd\":\"abort\",\"body\":{}}")
+  let assert Error(protocol.BadEnvelope(reason: "protocol version 2", ..)) =
+    protocol.decode_command(
+      "{\"v\":1,\"id\":1,\"cmd\":\"abort\",\"body\":{\"strand\":\"main\"}}",
+    )
+}
+
+pub fn old_event_version_refused_test() {
+  let assert Error(protocol.BadEnvelope(reason: "protocol version 2", ..)) =
+    protocol.decode_event(
+      "{\"v\":1,\"event\":\"error\",\"body\":{\"code\":\"conflict\",\"message\":\"busy\"}}",
+    )
 }
 
 pub fn missing_id_refused_test() {
   let assert Error(protocol.BadEnvelope(..)) =
-    protocol.decode_command("{\"v\":1,\"cmd\":\"abort\",\"body\":{}}")
+    protocol.decode_command("{\"v\":2,\"cmd\":\"abort\",\"body\":{}}")
 }
 
 pub fn malformed_frame_reported_test() {
   let assert Error(protocol.MalformedFrame(..)) =
-    protocol.decode_command("{\"v\":1,")
+    protocol.decode_command("{\"v\":2,")
 }
 
 pub fn unknown_command_tolerated_test() {
@@ -118,7 +130,7 @@ pub fn unknown_command_tolerated_test() {
     command: protocol.UnknownCommand(cmd: "future_thing", ..),
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":9,\"cmd\":\"future_thing\",\"body\":{\"x\":1}}",
+      "{\"v\":2,\"id\":9,\"cmd\":\"future_thing\",\"body\":{\"x\":1}}",
     )
 }
 
@@ -128,7 +140,7 @@ pub fn unknown_event_tolerated_test() {
     ..,
   )) =
     protocol.decode_event(
-      "{\"v\":1,\"event\":\"future_event\",\"body\":{\"x\":1}}",
+      "{\"v\":2,\"event\":\"future_event\",\"body\":{\"x\":1}}",
     )
 }
 
@@ -138,7 +150,7 @@ pub fn unknown_fields_ignored_test() {
     command: protocol.Abort(strand: "main"),
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":4,\"cmd\":\"abort\","
+      "{\"v\":2,\"id\":4,\"cmd\":\"abort\","
       <> "\"body\":{\"strand\":\"main\",\"later_field\":true}}",
     )
 }
@@ -146,7 +158,7 @@ pub fn unknown_fields_ignored_test() {
 pub fn bad_body_names_command_test() {
   let assert Error(protocol.BadBody(id: 7, cmd: "prompt", ..)) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":7,\"cmd\":\"prompt\",\"body\":{\"strand\":\"main\"}}",
+      "{\"v\":2,\"id\":7,\"cmd\":\"prompt\",\"body\":{\"strand\":\"main\"}}",
     )
 }
 
@@ -157,7 +169,7 @@ pub fn prompt_content_empty_list_is_refused_test() {
     reason: "content must be a non-empty array",
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":8,\"cmd\":\"prompt_content\","
+      "{\"v\":2,\"id\":8,\"cmd\":\"prompt_content\","
       <> "\"body\":{\"strand\":\"main\",\"content\":[]}}",
     )
 }
@@ -169,7 +181,7 @@ pub fn prompt_content_malformed_block_refuses_whole_command_test() {
     reason: "valid base64 image bytes",
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":9,\"cmd\":\"prompt_content\",\"body\":{"
+      "{\"v\":2,\"id\":9,\"cmd\":\"prompt_content\",\"body\":{"
       <> "\"strand\":\"main\",\"content\":["
       <> "{\"type\":\"text\",\"text\":\"keep me\"},"
       <> "{\"type\":\"image\",\"data\":\"not base64\","
@@ -184,7 +196,7 @@ pub fn prompt_content_refuses_empty_image_media_type_test() {
     reason: "a non-empty media type",
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":10,\"cmd\":\"prompt_content\",\"body\":{"
+      "{\"v\":2,\"id\":10,\"cmd\":\"prompt_content\",\"body\":{"
       <> "\"strand\":\"main\",\"content\":["
       <> "{\"type\":\"image\",\"data\":\"iVBORw0KGgo=\","
       <> "\"mimeType\":\"  \"}]}}",
@@ -198,7 +210,7 @@ pub fn prompt_content_refuses_unknown_and_wrong_typed_blocks_test() {
     reason: "text or image",
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":11,\"cmd\":\"prompt_content\",\"body\":{"
+      "{\"v\":2,\"id\":11,\"cmd\":\"prompt_content\",\"body\":{"
       <> "\"strand\":\"main\",\"content\":[{\"type\":\"audio\"}]}}",
     )
   let assert Error(protocol.BadBody(
@@ -207,7 +219,7 @@ pub fn prompt_content_refuses_unknown_and_wrong_typed_blocks_test() {
     reason: "a string",
   )) =
     protocol.decode_command(
-      "{\"v\":1,\"id\":12,\"cmd\":\"prompt_content\",\"body\":{"
+      "{\"v\":2,\"id\":12,\"cmd\":\"prompt_content\",\"body\":{"
       <> "\"strand\":\"main\",\"content\":["
       <> "{\"type\":\"image\",\"data\":7,\"mimeType\":\"image/png\"}]}}",
     )

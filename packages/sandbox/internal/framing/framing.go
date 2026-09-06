@@ -38,6 +38,7 @@ const (
 	KindExecOut   = "exec_out"
 	KindExecExit  = "exec_exit"
 	KindCancel    = "cancel"
+	KindShutdown  = "shutdown"
 	KindHeartbeat = "heartbeat"
 	KindError     = "error"
 )

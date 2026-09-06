@@ -89,6 +89,7 @@ import gleam/otp/actor
 import gleam/pair
 import gleam/result
 import gleam/string
+import weft/poll
 import weft/state_machine
 
 /// How strictly the caller demands kernel enforcement for an execution.
@@ -281,10 +282,15 @@ pub type Transport {
   /// An in-process peer: outbound bytes go to `send`; inbound bytes
   /// arrive on the helper's wire subject (see `wire`).
   ChannelTransport(send: fn(BitArray) -> Nil, close: fn() -> Nil)
+
+  /// Acquires a native transport only after its BEAM owner is published.
+  /// The factory must clean up any partial acquisition before returning Error.
+  DeferredTransport(acquire: fn() -> Result(Transport, String))
 }
 
 // The resolved runtime channel held in actor state.
 type Wire {
+  WireUnopened
   WirePort(port: Port, os_pid: Option(Int), cleanup: fn() -> Nil)
   WireChannel(send: fn(BitArray) -> Nil, close: fn() -> Nil)
 }
@@ -335,13 +341,19 @@ pub type WireEvent {
 pub opaque type Helper {
   /// Invariant: `commands` and `wire` are subjects of the same actor
   /// process `pid`.
-  Helper(commands: Subject(Msg), wire: Subject(WireEvent), pid: Pid)
+  Helper(
+    commands: Subject(Msg),
+    wire: Subject(WireEvent),
+    pid: Pid,
+    handshake_wait: Int,
+  )
 }
 
 /// The helper machine's message type: every event it dispatches on,
 /// whether it came from a caller, from the wire, or from one of the two
 /// state timeouts. Opaque; constructed only through this module's API.
 pub opaque type Msg {
+  Begin
   AwaitReady(reply: Subject(Result(List(String), ExecFailure)))
   QueryStatus(reply: Subject(HelperStatus))
   Run(
@@ -370,7 +382,33 @@ pub opaque type Msg {
 
   Heartbeat(reply: Subject(Result(Nil, ExecFailure)))
   Shutdown
+  AwaitRetirement(reply: fn(Result(Nil, RetirementFailure)) -> Nil)
+  ForgetRetired
   FromWire(event: WireEvent)
+}
+
+/// Why orderly native retirement could not be established.
+pub type RetirementFailure {
+  /// The caller's deadline expired; custody and the port remain live.
+  RetirementPending
+
+  /// The BEAM owner disappeared before reporting native exit.
+  RetirementOwnerGone
+
+  /// The channel was discarded before its native exit could be observed.
+  RetirementProofLost
+
+  /// Native exit was observed, but its status does not attest clean join.
+  RetirementExit(status: Int)
+}
+
+// Native evidence belongs to the terminal state, not the actor's liveness.
+// Changing PendingExit to a verdict replays postponed retirement requests.
+type Retirement {
+  NoNativeResource
+  PendingExit
+  NativeExit(status: Int)
+  LostExit
 }
 
 /// Where the helper is in its lifecycle: the machine's *state* in
@@ -391,6 +429,9 @@ pub opaque type Msg {
 /// moment its state is entered: `features` at hello, `RunningExec` at
 /// dispatch. Anything that moves per frame belongs in `Data`.
 type Phase {
+  /// The owner exists, but no transport or policy file has been acquired.
+  Prepared
+
   /// The hello exchange is in flight. Entering this state arms the
   /// handshake deadline.
   AwaitingHello
@@ -409,7 +450,7 @@ type Phase {
   /// The channel is gone. Absorbing: every request is answered with this
   /// failure until the machine is shut down, and no second failure
   /// re-notifies anyone.
-  Dead(failure: ExecFailure)
+  Dead(failure: ExecFailure, retirement: Retirement)
 }
 
 /// The execution a `Running` or `Cancelling` state carries. Immutable
@@ -452,6 +493,8 @@ type Data {
     pending_heartbeats: List(#(Int, Subject(Result(Nil, ExecFailure)))),
     tick_outstanding: Bool,
     cleaned: Bool,
+    commands: Subject(Msg),
+    wire: Subject(WireEvent),
   )
 }
 
@@ -477,6 +520,22 @@ type Machine {
 /// indistinguishable from an upstream actor to whatever starts it, so
 /// `spawn_helper`'s `InitFailed` translation below still reads.
 pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
+  prepare(config)
+  |> result.map(fn(helper) {
+    begin(helper)
+    helper
+  })
+}
+
+/// Creates a parked owner without opening its transport. The caller must
+/// record and monitor this owner before activating it with `begin`.
+///
+/// ## Examples
+///
+/// `prepare(config)` performs no native spawn or policy-file acquisition.
+pub fn prepare(config: HelperConfig) -> Result(Helper, actor.StartError) {
+  // Weft's parent-exit policy includes normal termination. A preparer that
+  // exits before publication must not leave a parked resource owner behind.
   state_machine.new_with_initialiser(5000, fn(commands) {
     let wire = process.new_subject()
     let base =
@@ -484,40 +543,47 @@ pub fn start(config: HelperConfig) -> Result(Helper, actor.StartError) {
       |> process.select(commands)
       |> process.select_map(wire, FromWire)
 
-    // The port must be opened by this process: port messages are
-    // delivered to the opener, and the opener is where the selector
-    // lives.
-    use #(wire_out, selector) <- result.try(open_transport(
-      config.transport,
-      base,
-    ))
-
-    // The handshake deadline is not armed here. It belongs to
-    // `AwaitingHello`, so `entered` arms it on the initial enter call
-    // weft makes for the starting state — which is what lets the move to
-    // `Idle` or `Dead` cancel it with nobody cancelling a timer.
+    // Native acquisition follows Begin, after the pool has custody. The
+    // parked phase owns no deadline because no handshake has begun.
     let data =
       Data(
         config:,
-        wire_out:,
+        wire_out: WireUnopened,
         deframer: framing.deframer(),
         next_id: 1,
         pending_heartbeats: [],
         tick_outstanding: False,
         cleaned: False,
+        commands:,
+        wire:,
       )
-    state_machine.initialised(AwaitingHello, data)
-    |> state_machine.selecting(selector)
+    state_machine.initialised(Prepared, data)
+    |> state_machine.selecting(base)
     |> state_machine.returning(#(commands, wire))
     |> Ok
   })
   |> state_machine.on_event(handle)
   |> state_machine.on_enter(entered)
+  |> state_machine.trapping_exits(True)
   |> state_machine.start
   |> result.map(fn(started) {
     let #(commands, wire) = started.data
-    Helper(commands:, wire:, pid: started.pid)
+    Helper(
+      commands:,
+      wire:,
+      pid: started.pid,
+      handshake_wait: config.handshake_timeout_ms + 1000,
+    )
   })
+}
+
+/// Activates a prepared helper once. Repeated activation has no effect.
+///
+/// ## Examples
+///
+/// `begin(helper)` is called only after the owner enters its pool inventory.
+pub fn begin(helper: Helper) -> Nil {
+  process.send(helper.commands, Begin)
 }
 
 // Opens the resolved runtime channel for a transport spec. The port
@@ -528,10 +594,17 @@ fn open_transport(
   base: process.Selector(Msg),
 ) -> Result(#(Wire, process.Selector(Msg)), String) {
   case transport {
+    DeferredTransport(acquire) -> {
+      use transport <- result.try(acquire())
+      open_transport(transport, base)
+    }
     ChannelTransport(send:, close:) -> Ok(#(WireChannel(send:, close:), base))
     PortTransport(executable:, args:, cleanup:) ->
       case ffi_port.open_helper(executable, args) {
-        Error(Nil) -> Error(port_open_failure)
+        Error(Nil) -> {
+          cleanup()
+          Error(port_open_failure)
+        }
         Ok(opened) -> {
           let os_pid = option.from_result(ffi_port.port_os_pid(opened))
           let selector =
@@ -696,10 +769,76 @@ fn or_unresponsive(
   }
 }
 
-/// Stops the helper actor, closing the channel (which orders the helper
-/// process to reap any running jail and exit).
+/// Requests orderly shutdown and discards the BEAM actor after confirmed
+/// native retirement. This cast is not a retirement acknowledgement.
 pub fn shutdown(helper: Helper) -> Nil {
   process.send(helper.commands, Shutdown)
+  process.send(
+    helper.commands,
+    AwaitRetirement(fn(outcome) {
+      case outcome {
+        Ok(Nil) -> process.send(helper.commands, ForgetRetired)
+        Error(_) -> Nil
+      }
+    }),
+  )
+}
+
+/// Waits for native exit after the helper's shutdown frame, then retires
+/// its BEAM owner. A timeout never closes the port or releases custody.
+///
+/// ## Examples
+///
+/// `close(helper, waiting: 5000)` requires native status 0 and normal owner
+/// exit, or explicit confirmation that no native transport was acquired.
+pub fn close(
+  helper: Helper,
+  waiting timeout: Int,
+) -> Result(Nil, RetirementFailure) {
+  let deadline = monotonic_ms() + timeout
+  let monitor = process.monitor(helper.pid)
+  process.send(helper.commands, Shutdown)
+  let outcome = case
+    call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
+      AwaitRetirement(fn(outcome) { process.send(reply, outcome) })
+    })
+  {
+    Ok(outcome) -> outcome
+    Error(call.NoReply) -> Error(RetirementPending)
+    Error(call.CalleeGone) -> Error(RetirementOwnerGone)
+  }
+  let outcome = case outcome {
+    Ok(Nil) -> {
+      process.send(helper.commands, ForgetRetired)
+      await_retired_owner(monitor, deadline)
+    }
+    Error(failure) -> Error(failure)
+  }
+  process.demonitor_process(monitor)
+  outcome
+}
+
+// Native proof and BEAM retirement are separate events. The monitor predates
+// both, and the remaining caller budget bounds the second observation too.
+fn await_retired_owner(
+  monitor: process.Monitor,
+  deadline: Int,
+) -> Result(Nil, RetirementFailure) {
+  process.new_selector()
+  |> process.select_specific_monitor(monitor, fn(down) {
+    case down.reason {
+      process.Normal -> Ok(Nil)
+      process.Killed | process.Abnormal(_) -> Error(RetirementOwnerGone)
+    }
+  })
+  |> process.selector_receive(int.max(0, deadline - monotonic_ms()))
+  |> result.unwrap(Error(RetirementPending))
+}
+
+// The two observations share Weft's monotonic clock and one caller budget.
+fn monotonic_ms() -> Int {
+  let clock = poll.monotonic()
+  clock.now()
 }
 
 /// The actor's pid, for monitoring.
@@ -732,6 +871,32 @@ fn handle(
   message: Msg,
 ) -> state_machine.Next(Phase, Data, Msg) {
   case phase, message {
+    Prepared, Begin -> activate(data)
+    AwaitingHello, Begin
+    | Idle(..), Begin
+    | Running(..), Begin
+    | Cancelling(..), Begin
+    | Dead(..), Begin
+    -> state_machine.keep(data)
+
+    Prepared, FromWire(..)
+    | Prepared, Stdin(..)
+    | Prepared, CancelExec
+    | Prepared, CancelDeadline
+    | Prepared, HandshakeDeadline
+    | Prepared, HeartbeatTick
+    | Prepared, ForgetRetired
+    -> state_machine.keep(data)
+    Prepared, AwaitReady(..) | Prepared, AwaitRetirement(..) ->
+      state_machine.keep(data) |> state_machine.postpone
+    Prepared, Run(reply:, ..) -> refuse_run(data, reply, NotReady)
+    Prepared, Heartbeat(reply) -> {
+      process.send(reply, Error(NotReady))
+      state_machine.keep(data)
+    }
+    Prepared, Shutdown ->
+      state_machine.transition(Dead(ChannelClosed(0), NoNativeResource), data)
+
     // Inbound bytes are deframed in every phase. `apply_inbound` asks
     // the phase question once per frame rather than once per chunk,
     // because a chunk can carry the frame that kills the channel and
@@ -740,7 +905,36 @@ fn handle(
       advance(handle_bytes(Machine(phase:, data:), bytes))
 
     phase, FromWire(WireClosed(status:)) ->
-      die(Machine(phase:, data:), ChannelClosed(status:))
+      native_exit(Machine(phase:, data:), status)
+
+    Dead(retirement: NativeExit(status), ..), AwaitRetirement(reply) -> {
+      reply(retirement_result(status))
+      state_machine.keep(data)
+    }
+    Dead(retirement: NoNativeResource, ..), AwaitRetirement(reply) -> {
+      reply(Ok(Nil))
+      state_machine.keep(data)
+    }
+    Dead(retirement: LostExit, ..), AwaitRetirement(reply) -> {
+      reply(Error(RetirementProofLost))
+      state_machine.keep(data)
+    }
+    Dead(retirement: PendingExit, ..), AwaitRetirement(..)
+    | AwaitingHello, AwaitRetirement(..)
+    | Idle(..), AwaitRetirement(..)
+    | Running(..), AwaitRetirement(..)
+    | Cancelling(..), AwaitRetirement(..)
+    -> state_machine.keep(data) |> state_machine.postpone
+
+    Dead(retirement: NativeExit(0), ..), ForgetRetired
+    | Dead(retirement: NoNativeResource, ..), ForgetRetired
+    -> state_machine.stop()
+    Dead(..), ForgetRetired
+    | AwaitingHello, ForgetRetired
+    | Idle(..), ForgetRetired
+    | Running(..), ForgetRetired
+    | Cancelling(..), ForgetRetired
+    -> state_machine.keep(data)
 
     // The status query reads the phase alone, which is why the hello
     // features are carried by the three live states rather than beside
@@ -753,7 +947,13 @@ fn handle(
     // Shutdown settles what is in flight before the machine stops, so a
     // caller whose execution is still running learns why it ended
     // instead of watching its events subject go quiet.
-    phase, Shutdown -> handle_shutdown(Machine(phase:, data:))
+    AwaitingHello, Shutdown ->
+      state_machine.keep(data) |> state_machine.postpone
+    Dead(..), Shutdown -> state_machine.keep(data)
+    Idle(..) as phase, Shutdown
+    | Running(..) as phase, Shutdown
+    | Cancelling(..) as phase, Shutdown
+    -> handle_shutdown(Machine(phase:, data:))
 
     // The handshake has not settled, so the asker is parked. `postpone`
     // re-queues this exact event; weft replays it, in arrival order,
@@ -773,7 +973,7 @@ fn handle(
       state_machine.keep(data)
     }
 
-    Dead(failure:), AwaitReady(reply:) -> {
+    Dead(failure:, ..), AwaitReady(reply:) -> {
       process.send(reply, Error(failure))
       state_machine.keep(data)
     }
@@ -781,7 +981,7 @@ fn handle(
     // A dispatch is answered now or never: nothing is postponed here,
     // because a caller that cannot run holds a budget reservation and a
     // deadline, and would rather be refused than parked.
-    Dead(failure:), Run(request: _, events: _, reply:) ->
+    Dead(failure:, ..), Run(request: _, events: _, reply:) ->
       refuse_run(data, reply, failure)
 
     AwaitingHello, Run(request: _, events: _, reply:) ->
@@ -879,7 +1079,7 @@ fn handle(
       state_machine.keep(data)
     }
 
-    Dead(failure:), Heartbeat(reply:) -> {
+    Dead(failure:, ..), Heartbeat(reply:) -> {
       process.send(reply, Error(failure))
       state_machine.keep(data)
     }
@@ -909,6 +1109,7 @@ fn entered(
   data: Data,
 ) -> state_machine.Enter(Phase, Data, Msg) {
   case to {
+    Prepared -> state_machine.keep(data)
     AwaitingHello ->
       state_machine.keep(data)
       |> state_machine.with_state_timeout(
@@ -931,7 +1132,7 @@ fn entered(
     Idle(..) ->
       case from {
         AwaitingHello -> arm_heartbeat(data)
-        Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
+        Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
           state_machine.keep(data)
       }
 
@@ -992,22 +1193,83 @@ fn advance(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
 // answered its hello and is doing what it was asked.
 fn status_of(phase: Phase) -> HelperStatus {
   case phase {
-    AwaitingHello -> StatusStarting
+    Prepared | AwaitingHello -> StatusStarting
     Idle(features:) | Running(features:, ..) | Cancelling(features:, ..) ->
       StatusReady(features:)
-    Dead(failure:) -> StatusDead(failure:)
+    Dead(failure:, ..) -> StatusDead(failure:)
   }
 }
 
-// Settles everything in flight in band, then closes the channel — which
-// orders the helper process to reap any running jail and exit — and
-// stops. The settlement precedes the close so that a caller learns why
-// its execution ended rather than inferring it from silence.
+// The pool has already published this owner. Port acquisition and selector
+// installation occur in that owner, so port messages cannot reach a short-lived
+// factory worker. An acquisition error here precedes every native port.
+fn activate(data: Data) -> state_machine.Next(Phase, Data, Msg) {
+  let base =
+    process.new_selector()
+    |> process.select(data.commands)
+    |> process.select_map(data.wire, FromWire)
+  case open_transport(data.config.transport, base) {
+    Error(_reason) ->
+      state_machine.transition(Dead(SendFailed, NoNativeResource), data)
+    Ok(#(wire_out, selector)) ->
+      state_machine.transition(AwaitingHello, Data(..data, wire_out:))
+      |> state_machine.with_selector(selector)
+  }
+}
+
+// Settles execution callers before requesting native shutdown. The port stays
+// open while the helper cancels and joins its jail; only its exit-status event
+// advances PendingExit and releases postponed retirement requests.
 fn handle_shutdown(machine: Machine) -> state_machine.Next(Phase, Data, Msg) {
   let data = notify_death(machine, ChannelClosed(status: 0))
-  close_transport(data.wire_out)
-  let _ = run_cleanup(data)
-  state_machine.stop()
+  let #(data, id) = fresh_id(data)
+  let sent = {
+    use bytes <- result.try(
+      framing.encode(framing.Frame(id:, body: framing.Shutdown))
+      |> result.replace_error(Nil),
+    )
+    transport_send(data.wire_out, bytes)
+  }
+  let retirement = case sent {
+    Ok(Nil) -> PendingExit
+    Error(Nil) -> LostExit
+  }
+  state_machine.transition(
+    Dead(ChannelClosed(0), retirement),
+    run_cleanup(data),
+  )
+}
+
+// Only an exit event selected while the port was retained may establish
+// native retirement. A late event after port_close cannot repair lost proof.
+fn native_exit(
+  machine: Machine,
+  status: Int,
+) -> state_machine.Next(Phase, Data, Msg) {
+  case machine.phase {
+    Prepared
+    | Dead(retirement: NoNativeResource, ..)
+    | Dead(retirement: LostExit, ..)
+    | Dead(retirement: NativeExit(_), ..) -> state_machine.keep(machine.data)
+    Dead(retirement: PendingExit, ..)
+    | AwaitingHello
+    | Idle(..)
+    | Running(..)
+    | Cancelling(..) -> {
+      let data = notify_death(machine, ChannelClosed(status)) |> run_cleanup
+      state_machine.transition(
+        Dead(ChannelClosed(status), NativeExit(status)),
+        data,
+      )
+    }
+  }
+}
+
+fn retirement_result(status: Int) -> Result(Nil, RetirementFailure) {
+  case status {
+    0 -> Ok(Nil)
+    status -> Error(RetirementExit(status))
+  }
 }
 
 // The idle liveness probe. A tick still outstanding when the next one
@@ -1388,7 +1650,7 @@ fn handle_bytes(machine: Machine, bytes: BitArray) -> Machine {
   let machine = Machine(..machine, data: Data(..machine.data, deframer:))
   let machine = list.fold(inbound, machine, apply_inbound)
   case fault, machine.phase {
-    _, Dead(_) -> machine
+    _, Dead(..) -> machine
     None, _ -> machine
     Some(fault), _ -> mark_dead(machine, ChannelFault(fault:))
   }
@@ -1398,7 +1660,7 @@ fn handle_bytes(machine: Machine, bytes: BitArray) -> Machine {
 // further inbound items are dropped rather than acted on.
 fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
   case machine.phase {
-    Dead(_) -> machine
+    Prepared | Dead(..) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) ->
       case item {
         framing.Known(frame:) -> handle_frame(machine, frame)
@@ -1477,6 +1739,7 @@ fn handle_frame(machine: Machine, frame: Frame) -> Machine {
     framing.HookResult(..) ->
       mark_dead(machine, ProtocolViolation(kind: "hook_result"))
     framing.Cancel -> mark_dead(machine, ProtocolViolation(kind: "cancel"))
+    framing.Shutdown -> mark_dead(machine, ProtocolViolation(kind: "shutdown"))
   }
 }
 
@@ -1494,7 +1757,7 @@ fn handle_hello(
         False -> mark_dead(machine, ProtocolViolation(kind: "hello"))
         True -> complete_handshake(machine, features)
       }
-    Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
+    Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
       mark_dead(machine, ProtocolViolation(kind: "hello"))
   }
 }
@@ -1534,7 +1797,7 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
   // function returns — and the `Idle(..), AwaitReady` arm in `handle`
   // answers it with `features`. Nothing here has to flush a queue.
   case machine.phase {
-    Dead(_) -> machine
+    Prepared | Dead(..) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
       let data = run_cleanup(machine.data)
       Machine(phase: Idle(features:), data:)
@@ -1643,7 +1906,7 @@ fn settle(
         }
         False -> machine
       }
-    AwaitingHello | Idle(..) | Dead(..) -> machine
+    Prepared | AwaitingHello | Idle(..) | Dead(..) -> machine
   }
 }
 
@@ -1656,7 +1919,7 @@ fn running_with_id(phase: Phase, id: Int) -> Option(RunningExec) {
         True -> Some(exec)
         False -> None
       }
-    AwaitingHello | Idle(..) | Dead(..) -> None
+    Prepared | AwaitingHello | Idle(..) | Dead(..) -> None
   }
 }
 
@@ -1697,6 +1960,7 @@ fn send_or_die(
 
 fn transport_send(wire_out: Wire, bytes: BitArray) -> Result(Nil, Nil) {
   case wire_out {
+    WireUnopened -> Error(Nil)
     WirePort(port:, os_pid: _, cleanup: _) -> ffi_port.port_send(port, bytes)
     WireChannel(send:, close: _) -> {
       send(bytes)
@@ -1707,6 +1971,7 @@ fn transport_send(wire_out: Wire, bytes: BitArray) -> Result(Nil, Nil) {
 
 fn close_transport(wire_out: Wire) -> Nil {
   case wire_out {
+    WireUnopened -> Nil
     WirePort(port:, os_pid: _, cleanup: _) -> ffi_port.close_port(port)
     WireChannel(send: _, close:) -> close()
   }
@@ -1715,6 +1980,7 @@ fn close_transport(wire_out: Wire) -> Nil {
 // Last-resort kill: close the channel and SIGKILL the OS process.
 fn kill_transport(wire_out: Wire) -> Nil {
   case wire_out {
+    WireUnopened -> Nil
     WirePort(port:, os_pid:, cleanup: _) -> {
       ffi_port.close_port(port)
       case os_pid {
@@ -1731,6 +1997,7 @@ fn run_cleanup(data: Data) -> Data {
     True -> data
     False -> {
       case data.wire_out {
+        WireUnopened -> Nil
         WirePort(port: _, os_pid: _, cleanup:) -> cleanup()
         WireChannel(send: _, close: _) -> Nil
       }
@@ -1748,11 +2015,15 @@ fn run_cleanup(data: Data) -> Data {
 // fault — must not re-notify callers who have already been told.
 fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
-    Dead(_) -> machine
+    Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
+    Dead(..) -> machine
     AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
       let data = notify_death(machine, failure)
       close_transport(data.wire_out)
-      Machine(phase: Dead(failure:), data: run_cleanup(data))
+      Machine(
+        phase: Dead(failure:, retirement: LostExit),
+        data: run_cleanup(data),
+      )
     }
   }
 }
@@ -1781,7 +2052,7 @@ fn notify_death(machine: Machine, failure: ExecFailure) -> Data {
   case machine.phase {
     Running(exec:, ..) | Cancelling(exec:, ..) ->
       process.send(exec.events, Failed(failure:))
-    AwaitingHello | Idle(..) | Dead(..) -> Nil
+    Prepared | AwaitingHello | Idle(..) | Dead(..) -> Nil
   }
   list.each(machine.data.pending_heartbeats, fn(pending) {
     process.send(pending.1, Error(failure))
@@ -1928,6 +2199,41 @@ pub type SpawnError {
 /// policy arrives on fd 3, and waits for the handshake. The temp file
 /// is unlinked as soon as the helper's hello arrives.
 pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
+  use helper <- result.try(prepare_helper(config))
+  begin(helper)
+  case await_ready(helper, waiting: helper.handshake_wait) {
+    Ok(_) -> Ok(helper)
+    Error(failure) -> {
+      shutdown(helper)
+      Error(HandshakeFailed(failure))
+    }
+  }
+}
+
+/// Prepares a native helper without creating its policy file or OS process.
+/// Pools use this factory so acquisition follows inventory publication.
+///
+/// ## Examples
+///
+/// `start_pool(size: 2, spawn: fn() { prepare_helper(config) })` owns each
+/// helper before its handshake starts.
+pub fn prepare_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
+  let transport =
+    DeferredTransport(fn() {
+      native_transport(config) |> result.map_error(string.inspect)
+    })
+  prepare(HelperConfig(
+    transport:,
+    handshake_timeout_ms: config.handshake_timeout_ms,
+    cancel_grace_ms: config.cancel_grace_ms,
+    heartbeat_interval_ms: config.heartbeat_interval_ms,
+  ))
+  |> result.map_error(ActorFailed)
+}
+
+// Runs only inside the already-published helper owner. The janitor covers
+// owner death after policy-file creation, including an untrappable kill.
+fn native_transport(config: SpawnConfig) -> Result(Transport, SpawnError) {
   use policy_bytes <- result.try(
     policy.encode(config.base_policy)
     |> result.map_error(fn(error) { PolicyUnencodable(error:) }),
@@ -1941,6 +2247,7 @@ pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
     |> result.replace_error(PolicyFileFailed),
   )
   let cleanup = fn() { ffi_port.delete_file(policy_path) }
+  watch_cleanup(process.self(), cleanup)
 
   // $0 is a display name; $1 the helper binary; $2 the policy file;
   // everything after that is the helper's own arguments. Positional
@@ -1958,37 +2265,7 @@ pub fn spawn_helper(config: SpawnConfig) -> Result(Helper, SpawnError) {
       ],
       config.helper_args,
     )
-  let transport = PortTransport(executable: config.shell_path, args:, cleanup:)
-  let helper_config =
-    HelperConfig(
-      transport:,
-      handshake_timeout_ms: config.handshake_timeout_ms,
-      cancel_grace_ms: config.cancel_grace_ms,
-      heartbeat_interval_ms: config.heartbeat_interval_ms,
-    )
-  case start(helper_config) {
-    Error(actor.InitFailed(message)) if message == port_open_failure -> {
-      cleanup()
-      Error(PortOpenFailed)
-    }
-    Error(error) -> {
-      cleanup()
-      Error(ActorFailed(error:))
-    }
-    Ok(helper) -> {
-      // The actor unlinks the file itself on every death it can see;
-      // the janitor covers the deaths it cannot (brutal kill before or
-      // after hello). Deletion is idempotent, so both firing is fine.
-      watch_cleanup(pid(helper), cleanup)
-      case await_ready(helper, waiting: config.handshake_timeout_ms + 1000) {
-        Ok(_features) -> Ok(helper)
-        Error(failure) -> {
-          shutdown(helper)
-          Error(HandshakeFailed(failure:))
-        }
-      }
-    }
-  }
+  Ok(PortTransport(executable: config.shell_path, args:, cleanup:))
 }
 
 /// Spawns a janitor process that runs `cleanup` when `pid` dies, for
@@ -2011,13 +2288,11 @@ pub fn watch_cleanup(pid: Pid, cleanup: fn() -> Nil) -> Nil {
 
 // --- the pool -----------------------------------------------------------
 
-/// A fixed-size pool of helpers with checkout/checkin semantics. One
-/// checkout maps to one helper, which runs one execution at a time —
-/// the helper contract is enforced structurally. Dead helpers are
-/// retired at checkout/checkin and capacity is respawned lazily on the
-/// next checkout.
+/// A fixed-size pool that owns helpers across checkout and checkin. A
+/// helper occupies capacity until native exit and normal BEAM retirement
+/// are confirmed. Replacement helpers are spawned lazily after that proof.
 pub opaque type Pool {
-  Pool(subject: Subject(PoolMsg))
+  Pool(subject: Subject(PoolMsg), pid: Pid)
 }
 
 /// The pool actor's message type. Opaque.
@@ -2025,11 +2300,16 @@ pub opaque type PoolMsg {
   Checkout(reply: Subject(Result(Helper, CheckoutError)))
   Checkin(helper: Helper)
   StopPool
+  AwaitPoolRetirement(reply: Subject(Result(Nil, RetirementFailure)))
+  HelperRetired(pid: Pid, outcome: Result(Nil, RetirementFailure))
+  HelperOwnerGone(pid: Pid, reason: process.ExitReason)
+  PoolLinkedExit(pid: Pid)
+  ForgetPool
 }
 
 /// Why a checkout was refused.
 pub type CheckoutError {
-  /// Every helper slot is lent out.
+  /// Every slot is borrowed or still held by an unreaped helper.
   AllBusy(size: Int)
 
   /// A fresh helper could not be spawned.
@@ -2048,9 +2328,34 @@ type PoolState {
   PoolState(
     size: Int,
     spawn: fn() -> Result(Helper, SpawnError),
-    idle: List(Helper),
-    lent: Int,
+    entries: List(PoolEntry),
+    commands: Subject(PoolMsg),
+    parent: Pid,
   )
+}
+
+// This is the pool's one canonical inventory. Borrowing changes admission,
+// never custody, so even a checkout reply lost to a deadline stays owned.
+type PoolEntry {
+  PoolEntry(
+    helper: Helper,
+    monitor: process.Monitor,
+    availability: Availability,
+  )
+}
+
+type Availability {
+  Available
+  Borrowed
+  Draining
+  RetiringActor
+  Unconfirmed(failure: RetirementFailure)
+}
+
+type PoolPhase {
+  PoolLive
+  PoolClosing
+  PoolFinished(outcome: Result(Nil, RetirementFailure))
 }
 
 /// The pool ceiling a host gets when it names no other: the node's
@@ -2112,10 +2417,18 @@ pub fn start_pool(
   size size: Int,
   spawn spawn: fn() -> Result(Helper, SpawnError),
 ) -> Result(Pool, actor.StartError) {
-  actor.new(PoolState(size:, spawn:, idle: [], lent: 0))
-  |> actor.on_message(handle_pool)
-  |> actor.start
-  |> result.map(fn(started) { Pool(subject: started.data) })
+  let parent = process.self()
+  state_machine.new_with_initialiser(5000, fn(commands) {
+    let state = PoolState(size:, spawn:, entries: [], commands:, parent:)
+    state_machine.initialised(PoolLive, state)
+    |> state_machine.selecting(pool_selector(state))
+    |> state_machine.returning(commands)
+    |> Ok
+  })
+  |> state_machine.trapping_exits(True)
+  |> state_machine.on_event(handle_pool)
+  |> state_machine.start
+  |> result.map(fn(started) { Pool(subject: started.data, pid: started.pid) })
 }
 
 /// Borrows a ready helper, spawning one if the pool is under capacity.
@@ -2130,9 +2443,9 @@ pub fn start_pool(
 ///
 /// The cost is real and worth naming: a pool that answers *after* the
 /// window sends `Ok(helper)` to a reply subject nobody is selecting on,
-/// and that helper stays counted as lent with no borrower to check it
-/// in. It is bounded by the pool's own size — once `lent` reaches
-/// `size` every later checkout is `AllBusy` — and it needs a pool that
+/// and that helper stays in the pool inventory with no borrower to check it
+/// in. It is bounded by the pool's own size: a full inventory answers
+/// `AllBusy`. This requires a pool that
 /// was blocked past a borrower's whole window and then recovered.
 /// Against it stands a dead broker, which strands those same helpers
 /// and loses everything else besides.
@@ -2146,71 +2459,260 @@ pub fn checkout(
   }
 }
 
-/// Returns a borrowed helper. Dead helpers are retired (their slot
-/// respawns lazily); live ones rejoin the idle set.
+/// Returns a borrowed helper. Ready helpers become available; failed
+/// helpers retain capacity while their retirement is requested and observed.
 pub fn checkin(pool: Pool, helper: Helper) -> Nil {
   process.send(pool.subject, Checkin(helper:))
 }
 
-/// Stops the pool actor and shuts down every idle helper. Lent helpers
-/// are the borrowers' to shut down via `checkin` having no pool — in
-/// practice `stop_pool` runs at session close, after all strands quiesce.
+/// Requests shutdown of every owned helper, including borrowed helpers.
+/// The pool stops only after confirmed retirement. Use `close_pool` when
+/// the caller needs the outcome; this cast is not proof of cleanup.
 pub fn stop_pool(pool: Pool) -> Nil {
   process.send(pool.subject, StopPool)
+  process.send(pool.subject, ForgetPool)
+}
+
+/// The pool owner, for custody monitors established before shutdown.
+///
+/// ## Examples
+///
+/// `process.monitor(pool_pid(pool))` watches the original pool owner.
+pub fn pool_pid(pool: Pool) -> Pid {
+  pool.pid
+}
+
+/// Stops admissions and waits for every owned helper, borrowed or idle,
+/// to report orderly native exit. A timeout preserves the inventory.
+///
+/// ## Examples
+///
+/// `close_pool(pool, waiting: 5000)` cannot succeed from actor death alone.
+pub fn close_pool(
+  pool: Pool,
+  waiting timeout: Int,
+) -> Result(Nil, RetirementFailure) {
+  let deadline = monotonic_ms() + timeout
+  let monitor = process.monitor(pool.pid)
+  process.send(pool.subject, StopPool)
+  let outcome = case
+    call.try_call(pool.subject, waiting: timeout, sending: AwaitPoolRetirement)
+  {
+    Ok(outcome) -> outcome
+    Error(call.NoReply) -> Error(RetirementPending)
+    Error(call.CalleeGone) -> Error(RetirementOwnerGone)
+  }
+  let outcome = case outcome {
+    Ok(Nil) -> {
+      process.send(pool.subject, ForgetPool)
+      await_retired_owner(monitor, deadline)
+    }
+    Error(failure) -> Error(failure)
+  }
+  process.demonitor_process(monitor)
+  outcome
 }
 
 fn handle_pool(
+  phase: PoolPhase,
   state: PoolState,
   message: PoolMsg,
-) -> actor.Next(PoolState, PoolMsg) {
-  case message {
-    Checkout(reply:) -> {
+) -> state_machine.Next(PoolPhase, PoolState, PoolMsg) {
+  case phase, message {
+    PoolLive, Checkout(reply:) -> {
       let #(state, outcome) = next_helper(state)
       process.send(reply, outcome)
-      actor.continue(state)
+      pool_step(PoolLive, state)
     }
-    Checkin(helper:) -> handle_checkin(state, helper)
-    StopPool -> {
-      list.each(state.idle, shutdown)
-      actor.stop()
+    PoolClosing, Checkout(reply) | PoolFinished(..), Checkout(reply) -> {
+      process.send(reply, Error(PoolUnavailable))
+      state_machine.keep(state)
+    }
+    PoolLive, Checkin(helper:) ->
+      pool_step(PoolLive, handle_checkin(state, helper))
+    PoolClosing, Checkin(..) | PoolFinished(..), Checkin(..) ->
+      state_machine.keep(state)
+    PoolLive, StopPool -> {
+      let entries =
+        list.map(state.entries, fn(entry) {
+          retire_entry(entry, state.commands)
+        })
+      pool_step(PoolClosing, PoolState(..state, entries:))
+    }
+    PoolClosing, StopPool | PoolFinished(..), StopPool ->
+      state_machine.keep(state)
+    PoolFinished(outcome), AwaitPoolRetirement(reply) -> {
+      process.send(reply, outcome)
+      state_machine.keep(state)
+    }
+    PoolLive, AwaitPoolRetirement(..) | PoolClosing, AwaitPoolRetirement(..) ->
+      state_machine.keep(state) |> state_machine.postpone
+    PoolFinished(Ok(Nil)), ForgetPool -> state_machine.stop()
+    PoolFinished(Error(_)), ForgetPool -> state_machine.keep(state)
+    PoolLive, ForgetPool | PoolClosing, ForgetPool ->
+      state_machine.keep(state) |> state_machine.postpone
+    phase, HelperRetired(pid, outcome) ->
+      pool_step(phase, record_retirement(state, pid, outcome))
+    phase, HelperOwnerGone(pid, reason) ->
+      pool_step(phase, record_owner_exit(state, pid, reason))
+    phase, PoolLinkedExit(pid) ->
+      case pid == state.parent {
+        True -> state_machine.stop()
+        False -> pool_step(phase, state)
+      }
+  }
+}
+
+fn pool_selector(state: PoolState) -> process.Selector(PoolMsg) {
+  let base =
+    process.new_selector()
+    |> process.select(state.commands)
+    |> process.select_trapped_exits(fn(exit) { PoolLinkedExit(exit.pid) })
+  list.fold(state.entries, base, fn(selector, entry) {
+    process.select_specific_monitor(selector, entry.monitor, fn(down) {
+      HelperOwnerGone(entry.helper.pid, down.reason)
+    })
+  })
+}
+
+fn pool_step(
+  phase: PoolPhase,
+  state: PoolState,
+) -> state_machine.Next(PoolPhase, PoolState, PoolMsg) {
+  let phase = case phase, state.entries {
+    PoolClosing, [] -> PoolFinished(Ok(Nil))
+    PoolClosing, [_, ..] ->
+      case
+        list.find(state.entries, fn(entry) {
+          case entry.availability {
+            Unconfirmed(_) -> True
+            Available | Borrowed | Draining | RetiringActor -> False
+          }
+        })
+      {
+        Ok(PoolEntry(availability: Unconfirmed(failure), ..)) ->
+          PoolFinished(Error(failure))
+        Ok(PoolEntry(availability: Available, ..))
+        | Ok(PoolEntry(availability: Borrowed, ..))
+        | Ok(PoolEntry(availability: Draining, ..))
+        | Ok(PoolEntry(availability: RetiringActor, ..))
+        | Error(Nil) -> PoolClosing
+      }
+    PoolLive, _ | PoolFinished(..), _ -> phase
+  }
+  state_machine.transition(phase, state)
+  |> state_machine.with_selector(pool_selector(state))
+}
+
+fn retire_entry(entry: PoolEntry, commands: Subject(PoolMsg)) -> PoolEntry {
+  case entry.availability {
+    Draining | RetiringActor | Unconfirmed(_) -> entry
+    Available | Borrowed -> {
+      process.send(entry.helper.commands, Shutdown)
+      process.send(
+        entry.helper.commands,
+        AwaitRetirement(fn(outcome) {
+          process.send(commands, HelperRetired(entry.helper.pid, outcome))
+        }),
+      )
+      PoolEntry(..entry, availability: Draining)
     }
   }
+}
+
+fn record_retirement(
+  state: PoolState,
+  pid: Pid,
+  outcome: Result(Nil, RetirementFailure),
+) -> PoolState {
+  let entries =
+    list.filter_map(state.entries, fn(entry) {
+      case entry.helper.pid == pid, outcome {
+        False, _ -> Ok(entry)
+        True, Ok(Nil) -> {
+          process.send(entry.helper.commands, ForgetRetired)
+          Ok(PoolEntry(..entry, availability: RetiringActor))
+        }
+        True, Error(failure) ->
+          Ok(PoolEntry(..entry, availability: Unconfirmed(failure)))
+      }
+    })
+  PoolState(..state, entries:)
+}
+
+// A native acknowledgement authorizes asking the actor to exit; only the
+// original normal monitor event completes that second retirement boundary.
+fn record_owner_exit(
+  state: PoolState,
+  pid: Pid,
+  reason: process.ExitReason,
+) -> PoolState {
+  let entries =
+    list.filter_map(state.entries, fn(entry) {
+      case entry.helper.pid == pid, entry.availability, reason {
+        False, _, _ -> Ok(entry)
+        True, RetiringActor, process.Normal -> {
+          process.demonitor_process(entry.monitor)
+          Error(Nil)
+        }
+        True, _, _ ->
+          Ok(PoolEntry(..entry, availability: Unconfirmed(RetirementOwnerGone)))
+      }
+    })
+  PoolState(..state, entries:)
 }
 
 // Returns a borrowed helper. Dead ones rejoin as `helper_ready` refuses
 // them; live ones fall through to `Checkin`'s ordinary bookkeeping.
-fn handle_checkin(
-  state: PoolState,
-  helper: Helper,
-) -> actor.Next(PoolState, PoolMsg) {
-  let lent = case state.lent > 0 {
-    True -> state.lent - 1
-    False -> 0
-  }
-  case helper_ready(helper) {
-    True ->
-      actor.continue(PoolState(..state, lent:, idle: [helper, ..state.idle]))
-    False -> {
-      shutdown(helper)
-      actor.continue(PoolState(..state, lent:))
-    }
-  }
+fn handle_checkin(state: PoolState, helper: Helper) -> PoolState {
+  let entries =
+    list.map(state.entries, fn(entry) {
+      case entry.helper.pid == helper.pid, entry.availability {
+        True, Borrowed ->
+          case helper_ready(helper) {
+            True -> PoolEntry(..entry, availability: Available)
+            False -> retire_entry(entry, state.commands)
+          }
+        False, _
+        | True, Available
+        | True, Draining
+        | True, RetiringActor
+        | True, Unconfirmed(_)
+        -> entry
+      }
+    })
+  PoolState(..state, entries:)
 }
 
 fn next_helper(
   state: PoolState,
 ) -> #(PoolState, Result(Helper, CheckoutError)) {
-  case state.idle {
-    [helper, ..idle] ->
-      case helper_ready(helper) {
-        True -> #(PoolState(..state, idle:, lent: state.lent + 1), Ok(helper))
+  case list.find(state.entries, fn(entry) { entry.availability == Available }) {
+    Ok(entry) ->
+      case helper_ready(entry.helper) {
+        True -> {
+          let entries =
+            list.map(state.entries, fn(candidate) {
+              case candidate.helper.pid == entry.helper.pid {
+                True -> PoolEntry(..candidate, availability: Borrowed)
+                False -> candidate
+              }
+            })
+          #(PoolState(..state, entries:), Ok(entry.helper))
+        }
         False -> {
-          shutdown(helper)
-          next_helper(PoolState(..state, idle:))
+          let entries =
+            list.map(state.entries, fn(candidate) {
+              case candidate.helper.pid == entry.helper.pid {
+                True -> retire_entry(candidate, state.commands)
+                False -> candidate
+              }
+            })
+          next_helper(PoolState(..state, entries:))
         }
       }
-    [] ->
-      case state.lent < state.size {
+    Error(Nil) ->
+      case state.size > 0 && list.drop(state.entries, state.size - 1) == [] {
         False -> #(state, Error(AllBusy(size: state.size)))
         True -> spawn_new(state)
       }
@@ -2219,7 +2721,30 @@ fn next_helper(
 
 fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
   case state.spawn() {
-    Ok(helper) -> #(PoolState(..state, lent: state.lent + 1), Ok(helper))
+    Ok(helper) -> {
+      let entry =
+        PoolEntry(
+          helper:,
+          monitor: process.monitor(helper.pid),
+          availability: Borrowed,
+        )
+      let state = PoolState(..state, entries: [entry, ..state.entries])
+
+      // Inventory and the original monitor precede Begin. A checkout
+      // caller's deadline can expire during the handshake without losing
+      // the owner or converting partial acquisition into an empty slot.
+      begin(helper)
+      case await_ready(helper, waiting: helper.handshake_wait) {
+        Ok(_) -> #(state, Ok(helper))
+        Error(failure) -> {
+          let retired = retire_entry(entry, state.commands)
+          #(
+            PoolState(..state, entries: [retired, ..list.drop(state.entries, 1)]),
+            Error(SpawnFailed(HandshakeFailed(failure))),
+          )
+        }
+      }
+    }
     Error(error) -> #(state, Error(SpawnFailed(error:)))
   }
 }
@@ -2230,9 +2755,9 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
 // answers in microseconds, and one that cannot answer within
 // `ready_probe_ms` is wedged, which is exactly what this is here to
 // catch. The cost is therefore bounded by the number of *wedged*
-// helpers and paid once each: an unanswered probe retires the helper
-// (`next_helper` shuts it down and moves on, `handle_checkin` refuses
-// to take it back), so it is never probed again. Shortening the timeout
+// helpers and paid once each: an unanswered probe removes the helper
+// from lending while retaining its custody until retirement is confirmed,
+// so it is never probed again. Shortening the timeout
 // to make a larger pool cheaper would trade that for retiring healthy
 // helpers under load, which is the worse failure.
 //

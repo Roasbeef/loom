@@ -175,6 +175,7 @@ pub fn the_hook_wraps_rather_than_replaces_test() {
             message.UserText(text: "an earlier layer", text_signature: None),
           ],
           timestamp: 0,
+          origin: None,
         ),
       ]
     })

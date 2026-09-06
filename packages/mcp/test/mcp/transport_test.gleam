@@ -165,6 +165,8 @@ pub fn a_line_written_to_a_real_child_comes_back_test() {
       let assert Ok(Nil) = connection.send("{\"ping\":1}\n")
       assert receive_line(selector, "") == "{\"ping\":1}\n"
       connection.close()
+      let #(_bytes, exited) = drain(selector, <<>>)
+      assert exited
     }
   }
 }

@@ -1,1 +1,1 @@
-{"v":1,"event":"stream_delta","body":{"strand":"main","op":"op-1","ephemeral":true,"kind":"text","text":"I will wrap the call"}}
+{"v":2,"event":"stream_delta","body":{"strand":"main","op":"op-1","ephemeral":true,"kind":"text","text":"I will wrap the call"}}
