@@ -96,20 +96,20 @@ jobs:
       # This is also the only step allowed the network for package
       # resolution (scripts/codemode_seed.sh explains why).
       - name: Prepare the code-mode build seed
-        run: make codemode-seed
+        run: .github/scripts/hex_retry.sh make codemode-seed
 
       # Shipped fixtures also belong to the ordinary package census. Supply
       # their executable before that gate instead of excusing its skip marker.
       - name: Build native bootstrap prerequisites
-        run: make binaries server-shipment
+        run: .github/scripts/hex_retry.sh make binaries server-shipment
 
       - name: make check
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
-        run: set -o pipefail; make check 2>&1 | tee check.log
+        run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check.log
 
       - name: make e2e-client-bootstrap
-        run: set -o pipefail; make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap.log
+        run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap.log
 
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check.log
@@ -120,8 +120,8 @@ jobs:
       - name: Build and smoke-test Linux deliverables
         run: |
           set -euo pipefail
-          scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
-          make dist 2>&1 | tee distribution-linux.log
+          .github/scripts/hex_retry.sh scripts/dev.sh --shipment-smoke 2>&1 | tee server-shipment-smoke.log
+          .github/scripts/hex_retry.sh make dist 2>&1 | tee distribution-linux.log
           test -x build/release/loom/erts-17.0.5/bin/erl
           measure() {
             for path in "$@"; do
@@ -141,7 +141,7 @@ jobs:
               dist/loomd-0.1.0-linux-x86_64.tar.gz \
               dist/loom-0.1.0-linux-x86_64.tar.gz
           } | tee -a distribution-linux.log
-          DIST_CODEMODE=0 make dist 2>&1 | tee -a distribution-linux.log
+          DIST_CODEMODE=0 .github/scripts/hex_retry.sh make dist 2>&1 | tee -a distribution-linux.log
           {
             echo "==> measured distribution without code mode"
             measure build/release/loom/erts-17.0.5 \
@@ -218,10 +218,10 @@ jobs:
             selftest-macos.log .github/enforcement-expectations "macos (self-test)"
 
       - name: Prepare the code-mode build seed
-        run: make codemode-seed
+        run: .github/scripts/hex_retry.sh make codemode-seed
 
       - name: Build native bootstrap prerequisites
-        run: make binaries server-shipment
+        run: .github/scripts/hex_retry.sh make binaries server-shipment
 
       # Owner-approved hosted load-sensitivity exception, not a performance fix.
       # https://github.com/Roasbeef/loom/issues/241
@@ -232,16 +232,16 @@ jobs:
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
           LOOM_SOAK_LATENCY_BOUND: observe
-        run: set -o pipefail; make check 2>&1 | tee check-macos.log
+        run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos.log
 
       - name: make e2e-client-bootstrap
-        run: set -o pipefail; make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
+        run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
 
       - name: make e2e
-        run: set -o pipefail; make e2e 2>&1 | tee e2e-macos.log
+        run: set -o pipefail; .github/scripts/hex_retry.sh make e2e 2>&1 | tee e2e-macos.log
 
       - name: make e2e-codemode
-        run: set -o pipefail; make e2e-codemode 2>&1 | tee e2e-codemode-macos.log
+        run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-codemode 2>&1 | tee e2e-codemode-macos.log
 
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check-macos.log
@@ -433,7 +433,7 @@ jobs:
         run: .github/scripts/skip_census.sh "jail (linux, go tests)" go-jail.log
 
       - name: Prepare the code-mode build seed
-        run: make codemode-seed
+        run: .github/scripts/hex_retry.sh make codemode-seed
 
       # Both end-to-end suites again — but this time over a helper that
       # has bwrap, Landlock and namespaces, so the enforcement they report
@@ -443,13 +443,13 @@ jobs:
         run: |
           set -o pipefail
           . .github/scripts/join_delegated_cgroup.sh
-          make e2e 2>&1 | tee e2e.log
+          .github/scripts/hex_retry.sh make e2e 2>&1 | tee e2e.log
 
       - name: make e2e-codemode
         run: |
           set -o pipefail
           . .github/scripts/join_delegated_cgroup.sh
-          make e2e-codemode 2>&1 | tee e2e-codemode.log
+          .github/scripts/hex_retry.sh make e2e-codemode 2>&1 | tee e2e-codemode.log
 
       - name: Skip census (end to end)
         run: .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
@@ -463,7 +463,7 @@ jobs:
         run: |
           set -euo pipefail
           . .github/scripts/join_delegated_cgroup.sh
-          make binaries server-shipment
+          .github/scripts/hex_retry.sh make binaries server-shipment
           bash scripts/test.sh client --match client@tui_shipped_multiplayer_test: \
             2>&1 | tee shipped-multiplayer.log
 
@@ -513,4 +513,4 @@ jobs:
           cache: ${{ github.event.inputs.cache || 'true' }}
 
       - name: make soak (seeds 1..200)
-        run: make soak SOAK_SEEDS=200 SOAK_FROM=1 SOAK_CHUNK=50
+        run: .github/scripts/hex_retry.sh make soak SOAK_SEEDS=200 SOAK_FROM=1 SOAK_CHUNK=50
