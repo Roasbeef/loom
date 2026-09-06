@@ -1178,8 +1178,20 @@ fn domain_trigger(
 }
 
 // Parks a quiesce reply until the pass it fenced has settled.
+//
+// The registry reuses one settled subject per domain slot across every
+// quiesce and revival, so a workspace that closes and reopens repeatedly
+// during one long pass would park the same subject once per cycle and the
+// book would grow with the number of cycles, which nothing else bounds. An
+// already parked subject is therefore left where it is: one answer per
+// caller is what the fence promises, and a second copy would only send a
+// duplicate account.
 fn parking(book: DomainBook, reply: Subject(Pass)) -> DomainBook {
-  DomainBook(..book, quiesce_waiters: [reply, ..book.quiesce_waiters])
+  case list.contains(book.quiesce_waiters, reply) {
+    True -> book
+    False ->
+      DomainBook(..book, quiesce_waiters: [reply, ..book.quiesce_waiters])
+  }
 }
 
 // Answers every parked quiesce with the account the domain came to.

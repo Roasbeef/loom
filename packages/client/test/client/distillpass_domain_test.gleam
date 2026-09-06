@@ -8,6 +8,7 @@ import client/memory
 import core/clock
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/supervision
 import provider/gateway
@@ -151,6 +152,39 @@ pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
   let assert Ok(distillpass.Completed(_)) =
     distillpass.domain_settled(name, waiting_ms: 1000)
     as "the pass after the late answer must complete"
+  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert address.stop(names) == Ok(Nil)
+}
+
+/// The registry reuses one settled subject per slot, so repeated fence and
+/// revival cycles during one pass must not accumulate parked copies of it.
+pub fn domain_cadence_repeated_fences_park_one_reply_per_caller_test() {
+  let assert Ok(names) = address.start() as "registry must start"
+  let name = address.new_address(names)
+  let arrivals = process.new_subject()
+  let assert Ok(_) =
+    distillpass.start_domain(config(name, arrivals, "resume-repeat"))
+    as "domain must start"
+  let assert Ok(first) = process.receive(arrivals, 1000)
+    as "first admission must run immediately"
+
+  // A workspace that closes and reopens five times while the pass is parked
+  // fences and revives with the same settled subject each time.
+  let fenced = process.new_subject()
+  list.each(list.repeat(Nil, 5), fn(_) {
+    assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
+    assert distillpass.request_resume(name) == Ok(Nil)
+  })
+  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+
+  process.send(first, Ok([]))
+  let assert Ok(second) = process.receive(arrivals, 2000)
+    as "the resumed domain runs the pass the revived session asked for"
+  process.send(second, Ok([]))
+  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
+    as "the fence is answered once nothing more is owed"
+  assert process.receive(fenced, 100) == Error(Nil)
+    as "one caller gets one account, however many times it fenced"
   assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
   assert address.stop(names) == Ok(Nil)
 }
