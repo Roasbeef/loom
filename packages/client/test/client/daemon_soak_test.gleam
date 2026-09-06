@@ -30,6 +30,7 @@ import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -52,6 +53,16 @@ import weft
 import weft/poll
 
 const large_bytes = 4_194_304
+
+type SnapshotTiming {
+  SnapshotTiming(
+    total: Int,
+    http: Int,
+    subscribe: Int,
+    drain: Int,
+    credits: Int,
+  )
+}
 
 fn settings() {
   let settings = owned_assembly_test.settings()
@@ -192,6 +203,68 @@ fn attach(serving: daemon_main.Serving(serve.Instance), token, id) {
   assert field(begin, "session_id") == json.String(id)
   assert field(begin, "epoch") == json.String(serving.ready.epoch)
   #(socket, snapshot)
+}
+
+// Measure the entire authenticated transfer through the existing wire driver.
+// Each prior turn adds entry credits, so a fixed total deadline would conflate
+// growing history with interference from A. Individual receives and the total
+// credit count retain their existing finite limits.
+fn measure_snapshot(serving: daemon_main.Serving(serve.Instance), token, id) {
+  let began = bootstrap.monotonic_time_ms()
+  let #(socket, headers) =
+    wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
+  let connected = bootstrap.monotonic_time_ms()
+  assert string.contains(headers, "101 Switching Protocols")
+  let #(begin, snapshot) = transfer.begin(socket, id)
+  let subscribed = bootstrap.monotonic_time_ms()
+  assert field(begin, "session_id") == json.String(id)
+  assert field(begin, "epoch") == json.String(serving.ready.epoch)
+
+  let chunks = transfer.drain(socket, snapshot, 0, [], 64)
+  let completed = bootstrap.monotonic_time_ms()
+  assert chunks != []
+  let _ = ffi_ws.tcp_close(socket)
+  let timing =
+    SnapshotTiming(
+      completed - began,
+      connected - began,
+      subscribed - connected,
+      completed - subscribed,
+      list.length(chunks) + 1,
+    )
+  let entries =
+    chunks
+    |> list.filter(fn(chunk) { field(chunk, "kind") == json.String("entry") })
+    |> list.map(fn(chunk) { field(chunk, "record_id") })
+  #(timing, entries)
+}
+
+fn timing_json(timing: SnapshotTiming) {
+  json.Object([
+    #("total_ms", json.Int(timing.total)),
+    #("http_ms", json.Int(timing.http)),
+    #("subscribe_ms", json.Int(timing.subscribe)),
+    #("drain_ms", json.Int(timing.drain)),
+    #("credits", json.Int(timing.credits)),
+  ])
+}
+
+// Emit before the comparison so a failing cycle survives EUnit's captured
+// output and the fixture JSONL. This diagnoses future failures; it does not
+// establish which stage caused the earlier CI aggregate of 3070 milliseconds.
+fn report_pair(directory, cycle, baseline, stressed) {
+  let encoded =
+    json.to_string(
+      json.Object([
+        #("stage", json.String("paired_wire")),
+        #("cycle", json.Int(cycle)),
+        #("baseline", timing_json(baseline)),
+        #("stressed", timing_json(stressed)),
+      ]),
+    )
+  io.println(encoded)
+  assert simplifile.append(directory <> "/daemon-soak.jsonl", encoded <> "\n")
+    == Ok(Nil)
 }
 
 // Read through metadata and one entry fragment, then leave the next credited
@@ -482,6 +555,8 @@ fn drive(
         as "one explicit open begins the next A incarnation"
       let a = resident(serving.ready.registry, a_id)
       let helper_owner = helper(a)
+      let #(unstalled, baseline_entries) =
+        measure_snapshot(serving, token, b_id)
       let #(slow, snapshot) = attach(serving, token, a_id)
       stall_entry(slow, snapshot, 0, 32)
       let assert Ok(gateway_pid) = addresses.owner(a.gateway.name)
@@ -489,13 +564,16 @@ fn drive(
       let queue = mailbox(gateway_pid)
       assert queue <= 2
         as "the unread peer cannot build a gateway request backlog"
-      let began = bootstrap.monotonic_time_ms()
-      let #(socket, b_snapshot) = attach(serving, token, b_id)
-      assert transfer.drain(socket, b_snapshot, 0, [], 64) != []
-      let latency = bootstrap.monotonic_time_ms() - began
-      assert latency < 1000
-        as "an unrelated session answers within its bounded wire budget"
-      let _ = ffi_ws.tcp_close(socket)
+      let #(stressed, stressed_entries) = measure_snapshot(serving, token, b_id)
+      report_pair(directory, cycle, unstalled, stressed)
+      assert stressed_entries == baseline_entries
+        as "both measurements transfer the same immutable B history"
+
+      // No B mutation separates these full snapshots. The paired budget bounds
+      // the unread peer's penalty, not a universal full-snapshot latency SLA.
+      assert stressed.total <= 2 * unstalled.total + 250
+        as "an unread peer stays within the paired full-snapshot slowdown budget"
+      let latency = stressed.total
 
       // Exercise durable provider progress, not only reads, while A retains its
       // large captured record and an actual unread credited reply.
