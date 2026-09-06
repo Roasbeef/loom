@@ -2127,18 +2127,34 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
       process.send(events, stream.Failed(error: stream.ProviderCancelled))
       stream.immediate(events:, cancel: fn() { Nil })
     })
-  let handle =
-    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let prepared =
+    provider_relay.prepare(surface, cancellation_spec(), fn(_event) { Nil })
+  let handle = prepared.handle
+
+  // The immediate terminal may retire the custodian before a begun request
+  // returns. Publish both original monitors while the relay is still parked.
   let drain_witness = stream.watch_drain(handle)
   let assert stream.StreamHandle(owner: Some(owner), ..) = handle
     as "the relay must publish a custodian-backed handle"
+  let owner_monitor = process.monitor(owner)
+  assert process.receive(callers, within: 20) == Error(Nil)
+    as "preparation must not release inner work before custody is published"
+  prepared.begin()
   let assert Ok(inner_consumer) = process.receive(callers, within: 1000)
 
   assert inner_consumer != owner
     as "fallible stream consumption must not be the public drain witness"
   let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
     stream.next(handle, within: 1000)
-  assert stream.await_drain_forever(drain_witness) == stream.Drained
+
+  // Deliberately await proof after retirement, not while racing the terminal.
+  // Only a monitor installed before begin can retain the original exit reason.
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "the original custodian must retire normally before drain is inspected"
+  assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
 }
 
 pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {

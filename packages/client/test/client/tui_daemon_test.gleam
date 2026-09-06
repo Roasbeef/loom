@@ -428,14 +428,23 @@ pub fn tui_daemon_missing_hello_closes_the_socket_on_deadline_test() {
 pub fn tui_daemon_terminal_normal_exit_reaps_control_after_starter_exit_test() {
   peer_listener(Some(greeting), fn(port, _, _, closed) {
     let terminal_ready = process.new_subject()
+    let test_owner = process.self()
     let terminal =
       process.spawn(fn() {
         let stop = process.new_subject()
+        let test_watch = process.monitor(test_owner)
         process.send(terminal_ready, stop)
-        let assert Ok(Nil) = process.receive(stop, 2000)
-          as "terminal exits only on test command"
+
+        // Only the explicit stop may end a live test's terminal. A separate
+        // timeout could retire control before its original monitor is installed;
+        // the test owner's death still reaps this fixture on assertion failure.
+        process.new_selector()
+        |> process.select(stop)
+        |> process.select_specific_monitor(test_watch, fn(_) { Nil })
+        |> process.selector_receive_forever()
         Nil
       })
+    let terminal_watch = process.monitor(terminal)
     let assert Ok(stop) = process.receive(terminal_ready, 1000)
       as "terminal owns a lifetime inbox"
     let connections = process.new_subject()
@@ -449,14 +458,19 @@ pub fn tui_daemon_terminal_normal_exit_reaps_control_after_starter_exit_test() {
     let starter_watch = process.monitor(starter)
     let assert Ok(Ok(control)) = process.receive(connections, 1000)
       as "short-lived bootstrap returns authenticated control"
+    let watch = process.monitor(daemon.owner(control))
     let assert Ok(_) =
       process.new_selector()
       |> process.select_specific_monitor(starter_watch, fn(down) { down })
       |> process.selector_receive(1000)
       as "bootstrap worker has exited"
     assert process.is_alive(daemon.owner(control))
-    let watch = process.monitor(daemon.owner(control))
     process.send(stop, Nil)
+    let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+      process.new_selector()
+      |> process.select_specific_monitor(terminal_watch, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "the explicitly released terminal exits normally"
     let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
       process.new_selector()
       |> process.select_specific_monitor(watch, fn(down) { down })
