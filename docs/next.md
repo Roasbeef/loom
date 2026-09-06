@@ -5,8 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `563f3573`
-and its reviewed storage-refusal assertion.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `df960471`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The plan remains
 [issue-plan.md](issue-plan.md), with required observations in the
@@ -23,7 +22,7 @@ release goal is not complete.
 |---|---|
 | Contracts and ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
-| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped daemon now has a distinct-principal native-TUI configuration fixture. |
+| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, presence recovery and two real HTTP prompt/reply turns. |
 | Default and release acceptance, phase 6 | Full local, packaging, multiplayer, soak and refreshed live-terminal checks pass for the named implementation. Remote platform acceptance, SQLite adoption, confinement and the remaining combined drive are open. |
 
 The plan numbers its seven phases 0 through 6. Backwards compatibility and
@@ -37,9 +36,10 @@ Draft [#238](https://github.com/Roasbeef/loom/pull/238) is published at
 `33387530`, based on #237. Native GitHub stack 231 contains that chain.
 Draft [#239](https://github.com/Roasbeef/loom/pull/239) publishes
 `client/daemon-acceptance`, based on #238. Its first published head was
-`e829a2a0`; published `ffacaa5b` adds the CI prerequisite repair and whole-VM
-reservation recovery. The next follow-up adds whole-VM recovery after
-identity publication but before catalogue confirmation. All remain unmerged.
+`e829a2a0`; published `34323df1` includes the CI prerequisite repair and both
+whole-VM recovery boundaries. The reviewed follow-up through `df960471` adds
+presence recovery and two real HTTP turns across Bob's reconnect. All remain
+unmerged.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -56,7 +56,9 @@ remained unfinished. Those statements are now superseded:
 - Durable recovery tests reopen the catalogue after reservation and after
   database identity publication, preserving identity and original custody.
 - The shipped bootstrap target now runs Alice, Bob and an observer through
-  separate native TUI drivers against the actual daemon executable.
+  separate native TUI drivers against the actual daemon executable. Its
+  finite loopback provider checks the latest user text, then all three
+  terminals compare exact durable records and authors across two turns.
 
 The [closing review](review/single-daemon-acceptance-closing.md) found no
 high-severity issue. Its gateway-hint finding was rejected after tracing
@@ -73,21 +75,30 @@ dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
 
-At `563f3573`, the combined `make check dist e2e-client-bootstrap
-e2e-multiplayer soak-daemon` gate exited 0 in **494.21 seconds**. It covered
-1,324 client tests and 206 TUI tests, packaging and all three enabled shipped
-fixtures in the dedicated target. Ordinary local package runs explicitly
-skip those fixtures without their executable environment variable; CI
-supplies it before ordinary check. The paired soak bound was unchanged.
+The provider/ordering candidate's combined `make check dist
+e2e-client-bootstrap e2e-multiplayer soak-daemon` gate exited 0 in
+**497.05 seconds**. It covered 1,332 client tests and 206 TUI tests, packaging
+and all three enabled shipped fixtures in the dedicated target. The later
+review corrections add type annotations, equivalent decoded-model capture
+and explanatory prose; the final eight helper tests passed in **0.65 seconds**
+and the final shipped integration at `df960471` passed in **3.46 seconds**.
+No safety assertion or per-terminal await deadline was removed or widened.
 The documentation gate exited 0 with zero errors and 137 warnings.
 
-The small subsequent review correction adds a session-correlated
+Ordinary local package runs explicitly skip the shipped fixtures without
+their executable environment variable; CI supplies it before ordinary check.
+The dedicated target also supplies the public dummy provider key. The paired
+soak bound is unchanged. The provider fixture uses actual chunked HTTP, not
+an injected transport, and the two turns include server-assigned user
+authorship, exact record equality, rendered answers and idle completion.
+
+The earlier identity-recovery review correction adds a session-correlated
 `storage_open_failed` observation to the immediate recovery retry. Its
 focused shipped fixture passed in **61.59 seconds**. The assertion excludes
 earlier configuration/helper failures, but does not identify the exact
 storage error. The unchanged original lease remains the safety assertion.
 
-The subsequent delta through `9cc115c5` changes test ordering and prose,
+The earlier delta through `9cc115c5` changes test ordering and prose,
 not implementation behavior. Its cadence tests passed 14 cases in 1.71
 seconds and registry tests passed seven in 0.85 seconds. Removing fence
 withdrawal compiled and failed the intended test; exact restoration and
@@ -145,7 +156,31 @@ shipment failed on a Hex API rate limit. macOS failed paired soak cycle nine:
 ordinary check, validating the prerequisite repair. The timing failure's
 cause remains unestablished. Production client and server sockets already
 enable TCP_NODELAY; a raw fixture option difference is not a causal finding.
-The identity-recovery follow-up still needs its own remote results.
+At `34323df1`, [run 34038875459](https://github.com/Roasbeef/loom/actions/runs/34038875459)
+passed the Linux gate, deliverables, strict census, jail and 200-seed jobs.
+macOS also passed `make check`, including the unchanged paired soak. Its
+later bootstrap invocation failed on a Hex rate limit before compilation
+or EUnit: job `101501867569`, runner exit 1 in 1.77 seconds, step exit 2.
+One infrastructure retry failed on the same limit while rebuilding
+`tui-shipment`, before tests: attempt 2, job `101504590127`, step exit 2.
+No further immediate retry was made. This is not green platform acceptance
+or an explanation of the earlier timing failures.
+
+The repeated dependency resolution has an upstream cause. Gleam 1.18.1
+updates only the first missing or changed direct-path fingerprint per
+invocation, then resolves again; the client has fifteen direct path
+dependencies. [Issue #6244](https://github.com/gleam-lang/gleam/issues/6244)
+reports this behavior and Hex rate limits. Merged
+[PR #6246](https://github.com/gleam-lang/gleam/pull/6246), commit `860f8224`,
+updates all fingerprints in one pass and adds a regression. At this
+checkpoint the latest published compiler was still 1.18.1, without the fix.
+The workflow already shares the workspace and caches package builds; another
+ordering change does not repair the compiler's freshness bookkeeping.
+
+The toolchain choice remains with the user: wait for a release containing
+that fix, or pin CI to a compiler built from the fixed source commit. No
+source-built compiler, fingerprint rewrite or dependency-skip workaround
+has been adopted. This explains resolver traffic, not the macOS soak delay.
 
 The earlier six mutation gates remain documented in
 [mutation evidence](review/single-daemon-mutation-gates.md). The two new
@@ -248,7 +283,7 @@ were not re-audited for this slice.
 ## How to verify
 
 ```sh
-LOOM_TEST_TIMEOUT_SECONDS=600 python3 scripts/with_timeout.py 900 -- make check dist e2e-client-bootstrap e2e-multiplayer soak-daemon
+LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key LOOM_TEST_TIMEOUT_SECONDS=600 python3 scripts/with_timeout.py 900 -- make check dist e2e-client-bootstrap e2e-multiplayer soak-daemon
 make doc-check
 ```
 

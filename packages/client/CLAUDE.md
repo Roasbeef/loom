@@ -291,6 +291,17 @@ catalogue without opening runtimes. Explicit admission invokes
   The next prompt waits for the clients' idle phase, not merely the
   assistant entry. `tui` and the existing pinned `etui` are test-only
   dependencies; neither enters the server's production dependency graph.
+- `test/support/provider_http.{Exchange, ObservedRequest, with_server}` is
+  a finite loopback Anthropic peer for the separately shipped daemon. It
+  checks the latest user text, including the normal human-attribution block,
+  before consuming one script step, and returns bounded request evidence.
+  A refused, replayed or missing request makes the final report fail. The
+  wrapper retains original listener and script-actor monitors outside its
+  bounded callback. `tui_shipped_multiplayer_test` uses ordinary provider
+  configuration and a public dummy key, then compares three native drivers'
+  exact durable records, authors, rendered answers and idle completion across
+  two turns and an operator's detach/rejoin. No fixture writes the answers
+  into the session store or injects a transport into the shipped VM.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

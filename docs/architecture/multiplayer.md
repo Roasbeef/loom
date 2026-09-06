@@ -147,13 +147,30 @@ real bootstrap and administration APIs. The owner creates a session, waits
 for its retirement, explicitly isolates it, invites two operators and an
 observer, and reopens it. Three independent native TUI drivers verify their
 principal and role, then converge on Alice's configuration change and its
-server-assigned origin. No provider call or fixture-written register supplies
-that result. `make e2e-client-bootstrap` enables this fixture; ordinary package
+server-assigned origin. No fixture-written register supplies that result.
+Alice then submits a prompt, Bob leaves and rejoins, and Bob submits a second
+prompt. A finite loopback HTTP/SSE peer validates each latest user message,
+including Loom's human-attribution block, before returning its answer. All
+three terminals must recover identical durable records, exact user authors
+and answer text, rendered answers and completed strands. This crosses the
+shipped daemon's ordinary provider transport, not an injected transport.
+`make e2e-client-bootstrap` supplies the executable and public dummy provider
+credential for this fixture; ordinary package
 tests explicitly skip it when `LOOM_BOOTSTRAP_E2E_SERVER` is unset.
 
+The same fixture stops Bob's terminal and waits for Alice and the observer
+to see his presence disappear. Bob rejoins with the same credential; all
+three terminals must see the exact principal set, a new Bob attachment ID,
+no old attachment ID, and the unchanged configuration and author. Driver
+exit alone is not the detach barrier: the surviving terminals must receive
+the server's updated presence. This covers presence recovery, not ordered
+replay beyond the two scripted turns or admission of a command queued before
+revocation.
+
 This shipped-artifact fixture has a bounded body and a separate native
-cleanup check, including on assertion failure. Its configuration round trip
-does not establish live-tool switching or the entire acceptance matrix.
+cleanup check, including on assertion failure. The loopback provider retains
+its original listener witness outside the bounded callback. The composed
+fixture does not establish live-tool switching or the entire acceptance matrix.
 
 Each driver creates its inbox and runs its terminal loop in the same
 process. Sharing a model or constructing both inboxes in the coordinator

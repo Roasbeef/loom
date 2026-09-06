@@ -129,3 +129,57 @@ bootstrap and documentation before a Hex API rate limit broke shipment;
 macOS failed the unchanged paired soak at 498 ms against 370 ms. Both shipped
 fixtures available at that head passed in ordinary check. Neither a causal
 timing fix nor green platform acceptance is claimed by this follow-up.
+
+## Shipped presence recovery follow-up
+
+The next test-only increment extends the existing three-terminal fixture
+through Bob's detach and rejoin. A fresh source review found no high- or
+medium-severity issue. Each surviving terminal must first capture the exact
+two-principal roster; all three then capture the exact recovered roster
+with Bob's new daemon-minted attachment identity and Alice's unchanged
+configuration and author. An original driver monitor is not used as proof
+of server detach.
+
+The review confirmed that the coherent-cut decoder already rejects duplicate
+attachment IDs. The explicit uniqueness and old-ID assertions are retained
+as named acceptance observations, not additional production defenses. The
+factored shutdown helper preserves the original monitor, Normal-exit check
+and deadline. No further review or timeout expansion was needed.
+
+At `86d7b7ec`, the focused fixture passed in 2.49 seconds. All three enabled
+shipped fixtures passed together in 64.80 seconds, with six total matches
+under the package filter. This establishes presence recovery, not ordered
+prompt replay or a queued command's revocation boundary.
+
+## Shipped provider and durable ordering follow-up
+
+The finite loopback provider and the two-turn native-TUI extension received
+one fresh source review. It found no high-severity issue or false-pass path.
+The shipped daemon uses its ordinary HTTP transport and a public dummy key.
+The peer compares the latest user text against the next script step, not
+against a substring of accumulated history. It accepts the production
+human-attribution block, and records any refused, repeated or missing request
+as a failing report. All three terminals compare exact durable records and
+user authors, rendered answers and idle completion across Bob's reconnect.
+
+The medium finding was possible hosted-runner exposure in the eight-second
+per-terminal await, not an observed miss. The deadline and its diagnostics
+remain unchanged: the focused whole drive passed in 3.46 seconds and its
+combined-gate invocation in 3.32 seconds. A measured miss would justify
+revisiting that stage's budget; an outer timeout increase would not fix it.
+
+Accepted corrections annotate the helper's public and private contracts,
+retain the decoded model in request evidence, clarify callback failure
+reporting, and explain port publication. Script bounds and explicit safety
+assertions remain. The small chunked-response actor is intentional coverage
+of chunked HTTP through the shipped transport; replacing it with a finite
+Content-Length response would remove that wire case. No general provider
+server or new production process machinery was added.
+
+Before those small clarity corrections, the combined check, distribution,
+shipped bootstrap, multiplayer and soak gate exited 0 in 497.05 seconds,
+with 1,332 client tests and 206 TUI tests. All three shipped fixtures ran in
+the dedicated target. The documentation gate reported zero errors and 137
+warnings. The separate helper suite passed eight cases, including actual
+socket closure after callback failure. The final focused correction results
+are recorded in the handoff; no second review pass was needed.
