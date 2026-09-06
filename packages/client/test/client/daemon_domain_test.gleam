@@ -314,13 +314,20 @@ pub fn failed_domain_cleanup_retains_admission_and_original_witness_test() {
 }
 
 /// Closing the last session in a workspace fences that domain's maintenance,
-/// and the next open takes it back rather than waiting the fence out.
+/// and the next open takes it back — cadence included — rather than waiting
+/// the fence out.
 ///
 /// The pass is parked inside its own source resolver for the whole of this
 /// test, so the fence cannot settle by itself: without revival the second
 /// admission is refused `Unavailable` until the pass wall expires, which by
 /// default is ten minutes, and the ordinary close-and-reopen loop is exactly
 /// the path that hits it.
+///
+/// Revival that handed the services back with the cadence still fenced would
+/// pass every assertion up to the last close, because a fenced worker refuses
+/// hints silently. So the test closes the revived session too and requires
+/// that close to produce a pass: that is the maintenance a reopened workspace
+/// would otherwise never run again.
 pub fn a_fenced_idle_domain_is_revived_by_the_next_open_test() {
   let settings = owned_assembly_test.settings()
   let directory = filepath.directory_name(settings.session_path)
@@ -384,6 +391,28 @@ pub fn a_fenced_idle_domain_is_revived_by_the_next_open_test() {
     ..,
   )) = manager.summary(registry)
     as "the account the fence asked for does not retire a revived domain"
+
+  // The revived domain's cadence is open again, so the next clean close in
+  // this workspace coalesces one more pass instead of being ignored. A
+  // revival that left the worker fenced reaches this point and then runs
+  // nothing at all.
+  let assert Ok(_) = manager.stop_session(registry, second.registration.id)
+    as "the revived session closes cleanly"
+  saved(registry, second.registration.id)
+  let assert Ok(revived) = process.receive(arrivals, 2000)
+    as "a revived domain still runs its scheduled maintenance"
+  process.send(revived, Ok([]))
+
+  // That pass is also the one the last close's own fence waits on, so its
+  // account retires the domain for real this time.
+  assert poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.summary(registry) {
+        Ok(manager.Summary(domain_occupied: 0, ..)) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+    == poll.Answered(Nil)
 
   // Shutdown fences the same domain irreversibly, and no admission crosses it.
   let watch = process.monitor(manager.pid(registry))

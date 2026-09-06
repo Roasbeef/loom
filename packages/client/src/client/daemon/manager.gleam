@@ -265,11 +265,20 @@ type Quiescence {
 /// - `DomainWaitingFailure` to `DomainBlocked` once cancellation has been
 ///   issued; neither is ever admitted against again.
 ///
-/// Revival hands back the *same* services and leaves the cadence fenced, so
-/// the in-flight pass finishes and this domain runs no further maintenance
-/// until it retires and is rebuilt. That is the price of not asking the
-/// maintenance worker to un-fence itself, and it costs one coalesced pass
-/// rather than refusing every open in the workspace for the length of a pass.
+/// Revival hands back the *same* services and un-fences the cadence with them
+/// (`domain_service.resume`), so a reopened workspace goes on running
+/// scheduled maintenance. Handing the services back without that would leave
+/// the maintenance worker in `Quiescing`, where it ignores every hint and
+/// schedules nothing, and a workspace closed and reopened once — the ordinary
+/// path — would distil nothing more until the domain retired and was rebuilt.
+/// The coalesced pass the fence admitted still runs to completion, and the
+/// account it produces reaches a slot that is no longer quiescing and is
+/// ignored there.
+///
+/// A cadence that refuses to resume fails the domain rather than reviving it:
+/// the worker that owns this domain's maintenance is not answering, which is
+/// the same fact a refused quiesce carries, and admitting against it would
+/// hand a session services whose custody is already in doubt.
 type DomainPhase {
   DomainPreparing
   DomainRunning(domain_service.Services)
@@ -1620,17 +1629,30 @@ fn ensure_domain(book: Book(instance), selected: domain.Domain) {
     )
     Ok(
       DomainSlot(phase: DomainQuiescing(Idle, services), operation:, ..) as slot,
-    ) -> #(
-      Book(
-        ..book,
-        domains: dict.insert(
-          book.domains,
-          selected.id,
-          DomainSlot(..slot, phase: DomainRunning(services)),
-        ),
-      ),
-      Ok(operation),
-    )
+    ) ->
+      case domain_service.resume(services) {
+        Ok(Nil) -> #(
+          Book(
+            ..book,
+            domains: dict.insert(
+              book.domains,
+              selected.id,
+              DomainSlot(..slot, phase: DomainRunning(services)),
+            ),
+          ),
+          Ok(operation),
+        )
+
+        // The maintenance worker did not take the resume, which says its
+        // custody is already lost. That is what a refused quiesce says too,
+        // and it is answered the same way: the domain fails, every session
+        // naming it is stopped, and this admission is refused rather than
+        // joining a domain nobody owns.
+        Error(reason) -> #(
+          domain_failed(book, selected.id, operation, reason),
+          Error(Unavailable),
+        )
+      }
 
     // The settled pass this domain is still waiting on is answered on the
     // slot's own `settled` subject, and `domain_settled` ignores an account

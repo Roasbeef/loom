@@ -69,6 +69,120 @@ pub fn domain_cadence_quiesce_waits_follow_up_test() {
   assert address.stop(names) == Ok(Nil)
 }
 
+/// A resume lifts a settled domain's fence, and the cadence schedules again.
+///
+/// This is the revival the registry performs when a new session opens in a
+/// workspace whose last one closed: without the resume the worker stays in
+/// `Quiescing`, where it refuses every trigger and every hint, so the reopened
+/// workspace runs no distillation for the rest of the domain's life.
+pub fn domain_cadence_resume_unfences_a_settled_domain_test() {
+  let assert Ok(names) = address.start() as "registry must start"
+  let name = address.new_address(names)
+  let arrivals = process.new_subject()
+  let assert Ok(_) =
+    distillpass.start_domain(config(name, arrivals, "resume-settled"))
+    as "domain must start"
+  let assert Ok(first) = process.receive(arrivals, 1000)
+    as "first admission must run immediately"
+  process.send(first, Ok([]))
+  let assert Ok(distillpass.Completed(_)) =
+    distillpass.domain_settled(name, waiting_ms: 1000)
+    as "the first pass must settle before the fence"
+
+  // Nothing is coalesced behind this fence, so it is answered from the settled
+  // account at once and leaves the worker refusing further work.
+  let fenced = process.new_subject()
+  assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
+  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
+    as "a quiesce with nothing owed answers from the settled account"
+  assert distillpass.trigger(name, waiting_ms: 1000)
+    == Error("domain worker is stopping")
+
+  assert distillpass.request_resume(name) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  let assert Ok(second) = process.receive(arrivals, 2000)
+    as "a resumed domain admits a scheduled pass again"
+  process.send(second, Ok([]))
+  let assert Ok(distillpass.Completed(_)) =
+    distillpass.domain_settled(name, waiting_ms: 1000)
+    as "the resumed pass must complete"
+  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert address.stop(names) == Ok(Nil)
+}
+
+/// A fence answered after a revival must not fence the resumed domain again.
+///
+/// The hazard this pins: a quiesce that arrives during a pass is owed an
+/// answer, and that answer lands after the registry has already handed the
+/// services back. If answering re-applied the fence, the resumed domain would
+/// look open to the registry and be closed to every hint the registry sends.
+pub fn domain_cadence_resume_survives_a_late_quiesce_answer_test() {
+  let assert Ok(names) = address.start() as "registry must start"
+  let name = address.new_address(names)
+  let arrivals = process.new_subject()
+  let assert Ok(_) =
+    distillpass.start_domain(config(name, arrivals, "resume-stale"))
+    as "domain must start"
+  let assert Ok(first) = process.receive(arrivals, 1000)
+    as "first admission must run immediately"
+
+  // The fence lands while the pass is parked, so its answer is owed rather
+  // than sent, and the revival happens in the gap.
+  let fenced = process.new_subject()
+  assert distillpass.request_quiesce(name, fenced) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: 1000)
+    == Error("domain worker is stopping")
+  assert distillpass.request_resume(name) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+
+  process.send(first, Ok([]))
+  let assert Ok(second) = process.receive(arrivals, 2000)
+    as "the resumed domain runs the pass the revived session asked for"
+  assert process.receive(fenced, 0) == Error(Nil)
+  process.send(second, Ok([]))
+  let assert Ok(distillpass.Completed(_)) = process.receive(fenced, 1000)
+    as "the fence's own answer arrives once nothing more is owed"
+
+  // The late answer must leave admission exactly where the resume put it.
+  assert distillpass.trigger(name, waiting_ms: 1000) == Ok(Nil)
+  let assert Ok(third) = process.receive(arrivals, 2000)
+    as "a resumed domain still schedules after its stale fence is answered"
+  process.send(third, Ok([]))
+  let assert Ok(distillpass.Completed(_)) =
+    distillpass.domain_settled(name, waiting_ms: 1000)
+    as "the pass after the late answer must complete"
+  assert distillpass.stop_domain(name, waiting_ms: 1000) == Ok(Nil)
+  assert address.stop(names) == Ok(Nil)
+}
+
+/// Retirement is not withdrawable, so a resume during a stop changes nothing.
+pub fn domain_cadence_resume_cannot_withdraw_a_stop_test() {
+  let assert Ok(names) = address.start() as "registry must start"
+  let name = address.new_address(names)
+  let started = process.new_subject()
+  let cancelled = process.new_subject()
+  let options = held_provider_config(name, started, cancelled, "resume-stop")
+  let assert Ok(worker) = distillpass.start_domain(options)
+    as "domain must start"
+  let original = process.monitor(worker.pid)
+  let assert Ok(#(_owner, release)) = process.receive(started, 1000)
+    as "the original provider owner must begin"
+  assert distillpass.stop_domain(name, waiting_ms: 20)
+    == Error("domain retirement remains unconfirmed")
+  assert process.receive(cancelled, 1000) == Ok(Nil)
+
+  // The stop has already asked the cancellation witness to exit, so this
+  // admission is final and the resume must leave it alone.
+  assert distillpass.request_resume(name) == Ok(Nil)
+  assert distillpass.trigger(name, waiting_ms: 1000)
+    == Error("domain worker is stopping")
+
+  // And the retirement the stop began still completes.
+  process.send(release, Nil)
+  assert down(original, 2000) == Ok(process.Normal)
+  assert address.stop(names) == Ok(Nil)
+}
+
 /// A burst creates one follow-up, after the prior waiters and witness retire.
 pub fn domain_cadence_coalesces_and_replies_before_follow_up_test() {
   let assert Ok(names) = address.start() as "registry must start"

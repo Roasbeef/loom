@@ -36,6 +36,15 @@
 //// follow-up. Failure discards that pending trigger; a later explicit trigger
 //// may retry. There is no timer or automatic failure retry.
 ////
+//// A fence is not always a step of retirement. The registry quiesces a domain
+//// the moment its last session closes, and the ordinary next thing that
+//// happens in a workspace is that somebody opens another session in it. That
+//// admission hands the same services back, so `request_resume` hands the
+//// cadence back with them; without it a reopened workspace would run no
+//// scheduled distillation at all until every trace of the domain retired and
+//// was rebuilt. Only `stop_domain`'s fence is final, because it has already
+//// asked the cancellation witness to exit.
+////
 //// A domain re-arms only after its managed retirement account and terminal
 //// delivery, plus the original linked cancellation witness's normal exit.
 //// Delivery alone is not resource retirement. Proof loss permanently blocks
@@ -669,6 +678,7 @@ pub opaque type DomainMessage {
   DomainNotify
   DomainAwait(Subject(Pass))
   DomainQuiesce(Subject(Pass))
+  DomainResume
   DomainStop(Subject(String))
   DomainWitness(Subject(Option(process.Pid)))
   DomainReported(weft.Pulled(distill.Report, String))
@@ -703,6 +713,17 @@ type WitnessStop {
   WitnessStopRequested
 }
 
+// What the domain machine carries across its phases.
+//
+// `quiesce_waiters` holds the reply subjects of quiesces that arrived while a
+// pass was still owed. They are kept here rather than in the machine's
+// postpone queue for one reason: a postponed event is handled again on every
+// transition, and each of those replays would re-apply the fence the quiesce
+// asked for. A `DomainResume` landing in between lifts that fence, so a
+// replay would silently fence a domain that has a live session again and the
+// workspace would run no maintenance for the rest of the domain's life.
+// Parking the reply makes the fence a thing that happens once, when the
+// quiesce arrives, and the answer a thing that touches nothing.
 type DomainBook {
   DomainBook(
     config: DomainConfig,
@@ -714,6 +735,7 @@ type DomainBook {
     account: Option(Pass),
     pending: Pending,
     admission: Admission,
+    quiesce_waiters: List(Subject(Pass)),
   )
 }
 
@@ -778,6 +800,7 @@ pub fn prepare_domain(
         None,
         NoFollowUp,
         Accepting,
+        [],
       ),
     )
     |> sm.selecting(selector)
@@ -918,6 +941,36 @@ pub fn request_quiesce(
   Ok(Nil)
 }
 
+/// Lifts a fence `request_quiesce` took while the domain still had a future.
+///
+/// Fire and forget, like `notify_domain`, because there is nothing for the
+/// worker to answer: the registry sends this on the admission path that hands
+/// a fenced idle domain's services back to a new session, and it is the
+/// admission itself — not this reply — that decides whether the session runs.
+/// A worker that is already accepting keeps accepting, one that `stop_domain`
+/// has fenced stays fenced, and one whose recovery is blocked stays blocked,
+/// so a duplicate or late resume changes nothing.
+///
+/// The quiesce this lifts may still be waiting on a pass. Its answer is
+/// withheld until that pass settles and then sent without touching admission,
+/// so it cannot fence the domain a second time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.request_resume(domain)
+/// ```
+@internal
+pub fn request_resume(
+  name: address.Address(DomainMessage),
+) -> Result(Nil, String) {
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  process.send(subject, DomainResume)
+  Ok(Nil)
+}
+
 /// Reports the currently owned cancellation witness for custody diagnostics.
 ///
 /// ## Examples
@@ -1021,17 +1074,22 @@ fn domain_handle(
       sm.keep(book)
     }
     Active, DomainAwait(_) -> sm.keep(book) |> sm.postpone
-    Active, DomainQuiesce(_) -> {
+    Active, DomainQuiesce(reply) -> {
       let admission = case book.admission {
         Stopping -> Stopping
         Accepting | Quiescing -> Quiescing
       }
-      sm.keep(DomainBook(..book, admission:)) |> sm.postpone
+
+      // The fence is applied here and nowhere else, and the reply waits in
+      // the book until the pass settles. `request_resume` may lift the fence
+      // before that happens, which is the whole reason the answer is not a
+      // postponed replay of this event.
+      sm.keep(parking(DomainBook(..book, admission:), reply))
     }
     Settled(pass), DomainQuiesce(reply) -> {
       let book = DomainBook(..book, admission: Quiescing)
       case book.pending {
-        FollowUp -> sm.keep(book) |> sm.postpone
+        FollowUp -> sm.keep(parking(book, reply))
         NoFollowUp -> {
           process.send(reply, pass)
           sm.keep(book)
@@ -1046,6 +1104,18 @@ fn domain_handle(
       process.send(reply, Refused(reason))
       sm.keep(book)
     }
+
+    // Revival. The registry has handed this domain's services back to a new
+    // session in the same workspace, and the cadence has to come back with
+    // them: a worker left in `Quiescing` ignores every hint and schedules
+    // nothing, so the reopened workspace would run no distillation until the
+    // domain retired and was rebuilt.
+    Dormant, DomainResume | Active, DomainResume | Settled(_), DomainResume ->
+      sm.keep(resumed(book))
+
+    // A blocked worker keeps its block. Its custody is lost, nothing it could
+    // schedule would run, and the registry never revives a blocked slot.
+    RecoveryBlocked(_), DomainResume -> sm.keep(book)
     Settled(pass), DomainAwait(reply) -> {
       process.send(reply, pass)
       sm.keep(book)
@@ -1104,6 +1174,36 @@ fn domain_trigger(
       answer_trigger(reply, Ok(Nil))
       sm.keep(DomainBook(..book, pending: FollowUp))
     }
+  }
+}
+
+// Parks a quiesce reply until the pass it fenced has settled.
+fn parking(book: DomainBook, reply: Subject(Pass)) -> DomainBook {
+  DomainBook(..book, quiesce_waiters: [reply, ..book.quiesce_waiters])
+}
+
+// Answers every parked quiesce with the account the domain came to.
+//
+// Nothing about admission moves here. By the time an answer is due the fence
+// that produced it may have been lifted by a revival, and re-applying it would
+// leave a domain with a live session running no maintenance at all. The order
+// the waiters are answered in is the reverse of arrival and nothing rests on
+// it: each subject belongs to a different caller and none can observe another.
+fn answer_quiesces(book: DomainBook, pass: Pass) -> DomainBook {
+  list.each(book.quiesce_waiters, fn(reply) { process.send(reply, pass) })
+  DomainBook(..book, quiesce_waiters: [])
+}
+
+// Lifts a fence that was only a pause.
+//
+// `Stopping` is the one admission a resume may not undo. `DomainStop` is its
+// only producer and it has already asked the cancellation witness to exit, so
+// the retirement it began is under way and is not withdrawable. `Accepting`
+// is already open, which is what makes a duplicate or late resume harmless.
+fn resumed(book: DomainBook) -> DomainBook {
+  case book.admission {
+    Quiescing -> DomainBook(..book, admission: Accepting)
+    Accepting | Stopping -> book
   }
 }
 
@@ -1222,6 +1322,14 @@ fn domain_finish(
         }
         _, _, _ -> NoFollowUp
       }
+
+      // A quiesce waits for the coalesced work its fence admitted, so its
+      // answer is withheld while a follow-up pass is still owed and sent the
+      // moment none is.
+      let book = case pending {
+        NoFollowUp -> answer_quiesces(book, pass)
+        FollowUp -> book
+      }
       sm.transition(Settled(pass), DomainBook(..book, witness: None, pending:))
     }
   }
@@ -1233,6 +1341,11 @@ fn domain_block(
 ) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
   let book = request_witness_stop(book)
   announce(book.config.pipeline.logger, Refused(reason))
+
+  // A blocked worker will never settle, so a parked quiesce would wait for an
+  // account that cannot come. Each gets the block's own reason, which is what
+  // the `RecoveryBlocked` arm answers a quiesce arriving after this point.
+  let book = answer_quiesces(book, Refused(reason))
   sm.transition(
     RecoveryBlocked(reason),
     DomainBook(..book, pending: NoFollowUp),

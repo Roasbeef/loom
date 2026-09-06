@@ -164,6 +164,27 @@ pub fn quiesce(
   }
 }
 
+/// Lifts the fence `quiesce` took, so revived services schedule maintenance.
+///
+/// The registry calls this where it hands a fenced idle domain's services back
+/// to a new session. Without it the cadence stays fenced for the life of the
+/// domain and the reopened workspace runs no scheduled distillation at all. A
+/// domain configured with no cadence has no fence to lift, which is why it
+/// answers `Ok(Nil)` rather than a refusal: nothing about the revival failed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // domain.resume(services)
+/// ```
+@internal
+pub fn resume(services: Services) -> Result(Nil, String) {
+  case services.cadence {
+    None -> Ok(Nil)
+    Some(name) -> distillpass.request_resume(name)
+  }
+}
+
 /// Supplies no effects only for explicit manager fixtures and disabled hosts.
 /// Production domain construction never substitutes this for a failed open.
 ///

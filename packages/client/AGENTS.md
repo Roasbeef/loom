@@ -90,8 +90,14 @@ catalogue without opening runtimes. Explicit admission invokes
   precedes `quiesce` from the same sender; the registry cancels the domain host
   only after current and coalesced maintenance settles. A domain fenced while
   admission is open is revived by the next open in the same domain, taking
-  back the same services with its cadence still fenced; a domain fenced
-  during shutdown is never revived. An assembly fault reports `Stopping`
+  back the same services with the cadence un-fenced along with them
+  (`domain.resume`), so a reopened workspace goes on distilling; the fence's
+  own answer, when it arrives after the revival, is withheld until nothing is
+  owed and then sent without touching admission, so it cannot fence a domain
+  that has a live session again. A domain fenced
+  during shutdown is never revived, and neither is one whose maintenance
+  worker refuses the resume — that refusal fails the domain, exactly as a
+  refused quiesce does. An assembly fault reports `Stopping`
   because Weft's ordered cleanup has already begun; only a cleanup failure
   reports `RecoveryBlocked`, so `Summary.blocked` counts custody that will
   never release. Failed cleanup retains admission capacity and prevents
