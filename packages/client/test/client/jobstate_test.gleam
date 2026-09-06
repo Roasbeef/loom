@@ -5,11 +5,12 @@
 //// every `(state, event)` pair the machine can be asked about and writes
 //// the answer down, so changing the relation shows up as a diff in a
 //// table rather than as a green run. The **properties** fold seeded
-//// random event scripts and assert the four things that must hold of
+//// random event scripts and assert the five things that must hold of
 //// every run — identity is immutable, terminal is absorbing, an exit
-//// report always terminates, the first stop's cause survives — because a
-//// table is only as exhaustive as its author and a fold reaches orders
-//// the author did not think of. The **codec** tests round-trip generated
+//// report always terminates, an `Exited` really did end of its own
+//// accord, the first stop's cause survives — because a table is only as
+//// exhaustive as its author and a fold reaches orders the author did not
+//// think of. The **codec** tests round-trip generated
 //// records and then feed the decoder a catalogue of malformed payloads,
 //// each of which must come back as a corruption report rather than a
 //// crash or a half-read record.
@@ -49,6 +50,19 @@ fn settled() -> ExecResult {
     timed_out: False,
     cancelled: False,
   )
+}
+
+// The same report with the helper's own witness that it climbed the
+// ladder, and with its wall timer having fired first. Both are ends the
+// actor never asked for, which is what the attribution arms read: a
+// timed-out run is cancelled too, because the helper's timer stops the
+// payload the same way a cancel does.
+fn cancelled() -> ExecResult {
+  ExecResult(..settled(), cancelled: True)
+}
+
+fn timed_out() -> ExecResult {
+  ExecResult(..settled(), timed_out: True, cancelled: True)
 }
 
 fn an_op() -> ids.OpId {
@@ -121,8 +135,11 @@ pub fn a_key_outside_the_namespace_is_not_a_job_test() {
 // --- the transition table -------------------------------------------------
 
 // Every `(state, event)` pair at the shape level, with its answer written
-// down rather than computed. Twenty-four rows: six states against four
-// events. The causes and reasons are exercised separately below, because
+// down rather than computed. Twenty-four of the rows are the shape — six
+// states against four events — and five more are the attribution arms,
+// because an exit report against a live state has three answers rather
+// than one and the difference between them is who a poll names. The
+// causes and reasons are otherwise exercised separately below, because
 // multiplying them into this table would hide the shape it exists to show.
 pub fn the_transition_table_is_exhaustive_test() {
   let result = settled()
@@ -135,6 +152,20 @@ pub fn the_transition_table_is_exhaustive_test() {
     #(Starting, HelperAccepted, Ok(Running)),
     #(Starting, KillRequested(by: ByDeadline), Ok(Draining(by: ByDeadline))),
     #(Starting, ExitReported(result:), Ok(Exited(result:))),
+    // An end the actor never asked for is attributed from the report,
+    // because the report is the only witness there is: the helper's wall
+    // timer can fire before the actor's, and `broker.abort` cancels the
+    // helper with no hook the actor could have heard first.
+    #(
+      Starting,
+      ExitReported(result: cancelled()),
+      Ok(Killed(by: ByOperationAbort, result: cancelled())),
+    ),
+    #(
+      Starting,
+      ExitReported(result: timed_out()),
+      Ok(Killed(by: ByDeadline, result: timed_out())),
+    ),
     #(Starting, RunnerLost(reason: HelperLoss), Ok(Lost(reason: HelperLoss))),
     // `Running` holds the one illegal live pair. A second acceptance is
     // not a race — the runner sends it once, on the relay's own channel —
@@ -142,6 +173,16 @@ pub fn the_transition_table_is_exhaustive_test() {
     #(Running, HelperAccepted, Error(jobstate.AcceptedTwice(state: Running))),
     #(Running, KillRequested(by: ByDeadline), Ok(Draining(by: ByDeadline))),
     #(Running, ExitReported(result:), Ok(Exited(result:))),
+    #(
+      Running,
+      ExitReported(result: cancelled()),
+      Ok(Killed(by: ByOperationAbort, result: cancelled())),
+    ),
+    #(
+      Running,
+      ExitReported(result: timed_out()),
+      Ok(Killed(by: ByDeadline, result: timed_out())),
+    ),
     #(Running, RunnerLost(reason: HelperLoss), Ok(Lost(reason: HelperLoss))),
     // `Draining` absorbs both of the events that would be surprising
     // elsewhere, and the first stop's cause is the one that survives: an
@@ -157,6 +198,15 @@ pub fn the_transition_table_is_exhaustive_test() {
       Draining(by: ByOwner),
       ExitReported(result:),
       Ok(Killed(by: ByOwner, result:)),
+    ),
+    // The deduction is for a job nobody told the actor about. A draining
+    // job was told, so the cause the stop named wins over the one the
+    // report would suggest — an owner's `job_kill` is not relabelled an
+    // abort because the helper cancelled the payload on its way out.
+    #(
+      Draining(by: ByOwner),
+      ExitReported(result: cancelled()),
+      Ok(Killed(by: ByOwner, result: cancelled())),
     ),
     #(
       Draining(by: ByOwner),
@@ -260,10 +310,11 @@ pub fn the_transition_table_is_exhaustive_test() {
     ),
   ]
 
-  // Twenty-four is the count the table is exhaustive at: six states
-  // against four events. A new state or a new event fails this line
-  // before it fails an assertion, which is the point of asserting it.
-  assert list.length(rows) == 24
+  // Twenty-nine is the count the table is exhaustive at: twenty-four
+  // shape rows, six states against four events, and five attribution
+  // rows. A new state or a new event fails this line before it fails an
+  // assertion, which is the point of asserting it.
+  assert list.length(rows) == 29
 
   list.each(rows, fn(row) {
     let #(state, event, expected) = row
@@ -378,6 +429,13 @@ fn check_script(before: JobRecord, events: List(JobEvent)) -> Nil {
         || !is_exit(event)
         || jobstate.is_terminal(after.state)
 
+      // `Exited` means the job ended of its own accord, and the helper's
+      // own flags are what make that check-able rather than merely
+      // documented: a report carrying `cancelled` or `timed_out` is
+      // attributed to `Killed`, so a poll reading `Exited` as "finished"
+      // is never reading a job a deadline or an abort stopped.
+      assert !exited_under_duress(after.state)
+
       check_script(after, rest)
     }
   }
@@ -388,6 +446,17 @@ fn apply(current: JobRecord, event: JobEvent) -> JobRecord {
   case jobstate.step(current, event) {
     Ok(next) -> next
     Error(_illegal) -> current
+  }
+}
+
+// Whether a state is an `Exited` carrying the helper's own witness that
+// the run did not end of its own accord — the shape the attribution arms
+// exist to make unreachable.
+fn exited_under_duress(state: JobState) -> Bool {
+  case state {
+    Exited(result:) -> result.cancelled || result.timed_out
+
+    Starting | Running | Draining(..) | Killed(..) | Lost(..) -> False
   }
 }
 

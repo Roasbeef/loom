@@ -150,14 +150,23 @@ pub type JobState {
   Draining(by: KillCause)
 
   /// The job ended of its own accord. `result` is the helper's whole
-  /// `exec_exit`, `cancelled` included, which is what lets a poll say
-  /// "the command finished" rather than guessing from an exit byte.
+  /// `exec_exit`, which is what lets a poll say "the command finished"
+  /// rather than guessing from an exit byte.
+  ///
+  /// "Of its own accord" is an invariant here and not a hope: a report
+  /// carrying `timed_out` or `cancelled` is attributed to `Killed` by
+  /// the transition that reads it, so neither flag is ever true in a
+  /// state this constructor built.
   Exited(result: ExecResult)
 
   /// The job was stopped and the helper reported the stopped execution.
   /// `by` is who asked, `result.cancelled` is the helper's own witness
   /// that it climbed the ladder — the two answer different questions and
   /// neither substitutes for the other.
+  ///
+  /// `by` is the cause the stop named when a stop passed through the
+  /// actor, and the cause deduced from the report when one did not; the
+  /// deduction is `exit_state` and its reasoning is written there.
   Killed(by: KillCause, result: ExecResult)
 
   /// The job can no longer be spoken for and no `ExecResult` was ever
@@ -425,7 +434,7 @@ fn from_starting(event: JobEvent) -> JobState {
 
     KillRequested(by:) -> Draining(by:)
 
-    ExitReported(result:) -> Exited(result:)
+    ExitReported(result:) -> exit_state(result)
 
     RunnerLost(reason:) -> Lost(reason:)
   }
@@ -443,7 +452,7 @@ fn from_running(event: JobEvent) -> Result(JobState, IllegalTransition) {
 
     KillRequested(by:) -> Ok(Draining(by:))
 
-    ExitReported(result:) -> Ok(Exited(result:))
+    ExitReported(result:) -> Ok(exit_state(result))
 
     RunnerLost(reason:) -> Ok(Lost(reason:))
   }
@@ -468,6 +477,38 @@ fn from_draining(by: KillCause, event: JobEvent) -> JobState {
     ExitReported(result:) -> Killed(by:, result:)
 
     RunnerLost(reason:) -> Lost(reason:)
+  }
+}
+
+// Where an exit report lands when the job was not draining: the report is
+// the only witness to a stop nobody told the actor about, and it carries
+// enough to say which stop it was.
+//
+// Two orderings put one here. The helper's own wall timer is armed from
+// `exec_start` and the actor's deadline timer from the same number, so
+// two clocks race to the same instant and the helper's can win by
+// milliseconds — the report arrives before the actor sends its own
+// `KillRequested(ByDeadline)`. And `broker.abort` of the operation that
+// started the job revokes its token and cancels its helper directly; the
+// actor has no hook on an abort, so the settlement is the first it hears.
+// Recording `Exited` for either would be a poll rendering "finished" for
+// a job an operator stopped, and a terminal state is written once, so no
+// later event corrects it.
+//
+// The flags cannot say who asked — `cancelled` says only *that* the
+// helper climbed the ladder (`protocol-change/006`) — but from a
+// non-draining state the deduction is forced. `timed_out` can only be the
+// deadline. A cancel with no `timed_out` can only be the abort, because
+// `job_kill` and session stop both pass through the actor, which drains
+// the record before the ladder starts, and a helper lost with the runner
+// reports nothing at all.
+fn exit_state(result: ExecResult) -> JobState {
+  case result.timed_out, result.cancelled {
+    True, _ -> Killed(by: ByDeadline, result:)
+
+    False, True -> Killed(by: ByOperationAbort, result:)
+
+    False, False -> Exited(result:)
   }
 }
 
