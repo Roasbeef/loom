@@ -558,7 +558,7 @@ fn accept_request(
         w,
         marked(
           tx.Tx(..plan_tx, expected: [
-            tx.Expect(register.FactCustom, "client/run_settings", defaults.seq),
+            tx.Expect(register.FactCustom, run_settings_key, defaults.seq),
             ..plan_tx.expected
           ]),
           mark,
@@ -1342,7 +1342,7 @@ pub type RunDefaults {
 /// ```
 @internal
 pub fn run_defaults_cell(runtime: Runtime) -> Result(RunDefaults, ApiError) {
-  use cell <- result.try(fact_cell(runtime, "client/run_settings"))
+  use cell <- result.try(fact_cell(runtime, run_settings_key))
   case cell {
     None -> Ok(RunDefaults(runtime.settings, None, None))
     Some(FactCell(json.Object(fields), seq)) -> {
@@ -1616,12 +1616,37 @@ pub const schedule_fact_prefix = "schedule/"
 /// on the harness side from the installed record's name.
 pub const ext_fact_prefix = "ext/"
 
+/// The reserved `fact.custom` key prefix the serving client keeps the
+/// settings a whole session shares under. One cell lives there today,
+/// `run_settings_key`.
+///
+/// Reserved for the sharpest version of the reason the others are: this
+/// is not durable state a forged write would *corrupt*, it is the state
+/// every admission reads to decide how the run it is admitting behaves.
+/// A model that could `put_fact` here would choose its own queue mode
+/// and tool-execution mode — turning a `OneAtATime` session into one
+/// that consumes its whole queue, or a `Sequential` one into parallel
+/// dispatch — for every later run of the session, including the
+/// operator's own.
+pub const client_fact_prefix = "client/"
+
+/// The one cell under `client_fact_prefix`: the run settings a session
+/// shares, holding its queue mode, its tool-execution mode and the
+/// origin that last set them.
+///
+/// It is a constant rather than a literal because the key is the CAS
+/// expectation `accept_request` folds into the admission transaction
+/// (`run_defaults_cell` reads the same cell to build it). A typo at
+/// either site would not fail to compile; it would silently drop the
+/// compare-and-set and admit runs against settings nobody checked.
+pub const run_settings_key = "client/run_settings"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The eight corners, and what each would let a forged write do:
+/// The nine corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -1632,7 +1657,9 @@ pub const ext_fact_prefix = "ext/"
 /// `schedule/` — mark a scheduled heartbeat's occurrence as already
 /// fired, so it never fires either; `ext/` — forge or read an installed
 /// extension's durable memory, which is the one durable thing an
-/// out-of-tree extension owns.
+/// out-of-tree extension owns; `client/` — rewrite the run settings
+/// every admission compares against, and so choose the queue mode and
+/// tool-execution mode of every later run of the session.
 ///
 /// ## Examples
 ///
@@ -1645,7 +1672,7 @@ pub const ext_fact_prefix = "ext/"
 /// ```
 ///
 pub fn reserved_fact_key(key: String) -> Bool {
-  string.starts_with(key, "client/")
+  string.starts_with(key, client_fact_prefix)
   || string.starts_with(key, escalation.key_prefix)
   || string.starts_with(key, operation.result_fact_prefix)
   || string.starts_with(key, lineage.key_prefix)
@@ -2177,6 +2204,16 @@ pub fn escalation_cell(
 /// are used, so a lost race or a crash spends the approval without a
 /// widened execution, never the reverse.
 ///
+/// The decision is **single-shot**, exactly as the attributed door
+/// `approve_escalation_at` is: this reads the record once and commits at
+/// the seq it read, so a `claim_escalation` that moved the record in
+/// between answers `RaceLost` rather than being retried. That is the
+/// contract rather than a limitation — a retry would reread the record
+/// and approve whatever question is standing there now, which is how one
+/// human answer comes to approve a different question. A caller holding a
+/// human's answer to a question that has moved on owes them a fresh
+/// look, not another attempt.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -2195,6 +2232,11 @@ pub fn approve_escalation(
 
 /// Rejects a pending escalation. No re-execution will run under its
 /// wanted grants.
+///
+/// Single-shot on the same terms as `approve_escalation`: the rejection
+/// commits at the seq this call read, and a record a later claimant
+/// moved in between answers `RaceLost` instead of being retried. A
+/// refusal aimed at one question must not land on the next one.
 ///
 /// ## Examples
 ///
@@ -2256,12 +2298,17 @@ pub fn deny_escalation_at(
   )
 }
 
+// The one commit both decision doors are built on: a status transition
+// checked against the status the caller read, then a CAS at that read's
+// seq. There is no retry ladder here on purpose — see
+// `approve_escalation_at` for why rereading a moved record would let one
+// human answer decide a question they were never shown.
 fn decide_escalation_at(
   runtime: Runtime,
   cell: EscalationCell,
   to: escalation.Status,
   next: Escalation,
-) {
+) -> Result(Escalation, ApiError) {
   let record = cell.record
   use <- bool.guard(
     when: !escalation.may_become(record.status, to),

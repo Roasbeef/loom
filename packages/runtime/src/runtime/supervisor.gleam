@@ -279,6 +279,22 @@ pub fn start_published(
         }),
       )
       process.unlink(started.pid)
+
+      // The namespace owner is spawn-linked to whoever called this
+      // function, and that caller is a transient assembly builder. The
+      // root is unlinked from it one line above, so without this the
+      // builder's abnormal exit would leave a fully assembled tree —
+      // writer, factories, drivers, effects all running — whose
+      // addresses no longer resolve, answering `RuntimeUnavailable` for
+      // ever and halting every strand on its next commit. Custody has
+      // been acknowledged by now (`publish` ran inside the first
+      // child-start callback, before this returned), and the weft leaf
+      // in `retain_namespace` still stops the namespace when the root
+      // exits, so nothing is leaked by dropping the link. This is the
+      // same transfer `session.open_sqlite_custody` performs for the
+      // connection; the namespace is the routing to that connection and
+      // was the half without it.
+      process.unlink(address.owner(namespace))
       Ok(describe_tree(started.pid, drains))
     }
     Error(error) -> {

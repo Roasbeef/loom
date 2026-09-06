@@ -83,7 +83,11 @@ extended by the M3 runtime wave.
   the `strand.*` registers and starts a driver for every strand found,
   routing each to its factory). The writer, registry and drain ledger bind
   reference addresses in `SessionTree.namespace`; its routing-only lifetime
-  ends when the root exits. `SessionTree.drains` retains the ledger's direct
+  ends when the root exits. It ends *only* there: the namespace owner is
+  spawn-linked to whoever assembled the tree, and `start_published`
+  unlinks it alongside the root once publication has acknowledged
+  custody, so a transient builder's abnormal exit can no longer strand a
+  fully assembled session behind addresses that resolve to nothing. `SessionTree.drains` retains the ledger's direct
   subject independently, because routing death cannot certify effect drain.
 - `runtime/supervisor.shutdown(tree, grace_ms:)` — the orderly stop
   `api.close` is built on: children terminated in reverse start order
@@ -507,15 +511,23 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Eight corners of `fact.custom` are reserved, and reserving hides as
+- **Nine corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
-  `prompt/`, `session/`, `rule/`, `schedule/` and `ext/` are refused to
+  `prompt/`, `session/`, `rule/`, `schedule/`, `ext/` and `client/` are
+  refused to
   `put_fact` and filtered out of `facts`, so no blackboard write can
   forge an approval, shadow a terminal result, rewrite a parent edge,
   overwrite the pinned system prompt, re-point the session's own
   identity, mark an operator's triggered project rule or scheduled
-  heartbeat as already fired so that it never fires, or forge and read
-  an installed extension's durable memory. Because
+  heartbeat as already fired so that it never fires, forge and read
+  an installed extension's durable memory, or rewrite the shared run
+  settings — `client/run_settings`, the one cell under `client/` — that
+  every admission compares against, and so choose the queue mode and
+  tool-execution mode of every later run of the session. Both are named
+  constants, `api.client_fact_prefix` and `api.run_settings_key`: the
+  key is a CAS expectation folded into the admission transaction, and a
+  typo in a literal spelling of it would not fail to compile, it would
+  silently drop the compare-and-set. Because
   the reservation also hides a namespace from its own owner, harness code
   reads and writes it through `reserved_facts` / `put_reserved_fact`,
   which refuse everything *outside* the reserved set — the two doors are

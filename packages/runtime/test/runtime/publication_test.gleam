@@ -153,6 +153,60 @@ pub fn owner_death_during_publication_drains_without_recovery_test() {
   assert session.close(session) == Ok(Nil)
 }
 
+/// Assembly runs in a transient builder process and the tree is
+/// deliberately unlinked from it, so a builder that dies abnormally
+/// cannot take a serving session down. The service namespace is the
+/// *routing* to that same tree and was the half without the transfer: it
+/// is spawn-linked to whoever started it, so the builder's death used to
+/// leave every strand, the writer and the factories running while their
+/// addresses resolved to nothing — `RuntimeUnavailable` from every api
+/// call for ever, and a halted strand at its next commit.
+pub fn builder_death_leaves_the_service_namespace_addressable_test() {
+  let assert Ok(session) =
+    session.open_memory(clock.stepping(from: 1000, by: 1))
+    as "the durable store must open"
+  let rec = recorder.start()
+  let opened = process.new_subject()
+  let builder =
+    process.spawn_unlinked(fn() {
+      let assert Ok(runtime) = api.open(session, answers(rec), options())
+        as "the builder must open a runtime"
+      process.send(opened, runtime)
+      process.receive_forever(process.new_subject())
+    })
+  let assert Ok(runtime) = process.receive(opened, within: 1000)
+    as "the builder must hand over its assembled runtime"
+  let routing = process.monitor(address.owner(runtime.tree.namespace))
+  let assembly = process.monitor(builder)
+  process.kill(builder)
+  let assert Ok(process.ProcessDown(..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(assembly, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "the builder must be gone before the tree is judged"
+
+  // A property about something *not* happening needs a window. An exit
+  // signal travelling the old link would already be in flight when the
+  // builder's own `Down` arrived, and nothing orders two senders'
+  // signals against each other — but under that link the namespace died
+  // in microseconds, so a window that sees no `Down` at all is decisive.
+  assert process.new_selector()
+    |> process.select_specific_monitor(routing, fn(down) { down })
+    |> process.selector_receive(200)
+    == Error(Nil)
+  let assert Ok(_writer) = address.lookup(runtime.tree.writer)
+    as "the session writer must still resolve"
+  let assert Ok(_registry) = address.lookup(runtime.tree.registry)
+    as "the strand registry must still resolve"
+  let assert Ok(operation) = api.prompt(runtime, [fake.user("orphaned")])
+    as "an orphaned tree must still admit work"
+  let assert Ok(outcome) = api.await_result(runtime, operation, within_ms: 5000)
+    as "an orphaned tree must still execute work"
+  harness.assert_completed(outcome)
+  assert api.close(runtime) == Ok(Nil)
+  assert session.close(session) == Ok(Nil)
+}
+
 fn assert_retired(runtime: api.Runtime) -> Nil {
   let assert Ok(drains) = process.subject_owner(runtime.tree.drains)
     as "the direct drain subject must retain its owner identity"
