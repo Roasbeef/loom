@@ -24,27 +24,46 @@ def positive_seconds(value):
 TERMINATION_GRACE_SECONDS = 5
 
 
+def leader_has_exited(child, deadline):
+    """Watches for the leader's exit without reaping it, until a deadline."""
+    while True:
+        # WNOWAIT observes the exit and leaves the zombie in place, so the
+        # leader's PID keeps naming the group we created for as long as we
+        # still need to signal that group.
+        try:
+            observed = os.waitid(os.P_PID, child.pid,
+                                 os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return True
+        if observed is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 def stop(child):
     """Ends a still-running command's process group, gently and then not."""
     try:
         os.killpg(child.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    try:
-        child.wait(timeout=TERMINATION_GRACE_SECONDS)
-        return
-    except subprocess.TimeoutExpired:
-        pass
+    leader_has_exited(child, time.monotonic() + TERMINATION_GRACE_SECONDS)
 
-    # The leader outlived its grace, so it has not been reaped and its PID
-    # still names the group we created — which is what makes this second
-    # signal safe to send. A leader that did stop has been reaped, its PID may
-    # already name somebody else's group, and its own group has had the
-    # SIGTERM; so that case is deliberately left alone.
+    # The leader is either still running or exited and unreaped, so its PID
+    # still names the group we created and this second signal cannot reach
+    # anybody else's group. It is sent whether or not the leader stopped: a
+    # leader that died of the SIGTERM says nothing about a descendant in the
+    # same group that ignored it, and reaping the leader first is what used
+    # to let such a descendant outlive the reported timeout.
+    # Every member of the group is our own descendant, so a permission error
+    # cannot mean a live process we may not signal. Darwin answers EPERM when
+    # the group's only remaining member is the unreaped leader itself, where
+    # Linux answers success; both mean there is nothing left to kill.
     try:
         os.killpg(child.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
+    except (ProcessLookupError, PermissionError):
+        pass
     try:
         child.wait(timeout=TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:

@@ -88,6 +88,33 @@ class DeadlineTest(unittest.TestCase):
                 child.wait(timeout=2)
             child.stdout.close()
 
+    def test_a_descendant_ignoring_sigterm_does_not_outlive_its_leader(self):
+        # The leader keeps the default SIGTERM and dies of it inside the grace;
+        # its same-group child ignores the signal and would announce its
+        # survival a second later. Reaping the leader and stopping there is
+        # what let that child outlive the reported timeout.
+        descendant = "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(1); print('descendant-survived', flush=True)"
+        source = ("import subprocess, sys; "
+                  "subprocess.run([sys.executable, '-c', %r])" % descendant)
+        child = subprocess.Popen([sys.executable, "-c", source],
+                                 start_new_session=True,
+                                 stdout=subprocess.PIPE, text=True)
+        try:
+            announced, _, _ = select.select([child.stdout], [], [], 5)
+            self.assertTrue(announced, "the descendant never announced itself")
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            with mock.patch.object(with_timeout, "TERMINATION_GRACE_SECONDS", 0.3):
+                with_timeout.stop(child)
+            self.assertEqual(child.returncode, -signal.SIGTERM)
+            # The descendant holds the pipe's write end, so EOF is its exit;
+            # the read is bounded by its own one-second self-expiry either way.
+            self.assertNotIn("descendant-survived", child.stdout.read())
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)
+            child.stdout.close()
+
     def test_invalid_deadlines_do_not_run_the_command(self):
         for seconds in ("0", "-1", "nan", "inf"):
             with self.subTest(seconds=seconds):
