@@ -284,7 +284,21 @@ pub fn accept(status: Status, event: Event) -> #(Status, Option(Outcome)) {
           key,
         )),
       ))
-    Opening(run, prepared, frames, Some(candidate)), Frame(source, message)
+
+    // The same guard `progress` and `drain` apply: once the initial cut is
+    // captured the channel is `Ready`, and handing it another frame makes it
+    // answer "unsolicited conversation response" and abort an attempt the
+    // interactive loop would have adopted. The interactive loop leaves such a
+    // frame queued for the adopted terminal; a driver has already taken it out
+    // of the mailbox, so here it is dropped instead — the adopted channel's
+    // 250 ms credited `catch_up` is what makes that lossless.
+    Opening(
+      run,
+      prepared,
+      frames,
+      Some(Candidate(captured: None, ..) as candidate),
+    ),
+      Frame(source, message)
       if frames == source
     -> {
       let #(next, updates) = channel.receive(candidate.channel, message)

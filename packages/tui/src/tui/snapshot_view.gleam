@@ -135,7 +135,7 @@ pub fn decode(captured: snapshot.Captured) -> Result(View, String) {
     |> result.replace_error("invalid captured usage"),
   )
 
-  decode_view(captured, fields, cells, usage)
+  decode_view(fields, cells, usage)
 }
 
 fn captured_cells(captured: snapshot.Captured) {
@@ -154,9 +154,12 @@ fn captured_cells(captured: snapshot.Captured) {
   Ok(cells)
 }
 
-fn decode_view(_captured, fields, cells, usage) {
+fn decode_view(fields, cells, usage) {
   // The mutable server default is read from this same cut, never from a
-  // separate config response which could race its attribution cell.
+  // separate config response which could race its attribution cell. The
+  // key is `runtime/api.run_settings_key`, spelled out here because the
+  // terminal does not depend on the runtime package; a change there must
+  // be mirrored by hand.
   let settings_value = case
     find(cells, register.FactCustom, "client/run_settings")
   {

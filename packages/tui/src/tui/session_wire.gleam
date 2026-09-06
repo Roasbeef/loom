@@ -29,6 +29,22 @@ pub type Reply {
   Presentation(event: protocol.Event)
 }
 
+/// The exact opening bytes `command` produces, up to the request identity.
+///
+/// `tui/session_channel` re-allocates a request identity by splitting an
+/// already-encoded frame rather than reparsing a body that may hold a
+/// multi-megabyte image. That makes this module's field order and spelling
+/// load-bearing at run time, so the three literals it depends on are named
+/// here, beside the encoder that emits them, instead of being repeated as
+/// string literals at the other end.
+pub const command_prefix = "{\"v\":2,\"id\":"
+
+/// The separator between the request identity and the command name.
+pub const command_tag = ",\"cmd\":"
+
+/// The separator between the command name and its body object.
+pub const command_body = ",\"body\":"
+
 /// Builds one version-two command; callers allocate monotonically increasing IDs.
 ///
 /// ## Examples

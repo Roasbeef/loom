@@ -12,6 +12,7 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -259,7 +260,7 @@ pub fn attempt_recording_round_trips_bounded_selectors_and_refuses_mixed_formats
       attempt.Id(1),
       attempt.Request(5, "escalations_get", attempt.Decisions(["a", "b"])),
     )
-  assert attempt.decode(attempt.encode(request)) == Ok(request)
+  assert attempt.decode(json.Object(attempt.encode(request))) == Ok(request)
 }
 
 pub fn attempt_replay_failed_selection_and_closed_live_lane_release_buffers_test() {
@@ -381,7 +382,7 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
     list.flatten([
       events(1, "A"),
       [attempt.Adopted(attempt.Id(1))],
-      settled_catch_up(row),
+      settled_catch_up(row, 4),
     ])
   let inbox = connection.new_inbox()
   let model =
@@ -414,8 +415,105 @@ pub fn credited_idle_cut_repaints_settled_answer_without_keyboard_input_test() {
     as "an earlier adopted frame was painted before the answer arrived"
 }
 
-fn settled_catch_up(row: entry.Entry) {
-  let id = attempt.Id(1)
+// A replay used to send cuts straight to `apply_cut`, which always
+// invalidates the transcript and restarts the activity indicator. The live
+// client sends them to `reconcile_cut`, whose whole point is that a cut with
+// the same `next_seq` and metadata as the last one changes nothing on screen.
+// A replay that repaints frames the live client did not is not reproducing the
+// session, so both paths now use the same reducer; the outbound half of it,
+// `request_decisions`, is inert while the peer is `Replaying`.
+pub fn a_replay_leaves_an_unchanged_cut_alone_test() {
+  let row = settled_row("Answer that arrives once")
+  let attached =
+    list.flatten([events(1, "A"), [attempt.Adopted(attempt.Id(1))]])
+  let once = replay_run(list.flatten([attached, settled_catch_up(row, 4)]))
+
+  // The second catch-up carries the same entry, the same metadata and the
+  // same `next_seq`; only its request and transfer identities differ, which
+  // is exactly the reconciliation the adopted channel runs every 250 ms.
+  let twice =
+    replay_run(
+      list.flatten([
+        attached,
+        settled_catch_up(row, 4),
+        idle_catch_up(row, 8),
+      ]),
+    )
+  assert once.final.replay_error == None
+  assert twice.final.replay_error == None
+  assert twice.final.render_revision == once.final.render_revision
+    as "an equal cut must not invalidate the replayed transcript"
+  assert list.map(twice.final.records, fn(record) { record.entry.id })
+    == list.map(once.final.records, fn(record) { record.entry.id })
+  assert !list.any(twice.final.transcript, fn(line) {
+    string.contains(line.text, "conversation is not attached")
+  })
+    as "a replay asks for no decision lookup, so it reports no lost one"
+}
+
+// One durable assistant turn, settled, at seq 10.
+fn settled_row(answer: String) -> entry.Entry {
+  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(1000), 987))
+  entry.MessageEntry(
+    id,
+    None,
+    10,
+    1000,
+    message.AssistantMessage(
+      [message.AssistantText(answer, None)],
+      "test",
+      "test",
+      "test",
+      None,
+      None,
+      None,
+      message.Usage(
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        0,
+        message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      ),
+      message.Stop,
+      None,
+      None,
+      None,
+      Some(True),
+      1000,
+    ),
+    False,
+  )
+}
+
+// Drives one scripted attempt stream through the shipped loop under the
+// virtual backend, with nothing attached and nothing sent.
+fn replay_run(source: List(attempt.Event)) {
+  let inbox = connection.new_inbox()
+  let model =
+    tui.Model(
+      ..tui.new_model_with_clock(inbox, workspace.Context("replay", None), fn() {
+        -1000
+      }),
+      peer: tui.Replaying,
+    )
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(110, 30),
+      list.map(source, virtual_backend.Attempt),
+      inbox,
+    )
+    |> virtual_backend.with_attempts(model.replay_inbox)
+  let assert Ok(run) = tui.run_script(model, script)
+    as "the shipped reducer replays credited traffic without a socket"
+  run
+}
+
+// The metadata cut both catch-ups carry: identical bytes, so a second
+// delivery of it is an equal cut by `reconcile_cut`'s own test.
+fn catch_up_metadata(row: entry.Entry) -> String {
   let cell = fn(namespace, value) {
     json.Object([
       #("namespace", json.String(namespace)),
@@ -452,15 +550,103 @@ fn settled_catch_up(row: entry.Entry) {
         ..list.filter(fields, fn(field) { field.0 != "cells" })
       ]),
     )
+  data
+}
+
+// A reconciliation that finds nothing new: the cursor has caught up, the
+// cut's `next_seq` is unchanged and the metadata is byte-identical to the
+// last one. This is what the adopted channel's 250 ms `catch_up` produces on
+// an idle session, and what `reconcile_cut`'s fast path exists for.
+fn idle_catch_up(row: entry.Entry, first_request: Int) {
+  let id = attempt.Id(1)
+  let transfer = "1:" <> int.to_string(first_request)
+  let data = catch_up_metadata(row)
+  list.flatten([
+    [
+      attempt.Issued(
+        id,
+        attempt.Request(first_request, "catch_up", attempt.Cursor(11)),
+      ),
+      attempt.Received(
+        id,
+        frame(
+          first_request,
+          "snapshot_begin",
+          json.Object([
+            #("snapshot_id", json.String(transfer)),
+            #("session_id", json.String("A")),
+            #("epoch", json.String("epoch")),
+            #("incarnation", json.String("incarnation")),
+            #("connection_id", json.String("connection")),
+            #(
+              "origin",
+              json.Object([
+                #("principal", json.String("alice")),
+                #("name", json.String("Alice")),
+              ]),
+            ),
+            #("role", json.String("operator")),
+            #("next_seq", json.Int(11)),
+            #("oldest_seq", json.Int(11)),
+            #("window", json.String("catch_up")),
+            #("complete_history", json.Bool(False)),
+            #("record_bytes_limit", json.Int(snapshot.record_limit)),
+            #("fragment_bytes_limit", json.Int(snapshot.piece_limit)),
+          ]),
+        ),
+      ),
+    ],
+    credited_piece(
+      first_request + 1,
+      transfer,
+      0,
+      "metadata",
+      "metadata",
+      json.Null,
+      data,
+    ),
+    [
+      attempt.Issued(
+        id,
+        attempt.Request(
+          first_request + 2,
+          "snapshot_next",
+          attempt.Credit(transfer, 1),
+        ),
+      ),
+      attempt.Received(
+        id,
+        frame(
+          first_request + 2,
+          "snapshot_end",
+          json.Object([
+            #("snapshot_id", json.String(transfer)),
+            #("index", json.Int(1)),
+            #("next_seq", json.Int(11)),
+            #("more_after", json.Null),
+          ]),
+        ),
+      ),
+    ],
+  ])
+}
+
+fn settled_catch_up(row: entry.Entry, first_request: Int) {
+  let id = attempt.Id(1)
+  let transfer = "1:" <> int.to_string(first_request)
+  let data = catch_up_metadata(row)
   [
-    attempt.Issued(id, attempt.Request(4, "catch_up", attempt.Cursor(10))),
+    attempt.Issued(
+      id,
+      attempt.Request(first_request, "catch_up", attempt.Cursor(10)),
+    ),
     attempt.Received(
       id,
       frame(
-        4,
+        first_request,
         "snapshot_begin",
         json.Object([
-          #("snapshot_id", json.String("1:4")),
+          #("snapshot_id", json.String(transfer)),
           #("session_id", json.String("A")),
           #("epoch", json.String("epoch")),
           #("incarnation", json.String("incarnation")),
@@ -483,9 +669,18 @@ fn settled_catch_up(row: entry.Entry) {
       ),
     ),
     ..list.flatten([
-      credited_piece(5, 0, "metadata", "metadata", json.Null, data),
       credited_piece(
-        6,
+        first_request + 1,
+        transfer,
+        0,
+        "metadata",
+        "metadata",
+        json.Null,
+        data,
+      ),
+      credited_piece(
+        first_request + 2,
+        transfer,
         1,
         "entry",
         ids.entry_id_to_string(row.id),
@@ -495,15 +690,19 @@ fn settled_catch_up(row: entry.Entry) {
       [
         attempt.Issued(
           id,
-          attempt.Request(7, "snapshot_next", attempt.Credit("1:4", 2)),
+          attempt.Request(
+            first_request + 3,
+            "snapshot_next",
+            attempt.Credit(transfer, 2),
+          ),
         ),
         attempt.Received(
           id,
           frame(
-            7,
+            first_request + 3,
             "snapshot_end",
             json.Object([
-              #("snapshot_id", json.String("1:4")),
+              #("snapshot_id", json.String(transfer)),
               #("index", json.Int(2)),
               #("next_seq", json.Int(11)),
               #("more_after", json.Null),
@@ -515,12 +714,24 @@ fn settled_catch_up(row: entry.Entry) {
   ]
 }
 
-fn credited_piece(request_id, index, kind, record_id, sequence, data) {
+fn credited_piece(
+  request_id,
+  transfer,
+  index,
+  kind,
+  record_id,
+  sequence,
+  data,
+) {
   let id = attempt.Id(1)
   [
     attempt.Issued(
       id,
-      attempt.Request(request_id, "snapshot_next", attempt.Credit("1:4", index)),
+      attempt.Request(
+        request_id,
+        "snapshot_next",
+        attempt.Credit(transfer, index),
+      ),
     ),
     attempt.Received(
       id,
@@ -528,7 +739,7 @@ fn credited_piece(request_id, index, kind, record_id, sequence, data) {
         request_id,
         "snapshot_chunk",
         json.Object([
-          #("snapshot_id", json.String("1:4")),
+          #("snapshot_id", json.String(transfer)),
           #("index", json.Int(index)),
           #("kind", json.String(kind)),
           #("record_id", json.String(record_id)),
@@ -583,7 +794,7 @@ fn waiting_capture(clock) {
       message.UserMessage([message.UserText("prior turn", None)], 1000, None),
       False,
     )
-  let source = settled_catch_up(row)
+  let source = settled_catch_up(row, 4)
   let #(capturing, _) = read_channel(ready, list.take(source, 2))
   #(capturing, list.drop(source, 2))
 }
@@ -806,9 +1017,17 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
   assert !session_channel.has_unsent(channel)
   assert adopted.unconfirmed == None
     as "cancellation of unsent work is not uncertain delivery"
-  assert list.any(adopted.transcript, fn(line) {
-    string.contains(line.text, "target changed from A")
-  })
+  // Exactly one notice, and it is the one issued after the cut.
+  // `cancel_pending` appends its own "Not sent" line first, but `render_cut`
+  // replaces the whole transcript with the adopted session's, so only the
+  // line written after adoption reaches the operator. A review read this as
+  // a duplicate; it is not, and dropping the later line loses the notice.
+  let notices =
+    list.filter(adopted.transcript, fn(line) {
+      string.contains(line.text, "target change") && line.speaker == tui.System
+    })
+  let assert [notice] = notices as "the unsent draft is reported once"
+  assert notice.text == "Not sent: target changed from A; draft retained"
 }
 
 pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_test() {

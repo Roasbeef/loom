@@ -769,9 +769,9 @@ fn send_queued(channel: Channel, updates: List(Update)) {
 
 fn send(channel: Channel, outbound: Outbound) {
   let frame =
-    "{\"v\":2,\"id\":"
+    session_wire.command_prefix
     <> int.to_string(channel.next_id)
-    <> ",\"cmd\":"
+    <> session_wire.command_tag
     <> outbound.suffix
   let selection = case outbound.intent {
     Lookup(ids) -> attempt.Decisions(ids)
@@ -796,23 +796,21 @@ fn outbound(frame: String) {
     Error("conversation command exceeds the input bound"),
   )
   use #(prefix, suffix) <- result.try(
-    string.split_once(frame, ",\"cmd\":")
+    string.split_once(frame, session_wire.command_tag)
     |> result.replace_error("invalid generated command prefix"),
   )
   use id <- result.try(
-    string.starts_with(prefix, "{\"v\":2,\"id\":")
-    |> fn(valid) {
-      case valid {
-        True -> Ok(string.drop_start(prefix, 12))
-        False -> Error("invalid generated command version")
-      }
+    case string.starts_with(prefix, session_wire.command_prefix) {
+      True ->
+        Ok(string.drop_start(prefix, string.length(session_wire.command_prefix)))
+      False -> Error("invalid generated command version")
     },
   )
   use _ <- result.try(
     int.parse(id) |> result.replace_error("invalid generated command identity"),
   )
   use #(name, _body) <- result.try(
-    string.split_once(suffix, ",\"body\":")
+    string.split_once(suffix, session_wire.command_body)
     |> result.replace_error("invalid generated command body"),
   )
   use name <- result.try(

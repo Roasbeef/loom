@@ -54,7 +54,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/frame
 import tui/image_drop
-import tui/internal/ffi_bootstrap
+import tui/internal/ffi_terminal
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
@@ -479,7 +479,7 @@ pub type FrameDecision {
 /// ```
 pub fn main() {
   // Nothing but the rendered frame may write to this terminal from here on.
-  ffi_bootstrap.silence_logger()
+  ffi_terminal.silence_logger()
 
   // `--record` is answered here rather than inside `parse_launch` because
   // it qualifies every interactive launch rather than choosing one, and
@@ -532,20 +532,20 @@ fn forward(arguments: List(String)) -> Nil {
   case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
     Error(reason) -> {
       io.println_error("loom ext: " <> reason)
-      ffi_bootstrap.halt(1)
+      ffi_terminal.halt(1)
       Nil
     }
     Ok(server) ->
-      case ffi_bootstrap.run_forwarding(server, ["ext", ..arguments]) {
+      case ffi_terminal.run_forwarding(server, ["ext", ..arguments]) {
         Ok(status) -> {
-          ffi_bootstrap.halt(status)
+          ffi_terminal.halt(status)
           Nil
         }
         Error(reason) -> {
           io.println_error(
             "loom ext: could not run " <> server <> ": " <> reason,
           )
-          ffi_bootstrap.halt(1)
+          ffi_terminal.halt(1)
           Nil
         }
       }
@@ -577,7 +577,7 @@ pub fn new_model(
   inbox: Subject(connection.Message),
   project: workspace.Context,
 ) -> Model {
-  new_model_with_clock(inbox, project, ffi_bootstrap.monotonic_time_ms)
+  new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
 }
 
 /// Creates a presentation state whose timing is controlled by its caller.
@@ -995,7 +995,7 @@ fn replay(
     Ok(rendered) -> print_frames(rendered, frames)
     Error(reason) -> {
       io.println_error("loom replay: " <> reason)
-      ffi_bootstrap.halt(1)
+      ffi_terminal.halt(1)
       Nil
     }
   }
@@ -1079,7 +1079,7 @@ fn print_one(frame_result: Result(buffer.Buffer, Nil), missing: String) -> Nil {
     Ok(drawn) -> io.println(frame.buffer_to_text(drawn))
     Error(Nil) -> {
       io.println_error("loom replay: " <> missing)
-      ffi_bootstrap.halt(1)
+      ffi_terminal.halt(1)
       Nil
     }
   }
@@ -1177,7 +1177,40 @@ fn attach_daemon(
   }
 }
 
+/// Runs `proceed` with a model whose daemon control has a living owner.
+///
+/// Every control action goes through here because a control request that times
+/// out retires its owner, and `daemon_host` is otherwise written only during
+/// startup: without this the first slow registry read would leave `/sessions`,
+/// open and create failing for the rest of the process's life. Rebuilding is
+/// deliberate rather than automatic — it happens when the operator asks for a
+/// control action, and its handshake cost is that action's.
+///
+/// An absent host is passed through untouched, because "no daemon at all" is a
+/// different situation from "the owner retired" and each caller words it
+/// itself.
+fn with_live_control(model: Model, proceed: fn(Model) -> Model) -> Model {
+  case model.daemon_host {
+    None -> proceed(model)
+    Some(host) ->
+      case process.is_alive(daemon.owner(daemon_selection.control(host))) {
+        True -> proceed(model)
+
+        // The retired owner's route is still good; only its connection is
+        // gone. A failed rebuild keeps that route in the model so the next
+        // control action can try again rather than losing the daemon.
+        False ->
+          case daemon_selection.reconnect(host, process.self()) {
+            Ok(host) -> proceed(Model(..model, daemon_host: Some(host)))
+            Error(reason) ->
+              append_error(model, "reconnect daemon control: " <> reason)
+          }
+      }
+  }
+}
+
 fn begin_open(model: Model, session: String) -> Model {
+  use model <- with_live_control(model)
   let model = cancel_pending(model, "target change from " <> model.session)
   case attachment.busy(model.candidate), model.daemon_host {
     True, _ -> append_error(model, "a session switch is already in progress")
@@ -1198,12 +1231,22 @@ fn begin_open(model: Model, session: String) -> Model {
 }
 
 fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
+  use model <- with_live_control(model)
   case model.catalogue_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
       let cancel = weft.cancel_signal()
       let replies = process.new_subject()
+
+      // The two scalars the worker needs are bound here rather than read off
+      // `model` inside the closure. A closure over a field captures the whole
+      // record, and weft copies a fun's environment into the worker: that
+      // would send the transcript, the row caches and the cached frame — an
+      // 8 MiB retained window at its bound — to a process that wants a
+      // session id and a path.
+      let session = model.session
+      let workspace = model.workspace.path
       let _relay =
         weft.new([
           fn() {
@@ -1219,8 +1262,8 @@ fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
               control_protocol.SessionsReply(page) -> Ok(page)
               _ -> Error("catalogue returned an unexpected control reply")
             })
-            let selected = case model.session {
-              "" -> default_selection(host, model.workspace.path)
+            let selected = case session {
+              "" -> default_selection(host, workspace)
               id -> id
             }
             Ok(#(page, selected))
@@ -1341,6 +1384,7 @@ fn finish_catalogue(model, result) {
 }
 
 fn create_session(model: Model) -> Model {
+  use model <- with_live_control(model)
   let model = cancel_pending(model, "target change from " <> model.session)
   case model.creation_key, model.daemon_host, attachment.busy(model.candidate) {
     Some(key), _, _ ->
@@ -1365,6 +1409,12 @@ fn create_session(model: Model) -> Model {
         Some(options) -> options.config
         None -> ""
       }
+
+      // Bound outside the closure for the same reason the catalogue job binds
+      // its two: a reference to `model.workspace` would put the whole
+      // presentation state, cached frame included, in the worker's copied
+      // environment.
+      let workspace = model.workspace.path
       Model(
         ..model,
         creation_key: Some(key),
@@ -1372,9 +1422,7 @@ fn create_session(model: Model) -> Model {
         next_id: model.next_id + 1,
         next_attempt: model.next_attempt + 1,
         candidate: attachment.start_recorded(
-          fn() {
-            daemon_selection.create(host, key, model.workspace.path, config)
-          },
+          fn() { daemon_selection.create(host, key, workspace, config) },
           90_000,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
         ),
@@ -2560,8 +2608,14 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         interrupt: None,
       )
       |> apply_cut(cut, view)
-    attempt_replay.Update(session_channel.Captured(cut, view)) ->
-      apply_cut(model, cut, view)
+
+    // Every update, cuts included, goes through the live reducer. A cut used
+    // to be special-cased into `apply_cut`, which always invalidates the
+    // transcript and restarts the activity indicator; `reconcile_cut`'s
+    // equal-cut fast path is what the live client does instead, and a replay
+    // that rendered frames the live client did not is not a replay. The
+    // outbound half of that path is made inert by `request_decisions`, which
+    // sends nothing while the peer is `Replaying`.
     attempt_replay.Update(update) -> apply_channel_update(model, update)
   }
 }
@@ -2937,6 +2991,12 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         "open session: " <> reason,
       )
     Some(attachment.Adopted(channel, cut, view, inbox, workspace, creation_key)) -> {
+      // `cancel_pending` below appends its own "Not sent: … ; draft retained"
+      // notice, but `render_cut` replaces the whole transcript with the new
+      // session's, so that line does not survive this arm. The fact still has
+      // to reach the operator, so it is re-issued after the cut. Reading the
+      // draft here rather than afterwards is what makes that possible: by
+      // then the pending slot is already cleared.
       let cancelled = case model.pending_submission {
         Some(_) ->
           Some(
@@ -2947,7 +3007,15 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
         None -> None
       }
       let model = cancel_pending(model, "target change from " <> model.session)
+
+      // Retirement runs while the old channel's session is still the visible
+      // one: its outcome is reported against the identity that produced it,
+      // and a sent request keeps that identity rather than acquiring the new
+      // session's.
       let model = retire_previous(model)
+
+      // Only then is the old inbox drained. Draining first would discard
+      // frames the retirement is entitled to reduce.
       sessions.discard(model.inbox)
       let adopted =
         Model(
@@ -2977,6 +3045,11 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           scroll_offset: 0,
         )
         |> apply_cut(cut, view)
+
+      // The adoption marker is written after the cut, not before it. ADR-009
+      // makes that ordering a correctness rule: a recording is replayed by
+      // the same reducer, and a marker ahead of its cut would move the
+      // visible session before the frames that justify it.
       session_channel.adopted(channel)
       let adopted = adopted |> send_frame(protocol.models(1))
       case cancelled {
@@ -3109,13 +3182,22 @@ fn reconcile_cut(
 }
 
 fn request_decisions(model: Model, ids: List(String)) -> Model {
-  case model.channel {
-    None -> append_error(model, "conversation is not attached")
-    Some(channel) ->
-      case session_channel.lookup(channel, ids) {
-        Ok(channel) -> Model(..model, channel: Some(channel))
-        Error(reason) ->
-          append_error(model, "decision lookup not sent: " <> reason)
+  case model.peer {
+    // A replay performs no outbound effect and invents no line the live
+    // client was not shown. Whatever the live client learned about these
+    // decisions is already in the recording; a "conversation is not
+    // attached" error here would be a line no live session ever produced.
+    Replaying -> model
+
+    Attached(_) | Disconnected | Preview ->
+      case model.channel {
+        None -> append_error(model, "conversation is not attached")
+        Some(channel) ->
+          case session_channel.lookup(channel, ids) {
+            Ok(channel) -> Model(..model, channel: Some(channel))
+            Error(reason) ->
+              append_error(model, "decision lookup not sent: " <> reason)
+          }
       }
   }
 }

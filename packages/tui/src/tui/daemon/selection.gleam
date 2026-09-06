@@ -4,6 +4,7 @@
 //// once, then observes only the returned operation within the same epoch.
 //// Losing admission's reply is reported as an unknown outcome, never retried.
 
+import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/uri
@@ -46,6 +47,33 @@ pub fn host(
 /// ```
 pub fn control(host: Host) -> daemon.Connection {
   host.control
+}
+
+/// Builds a second control owner on this host's own route and credential.
+///
+/// A control request that times out retires its owner: `daemon.finish` closes
+/// the socket and stops the machine so a stalled writer cannot accumulate
+/// requests, and a late reply is delivered to an inbox nobody reads. That
+/// ruling is what makes a lost reply safe. What it leaves behind is a route
+/// whose owner is gone, and the route is the durable half — so it, not the
+/// connection, is what the terminal keeps and what mints the replacement. The
+/// new owner is a new state machine with a new inbox, so a reply owed to the
+/// retired owner can never be mistaken for an answer to a later request.
+///
+/// This is not automatic reconnection: the caller decides when a control
+/// action is worth a new connection, and pays the handshake for it there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.reconnect(host, process.self())
+/// ```
+pub fn reconnect(host: Host, owner: process.Pid) -> Result(Host, String) {
+  use control <- result.map(
+    daemon.connect(uri.to_string(host.address), host.token, owner, 5000)
+    |> result.map_error(failure),
+  )
+  Host(..host, control:)
 }
 
 /// Sends one explicit open and waits only on its returned operation.

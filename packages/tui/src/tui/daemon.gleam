@@ -399,9 +399,20 @@ fn remaining(deadline: Int) {
   int.max(0, deadline - bootstrap.monotonic_time_ms())
 }
 
-// Credentials may cross cleartext TCP only to literal loopback addresses.
-// Validation precedes the existing transport's authorization-header creation.
-fn valid_address(address: String) {
+/// Accepts a control address only when its credentials stay off the network.
+///
+/// Credentials may cross cleartext TCP only to literal loopback addresses.
+/// Validation precedes the existing transport's authorization-header creation.
+/// It is exposed to the suite because the decision is a pure string judgement
+/// that would otherwise only be observable behind a real socket connect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon.valid_address("ws://[::1]:8080/v2/control") -> Ok(Nil)
+/// ```
+@internal
+pub fn valid_address(address: String) {
   use endpoint <- result.try(
     uri.parse(address)
     |> result.replace_error(Invalid("invalid control address")),
@@ -416,9 +427,17 @@ fn valid_address(address: String) {
     ) -> Ok(Nil)
     _ -> Error(Invalid("expected an unqualified /v2/control endpoint"))
   })
+
+  // `uri.parse` keeps an IPv6 literal's brackets in `host`, so the bracketed
+  // form is the one a parsed `ws://[::1]:PORT/v2/control` actually presents.
+  // The bare form is matched as well because a caller may hand this function
+  // a host it assembled itself rather than one it parsed back out of a URI.
   case endpoint.scheme, endpoint.host {
     Some("wss"), Some(host) if host != "" -> Ok(Nil)
-    Some("ws"), Some("127.0.0.1") | Some("ws"), Some("::1") -> Ok(Nil)
+    Some("ws"), Some("127.0.0.1")
+    | Some("ws"), Some("[::1]")
+    | Some("ws"), Some("::1")
+    -> Ok(Nil)
     _, _ -> Error(Invalid("remote control requires TLS"))
   }
 }

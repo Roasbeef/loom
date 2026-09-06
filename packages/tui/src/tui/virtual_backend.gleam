@@ -280,7 +280,16 @@ fn next_scripted(
           process.send(inbox, event)
           Ok(#(backend.Tick, VirtualState(..state, remaining: rest)))
         }
-        None -> Error(backend.Interrupted)
+
+        // `Interrupted` is how a spent script ends a run, so answering with
+        // it here would report a scripting mistake as an ordinary finish.
+        // The script asked to deliver a candidate event to a run that never
+        // opened an attempts inbox, and that is worth naming.
+        None ->
+          Error(backend.IOError(
+            "the script delivers an attempt event but the run has no "
+            <> "attempts inbox",
+          ))
       }
 
     [] -> settle(state)

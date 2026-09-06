@@ -82,11 +82,21 @@ that tree separately from the self-contained server.
   stalled writer cannot accumulate requests after repeated timeouts. An explicit
   replacement owns a new inbox; old replies cannot reach it. A lost mutation
   reply returns `UnknownOutcome(command)` without resending it.
+  A retired owner is not a dead daemon. The route — address and credential —
+  outlives it, so `tui/daemon/selection.reconnect` mints a second owner on the
+  same route with a new inbox, and `/sessions`, open and create take that step
+  before they use control. That is not automatic reconnection: the operator's
+  own action pays for the handshake, and nothing is resent. One control slot
+  plus `selection.await`'s 50 ms poll also means a saved-session open answers
+  every concurrent control request with `Busy` for as long as it runs, which
+  is the accepted cost of never queueing.
   `tui/daemon/protocol` is the independent, total control codec:
   `Page` is bounded to 100 authorized records, lifecycle requests use the hello
   epoch, and `GetOperation` refuses an operation from another epoch locally.
   Metadata/default reads never imply an open. Cleartext credentials are allowed
-  only for literal loopback endpoints; remote control requires `wss`. The codec
+  only for literal loopback endpoints — `127.0.0.1` and `[::1]`, bracketed
+  because that is the form `uri.parse` leaves in a parsed URI's host; remote
+  control requires `wss`. The codec
   caps a complete frame before JSON parsing, but does not claim a preallocation
   bound in the inherited Stratus parser.
 - `tui/bootstrap.Options` describes local-launch inputs, while
@@ -141,10 +151,16 @@ that tree separately from the self-contained server.
   while denial remains available under the captured sequence.
   `tui/sessions` and workspace-record bootstrap remain historical host-test
   seams, not the live default selector.
-- `tui/internal/ffi_bootstrap` delegates shared operating-system facts and
-  actions to `host/bootstrap`: private and bounded file operations, process
-  identity and launch, a kernel lock, loopback port reservation, time, and
-  SHA-256. Logger suppression, command forwarding, and VM exit remain in TUI.
+- `host/bootstrap` is called directly, with no shim between. Shared
+  operating-system facts and actions — private and bounded file operations,
+  process identity and launch, a kernel lock, loopback port reservation, time,
+  and SHA-256 — live there because the daemon needs the same ones, and a
+  forwarding module over them was one more place for three copies of the same
+  doc comment to drift. `tui/internal/ffi_terminal` is what is left: the three
+  actions only a program that owns a terminal wants — `silence_logger`,
+  `run_forwarding` and `halt` — and `tui_ffi.erl` holds exactly those three.
+  `tui/internal/ffi_file` adds a weft deadline to `host/bootstrap`'s own
+  bounded reads rather than declaring externals of its own.
   The shared Erlang implementation must not acquire bootstrap policy. Every
   path or name crossing into Erlang is converted with
   `unicode:characters_to_list/1`, never `binary_to_list/1`, which would split a
@@ -504,8 +520,12 @@ that tree separately from the self-contained server.
 - **Manual replacement is not catch-up.** `/sessions` validates a provisional
   attachment while preserving the old projection. The adopted channel runs
   credited `catch_up` at 250ms and includes metadata-only changes. Equal cuts
-  do not restart animation or invalidate the transcript. Disconnect closes
-  the channel without automatic reconnect or mutation resend.
+  do not restart animation or invalidate the transcript, and a replay goes
+  through that same reconciliation rather than repainting every recorded cut,
+  because a replay that draws frames the live client did not is not
+  reproducing the session; its outbound half, the decision lookup, is inert
+  while the peer is `Replaying`. Disconnect closes the channel without
+  automatic reconnect or mutation resend.
 - **Attachment identity is not a transient notice.** The committed cut supplies
   the visible author name, role and presence count alongside configuration.
   Model-list replies and other notices cannot replace that identity. A pending
@@ -518,7 +538,7 @@ that tree separately from the self-contained server.
   notice without claiming that earlier uncertainty has been resolved.
 
 - **A passthrough forwards output, it does not interpret it.**
-  `ffi_bootstrap.run_forwarding` opens a port with `exit_status` and
+  `ffi_terminal.run_forwarding` opens a port with `exit_status` and
   `stderr_to_stdout` and writes every chunk to this process's stdout as
   it arrives. It is a new FFI rather than a reuse of `spawn_server`,
   which exists to start a *detached, paused* daemon and hand back its

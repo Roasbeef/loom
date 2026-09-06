@@ -131,14 +131,18 @@ pub fn note(trace: Option(Trace), event: Event) -> Nil {
   }
 }
 
-/// Encodes a format-two attempt event, without a timestamp envelope.
+/// Encodes a format-two attempt event as the fields of one recorded line.
+///
+/// The fields are returned rather than an object because the recorder splices
+/// them into its own line, and a `JsonValue` it had to re-match would give it
+/// an unreachable arm that silently wrote a line with no `t` discriminator.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let value = attempt.encode(attempt.Closed(attempt.Id(1)))
+/// let fields = attempt.encode(attempt.Closed(attempt.Id(1)))
 /// ```
-pub fn encode(event: Event) -> json.JsonValue {
+pub fn encode(event: Event) -> List(#(String, json.JsonValue)) {
   let #(Id(id), tag, fields) = case event {
     Started(id, expected) -> #(id, "attempt_started", [
       #("session", json.String(expected.session)),
@@ -166,7 +170,7 @@ pub fn encode(event: Event) -> json.JsonValue {
       #("reason", json.String(reason)),
     ])
   }
-  json.Object([#("t", json.String(tag)), #("attempt", json.Int(id)), ..fields])
+  [#("t", json.String(tag)), #("attempt", json.Int(id)), ..fields]
 }
 
 fn encode_selection(selection) {
@@ -186,7 +190,9 @@ fn encode_selection(selection) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert attempt.decode(attempt.encode(attempt.Closed(attempt.Id(1))))
+/// assert attempt.decode(json.Object(attempt.encode(attempt.Closed(
+///   attempt.Id(1),
+/// ))))
 ///   == Ok(attempt.Closed(attempt.Id(1)))
 /// ```
 pub fn decode(value: json.JsonValue) -> Result(Event, String) {

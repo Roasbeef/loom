@@ -20,8 +20,8 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/string
+import host/bootstrap as host_bootstrap
 import simplifile
-import tui/internal/ffi_bootstrap
 
 /// Compares text against the golden of the given name, or rewrites it.
 ///
@@ -129,5 +129,5 @@ fn drop_one_trailing_newline(text: String) -> String {
 }
 
 fn updating() -> Bool {
-  ffi_bootstrap.getenv("LOOM_UPDATE_SNAPSHOTS") == Ok("1")
+  host_bootstrap.getenv("LOOM_UPDATE_SNAPSHOTS") == Ok("1")
 }

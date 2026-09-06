@@ -56,10 +56,10 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap as host_bootstrap
 import simplifile
 import tui/attempt
 import tui/connection
-import tui/internal/ffi_bootstrap
 import tui/virtual_backend
 
 /// Which way a wheel event moved, so no reader has to carry the polarity
@@ -141,7 +141,7 @@ pub opaque type Recorder {
 pub fn start(path: String) -> Result(Recorder, String) {
   case simplifile.write(path, encode_line(Moment(0, LocalFormatTwo)) <> "\n") {
     Ok(Nil) ->
-      Ok(Recorder(path:, started_ms: ffi_bootstrap.monotonic_time_ms()))
+      Ok(Recorder(path:, started_ms: host_bootstrap.monotonic_time_ms()))
     Error(reason) ->
       Error("cannot open recording " <> path <> ": " <> string.inspect(reason))
   }
@@ -374,7 +374,7 @@ pub fn decode_text(text: String) -> Result(List(Moment), String) {
 // websocket, so the syscall rate is bounded by those and buffering would
 // only risk losing the tail of the run that is being diagnosed.
 fn append(recorder: Recorder, event: Recorded) -> Nil {
-  let at_ms = ffi_bootstrap.monotonic_time_ms() - recorder.started_ms
+  let at_ms = host_bootstrap.monotonic_time_ms() - recorder.started_ms
   let line = encode_line(Moment(at_ms:, event:)) <> "\n"
 
   // A failed append is deliberately silent. The terminal owns the screen,
@@ -387,11 +387,7 @@ fn append(recorder: Recorder, event: Recorded) -> Nil {
 fn encode_event(event: Recorded) -> List(#(String, json.JsonValue)) {
   case event {
     LocalFormatTwo -> [#("t", json.String("format")), #("version", json.Int(2))]
-    Attempt(event) ->
-      case attempt.encode(event) {
-        json.Object(fields) -> fields
-        _ -> []
-      }
+    Attempt(event) -> attempt.encode(event)
     Key(text:) -> [#("t", json.String("key")), #("key", json.String(text))]
     Pasted(text:) -> [
       #("t", json.String("paste")),
@@ -480,9 +476,8 @@ fn decode_event(
     | "attempt_disconnected"
     | "attempt_fault"
     | "attempt_adopted"
-    | "attempt_closed" ->
-      attempt.decode(json.Object(fields)) |> result.map(Attempt)
-    "attempt_failed" ->
+    | "attempt_closed"
+    | "attempt_failed" ->
       attempt.decode(json.Object(fields)) |> result.map(Attempt)
     "key" -> result.map(required_string(fields, "key"), Key)
     "paste" -> result.map(required_string(fields, "text"), Pasted)

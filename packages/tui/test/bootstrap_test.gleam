@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap as host_bootstrap
 import host/endpoint
 import simplifile
 import tui/attachment
@@ -14,7 +15,6 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control
 import tui/daemon/selection
-import tui/internal/ffi_bootstrap
 import tui/session_channel
 import tui/sessions
 import weft
@@ -53,6 +53,19 @@ pub fn local_gateway_address_rejects_lookalikes_test() {
   assert !bootstrap.local_gateway_address("ws://127.0.0.1:65536/v1/ws")
   assert !bootstrap.local_gateway_address("ws://127.0.0.1:44123/v1/ws?q=1")
   assert !bootstrap.local_gateway_address("ws://user@127.0.0.1:44123/v1/ws")
+}
+
+pub fn control_address_accepts_the_bracketed_ipv6_loopback_test() {
+  // `uri.parse` keeps the brackets, so the bracketed literal is what a
+  // `--bind [::1]:0` daemon's own published address parses back into. An
+  // unbracketed arm alone refuses that daemon as if it were remote.
+  assert daemon.valid_address("ws://[::1]:1234/v2/control") == Ok(Nil)
+  assert daemon.valid_address("ws://127.0.0.1:1234/v2/control") == Ok(Nil)
+  assert daemon.valid_address("wss://control.example:443/v2/control") == Ok(Nil)
+  assert daemon.valid_address("ws://[::2]:1234/v2/control")
+    == Error(daemon.Invalid("remote control requires TLS"))
+  assert daemon.valid_address("ws://example.com:1234/v2/control")
+    == Error(daemon.Invalid("remote control requires TLS"))
 }
 
 pub fn launch_arguments_do_not_trust_workspace_configuration_test() {
@@ -112,11 +125,11 @@ pub fn private_file_round_trip_is_bounded_test() {
   let root = test_root("private-file")
   let path = filepath.join(root, "record")
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
-  let assert Ok(Nil) = ffi_bootstrap.atomic_write_private(path, "ready\n")
-  let assert Ok(bytes) = ffi_bootstrap.read_private_bounded(path, 32)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) = host_bootstrap.atomic_write_private(path, "ready\n")
+  let assert Ok(bytes) = host_bootstrap.read_private_bounded(path, 32)
   assert bit_array.to_string(bytes) == Ok("ready\n")
-  assert ffi_bootstrap.read_regular_bounded(path, 3)
+  assert host_bootstrap.read_bounded(path, 3)
     == Error("file exceeds the bounded read limit")
   let _ = simplifile.delete(root)
 }
@@ -124,14 +137,14 @@ pub fn private_file_round_trip_is_bounded_test() {
 pub fn private_directory_listing_is_bounded_test() {
   let root = test_root("bounded-directory")
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
   let assert Ok(Nil) =
-    ffi_bootstrap.atomic_write_private(filepath.join(root, "first"), "one")
+    host_bootstrap.atomic_write_private(filepath.join(root, "first"), "one")
   let assert Ok(Nil) =
-    ffi_bootstrap.atomic_write_private(filepath.join(root, "second"), "two")
-  assert ffi_bootstrap.list_directory_bounded(root, 1)
+    host_bootstrap.atomic_write_private(filepath.join(root, "second"), "two")
+  assert host_bootstrap.list_directory_bounded(root, 1)
     == Error("directory exceeds the entry limit")
-  let assert Ok(entries) = ffi_bootstrap.list_directory_bounded(root, 2)
+  let assert Ok(entries) = host_bootstrap.list_directory_bounded(root, 2)
   assert list.length(entries) == 2
   let _ = simplifile.delete(root)
 }
@@ -145,15 +158,16 @@ pub fn local_session_discovery_validates_launcher_records_test() {
   let endpoint_directory = filepath.join(state, "endpoints")
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(state)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(session_directory)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(state)
   let assert Ok(Nil) =
-    ffi_bootstrap.ensure_private_directory(endpoint_directory)
+    host_bootstrap.ensure_private_directory(session_directory)
+  let assert Ok(Nil) =
+    host_bootstrap.ensure_private_directory(endpoint_directory)
   let assert Ok(Nil) = simplifile.write(session, "")
   let assert Ok(canonical_workspace) =
-    ffi_bootstrap.canonical_directory(workspace)
-  let assert Ok(canonical_state) = ffi_bootstrap.canonical_directory(state)
-  let assert Ok(canonical_session) = ffi_bootstrap.canonical_path(session)
+    host_bootstrap.canonical_directory(workspace)
+  let assert Ok(canonical_state) = host_bootstrap.canonical_directory(state)
+  let assert Ok(canonical_session) = host_bootstrap.canonical_path(session)
   let key = digest_prefix(canonical_session, 24)
   let endpoint = filepath.join(endpoint_directory, key <> ".json")
   let record =
@@ -181,12 +195,12 @@ pub fn local_session_discovery_validates_launcher_records_test() {
       ),
       #("server_pid", json.Int(0)),
       #("server_birth", json.String("")),
-      #("started_at_ms", json.Int(ffi_bootstrap.system_time_ms())),
+      #("started_at_ms", json.Int(host_bootstrap.system_time_ms())),
     ])
     |> json.to_string
-  let assert Ok(Nil) = ffi_bootstrap.atomic_write_private(endpoint, record)
+  let assert Ok(Nil) = host_bootstrap.atomic_write_private(endpoint, record)
   let assert Ok(Nil) =
-    ffi_bootstrap.atomic_write_private(
+    host_bootstrap.atomic_write_private(
       filepath.join(endpoint_directory, "malformed.json"),
       "not json",
     )
@@ -196,7 +210,7 @@ pub fn local_session_discovery_validates_launcher_records_test() {
   // starting, as a record a failed spawn abandoned would.
   let pending = filepath.join(session_directory, "pending.db")
   let assert Ok(Nil) = simplifile.write(pending, "")
-  let assert Ok(canonical_pending) = ffi_bootstrap.canonical_path(pending)
+  let assert Ok(canonical_pending) = host_bootstrap.canonical_path(pending)
   let pending_key = digest_prefix(canonical_pending, 24)
   let pending_endpoint =
     filepath.join(endpoint_directory, pending_key <> ".json")
@@ -207,11 +221,11 @@ pub fn local_session_discovery_validates_launcher_records_test() {
     |> string.replace(key, pending_key)
   let options = bootstrap.Options(workspace, session, "/bin/loomd", state, "")
   let assert Ok(Nil) =
-    ffi_bootstrap.atomic_write_private(pending_endpoint, pending_record)
+    host_bootstrap.atomic_write_private(pending_endpoint, pending_record)
   let assert Ok([_, _]) = bootstrap.discover_sessions(options)
     as "a ready sibling record is listed"
   let assert Ok(Nil) =
-    ffi_bootstrap.atomic_write_private(
+    host_bootstrap.atomic_write_private(
       pending_endpoint,
       string.replace(pending_record, "\"ready\"", "\"starting\""),
     )
@@ -237,12 +251,12 @@ pub fn launch_lock_is_single_winner_test() {
   let root = test_root("launch-lock")
   let path = filepath.join(root, "session.lock")
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
-  let assert Ok(first) = ffi_bootstrap.try_launch_lock(path)
-  assert ffi_bootstrap.try_launch_lock(path) == Error("busy")
-  ffi_bootstrap.release_launch_lock(first)
-  let assert Ok(second) = ffi_bootstrap.try_launch_lock(path)
-  ffi_bootstrap.release_launch_lock(second)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
+  let assert Ok(first) = host_bootstrap.try_launch_lock(path)
+  assert host_bootstrap.try_launch_lock(path) == Error("busy")
+  host_bootstrap.release_launch_lock(first)
+  let assert Ok(second) = host_bootstrap.try_launch_lock(path)
+  host_bootstrap.release_launch_lock(second)
   let _ = simplifile.delete(root)
 }
 
@@ -251,22 +265,22 @@ pub fn launch_lock_is_released_when_its_owner_dies_test() {
   let path = filepath.join(root, "session.lock")
   let ready = process.new_subject()
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
   let holder =
     process.spawn_unlinked(fn() {
       // Only the resource owner may receive on its parking inbox. A parent
       // inbox would crash this worker and release the lock before the kill.
       let parked = process.new_subject()
-      let assert Ok(lock) = ffi_bootstrap.try_launch_lock(path)
+      let assert Ok(lock) = host_bootstrap.try_launch_lock(path)
       process.send(ready, Nil)
       let _ = process.receive(parked, 5000)
-      ffi_bootstrap.release_launch_lock(lock)
+      host_bootstrap.release_launch_lock(lock)
     })
   let assert Ok(Nil) = process.receive(ready, 1000)
-  assert ffi_bootstrap.try_launch_lock(path) == Error("busy")
+  assert host_bootstrap.try_launch_lock(path) == Error("busy")
   process.kill(holder)
   let assert Ok(recovered) = acquire_lock_eventually(path, 20)
-  ffi_bootstrap.release_launch_lock(recovered)
+  host_bootstrap.release_launch_lock(recovered)
   let _ = simplifile.delete(root)
 }
 
@@ -275,27 +289,27 @@ pub fn launch_lock_keeps_one_inode_across_reacquisition_test() {
   let path = filepath.join(root, "session.lock")
   let anchor = filepath.join(root, "anchor.lock")
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
-  let assert Ok(first) = ffi_bootstrap.try_launch_lock(path)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
+  let assert Ok(first) = host_bootstrap.try_launch_lock(path)
   let assert Ok(original) = simplifile.file_info(path)
 
   // Keep the original inode allocated even if a faulty unlock unlinks the
   // pathname. Otherwise inode reuse could hide that the lock was replaced.
   let assert Ok(Nil) = simplifile.create_link(to: path, from: anchor)
-  ffi_bootstrap.release_launch_lock(first)
+  host_bootstrap.release_launch_lock(first)
   let assert Ok(second) = acquire_lock_eventually(path, 20)
   let assert Ok(reacquired) = simplifile.file_info(path)
   assert reacquired.inode == original.inode
-  assert ffi_bootstrap.try_launch_lock(anchor) == Error("busy")
+  assert host_bootstrap.try_launch_lock(anchor) == Error("busy")
 
   // Acquiring through the retained alias must exclude the public pathname
   // too, after another release and acquisition in the opposite direction.
-  ffi_bootstrap.release_launch_lock(second)
+  host_bootstrap.release_launch_lock(second)
   let assert Ok(third) = acquire_lock_eventually(anchor, 20)
-  assert ffi_bootstrap.try_launch_lock(path) == Error("busy")
+  assert host_bootstrap.try_launch_lock(path) == Error("busy")
   let assert Ok(retained) = simplifile.file_info(path)
   assert retained.inode == original.inode
-  ffi_bootstrap.release_launch_lock(third)
+  host_bootstrap.release_launch_lock(third)
   let _ = simplifile.delete(root)
 }
 
@@ -303,18 +317,18 @@ pub fn process_identity_distinguishes_one_process_lifetime_test() {
   let root = test_root("process-identity")
   let log = filepath.join(root, "sleep.log")
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
   let assert Ok(started) =
-    ffi_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
+    host_bootstrap.spawn_server("/bin/sleep", ["30"], root, log)
   let process_port = started.0
   let pid = started.1
-  let assert Ok(ffi_bootstrap.ProcessPresent(first)) =
-    ffi_bootstrap.process_identity(pid)
-  let assert Ok(Nil) = ffi_bootstrap.release_server_process(process_port)
-  assert ffi_bootstrap.process_identity(pid)
-    == Ok(ffi_bootstrap.ProcessPresent(first))
-  ffi_bootstrap.terminate_process_group(pid)
-  ffi_bootstrap.close_server_process(process_port)
+  let assert Ok(host_bootstrap.ProcessPresent(first)) =
+    host_bootstrap.process_identity(pid)
+  let assert Ok(Nil) = host_bootstrap.release_server_process(process_port)
+  assert host_bootstrap.process_identity(pid)
+    == Ok(host_bootstrap.ProcessPresent(first))
+  host_bootstrap.terminate_process_group(pid)
+  host_bootstrap.close_server_process(process_port)
   assert_process_stops(pid, 20)
   let _ = simplifile.delete(root)
 }
@@ -325,7 +339,7 @@ pub fn paused_server_dies_with_launcher_before_release_test() {
   let log = filepath.join(root, "server.log")
   let ready = process.new_subject()
   let _ = simplifile.delete(root)
-  let assert Ok(Nil) = ffi_bootstrap.ensure_private_directory(root)
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
 
   let launcher =
     process.spawn_unlinked(fn() {
@@ -333,7 +347,7 @@ pub fn paused_server_dies_with_launcher_before_release_test() {
       // parking inbox belongs to this process rather than the parent.
       let parked = process.new_subject()
       let assert Ok(started) =
-        ffi_bootstrap.spawn_server(
+        host_bootstrap.spawn_server(
           "/bin/sh",
           ["-c", "touch \"$1\"", "loomd-test", marker],
           root,
@@ -341,20 +355,20 @@ pub fn paused_server_dies_with_launcher_before_release_test() {
         )
       process.send(ready, started.1)
       let _ = process.receive(parked, 5000)
-      ffi_bootstrap.close_server_process(started.0)
+      host_bootstrap.close_server_process(started.0)
     })
 
   let assert Ok(pid) = process.receive(ready, 1000)
-  assert !ffi_bootstrap.path_exists(marker)
+  assert !host_bootstrap.path_exists(marker)
   process.kill(launcher)
   assert_process_stops(pid, 20)
   process.sleep(50)
-  assert !ffi_bootstrap.path_exists(marker)
+  assert !host_bootstrap.path_exists(marker)
   let _ = simplifile.delete(root)
 }
 
 pub fn bootstrap_real_server_lifecycle_test() {
-  case ffi_bootstrap.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
+  case host_bootstrap.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
     Error(Nil) -> Nil
     Ok(server) -> run_real_server_lifecycle(server)
   }
@@ -368,10 +382,10 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let _ = simplifile.delete(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(other_workspace)
-  let assert Ok(workspace) = ffi_bootstrap.canonical_directory(workspace)
+  let assert Ok(workspace) = host_bootstrap.canonical_directory(workspace)
     as "wire workspace paths are absolute, not relative to the daemon cwd"
   let assert Ok(other_workspace) =
-    ffi_bootstrap.canonical_directory(other_workspace)
+    host_bootstrap.canonical_directory(other_workspace)
   let configuration = filepath.join(root, "fixture.toml")
   let assert Ok(Nil) =
     simplifile.write(
@@ -379,7 +393,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
     )
     as "a deterministic launch never uses environment-backed maintenance"
-  let assert Ok(configuration) = ffi_bootstrap.absolute_path(configuration)
+  let assert Ok(configuration) = host_bootstrap.absolute_path(configuration)
   let options = bootstrap.Options(workspace, "", server, state, configuration)
   let terminal = process.self()
   let launched =
@@ -466,13 +480,13 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert third.record == first.record
   assert simplifile.read(third.paths.token) == Ok(token)
   let pid = first.record.fence.pid
-  let assert Ok(ffi_bootstrap.ProcessPresent(identity)) =
-    ffi_bootstrap.process_identity(pid)
+  let assert Ok(host_bootstrap.ProcessPresent(identity)) =
+    host_bootstrap.process_identity(pid)
   assert identity == first.record.fence.birth
-  assert ffi_bootstrap.process_identity(pid)
-    == Ok(ffi_bootstrap.ProcessPresent(identity))
+  assert host_bootstrap.process_identity(pid)
+    == Ok(host_bootstrap.ProcessPresent(identity))
   daemon.close(third.control)
-  ffi_bootstrap.terminate_process_group(pid)
+  host_bootstrap.terminate_process_group(pid)
   assert_process_stops(pid, 200)
   let assert Ok(restarted) = bootstrap.resolve_daemon(options, terminal, 40_000)
     as "an observed departed native owner permits a new daemon epoch"
@@ -503,11 +517,35 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert reopened_cut.attachment.expected.session == saved.session_id
   assert reopened_cut.attachment.expected.epoch != target.expected.epoch
   session_channel.close(reopened_channel)
+
+  // A control request that times out retires its owner, and closing it is the
+  // same retirement by another route. Before `selection.reconnect` existed the
+  // terminal had no way back: `daemon_host` was written only during startup,
+  // so one slow registry read left every later `/sessions`, open and create
+  // failing for the process's lifetime. The route survives the owner, so it
+  // mints another one, and the daemon itself is untouched by either.
   daemon.close(restarted.control)
+  let assert Error(_) =
+    daemon.request(restarted.control, control.ListSessions("", None), 5000)
+    as "the retired owner answers nothing"
+  let assert Ok(rebuilt) = selection.reconnect(restarted_host, terminal)
+    as "the surviving route mints a second control owner"
+  assert daemon.owner(selection.control(rebuilt))
+    != daemon.owner(restarted.control)
+  let assert Ok(control.SessionsReply(after_reconnect)) =
+    daemon.request(
+      selection.control(rebuilt),
+      control.ListSessions("", None),
+      5000,
+    )
+    as "metadata listing works again on the rebuilt control"
+  assert list.length(after_reconnect.sessions) == 1
+  daemon.close(selection.control(rebuilt))
+
   let restarted_pid = restarted.record.fence.pid
-  assert ffi_bootstrap.process_identity(restarted_pid)
-    == Ok(ffi_bootstrap.ProcessPresent(restarted.record.fence.birth))
-  ffi_bootstrap.terminate_process_group(restarted_pid)
+  assert host_bootstrap.process_identity(restarted_pid)
+    == Ok(host_bootstrap.ProcessPresent(restarted.record.fence.birth))
+  host_bootstrap.terminate_process_group(restarted_pid)
   assert_process_stops(restarted_pid, 200)
   let _ = simplifile.delete(root)
   Nil
@@ -556,10 +594,10 @@ fn wait_for_attachment(status, within) {
 fn acquire_lock_eventually(
   path: String,
   attempts: Int,
-) -> Result(ffi_bootstrap.LaunchLock, String) {
+) -> Result(host_bootstrap.LaunchLock, String) {
   case
     poll.until(within: attempts * 25, every: 25, attempt: fn() {
-      case ffi_bootstrap.try_launch_lock(path) {
+      case host_bootstrap.try_launch_lock(path) {
         Ok(lock) -> poll.Done(lock)
         Error("busy") -> poll.Retry
         Error(reason) -> poll.Fail(reason)
@@ -575,9 +613,9 @@ fn acquire_lock_eventually(
 fn assert_process_stops(pid: Int, attempts: Int) -> Nil {
   let observed =
     poll.until(within: attempts * 50, every: 50, attempt: fn() {
-      case ffi_bootstrap.process_identity(pid) {
-        Ok(ffi_bootstrap.ProcessAbsent) -> poll.Done(Nil)
-        Ok(ffi_bootstrap.ProcessPresent(_)) | Error(_) -> poll.Retry
+      case host_bootstrap.process_identity(pid) {
+        Ok(host_bootstrap.ProcessAbsent) -> poll.Done(Nil)
+        Ok(host_bootstrap.ProcessPresent(_)) | Error(_) -> poll.Retry
       }
     })
   assert observed == poll.Answered(Nil)
@@ -609,11 +647,11 @@ fn test_root(name: String) -> String {
   "build/bootstrap-test-"
   <> name
   <> "-"
-  <> string.inspect(ffi_bootstrap.system_time_ms())
+  <> string.inspect(host_bootstrap.system_time_ms())
 }
 
 fn digest_prefix(value: String, length: Int) -> String {
-  ffi_bootstrap.sha256(<<value:utf8>>)
+  host_bootstrap.sha256(<<value:utf8>>)
   |> bit_array.base16_encode
   |> string.lowercase
   |> string.slice(at_index: 0, length:)
