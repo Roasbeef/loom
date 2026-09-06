@@ -607,6 +607,15 @@ pub fn relay_pid(
 /// failure is an enforcement denial worth escalating (a degraded helper
 /// or a degraded enforcement report against a full-enforcement demand).
 ///
+/// Every `ExecFailure` is spelled out rather than swept into a final
+/// catch-all, because the two classes are not symmetric in what a
+/// mistake costs. `None` settles the call in band and asks nobody; a
+/// missed `Some` is an enforcement shortfall that never reaches an
+/// operator. The failure vocabulary grows on the enforcement side —
+/// which is precisely the side that must not default to silence — so
+/// the compiler is made to stop on the next variant and demand the
+/// judgment be written here.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -615,6 +624,9 @@ pub fn relay_pid(
 ///
 pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
   case failure {
+    // The helper's hello already fell short of `FullEnforcement`, so
+    // nothing ran. The features it *does* have are the diff a human
+    // decides about.
     exec.DegradedHelper(features:) ->
       Some(
         escalation.Denial(
@@ -623,6 +635,10 @@ pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
           wanted: [],
         ),
       )
+
+    // Worse: this one ran. The enforcement list on the result is what
+    // the layers actually applied, and the gap between it and the
+    // demand is what the operator is being asked to accept.
     exec.DegradedExecution(result:) ->
       Some(
         escalation.Denial(
@@ -631,7 +647,36 @@ pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
           wanted: [],
         ),
       )
-    _ -> None
+
+    // Availability, not enforcement: the helper was absent, still
+    // shaking hands, or already busy. Nothing was weakened and no
+    // policy question is open, so there is nothing for a human to
+    // approve — a retry or a different helper is the whole answer.
+    exec.NotReady | exec.HandshakeTimeout | exec.HelperBusy -> None
+
+    // The helper declined the dispatch itself (busy, bad_policy,
+    // spawn_failed, malformed). A refusal is the sandbox holding, not
+    // yielding; escalating it would offer an approval for a call that
+    // was never weakened.
+    exec.RefusedByHelper(..) -> None
+
+    // The channel broke or the helper died — framing fault, exit
+    // status, a frame kind that never flows this way, a failed stdin
+    // write, a cancel that had to be escalated to a kill, a missed
+    // heartbeat. Each closes the channel, and a dead channel enforces
+    // everything by executing nothing.
+    exec.ChannelFault(..)
+    | exec.ChannelClosed(..)
+    | exec.ProtocolViolation(..)
+    | exec.SendFailed
+    | exec.CancelEscalated
+    | exec.HeartbeatMissed -> None
+
+    // The helper *actor* was out of reach, so no execution was
+    // dispatched and nothing is known about the helper behind it. An
+    // unknown is not a denial: inventing one would put a policy
+    // question to a human that no execution ever asked.
+    exec.HelperUnresponsive -> None
   }
 }
 
