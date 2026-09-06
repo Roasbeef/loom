@@ -1,5 +1,5 @@
 //// A finite Anthropic peer reached through real loopback HTTP, including from
-//// a separately shipped daemon VM. Only the last user text selects a response;
+//// a separately shipped daemon VM. Only the last user message selects a response;
 //// earlier transcript markers cannot accidentally satisfy the next script step.
 //// The wrapper owns the listener and script actor through a bounded callback,
 //// retains original monitors, and retires both before returning request evidence.
@@ -8,6 +8,7 @@ import core/json
 import core/message
 import core/origin
 import gleam/bit_array
+import gleam/bool
 import gleam/bytes_tree
 import gleam/erlang/process
 import gleam/http
@@ -25,13 +26,53 @@ import weft/actor
 /// A deliberately public dummy credential, never a real provider secret.
 pub const dummy_key = "loom-provider-fixture-key"
 
-/// One ordered request and its finite text-only response.
+/// One ordered request and its finite response, without wildcard matchers.
 pub type Exchange {
+  /// Answers one exact user prompt with text.
   Exchange(
     /// Exact latest user text, independent of previous transcript messages.
     prompt: String,
     /// Text emitted as an Anthropic content delta.
     answer: String,
+  )
+
+  /// Answers one exact prompt with a single fixed tool invocation.
+  ToolUseExchange(
+    /// Exact latest user text.
+    prompt: String,
+    /// Provider-minted identity required again by the result step.
+    call_id: String,
+    /// Ordinary advertised tool name.
+    name: String,
+    /// Bounded JSON object sent through input_json_delta.
+    arguments: json.JsonValue,
+  )
+
+  /// Answers one exact successful tool result with final text.
+  ToolResultExchange(
+    /// Exact identity from the earlier tool invocation.
+    call_id: String,
+    /// Complete single text result, never a substring.
+    text: String,
+    /// Final assistant text after the result matches.
+    answer: String,
+  )
+}
+
+/// The validated latest message, independent of all earlier history.
+pub type Latest {
+  /// Human text with its optional attribution block removed.
+  UserPrompt(
+    /// Complete human prompt after attribution projection.
+    text: String,
+  )
+
+  /// One non-error tool result with complete bounded text.
+  SuccessfulToolResult(
+    /// Exact provider-minted invocation identity.
+    call_id: String,
+    /// Complete successful output, including literal whitespace.
+    text: String,
   )
 }
 
@@ -40,8 +81,8 @@ pub type ObservedRequest {
   ObservedRequest(
     /// The configured model, required to equal `fixture`.
     model: String,
-    /// Exact final user text, excluding its optional separate attribution block.
-    prompt: String,
+    /// Exact final user prompt or successful tool result.
+    latest: Latest,
     /// Bounded decoded content for additional transcript assertions.
     body: json.JsonValue,
   )
@@ -54,7 +95,7 @@ type Book {
 type Message {
   Submit(
     Result(ObservedRequest, String),
-    process.Subject(Result(String, String)),
+    process.Subject(Result(Exchange, String)),
   )
   Report(process.Subject(Result(List(ObservedRequest), String)))
 }
@@ -81,8 +122,19 @@ pub fn with_server(
 ) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.length(script) <= 8 as "the provider script is finite and small"
   assert list.all(script, fn(step) {
-    string.byte_size(step.prompt) <= 4096
-    && string.byte_size(step.answer) <= 4096
+    case step {
+      Exchange(prompt, answer) -> bounded(prompt) && bounded(answer)
+      ToolUseExchange(prompt, id, name, arguments) ->
+        bounded(prompt)
+        && id != ""
+        && bounded(id)
+        && name != ""
+        && bounded(name)
+        && bounded(json.to_string(arguments))
+        && is_object(arguments)
+      ToolResultExchange(id, text, answer) ->
+        id != "" && bounded(id) && bounded(text) && bounded(answer)
+    }
   })
     as "fixture prompts and answers have fixed byte bounds"
   let assert Ok(book) =
@@ -153,7 +205,7 @@ fn handle(book: Book, message: Message) -> actor.Next(Book, Message) {
 fn take(
   book: Book,
   incoming: Result(ObservedRequest, String),
-) -> #(Book, Result(String, String)) {
+) -> #(Book, Result(Exchange, String)) {
   let Book(remaining, seen, refusal) = book
   case refusal, incoming, remaining {
     Some(reason), _, _ -> #(book, Error(reason))
@@ -161,9 +213,18 @@ fn take(
       Book(remaining, seen, Some(reason)),
       Error(reason),
     )
-    None, Ok(observed), [Exchange(prompt, answer), ..rest]
-      if observed.prompt == prompt
-    -> #(Book(rest, [observed, ..seen], None), Ok(answer))
+    None, Ok(observed), [step, ..rest] ->
+      case observed.latest == expected(step) {
+        True -> #(Book(rest, [observed, ..seen], None), Ok(step))
+        False -> #(
+          Book(
+            remaining,
+            seen,
+            Some("unexpected latest user text or extra request"),
+          ),
+          Error("unexpected latest user text or extra request"),
+        )
+      }
     None, Ok(_), _ -> #(
       Book(
         remaining,
@@ -247,16 +308,73 @@ fn validate(
   use latest <- result.try(
     list.last(messages) |> result.replace_error("messages must not be empty"),
   )
-  use content <- result.try(
+  use latest <- result.try(
     case field(latest, "role"), field(latest, "content") {
-      json.String("user"), json.Array(content) -> user_content(content)
+      json.String("user"), json.Array(content) -> latest_content(content)
       _, _ -> Error("latest message must contain user text")
     },
   )
+  Ok(ObservedRequest(model, latest, value))
+}
+
+fn bounded(value: String) -> Bool {
+  string.byte_size(value) <= 4096
+}
+
+fn is_object(value: json.JsonValue) -> Bool {
+  case value {
+    json.Object(_) -> True
+    _ -> False
+  }
+}
+
+fn expected(step: Exchange) -> Latest {
+  case step {
+    Exchange(prompt, _) | ToolUseExchange(prompt, ..) -> UserPrompt(prompt)
+    ToolResultExchange(id, text, _) -> SuccessfulToolResult(id, text)
+  }
+}
+
+// A result cannot carry attribution or another block. Cache-control metadata
+// on the ordinary outer block is orthogonal to its exact identity and content.
+fn latest_content(blocks: List(json.JsonValue)) -> Result(Latest, String) {
+  case blocks {
+    [block] ->
+      case field(block, "type") {
+        json.String("tool_result") -> tool_result(block)
+        _ -> text_content(blocks)
+      }
+    _ -> text_content(blocks)
+  }
+}
+
+fn text_content(blocks: List(json.JsonValue)) -> Result(Latest, String) {
+  use content <- result.try(user_content(blocks))
   case field(content, "type"), field(content, "text") {
-    json.String("text"), json.String(prompt) ->
-      Ok(ObservedRequest(model, prompt, value))
+    json.String("text"), json.String(prompt) -> Ok(UserPrompt(prompt))
     _, _ -> Error("latest user content must be text")
+  }
+}
+
+fn tool_result(block: json.JsonValue) -> Result(Latest, String) {
+  case
+    field(block, "tool_use_id"),
+    field(block, "is_error"),
+    field(block, "content")
+  {
+    json.String(id), json.Bool(False), json.Array([content]) if id != "" ->
+      case field(content, "type"), field(content, "text") {
+        json.String("text"), json.String(text) -> {
+          use <- bool.guard(
+            when: !bounded(id) || !bounded(text),
+            return: Error("tool result exceeds fixture limit"),
+          )
+          Ok(SuccessfulToolResult(id, text))
+        }
+        _, _ -> Error("tool result requires one exact text block")
+      }
+    _, _, _ ->
+      Error("tool result requires an ID and one successful content block")
   }
 }
 
@@ -310,7 +428,30 @@ fn event(name: String, fields: List(#(String, json.JsonValue))) -> String {
   <> "\n\n"
 }
 
-fn transcript(answer: String) -> List(String) {
+fn transcript(step: Exchange) -> List(String) {
+  let #(block, delta, reason) = case step {
+    Exchange(_, answer) | ToolResultExchange(_, _, answer) -> #(
+      json.Object([#("type", json.String("text")), #("text", json.String(""))]),
+      json.Object([
+        #("type", json.String("text_delta")),
+        #("text", json.String(answer)),
+      ]),
+      "end_turn",
+    )
+    ToolUseExchange(_, id, name, arguments) -> #(
+      json.Object([
+        #("type", json.String("tool_use")),
+        #("id", json.String(id)),
+        #("name", json.String(name)),
+        #("input", json.Object([])),
+      ]),
+      json.Object([
+        #("type", json.String("input_json_delta")),
+        #("partial_json", json.String(json.to_string(arguments))),
+      ]),
+      "tool_use",
+    )
+  }
   [
     event("message_start", [
       #("type", json.String("message_start")),
@@ -332,25 +473,20 @@ fn transcript(answer: String) -> List(String) {
     event("content_block_start", [
       #("type", json.String("content_block_start")),
       #("index", json.Int(0)),
-      #(
-        "content_block",
-        json.Object([#("type", json.String("text")), #("text", json.String(""))]),
-      ),
+      #("content_block", block),
     ]),
     event("content_block_delta", [
       #("type", json.String("content_block_delta")),
       #("index", json.Int(0)),
-      #(
-        "delta",
-        json.Object([
-          #("type", json.String("text_delta")),
-          #("text", json.String(answer)),
-        ]),
-      ),
+      #("delta", delta),
+    ]),
+    event("content_block_stop", [
+      #("type", json.String("content_block_stop")),
+      #("index", json.Int(0)),
     ]),
     event("message_delta", [
       #("type", json.String("message_delta")),
-      #("delta", json.Object([#("stop_reason", json.String("end_turn"))])),
+      #("delta", json.Object([#("stop_reason", json.String(reason))])),
       #("usage", json.Object([#("output_tokens", json.Int(1))])),
     ]),
     event("message_stop", [#("type", json.String("message_stop"))]),

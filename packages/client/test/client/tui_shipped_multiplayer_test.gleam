@@ -88,12 +88,12 @@ pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> Eun
           )
         let assert Ok(observed) = report
           as "all four exact provider requests complete without a refused or extra call"
-        assert list.map(observed, fn(request) { request.prompt })
+        assert list.map(observed, fn(request) { request.latest })
           == [
-            "first shipped turn",
-            "second shipped turn",
-            "isolated B turn",
-            "A continues during switch",
+            provider_http.UserPrompt("first shipped turn"),
+            provider_http.UserPrompt("second shipped turn"),
+            provider_http.UserPrompt("isolated B turn"),
+            provider_http.UserPrompt("A continues during switch"),
           ]
       }
     }
