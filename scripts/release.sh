@@ -160,11 +160,15 @@ if [ "$SMOKE" = 1 ]; then
   # server. Running it on the bundled emulator needs no host Erlang or Gleam,
   # and reuses the production transport rather than adding a WebSocket codec.
   # Its request and polling deadlines are finite; the outer release-smoke gate
-  # also bounds the entire smoke, including this child.
+  # also bounds the entire smoke, including this child. The body is wrapped so
+  # a raise inside the probe halts with its own status and error text: an
+  # unwrapped -eval reports the failure as an emulator boot crash, writes an
+  # erl_crash.dump beside the workspace, and exits with the same 1 an ordinary
+  # probe failure uses.
   ( cd "$WORKSPACE" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
       "$REL/erts-$SMOKE_ERTS/bin/erl" \
       -boot "$REL/bin/no_dot_erlang" -pa "$REL"/lib/*/ebin "$SMOKE_SUPPORT" \
-      -noshell -eval 'application:ensure_all_started(client), client@release_probe_test:main(), halt().' \
+      -noshell -eval 'try application:ensure_all_started(client), client@release_probe_test:main(), io:format(standard_io, "", []), erlang:halt(0, [{flush, true}]) catch Class:Reason:Stack -> io:format(standard_error, "release probe failed: ~p:~p~n~p~n", [Class, Reason, Stack]), erlang:halt(3, [{flush, true}]) end.' \
       -extra "$STATE" "$WORKSPACE" "$SMOKE_SUPPORT/release-smoke.toml" ) >"$REL_ROOT/smoke/probe.log" 2>&1 || {
     echo "release.sh: daemon control/session probe failed:" >&2
     tail -60 "$REL_ROOT/smoke/probe.log" >&2

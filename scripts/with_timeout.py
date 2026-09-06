@@ -17,6 +17,41 @@ def positive_seconds(value):
     return seconds
 
 
+# How long a signalled group has to say what it was doing before the wrapper
+# insists. A timed-out BEAM stops its node on SIGTERM, which is what prints the
+# eunit summary and writes a crash dump; killing outright first throws away the
+# one artifact a stuck-suite wrapper exists to preserve.
+TERMINATION_GRACE_SECONDS = 5
+
+
+def stop(child):
+    """Ends a still-running command's process group, gently and then not."""
+    try:
+        os.killpg(child.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        child.wait(timeout=TERMINATION_GRACE_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    # The leader outlived its grace, so it has not been reaped and its PID
+    # still names the group we created — which is what makes this second
+    # signal safe to send. A leader that did stop has been reaped, its PID may
+    # already name somebody else's group, and its own group has had the
+    # SIGTERM; so that case is deliberately left alone.
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        child.wait(timeout=TERMINATION_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        print("test process did not reap after SIGKILL; cleanup is unconfirmed",
+              file=sys.stderr, flush=True)
+
+
 def command_for_host(command):
     # The assertion ends with this command; it changes no persistent setting
     # and does not prevent an explicit user sleep or lid-close sleep.
@@ -55,23 +90,17 @@ def run(command, seconds, cwd=None):
                 continue
     except subprocess.TimeoutExpired:
         print(f"TIMEOUT after {seconds:g}s: terminating test process group "
-              f"{child.pid}; inspect the last named test in the log",
+              f"{child.pid}; it has {TERMINATION_GRACE_SECONDS}s to report "
+              f"before it is killed",
               file=sys.stderr, flush=True)
         return 124
     finally:
         # Do not reap the group leader before signalling its group: its PID
         # must remain reserved while it names the group we created. Only an
-        # unfinished command is killed; successful commands keep their status.
+        # unfinished command is signalled; successful commands keep their
+        # status.
         if child.returncode is None:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                child.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                print("test process did not reap after SIGKILL; cleanup is unconfirmed",
-                      file=sys.stderr, flush=True)
+            stop(child)
 
 
 def interrupted(signum, _frame):
