@@ -8,8 +8,11 @@
 #
 #     The rate limit for the Hex API has been exceeded
 #
-# having proved nothing about the code. That sentence is the only signal
-# this script acts on. Any other failure, and any success, is returned
+# having proved nothing about the code. That sentence, the transport
+# failure Gleam prints when the same limit answers 429 or 502 on a
+# release lookup ("error sending request for url (https://hex.pm/..."),
+# and the generic "Hex API failure" header are the only signals this
+# script acts on. Any other failure, and any success, is returned
 # to the caller unchanged with the command's own exit status, so a real
 # red stays red and a retry never launders a failing test.
 #
@@ -34,7 +37,7 @@ while :; do
   if [ "$status" -eq 0 ]; then
     exit 0
   fi
-  if ! grep -q 'The rate limit for the Hex API has been exceeded' "$capture"; then
+  if ! grep -qE 'The rate limit for the Hex API has been exceeded|error sending request for url \(https://hex\.pm/|Hex API failure' "$capture"; then
     exit "$status"
   fi
   if [ "$attempt" -ge "${#waits[@]}" ]; then
