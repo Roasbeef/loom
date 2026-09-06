@@ -59,6 +59,20 @@ import weft
 import weft/actor
 import weft/poll
 
+// This command owns only fixture workspace markers. Its internal deadline
+// prevents an assertion failure from leaving a shell waiting for test cleanup.
+fn held_arguments() -> json.JsonValue {
+  json.Object([
+    #(
+      "command",
+      json.String(
+        "printf started > live-started; for ((i=0;i<200;i++)); do if test -f live-release; then printf 'completed\\n' >> live-completed; printf 'RELEASED-ONCE\\n'; exit 0; fi; sleep 0.1; done; printf 'fixture release expired\\n' >&2; exit 1",
+      ),
+    ),
+    #("timeout_ms", json.Int(30_000)),
+  ])
+}
+
 pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> EunitTest {
   // The runner scales EUnit timeouts by ten. The provider callback has 120
   // seconds around the native body's 90-second budget and its cleanup. Leave
@@ -83,17 +97,34 @@ pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> Eun
                 "A continues during switch",
                 "continuingaanswer",
               ),
+              provider_http.ToolUseExchange(
+                "hold A tool",
+                "held-call",
+                "bash",
+                held_arguments(),
+              ),
+              provider_http.Exchange("A2 progresses while held", "a2heldanswer"),
+              provider_http.Exchange("B progresses while held", "bheldanswer"),
+              provider_http.ToolResultExchange(
+                "held-call",
+                "RELEASED-ONCE\n",
+                "heldafinalanswer",
+              ),
             ],
             fn(base_url) { fixture(server, base_url) },
           )
         let assert Ok(observed) = report
-          as "all four exact provider requests complete without a refused or extra call"
+          as "all eight exact provider requests complete without a refused or extra call"
         assert list.map(observed, fn(request) { request.latest })
           == [
             provider_http.UserPrompt("first shipped turn"),
             provider_http.UserPrompt("second shipped turn"),
             provider_http.UserPrompt("isolated B turn"),
             provider_http.UserPrompt("A continues during switch"),
+            provider_http.UserPrompt("hold A tool"),
+            provider_http.UserPrompt("A2 progresses while held"),
+            provider_http.UserPrompt("B progresses while held"),
+            provider_http.SuccessfulToolResult("held-call", "RELEASED-ONCE\n"),
           ]
       }
     }
@@ -385,11 +416,283 @@ fn exercise(
     alice,
     reader,
   )
+  live_tool_switches(
+    host,
+    address,
+    owner,
+    epoch,
+    workspace,
+    configuration,
+    id,
+    foreign.expected.session,
+    alice,
+    reader,
+  )
 
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
   list.each([alice, rejoined, reader], stop_driver)
   daemon.close(connected.control)
+}
+
+// A1 retains execution custody while the terminal rejects A2, then visits A2
+// and B. The shell's release is causally after both independent provider turns.
+// Workspace markers witness this benign execution, not kernel confinement.
+fn live_tool_switches(
+  host: selection.Host,
+  address: String,
+  owner: String,
+  epoch: String,
+  workspace: String,
+  configuration: String,
+  original: String,
+  foreign: String,
+  alice: actor.Started(process.Subject(tui_driver.Message)),
+  reader: actor.Started(process.Subject(tui_driver.Message)),
+) -> Nil {
+  let assert Ok(target) =
+    selection.create(host, "held-tool-a2", workspace, configuration)
+    as "A2 is a separate durable session in A1's actual workspace"
+  let a2 = target.expected.session
+  let control = selection.control(host)
+  let assert Ok(_) = daemon.request(control, protocol.StopSession(a2), 5000)
+    as "A2 retires before the owner changes its sharing scope"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case daemon.request(control, protocol.GetSession(a2), 2000) {
+        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
+          poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+    as "A2's original runtime is saved before isolation"
+  owner_command(address, owner, epoch, [
+    "isolate",
+    a2,
+    "--share-existing-transcript",
+  ])
+  owner_command(address, owner, epoch, ["set-role", a2, "alice", "operator"])
+  let assert Ok(_) = selection.open(host, a2)
+    as "A2 is genuinely resident before entering the selector"
+
+  // Independent A1 terminals retain their original attachments while Alice
+  // replaces hers, so their final captures witness execution custody.
+  let assert Ok(peer) = tui_driver.start(address, owner, original)
+    as "an independent owner stays with Reader on A1 throughout the tool"
+  let before = tui_v2_test.await(peer.data, writable)
+  let original_attachment = attachment_of(before)
+  let prior_messages = recorded_messages(before)
+  let reader_attachment = attachment_of(tui_driver.play(reader.data, []))
+
+  // Receipt of the marker and the credited tools phase are independent
+  // observations: neither a provider response nor a painted label is enough.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("hold A tool"),
+      backend.KeyPress("enter"),
+    ])
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 10, attempt: fn() {
+      case simplifile.read(filepath.join(workspace, "live-started")) {
+        Ok("started") -> poll.Done(Nil)
+        Ok(_) | Error(simplifile.Enoent) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+    as "the ordinary shipped bash command actually starts"
+  let observed_start = native.monotonic_time_ms()
+  list.each([alice, peer, reader], fn(driver) {
+    let _ = tui_v2_test.await(driver.data, held_tool)
+  })
+  let highlighted = highlight_target(alice, a2)
+  let original_alice = attachment_of(highlighted)
+  let assert Some(channel) = highlighted.model.channel
+    as "the selector retains the live original channel"
+
+  // The owner acknowledgement precedes Enter. A2 refusal cannot detach A1
+  // or release the tool, even though its durable operation is still live.
+  owner_command(address, owner, epoch, ["revoke", a2, "alice"])
+  let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
+  let refused =
+    tui_v2_test.await(alice.data, fn(sample) {
+      !attachment.busy(sample.model.candidate)
+      && sample.model.notice == "open session: not_found: request refused"
+      && held_tool(sample)
+    })
+  assert attachment_of(refused) == original_alice
+  assert refused.model.session == original
+  assert refused.model.records == highlighted.model.records
+  assert refused.model.inbox == highlighted.model.inbox
+  let assert Some(retained) = refused.model.channel
+    as "the rejected candidate cannot take custody of A1's socket"
+  assert session_channel.socket(retained) == session_channel.socket(channel)
+  owner_command(address, owner, epoch, ["set-role", a2, "alice", "operator"])
+  select_live(alice, a2)
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("A2 progresses while held"),
+      backend.KeyPress("enter"),
+    ])
+  let assert [a2_done] =
+    captured_turns([alice], [#("alice", "A2 progresses while held")], [
+      "a2heldanswer",
+    ])
+    as "A2 completes its independent turn while A1 is held"
+  select_live(alice, foreign)
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("B progresses while held"),
+      backend.KeyPress("enter"),
+    ])
+  let assert [b_done] =
+    captured_turns(
+      [alice],
+      [#("alice", "isolated B turn"), #("alice", "B progresses while held")],
+      ["isolatedbanswer", "bheldanswer"],
+    )
+    as "the distinct workspace B also progresses before release"
+
+  // Both A1 peers still project the tools phase; this observation alone is
+  // not fresh liveness proof. Successful completion after the host's release
+  // establishes that the bounded shell survived the intervening switches.
+  list.each([peer, reader], fn(driver) {
+    let _ = tui_v2_test.await(driver.data, held_tool)
+  })
+  io.println_error(
+    "held tool: ms from start marker to release: "
+    <> int.to_string(native.monotonic_time_ms() - observed_start),
+  )
+  let assert Ok(Nil) =
+    simplifile.write(filepath.join(workspace, "live-release"), "release")
+    as "host release follows both positively completed independent turns"
+  let owner_done = tui_v2_test.await(peer.data, completed_tool)
+  let reader_done =
+    tui_v2_test.await(reader.data, fn(sample) {
+      completed_tool(sample) && sample.model.records == owner_done.model.records
+    })
+  assert attachment_of(owner_done) == original_attachment
+  assert attachment_of(reader_done) == reader_attachment
+  assert reader_done.model.session == original
+  assert list.drop(recorded_messages(owner_done), 4) == prior_messages
+  let assert [
+    message.AssistantMessage(content: final, ..),
+    message.ToolResultMessage(
+      tool_call_id: call_id,
+      tool_name: name,
+      content: output,
+      is_error: error,
+      ..,
+    ),
+    message.AssistantMessage(content: invocation, stop_reason: stop, ..),
+    message.UserMessage(content: prompt, origin: Some(author), ..),
+    ..
+  ] = recorded_messages(owner_done)
+    as "A1 durably orders user, invocation, exact result, and final answer"
+  assert prompt == [message.UserText("hold A tool", None)]
+  assert author.principal == "alice"
+  assert invocation
+    == [
+      message.AssistantToolCall(message.ToolCall(
+        "held-call",
+        "bash",
+        held_arguments(),
+        namespace: None,
+        thought_signature: None,
+      )),
+    ]
+  assert stop == message.ToolUse
+  assert call_id == "held-call"
+  assert name == "bash"
+  assert !error
+  assert output == [message.ToolResultText("RELEASED-ONCE\n", None)]
+  assert final == [message.AssistantText("heldafinalanswer", None)]
+  assert simplifile.read(filepath.join(workspace, "live-completed"))
+    == Ok("completed\n")
+
+  // Fresh native attachments after A1's completion obtain new accepted cuts,
+  // rather than treating an unchanged local frame as an isolation barrier.
+  list.each([#(a2, a2_done), #(foreign, b_done)], fn(target) {
+    let assert Ok(probe) = tui_driver.start(address, owner, target.0)
+      as "the owner obtains a fresh post-completion cut for the other session"
+    let sample = tui_v2_test.await(probe.data, writable)
+    assert sample.model.session == target.0
+    assert sample.model.records == target.1.model.records
+    stop_driver(probe)
+  })
+  select_live(alice, original)
+  let returned =
+    tui_v2_test.await(alice.data, fn(sample) {
+      completed_tool(sample) && sample.model.records == owner_done.model.records
+    })
+  assert attachment_of(returned).expected == original_alice.expected
+  stop_driver(peer)
+}
+
+// The consumed response orders owner authority changes before native input.
+fn owner_command(
+  address: String,
+  owner: String,
+  epoch: String,
+  arguments: List(String),
+) -> Nil {
+  let assert Ok(command) = admin.parse(arguments)
+    as "membership changes use the public owner command parser"
+  let assert Ok(_) = admin.exchange(address, owner, epoch, command)
+    as "the owner consumes each acknowledgement before dependent UI input"
+  Nil
+}
+
+// Selection always uses the real page and its highlighted target assertion.
+fn select_live(
+  driver: actor.Started(process.Subject(tui_driver.Message)),
+  target: String,
+) -> Nil {
+  let _ = highlight_target(driver, target)
+  let _ = tui_driver.play(driver.data, [backend.KeyPress("enter")])
+  let _ =
+    tui_v2_test.await(driver.data, fn(sample) {
+      writable(sample) && sample.model.session == target
+    })
+  Nil
+}
+
+// The gateway projects this phase from the durable main-strand operation.
+fn held_tool(sample: tui_driver.Sample) -> Bool {
+  list.any(sample.model.strands, fn(strand) {
+    strand.id == "main" && strand.live_phase == Some("tools")
+  })
+}
+
+// Settlement requires the final durable message and the idle strand, not just
+// a transient text delta or disappearance of the tools phase.
+fn completed_tool(sample: tui_driver.Sample) -> Bool {
+  case recorded_messages(sample) {
+    [
+      message.AssistantMessage(
+        content: [message.AssistantText("heldafinalanswer", None)],
+        ..,
+      ),
+      ..
+    ] ->
+      list.any(sample.model.strands, fn(strand) {
+        strand.id == "main" && strand.live_phase == None
+      })
+      && sample.model.streams == []
+      && sample.model.submitting == None
+    _ -> False
+  }
+}
+
+// Preserve every message variant in the oracle, including invocation and
+// result. Only non-message records such as configuration are projected away.
+fn recorded_messages(sample: tui_driver.Sample) -> List(message.AgentMessage) {
+  list.filter_map(sample.model.records, fn(record) {
+    case record.entry {
+      entry.MessageEntry(message:, ..) -> Ok(message)
+      _ -> Error(Nil)
+    }
+  })
 }
 
 fn failed_switch_preserves_channel(
