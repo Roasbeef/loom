@@ -309,3 +309,64 @@ of 0–3 ms, not all zero as the initial review summary said. Those durations
 include the sampler's own scheduling; they do not establish zero perturbation.
 Heap growth is not itself a collection, and no sampled state establishes a
 host or native-I/O cause. Final focused `4744fe7a` passed in 11.75 seconds.
+
+Direct review then found that passing EUnit captures the report's stdout,
+while CI did not upload the fixture's JSONL. Commit `8089a4b9` adds only those
+reports to both existing always-upload artifacts. It changes no measurement.
+The first hosted run carrying that commit must verify the files are present;
+missing samples from earlier green runs do not establish an absence of slow
+credits.
+
+## Successful switching with an active peer
+
+A fresh review of the four-turn shipped fixture found no high- or
+medium-severity issue. The extracted selector navigation preserves every
+failed-switch assertion, and the shared-history helper retains exact records
+and the observer's read-only check. Alice selects B and returns to A while
+Reader stays attached to A. Return compares the server-decoded epoch and
+incarnation against Reader's original attachment, not a reminted identity.
+
+The provider requests are sequenced by B's completion before the A request.
+Both runtimes coexist, but simultaneous inference is not claimed. After A
+completes, a fresh attributed configuration round-trip on B precedes exact
+B-only history checks. All three A terminals then compare complete records
+after Alice returns. The owner's expected principal comes from authenticated
+control and is checked against the owner's terminal attachment.
+
+Accepted low-severity suggestions add stanza comments and a final comparison
+of Reader's attachment. Earlier explicit identity and record equalities stay
+because they localize failures to the preceding stage. No deadline changed.
+The full client gate before those small review edits passed 1,332 tests in
+292.67 seconds, including all shipped fixtures, with a clean strict local
+census apart from the declared macOS prerequisite. The final focused result
+is recorded in the handoff.
+
+## Pending native selection across VM loss
+
+A fresh pass over the identity fixture's native-client addition found no
+high- or medium-severity issue. The driver is freshly selecting the session
+when control confirms its original opening operation. Actual VM departure
+precedes the failed-candidate observation. Only exact public control-loss
+outcomes pass; timeouts, startup expiry and unexpected reply shapes do not.
+The observed focused and composed runs reported disconnection.
+
+The pre-crash and failed models agree on session, channel, captured snapshot
+and records. Existing reservation, database identity, lease and metadata-only
+restore assertions remain at the same boundaries. After explicit recovery,
+the replacement terminal's epoch matches a separately authenticated control
+hello, differs from the old epoch and carries the current resident incarnation.
+Epochs are random identities, not ordered counters. The reused owner token
+also checks credential persistence across restart.
+
+Accepted low-severity edits shorten a diagnostic, remove the misleading word
+"original" from the shared driver-retirement message and clarify failure-class
+coverage. Explicit pre-crash equalities stay for failure localization. A
+driver round-trip does not prove that another scheduled worker already ran,
+so the exact allowlist retains handshake loss without claiming it was observed.
+No public type was expanded to expose the candidate worker's internal operation.
+
+The tightened focused run passed in 61.80 seconds. Root independently ran the
+composed shipped filter: six tests passed in 67.86 seconds. The final edits at
+`376da701` change comments and diagnostic labels only; format passes and the
+assertions and 200/230/270-second bounds remain unchanged. No further review
+was needed for those edits.

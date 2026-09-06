@@ -5,10 +5,11 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `4744fe7a`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `376da701`.
 The implementation, review dispositions and evidence below were checked
-against that tree or the explicitly named earlier gate. The plan remains
-[issue-plan.md](issue-plan.md), with required observations in the
+against that tree or the explicitly named earlier gate. The seven daemon
+phases are in the [single-daemon plan](design-notes/single-daemon.md), with
+required observations in the
 [single-daemon acceptance drive](design-notes/single-daemon.md#the-acceptance-drive)
 and [multiplayer brief](design-notes/multiplayer.md).
 
@@ -22,11 +23,13 @@ release goal is not complete.
 |---|---|
 | Contracts and ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
-| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitation boundaries, presence recovery, two real HTTP turns and live membership revocation. |
-| Default and release acceptance, phase 6 | Published `33aa9ef1` passes both platforms and corrected censuses. Revocation head `e50d3d2c` passes Linux, jail and seeds but fails the recurring macOS paired-latency assertion. The reviewed selector follow-up passes locally. SQLite adoption, confinement and the remaining combined drive remain open. |
+| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitation boundaries, presence recovery, live revocation and A-to-B-to-A switching with four HTTP turns. |
+| Default and release acceptance, phase 6 | Published `5df064c8` passes all four jobs and both corrected censuses. The successful-switch follow-up passes locally. SQLite adoption, confinement and the remaining combined drive remain open. |
 
 The plan numbers its seven phases 0 through 6. Backwards compatibility and
 legacy import were explicitly excluded; do not revive their historical cases.
+The separate repository roadmap in `issue-plan.md` does not add its later
+semantic-tool or promotion work to this daemon goal.
 
 ### Branch and review state
 
@@ -43,11 +46,17 @@ at `0bc46d32`. The reviewed follow-up through `e2480830` adds shipped
 invitation boundaries and repairs hidden prerequisite diagnostics, published
 with docs at `33aa9ef1`. Commit `0606cb89` adds the reviewed live membership
 revocation drive, published with docs at `e50d3d2c`. Commit `e8ec249e` adds
-reviewed failed-selector preservation. All remain unmerged.
+reviewed failed-selector preservation, published with diagnostics and docs at
+`5df064c8`. All remain unmerged.
 
 Commit `4744fe7a` adds bounded, test-owned observations to the recurring
 paired-latency failure without changing its workload or assertion. It is
 diagnostic evidence, not a claimed timing repair.
+Commit `8089a4b9` retains its JSONL in both platform artifacts, and
+`85e767d4` adds reviewed successful switching with an active peer.
+Commit `376da701` joins pending native selection to whole-VM identity recovery.
+These three commits have local evidence below; the earlier hosted run does
+not test them.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -82,6 +91,31 @@ them. `.claude/worktrees/daemon-candidate` is the integration tree; its
 dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
+
+The composed shipped filter passed **six tests in 67.86 seconds**: the three
+shipped integration fixtures and three existing scratch/system-prompt tests.
+The pending-selection fixture's tightened focused run passed in 61.80 seconds;
+most of that duration is the required natural 60-second writer lease expiry.
+The observed failure was exactly `daemon control disconnected; reconnect
+explicitly`. A fresh terminal then captured the recovered original session
+under the replacement epoch and current incarnation. The independent review
+found no high- or medium-severity issue; final `376da701` only shortens two
+diagnostic labels and clarifies that not every permitted failure class was
+exercised. Format passes; assertions and deadlines are unchanged.
+
+The reviewed successful-switch fixture at `85e767d4` passed in **5.68 seconds**.
+Before its small review cleanups, the full client gate passed 1,332 tests in
+**292.67 seconds**, with all three shipped fixtures enabled. Its strict local
+census passed with only the declared macOS prerequisite. Client lint reported
+zero errors and 91 warnings; the documentation gate reported zero errors and
+136 warnings.
+
+Alice selects B, completes B's own turn and remains there while an owner
+terminal advances A. Reader stays attached to A throughout. A configuration
+round-trip on B precedes another exact check of B's history. Returning to A
+must preserve A's original epoch and incarnation and reproduce both peers'
+complete records. These requests are sequenced; concurrent residency and
+independent progress do not establish simultaneous provider execution.
 
 The reviewed sampler's focused soak passed in **11.75 seconds** at
 `4744fe7a`. Its first run passed in 11.76 seconds and recorded all 18 pairs,
@@ -231,6 +265,21 @@ round trips of 23, 10, 100 and 1 ms. The preceding cycle already had a slow
 these timings do not establish whether scheduling, native I/O or shared
 service contention caused them. No threshold change or blind rerun followed.
 
+Published `5df064c8` passed all four jobs in
+[run 34046753887](https://github.com/Roasbeef/loom/actions/runs/34046753887).
+Both platform logs reported 1,332 client tests and 206 TUI tests. Both strict
+censuses were independently verified: macOS emitted only its declared `/proc`
+marker; Linux emitted no skip. The paired soak passed in 15.173 seconds on
+macOS and 10.653 seconds on Linux.
+
+Neither passing log contains the paired JSON reports. EUnit captured their
+stdout, and that head's artifact list omitted the fixture JSONL. Slow-credit
+near-misses, sampler costs and termination reasons are therefore unavailable,
+not proven absent. Commit `8089a4b9` adds those exact files to both existing
+always-upload artifacts; their presence needs verification on its first
+hosted run. This green run does not establish the earlier timing failure's
+cause.
+
 The new shipped recovery fixture fills runtime capacity, receives the exact
 capacity refusal after durable reservation, then kills the birth-verified
 fixture VM. Restart must preserve the reservation and domain mapping without
@@ -304,17 +353,18 @@ crash-at-every-publication-step sweep.
 
 ## What to do next
 
-### 1. Publish the selector follow-up and classify platform timing
+### 1. Publish the joined-client follow-up and classify platform timing
 
-Push the reviewed selector follow-up to #239, send its
+Push the reviewed joined-client follow-up to #239, send its
 exact head and gate evidence, and monitor both platform jobs, including
 their repaired skip censuses. Native stack 231 already places it above
 #238. Keep the PR draft while release acceptance is incomplete. Re-baseline
 this handoff after new CI evidence; do not carry an earlier run's result
 as the new head's result.
 
-The next hosted run includes bounded process observations beside the paired
-soak. The sampler retains at most 128 observations at a 25 ms cadence within
+The next hosted run must retain the process observations beside the paired
+soak, including when it passes. The sampler retains at most 128 observations
+at a 25 ms cadence within
 a 3.2-second horizon, names truncation and joins before the pair is evaluated.
 It watches fixed measurement, registry and gateway PIDs through the existing
 process-info wrapper; no new FFI or VM-global monitor is installed. Both
@@ -323,12 +373,29 @@ can suggest causes, not prove them; an absence of observed activity cannot
 distinguish host descheduling from waiting on I/O. Preserve the workload and
 assertion while classifying that evidence.
 
-The next grouped shipped-client increment is successful A-to-B-to-A switching
-with a peer still active on A and positive updates in both sessions. Existing
+Successful A-to-B-to-A switching with a peer still active on A and pending
+native selection during whole-VM recovery now have reviewed shipped fixtures.
+Existing
 shipped bootstrap tests already prove concurrent startup convergence; repeat
 that work only when joining it into the complete drive. Successful switching
-with an in-process daemon and the owner-only live drive are earlier evidence,
-not this missing distinct-principal shipped observation.
+with an in-process daemon and the owner-only live drive remain separate
+evidence from these distinct-principal shipped observations.
+
+The next live-tool increment must use the shipped daemon's ordinary provider
+and jailed execution paths. An exact scripted tool call can publish a started
+marker, wait for an explicit release and return fixed output under a finite
+tool deadline. Witness both the marker and captured running state before
+switching, then complete an independent session turn before release. Exact
+tool-result content and final records must distinguish the sessions. This
+establishes survival across switching, not filesystem confinement.
+
+The existing approval-effect fixture cannot supply the shipped approval trigger
+unchanged. It injects `wall_s: 1` in `tui_approval_effect_test.gleam` and asks
+for 30 seconds. The shipped default in `broker/policy.gleam` allows 600 seconds,
+and `tools/bash.gleam` clamps requests to 600. That request therefore needs no
+approval under the shipped policy. No ordinary configuration for narrowing
+this wall limit was found. Keep the required shipped approval race open;
+do not manufacture an approval or present the injected-policy test as proof.
 
 Exit: the reviewed follow-up is correctly stacked and its own platform
 results are known and triaged. This does not authorize merging the Loom

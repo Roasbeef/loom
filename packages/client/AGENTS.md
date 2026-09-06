@@ -314,6 +314,10 @@ catalogue without opening runtimes. Explicit admission invokes
   membership in its highlighted target is revoked before Enter. An owner
   attachment proves the target still works; Alice's next shared configuration
   update proves the original attachment and socket still carry traffic.
+  After membership is restored, Alice switches A-to-B-to-A while Reader stays
+  on A. Two further provider turns establish independent histories, and Alice
+  returns to A's original epoch/incarnation with records equal to both peers.
+  The turns are sequenced; simultaneous provider execution is not claimed.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

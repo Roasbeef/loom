@@ -368,13 +368,20 @@ These fixtures retain bounded execution and remain in the ordinary client
 suite. The [six mutation checks](../review/single-daemon-mutation-gates.md)
 show which deliberately broken protections the focused tests rejected.
 
-The default is implemented. An earlier working-tree client gate passed all
-1298 tests in 213.88 seconds, but subsequent clean runs exposed test-ordering
-failures. Those failures and the current committed verification results are
-recorded in [the handoff](../next.md#verification-and-its-limits). Local release
-results do not establish Linux support or validate an unadopted dependency.
-Both automatic local CI discovery and the explicit `ci.yml` attempt stopped
-during setup because the runner lacked an OTP 29 install.
+The default is implemented. Published `5df064c8` passed the Linux, macOS,
+jailed E2E and 200-seed CI jobs, including both strict skip censuses. Exact
+heads and later local results are recorded in
+[the handoff](../next.md#verified-results-and-their-limits). Those results do
+not validate an unadopted dependency or establish the entire joined drive.
+
+The shipped identity-recovery fixture also starts a native terminal while
+creation remains on its original opening operation. After VM death, selection
+must end with a control-loss failure without adopting a conversation. The
+terminal's session, channel, captured snapshot and records must retain their
+pre-crash values. Explicit same-key recovery waits for the original lease to
+expire; a fresh terminal then validates the original session under the
+replacement daemon's epoch and current runtime incarnation. This observes
+pending selection, not a particular outstanding frame or an ambiguous prompt.
 
 Live owner-authenticated terminals have verified rendering and submission
 without another keypress, recovery through explicit selection, and switching

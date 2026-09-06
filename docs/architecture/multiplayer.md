@@ -206,6 +206,19 @@ Alice's original connection sends another configuration change to Reader.
 This covers refusal before replacement attachment, not every failure during
 an already-started snapshot transfer or switching during a live tool.
 
+The owner then restores Alice's target membership. Alice selects session B
+while Reader stays on session A. Alice completes a provider turn on B, then
+an independently authenticated owner terminal completes another on A. Reader
+receives A's new turn without changing its attachment. Exact message contents
+and authors distinguish each session's history.
+
+After A completes, Alice's configuration round-trip on B precedes another
+check of B's unchanged records. Alice then selects A again. Her replacement
+attachment must name A's original daemon epoch and runtime incarnation, and
+her complete records must equal those of both terminals that stayed on A.
+The provider requests are deliberately sequenced; this is concurrent session
+residency and independent progress, not simultaneous provider execution.
+
 This shipped-artifact fixture has a bounded body and a separate native
 cleanup check, including on assertion failure. The loopback provider retains
 its original listener witness outside the bounded callback. The composed
