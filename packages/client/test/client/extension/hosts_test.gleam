@@ -22,6 +22,8 @@ import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/string
+import support/addresses
+import weft/registry as address
 
 // --- a caller that gave up leaves no work behind --------------------------
 
@@ -41,7 +43,7 @@ import gleam/string
 /// about.
 pub fn an_expired_invocation_is_never_performed_test() {
   let launches = process.new_subject()
-  let name = process.new_name(prefix: "loom_hosts_expiry")
+  let name = addresses.new()
   let assert Ok(_started) =
     hosts.start(name, wall(), [
       recipe("slow", launches, holding_for_ms: 1500),
@@ -110,7 +112,7 @@ fn ask(
   extension: String,
   margin_ms margin_ms: Int,
   within within: Int,
-  over name: process.Name(hosts.Message),
+  over name: address.Address(hosts.Message),
 ) -> Result(msgpack.MsgPackValue, hosts.HookFailure) {
   hosts.invoke(
     hosts.seam(name, clock: wall(), margin_ms:),

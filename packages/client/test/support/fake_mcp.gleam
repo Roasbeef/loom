@@ -51,7 +51,12 @@ pub fn seam(
         })
         Ok(Nil)
       },
-      close: fn() { Nil },
+      close: fn() {
+        process.send(
+          inbound,
+          transport.TransportClosed("fake transport closed"),
+        )
+      },
     )
   })
 }

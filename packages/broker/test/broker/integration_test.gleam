@@ -84,7 +84,7 @@ fn base_policy(work_dir: String) -> policy.SandboxPolicy {
 
 fn with_real_helper(name: String, run: fn(exec.Helper) -> Nil) -> Nil {
   case helper_config() {
-    Error(reason) -> io.println("SKIP " <> name <> ": " <> reason)
+    Error(reason) -> io.println_error("SKIP " <> name <> ": " <> reason)
     Ok(config) ->
       case exec.spawn_helper(config) {
         Error(spawn_error) ->
@@ -121,6 +121,62 @@ pub fn real_helper_handshake_test() {
   // the kernel we run on. Whatever it says, it said something.
   assert features != []
   assert exec.heartbeat(helper, waiting: 2000) == Ok(Nil)
+}
+
+pub fn real_helper_orderly_idle_retirement_test() {
+  use helper <- with_real_helper("real_helper_orderly_idle_retirement")
+  assert exec.close(helper, waiting: 5000) == Ok(Nil)
+  assert !process.is_alive(exec.pid(helper))
+}
+
+pub fn real_helper_orderly_running_retirement_test() {
+  use helper <- with_real_helper("real_helper_orderly_running_retirement")
+  let events = process.new_subject()
+  let req =
+    request(
+      ["/bin/sh", "-c", "trap '' TERM; printf ready; while :; do sleep 1; done"],
+      1024,
+    )
+  assert exec.run(helper, req, events:, waiting: 1000) == Ok(Nil)
+  let assert Ok(exec.Output(data: <<"ready":utf8>>, ..)) =
+    process.receive(events, 5000)
+    as "jailed payload is running before shutdown"
+  assert exec.close(helper, waiting: 5000) == Ok(Nil)
+  assert !process.is_alive(exec.pid(helper))
+}
+
+pub fn real_pool_orderly_borrowed_retirement_test() {
+  case helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_pool_orderly_borrowed_retirement: " <> reason)
+    Ok(config) -> {
+      let assert Ok(pool) =
+        exec.start_pool(size: 2, spawn: fn() { exec.prepare_helper(config) })
+        as "native pool starts"
+      let assert Ok(idle) = exec.checkout(pool, waiting: 5000)
+        as "idle native helper"
+      let assert Ok(borrowed) = exec.checkout(pool, waiting: 5000)
+        as "borrowed native helper"
+      exec.checkin(pool, idle)
+      let events = process.new_subject()
+      let req =
+        request(
+          [
+            "/bin/sh", "-c",
+            "trap '' TERM; printf ready; while :; do sleep 1; done",
+          ],
+          1024,
+        )
+      assert exec.run(borrowed, req, events:, waiting: 1000) == Ok(Nil)
+      let assert Ok(exec.Output(data: <<"ready":utf8>>, ..)) =
+        process.receive(events, 5000)
+        as "borrowed jail is running before pool drain"
+      assert exec.close_pool(pool, waiting: 5000) == Ok(Nil)
+      assert !process.is_alive(exec.pid(idle))
+      assert !process.is_alive(exec.pid(borrowed))
+      assert !process.is_alive(exec.pool_pid(pool))
+    }
+  }
 }
 
 pub fn real_helper_echo_test() {
@@ -264,7 +320,8 @@ pub fn real_helper_policy_file_unlinked_test() {
 // dropped on the way.
 pub fn helper_args_reach_the_helper_test() {
   case helper_config() {
-    Error(reason) -> io.println("SKIP helper_args_reach_the_helper: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP helper_args_reach_the_helper: " <> reason)
     Ok(config) -> {
       let bogus = exec.SpawnConfig(..config, helper_args: ["--not-a-real-flag"])
       let assert Error(_spawn_error) = exec.spawn_helper(bogus)
@@ -281,7 +338,7 @@ means the extra arguments never reached its command line"
 pub fn allow_unenforced_arg_is_harmless_where_a_jail_exists_test() {
   case helper_config() {
     Error(reason) ->
-      io.println("SKIP allow_unenforced_arg_is_harmless: " <> reason)
+      io.println_error("SKIP allow_unenforced_arg_is_harmless: " <> reason)
     Ok(config) -> {
       let args = exec.unenforced_helper_args(exec.host_platform())
       // On a jailed host there is nothing to pass, so pass it anyway:
@@ -355,7 +412,7 @@ fn layer_applied_or_skipped(result: exec.ExecResult, layer: String) -> Bool {
 pub fn full_enforcement_never_accepts_unenforced_ceilings_test() {
   case helper_config() {
     Error(reason) ->
-      io.println(
+      io.println_error(
         "SKIP full_enforcement_never_accepts_unenforced_ceilings: " <> reason,
       )
     Ok(config) -> {

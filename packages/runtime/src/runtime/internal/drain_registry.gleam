@@ -34,11 +34,12 @@
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/atom
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
+import weft/registry as address
 
 /// Messages understood by the drain ledger. Callers use `claim` rather than
 /// constructing messages directly.
@@ -68,7 +69,7 @@ type ClaimWaiter {
   ClaimWaiter(predecessors: List(Pid), reply_with: Subject(List(Pid)))
 }
 
-/// Starts the drain ledger under its stable, session-local name.
+/// Starts the drain ledger under its session-local reference address.
 ///
 /// The ledger traps its supervisor's shutdown exit. Once closing, it accepts
 /// no unsafe shortcut: it exits only after all monitored reapers have exited.
@@ -76,13 +77,16 @@ type ClaimWaiter {
 /// ## Examples
 ///
 /// ```gleam
-/// let name = process.new_name(prefix: "loom_drains")
+/// let name = address.new_address(namespace)
 /// drain_registry.start(name)
 /// // -> Ok(subject)
 /// ```
 ///
-pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
+pub fn start(
+  name: address.Address(Message),
+) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(1000, fn(subject) {
+    use Nil <- result.try(address.register(name, subject))
     process.trap_exits(True)
     let selector =
       process.new_selector()
@@ -94,7 +98,6 @@ pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
     |> actor.returning(subject)
     |> Ok
   })
-  |> actor.named(name)
   |> actor.on_message(handle)
   |> actor.start
 }
@@ -109,11 +112,13 @@ pub fn start(name: Name(Message)) -> actor.StartResult(Subject(Message)) {
 ///
 /// ```gleam
 /// let child =
-///   drain_registry.supervised(process.new_name(prefix: "loom_drains"))
+///   drain_registry.supervised(address.new_address(namespace))
 /// // Add `child` before every restartable session component.
 /// ```
 ///
-pub fn supervised(name: Name(Message)) -> ChildSpecification(Subject(Message)) {
+pub fn supervised(
+  name: address.Address(Message),
+) -> ChildSpecification(Subject(Message)) {
   supervision.supervisor(fn() { start(name) })
 }
 

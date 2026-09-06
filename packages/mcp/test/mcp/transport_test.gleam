@@ -86,7 +86,7 @@ const missing_executable = "enoent"
 // pass while spawning nothing at all.
 fn skip_only_if_absent(name: String, reason: String) -> Nil {
   case string.contains(reason, missing_executable) {
-    True -> io.println("SKIP " <> name <> ": " <> reason)
+    True -> io.println_error("SKIP " <> name <> ": " <> reason)
     False -> panic as { "the port transport failed: " <> reason }
   }
 }
@@ -165,6 +165,8 @@ pub fn a_line_written_to_a_real_child_comes_back_test() {
       let assert Ok(Nil) = connection.send("{\"ping\":1}\n")
       assert receive_line(selector, "") == "{\"ping\":1}\n"
       connection.close()
+      let #(_bytes, exited) = drain(selector, <<>>)
+      assert exited
     }
   }
 }

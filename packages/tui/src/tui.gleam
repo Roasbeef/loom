@@ -25,6 +25,8 @@ import etui/widgets/block
 import etui/widgets/paragraph
 import etui/widgets/statusbar
 import etui/widgets/textarea as text_area
+import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/float
 import gleam/int
@@ -33,25 +35,41 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap as host_bootstrap
+import host/endpoint
+import machine/strand as machine_strand
 import simplifile
 import tui/agents
+import tui/approval
+import tui/approval_panel
+import tui/attachment
+import tui/attempt
+import tui/attempt_replay
 import tui/bootstrap
 import tui/command
 import tui/composer
 import tui/connection
+import tui/daemon
+import tui/daemon/protocol as control_protocol
+import tui/daemon/selection as daemon_selection
 import tui/frame
 import tui/image_drop
-import tui/internal/ffi_bootstrap
+import tui/internal/ffi_terminal
 import tui/markdown
 import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/selection
+import tui/session_channel
+import tui/session_selector
 import tui/sessions
+import tui/snapshot
+import tui/snapshot_view
 import tui/text_hygiene
 import tui/theme
 import tui/virtual_backend
 import tui/workspace
+import weft
 
 /// Who a transcript line belongs to, which is the whole of its styling.
 @internal
@@ -89,11 +107,36 @@ pub type Overlay {
   ModelSelector(model_selector.State)
   AgentInspector(selected: Int)
   SessionSelector(sessions.State)
+  DaemonSelector(session_selector.State)
+  ApprovalInspector(approval_panel.State)
+}
+
+/// The latest unconfirmed submission, not proof that earlier uncertainty cleared.
+@internal
+pub type UnconfirmedSubmission {
+  UnconfirmedSubmission(
+    /// Session whose command was sent, retained across later attachment changes.
+    session: String,
+    /// Command kind only; no prompt body, grants or credentials are retained.
+    command: String,
+    /// Original connection-local request identity for this unknown outcome.
+    request_id: Int,
+  )
+}
+
+/// Only composer-originated sends consume the visible draft.
+@internal
+pub type SubmissionSource {
+  /// Text, attachments and mode remain in the existing composer until send.
+  ComposerSubmission
+
+  /// A selector action must preserve unrelated composer text.
+  OverlaySubmission
 }
 
 type Launch {
   Demo
-  Local(bootstrap.Options)
+  Local(bootstrap.Options, selected: String)
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
@@ -160,6 +203,9 @@ pub type Peer {
   /// server's own events come back as transcript.
   Attached(socket: connection.Connection)
 
+  /// A live launch without an adopted socket; never fabricates preview replies.
+  Disconnected
+
   /// The `--demo` preview. A submitted prompt is echoed locally, because
   /// there is nothing else to draw.
   Preview
@@ -193,6 +239,25 @@ pub type Clipboard {
 @internal
 pub type Interrupt {
   Interrupt(strand: String, pending: Option(String))
+}
+
+/// One relayed page job, selected by the terminal and its actor-backed driver.
+@internal
+pub type CatalogueRequest {
+  CatalogueRequest(
+    cancel: weft.Cancel,
+    replies: Subject(weft.Pulled(#(control_protocol.Page, String), String)),
+    result: Option(Result(#(control_protocol.Page, String), String)),
+  )
+}
+
+/// An already selected metadata job message retains its original source tag.
+@internal
+pub type CatalogueEvent {
+  CatalogueEvent(
+    source: Subject(weft.Pulled(#(control_protocol.Page, String), String)),
+    reply: weft.Pulled(#(control_protocol.Page, String), String),
+  )
 }
 
 // Recent terminal or websocket activity keeps input and stream latency below a
@@ -245,6 +310,8 @@ pub type Model {
     history_draft: String,
     command_selected: Int,
     submission_mode: SubmissionMode,
+    /// Ownership marker only; the unsent encoded intent belongs to Channel.
+    pending_submission: Option(SubmissionSource),
     interrupt: Option(Interrupt),
     submitting: Option(String),
     transcript: List(Line),
@@ -264,6 +331,31 @@ pub type Model {
     inbox: Subject(connection.Message),
     peer: Peer,
     session_switch: sessions.SwitchStatus,
+    /// One provisional replacement, whose original deadline includes capture.
+    candidate: attachment.Status,
+    /// Serial credited state for the adopted socket only.
+    channel: Option(session_channel.Channel),
+    /// Last complete raw cut and its coherent metadata projection.
+    captured: Option(#(snapshot.Captured, snapshot_view.View)),
+    /// Terminal-owned daemon control, independent of the selected session.
+    daemon_host: Option(daemon_selection.Host),
+    /// One bounded metadata page request; no catalogue accumulation.
+    catalogue_request: Option(CatalogueRequest),
+    /// Retained after an uncertain create so another key cannot duplicate it.
+    creation_key: Option(String),
+    /// Current pending requests and at most sixteen bounded resolved summaries.
+    approvals: List(approval.Review),
+    /// Exact decision currently requested for local inspection, if any.
+    inspecting_approval: Option(String),
+    /// Last sent mutation whose outcome was not observed; survives adoption.
+    unconfirmed: Option(UnconfirmedSubmission),
+    /// Next terminal-local attachment identity, independent of server IDs.
+    next_attempt: Int,
+    /// Two-slot effect-free replay state and its terminal-owned delivery lane.
+    replay_state: attempt_replay.State,
+    replay_inbox: Subject(attempt.Event),
+    /// A malformed local recording stops replay rather than skipping a frame.
+    replay_error: Option(String),
     next_id: Int,
     usage: message.Usage,
     /// When the active strand's streaming generation produced its first
@@ -387,7 +479,7 @@ pub type FrameDecision {
 /// ```
 pub fn main() {
   // Nothing but the rendered frame may write to this terminal from here on.
-  ffi_bootstrap.silence_logger()
+  ffi_terminal.silence_logger()
 
   // `--record` is answered here rather than inside `parse_launch` because
   // it qualifies every interactive launch rather than choosing one, and
@@ -440,20 +532,20 @@ fn forward(arguments: List(String)) -> Nil {
   case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
     Error(reason) -> {
       io.println_error("loom ext: " <> reason)
-      ffi_bootstrap.halt(1)
+      ffi_terminal.halt(1)
       Nil
     }
     Ok(server) ->
-      case ffi_bootstrap.run_forwarding(server, ["ext", ..arguments]) {
+      case ffi_terminal.run_forwarding(server, ["ext", ..arguments]) {
         Ok(status) -> {
-          ffi_bootstrap.halt(status)
+          ffi_terminal.halt(status)
           Nil
         }
         Error(reason) -> {
           io.println_error(
             "loom ext: could not run " <> server <> ": " <> reason,
           )
-          ffi_bootstrap.halt(1)
+          ffi_terminal.halt(1)
           Nil
         }
       }
@@ -485,7 +577,7 @@ pub fn new_model(
   inbox: Subject(connection.Message),
   project: workspace.Context,
 ) -> Model {
-  new_model_with_clock(inbox, project, ffi_bootstrap.monotonic_time_ms)
+  new_model_with_clock(inbox, project, host_bootstrap.monotonic_time_ms)
 }
 
 /// Creates a presentation state whose timing is controlled by its caller.
@@ -518,6 +610,7 @@ pub fn new_model_with_clock(
     history_draft: "",
     command_selected: 0,
     submission_mode: SteerNow,
+    pending_submission: None,
     interrupt: None,
     submitting: None,
     transcript: [
@@ -548,6 +641,19 @@ pub fn new_model_with_clock(
     inbox:,
     peer: Preview,
     session_switch: sessions.Idle,
+    candidate: attachment.idle(),
+    channel: None,
+    captured: None,
+    daemon_host: None,
+    catalogue_request: None,
+    creation_key: None,
+    approvals: [],
+    inspecting_approval: None,
+    unconfirmed: None,
+    next_attempt: 1,
+    replay_state: attempt_replay.new(),
+    replay_inbox: process.new_subject(),
+    replay_error: None,
     next_id: 1,
     usage: zero_usage(),
     generation_started_ms: None,
@@ -596,7 +702,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
   let launched = case launch {
     // Unreachable: `main` answers these before it builds a model.
     Forward(..) | Replay(..) | Demo -> base
-    Local(options) -> {
+    Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
       // later `/sessions` switch derives it the same way from its choice.
@@ -609,11 +715,20 @@ fn interactive(launch: Launch, record: String) -> Nil {
             path -> workspace.discover_from(path)
           },
         )
-      case bootstrap.resolve(options) {
+      case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
-          append_error(Model(..local, notice: "local startup failed"), reason)
-        Ok(bootstrap.Target(address:, session:, token:)) ->
-          connect_remote(local, inbox, address, session, token)
+          append_error(
+            Model(..local, peer: Disconnected, notice: "daemon startup failed"),
+            reason,
+          )
+        Ok(connected) ->
+          attach_daemon(
+            local,
+            connected.control,
+            endpoint.address(connected.record),
+            connected.paths.token,
+            selected,
+          )
       }
     }
     Invalid(reason) ->
@@ -683,15 +798,41 @@ fn open_recording(model: Model, record: String) -> Model {
     path ->
       case recording.start(path) {
         Ok(recorder) ->
-          Model(..model, recorder: Some(recorder), notice: "recording")
+          Model(
+            ..model,
+            recorder: Some(recorder),
+            notice: "recording",
+            candidate: attachment.with_trace(
+              model.candidate,
+              recording.trace(
+                Some(recorder),
+                attempt.Id(model.next_attempt - 1),
+              ),
+            ),
+          )
         Error(reason) -> append_error(model, reason)
       }
   }
 }
 
+/// Opens the same post-launch recorder used by the interactive terminal.
+///
+/// Initial candidate mail is still terminal-owned and cannot be consumed
+/// before this binding. The native driver uses this seam to prove fast startup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.with_recording(launched, path)
+/// ```
+@internal
+pub fn with_recording(model: Model, path: String) -> Model {
+  open_recording(model, path)
+}
+
 fn parse_launch(arguments: List(String)) -> Launch {
   case arguments {
-    [] -> Local(default_bootstrap_options())
+    [] -> Local(default_bootstrap_options(), "")
     ["--demo"] -> Demo
     ["ext", ..rest] -> Forward(arguments: rest)
     ["replay", ..rest] -> parse_replay(rest)
@@ -702,10 +843,10 @@ fn parse_launch(arguments: List(String)) -> Launch {
             Ok(token) -> Remote(address:, session:, token:)
             Error(reason) -> Invalid(reason)
           }
-        Error(_), Ok(_) | Ok(_), Error(_) -> Invalid(launch_usage())
-        Error(_), Error(_) ->
+        Ok(_), Error(_) -> Invalid(launch_usage())
+        Error(_), selection ->
           case parse_local_options(arguments, default_bootstrap_options()) {
-            Ok(options) -> Local(options)
+            Ok(options) -> Local(options, result.unwrap(selection, ""))
             Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
           }
       }
@@ -730,11 +871,7 @@ fn parse_local_options(
             rest,
             bootstrap.Options(..options, workspace: value),
           )
-        "--session-file" ->
-          parse_local_options(
-            rest,
-            bootstrap.Options(..options, session_file: value),
-          )
+        "--session" -> parse_local_options(rest, options)
         "--server" ->
           parse_local_options(rest, bootstrap.Options(..options, server: value))
         "--state-dir" ->
@@ -762,7 +899,7 @@ fn launch_token(arguments: List(String)) -> Result(String, String) {
 }
 
 fn launch_usage() -> String {
-  "usage: loom [--workspace <path>] [--session-file <path>] "
+  "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
@@ -858,7 +995,7 @@ fn replay(
     Ok(rendered) -> print_frames(rendered, frames)
     Error(reason) -> {
       io.println_error("loom replay: " <> reason)
-      ffi_bootstrap.halt(1)
+      ffi_terminal.halt(1)
       Nil
     }
   }
@@ -909,9 +1046,13 @@ pub fn replay_steps(
     )
   use run <- result.try(run_script(
     model,
-    virtual_backend.script(size, steps, inbox),
+    virtual_backend.script(size, steps, inbox)
+      |> virtual_backend.with_attempts(model.replay_inbox),
   ))
-  Ok(run.frames)
+  case run.final.replay_error {
+    None -> Ok(run.frames)
+    Some(reason) -> Error(reason)
+  }
 }
 
 fn print_frames(frames: List(buffer.Buffer), selection: FrameSelection) -> Nil {
@@ -938,7 +1079,7 @@ fn print_one(frame_result: Result(buffer.Buffer, Nil), missing: String) -> Nil {
     Ok(drawn) -> io.println(frame.buffer_to_text(drawn))
     Error(Nil) -> {
       io.println_error("loom replay: " <> missing)
-      ffi_bootstrap.halt(1)
+      ffi_terminal.halt(1)
       Nil
     }
   }
@@ -967,26 +1108,297 @@ pub fn connect_remote(
   session: String,
   token: String,
 ) -> Model {
-  case connection.connect(address, token, inbox) {
-    Error(reason) ->
-      append_error(
-        Model(..base, session:, strands: [], agent_summary: agents.summary([])),
-        "connect: " <> reason,
-      )
-    Ok(socket) -> {
-      connection.send(socket, protocol.subscribe(1, session))
-      connection.send(socket, protocol.models(2))
-      connection.send(socket, protocol.config(3, base.active_strand))
+  let base = live_base(Model(..base, inbox: inbox))
+  let connected = {
+    use address <- result.try(daemon_selection.control_address(address))
+    use control <- result.try(
+      daemon.connect(address, token, process.self(), 5000)
+      |> result.map_error(daemon_selection.failure),
+    )
+    daemon_selection.host(control, address, token)
+  }
+  case connected {
+    Error(reason) -> append_error(base, reason)
+    Ok(host) -> {
+      let model = Model(..base, daemon_host: Some(host))
+      case session {
+        "" -> load_catalogue(model, "", None)
+        id -> begin_open(model, id)
+      }
+    }
+  }
+}
+
+fn live_base(base: Model) -> Model {
+  Model(
+    ..base,
+    peer: Disconnected,
+    session: "",
+    models: [],
+    strands: [],
+    records: [],
+    streams: [],
+    transcript: [],
+    current_model: "unconfigured",
+    agent_summary: agents.summary([]),
+    notice: "select a saved session or create one",
+  )
+}
+
+fn attach_daemon(
+  base: Model,
+  control: daemon.Connection,
+  address: Result(String, String),
+  token_path: String,
+  selected: String,
+) -> Model {
+  let host = {
+    use address <- result.try(address)
+    use bytes <- result.try(host_bootstrap.read_private_bounded(token_path, 65))
+    use token <- result.try(
+      bit_array.to_string(bytes)
+      |> result.replace_error("invalid owner credential encoding"),
+    )
+    daemon_selection.host(control, address, string.trim(token))
+  }
+  let base = live_base(base)
+  case host {
+    Error(reason) -> {
+      daemon.close(control)
+      append_error(base, reason)
+    }
+    Ok(host) -> {
+      let model = Model(..base, daemon_host: Some(host))
+      case selected {
+        "" -> load_catalogue(model, "", None)
+        id -> begin_open(model, id)
+      }
+    }
+  }
+}
+
+fn begin_open(model: Model, session: String) -> Model {
+  let model = cancel_pending(model, "target change from " <> model.session)
+  case attachment.busy(model.candidate), model.daemon_host {
+    True, _ -> append_error(model, "a session switch is already in progress")
+    False, None -> append_error(model, "daemon control is disconnected")
+    False, Some(host) ->
       Model(
-        ..base,
-        session:,
-        peer: Attached(socket:),
-        next_id: 4,
-        models: [],
-        strands: [],
-        agent_summary: agents.summary([]),
-        transcript: [Line(System, "connecting to session " <> session)],
-        notice: "connecting",
+        ..model,
+        overlay: NoOverlay,
+        next_attempt: model.next_attempt + 1,
+        candidate: attachment.start_recorded(
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            daemon_selection.open(host, session)
+          },
+          90_000,
+          recording.trace(model.recorder, attempt.Id(model.next_attempt)),
+        ),
+        notice: "opening session " <> session,
+      )
+  }
+}
+
+fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
+  case model.catalogue_request, model.daemon_host {
+    Some(_), _ -> append_error(model, "a catalogue page is already loading")
+    None, None -> append_error(model, "daemon control is disconnected")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+
+      // The two scalars the worker needs are bound here rather than read off
+      // `model` inside the closure. A closure over a field captures the whole
+      // record, and weft copies a fun's environment into the worker: that
+      // would send the transcript, the row caches and the cached frame — an
+      // 8 MiB retained window at its bound — to a process that wants a
+      // session id and a path.
+      let session = model.session
+      let workspace = model.workspace.path
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use reply <- result.try(
+              daemon.request(
+                daemon_selection.control(host),
+                control_protocol.ListSessions(after, revision),
+                5000,
+              )
+              |> result.map_error(daemon_selection.failure),
+            )
+            use page <- result.try(case reply {
+              control_protocol.SessionsReply(page) -> Ok(page)
+              _ -> Error("catalogue returned an unexpected control reply")
+            })
+            let selected = case session {
+              "" -> default_selection(host, workspace)
+              id -> id
+            }
+            Ok(#(page, selected))
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        catalogue_request: Some(CatalogueRequest(cancel, replies, None)),
+        notice: "loading authorized session metadata",
+      )
+    }
+  }
+}
+
+fn default_selection(host, workspace) {
+  case
+    daemon.request(
+      daemon_selection.control(host),
+      control_protocol.WorkspaceDefault(workspace),
+      5000,
+    )
+  {
+    Ok(control_protocol.SessionReply(row)) -> row.session_id
+    _ -> ""
+  }
+}
+
+fn drain_catalogue(model: Model) -> Model {
+  case model.catalogue_request {
+    None -> model
+    Some(run) ->
+      case process.receive(run.replies, 0) {
+        Error(Nil) -> model
+        Ok(reply) ->
+          accept_catalogue_event(model, CatalogueEvent(run.replies, reply))
+      }
+  }
+}
+
+/// Applies a selected page job response before later terminal messages.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.accept_catalogue_event(model, event)
+/// ```
+@internal
+pub fn accept_catalogue_event(model: Model, event: CatalogueEvent) -> Model {
+  case model.catalogue_request {
+    None -> model
+    Some(run) if run.replies != event.source -> model
+    Some(run) ->
+      case event.reply {
+        weft.NotYet -> model
+        weft.PulledOutcome(weft.Completed(value:, ..)) ->
+          Model(
+            ..model,
+            catalogue_request: Some(
+              CatalogueRequest(..run, result: Some(Ok(value))),
+            ),
+          )
+        weft.PulledOutcome(weft.Failed(error:, ..)) ->
+          Model(
+            ..model,
+            catalogue_request: Some(
+              CatalogueRequest(..run, result: Some(Error(error))),
+            ),
+          )
+        weft.PulledOutcome(weft.Crashed(reason:, ..))
+        | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+          Model(
+            ..model,
+            catalogue_request: Some(
+              CatalogueRequest(
+                ..run,
+                result: Some(Error(string.inspect(reason))),
+              ),
+            ),
+          )
+        weft.PulledOutcome(weft.Abandoned(..))
+        | weft.PulledOutcome(weft.NeverStarted(..))
+        | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+          Model(
+            ..model,
+            catalogue_request: Some(
+              CatalogueRequest(
+                ..run,
+                result: Some(Error("catalogue request did not complete")),
+              ),
+            ),
+          )
+        weft.RunLost(reason) ->
+          append_error(
+            Model(..model, catalogue_request: None),
+            string.inspect(reason),
+          )
+        weft.AllDelivered ->
+          finish_catalogue(Model(..model, catalogue_request: None), run.result)
+      }
+  }
+}
+
+fn finish_catalogue(model, result) {
+  case result {
+    Some(Ok(#(page, selected))) ->
+      Model(
+        ..model,
+        overlay: DaemonSelector(session_selector.new(page, selected)),
+        notice: "Enter opens the highlighted session · n creates a new session",
+      )
+      |> invalidate_frame
+    Some(Error(reason)) -> append_error(model, reason)
+    None -> append_error(model, "catalogue job ended without a page")
+  }
+}
+
+fn create_session(model: Model) -> Model {
+  let model = cancel_pending(model, "target change from " <> model.session)
+  case model.creation_key, model.daemon_host, attachment.busy(model.candidate) {
+    Some(key), _, _ ->
+      append_error(
+        model,
+        "reconcile prior creation key before creating again: " <> key,
+      )
+    None, None, _ -> append_error(model, "daemon control is disconnected")
+    None, Some(_), True ->
+      append_error(model, "a session switch is already in progress")
+    None, Some(host), False -> {
+      let key =
+        "tui-"
+        <> int.to_string(host_bootstrap.current_process_id())
+        <> "-"
+        <> string.inspect(process.self())
+        <> "-"
+        <> int.to_string(host_bootstrap.system_time_ms())
+        <> "-"
+        <> int.to_string(model.next_id)
+      let config = case model.local_options {
+        Some(options) -> options.config
+        None -> ""
+      }
+
+      // Bound outside the closure for the same reason the catalogue job binds
+      // its two: a reference to `model.workspace` would put the whole
+      // presentation state, cached frame included, in the worker's copied
+      // environment.
+      let workspace = model.workspace.path
+      Model(
+        ..model,
+        creation_key: Some(key),
+        overlay: NoOverlay,
+        next_id: model.next_id + 1,
+        next_attempt: model.next_attempt + 1,
+        candidate: attachment.start_recorded(
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            daemon_selection.create(host, key, workspace, config)
+          },
+          90_000,
+          recording.trace(model.recorder, attempt.Id(model.next_attempt)),
+        ),
+        notice: "creating a new session",
       )
     }
   }
@@ -1101,6 +1513,8 @@ fn render_frame(
         selected,
       )
     SessionSelector(selector) -> sessions.render(base, screen, selector)
+    DaemonSelector(selector) -> session_selector.render(base, screen, selector)
+    ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
   }
 
   // The highlight is the last paint, over overlays too: it marks cells of
@@ -1111,7 +1525,11 @@ fn render_frame(
   }
   let cursor = case model.overlay {
     NoOverlay -> text_area.cursor_screen_pos(input_view, editor_area)
-    ModelSelector(_) | AgentInspector(_) | SessionSelector(_) -> Error(Nil)
+    ModelSelector(_)
+    | AgentInspector(_)
+    | SessionSelector(_)
+    | DaemonSelector(_)
+    | ApprovalInspector(_) -> Error(Nil)
   }
   #(rendered, cursor)
 }
@@ -1957,6 +2375,8 @@ fn render_command_palette(
     | _, ModelSelector(_)
     | _, AgentInspector(_)
     | _, SessionSelector(_)
+    | _, DaemonSelector(_)
+    | _, ApprovalInspector(_)
     -> buf
     _, NoOverlay -> {
       let width = int.max(1, int.min(72, body.size.width - 4))
@@ -2040,8 +2460,12 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
       |> mark_activity
       |> invalidate_frame
     backend.Tick -> update_tick(model)
+
+    // A keyboard burst can arrive before an idle tick even when the final
+    // server reply is already queued. Apply bounded ready progress before
+    // interpreting the action, without starting another periodic capture.
     backend.KeyPress(key) ->
-      update_key_over_selection(keys.match(key), model)
+      update_ready_key(keys.match(key), model)
       |> mark_activity
       |> invalidate_frame
     backend.Paste(text) ->
@@ -2100,9 +2524,11 @@ fn frame_boundary(event: backend.InputEvent) -> FrameBoundary {
 // by the timeout that led to this tick. A live operation animates at this
 // cadence but does not by itself force the fast polling regime forever.
 fn update_tick(model: Model) -> Model {
-  let animated = advance_activity_indicator(model)
-  let switched = drain_session_switch(animated)
+  let animated = advance_activity_indicator(drain_replay(model))
+  let switched =
+    drain_candidate(drain_catalogue(drain_session_switch(animated)))
   let drained = drain_connection(switched, 64)
+  let drained = tick_channel(drained)
   let quiet_for_ms =
     next_quiet_for(
       model.quiet_for_ms,
@@ -2110,6 +2536,60 @@ fn update_tick(model: Model) -> Model {
       drained.activity_revision != model.activity_revision,
     )
   Model(..drained, quiet_for_ms:)
+}
+
+fn drain_replay(model: Model) -> Model {
+  case model.peer, process.receive(model.replay_inbox, 0) {
+    Replaying, Ok(event) ->
+      case attempt_replay.apply(model.replay_state, event) {
+        Error(reason) ->
+          append_error(
+            Model(..model, replay_error: Some(reason), quit: True),
+            reason,
+          )
+        Ok(#(state, changes)) ->
+          list.fold(
+            changes,
+            Model(..model, replay_state: state),
+            apply_replay_change,
+          )
+      }
+    _, _ -> model
+  }
+}
+
+fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
+  case change {
+    attempt_replay.Rejected(reason) ->
+      append_error(model, "open session: " <> reason)
+    attempt_replay.Adopt(cut, view) ->
+      Model(
+        ..model,
+        session: cut.attachment.expected.session,
+        captured: None,
+        approvals: [],
+        inspecting_approval: None,
+        records: [],
+        streams: [],
+        models: [],
+        current_model: "loading…",
+        active_strand: "main",
+        scroll_offset: 0,
+        record_cache_valid: False,
+        submitting: None,
+        interrupt: None,
+      )
+      |> apply_cut(cut, view)
+
+    // Every update, cuts included, goes through the live reducer. A cut used
+    // to be special-cased into `apply_cut`, which always invalidates the
+    // transcript and restarts the activity indicator; `reconcile_cut`'s
+    // equal-cut fast path is what the live client does instead, and a replay
+    // that rendered frames the live client did not is not a replay. The
+    // outbound half of that path is made inert by `request_decisions`, which
+    // sends nothing while the peer is `Replaying`.
+    attempt_replay.Update(update) -> apply_channel_update(model, update)
+  }
 }
 
 // The tick is the one place the clock is read, so the elapsed count and
@@ -2233,7 +2713,16 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
 /// ```
 @internal
 pub fn terminal_poll_timeout(model: Model) -> Int {
-  paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+  let ordinary = paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+  case attachment.busy(model.candidate), model.channel {
+    True, _ -> int.min(ordinary, 8)
+    False, Some(channel) ->
+      case session_channel.in_flight(channel) {
+        True -> int.min(ordinary, 8)
+        False -> int.min(ordinary, 250)
+      }
+    False, None -> ordinary
+  }
 }
 
 /// Returns the poll timeout, shortened while a deferred frame is waiting.
@@ -2403,6 +2892,13 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
 }
 
 fn handle_paste(model: Model, text: String) -> Model {
+  case model.pending_submission {
+    Some(_) -> waiting_notice(model)
+    None -> paste_unlocked(model, text)
+  }
+}
+
+fn paste_unlocked(model: Model, text: String) -> Model {
   case image_drop.load_paste(text) {
     Error(reason) -> append_error(model, reason)
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
@@ -2428,6 +2924,492 @@ fn add_attachment(model: Model, attachment: composer.Attachment) -> Model {
         composer.summary(attachments) |> option.unwrap("pasted content")
       Model(..model, attachments:, notice:)
     }
+  }
+}
+
+fn drain_candidate(model: Model) -> Model {
+  let #(candidate, outcome) = attachment.poll(model.candidate)
+  candidate_outcome(model, candidate, outcome)
+}
+
+/// Applies one driver-selected candidate event before later queued traffic.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.accept_candidate_event(model, event)
+/// ```
+@internal
+pub fn accept_candidate_event(model: Model, event: attachment.Event) -> Model {
+  let #(candidate, outcome) = attachment.accept(model.candidate, event)
+  candidate_outcome(model, candidate, outcome)
+}
+
+/// Applies the terminal's selected candidate result without changing its owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.candidate_outcome(model, candidate, outcome)
+/// ```
+@internal
+pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
+  let model = Model(..model, candidate: candidate)
+  case outcome {
+    None -> model
+    Some(attachment.Failed(reason)) ->
+      append_error(
+        cancel_pending(model, "target change from " <> model.session),
+        "open session: " <> reason,
+      )
+    Some(attachment.Adopted(channel, cut, view, inbox, workspace, creation_key)) -> {
+      // `cancel_pending` below appends its own "Not sent: … ; draft retained"
+      // notice, but `render_cut` replaces the whole transcript with the new
+      // session's, so that line does not survive this arm. The fact still has
+      // to reach the operator, so it is re-issued after the cut. Reading the
+      // draft here rather than afterwards is what makes that possible: by
+      // then the pending slot is already cleared.
+      let cancelled = case model.pending_submission {
+        Some(_) ->
+          Some(
+            "Not sent: target changed from "
+            <> model.session
+            <> "; draft retained",
+          )
+        None -> None
+      }
+      let model = cancel_pending(model, "target change from " <> model.session)
+
+      // Retirement runs while the old channel's session is still the visible
+      // one: its outcome is reported against the identity that produced it,
+      // and a sent request keeps that identity rather than acquiring the new
+      // session's.
+      let model = retire_previous(model)
+
+      // Only then is the old inbox drained. Draining first would discard
+      // frames the retirement is entitled to reduce.
+      sessions.discard(model.inbox)
+      let adopted =
+        Model(
+          ..model,
+          inbox: inbox,
+          peer: case session_channel.socket(channel) {
+            Some(socket) -> Attached(socket)
+            None -> Replaying
+          },
+          channel: Some(channel),
+          captured: None,
+          approvals: [],
+          overlay: NoOverlay,
+          creation_key: case creation_key {
+            Some(key) if model.creation_key == Some(key) -> None
+            Some(_) | None -> model.creation_key
+          },
+          workspace: workspace,
+          session: cut.attachment.expected.session,
+          records: [],
+          streams: [],
+          interrupt: None,
+          submitting: None,
+          models: [],
+          next_id: 1,
+          record_cache_valid: False,
+          scroll_offset: 0,
+        )
+        |> apply_cut(cut, view)
+
+      // The adoption marker is written after the cut, not before it. ADR-009
+      // makes that ordering a correctness rule: a recording is replayed by
+      // the same reducer, and a marker ahead of its cut would move the
+      // visible session before the frames that justify it.
+      session_channel.adopted(channel)
+      let adopted = adopted |> send_frame(protocol.models(1))
+      case cancelled {
+        Some(notice) -> append_system(adopted, notice)
+        None -> adopted
+      }
+    }
+  }
+}
+
+// Consume the old channel's outcome while its session identity is still the
+// visible one. Closing an already-sent request cannot imply it was rejected.
+fn retire_previous(model: Model) -> Model {
+  case model.channel {
+    Some(previous) -> {
+      let #(closed, updates) =
+        session_channel.retire(previous, "attachment replaced")
+      list.fold(
+        updates,
+        Model(..model, channel: Some(closed)),
+        apply_channel_update,
+      )
+    }
+    None -> {
+      case model.peer {
+        Attached(previous) -> connection.close(previous)
+        Disconnected | Preview | Replaying -> Nil
+      }
+      model
+    }
+  }
+}
+
+fn tick_channel(model: Model) -> Model {
+  case model.channel {
+    None -> model
+    Some(channel) -> {
+      let #(channel, updates) = session_channel.tick(channel)
+      list.fold(
+        updates,
+        Model(..model, channel: Some(channel)),
+        apply_channel_update,
+      )
+    }
+  }
+}
+
+fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
+  case update {
+    session_channel.Submission(disposition) ->
+      apply_submission(model, disposition)
+    session_channel.Captured(cut, view) -> reconcile_cut(model, cut, view)
+    session_channel.LookedUp(records, missing) -> {
+      let inspected = inspect_looked_up(model, records, missing)
+      let updated =
+        Model(
+          ..inspected,
+          approvals: approval.decisions(model.approvals, records, missing),
+        )
+      let updated = case updated.captured {
+        Some(#(cut, view)) -> render_cut(updated, cut, view, updated.approvals)
+        None -> updated
+      }
+      case missing {
+        [] -> updated
+        _ ->
+          append_system(
+            updated,
+            "Decisions not available: " <> string.join(missing, ", "),
+          )
+      }
+    }
+    session_channel.Auxiliary(event) -> apply_event(model, event)
+    session_channel.Acknowledged(command, status) ->
+      Model(..model, notice: command <> " " <> status) |> invalidate_frame
+    session_channel.UnknownOutcome(command, request_id) ->
+      append_error(
+        Model(
+          ..model,
+          unconfirmed: Some(UnconfirmedSubmission(
+            model.session,
+            command,
+            request_id,
+          )),
+        ),
+        "Last unconfirmed submission: " <> command <> "; not retried",
+      )
+    session_channel.Failed(reason) ->
+      append_error(
+        Model(..model, peer: after_close(model.peer)),
+        "conversation: " <> reason,
+      )
+  }
+}
+
+fn reconcile_cut(
+  model: Model,
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model {
+  // Equal metadata still advances transport credit, but must not continually
+  // restart animation or invalidate a transcript which has not changed.
+  case model.captured {
+    Some(#(previous, _))
+      if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
+    -> Model(..model, captured: Some(#(cut, view)))
+    Some(_) | None -> {
+      let updated = apply_cut(model, cut, view)
+      let disappeared =
+        model.approvals
+        |> list.filter(fn(old) {
+          old.status == approval.Pending
+          && !list.any(updated.approvals, fn(new) { new.id == old.id })
+        })
+        |> list.map(fn(record) { record.id })
+      let updated = case list.take(disappeared, 8) {
+        [] -> updated
+        ids -> request_decisions(updated, ids)
+      }
+      case list.drop(disappeared, 8) {
+        [] -> updated
+        _ ->
+          append_system(
+            updated,
+            "Additional resolutions are not loaded; use /approvals <id>.",
+          )
+      }
+    }
+  }
+}
+
+fn request_decisions(model: Model, ids: List(String)) -> Model {
+  case model.peer {
+    // A replay performs no outbound effect and invents no line the live
+    // client was not shown. Whatever the live client learned about these
+    // decisions is already in the recording; a "conversation is not
+    // attached" error here would be a line no live session ever produced.
+    Replaying -> model
+
+    Attached(_) | Disconnected | Preview ->
+      case model.channel {
+        None -> append_error(model, "conversation is not attached")
+        Some(channel) ->
+          case session_channel.lookup(channel, ids) {
+            Ok(channel) -> Model(..model, channel: Some(channel))
+            Error(reason) ->
+              append_error(model, "decision lookup not sent: " <> reason)
+          }
+      }
+  }
+}
+
+fn apply_cut(
+  model: Model,
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+) -> Model {
+  let reviews = case approval.records(view.cells) {
+    Ok(current) -> approval.project(model.approvals, current)
+    Error(_) -> []
+  }
+  render_cut(model, cut, view, reviews)
+}
+
+fn render_cut(
+  model: Model,
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  reviews: List(approval.Review),
+) -> Model {
+  let active = case is_known_strand(view.strands, model.active_strand) {
+    True -> model.active_strand
+    False ->
+      case view.strands {
+        [first, ..] -> first.id
+        [] -> "main"
+      }
+  }
+  let branch = snapshot_view.branch(view, cut.window, active)
+  let current_model = case dict.get(view.configurations, active) {
+    Ok(config) -> config.configuration.model.model_id
+    Error(Nil) -> "unconfigured"
+  }
+  let role = case cut.attachment.role {
+    snapshot.Owner -> "owner"
+    snapshot.Operator -> "operator"
+    snapshot.Observer -> "observer · read-only"
+  }
+  let boundary = case branch.unloaded {
+    None -> "Recent window; older history may be unloaded."
+    Some(id) -> "History not loaded beyond " <> id <> "."
+  }
+  let streams = case view.preview {
+    None -> []
+    Some(preview) ->
+      case dict.get(view.operations, active) {
+        Ok(operation) if operation == preview.operation -> [
+          Stream(active, "text", [preview.text]),
+        ]
+        Ok(_) | Error(Nil) -> []
+      }
+  }
+  Model(
+    ..model,
+    captured: Some(#(cut, view)),
+    approvals: reviews,
+    active_strand: active,
+    strands: view.strands,
+    agent_summary: agents.summary(view.strands),
+    records: branch.records,
+    usage: view.usage,
+    current_model: current_model,
+    streams: streams,
+    submitting: None,
+    record_cache_valid: False,
+    notice: cut.attachment.origin.name
+      <> " · "
+      <> role
+      <> " · "
+      <> int.to_string(list.length(view.peers))
+      <> " present",
+    transcript: [
+      Line(System, boundary),
+      Line(
+        System,
+        "Attached as: "
+          <> cut.attachment.origin.name
+          <> " · "
+          <> role
+          <> " · "
+          <> int.to_string(list.length(view.peers))
+          <> " present",
+      ),
+      ..list.append(
+        configuration_lines(view, active),
+        list.append(
+          unconfirmed_lines(model.unconfirmed),
+          approval_lines(reviews),
+        ),
+      )
+    ],
+  )
+  |> invalidate_transcript
+  // A completed cut can make the operation idle before the next animation
+  // tick. Invalidate the painted frame too; rebuilding transcript rows alone
+  // leaves the old buffer current until an unrelated key or resize arrives.
+  |> invalidate_frame
+  |> mark_activity
+}
+
+fn configuration_lines(view: snapshot_view.View, active: String) {
+  let configuration = case dict.get(view.configurations, active) {
+    Ok(config) -> [
+      Line(
+        System,
+        "Strand configuration: "
+          <> config.configuration.model.model_id
+          <> " · effort "
+          <> thinking_name(config.configuration.thinking_level)
+          <> changed_by(config.origin),
+      ),
+    ]
+    Error(Nil) -> []
+  }
+  [
+    Line(
+      System,
+      "Shared settings: "
+        <> view.settings.queue_mode
+        <> " · "
+        <> view.settings.tool_execution
+        <> changed_by(view.settings.origin),
+    ),
+    ..configuration
+  ]
+}
+
+fn changed_by(author: Option(message.Origin)) {
+  case author {
+    Some(author) -> " · changed by " <> author.name
+    None -> ""
+  }
+}
+
+fn thinking_name(level: machine_strand.ThinkingLevel) {
+  case level {
+    machine_strand.ThinkingOff -> "off"
+    machine_strand.ThinkingMinimal -> "minimal"
+    machine_strand.ThinkingLow -> "low"
+    machine_strand.ThinkingMedium -> "medium"
+    machine_strand.ThinkingHigh -> "high"
+    machine_strand.ThinkingXHigh -> "xhigh"
+    machine_strand.ThinkingMax -> "max"
+  }
+}
+
+fn unconfirmed_lines(unconfirmed: Option(UnconfirmedSubmission)) {
+  case unconfirmed {
+    None -> []
+    Some(last) -> [
+      Line(
+        System,
+        "Last unconfirmed submission: session "
+          <> last.session
+          <> " · "
+          <> last.command
+          <> " #"
+          <> int.to_string(last.request_id)
+          <> "; not retried. Earlier unknown outcomes may remain.",
+      ),
+    ]
+  }
+}
+
+fn inspect_looked_up(model: Model, records, missing) {
+  case model.inspecting_approval {
+    Some(id) ->
+      case list.find(records, fn(record: approval.Review) { record.id == id }) {
+        Ok(record) ->
+          Model(
+            ..model,
+            overlay: ApprovalInspector(approval_panel.new(record)),
+            inspecting_approval: None,
+          )
+        Error(Nil) ->
+          case list.contains(missing, id) {
+            True -> Model(..model, inspecting_approval: None)
+            False -> model
+          }
+      }
+    None -> model
+  }
+}
+
+fn approval_lines(reviews: List(approval.Review)) {
+  let lines =
+    reviews
+    |> list.take(8)
+    |> list.map(fn(record) {
+      let state = case record.status {
+        approval.Pending -> "pending"
+        approval.Approved -> "approved"
+        approval.Rejected -> "rejected"
+        approval.Consumed -> "consumed"
+      }
+      let author = case record.origin {
+        Some(origin) -> " · " <> origin.name
+        None -> ""
+      }
+      Line(
+        System,
+        "Approval "
+          <> record.id
+          <> " · "
+          <> state
+          <> author
+          <> " · "
+          <> string.slice(record.preview, 0, 256),
+      )
+    })
+  case list.drop(reviews, 8) {
+    [] -> lines
+    _ ->
+      list.append(lines, [
+        Line(
+          System,
+          "More decisions are captured; /approvals <id> loads an exact decision.",
+        ),
+      ])
+  }
+}
+
+fn decide(
+  model: Model,
+  id: String,
+  encode: fn(Int, approval.Review) -> Result(String, String),
+) -> Model {
+  case list.find(model.approvals, fn(record) { record.id == id }) {
+    Error(Nil) ->
+      append_error(
+        model,
+        "decision is not displayed; load /approvals " <> id <> " first",
+      )
+    Ok(record) ->
+      case encode(model.next_id, record) {
+        Error(reason) -> append_error(model, reason)
+        Ok(frame) -> send_frame(model, frame)
+      }
   }
 }
 
@@ -2481,7 +3463,7 @@ fn adopt_session(
 ) -> Model {
   case model.peer {
     Attached(socket: previous) -> connection.close(previous)
-    Preview | Replaying -> Nil
+    Preview | Replaying | Disconnected -> Nil
   }
 
   // Frames the old socket already delivered would otherwise sit unread in
@@ -2530,19 +3512,64 @@ fn adopt_session(
 }
 
 fn drain_connection(model: Model, remaining: Int) -> Model {
-  case remaining <= 0, connection.receive(model.inbox) {
-    True, _ | _, Error(Nil) -> model
-    False, Ok(message) ->
-      drain_connection(handle_connection_message(model, message), remaining - 1)
+  // The budget is checked before receiving: an eager second case subject
+  // would remove and discard the first message belonging to the next batch.
+  case remaining <= 0 {
+    True -> model
+    False ->
+      case connection.receive(model.inbox) {
+        Error(Nil) -> model
+        Ok(message) ->
+          drain_connection(
+            handle_connection_message(model, message),
+            remaining - 1,
+          )
+      }
   }
+}
+
+/// Applies an already selected socket message through the shipped reducer.
+///
+/// A driver calls this before running later ticks, rather than requeueing into
+/// a concurrently written inbox and potentially placing newer traffic first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.accept_connection_message(model, incoming)
+/// ```
+@internal
+pub fn accept_connection_message(
+  model: Model,
+  incoming: connection.Message,
+) -> Model {
+  handle_connection_message(model, incoming)
 }
 
 fn handle_connection_message(
   model: Model,
   incoming: connection.Message,
 ) -> Model {
-  recording.note_message(model.recorder, incoming)
+  case model.channel {
+    Some(channel) -> {
+      let #(channel, updates) = session_channel.receive(channel, incoming)
+      list.fold(
+        updates,
+        Model(..model, channel: Some(channel)),
+        apply_channel_update,
+      )
+    }
+    None -> {
+      recording.note_message(model.recorder, incoming)
+      handle_presentation_message(model, incoming)
+    }
+  }
+}
 
+fn handle_presentation_message(
+  model: Model,
+  incoming: connection.Message,
+) -> Model {
   case incoming {
     connection.Connected ->
       Model(..model, notice: "connected")
@@ -2602,6 +3629,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         NoOverlay -> NoOverlay
         AgentInspector(selected) -> AgentInspector(selected)
         SessionSelector(selector) -> SessionSelector(selector)
+        DaemonSelector(selector) -> DaemonSelector(selector)
+        ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
       Model(
         ..model,
@@ -2700,7 +3729,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         // nothing anyway; a long one would report how fast the replay
         // ran. Declining outright is the same rule that stops a replay
         // echoing a prompt.
-        Replaying, _ -> model.output_rate_tps
+        Replaying, _ | Disconnected, _ -> model.output_rate_tps
 
         Attached(..), Some(started) | Preview, Some(started) ->
           output_rate(settled.output, model.monotonic_time_ms() - started)
@@ -2923,13 +3952,16 @@ fn message_lines(
   details_expanded: Bool,
 ) -> List(Line) {
   case value {
-    message.UserMessage(content:, ..) -> [
+    message.UserMessage(content:, origin:, ..) -> [
       Line(
         User,
-        content
+        user_author_prefix(origin)
+          <> {
+          content
           |> list.map(user_block_text)
           |> string.join("\n")
-          |> composer.transcript_text(details_expanded),
+          |> composer.transcript_text(details_expanded)
+        },
       ),
     ]
     message.AssistantMessage(content:, error_message:, ..) -> {
@@ -2945,6 +3977,13 @@ fn message_lines(
     message.CustomMessage(schema:, payload:) -> [
       Line(System, schema <> " · " <> json.to_string(payload)),
     ]
+  }
+}
+
+fn user_author_prefix(origin: Option(message.Origin)) -> String {
+  case origin {
+    None -> ""
+    Some(author) -> text_hygiene.single_line(author.name) <> ":\n"
   }
 }
 
@@ -3483,6 +4522,13 @@ fn update_key(key: keys.Key, model: Model) -> Model {
         AgentInspector(selected) -> update_agent_inspector(key, model, selected)
         SessionSelector(selector) ->
           update_session_selector(key, model, selector)
+        DaemonSelector(selector) -> update_daemon_selector(key, model, selector)
+        ApprovalInspector(panel) ->
+          case approval_panel.update(key, panel) {
+            approval_panel.Close -> Model(..model, overlay: NoOverlay)
+            approval_panel.Continue(next) ->
+              Model(..model, overlay: ApprovalInspector(next))
+          }
         NoOverlay -> update_main_key(key, model)
       }
   }
@@ -3503,6 +4549,24 @@ fn update_session_selector(
         notice: "session selection cancelled",
       )
     sessions.Choose(choice) -> begin_session_switch(model, choice)
+  }
+}
+
+fn update_daemon_selector(
+  key: keys.Key,
+  model: Model,
+  selector: session_selector.State,
+) -> Model {
+  case session_selector.update(key, selector) {
+    session_selector.Continue(next) ->
+      Model(..model, overlay: DaemonSelector(next))
+    session_selector.Close ->
+      Model(..model, overlay: NoOverlay, notice: "session selection cancelled")
+    session_selector.Choose(row) -> begin_open(model, row.session_id)
+    session_selector.NewSession -> create_session(model)
+    session_selector.NextPage(after, revision) ->
+      load_catalogue(model, after, Some(revision))
+    session_selector.FirstPage -> load_catalogue(model, "", None)
   }
 }
 
@@ -3745,6 +4809,42 @@ fn update_key_over_selection(key: keys.Key, model: Model) -> Model {
   }
 }
 
+// Escape owns cancellation before a queued final reply can send the intent.
+// Other input first observes bounded ready traffic, then the current lock.
+fn update_ready_key(key: keys.Key, model: Model) -> Model {
+  case model.pending_submission, key {
+    Some(_), keys.Escape -> cancel_pending(model, "cancelled by Escape")
+    Some(_), keys.Ctrl("c") -> quit(cancel_pending(model, "terminal closed"))
+    _, _ -> {
+      let model = drain_connection(model, 64)
+      case model.pending_submission, key {
+        None, _ -> update_key_over_selection(key, model)
+        Some(_), keys.PageUp -> scroll_transcript(model, True, 10)
+        Some(_), keys.PageDown -> scroll_transcript(model, False, 10)
+        Some(_), _ -> waiting_notice(model)
+      }
+    }
+  }
+}
+
+fn waiting_notice(model: Model) -> Model {
+  Model(..model, notice: "Waiting to send · draft locked · Esc cancels")
+}
+
+fn cancel_pending(model: Model, reason: String) -> Model {
+  case model.channel {
+    None -> Model(..model, pending_submission: None)
+    Some(channel) -> {
+      let #(channel, updates) = session_channel.cancel_unsent(channel, reason)
+      list.fold(
+        updates,
+        Model(..model, channel: Some(channel)),
+        apply_channel_update,
+      )
+    }
+  }
+}
+
 fn clear_selection(model: Model) -> Model {
   Model(..model, selection: None)
 }
@@ -3928,6 +5028,82 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
 }
 
 fn submit(model: Model) -> Model {
+  case mutation_refusal(model, command.parse(text_area.value(model.input))) {
+    Some(reason) -> append_error(model, reason)
+    None -> {
+      // This marker scopes the synchronous encoder call and, only if queued,
+      // the later send. The draft itself never leaves its existing fields.
+      let prepared = case
+        mutating_submission(model, command.parse(text_area.value(model.input))),
+        model.peer
+      {
+        True, Attached(_) ->
+          Model(..model, pending_submission: Some(ComposerSubmission))
+        _, _ -> model
+      }
+      let after = submit_admitted(prepared)
+      case after.channel {
+        Some(channel) ->
+          case session_channel.has_unsent(channel) {
+            True -> after
+            False -> Model(..after, pending_submission: None)
+          }
+        None -> Model(..after, pending_submission: None)
+      }
+    }
+  }
+}
+
+fn mutation_refusal(model: Model, command: command.Command) -> Option(String) {
+  let mutates = mutating_submission(model, command)
+  case mutates, model.peer, model.channel {
+    False, _, _ -> None
+    True, Disconnected, _ -> Some("no conversation is attached; draft retained")
+    True, Attached(_), Some(channel) ->
+      case session_channel.mutation_available(channel) {
+        True -> None
+        False ->
+          Some(
+            "attachment is read-only or its command slot is busy; draft retained",
+          )
+      }
+    True, Attached(_), None ->
+      Some("conversation has not synchronized; draft retained")
+    True, Preview, _ | True, Replaying, _ -> None
+  }
+}
+
+fn mutating_submission(model: Model, command: command.Command) -> Bool {
+  case command {
+    command.Prompt(_)
+    | command.Model(_)
+    | command.Unschedule(..)
+    | command.Fork(_)
+    | command.Effort(_)
+    | command.Compact
+    | command.Abort
+    | command.Steer(_)
+    | command.Queue(_) -> True
+    command.Approve(_) | command.Deny(_) -> True
+    command.Empty -> model.attachments != []
+    command.Help
+    | command.Models
+    | command.Strands
+    | command.Schedules
+    | command.Agents
+    | command.Sessions
+    | command.Approvals(_)
+    | command.Notes
+    | command.Details
+    | command.Strand(_)
+    | command.Clear
+    | command.Quit
+    | command.Unknown(_)
+    | command.MissingArgument(_) -> False
+  }
+}
+
+fn submit_admitted(model: Model) -> Model {
   case composer.has_images(model.attachments) {
     True -> submit_with_images(model)
     False -> submit_text(model)
@@ -3935,6 +5111,22 @@ fn submit(model: Model) -> Model {
 }
 
 fn open_session_selector(model: Model) -> Model {
+  case model.daemon_host {
+    Some(_) -> load_catalogue(model, "", None)
+    None ->
+      append_error(model, "daemon control is unavailable; reconnect explicitly")
+  }
+}
+
+/// Historical host-fixture selector; live terminals always use daemon control.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.open_legacy_session_selector(fixture)
+/// ```
+@internal
+pub fn open_legacy_session_selector(model: Model) -> Model {
   case model.peer {
     // The selector is built from the local launcher catalogue, which a
     // recording does not carry and a replaying machine need not have. It
@@ -3942,7 +5134,7 @@ fn open_session_selector(model: Model) -> Model {
     // the live client never showed.
     Replaying -> Model(..model, notice: "/sessions is not replayed")
 
-    Attached(..) | Preview ->
+    Attached(..) | Preview | Disconnected ->
       case model.local_options {
         None ->
           append_error(
@@ -3983,18 +5175,22 @@ fn begin_session_switch(
   model: Model,
   choice: bootstrap.SessionChoice,
 ) -> Model {
+  let model = cancel_pending(model, "target change from " <> model.session)
   case model.peer, model.local_options {
     // Unreachable: a replay never opens the selector this arrives from.
     // Enumerated rather than swept up, so a future path into it starts no
     // daemon and opens no socket.
     Replaying, _ -> Model(..model, overlay: NoOverlay)
 
-    Attached(..), None | Preview, None ->
+    Attached(..), None | Preview, None | Disconnected, None ->
       append_error(
         Model(..model, overlay: NoOverlay),
         "/sessions is available only for local attachments",
       )
-    Attached(..), Some(options) | Preview, Some(options) ->
+    Attached(..), Some(options)
+    | Preview, Some(options)
+    | Disconnected, Some(options)
+    ->
       Model(
         ..model,
         overlay: NoOverlay,
@@ -4008,16 +5204,15 @@ fn begin_session_switch(
 fn submit_text(model: Model) -> Model {
   let input = text_area.value(model.input)
   let expanded = composer.expand(input, model.attachments)
-  let remembered = remember_submission(model, input)
-  let cleared =
-    Model(
-      ..remembered,
-      input: text_area.state_new(),
-      history_index: 0,
-      history_draft: "",
-    )
-  let prompt_cleared =
-    Model(..cleared, attachments: [], submission_mode: SteerNow)
+  let cleared = case model.pending_submission {
+    Some(ComposerSubmission) -> model
+    Some(OverlaySubmission) | None -> clear_composer_text(model)
+  }
+  let prompt_cleared = case model.pending_submission {
+    Some(ComposerSubmission) -> cleared
+    Some(OverlaySubmission) | None ->
+      Model(..cleared, attachments: [], submission_mode: SteerNow)
+  }
   case command.parse(input) {
     command.Empty ->
       case model.attachments {
@@ -4094,6 +5289,14 @@ fn submit_text(model: Model) -> Model {
       )
     }
     command.Sessions -> open_session_selector(cleared)
+    command.Approvals(None) ->
+      list.fold(approval_lines(cleared.approvals), cleared, fn(model, line) {
+        append_system(model, line.text)
+      })
+    command.Approvals(Some(id)) ->
+      request_decisions(Model(..cleared, inspecting_approval: Some(id)), [id])
+    command.Approve(id) -> decide(cleared, id, approval.approve)
+    command.Deny(id) -> decide(cleared, id, approval.deny)
     command.Notes ->
       Model(
         ..cleared,
@@ -4171,6 +5374,9 @@ fn submit_with_images(model: Model) -> Model {
         | command.Unschedule(..)
         | command.Agents
         | command.Sessions
+        | command.Approvals(_)
+        | command.Approve(_)
+        | command.Deny(_)
         | command.Notes
         | command.Details
         | command.Strand(_)
@@ -4196,16 +5402,10 @@ fn send_image_prompt(model: Model, input: String) -> Model {
   let expanded = composer.expand(input, model.attachments)
   let images = composer.images(model.attachments)
   let content = image_prompt_content(expanded, images)
-  let remembered = remember_submission(model, input)
-  let cleared =
-    Model(
-      ..remembered,
-      input: text_area.state_new(),
-      attachments: [],
-      history_index: 0,
-      history_draft: "",
-      submission_mode: SteerNow,
-    )
+  let cleared = case model.pending_submission {
+    Some(ComposerSubmission) -> model
+    Some(OverlaySubmission) | None -> clear_composer(model)
+  }
   send_prompt_content(cleared, content, expanded, images)
 }
 
@@ -4255,6 +5455,7 @@ fn send_prompt_content(
     // A replay stops exactly where the live client's local work stopped.
     // The turn it produced is in the recording and arrives as an entry.
     Replaying -> sent
+    Disconnected -> append_error(model, "no conversation is attached")
     Preview ->
       Model(
         ..model,
@@ -4434,6 +5635,7 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
     // The server echoed this turn back as an entry, and the recording has
     // it. Drawing a local copy here would show the operator's line twice.
     Replaying -> sent
+    Disconnected -> append_error(model, "no conversation is attached")
     Preview ->
       Model(
         ..model,
@@ -4587,6 +5789,88 @@ fn toggle_details(model: Model) -> Model {
 }
 
 fn send_frame(model: Model, frame: String) -> Model {
+  case model.channel {
+    Some(channel) -> {
+      let #(channel, disposition) = session_channel.submit(channel, frame)
+      apply_submission(Model(..model, channel: Some(channel)), disposition)
+    }
+    None -> send_preview_frame(model, frame)
+  }
+}
+
+fn apply_submission(
+  model: Model,
+  disposition: session_channel.Disposition,
+) -> Model {
+  case disposition {
+    session_channel.Waiting(_) -> {
+      let pending = case model.channel {
+        Some(channel) -> session_channel.has_unsent(channel)
+        None -> False
+      }
+      case pending {
+        True ->
+          waiting_notice(
+            Model(
+              ..model,
+              pending_submission: Some(option.unwrap(
+                model.pending_submission,
+                OverlaySubmission,
+              )),
+              submitting: None,
+            ),
+          )
+        False -> model
+      }
+    }
+    session_channel.Sent(command, _) -> {
+      let sent = case model.pending_submission {
+        Some(ComposerSubmission) -> clear_composer(model)
+        Some(OverlaySubmission) | None -> model
+      }
+      let submitting = case command, model.pending_submission {
+        "prompt", Some(ComposerSubmission) -> Some(model.active_strand)
+        _, _ -> sent.submitting
+      }
+      Model(
+        ..sent,
+        submitting: submitting,
+        pending_submission: None,
+        next_id: sent.next_id + 1,
+        notice: command <> " sent",
+      )
+      |> invalidate_frame
+    }
+    session_channel.DefinitelyNotSent(reason) -> {
+      let retained = case model.channel {
+        Some(channel) -> session_channel.has_unsent(channel)
+        None -> False
+      }
+      let model = case retained {
+        True -> model
+        False -> Model(..model, pending_submission: None, submitting: None)
+      }
+      append_error(model, "Not sent: " <> reason <> "; draft retained")
+    }
+  }
+}
+
+fn clear_composer(model: Model) -> Model {
+  let cleared = clear_composer_text(model)
+  Model(..cleared, attachments: [], submission_mode: SteerNow)
+}
+
+fn clear_composer_text(model: Model) -> Model {
+  let remembered = remember_submission(model, text_area.value(model.input))
+  Model(
+    ..remembered,
+    input: text_area.state_new(),
+    history_index: 0,
+    history_draft: "",
+  )
+}
+
+fn send_preview_frame(model: Model, frame: String) -> Model {
   case model.peer {
     Attached(socket:) -> {
       connection.send(socket, frame)
@@ -4594,26 +5878,38 @@ fn send_frame(model: Model, frame: String) -> Model {
     }
 
     // Neither peer has anywhere to write, and neither may pretend it does.
-    Preview | Replaying -> model
+    Preview | Replaying | Disconnected -> model
   }
 }
 
-// What a closed websocket leaves behind. A live attachment falls back to
-// the preview, which is the behaviour a disconnected client has always
-// had; a replay stays a replay, because a recorded close must not turn the
-// rest of the recording into fabricated preview echoes.
+// Live transport loss retains the transcript without becoming a design demo.
+// A replay remains a replay and cannot fabricate responses after recorded loss.
 fn after_close(peer: Peer) -> Peer {
   case peer {
-    Attached(..) | Preview -> Preview
+    Attached(..) | Disconnected -> Disconnected
+    Preview -> Preview
     Replaying -> Replaying
   }
 }
 
 fn quit(model: Model) -> Model {
   sessions.cancel(model.session_switch)
-  case model.peer {
-    Attached(socket:) -> connection.close(socket)
-    Preview | Replaying -> Nil
+  attachment.cancel(model.candidate)
+  case model.catalogue_request {
+    None -> Nil
+    Some(run) -> weft.cancel(run.cancel)
+  }
+  case model.daemon_host {
+    None -> Nil
+    Some(host) -> daemon.close(daemon_selection.control(host))
+  }
+  case model.channel {
+    Some(channel) -> session_channel.close(channel)
+    None ->
+      case model.peer {
+        Attached(socket:) -> connection.close(socket)
+        Preview | Replaying | Disconnected -> Nil
+      }
   }
   Model(..model, quit: True)
 }
@@ -4626,18 +5922,23 @@ fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
 }
 
 fn switch_active_strand(model: Model, strand: String) -> Model {
-  Model(
-    ..model,
-    overlay: NoOverlay,
-    active_strand: strand,
-    current_model: "loading…",
-    scroll_offset: 0,
-    record_cache_valid: False,
-    repaint_phase: !model.repaint_phase,
-    notice: "active strand: " <> strand,
-  )
-  |> invalidate_transcript
-  |> send_frame(protocol.config(model.next_id, strand))
+  let model = cancel_pending(model, "target change from " <> model.session)
+  let selected =
+    Model(
+      ..model,
+      overlay: NoOverlay,
+      active_strand: strand,
+      current_model: "loading…",
+      scroll_offset: 0,
+      record_cache_valid: False,
+      repaint_phase: !model.repaint_phase,
+      notice: "active strand: " <> strand,
+    )
+    |> invalidate_transcript
+  case model.captured {
+    Some(#(cut, view)) -> apply_cut(selected, cut, view)
+    None -> send_frame(selected, protocol.config(model.next_id, strand))
+  }
 }
 
 fn active_strand_index(strands: List(protocol.Strand), active: String) -> Int {

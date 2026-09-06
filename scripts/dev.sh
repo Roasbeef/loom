@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# One-command dev loop: build the helper and native TUI, start the server on
-# a scratch session (or $SESSION) in the background, wait for its startup
-# line, attach the TUI, and tear the server down when the TUI exits.
+# One-command dev loop: build the helper and native TUI, start an isolated
+# daemon, open its session picker, and stop that daemon when the TUI exits.
+# STATE_DIR can select persistent development state; otherwise each invocation
+# gets a fresh directory under build. SESSION is an optional saved session ID,
+# never a database path. Listing alone creates or resumes no session.
 # Interactive — run it from a real terminal.
 #
 #   scripts/dev.sh            # server + TUI, torn down together
-#   scripts/dev.sh --smoke    # non-interactive: boot, probe /healthz and
-#                             # the ws route, verify a clean SIGTERM close
+#   scripts/dev.sh --smoke    # boot, probe v2 control, verify clean SIGTERM
 #   scripts/dev.sh --shipment-smoke
 #                             # the same smoke through bin/loomd and
 #                             # Gleam's exported Erlang shipment
@@ -20,63 +21,75 @@ ROOT="$(pwd)"
 SMOKE=0
 SHIPMENT=0
 case "${1-}" in
+  "") ;;
   --smoke) SMOKE=1 ;;
   --shipment-smoke) SMOKE=1; SHIPMENT=1 ;;
+  *) echo "usage: scripts/dev.sh [--smoke | --shipment-smoke]" >&2; exit 2 ;;
 esac
+[ "$#" -le 1 ] || { echo "dev.sh: too many arguments" >&2; exit 2; }
 
 make binaries
-[ "$SHIPMENT" = 1 ] && make server-shipment
-
-SESSION="${SESSION:-$ROOT/build/dev/session.db}"
-WORKSPACE="${WORKSPACE:-$ROOT/build/dev/work}"
-mkdir -p "$(dirname "$SESSION")" "$WORKSPACE"
-
-# The server's stdout is the contract here: one startup line carrying the
-# session id, the bound port, and the token file. Everything below reads
-# that line rather than guessing.
-LOG="$(mktemp -t loom-dev-server.XXXXXX.log)"
 if [ "$SHIPMENT" = 1 ]; then
-  # loomd and the shipment entrypoint both exec their child, so this PID
-  # is the BEAM itself. Avoid setsid here because macOS does not ship it.
-  "$ROOT/bin/loomd" \
-    --session "$SESSION" --workspace "$WORKSPACE" \
-    --helper "$ROOT/bin/loom-exec" --best-effort >"$LOG" 2>&1 &
-  SERVER_PID=$!
-  SERVER_TARGET="$SERVER_PID"
+  make server-shipment
 else
-  # setsid puts the development server in its own process group: `gleam run`
-  # wraps the BEAM and does not forward signals, so teardown targets the group.
-  setsid bash -c "cd packages/client && exec gleam run -m client/serve -- \
-      --session '$SESSION' --workspace '$WORKSPACE' \
-      --helper '$ROOT/bin/loom-exec' --best-effort" >"$LOG" 2>&1 &
-  SERVER_PID=$!
-  SERVER_TARGET="-$SERVER_PID"
+  ( cd packages/client && gleam build --warnings-as-errors )
 fi
 
+mkdir -p "$ROOT/build"
+DEV_ROOT="$(mktemp -d "$ROOT/build/dev.XXXXXX")"
+STATE_DIR="${STATE_DIR:-$DEV_ROOT/state}"
+WORKSPACE="${WORKSPACE:-$DEV_ROOT/work}"
+mkdir -p "$WORKSPACE"
+WORKSPACE="$(cd "$WORKSPACE" && pwd -P)"
+case "$STATE_DIR" in
+  /*) ;;
+  *) STATE_DIR="$ROOT/$STATE_DIR" ;;
+esac
+
+# The log announces the selected port, never a per-session identity or token.
+# The interactive client authenticates through the private endpoint itself.
+# Smoke supplies an offline configuration even if the developer has providers
+# configured; its empty catalogue must not trigger any session assembly.
+LOG="$DEV_ROOT/daemon.log"
+DAEMON_ARGS=(--state-dir "$STATE_DIR" --bind 127.0.0.1:0
+  --helper "$ROOT/bin/loom-exec" --best-effort)
+CONFIG="${CONFIG:-}"
+if [ "$SMOKE" = 1 ]; then CONFIG="$ROOT/scripts/release-smoke.toml"; fi
+if [ -n "$CONFIG" ]; then
+  case "$CONFIG" in
+    /*) ;;
+    *) CONFIG="$ROOT/$CONFIG" ;;
+  esac
+  DAEMON_ARGS+=(--config "$CONFIG")
+fi
+
+if [ "$SHIPMENT" = 1 ]; then
+  "$ROOT/bin/loomd" "${DAEMON_ARGS[@]}" >"$LOG" 2>&1 &
+else
+  # Use the generated Gleam runner after compiling, just as the shipment does.
+  # Both routes exec BEAM directly, so the captured PID owns the daemon and
+  # SIGTERM reaches its handler without a gleam wrapper or platform setsid.
+  erl -pa "$ROOT"/packages/client/build/dev/erlang/*/ebin \
+    -noshell -eval 'client@@main:run(client)' \
+    -extra "${DAEMON_ARGS[@]}" >"$LOG" 2>&1 &
+fi
+SERVER_PID=$!
+
 teardown() {
-  kill -TERM -- "$SERVER_TARGET" 2>/dev/null || true
-  # Give the server's SIGTERM handler time to close the runtime and
-  # release the session lease before we stop waiting on it. The witness is
-  # the `server.stopped` structured log line, emitted once the listener is
-  # closed and the lease released; it replaced a plain `loomd:
-  # closed` println when the server's logging became structured (5abe62f),
-  # and this script kept grepping for a line nothing printed any more.
+  kill -TERM "$SERVER_PID" 2>/dev/null || true
+
+  # The log supplies the aggregate drain verdict; wait supplies the original
+  # native exit status. Neither a stop request nor a timeout is clean teardown.
   CLOSED=0
   STOPPED=0
   for _ in $(seq 1 50); do
-    if grep -q '"event":"server.stopped"' "$LOG" 2>/dev/null; then
+    if grep -q '"event":"daemon.stopped"' "$LOG" 2>/dev/null; then
       CLOSED=1
     fi
-    if [ "$SHIPMENT" = 1 ]; then
-      SERVER_STATE="$(ps -o stat= -p "$SERVER_PID" 2>/dev/null || true)"
-      case "$SERVER_STATE" in
-        ""|Z*) STOPPED=1 ;;
-      esac
-    elif ! ps -ax -o pgid= -o stat= 2>/dev/null \
-      | awk -v group="$SERVER_PID" \
-        '$1 == group && $2 !~ /^Z/ { live = 1 } END { exit !live }'; then
-      STOPPED=1
-    fi
+    SERVER_STATE="$(ps -o stat= -p "$SERVER_PID" 2>/dev/null || true)"
+    case "$SERVER_STATE" in
+      ""|Z*) STOPPED=1 ;;
+    esac
     [ "$CLOSED" = 1 ] && [ "$STOPPED" = 1 ] && break
     sleep 0.2
   done
@@ -84,17 +97,17 @@ teardown() {
     # A broken SIGTERM path is precisely what this smoke protects. Bound the
     # reaping wait so that regression reports here instead of consuming the
     # job's outer timeout without an actionable failure.
-    kill -KILL -- "$SERVER_TARGET" 2>/dev/null || true
+    kill -KILL "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
     echo "dev.sh: the server did not stop within 10 seconds of SIGTERM:" >&2
-    cat "$LOG" >&2
+    tail -60 "$LOG" >&2
     return 1
   fi
   SERVER_STATUS=0
   wait "$SERVER_PID" 2>/dev/null || SERVER_STATUS=$?
   if [ "$CLOSED" != 1 ] || [ "$SERVER_STATUS" != 0 ]; then
     echo "dev.sh: the server did not close cleanly (status $SERVER_STATUS):" >&2
-    cat "$LOG" >&2
+    tail -60 "$LOG" >&2
     return 1
   fi
 }
@@ -106,50 +119,56 @@ for _ in $(seq 1 300); do
   [ -n "$LINE" ] && break
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     echo "dev.sh: the server died during startup:" >&2
-    cat "$LOG" >&2
+    tail -60 "$LOG" >&2
     exit 1
   fi
   sleep 0.2
 done
 if [ -z "$LINE" ]; then
   echo "dev.sh: the server never announced its port:" >&2
-  cat "$LOG" >&2
+  tail -60 "$LOG" >&2
   exit 1
 fi
 
-PORT="$(printf '%s\n' "$LINE" | sed -n 's|.*ws://[^:]*:\([0-9]*\)/v1/ws.*|\1|p')"
-SESSION_ID="$(printf '%s\n' "$LINE" | sed -n 's|^loomd: session \([^ ]*\) .*|\1|p')"
-TOKEN_FILE="$(printf '%s\n' "$LINE" | sed -n 's|.*(token file \(.*\))$|\1|p')"
-echo "dev.sh: server up — session $SESSION_ID, port $PORT, log $LOG"
+PORT="$(printf '%s\n' "$LINE" | sed -n 's|.*ws://[^:]*:\([0-9]*\)/v2/control.*|\1|p')"
+[ -n "$PORT" ] || { echo "dev.sh: invalid daemon startup address" >&2; exit 1; }
+echo "dev.sh: daemon up — state $STATE_DIR, port $PORT, log $LOG"
 
 if [ "$SMOKE" = 1 ]; then
-  # Boot proof without a terminal: health answers, the ws route is live
-  # (an unauthenticated upgrade is turned away, not absent), and SIGTERM
-  # produces the clean close line.
-  curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null
-  WS_STATUS="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/ws")"
+  # Boot proof without a terminal: the legacy route is absent, control
+  # requires authentication, and catalogue restoration starts no runtime.
+  # Authenticated hello/session scenarios belong to the fuller release probe.
+  HEALTH_STATUS="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null \
+    -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")"
+  [ "$HEALTH_STATUS" = 404 ] || {
+    echo "dev.sh: expected removed healthz route to return 404, got $HEALTH_STATUS" >&2; exit 1; }
+  WS_STATUS="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null \
+    -w '%{http_code}' "http://127.0.0.1:$PORT/v2/control")"
   if [ "$WS_STATUS" != 401 ]; then
     echo "dev.sh: expected 401 from an unauthenticated ws upgrade, got $WS_STATUS" >&2
     exit 1
+  fi
+  [ -s "$STATE_DIR/catalogue.db" ] || {
+    echo "dev.sh: daemon created no catalogue" >&2; exit 1; }
+  if grep -q '"event":"server.tools"' "$LOG"; then
+    echo "dev.sh: daemon boot unexpectedly assembled a session" >&2; exit 1
   fi
   if ! teardown; then
     trap - EXIT
     exit 1
   fi
   trap - EXIT
-  if ! grep -q '"event":"server.stopped"' "$LOG"; then
-    echo "dev.sh: the server did not close cleanly on SIGTERM:" >&2
-    cat "$LOG" >&2
-    exit 1
-  fi
   if [ "$SHIPMENT" = 1 ]; then
-    echo "dev.sh: shipment smoke ok — healthz 200, ws 401 without a token, clean close"
+    echo "dev.sh: shipment smoke ok — legacy healthz 404, control 401, no session opens, clean close"
   else
-    echo "dev.sh: smoke ok — healthz 200, ws 401 without a token, clean close"
+    echo "dev.sh: smoke ok — legacy healthz 404, control 401, no session opens, clean close"
   fi
   exit 0
 fi
 
-# Hand the terminal to the TUI; the EXIT trap stops the server afterwards.
-./bin/loom --addr "ws://127.0.0.1:$PORT/v1/ws" \
-  --session "$SESSION_ID" --token "$(cat "$TOKEN_FILE")"
+# The terminal discovers and authenticates this daemon through its endpoint.
+# Enter/New explicitly admits a session; opening the picker causes no effects.
+TUI_ARGS=(--state-dir "$STATE_DIR" --workspace "$WORKSPACE")
+if [ -n "$CONFIG" ]; then TUI_ARGS+=(--config "$CONFIG"); fi
+if [ -n "${SESSION:-}" ]; then TUI_ARGS+=(--session "$SESSION"); fi
+./bin/loom "${TUI_ARGS[@]}"

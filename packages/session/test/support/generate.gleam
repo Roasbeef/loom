@@ -105,6 +105,7 @@ pub fn user_text(text: String) -> AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: n_of_text(text),
+    origin: None,
   )
 }
 

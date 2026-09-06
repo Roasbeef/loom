@@ -92,7 +92,8 @@ Ranked by LOC-reduction-per-risk:
    too.
 
 2. **`tui/connection.start_safely_within` → `weft` single-task run**
-   (`connection.gleam:142-175`, ~35 lines). Hand-rolled
+   (now implemented by `host/websocket.start_safely_within`, with
+   `tui/connection` delegating). Hand-rolled
    spawn-unlinked / monitor / race-reply-against-DOWN / kill-on-timeout —
    exactly `weft.new([task]) |> weft.deadline(ms) |> weft.start` with the
    outcome vocabulary (`Completed`/`Crashed`/deadline-`Abandoned`) the

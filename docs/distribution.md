@@ -4,9 +4,10 @@ How Loom is packaged for somebody who wants to *run* it rather than work
 on it, what that costs, and why the sandbox helper ships as a file beside
 the server rather than inside it.
 
-Everything below was measured on the Linux x86_64 CI runner with Gleam 1.18.1,
+The historical size measurements below were taken on the Linux x86_64 CI runner with Gleam 1.18.1,
 Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.24.7 by running the targets it
-describes.
+describes. They are not fresh measurements of the single-daemon implementation.
+Current verification and remaining release gates are recorded in [next.md](next.md).
 
 ## The problem
 
@@ -37,10 +38,27 @@ allowed the network; `DIST_CODEMODE=0` drops that requirement and the
 bundle with it). **To run what comes out**: nothing. `make release-smoke`
 proves that second claim rather than asserting it — it boots the built
 release with `env -i PATH=/usr/bin:/bin`, so neither `erl` nor `gleam` is
-reachable, and requires a `/healthz` 200, a 401 from an unauthenticated
-websocket upgrade, a written session file, the graceful-shutdown log line
-on SIGTERM, and the four code-mode and helper checks the last section
-describes.
+reachable, and requires authenticated v2 readiness, a 401 from an unauthenticated
+v2 control connection, a written catalogue with no resident sessions, explicit
+admission of two sessions, and confirmed daemon shutdown on SIGTERM. It also
+checks the code-mode and helper behavior described below. The target has an
+independent 180-second process deadline and requires Python for that watchdog;
+the downloaded daemon does not require Python.
+
+One dependency in that closure is not the one hex publishes. The websocket
+listener needs a per-connection frame ceiling, which mist and gramps do not
+expose upstream, so the client shipment resolves both from forks:
+`mist` at `Roasbeef/mist` revision `65b29375`, and `gramps` at
+`Roasbeef/gramps` revision `a37a8ae3`, pulled in transitively by the mist
+fork. The forked framing code is therefore inside the artifact people
+download, and reproducing a build needs both git remotes rather than only
+hex. [ADR-011](adr/011-bounded-websocket-forks.md) has the reasoning, the
+upstream pull requests, and the maintenance cost.
+
+The build places one compiled test probe in `build/release/smoke-support`,
+outside the distributed `loom` tree. The smoke runs that probe on the bundled
+emulator, using the server's existing WebSocket transport. It adds no test
+command to `loomd` and needs no host Erlang to drive control requests.
 
 ### What was rejected
 
@@ -404,9 +422,9 @@ code-mode execution pays that, on top of a jail spin-up, so the 4.3 MB
 stays; but the reason is a second of `erlc` per call, not "a fresh
 compile of the world", and it is worth stating the real number.
 
-For comparison, the retired client was a 16 MB stripped Go binary. The native
-client trades that self-contained process for a smaller BEAM shipment and an
-explicit OTP-on-the-client-host dependency.
+For comparison, the retired client was a 16 MB stripped Go binary. The slim
+client uses the host's OTP installation; the self-contained client carries its
+own runtime. Their sizes must be measured separately.
 
 ## Code mode ships in the release, and doubling the artifact is the cost
 
@@ -511,34 +529,38 @@ will build with.
 
 `make release-smoke` checks all of this on the built artifact rather than
 asserting it. Booted with `env -i PATH=/usr/bin:/bin`, the release must
-report the helper it found is the one beside it, must list `code_mode` in
-its `server.tools` line, must refuse `--helper /nonexistent/loom-exec`
-(so the flag still outranks the shipped helper), and must compile a clone
+resolve the helper beside itself when a session is admitted, must list
+`code_mode` in that session's `server.tools` line, and must refuse
+`--helper /nonexistent/loom-exec` through the same managed resolver. Helper
+resolution is lazy: the daemon does not validate session defaults merely by
+opening its catalogue. The smoke also attempts to compile a clone
 of the bundled seed in a network namespace with nothing but its own `bin`
-on `PATH`. A `DIST_CODEMODE=0` release is held to the mirror image: no
+on `PATH`; a host that refuses that namespace reports this build check as
+unverified, not passed. A `DIST_CODEMODE=0` release is held to the mirror image: no
 `code_mode`, and a stated reason.
 
 ## Memory distils on the release's own lifecycle
 
-A release ships the memory *consumer* and, since #149, the producer with
-it. There is nothing to install and no cron job to write: every ordinary
-boot starts a supervised worker that runs one distillation pass and then
-idles, so a repository's closed sessions and its remembered notes reach
-`loom-memory.digest` without a Gleam source checkout anywhere on the
-machine. `docs/architecture/memory.md` is the whole subsystem; what an
-operator needs from a release is six facts.
+A release ships both the memory consumer and producer. One daemon can serve
+many sessions, but memory maintenance belongs to their persisted domain, not
+to each session or to daemon startup. Catalogue restoration opens neither
+conversations nor domain resources. See [sessions](architecture/sessions.md)
+and [multiplayer](architecture/multiplayer.md) for domain ownership and access.
 
-**The cadence is one pass per session boot.** Not per turn, and not on a
-timer. A live session holds its own writer lease, so a pass can never
-read the session it runs inside; what it can read — the sessions closed
-since the last boot, and the notes written through `remember` — does not
-change while this server runs.
+**The cadence follows domain admission and confirmed session closure.** The
+first explicitly opened session starts the shared domain owner and its initial
+pass. A successfully closed session requests another pass. At most one pass
+runs at a time, with at most one coalesced follow-up; there is no periodic
+timer. Before retiring the last domain owner, shutdown waits for its current
+and already coalesced work. Source identities and paths come from current
+catalogue mappings, never a directory scan. Maintenance skips a source with a
+live writer lease; shared read-only history search has a separate contract.
 
-**The opt-out is a table in the same `loom.toml` as the catalogue:**
+**Maintenance uses the domain's captured owner configuration:**
 
 ```toml
 [memory]
-distill = "on-boot"      # or "off"; the default is "on-boot"
+distill = "on-boot"      # domain admission and closure cadence; or "off"
 distill_wall_ms = 600000 # how long one whole pass may take; also the ceiling
 ```
 
@@ -546,12 +568,11 @@ distill_wall_ms = 600000 # how long one whole pass may take; also the ceiling
 how long the memory session's writer lease lasts and nothing renews a
 lease but a commit — a pass that outlived it would fail at its next
 commit instead of being cut cleanly, so a larger value is refused at
-boot with that sentence. `distill = "off"` starts no worker at all, logs
-`memory.distill.off`,
-and leaves remembered notes accumulating for a `loom-distill` run by
-hand. An unknown key in the table refuses the boot rather than being
-ignored, because an opt-out that distilled anyway is the one failure
-nobody would see.
+domain admission with an error. `distill = "off"` starts no maintenance
+worker; it does not disable shared history search. Each session retains its
+own runtime configuration, even when it shares the domain's memory and index
+paths. A malformed maintenance configuration refuses domain admission rather
+than silently enabling maintenance.
 
 **The model cost is unchanged by shipping it:** one extraction request
 per eligible closed session plus one consolidation request, routed to
@@ -561,42 +582,39 @@ memory session's own ledger. A pass with nothing new to read dispatches
 **no** request at all, which is why a fresh install costs nothing until
 there is something to distil.
 
-**Retry is "the next boot".** A pass that fails or overruns
-`distill_wall_ms` moves no cursor and is not retried in this session;
-the next boot reads the same material again. The one cost of an
-interruption is that the memory lease it held is released only by its
-ten-minute TTL, so a boot inside that window logs `memory.distill.failed`
-naming the holder and distils nothing — a freshness cost, never a lost
-row, because the pipeline commits rows, then the head, then the sidecar.
+**Failure does not trigger an automatic retry.** A refused or expired pass
+retains any progress already committed and discards its already coalesced
+follow-up. A later authorized closure trigger or fresh domain admission can
+retry. Lost cleanup proof is different: the original owner remains blocked
+and consumes domain capacity. A timeout or closed port is not permission to
+open a replacement owner over the same files.
 
-**A new digest becomes visible at the next run start**, of any session on
-the repository, including later runs of the session whose own pass wrote
-it. It is injected as a fenced, attributed user message and never into
+**A new digest becomes visible at the next run start** for sessions sharing
+that memory domain, including later runs of the session whose closure
+triggered the pass. It is injected as a fenced, attributed user message and never into
 the pinned system prompt, so a changed digest costs a rolling tail write
 rather than a cache-head rewrite.
 
 **What ran is in the log**, under `memory.distill.started`,
 `memory.distill.completed` (with `sources`, `skipped`, `candidates`,
 `rows` and whether the digest was written, emptied or unchanged),
-`memory.distill.failed`, `memory.distill.expired` and
-`memory.distill.off`.
+`memory.distill.failed` and `memory.distill.expired`.
 
 `make release-smoke` holds the artifact to the first of those: booted
 with `env -i PATH=/usr/bin:/bin` in a directory of its own, the release
-must log `memory.distill.completed` before it is stopped, and that line
-must report the live session skipped. The claim is deliberately about
-the lifecycle rather than about a distillate — one session file, held by
-the server itself, means the pass reads nothing and asks no provider, so
-the assertion needs no API key and still fails for a missing worker, an
-unroutable catalogue or a pass that died.
+must first restore metadata without assembling a session. The test probe
+explicitly creates two empty sessions, confirms both become resident, and
+closes one while the other remains available. A domain pass must complete
+with zero candidates and rows before shutdown. Empty transcripts require no
+provider request; the test needs no API key and does not claim extraction
+quality. SIGTERM must then retire the remaining session and shared domain,
+with both `daemon.stopped` and a successful native process exit.
 
 ## What is still wanted from the source
 
 Nothing about the helper ladder: #101 is closed above, and the launcher
 is three lines shorter for it.
 
-One thing this does not do is bundle a second ERTS for `loom`. The client
-archive is a host-built Erlang shipment and requires compatible Erlang/OTP 29
-on the machine where the terminal runs. Making that client archive
-self-contained would be a separate packaging decision with its own size and
-platform matrix.
+The self-contained client already bundles its own ERTS; only the slim archive
+requires a host OTP installation. The remaining single-daemon release gates,
+including current platform coverage, are recorded in [next.md](next.md).

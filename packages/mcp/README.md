@@ -140,7 +140,7 @@ Follow one configured server through its whole life.
 ```mermaid
 sequenceDiagram
   autonumber
-  participant H as client/mcp.start
+  participant H as client/mcp layer
   participant C as mcp/client (the actor)
   participant T as mcp/transport<br/>PortTransport
   participant S as the server child
@@ -148,8 +148,10 @@ sequenceDiagram
   participant P as a jailed code-mode program
   participant R as client/mcp.routing
 
-  Note over H,S: spawn and handshake, bounded by handshake_timeout_ms
-  H->>C: start(PortTransport(spawn), options(client_version))
+  H->>C: prepare_owned(PortTransport(spawn), custodian)
+  Note over H,C: Publish the complete cleanup census before any native spawn
+  H->>C: connect(client, options(client_version))
+  Note over H,S: handshake bounded by handshake_timeout_ms
   C->>T: open(spawn)
   T->>S: argv as a list, env, cwd, with stderr inherited rather than merged
   T-->>C: Connection
@@ -157,7 +159,7 @@ sequenceDiagram
   S-->>C: InitializeResult(protocolVersion, capabilities)
   C->>C: negotiate against supported_versions()
   alt the revision is outside the closed list, or tools is not declared
-    C-->>H: VersionUnsupported / ToolsNotDeclared, actor torn down
+    C-->>H: VersionUnsupported / ToolsNotDeclared; retain cleanup custody
   else accepted
     C->>S: {"method":"notifications/initialized"} (a notification)
   end
@@ -184,18 +186,27 @@ sequenceDiagram
   R-->>P: cap_result — client/mcp.tool_result's pinned shape
 
   Note over H,S: shutdown, at session end
-  H->>C: stop(client)
-  C->>T: close — the child's stdin closes, then the child is killed
+  H->>C: shutdown(client, within)
+  C->>T: request single-process termination, keep port open
   C->>C: settle every in-flight call as Unavailable, latch dead
+  S-->>T: native exit_status
+  T-->>C: TransportClosed
+  C-->>H: explicit native-exit proof, then normal actor DOWN
 ```
 
-Three details in that trace are load-bearing. The handshake failing tears
-the actor down before `start` returns, so there is no half-started client
-to reason about. `Expire(id)` is armed per call inside the actor, so a late
-response for a forgotten id is dropped silently rather than answering a
-caller that has moved on. And `stop` is fire-and-forget and idempotent:
-calls made after it answer `Unavailable` in band, because a caller holding
-a tool-call verdict must not die of a wedged client.
+The cleanup census includes failed handshakes and listings, not just servers
+that supplied tools. A builder can therefore disappear without losing the
+already-published native owner. Parked clients can prove that they never
+opened a native resource. Active clients must observe their exact transport's
+native exit before typed shutdown succeeds; timeout or unexpected owner death
+returns uncertainty. The layer closes all clients under one shared deadline.
+
+`Expire(id)` remains per-call: late responses for forgotten ids are dropped.
+`stop` is still an idempotent, request-only API, and subsequent calls return
+`Unavailable`. It is not a replacement for typed `shutdown` or layer `close`.
+The unjailed MCP process remains operator-trusted. PID lookup and signaling
+are not atomic, and the native exit event proves neither descendant drain nor
+rollback of remote effects.
 
 ## MCP tools are modules, not tools
 

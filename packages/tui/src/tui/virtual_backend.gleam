@@ -47,10 +47,15 @@ import etui/buffer.{type Buffer}
 import etui/geometry.{type Position, type Rect}
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{type Option, None, Some}
+import tui/attempt
 import tui/connection
 
 /// One scripted moment in a run.
 pub type Step {
+  /// One typed local attempt fact, consumed by the terminal's replay lane.
+  Attempt(event: attempt.Event)
+
   /// An input event delivered to the application exactly as a terminal
   /// backend would deliver it. A `Resize` also changes the size
   /// `next_size` reports from then on, so the two accounts of the screen
@@ -78,6 +83,8 @@ pub type Script {
     /// enough to flush a deferred frame and drain the inbox; a run whose
     /// last step is a `Deliver` that triggers more work may want more.
     settle_ticks: Int,
+    /// Optional terminal-owned delivery lane for format-two recordings.
+    attempts: Option(Subject(attempt.Event)),
   )
 }
 
@@ -118,6 +125,7 @@ pub opaque type VirtualState {
     remaining: List(Step),
     inbox: Subject(connection.Message),
     settling: Int,
+    attempts: Option(Subject(attempt.Event)),
   )
 }
 
@@ -138,7 +146,18 @@ pub fn script(
   steps: List(Step),
   inbox: Subject(connection.Message),
 ) -> Script {
-  Script(size:, steps:, inbox:, settle_ticks: 2)
+  Script(size:, steps:, inbox:, settle_ticks: 2, attempts: None)
+}
+
+/// Installs the terminal-owned attempt-event inbox for version-two replay.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // virtual_backend.with_attempts(script, terminal_inbox)
+/// ```
+pub fn with_attempts(script: Script, inbox: Subject(attempt.Event)) -> Script {
+  Script(..script, attempts: Some(inbox))
 }
 
 /// The etui backend a script drives.
@@ -153,10 +172,16 @@ pub fn script(
 /// let terminal_backend = virtual_backend.new(script)
 /// ```
 pub fn new(script: Script) -> backend.Backend(VirtualState) {
-  let Script(size:, steps:, inbox:, settle_ticks:) = script
+  let Script(size:, steps:, inbox:, settle_ticks:, attempts:) = script
   backend.Backend(
     init: fn() {
-      Ok(VirtualState(size:, remaining: steps, inbox:, settling: settle_ticks))
+      Ok(VirtualState(
+        size:,
+        remaining: steps,
+        inbox:,
+        settling: settle_ticks,
+        attempts:,
+      ))
     },
     render: fn(state, _ops) { Ok(state) },
     poll: poll,
@@ -248,6 +273,24 @@ fn next_scripted(
       process.send(state.inbox, message)
       Ok(#(backend.Tick, VirtualState(..state, remaining: rest)))
     }
+
+    [Attempt(event), ..rest] ->
+      case state.attempts {
+        Some(inbox) -> {
+          process.send(inbox, event)
+          Ok(#(backend.Tick, VirtualState(..state, remaining: rest)))
+        }
+
+        // `Interrupted` is how a spent script ends a run, so answering with
+        // it here would report a scripting mistake as an ordinary finish.
+        // The script asked to deliver a candidate event to a run that never
+        // opened an attempts inbox, and that is worth naming.
+        None ->
+          Error(backend.IOError(
+            "the script delivers an attempt event but the run has no "
+            <> "attempts inbox",
+          ))
+      }
 
     [] -> settle(state)
   }

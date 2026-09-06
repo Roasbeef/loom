@@ -16,11 +16,11 @@
 ////   — are carried **verbatim** in `core/codec`'s vocabulary (pi field
 ////   names, camelCase), so this module encodes them with the codec the
 ////   harness already has.
-//// - Envelope decoding is strict: `v` must be `1`; `cmd`/`event` and
+//// - Envelope decoding is strict: `v` must be `2`; `cmd`/`event` and
 ////   the command `id` must be present. Unknown `cmd`/`event` *names*
 ////   are tolerated as data (`UnknownCommand` / `UnknownEvent`) so the
 ////   receiver can answer in-band; unknown *fields* inside known bodies
-////   are ignored (forward compatibility within v1).
+////   are ignored (forward compatibility within v2).
 //// - Everything here is pure and total: malformed input yields a
 ////   `ProtocolFault` value, never a crash.
 ////
@@ -44,8 +44,10 @@ import broker/policy.{type Grant}
 import core/codec
 import core/corruption.{type CorruptionReport}
 import core/entry.{type Entry}
+import core/ids
 import core/json.{type JsonValue}
 import core/message.{type Usage, type UserBlock, UserImage, UserText}
+import core/origin
 import gleam/bit_array
 import gleam/float
 import gleam/int
@@ -56,7 +58,7 @@ import gleam/string
 
 /// The one protocol version this gateway speaks. A different `v` on the
 /// wire is a refused frame, never tolerated drift.
-pub const version = 1
+pub const version = 2
 
 /// Why a frame was refused. Every constructor is data the receiver can
 /// answer in-band; nothing here crashes a connection process.
@@ -79,7 +81,7 @@ pub type ProtocolFault {
 /// a new strand cursor over the shared tree — because the protocol's
 /// reply (a `strands` snapshot of this session) can only name strands of
 /// the subscribed session; `session/repo.fork` into a separate session
-/// file is not reachable through v1 (see the module doc of
+/// file is not reachable through the conversation protocol (see the module doc of
 /// `client/gateway`).
 pub type ForkScope {
   /// Fork the source strand's branch.
@@ -99,6 +101,15 @@ pub type ForkScope {
 /// envelope whose `cmd` name this build does not know — the server
 /// answers it with `error` (`unsupported`).
 pub type Command {
+  /// Grants exactly one response from the current bounded transfer.
+  SnapshotNext(snapshot_id: String, index: Int)
+
+  /// Requests one ascending bounded history page, not the whole parent tree.
+  History(after_seq: Int, before_seq: Int)
+
+  /// Reads up to eight exact escalation cells, including resolution authors.
+  EscalationsGet(ids: List(String))
+
   /// Scope the connection to a session and start the event stream.
   Subscribe(session: String, from_seq: Option(Int))
 
@@ -128,10 +139,15 @@ pub type Command {
   /// the denial's wanted diff — an approval may narrow what was asked
   /// for, never widen it — and `action` is the empty string exactly
   /// when the record names no action.
-  Approve(escalation_id: String, grants: List(Grant), action: String)
+  Approve(
+    escalation_id: String,
+    grants: List(Grant),
+    action: String,
+    expected_seq: Int,
+  )
 
   /// Reject a pending escalation.
-  Deny(escalation_id: String)
+  Deny(escalation_id: String, expected_seq: Int)
 
   /// Fork a strand; the new strand appears in the `strands` reply.
   Fork(strand: String, scope: ForkScope, name: Option(String))
@@ -341,6 +357,10 @@ pub type EscalationRecord {
     preview: String,
     asked: Int,
     denial: Option(Denial),
+    /// Durable question revision displayed to the answering human.
+    seq: Int,
+    /// Historical author of the winning decision, if any.
+    origin: Option(message.Origin),
   )
 }
 
@@ -375,6 +395,24 @@ pub type DeltaKind {
 /// `UnknownEvent` keeps the raw body of an event name this build does
 /// not know, which a client ignores (tolerant reading).
 pub type Event {
+  /// Small transfer header; copied metadata arrives as credited fragments.
+  SnapshotBegin(body: JsonValue)
+
+  /// One bounded piece of a metadata or raw immutable entry record.
+  SnapshotChunk(body: JsonValue)
+
+  /// The fixed cut is complete within its explicitly advertised window.
+  SnapshotEnd(body: JsonValue)
+
+  /// A mutation was admitted or committed; this is not an execution result.
+  MutationOutcome(body: JsonValue)
+
+  /// Server-owned immutable attachment metadata, before snapshot transfer.
+  AttachmentEvent(metadata: JsonValue)
+
+  /// Complete transient roster; it never writes conversation entries.
+  PresenceEvent(peers: List(JsonValue))
+
   /// A snapshot reply.
   SnapshotEvent(snapshot: Snapshot)
 
@@ -489,6 +527,26 @@ pub fn encode_command(envelope: CommandEnvelope) -> String {
 
 fn command_body(command: Command) -> #(String, JsonValue) {
   case command {
+    EscalationsGet(ids) -> #(
+      "escalations_get",
+      json.Object([
+        #("ids", json.Array(list.map(ids, json.String))),
+      ]),
+    )
+    SnapshotNext(snapshot_id, index) -> #(
+      "snapshot_next",
+      json.Object([
+        #("snapshot_id", json.String(snapshot_id)),
+        #("index", json.Int(index)),
+      ]),
+    )
+    History(after_seq, before_seq) -> #(
+      "history",
+      json.Object([
+        #("after_seq", json.Int(after_seq)),
+        #("before_seq", json.Int(before_seq)),
+      ]),
+    )
     Subscribe(session:, from_seq:) -> #(
       "subscribe",
       object_of([
@@ -514,17 +572,21 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "abort",
       json.Object([#("strand", json.String(strand))]),
     )
-    Approve(escalation_id:, grants:, action:) -> #(
+    Approve(escalation_id:, grants:, action:, expected_seq:) -> #(
       "approve",
       json.Object([
         #("escalation_id", json.String(escalation_id)),
         #("grants", json.Array(list.map(grants, encode_grant))),
         #("action", json.String(action)),
+        #("expected_seq", json.Int(expected_seq)),
       ]),
     )
-    Deny(escalation_id:) -> #(
+    Deny(escalation_id:, expected_seq:) -> #(
       "deny",
-      json.Object([#("escalation_id", json.String(escalation_id))]),
+      json.Object([
+        #("escalation_id", json.String(escalation_id)),
+        #("expected_seq", json.Int(expected_seq)),
+      ]),
     )
     Fork(strand:, scope:, name:) -> #(
       "fork",
@@ -638,6 +700,39 @@ fn decode_command_body(
   body: JsonValue,
 ) -> Result(Command, String) {
   case cmd {
+    "escalations_get" -> {
+      use fields <- result.try(body_fields(body))
+      use values <- result.try(case list.key_find(fields, "ids") {
+        Ok(json.Array(values)) if values != [] -> Ok(values)
+        Ok(_) | Error(Nil) -> Error("ids must be a nonempty array")
+      })
+      use _ <- result.try(case list.drop(values, 8) == [] {
+        True -> Ok(Nil)
+        False -> Error("at most eight escalation IDs are allowed")
+      })
+      use ids <- result.try(
+        list.try_map(values, fn(value) {
+          case value {
+            json.String(id) if id != "" ->
+              transfer_identifier([#("id", json.String(id))], "id")
+            _ -> Error("escalation ID must be a nonempty string")
+          }
+        }),
+      )
+      Ok(EscalationsGet(list.unique(ids)))
+    }
+    "snapshot_next" -> {
+      use fields <- result.try(body_fields(body))
+      use snapshot_id <- result.try(required_string(fields, "snapshot_id"))
+      use index <- result.try(nonnegative_field(fields, "index"))
+      Ok(SnapshotNext(snapshot_id, index))
+    }
+    "history" -> {
+      use fields <- result.try(body_fields(body))
+      use after_seq <- result.try(nonnegative_field(fields, "after_seq"))
+      use before_seq <- result.try(nonnegative_field(fields, "before_seq"))
+      Ok(History(after_seq, before_seq))
+    }
     "subscribe" -> {
       use fields <- result.try(body_fields(body))
       use session <- result.try(required_string(fields, "session"))
@@ -685,12 +780,14 @@ fn decode_command_body(
         Error(Nil) -> Error("grants is required")
       })
       use action <- result.try(required_string(fields, "action"))
-      Ok(Approve(escalation_id:, grants:, action:))
+      use expected_seq <- result.try(nonnegative_field(fields, "expected_seq"))
+      Ok(Approve(escalation_id:, grants:, action:, expected_seq:))
     }
     "deny" -> {
       use fields <- result.try(body_fields(body))
       use escalation_id <- result.try(required_string(fields, "escalation_id"))
-      Ok(Deny(escalation_id:))
+      use expected_seq <- result.try(nonnegative_field(fields, "expected_seq"))
+      Ok(Deny(escalation_id:, expected_seq:))
     }
     "fork" -> {
       use fields <- result.try(body_fields(body))
@@ -789,20 +886,39 @@ fn decode_strand_text(
 /// ```
 ///
 pub fn encode_event(envelope: EventEnvelope) -> String {
+  to_wire_text(event_value(envelope))
+}
+
+/// Exposes the envelope before serialization so bounded delivery can size it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.event_value(envelope)
+/// ```
+@internal
+pub fn event_value(envelope: EventEnvelope) -> JsonValue {
   let #(name, body) = event_body(envelope.event)
-  to_wire_text(
-    object_of([
-      #("v", Some(json.Int(version))),
-      #("reply_to", option.map(envelope.reply_to, json.Int)),
-      #("event", Some(json.String(name))),
-      #("seq", option.map(envelope.seq, json.Int)),
-      #("body", Some(body)),
-    ]),
-  )
+  object_of([
+    #("v", Some(json.Int(version))),
+    #("reply_to", option.map(envelope.reply_to, json.Int)),
+    #("event", Some(json.String(name))),
+    #("seq", option.map(envelope.seq, json.Int)),
+    #("body", Some(body)),
+  ])
 }
 
 fn event_body(event: Event) -> #(String, JsonValue) {
   case event {
+    SnapshotBegin(body) -> #("snapshot_begin", body)
+    SnapshotChunk(body) -> #("snapshot_chunk", body)
+    SnapshotEnd(body) -> #("snapshot_end", body)
+    MutationOutcome(body) -> #("mutation_outcome", body)
+    AttachmentEvent(metadata) -> #("attachment", metadata)
+    PresenceEvent(peers) -> #(
+      "presence",
+      json.Object([#("peers", json.Array(peers))]),
+    )
     SnapshotEvent(snapshot:) -> #("snapshot", encode_snapshot(snapshot))
     EntryEvent(record:) -> #("entry", encode_entry_record(record))
     OpTransitionEvent(op:, strand:, phase:) -> #(
@@ -969,12 +1085,12 @@ fn encode_entry_record(record: EntryRecord) -> JsonValue {
   ])
 }
 
-// The action fields are additive within v1, so each is emitted only
-// when it says something: a record that names no action encodes
-// exactly as one written before the fields existed, and a reader that
-// does not know them is unaffected either way.
+// Historical records may name no action, so those fields remain optional.
+// Every v2 record still includes the exact decision sequence and its origin.
 fn encode_escalation(record: EscalationRecord) -> JsonValue {
   object_of([
+    #("seq", Some(json.Int(record.seq))),
+    #("origin", Some(origin.encode(record.origin))),
     #("escalation_id", Some(json.String(record.escalation_id))),
     #("op", Some(json.String(record.op))),
     #("strand", Some(json.String(record.strand))),
@@ -1082,6 +1198,28 @@ pub fn decode_event(text: String) -> Result(EventEnvelope, ProtocolFault) {
 
 fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
   case name {
+    "snapshot_begin" -> decode_transfer_begin(body)
+    "snapshot_chunk" -> decode_transfer_chunk(body)
+    "snapshot_end" -> decode_transfer_end(body)
+    "mutation_outcome" -> {
+      use fields <- result.try(body_fields(body))
+      use status <- result.try(required_string(fields, "status"))
+      case status {
+        "admitted" | "committed" -> Ok(MutationOutcome(body))
+        _ -> Error("unknown mutation outcome")
+      }
+    }
+    "attachment" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(AttachmentEvent(body))
+    }
+    "presence" -> {
+      use fields <- result.try(body_fields(body))
+      case list.key_find(fields, "peers") {
+        Ok(json.Array(peers)) -> Ok(PresenceEvent(peers))
+        Ok(_) | Error(Nil) -> Error("peers must be an array")
+      }
+    }
     "snapshot" -> decode_snapshot(body)
     "entry" -> {
       use record <- result.try(decode_entry_record(body))
@@ -1167,6 +1305,112 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       Ok(ErrorEvent(code:, message:, details:))
     }
     other -> Ok(UnknownEvent(event: other, body:))
+  }
+}
+
+// These checks bound each independent frame. The receiver additionally checks
+// identity, exact continuation index and contiguous offsets across frames.
+fn decode_transfer_begin(body) {
+  use fields <- result.try(body_fields(body))
+  use _ <- result.try(transfer_identifier(fields, "snapshot_id"))
+  use _ <- result.try(nonnegative_field(fields, "next_seq"))
+  use _ <- result.try(
+    list.try_each(
+      ["session_id", "epoch", "incarnation", "connection_id"],
+      fn(key) { transfer_identifier(fields, key) |> result.map(fn(_) { Nil }) },
+    ),
+  )
+  use window <- result.try(required_string(fields, "window"))
+  use role <- result.try(required_string(fields, "role"))
+  use _ <- result.try(nullable_sequence(fields, "oldest_seq"))
+  use _ <- result.try(
+    list.key_find(fields, "origin") |> result.replace_error("origin required"),
+  )
+  use _ <- result.try(
+    origin.decode_field(fields) |> result.replace_error("invalid origin"),
+  )
+  case
+    list.contains(["recent", "catch_up", "history", "escalations"], window),
+    list.contains(["owner", "operator", "observer"], role),
+    list.key_find(fields, "complete_history"),
+    list.key_find(fields, "record_bytes_limit"),
+    list.key_find(fields, "fragment_bytes_limit")
+  {
+    True,
+      True,
+      Ok(json.Bool(False)),
+      Ok(json.Int(33_554_432)),
+      Ok(json.Int(24_576))
+    -> Ok(SnapshotBegin(body))
+    _, _, _, _, _ -> Error("invalid transfer window, role, or bounds")
+  }
+}
+
+fn decode_transfer_chunk(body) {
+  use fields <- result.try(body_fields(body))
+  use _ <- result.try(transfer_identifier(fields, "snapshot_id"))
+  use _ <- result.try(nonnegative_field(fields, "index"))
+  use record_id <- result.try(transfer_identifier(fields, "record_id"))
+  use total <- result.try(nonnegative_field(fields, "total_bytes"))
+  use offset <- result.try(nonnegative_field(fields, "offset"))
+  use encoded <- result.try(required_string(fields, "data"))
+  use _ <- result.try(case string.byte_size(encoded) <= 32_768 {
+    True -> Ok(Nil)
+    False -> Error("encoded fragment is too large")
+  })
+  use bytes <- result.try(
+    bit_array.base64_decode(encoded)
+    |> result.replace_error("invalid fragment base64"),
+  )
+  let size = bit_array.byte_size(bytes)
+  use kind <- result.try(required_string(fields, "kind"))
+  use seq <- result.try(nullable_sequence(fields, "record_seq"))
+  use _ <- result.try(
+    case
+      size > 0
+      && size <= 24_576
+      && offset + size <= total
+      && total <= 33_554_432
+    {
+      True -> Ok(Nil)
+      False -> Error("invalid fragment bounds")
+    },
+  )
+  case kind, record_id, seq {
+    "metadata", "metadata", None if total <= 2_097_152 -> Ok(SnapshotChunk(body))
+    "entry", _, Some(seq) if seq > 0 -> {
+      use _ <- result.try(
+        ids.parse_entry_id(record_id)
+        |> result.replace_error("invalid entry identity"),
+      )
+      Ok(SnapshotChunk(body))
+    }
+    _, _, _ -> Error("invalid fragment kind or record sequence")
+  }
+}
+
+fn decode_transfer_end(body) {
+  use fields <- result.try(body_fields(body))
+  use _ <- result.try(transfer_identifier(fields, "snapshot_id"))
+  use _ <- result.try(nonnegative_field(fields, "index"))
+  use _ <- result.try(nonnegative_field(fields, "next_seq"))
+  use _ <- result.try(nullable_sequence(fields, "more_after"))
+  Ok(SnapshotEnd(body))
+}
+
+fn transfer_identifier(fields, key) {
+  use value <- result.try(required_string(fields, key))
+  case string.byte_size(value) > 0 && string.byte_size(value) <= 256 {
+    True -> Ok(value)
+    False -> Error(key <> " must contain 1 to 256 bytes")
+  }
+}
+
+fn nullable_sequence(fields, key) {
+  case list.key_find(fields, key) {
+    Ok(json.Null) -> Ok(None)
+    Ok(json.Int(value)) if value >= 0 -> Ok(Some(value))
+    Ok(_) | Error(Nil) -> Error(key <> " must be null or a nonnegative integer")
   }
 }
 
@@ -1333,6 +1577,10 @@ fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
 
 fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use fields <- result.try(body_fields(value))
+  use seq <- result.try(nonnegative_field(fields, "seq"))
+  use origin <- result.try(
+    origin.decode_field(fields) |> result.replace_error("invalid origin"),
+  )
   use escalation_id <- result.try(required_string(fields, "escalation_id"))
   use op <- result.try(required_string(fields, "op"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1360,6 +1608,8 @@ fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
     preview:,
     asked:,
     denial:,
+    seq:,
+    origin:,
   ))
 }
 
@@ -1371,6 +1621,13 @@ fn defaulted_string(
   key: String,
 ) -> Result(String, String) {
   optional_string(fields, key) |> result.map(option.unwrap(_, ""))
+}
+
+fn nonnegative_field(fields, key) {
+  case list.key_find(fields, key) {
+    Ok(json.Int(value)) if value >= 0 -> Ok(value)
+    Ok(_) | Error(Nil) -> Error(key <> " must be a nonnegative integer")
+  }
 }
 
 fn decode_denial(value: JsonValue) -> Result(Denial, String) {

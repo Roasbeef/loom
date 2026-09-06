@@ -208,14 +208,18 @@ them from their own test mains.
   idle.
 - **An intervention that does not land is a violation, not a shrug.**
   `surface.apply` honors the `Result` of `api.steer_quietly` and
-  `api.follow_up`: every `api.ApiError` reaches it having written
-  nothing, so a refusal is a turn the transcript has permanently lost
+  `api.follow_up`: a refusal is a turn the transcript has permanently lost
   and it is recorded through `control.note` — `Report.violations`, which
   `sound` fails the seed on. Two refusals are deliberately exempt and
   marked instead of noted: an `AtTerminalCommit` steer, where the run the
   item would attach to is already closed and refusal is the documented
   outcome, and an admission whose reply the surface did not observe,
-  which is not evidence the commit failed. The recording lives on an
+  which is not evidence the commit failed. `api.RuntimeUnavailable` is not a
+  refusal: no request reached a writer. It goes through the existing durable
+  fact reconciliation and retries while the root can restore the writer.
+  The ordered batch stops at the first unavailable admission; its untouched
+  suffix cannot overtake it, including an abort from the same trigger.
+  The recording lives on an
   error path and touches no schedule, so the seed corpus keeps its
   meaning as a before/after oracle. The runner takes the intervention's
   in-memory one-shot claim, while the instrumented store derives the same
@@ -251,7 +255,8 @@ them from their own test mains.
   still by construction, not by luck — only the process carrying the
   admission moved, from the effect to the runner, which is never a
   target of any fault in the taxonomy. If that runner-owned carrier loses its
-  writer call during restart, `surface` reads the transaction's atomic fact
+  writer call during restart, or receives the typed pre-send availability
+  result, `surface` reads the transaction's atomic fact
   directly from the raw durable session: it settles an admission that already
   landed, or retries one that did not. There is no post-commit counter for a
   crash to overtake. The `intervening@path` / `intervened@path` bracket remains

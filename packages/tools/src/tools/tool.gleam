@@ -1151,6 +1151,8 @@ fn budget_text(refusal: budget.Refusal) -> String {
 
 fn checkout_text(error: exec.CheckoutError) -> String {
   case error {
+    exec.AllBusy(size: 0) ->
+      "no sandbox helper can be lent; every slot is held by an unconfirmed retirement"
     exec.AllBusy(size:) ->
       "all " <> int.to_string(size) <> " helpers are lent out"
     exec.SpawnFailed(error: _) -> "spawning a helper failed"

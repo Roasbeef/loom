@@ -114,7 +114,7 @@ const expected_join_ms = 20_000
 pub fn code_mode_orchestration_sample_test() {
   case rig.prerequisites() {
     Error(reason) ->
-      io.println("SKIP code_mode_orchestration_sample: " <> reason)
+      io.println_error("SKIP code_mode_orchestration_sample: " <> reason)
     Ok(prerequisites) -> run_sample(prerequisites)
   }
 }

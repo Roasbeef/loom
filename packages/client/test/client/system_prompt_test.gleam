@@ -30,7 +30,6 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/string
 import machine/operation
 import machine/strand as machine_strand
@@ -46,6 +45,7 @@ import simplifile
 import support/provider as provider_test
 import support/tool_registry
 import tools/tool
+import weft/actor
 
 const root = "build/system-prompt-test"
 

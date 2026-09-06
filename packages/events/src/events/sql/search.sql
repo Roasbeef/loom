@@ -36,6 +36,14 @@ SELECT generation, high_water
 FROM search_cursor
 WHERE session_id = ?;
 
+-- name: SearchAuthorizedEntries :many
+SELECT session_id, entry_id,
+  snippet(entry_fts, 2, '[', ']', '...', 12) AS snippet
+FROM entry_fts
+WHERE entry_fts.text MATCH @query
+  AND session_id IN (SELECT value FROM json_each(CAST(@sessions AS TEXT)))
+ORDER BY rank LIMIT @max_hits;
+
 -- name: SetCursor :exec
 INSERT INTO search_cursor (session_id, generation, high_water)
 VALUES (?, ?, ?)

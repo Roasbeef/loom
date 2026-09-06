@@ -3,7 +3,7 @@
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
 
-PACKAGES := core storage session machine prompt telemetry runtime provider \
+PACKAGES := host core storage session machine prompt telemetry runtime provider \
 	broker mcp tools cap ext codemode events client conformance tui lint
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
@@ -28,12 +28,12 @@ check-%: binaries ## Full gate for one package, e.g. make check-machine
 .PHONY: test
 test: ## Run tests only (skips format check), all Gleam packages
 	@set -e; for p in $(PACKAGES); do \
-		echo "==> $$p"; (cd packages/$$p && gleam test); \
+		echo "==> $$p"; bash scripts/test.sh $$p; \
 	done
 
 .PHONY: test-%
 test-%: ## Run tests for one package, e.g. make test-core
-	@cd packages/$* && gleam test
+	@bash scripts/test.sh $*
 
 .PHONY: build
 build: ## Warning-free build of every Gleam package
@@ -158,7 +158,7 @@ release: ## Build the self-contained server into build/release/loom (needs rebar
 
 .PHONY: release-smoke
 release-smoke: ## Boot build/release/loom with no erl on PATH and prove it serves code mode
-	@scripts/release.sh --smoke
+	@python3 scripts/with_timeout.py 180 -- bash scripts/release.sh --smoke
 
 # The client gets the same treatment as the server: an OTP release with
 # the runtime system copied in, so `loom` runs on a machine with no
@@ -193,33 +193,33 @@ install: codemode-seed release $(CLIENT_ARTIFACT) ## Install loom and loomd unde
 # ------------------------------------------------------------------- running
 
 WORKSPACE ?= .
+STATE_DIR ?= $(CURDIR)/build/dev/state
 
 .PHONY: run-server
-run-server: binaries ## Run the server from source: make run-server SESSION=path [ARGS=--best-effort]
-	@test -n "$(SESSION)" || { \
-		echo "usage: make run-server SESSION=path/to/session.db [WORKSPACE=dir] [ARGS=...]"; \
-		exit 1; }
-	@cd packages/client && gleam run -m client/serve -- \
-		--session "$(abspath $(SESSION))" \
-		--workspace "$(abspath $(WORKSPACE))" \
+run-server: binaries ## Run the daemon from source: [STATE_DIR=path] [ARGS=--best-effort]
+	@cd packages/client && gleam run -m client -- \
+		--state-dir "$(abspath $(STATE_DIR))" \
 		--helper "$(abspath bin/loom-exec)" $(ARGS)
 
 .PHONY: run-tui
-run-tui: binaries ## Attach the TUI: make run-tui ADDR=ws://host:port/v1/ws SESSION=id [TOKEN_FILE=path]
-	@test -n "$(ADDR)" && test -n "$(SESSION)" || { \
-		echo "usage: make run-tui ADDR=ws://host:port/v1/ws SESSION=id [TOKEN_FILE=path]"; \
-		exit 1; }
-	@if [ -n "$(TOKEN_FILE)" ]; then \
-		./bin/loom --addr "$(ADDR)" --session "$(SESSION)" \
-			--token-file "$(TOKEN_FILE)"; \
-	else ./bin/loom --addr "$(ADDR)" --session "$(SESSION)"; fi
+run-tui: binaries server-shipment ## Open the daemon session picker: [STATE_DIR=path] [WORKSPACE=dir] [SESSION=id]; remote: ADDR=ws://host:port/v2/sessions/id/ws TOKEN_FILE=path
+	@if [ -n "$(ADDR)" ]; then \
+		test -n "$(SESSION)" && test -n "$(TOKEN_FILE)" || { \
+			echo "remote attachment requires SESSION=id and TOKEN_FILE=path" >&2; exit 1; }; \
+		./bin/loom --addr "$(ADDR)" --session "$(SESSION)" --token-file "$(TOKEN_FILE)"; \
+	else \
+		set -- --state-dir "$(abspath $(STATE_DIR))" --workspace "$(abspath $(WORKSPACE))" \
+			--server "$(abspath bin/loomd)"; \
+		if [ -n "$(SESSION)" ]; then set -- "$$@" --session "$(SESSION)"; fi; \
+		./bin/loom "$$@"; \
+	fi
 
 .PHONY: bench-tui
 bench-tui: ## Benchmark the TUI frame-rendering hot paths
 	@cd packages/tui && gleam dev
 
 .PHONY: dev
-dev: ## Build, start a server on a scratch session, attach the TUI (interactive)
+dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh
 
 # -------------------------------------------------------------- the sandbox
@@ -231,7 +231,8 @@ sandbox: ## Build the loom-exec sandbox helper binary
 
 .PHONY: sandbox-test
 sandbox-test: ## Vet, build, and test the Go sandbox package
-	@cd $(GO_PKG) && go vet ./... && go build ./... && go test ./...
+	@cd $(GO_PKG) && go vet ./... && go build ./... && \
+		python3 ../../scripts/with_timeout.py 1200 -- go test -timeout 10m ./...
 
 .PHONY: selftest
 selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED per probe)
@@ -241,29 +242,67 @@ selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED pe
 
 .PHONY: e2e
 e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper
-	@cd packages/conformance && gleam test
+	@bash scripts/test.sh conformance
+
+# These are focused daemon fixtures, not a substitute for shipped-artifact
+# acceptance. Each module retains its own watchdog and stops the target on
+# failure; LOOM_TEST_TIMEOUT_SECONDS overrides the 180-second per-module budget.
+.PHONY: e2e-multiplayer
+e2e-multiplayer: sandbox ## Run the multiplayer fixture suite against the real helper
+	@set -e; for filter in \
+		client@tui_e2e_test: \
+		client@tui_multiplayer_test: \
+		client@tui_v2_persisted_test: \
+		client@tui_approval_effect_test: \
+		client@daemon_fault_containment_test:; do \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+			bash scripts/test.sh client --match "$$filter"; \
+	done
+
+.PHONY: soak-daemon
+soak-daemon: sandbox ## Run the bounded real-daemon lifecycle soak fixture
+	@LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+		bash scripts/test.sh client --match client@daemon_soak_test:
 
 .PHONY: e2e-client-bootstrap
 e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the real local server through the native TUI bootstrap
 	@cd packages/tui && \
 		LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		gleam test -- --match bootstrap_real_server_lifecycle_test && \
+		bash ../../scripts/test.sh tui --match bootstrap_real_server_lifecycle_test && \
 		env 'BASH_FUNC_read%%=() { return 0; }' \
-		gleam test -- --match paused_server_dies_with_launcher_before_release_test && \
+		bash ../../scripts/test.sh tui --match paused_server_dies_with_launcher_before_release_test && \
 		env 'BASH_FUNC_cat%%=() { return 0; }' \
-		gleam test -- --match launch_lock_is_single_winner_test && \
+		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test && \
 		env 'BASH_FUNC_read%%=() { return 1; }' \
-		gleam test -- --match launch_lock_is_single_winner_test && \
+		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test && \
 		hostile_bin="$$(/usr/bin/mktemp -d "$${TMPDIR:-/tmp}/loom-lock-path.XXXXXX")" && \
 		trap 'rm -rf "$$hostile_bin"' 0 1 2 15 && \
 		printf '%s\n' '#!/bin/sh' 'exit 0' > "$$hostile_bin/cat" && \
 		chmod 0755 "$$hostile_bin/cat" && \
 		PATH="$$hostile_bin:$$PATH" \
-		gleam test -- --match launch_lock_is_single_winner_test
+		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+		bash scripts/test.sh client --match client@tui_shipped_multiplayer_test:
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+		bash scripts/test.sh client --match client@daemon_shipped_stop_test:
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+		bash scripts/test.sh client --match client@daemon_shipped_schedule_test:
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-150}" \
+		bash scripts/test.sh client --match client@daemon_shipped_recovery_test:
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-270}" \
+		bash scripts/test.sh client --match client@daemon_shipped_identity_recovery_test:
 
 .PHONY: conformance
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
-	@cd packages/conformance && gleam test
+	@bash scripts/test.sh conformance
 
 .PHONY: codemode-seed
 codemode-seed: ## Prepare the offline package cache code-mode builds clone
@@ -271,7 +310,7 @@ codemode-seed: ## Prepare the offline package cache code-mode builds clone
 
 .PHONY: e2e-codemode
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
-	@cd packages/codemode && gleam test
+	@bash scripts/test.sh codemode
 
 # ------------------------------------------------------------ the simulator
 
@@ -290,8 +329,8 @@ soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=
 	while [ $$left -gt 0 ]; do \
 		n=$$( [ $$left -lt $(SOAK_CHUNK) ] && echo $$left || echo $(SOAK_CHUNK) ); \
 		echo "==> seeds $$from..$$(( from + n - 1 ))"; \
-		( cd packages/conformance && \
-			LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from gleam test ) || \
+		( LOOM_SOAK_SEEDS=$$n LOOM_SOAK_FROM=$$from \
+			bash scripts/test.sh conformance ) || \
 			{ echo "soak FAILED in seeds $$from..$$(( from + n - 1 ))"; exit 1; }; \
 		from=$$(( from + n )); left=$$(( left - n )); \
 	done; \

@@ -18,6 +18,12 @@ the rewrite exists for. WP-C plus WP-C-full.
   `lease_interval_ms` (SQLite only; `None` for memory), and
   `record_identity`, which projects the canonical session id into the
   SQLite catalog row (a no-op for memory, which has no catalog).
+  `snapshot_reader` borrows bounded capture/page/fragment functions from the
+  same backend actor. It changes neither the frozen `Storage` record nor
+  storage ownership; reads after close fail like ordinary storage reads.
+  Each read takes a finite wait budget. ReadTimedOut ends only the wait,
+  not the storage work: the original gateway/session must fail without
+  retrying, and custody must retain the original store until drain is proved.
 - `session/session.{id, parent_id, ensure_id, session_id_key,
   parent_session_id_key}` — the canonical `core/ids.SessionId`
   (`protocol-change/008`). `ensure_id` is boot bookkeeping in
@@ -25,6 +31,10 @@ the rewrite exists for. WP-C plus WP-C-full.
   cell is empty, CAS-guarded on absence, so reopening a session always
   yields the same id and a session that predates the concept gains one on
   first open. `runtime/api.open` is the call site.
+- `session/session.ensure_reserved_id` is the internal creation seam for a
+  catalogue reservation. Before runtime initialization, it establishes the
+  reserved canonical id with the same absence CAS as `ensure_id`. A retry
+  accepts only that id; an existing different id is never overwritten.
 - `session/session.Cell(payload)` — a decoded register payload with the seq
   it was read at. Every typed accessor returns one, because the seq is what
   the caller's CAS expectation is built from.
@@ -34,6 +44,14 @@ the rewrite exists for. WP-C plus WP-C-full.
   `open_sqlite` runs `migration_chain()`, the ordered migrate-on-open seam
   every schema bump extends (empty today — storage version 1 is the only
   version that has existed).
+- `session/session.open_sqlite_owned` returns a session and a separate
+  close-and-retire capability. The custodian retains that capability until
+  every writer, reader and external effect has drained; a failed close
+  never becomes permission to retire the connection actor.
+- `session/session.open_sqlite_custody` also returns a startup-link transfer
+  capability. The initializer publishes retirement before invoking transfer,
+  so its later death cannot kill the connection behind the custodian's handle.
+  Transfer returns the original actor PID for the instance host's fatal monitor.
 - `session/session.ensure_strand` — idempotent boot seeding. It flattens
   every commit refusal it does not already recognize into
   `StoreFailure(BackendFault(..))`, `tx.LeaseLost` included: this layer
@@ -59,7 +77,8 @@ the rewrite exists for. WP-C plus WP-C-full.
 
 - **Depends on**: `core` (ids, entries, registers, tx), `storage` (both
   backends and the handle), `machine` (register payload types and the total
-  codecs). Note that the spec's DAG (§0.1) writes `C → A,B`; the machine
+  codecs), `gleam_erlang` (the owned connection's PID type). Note that the
+  spec's DAG (§0.1) writes `C → A,B`; the machine
   edge is real and load-bearing — typed register access cannot exist
   without the payload codecs.
 - **Depended on by**: `runtime` (the writer and the driver both hold a
@@ -73,7 +92,9 @@ the rewrite exists for. WP-C plus WP-C-full.
 
 - **Actor messages**: none of its own. Every call is a synchronous
   pass-through to the backend actor behind the `Storage` record.
-- **Commits**: two paths, both outside the writer because both run where no
+  The additional snapshot capability reaches that same actor without
+  creating a reader process or retaining a network-owned transaction.
+- **Commits**: initialization and repository paths run outside the writer where no
   supervision tree owns the store.
   - `ensure_strand`'s three-write seed (`SetRegister` on `strand.leaf`,
     `strand.config`, `strand.state`), committed **through the session
@@ -84,6 +105,9 @@ the rewrite exists for. WP-C plus WP-C-full.
   - `ensure_id`'s one-write mint (`SetRegister` on `fact.custom`
     `session/id`), CAS-guarded with `Expect(..., seq: None)`; a losing
     concurrent minter re-reads the winner's id rather than failing.
+    `ensure_reserved_id` shares this transaction but accepts the winner only
+    when it equals the reserved id. Both repair the SQLite identity projection
+    from the register rather than treating the projection as authority.
   - `repo.fork`'s single destination transaction: `InsertEntry` per copied
     entry (ids preserved, `seq`/`ts` re-stamped by the destination),
     `SetRegister` for the destination strands' `strand.leaf` /
@@ -109,6 +133,10 @@ the rewrite exists for. WP-C plus WP-C-full.
 
 ## Invariants
 
+- **Catalogue creation preserves its reserved identity.** The initializer
+  owns the fresh file and writer lease, then calls `ensure_reserved_id` before
+  runtime startup or effects. Retrying cannot mint a replacement identity or
+  overwrite an existing one.
 - **One writer commits through a session.** Reads may come from anywhere —
   both backends serialize through their own actor mailbox — but exactly one
   StorageWriter process should hold the commit path.

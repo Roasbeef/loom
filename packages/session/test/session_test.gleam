@@ -33,7 +33,11 @@ fn generator() -> ids.Generator {
 }
 
 fn user(text: String) -> message.AgentMessage {
-  UserMessage(content: [UserText(text:, text_signature: None)], timestamp: 0)
+  UserMessage(
+    content: [UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin: None,
+  )
 }
 
 fn assistant(text: String, stop: message.StopReason) -> message.AgentMessage {
@@ -150,7 +154,13 @@ pub fn project_scan_compaction_opens_context_test() {
   let generator = generator()
   let #(a, generator) = ids.mint_entry(generator)
   let #(b, _generator) = ids.mint_entry(generator)
-  let retained = [user("tail message")]
+  let attributed =
+    UserMessage(
+      [UserText("tail message", None)],
+      0,
+      Some(message.Origin("alice", "Alice before rename")),
+    )
+  let retained = [attributed]
   // Newest-first: the compaction terminated the scan, so it is last.
   let scanned = [
     MessageEntry(
@@ -180,8 +190,9 @@ pub fn project_scan_compaction_opens_context_test() {
           UserText(text: "everything so far", text_signature: None),
         ],
         timestamp: 8,
+        origin: None,
       ),
-      user("tail message"),
+      attributed,
       assistant("after", message.Stop),
     ]
 }
@@ -252,6 +263,12 @@ pub fn ensure_strand_seeds_once_test() {
 
 pub fn project_context_reads_the_branch_test() {
   let assert Ok(sess) = session.open_memory(clock.fixed(at: 1000))
+  let attributed =
+    UserMessage(
+      [UserText("hello", None)],
+      0,
+      Some(message.Origin("alice", "Alice before rename")),
+    )
   let generator = generator()
   let #(a, generator) = ids.mint_entry(generator)
   let #(b, _generator) = ids.mint_entry(generator)
@@ -265,7 +282,7 @@ pub fn project_context_reads_the_branch_test() {
             parent: None,
             seq: 0,
             ts: 0,
-            message: user("hello"),
+            message: attributed,
             terminate: False,
           )),
           InsertEntry(entry: MessageEntry(
@@ -281,7 +298,7 @@ pub fn project_context_reads_the_branch_test() {
       ),
     )
   let assert Ok(projected) = session.project_context(sess, Some(b))
-  assert projected == [user("hello"), assistant("answer", message.Stop)]
+  assert projected == [attributed, assistant("answer", message.Stop)]
   let assert Ok(empty) = session.project_context(sess, None)
   assert empty == []
 }

@@ -12,9 +12,11 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import support/addresses
+import weft/registry as address
 
 pub fn stopping_a_missing_store_is_a_no_op_test() {
-  scratch.stop(process.new_name(prefix: "missing-scratch-store"))
+  scratch.stop(addresses.new())
 }
 
 // --- a round trip -------------------------------------------------------------
@@ -203,7 +205,7 @@ pub fn an_unstarted_store_refuses_in_band_test() {
   // never settles. And never a silent success — a `set` answering `Ok`
   // into nothing looks to a program exactly like an eviction, and it
   // would loop re-setting a key that never lands.
-  let name = process.new_name(prefix: "loom_scratch_absent")
+  let name = addresses.new()
   let seam = scratch.seam(name, timeout_ms: 200)
   let assert Error(workspace.StoreUnavailable(reason:)) = seam.get("k")
     as "an absent store refuses a get in band"
@@ -239,11 +241,11 @@ pub fn a_stopped_store_refuses_rather_than_killing_the_caller_test() {
 // --- the rig --------------------------------------------------------------------
 
 type Store {
-  Store(name: process.Name(scratch.Message), seam: scratch.Scratch)
+  Store(name: address.Address(scratch.Message), seam: scratch.Scratch)
 }
 
 fn started(bounds: scratch.Bounds) -> Store {
-  let name = process.new_name(prefix: "loom_scratch_test")
+  let name = addresses.new()
   let assert Ok(_started) = scratch.start(name, bounds)
     as "the scratch store must start"
   Store(name:, seam: scratch.seam(name, timeout_ms: 1000))
@@ -295,8 +297,8 @@ fn stop(store: Store) -> Nil {
   wait_gone(store.name, 100)
 }
 
-fn wait_gone(name: process.Name(scratch.Message), polls: Int) -> Nil {
-  case process.named(name), polls <= 0 {
+fn wait_gone(name: address.Address(scratch.Message), polls: Int) -> Nil {
+  case addresses.owner(name), polls <= 0 {
     Error(Nil), _ -> Nil
     Ok(_pid), True -> Nil
     Ok(_pid), False -> {

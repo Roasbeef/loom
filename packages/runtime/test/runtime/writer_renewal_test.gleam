@@ -30,6 +30,7 @@ import runtime/writer
 import session/session.{type Session, Session}
 import storage/storage
 import support/recorder
+import weft/registry as address
 
 /// A memory session whose lease renewal is the test's own function,
 /// renewing every `interval` milliseconds.
@@ -52,8 +53,9 @@ fn leased_session(
 /// The unlink is not tidiness: a writer that loses its lease exits
 /// abnormally, and a linked test process would die of it before it could
 /// assert anything.
-fn start_writer(session: Session) -> Pid {
-  let name = process.new_name(prefix: "loom_writer_renewal_test")
+fn start_writer(session: Session) -> #(Pid, address.Registry) {
+  let assert Ok(namespace) = address.start() as "the namespace must start"
+  let name = address.new_address(namespace)
   let assert Ok(started) =
     writer.start(
       writer.Options(
@@ -65,7 +67,7 @@ fn start_writer(session: Session) -> Pid {
     )
     as "the writer must start"
   process.unlink(started.pid)
-  started.pid
+  #(started.pid, namespace)
 }
 
 pub fn the_writer_renews_its_lease_on_its_own_interval_test() {
@@ -75,7 +77,7 @@ pub fn the_writer_renews_its_lease_on_its_own_interval_test() {
       let _renewals = recorder.bump(rec, "renew")
       Ok(Nil)
     })
-  let pid = start_writer(session)
+  let #(pid, namespace) = start_writer(session)
 
   // Repeatedly, not once: a one-shot timer or a re-arm that never happened
   // would leave this at exactly one, which is the failure this count is
@@ -85,6 +87,7 @@ pub fn the_writer_renews_its_lease_on_its_own_interval_test() {
   assert process.is_alive(pid)
 
   process.kill(pid)
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 pub fn a_session_with_no_lease_renews_nothing_test() {
@@ -99,13 +102,14 @@ pub fn a_session_with_no_lease_renews_nothing_test() {
       let _renewals = recorder.bump(rec, "renew")
       Ok(Nil)
     })
-  let pid = start_writer(session)
+  let #(pid, namespace) = start_writer(session)
 
   process.sleep(300)
   assert recorder.read(rec, "renew") == 0
   assert process.is_alive(pid)
 
   process.kill(pid)
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 pub fn a_lost_lease_stops_the_writer_test() {
@@ -119,9 +123,10 @@ pub fn a_lost_lease_stops_the_writer_test() {
       let _attempts = recorder.bump(rec, "renew")
       Error(storage.BackendFault(reason: "lease stolen"))
     })
-  let pid = start_writer(session)
+  let #(pid, namespace) = start_writer(session)
 
   process.sleep(300)
   assert recorder.read(rec, "renew") == 1
   assert !process.is_alive(pid)
+  assert address.stop(namespace) == Ok(Nil)
 }

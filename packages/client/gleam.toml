@@ -3,6 +3,7 @@ version = "0.1.0"
 gleam = ">= 1.18.0"
 
 [dependencies]
+host = { path = "../host" }
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.0.0 and < 2.0.0"
 filepath = ">= 1.0.0 and < 2.0.0"
@@ -21,15 +22,16 @@ mcp = { path = "../mcp" }
 telemetry = { path = "../telemetry" }
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = ">= 0.4.2 and < 1.0.0"
+weft = "== 0.4.4"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
-mist = ">= 6.0.3 and < 7.0.0"
+mist = { git = "https://github.com/Roasbeef/mist.git", ref = "65b29375ecefc9a5d58bf4190a2eee41d7dd1db5" }
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.1.0 and < 2.0.0"
 tom = ">= 2.1.0 and < 3.0.0"
 
 [dev_dependencies]
+sqlight = ">= 1.0.0 and < 2.0.0"
 tui = { path = "../tui" }
 etui = { git = "https://github.com/Roasbeef/etui.git", ref = "702a88415d66acab7c977da41850a7e02cc2ebed" }
 gleeunit = ">= 1.0.0 and < 2.0.0"

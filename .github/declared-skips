@@ -30,10 +30,8 @@
 
 # --- macOS: the MCP teardown assertion has no process-observation API.
 #
-# The test exercises the real MCP server and its shutdown on every host. Its
-# final assertion additionally reads `/proc/<pid>` to prove the server process
-# disappeared. Darwin has no procfs and the test has no equivalent observation
-# API, so that assertion reports a precise platform skip after the functional
-# path has run. This declaration stops matching when the test gains a Darwin
-# process observation and makes the census demand its removal.
-declared|darwin|no /proc on this host, so a stopped server's death cannot be observed by pid|the real MCP exchange and shutdown ran, but Darwin has no procfs for the final independent pid-death assertion
+# The fixture requires `/proc/<pid>` observation before reserving its runtime.
+# Darwin has no procfs, so this prerequisite skips the whole fixture before
+# the MCP exchange or shutdown runs. This declaration stops matching when the
+# fixture gains a Darwin process observation and the census demands removal.
+declared|darwin|no /proc on this host, so a stopped server's death cannot be observed by pid|Darwin has no procfs, so the prerequisite skips the whole real-MCP fixture before setup

@@ -133,7 +133,7 @@ package if the dependency direction objects, since `tui` must not depend
 on `conformance`. It reuses the virtual backend's `run_script` for the
 loop so the loop under test is the loop that ships, and `buffer_to_lines`
 for the checks. It needs one thing the TUI does not yet have: an injected
-monotonic clock. `ffi_bootstrap.monotonic_time_ms()` is called from
+monotonic clock. `tui/internal/ffi_bootstrap.monotonic_time_ms()` is called from
 `update_tick`, the generation clock and the activity indicator; thread a
 `clock: fn() -> Int` through `Model` (or a `Clock` record beside it) so a
 schedule can own time. That is the only production change Part A needs,

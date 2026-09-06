@@ -20,7 +20,6 @@ import core/tx.{InsertEntry, Tx}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/string
 import provider/gateway as provider_gateway
 import provider/http
@@ -32,6 +31,8 @@ import simplifile
 import storage/storage
 import support/provider as provider_test
 import tools/remember
+import weft
+import weft/actor
 
 // What the scripted consolidation turn answers with. The exit criterion
 // downstream looks for this text, so it is stated once.
@@ -41,6 +42,212 @@ const consolidated = "preference: the user prefers tabs over spaces\n"
 const extracted = "fact: the release smoke boots with no erl on PATH"
 
 // --- the whole pass ---------------------------------------------------------
+
+/// Managed passes resolve fresh explicit sources and never scan on failure.
+pub fn owned_distillation_resolves_sources_after_custody_test() {
+  let root = absolute_root("owned-resolver")
+  let _unselected =
+    write_source(root <> "/unselected.db", 190, [assistant("not selected")])
+  let resolved = process.new_subject()
+  let options = config(root, start_recorder())
+  let task =
+    distill.prepare(
+      options,
+      fn() {
+        process.send(resolved, Nil)
+        Ok([])
+      },
+      gateway_routing([model.Main]),
+      model.ForRole(model.Main, None),
+      1000,
+    )
+  let assert [weft.Completed(value: first, ..)] =
+    weft.new_prepared([task])
+    |> weft.deadline(2000)
+    |> weft.start
+    as "an empty authorized domain must complete without model work"
+  assert first.sources == 0
+  let assert [weft.Completed(..)] =
+    weft.new_prepared([task])
+    |> weft.deadline(2000)
+    |> weft.start
+    as "a later pass resolves again"
+  assert process.receive(resolved, 1000) == Ok(Nil)
+  assert process.receive(resolved, 1000) == Ok(Nil)
+  let refused =
+    distill.prepare(
+      options,
+      fn() { Error("catalogue unavailable") },
+      gateway_routing([model.Main]),
+      model.ForRole(model.Main, None),
+      1000,
+    )
+  let assert [weft.Failed(error: "catalogue unavailable", ..)] =
+    weft.new_prepared([refused]) |> weft.deadline(2000) |> weft.start
+    as "resolver failure must not fall back to the unselected file"
+}
+
+/// A cancelled builder cannot retire while its original provider still lives.
+pub fn owned_distillation_cancellation_retains_provider_owner_test() {
+  let root = absolute_root("owned-provider")
+  let path = root <> "/source.db"
+  let named = write_source(path, 191, [assistant("extract this fact")])
+  let assert Ok(id) = ids.parse_session_id(named) as "source ID must parse"
+  let started = process.new_subject()
+  let cancelled = process.new_subject()
+  let transport =
+    http.Transport(prepare_streaming: fn(_request, _events) {
+      let ready = process.new_subject()
+      let owner =
+        process.spawn_unlinked(fn() {
+          let release = process.new_subject()
+          process.send(ready, release)
+          let assert Ok(Nil) = process.receive(release, 3000)
+            as "the provider test gate must be released"
+        })
+      let assert Ok(release) = process.receive(ready, 1000)
+        as "provider must park"
+      Ok(
+        http.PreparedRequest(
+          running: http.RunningRequest(owner:, cancel: fn() {
+            process.send(cancelled, Nil)
+          }),
+          begin: fn() { process.send(started, #(owner, release)) },
+        ),
+      )
+    })
+  let gateway =
+    provider_gateway.new(
+      transport:,
+      secrets: secret.from_list([#("ACME_KEY", "unit-test-key")]),
+      clock: clock.fixed(at: 0),
+    )
+    |> provider_gateway.add_provider(provider_gateway.AnthropicProvider(
+      name: "acme",
+      base_url: "https://acme.invalid",
+      api_key_secret: "ACME_KEY",
+    ))
+    |> provider_gateway.route(model.Main, [
+      model.ResolvedModel(
+        provider: "acme",
+        model_id: "loom-1",
+        thinking: model.ThinkingOff,
+        context_window: 100_000,
+        max_output_tokens: 4096,
+      ),
+    ])
+  let task =
+    distill.prepare(
+      config(root, start_recorder()),
+      fn() { Ok([distill.Source(session: id, path:)]) },
+      gateway,
+      model.ForRole(model.Main, None),
+      2000,
+    )
+  let running =
+    weft.new_prepared([task]) |> weft.deadline(3000) |> weft.start_detached
+  let assert Ok(#(owner, release)) = process.receive(started, 1000)
+    as "owned provider work must begin"
+  weft.cancel_detached(running)
+  assert process.receive(cancelled, 1000) == Ok(Nil)
+  assert process.is_alive(owner)
+  assert weft.pull(running, 20) == weft.NotYet
+  process.send(release, Nil)
+  let assert weft.PulledOutcome(weft.Abandoned(..)) = weft.pull(running, 2000)
+    as "cancellation settles only after provider retirement"
+  assert weft.pull(running, 1000) == weft.AllDelivered
+}
+
+/// Explicit catalogue paths are independent of the destination directory.
+pub fn explicit_sources_use_only_selected_external_conversations_test() {
+  let root = absolute_root("explicit-destination")
+  let sources = absolute_root("explicit-conversations")
+  let path = sources <> "/managed.db"
+  let named = write_source(path, 171, [assistant("selected source")])
+  let unrelated =
+    write_source(root <> "/unrelated.db", 172, [
+      assistant("unrelated source"),
+    ])
+  let assert Ok(id) = ids.parse_session_id(named) as "source ID must parse"
+  let prompts = start_recorder()
+  let selected =
+    config(root, prompts)
+    |> distill.with_sources([distill.Source(session: id, path:)])
+  let assert Ok(report) = distill.run(selected) as "explicit pass must run"
+  assert report.sources == 1
+  let assert Ok(opened) = open_memory(root) as "memory must open"
+  let assert Ok(rows) = raw_rows(opened) as "provenance must read"
+  assert list.length(rows) == 2
+  assert list.all(rows, fn(row) { string.contains(row, named) })
+  assert list.all(rows, fn(row) { !string.contains(row, unrelated) })
+  memory.close(opened)
+
+  // An empty explicit selection must not discover the unrelated local file.
+  let assert Ok(empty) = distill.run(distill.with_sources(selected, []))
+    as "empty explicit pass must run"
+  assert empty.sources == 0
+}
+
+/// A replaced source file contributes nothing under a different identity.
+pub fn explicit_sources_reject_identity_mismatch_test() {
+  let root = absolute_root("explicit-mismatch")
+  let actual = write_source(root <> "/actual.db", 173, [assistant("secret")])
+  let expected = write_source(root <> "/expected.db", 174, [])
+  let assert Ok(id) = ids.parse_session_id(expected) as "expected ID must parse"
+  let prompts = start_recorder()
+  let selected =
+    config(root, prompts)
+    |> distill.with_sources([
+      distill.Source(session: id, path: root <> "/actual.db"),
+    ])
+  let assert Ok(report) = distill.run(selected) as "bad source is skipped"
+  assert report.sources == 0
+  assert report.skipped == 1
+  assert recorded(prompts) == []
+  let assert Ok(opened) = open_memory(root) as "memory must open"
+  assert memory.cell(opened, memory.cursor_key(actual)) == Ok(None)
+  assert memory.cell(opened, memory.cursor_key(expected)) == Ok(None)
+  memory.close(opened)
+}
+
+/// Explicit mode preserves lease exclusion and refuses projection inputs.
+pub fn explicit_sources_preserve_lease_and_preflight_bounds_test() {
+  let root = absolute_root("explicit-lease")
+  let path = root <> "/live.db"
+  let named = write_source(path, 175, [assistant("still live")])
+  let assert Ok(id) = ids.parse_session_id(named) as "source ID must parse"
+  let assert Ok(live) =
+    session.open_sqlite(
+      path:,
+      owner: "loomd",
+      lease_ttl_ms: 60_000,
+      clock: a_clock(),
+    )
+    as "source lease must open"
+  let prompts = start_recorder()
+  let source = distill.Source(session: id, path:)
+  let selected = config(root, prompts) |> distill.with_sources([source])
+  let assert Ok(report) = distill.run(selected) as "live source is skipped"
+  assert report.sources == 0
+  assert report.skipped == 1
+  assert recorded(prompts) == []
+  let _closed = session.close(live)
+  let assert Ok(after) = distill.run(selected) as "released source is readable"
+  assert after.sources == 1
+
+  let bounded = distill.Config(..selected, scan_limit: 1)
+  let assert Error(_) =
+    distill.run(distill.with_sources(bounded, [source, source]))
+    as "too many explicit sources must be refused"
+  list.each(["loom-memory.db", "loom-search.db"], fn(name) {
+    let invalid =
+      distill.with_sources(selected, [
+        distill.Source(session: id, path: root <> "/" <> name),
+      ])
+    let assert Error(_) = distill.run(invalid)
+      as "projection input must be refused before opening"
+  })
+}
 
 /// One pass over a directory with one quiet source: walk, extract,
 /// consolidate, append, CAS, render.
@@ -1534,6 +1741,7 @@ fn user(text: String) -> AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
+    origin: None,
   )
 }
 
@@ -1769,6 +1977,13 @@ fn notes_cursor(opened: memory.Opened) -> Int {
 
 fn a_clock() -> clock.Clock {
   clock.stepping(from: 1_756_000_000_000, by: 3)
+}
+
+// Catalogue records carry absolute paths, unlike the standalone fixtures.
+fn absolute_root(lane: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test working directory must resolve"
+  here <> "/" <> fresh_root(lane)
 }
 
 fn fresh_root(lane: String) -> String {

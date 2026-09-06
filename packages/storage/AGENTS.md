@@ -12,6 +12,77 @@ by WP-C-full.
 
 ## Key Types
 
+- `storage/internal/history_source.{Source, Cut}` binds a read-only native
+  connection to its canonical source path. `inspect` reads identity, generation,
+  and high-water in one short transaction on that retained connection; `page`,
+  `entry`, and `fragment` reuse the snapshot descriptor and byte bounds. Acquire
+  never creates a missing conversation or claims its writer lease. The owning
+  actor must retain the handle after a failed close; this raw capability is
+  linear, not a reusable read-after-close interface.
+- `storage/domain.{Domain, Scope}` stores daemon-owned domain configuration and
+  memory/index paths separately from session admission. `reserve_session`
+  atomically reserves identity and its mapping; `isolate` replaces a private
+  mapping with a fresh session-only record without opening or copying files.
+  `sources` pages only saved registrations and validates their mapped workspace.
+  Existing domain references and repeated isolation retain their original paths.
+  The catalogue also reserves `digest_beside(memory_path)` and checks memory,
+  index, and digest paths against every destination column in one transaction.
+  A client-side parity test pins the derived sidecar to the memory module's
+  convention, so imported destinations cannot silently overlap its digest.
+
+- `storage/sqlite_policy.{Options, ForeignKeys, Journal}` centralizes connection
+  and journal tuning for sessions, the catalogue and search. Record updates
+  override a database's busy timeout, foreign-key enforcement, journal mode or
+  optional cache target. Connection configuration precedes admission; journal
+  configuration follows successful file validation and ownership acquisition.
+  `configure_database` runs the journal pragma as a query and compares the mode
+  SQLite reports back, so success means the database is in the requested mode
+  rather than that the statement ran.
+- `storage/access.{Principal, PrincipalKind, Digest, Role, Authority}` holds
+  stable daemon identities, current display names, SHA-256 credential digests,
+  and per-session operator/observer membership. `bootstrap_owner` creates the
+  one owner or verifies its existing active credential; `owner` reads identity
+  without changing credentials. `rotate_credential` changes credentials, not
+  principal identity. This is an internal DAL, not invitation or gateway policy.
+  `invite_member` atomically creates a reserved principal ID, credential, and
+  first membership. `rotate_member` revokes all active member credentials and
+  inserts one replacement; `revoke_member` retains the identity and grants.
+  These member operations refuse the owner principal.
+- `storage/catalogue.{Catalogue, Registration, State, Page}` holds daemon
+  metadata in a separate SQLite file. `Reserved` and `Saved` describe file
+  initialization, not runtime liveness. `reserve` is idempotent by creation
+  key; `by_request_key` recovers the original registration before a retry
+  allocates an id, path, or timestamp. `workspace_default` reads a workspace's
+  saved choice; `set_workspace_default` changes it only to a registration in
+  that workspace. `member_page` applies membership in SQL before its 100-row
+  limit, so a continuation never exposes an unrelated session identity.
+  The catalogue revision advances only on registration, default or membership changes,
+  not on identical retries.
+- `storage/snapshot.{Reader, Plan, Cut, Descriptor}` supplies bounded client
+  reads without changing the frozen `Storage` record. A declarative plan
+  selects register namespaces/prefixes or `ExactKey(namespace, key)` and follows
+  bounded references. Missing exact keys are omitted; a caller needing absence
+  reports must compare requested keys with returned cells. Exact selection uses
+  the existing indexed header lookup, accounts before payload fetch, and never
+  scans prefix neighbors. Capture
+  copies a coherent high-water, stats and metadata; later descriptor pages and
+  raw entry fragments retain no transaction. The existing backend actor owns
+  every read. This capability creates neither a reader process nor a lease.
+  Each function takes a final wait budget in milliseconds, capped at 5,000.
+  The shared monitored exchange in `internal/snapshot_call` returns
+  `ReadTimedOut` or `ReaderUnavailable` instead of panicking.
+- `storage/sql` contains parrot/sqlc-generated catalogue and snapshot queries.
+  `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
+  embeds conversation `sql/session.sql`. Generation loads both schemas for
+  query checking, but each database executes only its own schema. `make gen-sql`
+  regenerates these artifacts, and tests pin them to their sources.
+- `storage/catalogue.{query, statement, atomic, coherent}` are internal
+  generated-query adapters for access metadata. They reuse the catalogue
+  connection and its existing daemon owner; they introduce neither a connection
+  nor an actor. `atomic` is the write seam (`BEGIN IMMEDIATE`) and `coherent`
+  its read-intent sibling (`BEGIN DEFERRED`); neither may be nested inside the
+  other, since SQLite has no nested transactions and the inner rollback would
+  discard the outer transaction's writes.
 - `storage/storage.Storage(handle)` — a record of functions closed over a
   backend handle: `commit`, `get_entries`, `get_register`,
   `list_registers`, `scan_branch`, `scan_entries`, `scan_usage`, `stats`,
@@ -29,6 +100,9 @@ by WP-C-full.
   lease TTL, busy timeout; the segmented branch-index window type.
   `OpenError.UnsupportedVersion(found, supported)` is the fail-closed
   answer to a file this build cannot read.
+- `storage/sqlite.transfer_startup(handle)` unlinks the original SQLite actor
+  only after cleanup publication is acknowledged, and returns that actor's PID.
+  A failed builder cannot discard the published actor's lease-release proof.
 - `storage/sqlite.Migration(from_version, statements)` — one migrate-on-open
   step, run by `open_with_migrations`; the chain itself is owned by
   `session.migration_chain`. `sqlite.storage_version` is 1, so the chain is
@@ -62,7 +136,7 @@ by WP-C-full.
 - **Depends on**: `core` (ids, entries, registers, tx, codecs,
   corruption), `sqlight` (the SQLite binding, ADR-002), `simplifile` (the
   rewrite's copy/rename/unlink), `gleam_erlang` + `gleam_otp` (both
-  backends are actors).
+  backends are actors), `parrot` (typed catalogue queries, ADR-004).
 - **Depended on by**: `session` (wraps one open handle; owns the migration
   chain and drives the rewrite), `runtime` (the StorageWriter owns it),
   `events` (projections and the search service scan sessions through the
@@ -98,10 +172,92 @@ by WP-C-full.
 
 ## Invariants
 
+- **Stable identity is not a credential.** Principal IDs and current display
+  names are stored independently of active/revoked credential digests. Plaintext
+  bearer tokens never enter access SQL. The caller must supply SHA-256 hashes
+  of cryptographically random tokens; validating a 64-hex-byte representation
+  does not prove entropy. Revoked digests remain tombstones and cannot be
+  reassigned or reactivated. Rotation is one immediate transaction, so a failed
+  replacement leaves the previous credential active.
+- **Invitation retries do not mint new identities or credentials.** A caller
+  chooses its recovery ID before sending. Existing principal IDs always
+  conflict, including after revocation. Explicit member rotation recovers a
+  lost successful reply without reusing any tombstoned digest. Invitation and
+  rotation roll back all preceding writes if a later insertion fails.
+- **There is one durable owner.** A partial unique index enforces the single
+  owner row. Bootstrap retries require an active credential already belonging
+  to that owner; a missing, malformed, revoked, or unrelated token cannot reset
+  ownership. A display-name change preserves principal identity, and readers
+  can snapshot the current name without rewriting historical origins.
+- **Membership is session-scoped.** `(principal_id, session_id)` is the indexed
+  membership key. Operator and observer are explicit roles, not fallback values;
+  a missing row grants nothing. Even owner authorization checks that the session
+  exists. Foreign keys and DAL validation reject dangling references. Reads
+  totally decode persisted principal kinds, credential states, and roles; an
+  unknown value refuses access. No access API performs an unbounded list.
+- **Catalogue metadata never opens a conversation.** Listing, request-key
+  lookup, and workspace defaults read only the separate catalogue file.
+  A default may name a reservation; it proves neither initialization nor
+  runtime liveness. Reads reject dangling or cross-workspace defaults, and
+  writes validate the target workspace before changing the mapping.
+  The caller serializes
+  metadata access under the daemon lifetime lock. Reservations survive
+  restart without taking session leases or executing recovery. Canonical
+  paths and authorization are the daemon's responsibility.
+- **Actor retirement follows successful close.** `sqlite.retire_closed`
+  refuses an open connection or retained close error, then observes normal
+  actor exit before returning success. Ordinary `Storage.close` keeps its
+  idempotent contract and does not retire the actor.
+- **Snapshot bounds precede payload reads.** Capture admits at most 1,024 cells
+  and 1 MiB of encoded metadata, including identifiers and referenced cells.
+  SQL preflights identifier and payload lengths before transferring them to
+  the BEAM. Pages contain at most 100 entry descriptors; fragments contain at
+  most 190 KiB; a record above 32 MiB is refused before its payload is fetched.
+  These are representation bounds, not a VM RSS limit. The memory backend
+  already owns decoded entries and serializes one selected entry for slicing.
+- **The snapshot cut outlives no transaction.** SQLite captures mutable cells,
+  stats and `next_seq` in one short deferred transaction. Later pages stay
+  below that cut and read write-once entries. The gateway, not storage, owns
+  incarnation checks, transfer credit, authorization and socket deadlines.
+  Metadata itself can exceed one 256 KiB wire frame and must also be chunked.
+- **A snapshot timeout is not cancellation.** The read may remain queued or
+  running, and its eventual reply may enter the caller's mailbox. The original
+  gateway/session must fail without retrying or admitting further reads.
+  Session custody must drain the original storage actor or retain
+  RecoveryBlocked before reopening it. The exchange owns only its monitor,
+  which is released on every outcome; it neither kills nor replaces storage.
 - **All-or-none commits.** Validation completes before any state is
   replaced; a failed commit applies nothing and consumes no seq. Seqs are
   strictly increasing per session; gaps are legal.
-- **Every SQLite transaction opens with `BEGIN IMMEDIATE`.** Allocating the
+- **Transaction intent is explicit, not inferred from generated cardinality.**
+  Catalogue pages and compound default reads use `BEGIN DEFERRED`; they read a
+  coherent snapshot without reserving the writer. So does `access.authorization`,
+  whose three lookups answer one question about authority and must see one state
+  of the world without depending on the daemon's lifetime lock. Catalogue
+  mutations and access changes use `BEGIN IMMEDIATE`, including read-then-write
+  operations. A generated `:many` query is not necessarily read-only: writes can
+  return rows.
+- **The journal mode is verified, never assumed.** A journal change SQLite
+  declines is reported as the mode the database kept, not as an error, and an
+  exec discards that row. `configure_database` reads it and fails unless it
+  matches the requested mode, accepting only the `memory` an in-memory database
+  answers with. Without that check a session could run in rollback-journal mode
+  while every caller believed it had readers-alongside-one-writer.
+- **A snapshot prefix selection is an index range, not a namespace scan.**
+  `snapshot_sqlite` computes the prefix's successor in Gleam and the generated
+  queries bound `registers(ns, key)` with `key >= @prefix AND key <
+  @prefix_upper`, so the per-row JSON predicate only runs inside the prefix
+  window. An empty successor means the prefix has none — it is empty, or all
+  maximum code points — and the range stays open above, which a BLOB upper bound
+  expresses because every BLOB sorts after every TEXT. Prefixes stay literal:
+  nothing in them is a pattern, so nothing needs escaping.
+- **A test that opens a real database owns a scratch directory.**
+  `support/fixtures.scratch` deletes the directory, proves it absent, and
+  recreates it, so an interrupted run cannot leave a `-wal`/`-shm` sibling that
+  makes the next open see the database as locked (issue #119). Deleting the
+  `.db` alone is not enough, and a fixture must not depend on the journal mode
+  a previous run left behind.
+- **Every session write transaction opens with `BEGIN IMMEDIATE`.** Allocating the
   seq range reads `session.next_seq` before writing it, so every commit
   reads before it writes; a deferred `BEGIN` takes a read snapshot it
   cannot upgrade, and `busy_timeout` cannot rescue that.
@@ -136,7 +292,11 @@ by WP-C-full.
 - **Parent-must-exist is enforced at commit**; in-transaction parents work
   because writes apply in order.
 - **Close is idempotent** (pi §1.5): a sealed handle answers handle-closed
-  on reads and faulted on commits rather than crashing.
+  on reads and faulted on commits rather than crashing. SQLite retains
+  its original close result, including a failed lease deletion; a retry
+  cannot turn that failure into permission to replace the writer. Both
+  close and failed-open lease cleanup use the binding's busy-total exec
+  path, with the owner quoted as a literal and the fence matched exactly.
 - **Stats equal the ledger sum after every commit** — the conformance suite
   asserts it at each transaction, not just at the end.
 - **A version is migrated or refused, never misread — and a refusal writes

@@ -18,6 +18,7 @@ func TestRoundtripAllKinds(t *testing.T) {
 		{KindExecOut, ExecOut{Stream: "stdout", Data: []byte("chunk"), Bytes: 5, Truncated: false}},
 		{KindExecExit, ExecExit{Code: 3, StdoutBytes: 10, Enforcement: []string{"bwrap"}, WallMs: 42}},
 		{KindCancel, map[string]any{}},
+		{KindShutdown, map[string]any{}},
 		{KindHeartbeat, map[string]any{}},
 		{KindError, ErrorBody{Code: ErrCodeBusy, Msg: "an execution is already running"}},
 	}

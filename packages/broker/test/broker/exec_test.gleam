@@ -7,6 +7,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import weft/poll
 
 fn request(demand: exec.EnforcementDemand) -> exec.ExecRequest {
   exec.ExecRequest(
@@ -430,12 +431,21 @@ pub fn pool_retires_dead_helpers_and_respawns_test() {
       Ok(fake_helper.start_helper(fake_helper.EchoArgv))
     })
   let assert Ok(helper) = exec.checkout(pool, waiting: 2000)
-  // The helper dies while lent out (channel gone).
-  process.send(exec.wire(helper), exec.WireClosed(status: 1))
+  // A clean native exit while lent out is evidence the helper joined its
+  // jail. The pool must still observe the BEAM owner retire before reuse.
+  process.send(exec.wire(helper), exec.WireClosed(status: 0))
   let assert Ok(_) = process_settle(helper)
   exec.checkin(pool, helper)
   // The dead helper was retired; capacity respawns a fresh one.
-  let assert Ok(fresh) = exec.checkout(pool, waiting: 2000)
+  let assert poll.Answered(fresh) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case exec.checkout(pool, waiting: 1000) {
+        Ok(helper) -> poll.Done(helper)
+        Error(exec.AllBusy(_)) -> poll.Retry
+        Error(other) -> poll.Fail(other)
+      }
+    })
+    as "confirmed retirement frees capacity"
   let assert exec.StatusReady(_) = exec.status(fresh, waiting: 1000)
   exec.checkin(pool, fresh)
   exec.stop_pool(pool)
@@ -449,7 +459,7 @@ pub fn pool_retires_dead_helpers_and_respawns_test() {
 /// scaling argument for a sixteen-slot pool rests on a probe costing one
 /// timeout per wedged helper and never being paid twice; that is only
 /// true if the first timeout is survivable.
-pub fn pool_retires_a_wedged_helper_rather_than_faulting_test() {
+pub fn pool_retains_a_wedged_helper_without_faulting_test() {
   let #(wedged, wedge) = fake_helper.start_wedgeable_helper(blocking_for: 4000)
   let first_spawn = one_shot()
   let assert Ok(pool) =
@@ -466,14 +476,11 @@ pub fn pool_retires_a_wedged_helper_rather_than_faulting_test() {
   fake_helper.close_wedge(wedge)
   process.sleep(200)
   exec.checkin(pool, borrowed)
-  // The probe times out, the wedged helper is retired, and the slot
-  // respawns. A pool that had faulted would take this `checkout` with
-  // it instead of answering.
-  let assert Ok(fresh) = exec.checkout(pool, waiting: 4000)
-  assert exec.pid(fresh) != exec.pid(wedged)
-  let assert exec.StatusReady(_) = exec.status(fresh, waiting: 1000)
-  exec.checkin(pool, fresh)
-  exec.stop_pool(pool)
+  // The probe times out without killing the pool. A stop request is not
+  // retirement evidence, so the unreaped helper still occupies capacity.
+  assert exec.checkout(pool, waiting: 4000) == Error(exec.AllBusy(size: 1))
+  assert exec.close_pool(pool, waiting: 20) == Error(exec.RetirementPending)
+  assert process.is_alive(exec.pool_pid(pool))
 }
 
 /// A pool that has stopped answers its borrower rather than killing
@@ -569,13 +576,15 @@ pub fn probes_of_a_departed_helper_are_unresponsive_test() {
 // Waits until a shut-down helper actor has actually exited, so a test
 // that means "the callee is gone" is not racing the shutdown.
 fn await_departed(pid: process.Pid) -> Nil {
-  case process.is_alive(pid) {
-    False -> Nil
-    True -> {
-      process.sleep(20)
-      await_departed(pid)
-    }
-  }
+  let assert poll.Answered(Nil) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case process.is_alive(pid) {
+        False -> poll.Done(Nil)
+        True -> poll.Retry
+      }
+    })
+    as "helper actor exits within test deadline"
+  Nil
 }
 
 type LatchMsg {

@@ -111,7 +111,10 @@ fn handle(state: State(s), msg: Msg(s)) -> actor.Next(State(s), Msg(s)) {
       deliver(state.inbound, actions)
       actor.continue(State(..state, script_state:))
     }
-    ClientClosed -> actor.continue(state)
+    ClientClosed -> {
+      deliver(state.inbound, [Close("fake transport closed")])
+      actor.continue(state)
+    }
     Inject(actions:) -> {
       deliver(state.inbound, actions)
       actor.continue(state)

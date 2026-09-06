@@ -9,7 +9,7 @@
 ////
 //// Non-negotiables enforced here:
 ////
-//// - **Every transaction opens with `BEGIN IMMEDIATE`.** Allocating the
+//// - **Every write transaction opens with `BEGIN IMMEDIATE`.** Allocating the
 ////   seq range reads `session.next_seq` before writing it, so every
 ////   commit reads before it writes; a deferred `BEGIN` could take a read
 ////   snapshot it cannot upgrade, and `busy_timeout` cannot rescue that.
@@ -32,6 +32,8 @@
 //// serialize through one mailbox ("one writer, one queue"), and the
 //// injected clock is threaded through it. The esqlite connection is only
 //// ever used from the actor process after `open` returns.
+//// Bounded client metadata capture uses one short `BEGIN DEFERRED` read
+//// transaction; immutable continuation and byte fragments retain no transaction.
 
 import core/clock.{type Clock}
 import core/codec
@@ -52,7 +54,7 @@ import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode.{type Decoder}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -63,6 +65,11 @@ import gleam/uri
 import simplifile
 import sqlight.{type Connection}
 import storage/internal/branch
+import storage/internal/snapshot_call
+import storage/internal/snapshot_sqlite
+import storage/session_schema
+import storage/snapshot
+import storage/sqlite_policy
 import storage/storage.{
   type BranchScan, type EntryScan, type Register, type ScanOrder,
   type SessionStats, type Storage, type StorageError, type UsageScan,
@@ -100,7 +107,12 @@ pub type Config {
 /// ```
 ///
 pub fn config(path path: String, owner owner: String) -> Config {
-  Config(path:, owner:, lease_ttl_ms: 30_000, busy_timeout_ms: 5000)
+  Config(
+    path:,
+    owner:,
+    lease_ttl_ms: 30_000,
+    busy_timeout_ms: sqlite_policy.defaults().busy_timeout_ms,
+  )
 }
 
 /// Sets the lease time-to-live in milliseconds.
@@ -214,6 +226,27 @@ pub opaque type Message {
   /// Stats projection read.
   Stats(reply: Subject(Result(SessionStats, StorageError)))
 
+  /// Capture one bounded metadata cut without a network-owned transaction.
+  SnapshotCapture(
+    plan: snapshot.Plan,
+    reply: Subject(Result(snapshot.Cut, snapshot.Error)),
+  )
+
+  /// Read immutable descriptors below the caller's fixed high-water.
+  SnapshotPage(
+    after: Int,
+    before: Int,
+    limit: Int,
+    reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
+  )
+
+  /// Slice one immutable record before returning bytes to the gateway.
+  SnapshotFragment(
+    descriptor: snapshot.Descriptor,
+    offset: Int,
+    reply: Subject(Result(BitArray, snapshot.Error)),
+  )
+
   /// Renew the writer lease without committing anything.
   RenewLease(reply: Subject(Result(Nil, StorageError)))
 
@@ -235,6 +268,9 @@ pub opaque type Message {
 
   /// Seal the handle: release the lease, close the file. Idempotent.
   Close(reply: Subject(Result(Nil, StorageError)))
+
+  /// Retire the actor only after its connection closed successfully.
+  Retire(reply: Subject(Result(Nil, StorageError)))
 }
 
 type ActorState {
@@ -244,8 +280,15 @@ type ActorState {
     owner: String,
     fence: Int,
     lease_ttl_ms: Int,
-    closed: Bool,
+    phase: ConnectionPhase,
   )
+}
+
+// A sealed connection retains its first close result. In particular, a
+// failed lease deletion cannot become successful merely by closing twice.
+type ConnectionPhase {
+  OpenConnection
+  ClosedConnection(outcome: Result(Nil, StorageError))
 }
 
 // Failures inside a transaction, mapped to `CommitError` or
@@ -362,7 +405,7 @@ fn initialize(
     // The lease was claimed but this open cannot deliver a usable handle;
     // release the claim so the file is not locked out for a whole TTL.
     Error(open_error) -> {
-      let _ = abandon_lease(conn, config.owner, fence)
+      let _ = release_lease(conn, config.owner, fence)
       Error(open_error)
     }
   }
@@ -388,9 +431,10 @@ fn set_busy_timeout(
   conn: Connection,
   busy_timeout_ms: Int,
 ) -> Result(Nil, OpenError) {
-  sqlight.exec(
-    "PRAGMA busy_timeout = " <> int.to_string(busy_timeout_ms),
-    on: conn,
+  let defaults = sqlite_policy.defaults()
+  sqlite_policy.configure_connection(
+    conn,
+    sqlite_policy.Options(..defaults, busy_timeout_ms:),
   )
   |> result.map_error(fn(error) {
     OpenFailed(reason: "busy_timeout: " <> describe_sqlight(error))
@@ -400,7 +444,7 @@ fn set_busy_timeout(
 // WAL only after admission: switching the journal mode writes the file
 // header, and a refused open must leave the file byte-identical.
 fn set_wal_journal(conn: Connection) -> Result(Nil, OpenError) {
-  sqlight.exec("PRAGMA journal_mode = WAL", on: conn)
+  sqlite_policy.configure_database(conn, sqlite_policy.defaults())
   |> result.map_error(fn(error) {
     OpenFailed(reason: "journal_mode: " <> describe_sqlight(error))
   })
@@ -493,7 +537,7 @@ fn read_catalog_versions(
 }
 
 fn exec_schema(conn: Connection) -> Result(Nil, OpenError) {
-  sqlight.exec(schema_sql, on: conn)
+  sqlight.exec(session_schema.schema, on: conn)
   |> result.map_error(fn(error) {
     OpenFailed(reason: "schema: " <> describe_sqlight(error))
   })
@@ -642,16 +686,15 @@ fn claim_lease(
   |> result.replace(fence)
 }
 
-// Best-effort release of a lease this open claimed but cannot use (a
-// migration or journal-mode failure after admission committed). Scoped to
-// our own (owner, fence) pair like `Close`, and issued through `exec` —
-// the busy-total path — with the owner quoted as a SQL literal, because
-// no transaction protects this statement from cross-process contention.
-fn abandon_lease(
+// Both close and failed-open cleanup can contend with another connection.
+// Use the binding's busy-total exec path: a query can throw on SQLITE_BUSY
+// instead of returning its error. The quoted owner and exact fence keep a
+// stale connection from deleting its replacement's lease.
+fn release_lease(
   conn: Connection,
   owner: String,
   fence: Int,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, Fail) {
   sqlight.exec(
     "DELETE FROM writer_lease WHERE owner_id = "
       <> sql_quote(owner)
@@ -659,41 +702,45 @@ fn abandon_lease(
       <> int.to_string(fence),
     on: conn,
   )
-  |> result.replace(Nil)
-  |> result.replace_error(Nil)
+  |> result.map_error(FailSql)
 }
 
-const schema_sql = "
-CREATE TABLE IF NOT EXISTS entries(
-  id TEXT PRIMARY KEY, parent_id TEXT, seq INTEGER, type TEXT,
-  custom_type TEXT, ts INTEGER, payload BLOB) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_entry_parent ON entries(parent_id);
-CREATE INDEX IF NOT EXISTS ix_entry_seq ON entries(seq, type);
-CREATE TABLE IF NOT EXISTS registers(
-  ns TEXT NOT NULL, key TEXT NOT NULL, seq INTEGER NOT NULL,
-  value BLOB NOT NULL, PRIMARY KEY(ns, key));
-CREATE TABLE IF NOT EXISTS usage_ledger(
-  id TEXT PRIMARY KEY, seq INTEGER, entry_id TEXT, adjustment INTEGER,
-  usage BLOB, details BLOB) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_usage_seq ON usage_ledger(seq);
-CREATE TABLE IF NOT EXISTS branch_entries(
-  branch_id TEXT, entry_id TEXT, entry_seq INTEGER, entry_type TEXT,
-  PRIMARY KEY(branch_id, entry_id)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_be_seq
-  ON branch_entries(branch_id, entry_seq, entry_id, entry_type);
-CREATE INDEX IF NOT EXISTS ix_be_type
-  ON branch_entries(branch_id, entry_type, entry_seq, entry_id);
-CREATE INDEX IF NOT EXISTS ix_be_entry ON branch_entries(entry_id);
-CREATE TABLE IF NOT EXISTS branch_meta(
-  branch_id TEXT PRIMARY KEY, tip_entry_id TEXT, tip_seq INTEGER,
-  base_branch_id TEXT, base_seq INTEGER);
-CREATE UNIQUE INDEX IF NOT EXISTS ix_bm_tip ON branch_meta(tip_entry_id);
-CREATE TABLE IF NOT EXISTS session(
-  created_at INTEGER, parent_session_id TEXT, storage_version INTEGER,
-  metadata BLOB, message_count INTEGER, usage_payload BLOB, next_seq INTEGER);
-CREATE TABLE IF NOT EXISTS writer_lease(
-  owner_id TEXT, fence INTEGER, expires_at_ms INTEGER);
-"
+/// Borrows bounded snapshot read capabilities from this connection's actor.
+///
+/// The capabilities own no resource and must retire before the instance owner
+/// closes storage. Sealed handles answer HandleClosed like ordinary reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let reader = sqlite.snapshot_reader(store.handle)
+/// ```
+@internal
+pub fn snapshot_reader(handle: Subject(Message)) -> snapshot.Reader {
+  snapshot.Reader(
+    capture: fn(plan, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotCapture(
+        plan,
+        _,
+      ))
+    },
+    page: fn(after, before, limit, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotPage(
+        after,
+        before,
+        limit,
+        _,
+      ))
+    },
+    fragment: fn(descriptor, offset, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotFragment(
+        descriptor,
+        offset,
+        _,
+      ))
+    },
+  )
+}
 
 fn start_actor(
   conn: Connection,
@@ -708,7 +755,7 @@ fn start_actor(
       owner: config.owner,
       fence:,
       lease_ttl_ms: config.lease_ttl_ms,
-      closed: False,
+      phase: OpenConnection,
     )
   let started =
     actor.new(state)
@@ -770,6 +817,73 @@ fn start_error_reason(error: actor.StartError) -> String {
 ///
 pub fn renew_lease(handle: Subject(Message)) -> Result(Nil, StorageError) {
   process.call_forever(handle, RenewLease)
+}
+
+/// Retires an owned connection's actor after successful storage close.
+///
+/// Ordinary `Storage.close` remains idempotent and leaves its actor available.
+/// An instance custodian calls this separate operation only after every reader
+/// and writer has retired. An open connection or failed close is refused; a
+/// missing actor is not evidence that its lease was released.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // use Nil <- result.try(storage.close(store))
+/// // sqlite.retire_closed(store.handle)
+/// ```
+@internal
+pub fn retire_closed(handle: Subject(Message)) -> Result(Nil, StorageError) {
+  use pid <- result.try(
+    process.subject_owner(handle)
+    |> result.map_error(fn(_nil) {
+      BackendFault("SQLite retirement has no local owner")
+    }),
+  )
+  let watch = process.monitor(pid)
+  let outcome = case process.call_forever(handle, Retire) {
+    Error(error) -> Error(error)
+    Ok(Nil) -> {
+      process.new_selector()
+      |> process.select_specific_monitor(watch, fn(down) {
+        case down {
+          process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
+          process.ProcessDown(reason:, ..) | process.PortDown(reason:, ..) ->
+            Error(BackendFault(
+              "SQLite retirement lost proof: " <> string.inspect(reason),
+            ))
+        }
+      })
+      |> process.selector_receive(5000)
+      |> result.unwrap(
+        Error(BackendFault("SQLite retirement was not acknowledged")),
+      )
+    }
+  }
+  process.demonitor_process(watch)
+  outcome
+}
+
+/// Transfers the connection's startup link after cleanup custody is acknowledged.
+///
+/// The initializer calls this only after publishing its close-and-retire
+/// capability. A missing actor is lost custody, never a successful transfer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.transfer_startup(handle)
+/// ```
+@internal
+pub fn transfer_startup(handle: Subject(Message)) -> Result(Pid, StorageError) {
+  use owner <- result.map(
+    process.subject_owner(handle)
+    |> result.replace_error(storage.BackendFault(
+      "the storage owner died before transfer",
+    )),
+  )
+  process.unlink(owner)
+  owner
 }
 
 /// Projects a session's canonical identity (`protocol-change/008`) into
@@ -1074,7 +1188,7 @@ fn stage_rewrite(
   // The claim transaction below contends with concurrent open probes;
   // without a busy timeout it would fail spuriously instead of waiting.
   use Nil <- result.try(
-    sqlight.exec("PRAGMA busy_timeout = 5000", on: conn)
+    sqlite_policy.configure_connection(conn, sqlite_policy.defaults())
     |> result.map_error(fn(error) {
       RewriteFailed(reason: "busy_timeout: " <> describe_sqlight(error))
     }),
@@ -1723,32 +1837,58 @@ fn handle_message(
   state: ActorState,
   message: Message,
 ) -> actor.Next(ActorState, Message) {
-  case state.closed {
-    True -> handle_closed(state, message)
-    False -> handle_open(state, message)
+  case state.phase {
+    ClosedConnection(outcome) -> handle_closed(state, message, outcome)
+    OpenConnection -> handle_open(state, message)
   }
 }
 
 fn handle_closed(
   state: ActorState,
   message: Message,
+  close_outcome: Result(Nil, StorageError),
 ) -> actor.Next(ActorState, Message) {
   case message {
-    Close(reply:) -> process.send(reply, Ok(Nil))
+    Retire(reply:) -> {
+      case close_outcome {
+        Ok(Nil) -> {
+          process.send(reply, Ok(Nil))
+          actor.stop()
+        }
+        Error(error) -> answer(state, reply, Error(error))
+      }
+    }
+    Close(reply:) -> answer(state, reply, close_outcome)
     Commit(reply:, ..) ->
-      process.send(reply, Error(Faulted(reason: "storage handle closed")))
-    GetEntries(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    GetRegister(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    ListRegisters(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    ScanBranch(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    ScanEntries(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    ScanUsage(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    Stats(reply:) -> process.send(reply, Error(HandleClosed))
-    RenewLease(reply:) -> process.send(reply, Error(HandleClosed))
-    RecordIdentity(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    ScanBranchPlan(reply:, ..) -> process.send(reply, Error(HandleClosed))
-    Segments(reply:) -> process.send(reply, Error(HandleClosed))
+      answer(state, reply, Error(Faulted(reason: "storage handle closed")))
+    GetEntries(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    GetRegister(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ListRegisters(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ScanBranch(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ScanEntries(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ScanUsage(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    Stats(reply:) -> answer(state, reply, Error(HandleClosed))
+    SnapshotCapture(reply:, ..) ->
+      answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
+    SnapshotPage(reply:, ..) ->
+      answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
+    SnapshotFragment(reply:, ..) ->
+      answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
+    RenewLease(reply:) -> answer(state, reply, Error(HandleClosed))
+    RecordIdentity(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    ScanBranchPlan(reply:, ..) -> answer(state, reply, Error(HandleClosed))
+    Segments(reply:) -> answer(state, reply, Error(HandleClosed))
   }
+}
+
+// Ordinary closed-handle replies keep the actor available for idempotence.
+// Only the separate successful Retire transition ends its process lifetime.
+fn answer(
+  state: ActorState,
+  reply: Subject(value),
+  value: value,
+) -> actor.Next(ActorState, Message) {
+  process.send(reply, value)
   actor.continue(state)
 }
 
@@ -1757,6 +1897,26 @@ fn handle_open(
   message: Message,
 ) -> actor.Next(ActorState, Message) {
   case message {
+    SnapshotCapture(plan, reply) ->
+      answer(state, reply, snapshot_sqlite.capture(state.conn, plan))
+    SnapshotPage(after, before, limit, reply) ->
+      answer(
+        state,
+        reply,
+        snapshot_sqlite.page(state.conn, after, before, limit),
+      )
+    SnapshotFragment(descriptor, offset, reply) ->
+      answer(
+        state,
+        reply,
+        snapshot_sqlite.fragment(state.conn, descriptor, offset),
+      )
+    Retire(reply:) ->
+      answer(
+        state,
+        reply,
+        Error(BackendFault("SQLite must close successfully before retirement")),
+      )
     Commit(tx:, reply:) -> {
       let #(now, clock) = clock.read(state.clock)
       process.send(reply, do_commit(state, tx, now))
@@ -1816,13 +1976,7 @@ fn handle_open(
       // owner that lost the lease to a steal cannot delete its
       // replacement's row on the way out (module doc: close is scoped to
       // the writer's own pair).
-      let released =
-        run(
-          state.conn,
-          "DELETE FROM writer_lease WHERE owner_id = ?1 AND fence = ?2",
-          [sqlight.text(state.owner), sqlight.int(state.fence)],
-          decode.dynamic,
-        )
+      let released = release_lease(state.conn, state.owner, state.fence)
       let closed = sqlight.close(state.conn)
       let outcome = case released, closed {
         Ok(_), Ok(Nil) -> Ok(Nil)
@@ -1833,7 +1987,7 @@ fn handle_open(
           ))
       }
       process.send(reply, outcome)
-      actor.continue(ActorState(..state, closed: True))
+      actor.continue(ActorState(..state, phase: ClosedConnection(outcome)))
     }
   }
 }

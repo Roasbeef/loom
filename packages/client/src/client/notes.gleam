@@ -123,6 +123,7 @@ fn message_for(
         message.UserMessage(
           content: [message.UserText(text:, text_signature: None)],
           timestamp: now,
+          origin: None,
         ),
       ]
     }

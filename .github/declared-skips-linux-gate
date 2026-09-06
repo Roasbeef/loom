@@ -1,0 +1,5 @@
+# Only the ordinary Linux gate uses this declaration. The delegated jail job
+# runs the same shipped fixture with its verified enforcement prerequisites
+# and the default strict census, where this marker remains undeclared.
+# The census also rejects this declaration if the skip stops occurring.
+declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated jail job must execute the live-tool subsection without this waiver.

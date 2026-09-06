@@ -1,5 +1,4 @@
-//// The distillation pass in the session lifecycle: one supervised
-//// worker that runs `client/distill` once per boot and then idles.
+//// Distillation cadence for standalone sessions and shared workspace domains.
 ////
 //// # Why a resident at all
 ////
@@ -11,7 +10,7 @@
 //// half — the pipeline unchanged, started by the server that already
 //// consumes what it writes.
 ////
-//// # One pass, at boot, and then nothing
+//// # The standalone adapter
 ////
 //// The worker starts under the host's restartable service tier, beside
 //// the search-index holder, and its whole life is three steps: run one
@@ -24,13 +23,34 @@
 //// the notes the `remember` door wrote — does not change while this
 //// server runs.
 ////
-//// That is also the whole retry policy. A pass that fails, or that the
-//// deadline cuts off, leaves every cursor where it was and is not
-//// retried in this session; the next boot reads the same material
-//// again. Nothing is lost by that: the pipeline's crash contract is the
-//// write order (rows, then the head-and-cursors CAS, then the sidecar),
-//// so an interrupted pass leaves a store that the next pass reads as if
-//// it had never run.
+//// This adapter does not retry during the session. Interruption does not
+//// roll back committed work: the next pass resumes from durable head/cursor
+//// state and reconciles the digest sidecar. Failure after that commit must
+//// never be reported as though no progress occurred.
+////
+//// # Shared-domain cadence and retirement
+////
+//// `start_domain` uses the owned `distill.prepare` pipeline. First authorized
+//// admission starts one pass, and each pass resolves its explicit catalogue
+//// sources afresh. Clean-close triggers during a pass coalesce into one
+//// follow-up. Failure discards that pending trigger; a later explicit trigger
+//// may retry. There is no timer or automatic failure retry.
+////
+//// A fence is not always a step of retirement. The registry quiesces a domain
+//// the moment its last session closes, and the ordinary next thing that
+//// happens in a workspace is that somebody opens another session in it. That
+//// admission hands the same services back, so `request_resume` hands the
+//// cadence back with them; without it a reopened workspace would run no
+//// scheduled distillation at all until every trace of the domain retired and
+//// was rebuilt. Only `stop_domain`'s fence is final, because it has already
+//// asked the cancellation witness to exit.
+////
+//// A domain re-arms only after its managed retirement account and terminal
+//// delivery, plus the original linked cancellation witness's normal exit.
+//// Delivery alone is not resource retirement. Proof loss permanently blocks
+//// the worker, and its temporary supervision policy forbids automatic
+//// replacement. The daemon must preserve the corresponding reservation if
+//// this original worker dies unexpectedly.
 ////
 //// # Why it starts after the boot rather than during it
 ////
@@ -52,7 +72,7 @@
 ////
 //// # The one cost of an interruption
 ////
-//// A pass killed mid-flight — a shutdown, a fatal child, `SIGKILL` —
+//// A standalone pass killed mid-flight — a shutdown, a fatal child, `SIGKILL` —
 //// cannot release the memory session's lease, which it holds under the
 //// run-scale TTL (`client/memory.run_lease_ttl_ms`, ten minutes). The
 //// store is consistent, because the write order says so, but a boot
@@ -61,24 +81,30 @@
 //// minutes and never a lost row, which is why this module carries no
 //// machinery to shorten it: releasing a lease from outside the process
 //// that took it is exactly the theft the run-scale TTL exists to
-//// prevent.
+//// prevent. Owned domain passes instead retain cleanup with adopted holders;
+//// caller timeout is neither cancellation nor permission to reopen a store.
 
+import broker/internal/call
 import client/distill
 import client/memory
 import core/clock.{type Clock}
+import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
-import runtime/internal/ffi_sup
+import provider/gateway
+import provider/model
 import telemetry/field
 import telemetry/log.{type Logger}
 import tom
 import weft
+import weft/actor
+import weft/registry as address
 import weft/state_machine as sm
 
 // --- the operator's configuration ------------------------------------------
@@ -229,7 +255,8 @@ fn cadence_of(fields: Dict(String, tom.Toml)) -> Result(Cadence, String) {
     Ok(_other) ->
       Error(
         "memory.distill must be one of \"on-boot\" or \"off\": \"on-boot\" "
-        <> "runs one distillation pass per session boot, and \"off\" runs "
+        <> "runs at domain admission and coalesces successful-close passes, "
+        <> "while \"off\" runs "
         <> "none at all and leaves remembered notes for a hand-run "
         <> "`loom-distill`",
       )
@@ -275,12 +302,12 @@ pub type Pass {
   /// many rows the head now carries, and whether the sidecar moved.
   Completed(report: distill.Report)
 
-  /// The pipeline refused, or the process running it died. Every cursor
-  /// is where it was, and the next boot reads the same material again.
+  /// The pipeline refused, or its worker died. Earlier commits may stand;
+  /// this outcome does not assert rollback.
   Refused(reason: String)
 
-  /// The wall deadline reaped the pass. Work was done and thrown away;
-  /// like a refusal, the next boot starts over.
+  /// The wall deadline cancelled the pass. A later pass resumes from durable
+  /// head/cursor state, which may already include this pass's commit.
   Expired(after_ms: Int)
 }
 
@@ -296,7 +323,7 @@ pub type Pass {
 /// (`client/distill.target`); `wall_ms` is positive.
 pub type Config {
   Config(
-    name: Name(Message),
+    name: address.Address(Message),
     directory: String,
     distiller: distill.Distiller,
     clock: Clock,
@@ -394,7 +421,7 @@ pub fn start(config: Config) -> sm.StartResult(Subject(Message)) {
     |> sm.continuing(Begin)
     |> Ok
   })
-  |> sm.named(config.name)
+  |> sm.addressed(config.name)
   |> sm.on_event(handle)
   |> sm.start
 }
@@ -434,19 +461,23 @@ pub fn supervised(config: Config) -> ChildSpecification(Subject(Message)) {
 /// ```
 ///
 pub fn settled(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms timeout_ms: Int,
 ) -> Result(Pass, String) {
-  case process.named(name) {
+  case address.lookup(name) {
     Error(Nil) -> Error(no_worker)
-    Ok(pid) -> {
+    Ok(subject) -> {
+      use pid <- result.try(
+        process.subject_owner(subject)
+        |> result.replace_error(no_worker),
+      )
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
 
       // Sent to the pid the monitor describes, for the reason
       // `client/history.ask` gives: re-resolving the name could ask a
       // replacement while watching its predecessor.
-      ffi_sup.send_to_pid(pid, #(name, Awaited(reply_with: reply)))
+      process.send(subject, Awaited(reply_with: reply))
       let answered =
         process.new_selector()
         |> process.select_map(reply, Some)
@@ -571,7 +602,7 @@ fn reported(
       settle(book, Refused(reason: "the pass did not confirm cancellation"))
 
     // The run ended without delivering an outcome, which means the scope
-    // died before the task reported. Every cursor is where it was.
+    // died before the task reported. Already committed progress still stands.
     weft.AllDelivered ->
       settle(book, Refused(reason: "the pass ended without an account"))
     weft.RunLost(reason:) ->
@@ -616,8 +647,764 @@ fn announce(logger: Logger, pass: Pass) -> Nil {
   }
 }
 
-const retry_note = "no cursor moved; the next session boot reads the same "
-  <> "material again"
+const retry_note = "committed head/cursor state is retained; a later authorized "
+  <> "trigger or session boot resumes from durable progress"
+
+/// A domain's owner-selected policy and fresh catalogue source resolver.
+/// This worker always uses `distill.prepare`, never an arbitrary leaf task.
+pub type DomainConfig {
+  DomainConfig(
+    /// Stable address owned by daemon domain admission.
+    name: address.Address(DomainMessage),
+    /// Memory/digest destinations, clock, entropy, and logger.
+    pipeline: distill.Config,
+    /// Resolves authorized explicit sources afresh inside each managed pass.
+    sources: fn() -> Result(List(distill.Source), String),
+    /// Provider configuration belonging to the domain's explicit owner.
+    gateway: gateway.Gateway,
+    /// The owner's resolved distillation route.
+    target: model.RequestTarget,
+    /// Per-request deadline, distinct from the pass wall deadline.
+    request_timeout_ms: Int,
+    /// Explicit opt-out and maximum pass duration.
+    options: Options,
+  )
+}
+
+/// Domain messages are private to the bounded command functions below.
+pub opaque type DomainMessage {
+  DomainBegin
+  DomainTrigger(Subject(Result(Nil, String)))
+  DomainNotify
+  DomainAwait(Subject(Pass))
+  DomainQuiesce(Subject(Pass))
+  DomainResume
+  DomainStop(Subject(String))
+  DomainWitness(Subject(Option(process.Pid)))
+  DomainReported(weft.Pulled(distill.Report, String))
+  WitnessRetired(process.ExitReason)
+}
+
+type DomainPhase {
+  Dormant
+  Active
+  Settled(Pass)
+  RecoveryBlocked(String)
+}
+
+type Pending {
+  NoFollowUp
+  FollowUp
+}
+
+type Admission {
+  Accepting
+  Quiescing
+  Stopping
+}
+
+type Delivery {
+  WaitingForDelivery
+  Delivered
+}
+
+type WitnessStop {
+  WitnessRunning
+  WitnessStopRequested
+}
+
+// What the domain machine carries across its phases.
+//
+// `quiesce_waiters` holds the reply subjects of quiesces that arrived while a
+// pass was still owed. They are kept here rather than in the machine's
+// postpone queue for one reason: a postponed event is handled again on every
+// transition, and each of those replays would re-apply the fence the quiesce
+// asked for. A `DomainResume` landing in between lifts that fence, so a
+// replay would silently fence a domain that has a live session again and the
+// workspace would run no maintenance for the rest of the domain's life.
+// Parking the reply makes the fence a thing that happens once, when the
+// quiesce arrives, and the answer a thing that touches nothing.
+type DomainBook {
+  DomainBook(
+    config: DomainConfig,
+    subject: Subject(DomainMessage),
+    reports: Subject(weft.Pulled(distill.Report, String)),
+    witness: Option(#(Subject(Nil), process.Pid, process.Monitor)),
+    witness_stop: WitnessStop,
+    delivery: Delivery,
+    account: Option(Pass),
+    pending: Pending,
+    admission: Admission,
+    quiesce_waiters: List(Subject(Pass)),
+  )
+}
+
+/// Starts one pass at first authorized domain admission, then waits for triggers.
+/// Opted-out domains refuse before creating a pass or cancellation witness.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.start_domain(config)
+/// ```
+@internal
+pub fn start_domain(
+  config: DomainConfig,
+) -> sm.StartResult(Subject(DomainMessage)) {
+  prepare_domain(config)
+  |> result.map(fn(started) {
+    begin_domain(started.data)
+    started
+  })
+}
+
+/// Starts parked, retaining the creator link without opening any resource.
+/// The domain custodian publishes cleanup before unlinking and calling begin.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let parked = distillpass.prepare_domain(config)
+/// ```
+@internal
+pub fn prepare_domain(
+  config: DomainConfig,
+) -> sm.StartResult(Subject(DomainMessage)) {
+  sm.new_with_initialiser(1000, fn(subject) {
+    use <- bool.guard(
+      when: config.options.cadence == DistillsOff,
+      return: Error("distillation is disabled for this domain"),
+    )
+    use <- bool.guard(
+      when: config.options.wall_ms <= 0
+        || config.options.wall_ms > default_wall_ms
+        || config.request_timeout_ms <= 0,
+      return: Error(
+        "domain distillation deadlines must be positive and bounded",
+      ),
+    )
+    let reports = process.new_subject()
+    let selector =
+      process.new_selector()
+      |> process.select(subject)
+      |> process.select_map(reports, DomainReported)
+    sm.initialised(
+      Dormant,
+      DomainBook(
+        config,
+        subject,
+        reports,
+        None,
+        WitnessRunning,
+        WaitingForDelivery,
+        None,
+        NoFollowUp,
+        Accepting,
+        [],
+      ),
+    )
+    |> sm.selecting(selector)
+    |> sm.returning(subject)
+    |> Ok
+  })
+  |> sm.addressed(config.name)
+  |> sm.on_event(domain_handle)
+  |> sm.start
+}
+
+/// Releases the original parked worker after cleanup publication succeeds.
+/// Duplicate releases during an active run cannot allocate another run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.begin_domain(parked.data)
+/// ```
+@internal
+pub fn begin_domain(subject: Subject(DomainMessage)) -> Nil {
+  process.send(subject, DomainBegin)
+}
+
+/// Supervision must not replace an owner whose unexpected death lost custody.
+/// The daemon must separately retain its original monitor and blocked reservation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sup.add(builder, distillpass.supervised_domain(config))
+/// ```
+@internal
+pub fn supervised_domain(
+  config: DomainConfig,
+) -> ChildSpecification(Subject(DomainMessage)) {
+  supervision.worker(fn() { start_domain(config) })
+  |> supervision.restart(supervision.Temporary)
+}
+
+/// Coalesces a clean-close notification into at most one follow-up pass.
+/// A timeout does not withdraw a queued trigger. No trigger retries proof loss.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.trigger(domain, waiting_ms: 1000)
+/// ```
+@internal
+pub fn trigger(
+  name: address.Address(DomainMessage),
+  waiting_ms waiting: Int,
+) -> Result(Nil, String) {
+  use answer <- result.try(domain_call(name, waiting, DomainTrigger))
+  answer
+}
+
+/// Sends a clean-close hint without waiting inside daemon admission.
+/// A fenced or unstarted worker ignores hints. Send before quiesce to request
+/// the final clean-close pass without introducing an automatic retry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.notify_domain(domain)
+/// ```
+@internal
+pub fn notify_domain(
+  name: address.Address(DomainMessage),
+) -> Result(Nil, String) {
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  process.send(subject, DomainNotify)
+  Ok(Nil)
+}
+
+/// Waits for the active pass, or returns the most recently completed account.
+/// Postponed callers are answered before any ordinary-mailbox follow-up begins.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.domain_settled(domain, waiting_ms: 1000)
+/// ```
+@internal
+pub fn domain_settled(
+  name: address.Address(DomainMessage),
+  waiting_ms waiting: Int,
+) -> Result(Pass, String) {
+  domain_call(name, waiting, domain_await)
+}
+
+/// Requests the current account on a caller-owned typed reply subject.
+/// The caller owns its receive deadline; expiry does not withdraw the request,
+/// and a late account may still arrive on that subject. This uses the same
+/// dispatch as `domain_settled`, without inspecting private mailbox envelopes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.request_domain_settled(domain, reply)
+/// ```
+@internal
+pub fn request_domain_settled(
+  name: address.Address(DomainMessage),
+  reply: Subject(Pass),
+) -> Result(Nil, String) {
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  process.send(subject, domain_await(reply))
+  Ok(Nil)
+}
+
+fn domain_await(reply: Subject(Pass)) -> DomainMessage {
+  DomainAwait(reply)
+}
+
+/// Fences new triggers and waits for current and already-coalesced work.
+/// Failure discards the pending pass as usual. The caller owns its receive
+/// deadline; the worker remains alive for custody's original stop request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.request_quiesce(domain, reply)
+/// ```
+@internal
+pub fn request_quiesce(
+  name: address.Address(DomainMessage),
+  reply: Subject(Pass),
+) -> Result(Nil, String) {
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  process.send(subject, DomainQuiesce(reply))
+  Ok(Nil)
+}
+
+/// Lifts a fence `request_quiesce` took while the domain still had a future.
+///
+/// Fire and forget, like `notify_domain`, because there is nothing for the
+/// worker to answer: the registry sends this on the admission path that hands
+/// a fenced idle domain's services back to a new session, and it is the
+/// admission itself — not this reply — that decides whether the session runs.
+/// A worker that is already accepting keeps accepting, one that `stop_domain`
+/// has fenced stays fenced, and one whose recovery is blocked stays blocked,
+/// so a duplicate or late resume changes nothing.
+///
+/// The quiesce this lifts may still be waiting on a pass. Its answer is
+/// withheld until that pass settles and then sent without touching admission,
+/// so it cannot fence the domain a second time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.request_resume(domain)
+/// ```
+@internal
+pub fn request_resume(
+  name: address.Address(DomainMessage),
+) -> Result(Nil, String) {
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  process.send(subject, DomainResume)
+  Ok(Nil)
+}
+
+/// Reports the currently owned cancellation witness for custody diagnostics.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.active_witness(domain, waiting_ms: 1000)
+/// ```
+@internal
+pub fn active_witness(
+  name: address.Address(DomainMessage),
+  waiting_ms waiting: Int,
+) -> Result(Option(process.Pid), String) {
+  domain_call(name, waiting, DomainWitness)
+}
+
+fn domain_call(
+  name: address.Address(DomainMessage),
+  waiting: Int,
+  message: fn(Subject(answer)) -> DomainMessage,
+) -> Result(answer, String) {
+  use <- bool.guard(
+    when: waiting <= 0,
+    return: Error("domain call deadline expired"),
+  )
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  call.try_call(subject, waiting: int.min(waiting, 5000), sending: message)
+  |> result.map_error(fn(fault) {
+    "domain worker did not answer: " <> string.inspect(fault)
+  })
+}
+
+/// Fences new work and waits for the original domain worker's normal exit.
+/// Timeout or abnormal exit is not retirement proof. A blocked worker stays alive.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // distillpass.stop_domain(domain, waiting_ms: 1000)
+/// ```
+@internal
+pub fn stop_domain(
+  name: address.Address(DomainMessage),
+  waiting_ms waiting: Int,
+) -> Result(Nil, String) {
+  use <- bool.guard(
+    when: waiting <= 0,
+    return: Error("domain stop deadline expired"),
+  )
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error("domain worker is unavailable"),
+  )
+  use pid <- result.try(
+    process.subject_owner(subject)
+    |> result.replace_error("domain worker is unavailable"),
+  )
+  let watch = process.monitor(pid)
+  let refused = process.new_subject()
+  process.send(subject, DomainStop(refused))
+  let observed =
+    process.new_selector()
+    |> process.select_map(refused, Error)
+    |> process.select_specific_monitor(watch, fn(down) {
+      case down.reason {
+        process.Normal -> Ok(Nil)
+        reason ->
+          Error("domain retirement lost proof: " <> string.inspect(reason))
+      }
+    })
+    |> process.selector_receive(int.min(waiting, 5000))
+  process.demonitor_process(watch)
+  observed |> result.unwrap(Error("domain retirement remains unconfirmed"))
+}
+
+fn domain_handle(
+  phase: DomainPhase,
+  book: DomainBook,
+  message: DomainMessage,
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  case phase, message {
+    Dormant, DomainBegin ->
+      case book.admission {
+        Accepting -> domain_begin(book)
+        Quiescing | Stopping -> sm.keep(book)
+      }
+    Active, DomainBegin -> sm.keep(book)
+    Settled(_), DomainBegin ->
+      case book.pending {
+        FollowUp -> domain_begin(book)
+        NoFollowUp -> sm.keep(book)
+      }
+    RecoveryBlocked(_), DomainBegin -> sm.keep(book)
+    Active, DomainReported(report) -> domain_reported(book, report)
+    Dormant, DomainReported(_)
+    | Settled(_), DomainReported(_)
+    | RecoveryBlocked(_), DomainReported(_)
+    -> sm.keep(book)
+    Dormant, DomainAwait(reply) -> {
+      process.send(reply, Refused("domain worker has not begun"))
+      sm.keep(book)
+    }
+    Active, DomainAwait(_) -> sm.keep(book) |> sm.postpone
+    Active, DomainQuiesce(reply) -> {
+      let admission = case book.admission {
+        Stopping -> Stopping
+        Accepting | Quiescing -> Quiescing
+      }
+
+      // The fence is applied here and nowhere else, and the reply waits in
+      // the book until the pass settles. `request_resume` may lift the fence
+      // before that happens, which is the whole reason the answer is not a
+      // postponed replay of this event.
+      sm.keep(parking(DomainBook(..book, admission:), reply))
+    }
+    Settled(pass), DomainQuiesce(reply) -> {
+      let book = DomainBook(..book, admission: Quiescing)
+      case book.pending {
+        FollowUp -> sm.keep(parking(book, reply))
+        NoFollowUp -> {
+          process.send(reply, pass)
+          sm.keep(book)
+        }
+      }
+    }
+    Dormant, DomainQuiesce(reply) -> {
+      process.send(reply, Refused("domain worker has not begun"))
+      sm.keep(DomainBook(..book, admission: Quiescing))
+    }
+    RecoveryBlocked(reason), DomainQuiesce(reply) -> {
+      process.send(reply, Refused(reason))
+      sm.keep(book)
+    }
+
+    // Revival. The registry has handed this domain's services back to a new
+    // session in the same workspace, and the cadence has to come back with
+    // them: a worker left in `Quiescing` ignores every hint and schedules
+    // nothing, so the reopened workspace would run no distillation until the
+    // domain retired and was rebuilt.
+    Dormant, DomainResume | Active, DomainResume | Settled(_), DomainResume ->
+      sm.keep(resumed(book))
+
+    // A blocked worker keeps its block. Its custody is lost, nothing it could
+    // schedule would run, and the registry never revives a blocked slot.
+    RecoveryBlocked(_), DomainResume -> sm.keep(book)
+    Settled(pass), DomainAwait(reply) -> {
+      process.send(reply, pass)
+      sm.keep(book)
+    }
+    RecoveryBlocked(reason), DomainAwait(reply) -> {
+      process.send(reply, Refused(reason))
+      sm.keep(book)
+    }
+    RecoveryBlocked(reason), DomainTrigger(reply) -> {
+      process.send(reply, Error(reason))
+      sm.keep(book)
+    }
+    Dormant, DomainTrigger(reply) -> {
+      process.send(reply, Error("domain worker has not begun"))
+      sm.keep(book)
+    }
+    _, DomainTrigger(reply) -> domain_trigger(phase, book, Some(reply))
+    Dormant, DomainNotify | RecoveryBlocked(_), DomainNotify -> sm.keep(book)
+    _, DomainNotify -> domain_trigger(phase, book, None)
+    Active, DomainStop(_) -> {
+      let book = request_witness_stop(book)
+      sm.keep(DomainBook(..book, admission: Stopping, pending: NoFollowUp))
+      |> sm.postpone
+    }
+    Dormant, DomainStop(_) | Settled(_), DomainStop(_) -> {
+      sm.stop()
+    }
+    RecoveryBlocked(reason), DomainStop(reply) -> {
+      process.send(reply, reason)
+      sm.keep(book)
+    }
+    _, DomainWitness(reply) -> {
+      process.send(reply, option.map(book.witness, fn(witness) { witness.1 }))
+      sm.keep(book)
+    }
+    _, WitnessRetired(reason) -> witness_retired(phase, book, reason)
+  }
+}
+
+fn domain_trigger(
+  phase: DomainPhase,
+  book: DomainBook,
+  reply: Option(Subject(Result(Nil, String))),
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  case book.admission {
+    Quiescing | Stopping -> {
+      answer_trigger(reply, Error("domain worker is stopping"))
+      sm.keep(book)
+    }
+    Accepting -> {
+      case phase, book.pending {
+        Settled(_), NoFollowUp -> process.send(book.subject, DomainBegin)
+        Dormant, _ | Active, _ | Settled(_), FollowUp | RecoveryBlocked(_), _ ->
+          Nil
+      }
+      answer_trigger(reply, Ok(Nil))
+      sm.keep(DomainBook(..book, pending: FollowUp))
+    }
+  }
+}
+
+// Parks a quiesce reply until the pass it fenced has settled. A resume
+// empties the park, so at most one fence's reply is ever held here.
+fn parking(book: DomainBook, reply: Subject(Pass)) -> DomainBook {
+  DomainBook(..book, quiesce_waiters: [reply, ..book.quiesce_waiters])
+}
+
+// Answers every parked quiesce with the account the domain came to.
+//
+// Nothing about admission moves here. By the time an answer is due the fence
+// that produced it may have been lifted by a revival, and re-applying it would
+// leave a domain with a live session running no maintenance at all. The order
+// the waiters are answered in is the reverse of arrival and nothing rests on
+// it: each subject belongs to a different caller and none can observe another.
+fn answer_quiesces(book: DomainBook, pass: Pass) -> DomainBook {
+  list.each(book.quiesce_waiters, fn(reply) { process.send(reply, pass) })
+  DomainBook(..book, quiesce_waiters: [])
+}
+
+// Lifts a fence that was only a pause.
+//
+// `Stopping` is the one admission a resume may not undo. `DomainStop` is its
+// only producer and it has already asked the cancellation witness to exit, so
+// the retirement it began is under way and is not withdrawable. `Accepting`
+// is already open, which is what makes a duplicate or late resume harmless.
+//
+// A resume also withdraws the fence's parked reply. The registry that asked
+// for that fence has moved on: it listens for a settle on a fresh subject
+// once it revives the domain, so an account of the withdrawn fence could
+// only arrive as a stranger, and answering it later would hand the registry
+// a settle for a fence it did not issue. Dropping it here is also what keeps
+// the park bounded when a workspace closes and reopens many times during
+// one long pass.
+fn resumed(book: DomainBook) -> DomainBook {
+  case book.admission {
+    Quiescing -> DomainBook(..book, admission: Accepting, quiesce_waiters: [])
+    Accepting | Stopping -> book
+  }
+}
+
+fn answer_trigger(reply, answer) {
+  case reply {
+    Some(reply) -> process.send(reply, answer)
+    None -> Nil
+  }
+}
+
+fn domain_begin(
+  book: DomainBook,
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  let started =
+    actor.new(Nil)
+    |> actor.on_message(fn(_state, _stop: Nil) { actor.stop() })
+    |> actor.start
+  case started {
+    Error(error) ->
+      domain_block(
+        book,
+        "cancellation witness failed: " <> string.inspect(error),
+      )
+    Ok(witness) -> {
+      let monitor = process.monitor(witness.pid)
+      let config = book.config
+      let _relay =
+        weft.new_prepared([
+          distill.prepare(
+            config.pipeline,
+            config.sources,
+            config.gateway,
+            config.target,
+            config.request_timeout_ms,
+          ),
+        ])
+        |> weft.deadline(config.options.wall_ms)
+        |> weft.cancel_when_exits(witness.pid)
+        |> weft.start_relayed(to: book.reports)
+      log.info(config.pipeline.logger, started_event, [
+        field.text("memory", config.pipeline.memory_path),
+      ])
+      let book =
+        DomainBook(
+          ..book,
+          witness: Some(#(witness.data, witness.pid, monitor)),
+          witness_stop: WitnessRunning,
+          delivery: WaitingForDelivery,
+          account: None,
+          pending: NoFollowUp,
+        )
+      sm.transition(Active, book)
+      |> sm.with_selector(domain_selector(book))
+    }
+  }
+}
+
+fn domain_reported(
+  book: DomainBook,
+  report: weft.Pulled(distill.Report, String),
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  case report {
+    weft.PulledOutcome(weft.Completed(value:, ..)) ->
+      domain_account(book, Completed(value))
+    weft.PulledOutcome(weft.Failed(error:, ..)) ->
+      domain_account(book, Refused(error))
+    weft.PulledOutcome(weft.Crashed(reason:, ..)) ->
+      domain_account(book, Refused(string.inspect(reason)))
+    weft.PulledOutcome(weft.Abandoned(..)) ->
+      case book.admission {
+        Accepting | Quiescing ->
+          domain_account(book, Expired(book.config.options.wall_ms))
+        Stopping ->
+          domain_account(book, Refused("domain shutdown cancelled the pass"))
+      }
+    weft.PulledOutcome(weft.NeverStarted(..)) ->
+      domain_account(book, Refused("pass never started"))
+    weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
+      domain_block(book, "pass lost drain proof: " <> string.inspect(reason))
+    weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
+      domain_block(book, "pass cancellation is unconfirmed")
+    weft.RunLost(reason) ->
+      domain_block(book, "pass scope lost: " <> string.inspect(reason))
+    weft.NotYet -> sm.keep(book)
+    weft.AllDelivered -> {
+      let book = request_witness_stop(DomainBook(..book, delivery: Delivered))
+      case book.witness {
+        None -> domain_finish(book)
+        Some(_) -> sm.keep(book)
+      }
+    }
+  }
+}
+
+// Only the fixed managed pipeline may supply this account. Weft withholds it
+// until its worker and every adopted owner retire, replacing it on proof loss.
+fn domain_account(
+  book: DomainBook,
+  pass: Pass,
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  sm.keep(DomainBook(..book, account: Some(pass)))
+}
+
+fn domain_finish(
+  book: DomainBook,
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  case book.account {
+    None -> domain_block(book, "pass delivered no retirement account")
+    Some(pass) -> {
+      announce(book.config.pipeline.logger, pass)
+      let pending = case pass, book.admission, book.pending {
+        Completed(_), Accepting, FollowUp | Completed(_), Quiescing, FollowUp -> {
+          // Mailbox delivery is deliberate: postponed Awaited calls replay first.
+          process.send(book.subject, DomainBegin)
+          FollowUp
+        }
+        _, _, _ -> NoFollowUp
+      }
+
+      // A quiesce waits for the coalesced work its fence admitted, so its
+      // answer is withheld while a follow-up pass is still owed and sent the
+      // moment none is.
+      let book = case pending {
+        NoFollowUp -> answer_quiesces(book, pass)
+        FollowUp -> book
+      }
+      sm.transition(Settled(pass), DomainBook(..book, witness: None, pending:))
+    }
+  }
+}
+
+fn domain_block(
+  book: DomainBook,
+  reason: String,
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  let book = request_witness_stop(book)
+  announce(book.config.pipeline.logger, Refused(reason))
+
+  // A blocked worker will never settle, so a parked quiesce would wait for an
+  // account that cannot come. Each gets the block's own reason, which is what
+  // the `RecoveryBlocked` arm answers a quiesce arriving after this point.
+  let book = answer_quiesces(book, Refused(reason))
+  sm.transition(
+    RecoveryBlocked(reason),
+    DomainBook(..book, pending: NoFollowUp),
+  )
+}
+
+fn request_witness_stop(book: DomainBook) -> DomainBook {
+  case book.witness {
+    Some(#(subject, _, _)) -> process.send(subject, Nil)
+    None -> Nil
+  }
+  DomainBook(..book, witness_stop: WitnessStopRequested)
+}
+
+fn domain_selector(book: DomainBook) -> process.Selector(DomainMessage) {
+  let selector =
+    process.new_selector()
+    |> process.select(book.subject)
+    |> process.select_map(book.reports, DomainReported)
+  case book.witness {
+    None -> selector
+    Some(#(_, _, monitor)) ->
+      selector
+      |> process.select_specific_monitor(monitor, fn(down) {
+        WitnessRetired(down.reason)
+      })
+  }
+}
+
+// A new run cannot allocate its witness until the original one exits normally.
+fn witness_retired(
+  phase: DomainPhase,
+  book: DomainBook,
+  reason: process.ExitReason,
+) -> sm.Next(DomainPhase, DomainBook, DomainMessage) {
+  let book = DomainBook(..book, witness: None)
+  case phase, book.witness_stop, reason {
+    RecoveryBlocked(_), _, _ -> sm.keep(book)
+    _, WitnessStopRequested, process.Normal ->
+      case book.delivery {
+        WaitingForDelivery -> sm.keep(book)
+        Delivered -> domain_finish(book)
+      }
+    _, _, _ ->
+      domain_block(
+        book,
+        "cancellation witness retired unexpectedly: " <> string.inspect(reason),
+      )
+  }
+}
 
 // Whether the sidecar moved, in the vocabulary
 // `client/memory.reconcile_digest` answers in: `None` is a file this

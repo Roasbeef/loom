@@ -35,58 +35,32 @@
 //// by vetting with no explanation of why the module is absent, and this
 //// line is the only place an operator will ever see the cause.
 ////
-//// ## Secrets are read at spawn and never held
+//// ## Secrets are read during preparation and discarded after spawn
 ////
 //// A `[mcp.<name>]` table names an environment *variable*
 //// (`api_key_env`), never a key. The value is read from the harness's
-//// own environment at spawn, put into the child's environment under the
-//// same name, and never stored in a record, a log line, or a refusal
-//// message. A configured variable that is unset refuses that server
+//// own environment during preparation and passed to the child's environment
+//// under the same name. The parked client holds its spawn specification only
+//// until transport opening finishes; no value enters logs or refusal messages.
+//// A configured variable that is unset refuses that server
 //// before anything is spawned: starting a server without the key it was
 //// configured with fails later, further away, and in the server's own
 //// words.
 ////
-//// ## The client actor is not linked to the server
+//// ## Publish the complete census before any server starts
 ////
-//// `mcp/client.start` links its actor to whoever calls it, and this
-//// boot runs on the host process every fatal child is linked to. An MCP
-//// server is third-party code and its client actor is driven by that
-//// server's bytes, so the actors are started from a throwaway unlinked
-//// process instead: the starter exits normally the moment it has the
-//// handle, and a normal exit is not a signal any linked process acts
-//// on, so what is left is an actor no link reaches. The handle in the
-//// `Layer` is the only way to stop it, which `shutdown` does.
+//// `prepare` creates parked, unlinked client actors without opening ports.
+//// The session builder publishes `close_prepared` to its surviving owner,
+//// then `start_prepared` runs the handshakes and listings as concurrent Weft
+//// jobs. A worker's death cannot discard a client because the published
+//// immutable census already contains it. Failed listings remain in that
+//// census even though they never enter `Layer.servers`.
 ////
-//// That is also why the boot's own wait has a watcher between it and
-//// the starter. A start that lands after the boot has given up would
-//// otherwise hand its client to nobody — an actor and a server process
-//// with no handle anywhere, alive for the life of the VM — so the
-//// watcher holds the reply subject, answers the boot inside the window,
-//// and stops a late arrival itself.
-////
-//// ## Bring-up runs on a weft scope, and that changes nothing above
-////
-//// `start` fans every configured server's `start_one` out over a
-//// `weft` run rather than folding them with `list.map`, so N servers
-//// pay one shared clock for their handshake timeouts rather than N
-//// consecutive ones. That moves `start_one` onto a worker linked to
-//// weft's scope instead of onto `start`'s own caller — a real change to
-//// *which process* dials `start_client` — but it reaches no further
-//// than that, because the isolation two paragraphs up already happens
-//// **inside** `start_client`, two `process.spawn_unlinked` calls below
-//// whoever called it. The client actor is linked to `_starter`, which
-//// is unlinked from `watch_start`, which is unlinked from `start_client`
-//// itself — so the actor is already severed from its caller before
-//// `start_client` ever returns, whether that caller is the process that
-//// called `mcp.start` directly or a weft worker running `start_one` on
-//// its behalf. A weft worker killed mid-handshake — this run sets no
-//// deadline and no cancel signal, so nothing kills one, but the
-//// argument does not depend on that — takes down only the worker
-//// itself, blocked inside `start_client`'s `process.receive`; the
-//// watcher, the starter and any client they have already handed off
-//// keep running underneath it, exactly as a boot-window timeout already
-//// leaves them running today. Nothing here needed a `pid` accessor on
-//// `mcp/client.Client`, because nothing here needed to link anything.
+//// Cleanup requests every stop before collecting retirement proofs under one
+//// shared Weft deadline. Each client retains its port until the exact native
+//// exit event; only explicit transport proof followed by the original normal
+//// actor DOWN satisfies `close`. A timeout leaves cleanup unconfirmed.
+//// No server protocol extension or stronger process containment is implied.
 
 import broker/framing.{type CapOutcome}
 import client/catalog
@@ -207,7 +181,21 @@ pub type Refusal {
 /// operator configures a server: it allows no module, generates no
 /// source, renders no surface, and routes nothing.
 pub type Layer {
-  Layer(servers: List(Server), call_timeout_ms: Int)
+  Layer(
+    servers: List(Server),
+    call_timeout_ms: Int,
+    /// Every prepared client, including failed handshakes and tool listings.
+    custody: List(mcp_client.Client),
+  )
+}
+
+/// An immutable census prepared before any MCP process can be spawned.
+/// Publish `close_prepared` before invoking `start_prepared`.
+pub opaque type Prepared {
+  Prepared(
+    entries: List(#(catalog.McpServer, Result(mcp_client.Client, Refusal))),
+    options: Options,
+  )
 }
 
 /// Everything `start` needs beyond the configured servers.
@@ -286,7 +274,7 @@ const blob_prefix = "sha256-"
 /// ```
 ///
 pub fn none() -> Layer {
-  Layer(servers: [], call_timeout_ms: default_call_timeout_ms)
+  Layer(servers: [], call_timeout_ms: default_call_timeout_ms, custody: [])
 }
 
 /// Whether this layer reached any server at all. What the boot asks
@@ -312,8 +300,8 @@ pub fn serving(layer: Layer) -> Bool {
 /// failure: an operator who configured a server that cannot serve should
 /// see why, once, and keep their session.
 ///
-/// Every failing step tears its own client down before returning, so a
-/// server whose `tools/list` was refused leaves no process behind.
+/// A failing step requests its client's stop. The returned layer retains
+/// that client until typed `close` verifies its native retirement.
 ///
 /// Bring-up itself is concurrent: every `start_one` runs as its own
 /// `weft` task, bounded by the catalogue's own length so an N-server
@@ -334,9 +322,81 @@ pub fn start(
   servers: List(catalog.McpServer),
   options: Options,
 ) -> #(Layer, List(Refusal)) {
+  start_prepared(prepare(servers, options))
+}
+
+/// Prepares every client without opening transports or starting handshakes.
+/// The resulting census remains complete even when bring-up later fails.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let prepared = mcp.prepare(configured, options)
+/// // publish(fn() { mcp.close_prepared(prepared, within: 5000) })
+/// ```
+@internal
+pub fn prepare(servers: List(catalog.McpServer), options: Options) -> Prepared {
+  prepare_owned(servers, options, process.self())
+}
+
+/// Prepares the complete census under a separately published cleanup owner.
+/// The custodian outlives a failed startup builder, including parked clients.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mcp.prepare_owned(configured, options, instance_owner)
+/// ```
+@internal
+pub fn prepare_owned(
+  servers: List(catalog.McpServer),
+  options: Options,
+  custodian custodian: process.Pid,
+) -> Prepared {
+  Prepared(
+    entries: list.map(servers, fn(configured) {
+      #(configured, prepare_one(configured, options, custodian))
+    }),
+    options:,
+  )
+}
+
+fn prepare_one(
+  configured: catalog.McpServer,
+  options: Options,
+  custodian: process.Pid,
+) -> Result(mcp_client.Client, Refusal) {
+  let refuse = fn(reason) { Refusal(server: configured.name, reason:) }
+  use env <- result.try(
+    server_env(configured, options.secrets) |> result.map_error(refuse),
+  )
+  mcp_client.prepare_owned(
+    transport.PortTransport(spawn_of(configured.command, env)),
+    custodian,
+  )
+  |> result.map_error(fn(error) { refuse(describe_start_error(error)) })
+}
+
+/// Starts the previously published clients concurrently, preserving catalogue
+/// order for both successful listings and refusals.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(layer, refusals) = mcp.start_prepared(prepared)
+/// ```
+@internal
+pub fn start_prepared(prepared: Prepared) -> #(Layer, List(Refusal)) {
+  let options = prepared.options
+  let servers = list.map(prepared.entries, fn(entry) { entry.0 })
   let outcomes =
     weft.new(
-      list.map(servers, fn(server) { fn() { start_one(server, options) } }),
+      list.map(prepared.entries, fn(entry) {
+        fn() {
+          use client <- result.try(entry.1)
+          start_one(entry.0, client, options)
+        }
+      }),
     )
     |> weft.limit(list.length(servers))
     |> weft.start
@@ -345,6 +405,7 @@ pub fn start(
     Layer(
       servers: list.filter_map(started, fn(one) { one }),
       call_timeout_ms: options.call_timeout_ms,
+      custody: prepared_clients(prepared),
     ),
     list.filter_map(started, fn(one) {
       case one {
@@ -393,23 +454,111 @@ fn resolve_outcome(
   }
 }
 
-/// Stops every server in the layer: each client closes its child's
-/// stdin and kills it. Fire-and-forget and idempotent, so `shutdown` may
-/// run it twice.
+/// Requests every client's stop, including failed startups. This is not a
+/// retirement proof; use `close` before releasing session custody.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mcp.stop(layer)
+/// // mcp.close(layer, within: 5000)
+/// ```
 pub fn stop(layer: Layer) -> Nil {
-  list.each(layer.servers, fn(server) { mcp_client.stop(server.client) })
+  list.each(layer.custody, mcp_client.stop)
+}
+
+/// Closes every client under one shared deadline, including failed bring-up.
+/// A timeout returns uncertainty; the published census still owns the clients.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mcp.close_prepared(prepared, within: 5000)
+/// ```
+@internal
+pub fn close_prepared(
+  prepared: Prepared,
+  within within: Int,
+) -> Result(Nil, String) {
+  close_clients(prepared_clients(prepared), within)
+}
+
+/// Confirms retirement of the entire layer under one shared deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mcp.close(layer, within: 5000)
+/// ```
+@internal
+pub fn close(layer: Layer, within within: Int) -> Result(Nil, String) {
+  close_clients(layer.custody, within)
+}
+
+fn prepared_clients(prepared: Prepared) -> List(mcp_client.Client) {
+  list.filter_map(prepared.entries, fn(entry) { entry.1 })
+}
+
+// How much longer the collecting scope lives than the proof each of its
+// tasks is allowed to wait for.
+//
+// Without a margin the two budgets are the same instant: a server whose
+// native exit lands close to `within` returns a definite verdict at
+// exactly the moment the scope reaps the worker holding it, and every
+// non-`Completed` outcome folds into one error string — so a confirmed
+// retirement is reported as an unconfirmed one, and an unconfirmed
+// cleanup retains custody and occupancy for the session. The margin is
+// the same arrangement `broker/exec`'s `handshake_wait` makes over its
+// own handshake timeout, and for the same reason: the outer bound is
+// there to catch a task that is stuck, not to race the answer of one
+// that is finishing.
+const collector_margin_ms = 1000
+
+fn close_clients(
+  clients: List(mcp_client.Client),
+  within: Int,
+) -> Result(Nil, String) {
+  // Request every stop before starting bounded proof collectors. A collector
+  // that never runs cannot leave its client accepting more tool calls.
+  list.each(clients, mcp_client.stop)
+  let outcomes =
+    weft.new(
+      list.map(clients, fn(client) {
+        fn() { mcp_client.shutdown(client, within: within) }
+      }),
+    )
+    |> weft.limit(int.max(list.length(clients), 1))
+    |> weft.deadline(int.max(within, 1) + collector_margin_ms)
+    |> weft.start
+  use _ <- result.try(
+    list.try_map(outcomes, fn(outcome) {
+      case outcome {
+        weft.Completed(..) -> Ok(Nil)
+        weft.Failed(..)
+        | weft.Crashed(..)
+        | weft.Abandoned(..)
+        | weft.NeverStarted(..)
+        | weft.DrainProofLost(..)
+        | weft.CancellationUnconfirmed(..) ->
+          Error("mcp native retirement was not confirmed")
+      }
+    }),
+  )
+  Ok(Nil)
 }
 
 fn start_one(
   configured: catalog.McpServer,
+  client: mcp_client.Client,
   options: Options,
 ) -> Result(Server, Refusal) {
   let refuse = fn(reason) { Refusal(server: configured.name, reason:) }
-  use env <- result.try(
-    server_env(configured, options.secrets) |> result.map_error(refuse),
-  )
-  use client <- result.try(
-    start_client(configured, env, options)
+  use Nil <- result.try(
+    mcp_client.connect(
+      client,
+      mcp_client.options(options.client_version)
+        |> mcp_client.with_handshake_timeout(options.handshake_timeout_ms),
+    )
     |> result.map_error(fn(error) {
       refuse("it did not start: " <> describe_start_error(error))
     }),
@@ -459,106 +608,6 @@ fn server_env(
           )
       }
   }
-}
-
-// The client actor, started from processes of its own so that no link
-// reaches back here. See the module doc; the receive is bounded past
-// everything `mcp/client.start` bounds itself by, so a timeout here
-// means the starter died or the host is wedged rather than that a server
-// was merely slow.
-fn start_client(
-  configured: catalog.McpServer,
-  env: List(#(String, String)),
-  options: Options,
-) -> Result(mcp_client.Client, mcp_client.StartError) {
-  let spec = transport.PortTransport(spawn: spawn_of(configured.command, env))
-  let client_options =
-    mcp_client.options(options.client_version)
-    |> mcp_client.with_handshake_timeout(options.handshake_timeout_ms)
-  let window = start_window_ms(options.handshake_timeout_ms)
-  let verdicts = process.new_subject()
-  let _watcher =
-    process.spawn_unlinked(fn() {
-      watch_start(spec, client_options, window, verdicts)
-    })
-  case process.receive(verdicts, within: window + hop_margin_ms) {
-    Ok(verdict) -> verdict
-
-    // The watcher answers inside `window` either way, so reaching this
-    // is the watcher itself having died.
-    Error(Nil) -> Error(mcp_client.TransportFailed(reason: too_slow(window)))
-  }
-}
-
-// The window a start is given: `mcp/client.start` opens the transport
-// inside its own initialiser and *then* runs the handshake, so the two
-// budgets are consecutive and the window is their sum plus real slack.
-// Stated as the relationship rather than as a number near it — the
-// window used to be the handshake budget alone plus five seconds, which
-// is *shorter* than the worst case it was meant to cover.
-fn start_window_ms(handshake_timeout_ms: Int) -> Int {
-  mcp_client.init_timeout_ms + handshake_timeout_ms + start_margin_ms
-}
-
-// Slack over the two budgets `mcp/client.start` spends, covering the
-// margin it adds to its own handshake reply and a host under load.
-const start_margin_ms = 5000
-
-// One message hop: the watcher decides at `window` and forwards, so this
-// only has to cover the send landing here.
-const hop_margin_ms = 1000
-
-// Runs `mcp/client.start` on a process of its own and answers inside
-// `window` whatever happens.
-//
-// The drain is the point. A start that lands *after* the window would
-// otherwise leave a client actor — and the third-party server process
-// under it — running for the life of the VM with nothing holding a
-// handle on it, because `Layer` is the only handle and this server never
-// reached one. It has to be drained here rather than by the caller: a
-// `Subject` is read only by the process that created it, so the only
-// process that can receive a late `started` is the one that made it.
-fn watch_start(
-  spec: transport.Transport,
-  client_options: mcp_client.Options,
-  window: Int,
-  verdicts: process.Subject(Result(mcp_client.Client, mcp_client.StartError)),
-) -> Nil {
-  let started = process.new_subject()
-  let _starter =
-    process.spawn_unlinked(fn() {
-      process.send(started, mcp_client.start(spec, client_options))
-    })
-  case process.receive(started, within: window) {
-    Ok(verdict) -> process.send(verdicts, verdict)
-    Error(Nil) -> {
-      process.send(
-        verdicts,
-        Error(mcp_client.TransportFailed(reason: too_slow(window))),
-      )
-      drain_late_start(started)
-    }
-  }
-}
-
-fn drain_late_start(
-  started: process.Subject(Result(mcp_client.Client, mcp_client.StartError)),
-) -> Nil {
-  case process.receive(started, within: drain_window_ms) {
-    Ok(Ok(client)) -> mcp_client.stop(client)
-    Ok(Error(_refused)) -> Nil
-    Error(Nil) -> Nil
-  }
-}
-
-// How long the drainer waits for a start that already missed its window.
-// Bounded rather than forever: the watcher is unlinked, and a process
-// waiting on a subject nobody will ever write to is itself the leak this
-// exists to prevent.
-const drain_window_ms = 120_000
-
-fn too_slow(window: Int) -> String {
-  "the client did not answer within " <> int.to_string(window) <> "ms"
 }
 
 // A configured argv, executable first. `catalog` guarantees it is
@@ -971,6 +1020,7 @@ pub fn describe_start_error(error: mcp_client.StartError) -> String {
     mcp_client.ToolsNotDeclared ->
       "it declares no tools capability, and tools are the only thing this "
       <> "client reaches an MCP server for"
+    mcp_client.CleanupUnconfirmed(_) -> "its native retirement is unconfirmed"
   }
 }
 

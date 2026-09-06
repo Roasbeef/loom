@@ -15,12 +15,75 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
+import host/bootstrap as host
+import host/endpoint as daemon_endpoint
 import tui/connection
-import tui/internal/ffi_bootstrap
+import tui/daemon/bootstrap as daemon_bootstrap
 import tui/protocol
 import weft/poll
 
 const endpoint_version = 2
+
+/// Resolves the per-user daemon independently of workspace/session selection.
+///
+/// The returned terminal-owned control connection has authenticated protocol
+/// two and the endpoint epoch. No session is created, restored, or opened here.
+/// Executable/configuration discovery runs only for a proven vacant endpoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.resolve_daemon(options, terminal_pid, 30_000)
+/// ```
+pub fn resolve_daemon(
+  options: Options,
+  owner: process.Pid,
+  within_ms: Int,
+) -> Result(daemon_bootstrap.Connected, String) {
+  use state <- result.try(state_directory(options.state_directory))
+  use paths <- result.try(daemon_endpoint.paths(state))
+  daemon_bootstrap.resolve(
+    paths,
+    owner,
+    fn() {
+      use server <- result.try(find_server(options.server))
+      use config <- result.try(resolve_config(options.config, paths.root))
+      Ok(daemon_bootstrap.Launch(
+        server,
+        daemon_launch_arguments(paths.root, server, config),
+      ))
+    },
+    within_ms,
+  )
+}
+
+/// Builds only global daemon flags from trusted launcher configuration.
+///
+/// Port zero is resolved by the daemon's listener before Ready publication;
+/// workspace paths and per-session credentials never enter these arguments.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.daemon_launch_arguments("/private/loom", "/usr/local/bin/loomd", "")
+/// ```
+@internal
+pub fn daemon_launch_arguments(
+  state: String,
+  server: String,
+  config: String,
+) -> List(String) {
+  let arguments = ["--state-dir", state, "--bind", "127.0.0.1:0"]
+  let arguments = case config {
+    "" -> arguments
+    path -> list.append(arguments, ["--config", path])
+  }
+  let helper = filepath.join(filepath.directory_name(server), "loom-exec")
+  case host.is_executable_file(helper) {
+    True -> list.append(arguments, ["--helper", helper])
+    False -> arguments
+  }
+}
 
 const gateway_protocol = 1
 
@@ -124,7 +187,7 @@ type Paths {
 }
 
 type StartedProcess {
-  StartedProcess(process: ffi_bootstrap.ServerProcess, pid: Int)
+  StartedProcess(process: host.ServerProcess, pid: Int)
 }
 
 type Reuse {
@@ -156,7 +219,7 @@ pub fn resolve(options: Options) -> Result(Target, String) {
   use Nil <- result.try(ensure_private_directories(paths.private_directories))
   use lock <- result.try(acquire_lock(paths.lock))
   let outcome = resolve_locked(options, workspace, paths)
-  ffi_bootstrap.release_launch_lock(lock)
+  host.release_launch_lock(lock)
   outcome
 }
 
@@ -180,24 +243,24 @@ pub fn discover_sessions(
 ) -> Result(List(SessionChoice), String) {
   use unresolved_state <- result.try(state_directory(options.state_directory))
   use Nil <- result.try(
-    ffi_bootstrap.ensure_private_directory(unresolved_state)
+    host.ensure_private_directory(unresolved_state)
     |> result.map_error(fn(reason) {
       "prepare Loom state " <> unresolved_state <> ": " <> reason
     }),
   )
   use state <- result.try(
-    ffi_bootstrap.canonical_directory(unresolved_state)
+    host.canonical_directory(unresolved_state)
     |> result.map_error(fn(reason) { "resolve state directory: " <> reason }),
   )
   let directory = filepath.join(state, "endpoints")
   use Nil <- result.try(
-    ffi_bootstrap.ensure_private_directory(directory)
+    host.ensure_private_directory(directory)
     |> result.map_error(fn(reason) {
       "prepare Loom state " <> directory <> ": " <> reason
     }),
   )
   use names <- result.try(
-    ffi_bootstrap.list_directory_bounded(directory, max_endpoint_records)
+    host.list_directory_bounded(directory, max_endpoint_records)
     |> result.map_error(fn(reason) { "list local sessions: " <> reason }),
   )
   let choices =
@@ -378,7 +441,7 @@ fn await_starting(
   // arrived late, and this launcher's own clock bounds it even when the
   // recorded time is in the future; the budget is what remains of the
   // earlier of the two.
-  let now = ffi_bootstrap.system_time_ms()
+  let now = host.system_time_ms()
   let deadline =
     int.min(
       endpoint.started_at_ms + startup_timeout_ms,
@@ -480,7 +543,7 @@ fn start_server(
   use state_root <- result.try(state_directory(options.state_directory))
   use config <- result.try(resolve_config(options.config, state_root))
   use port <- result.try(
-    ffi_bootstrap.reserve_loopback_port()
+    host.reserve_loopback_port()
     |> result.map_error(fn(reason) { "reserve loopback port: " <> reason }),
   )
 
@@ -489,9 +552,8 @@ fn start_server(
   // the budget has already been spent; the monotonic one bounds this
   // launcher's own wait, so a wall-clock step while the server boots
   // cannot stretch or cut it.
-  let started_at_ms = ffi_bootstrap.system_time_ms()
-  let startup_deadline_ms =
-    ffi_bootstrap.monotonic_time_ms() + startup_timeout_ms
+  let started_at_ms = host.system_time_ms()
+  let startup_deadline_ms = host.monotonic_time_ms() + startup_timeout_ms
   let endpoint =
     Endpoint(
       version: endpoint_version,
@@ -513,16 +575,16 @@ fn start_server(
   )
   use started <- result.try(spawn(endpoint, server, config))
   let StartedProcess(process:, pid:) = started
-  case ffi_bootstrap.process_identity(pid) {
+  case host.process_identity(pid) {
     Error(reason) -> {
       stop_started(StartedProcess(process:, pid:))
       Error("identify loomd process: " <> reason)
     }
-    Ok(ffi_bootstrap.ProcessAbsent) -> {
+    Ok(host.ProcessAbsent) -> {
       stop_started(StartedProcess(process:, pid:))
       Error("loomd wrapper exited before its identity was published")
     }
-    Ok(ffi_bootstrap.ProcessPresent(server_birth)) -> {
+    Ok(host.ProcessPresent(server_birth)) -> {
       let endpoint = Endpoint(..endpoint, server_pid: pid, server_birth:)
       case write_endpoint(paths.endpoint, endpoint) {
         Error(reason) -> {
@@ -548,7 +610,7 @@ fn release_and_await(
   startup_deadline_ms: Int,
 ) -> Result(Target, String) {
   let StartedProcess(process:, pid:) = started
-  case ffi_bootstrap.release_server_process(process) {
+  case host.release_server_process(process) {
     Error(reason) -> {
       stop_started(StartedProcess(process:, pid:))
       Error("release loomd process: " <> reason)
@@ -566,7 +628,7 @@ fn await_new_server(
 ) -> Result(Target, String) {
   let outcome =
     poll.until(
-      within: deadline - ffi_bootstrap.monotonic_time_ms(),
+      within: deadline - host.monotonic_time_ms(),
       every: startup_poll_ms,
       attempt: fn() {
         case probe(endpoint) {
@@ -605,10 +667,10 @@ fn await_new_server(
   }
 }
 
-fn acquire_lock(path: String) -> Result(ffi_bootstrap.LaunchLock, String) {
+fn acquire_lock(path: String) -> Result(host.LaunchLock, String) {
   let outcome =
     poll.until(within: lock_timeout_ms, every: 25, attempt: fn() {
-      case ffi_bootstrap.try_launch_lock(path) {
+      case host.try_launch_lock(path) {
         Ok(lock) -> poll.Done(lock)
 
         // Busy is the one failure more time can fix; anything else is the
@@ -625,26 +687,26 @@ fn acquire_lock(path: String) -> Result(ffi_bootstrap.LaunchLock, String) {
 }
 
 fn canonical_workspace(path: String) -> Result(String, String) {
-  ffi_bootstrap.canonical_directory(path)
+  host.canonical_directory(path)
   |> result.map_error(fn(reason) { "resolve workspace: " <> reason })
 }
 
 fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
   use unresolved_state <- result.try(state_directory(options.state_directory))
   use Nil <- result.try(
-    ffi_bootstrap.ensure_private_directory(unresolved_state)
+    host.ensure_private_directory(unresolved_state)
     |> result.map_error(fn(reason) {
       "prepare Loom state " <> unresolved_state <> ": " <> reason
     }),
   )
   use state_directory <- result.try(
-    ffi_bootstrap.canonical_directory(unresolved_state)
+    host.canonical_directory(unresolved_state)
     |> result.map_error(fn(reason) { "resolve state directory: " <> reason }),
   )
   let default_session_directory = filepath.join(state_directory, "sessions")
   use Nil <- result.try(case options.session_file {
     "" ->
-      ffi_bootstrap.ensure_private_directory(default_session_directory)
+      host.ensure_private_directory(default_session_directory)
       |> result.map_error(fn(reason) {
         "prepare Loom state " <> default_session_directory <> ": " <> reason
       })
@@ -683,8 +745,8 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
 // catalogue nobody wrote — which is what CI's bootstrap e2e did.
 fn present_default_catalogue(state_directory: String) -> String {
   let path = default_catalogue_path(state_directory)
-  case ffi_bootstrap.path_exists(path) {
-    True -> ffi_bootstrap.canonical_path(path) |> result.unwrap(path)
+  case host.path_exists(path) {
+    True -> host.canonical_path(path) |> result.unwrap(path)
     False -> ""
   }
 }
@@ -708,12 +770,12 @@ fn state_directory(override: String) -> Result(String, String) {
   case override {
     "" -> {
       use home <- result.try(
-        ffi_bootstrap.getenv("HOME")
+        host.getenv("HOME")
         |> result.map_error(fn(_) { "find home directory: HOME is not set" }),
       )
-      ffi_bootstrap.absolute_path(filepath.join(home, ".loom"))
+      host.absolute_path(filepath.join(home, ".loom"))
     }
-    path -> ffi_bootstrap.absolute_path(path)
+    path -> host.absolute_path(path)
   }
   |> result.map_error(fn(reason) { "resolve state directory: " <> reason })
 }
@@ -735,16 +797,16 @@ fn session_path(
 
 fn canonical_session_path(path: String) -> Result(String, String) {
   use absolute <- result.try(
-    ffi_bootstrap.absolute_path(path)
+    host.absolute_path(path)
     |> result.map_error(fn(reason) { "resolve session file: " <> reason }),
   )
-  case ffi_bootstrap.path_exists(absolute) {
+  case host.path_exists(absolute) {
     True ->
-      ffi_bootstrap.canonical_path(absolute)
+      host.canonical_path(absolute)
       |> result.map_error(fn(reason) { "resolve session file: " <> reason })
     False -> {
       use parent <- result.try(
-        ffi_bootstrap.canonical_directory(filepath.directory_name(absolute))
+        host.canonical_directory(filepath.directory_name(absolute))
         |> result.map_error(fn(reason) {
           "resolve session directory: " <> reason
         }),
@@ -759,7 +821,7 @@ fn ensure_private_directories(
 ) -> Result(Nil, String) {
   directories
   |> list.try_each(fn(directory) {
-    ffi_bootstrap.ensure_private_directory(directory)
+    host.ensure_private_directory(directory)
     |> result.map_error(fn(reason) {
       "prepare Loom state " <> directory <> ": " <> reason
     })
@@ -823,7 +885,7 @@ fn trim_slug(slug: String) -> String {
 }
 
 fn digest_prefix(value: String, length: Int) -> String {
-  ffi_bootstrap.sha256(<<value:utf8>>)
+  host.sha256(<<value:utf8>>)
   |> bit_array.base16_encode
   |> string.lowercase
   |> string.slice(at_index: 0, length:)
@@ -834,7 +896,7 @@ fn endpoint_matches(
   workspace: String,
   paths: Paths,
 ) -> Bool {
-  let now = ffi_bootstrap.system_time_ms()
+  let now = host.system_time_ms()
   endpoint.version == endpoint_version
   && endpoint.gateway_protocol == gateway_protocol
   && { endpoint.status == "starting" || endpoint.status == "ready" }
@@ -888,10 +950,7 @@ pub fn session_id(path: String) -> String {
 }
 
 fn read_endpoint(path: String) -> Result(Endpoint, String) {
-  use bytes <- result.try(ffi_bootstrap.read_regular_bounded(
-    path,
-    max_endpoint_bytes,
-  ))
+  use bytes <- result.try(host.read_bounded(path, max_endpoint_bytes))
   use text <- result.try(
     bit_array.to_string(bytes)
     |> result.replace_error("endpoint record is not UTF-8"),
@@ -938,7 +997,7 @@ fn write_endpoint(path: String, endpoint: Endpoint) -> Result(Nil, String) {
   |> encode_endpoint
   |> json.to_string
   |> string.append("\n")
-  |> ffi_bootstrap.atomic_write_private(path, _)
+  |> host.atomic_write_private(path, _)
 }
 
 fn encode_endpoint(endpoint: Endpoint) -> json.JsonValue {
@@ -1016,22 +1075,22 @@ fn find_server(explicit: String) -> Result(String, String) {
   case explicit {
     "" -> find_configured_server()
     path ->
-      ffi_bootstrap.find_executable(path)
+      host.find_executable(path)
       |> result.map_error(fn(reason) { "--server: " <> reason })
   }
 }
 
 fn find_configured_server() -> Result(String, String) {
-  case ffi_bootstrap.getenv("LOOM_SERVER") {
+  case host.getenv("LOOM_SERVER") {
     Ok(configured) ->
-      ffi_bootstrap.find_executable(configured)
+      host.find_executable(configured)
       |> result.map_error(fn(reason) { "LOOM_SERVER: " <> reason })
     Error(Nil) -> find_installed_server()
   }
 }
 
 fn find_installed_server() -> Result(String, String) {
-  let sibling_candidates = case ffi_bootstrap.getenv("LOOM_EXECUTABLE") {
+  let sibling_candidates = case host.getenv("LOOM_EXECUTABLE") {
     Ok(executable) ->
       case string.starts_with(executable, "/") {
         True -> [filepath.join(filepath.directory_name(executable), "loomd")]
@@ -1039,7 +1098,7 @@ fn find_installed_server() -> Result(String, String) {
       }
     Error(Nil) -> []
   }
-  let path_candidates = case ffi_bootstrap.getenv("PATH") {
+  let path_candidates = case host.getenv("PATH") {
     Ok(path) -> installed_path_candidates(path)
     Error(Nil) -> []
   }
@@ -1066,7 +1125,7 @@ fn find_first_server(candidates: List(String)) -> Result(String, String) {
         "loomd was not found; install it beside loom, put it on PATH, or pass --server <path>",
       )
     [candidate, ..rest] ->
-      case ffi_bootstrap.find_executable(candidate) {
+      case host.find_executable(candidate) {
         Ok(path) -> Ok(path)
         Error(_) -> find_first_server(rest)
       }
@@ -1079,7 +1138,7 @@ fn spawn(
   config: String,
 ) -> Result(StartedProcess, String) {
   let arguments = server_arguments(endpoint, server, config)
-  ffi_bootstrap.spawn_server(
+  host.spawn_server(
     server,
     arguments,
     filepath.directory_name(endpoint.log_file),
@@ -1093,7 +1152,7 @@ fn spawn(
 
 fn stop_started(started: StartedProcess) -> Nil {
   let StartedProcess(process:, pid: _) = started
-  ffi_bootstrap.close_server_process(process)
+  host.close_server_process(process)
 }
 
 fn server_arguments(
@@ -1134,7 +1193,7 @@ fn resolve_config(
   case config {
     "" -> Ok(present_default_catalogue(state_directory))
     path ->
-      ffi_bootstrap.canonical_path(path)
+      host.canonical_path(path)
       |> result.map_error(fn(reason) {
         "resolve config " <> path <> ": " <> reason
       })
@@ -1171,7 +1230,7 @@ pub fn launch_arguments(
     path -> list.append(arguments, ["--config", path])
   }
   let helper = filepath.join(filepath.directory_name(server), "loom-exec")
-  case ffi_bootstrap.is_executable_file(helper) {
+  case host.is_executable_file(helper) {
     True -> list.append(arguments, ["--helper", helper])
     False -> arguments
   }
@@ -1181,11 +1240,9 @@ fn match_process(pid: Int, birth: String) -> ProcessMatch {
   case pid > 1 && birth != "" {
     False -> DifferentProcess
     True ->
-      case ffi_bootstrap.process_identity(pid) {
-        Ok(ffi_bootstrap.ProcessPresent(current)) if current == birth ->
-          SameProcess
-        Ok(ffi_bootstrap.ProcessPresent(_)) | Ok(ffi_bootstrap.ProcessAbsent) ->
-          DifferentProcess
+      case host.process_identity(pid) {
+        Ok(host.ProcessPresent(current)) if current == birth -> SameProcess
+        Ok(host.ProcessPresent(_)) | Ok(host.ProcessAbsent) -> DifferentProcess
         Error(reason) -> ProcessUnknown(reason)
       }
   }
@@ -1208,7 +1265,7 @@ fn probe(endpoint: Endpoint) -> Result(Target, String) {
     await_snapshot(
       inbox,
       endpoint.session,
-      ffi_bootstrap.monotonic_time_ms() + probe_timeout_ms,
+      host.monotonic_time_ms() + probe_timeout_ms,
     )
   connection.close(socket)
   result
@@ -1226,7 +1283,7 @@ fn await_snapshot(
   // it is not a poll; the deadline is monotonic for the same reason every
   // other launcher wait is, and each frame that is not the answer resumes
   // the receive against what remains of it.
-  let remaining = int.max(0, deadline - ffi_bootstrap.monotonic_time_ms())
+  let remaining = int.max(0, deadline - host.monotonic_time_ms())
   case process.receive(inbox, remaining) {
     Error(Nil) -> Error("gateway snapshot timed out")
     Ok(connection.Connected) ->
@@ -1254,10 +1311,7 @@ fn await_snapshot(
 }
 
 fn read_token(path: String) -> Result(String, String) {
-  use bytes <- result.try(ffi_bootstrap.read_private_bounded(
-    path,
-    max_token_bytes,
-  ))
+  use bytes <- result.try(host.read_private_bounded(path, max_token_bytes))
   use token <- result.try(
     bit_array.to_string(bytes)
     |> result.replace_error("token file is not UTF-8"),
@@ -1270,7 +1324,7 @@ fn read_token(path: String) -> Result(String, String) {
 
 fn log_tail(endpoint: Endpoint) -> String {
   case
-    ffi_bootstrap.current_log_tail(
+    host.current_log_tail(
       endpoint.log_file,
       endpoint.started_at_ms,
       startup_log_tail_bytes,

@@ -21,21 +21,23 @@ import session/session
 import support/fake
 import support/harness
 import support/recorder
+import weft/registry as address
 
 pub fn writer_publishes_committed_events_test() {
   let assert Ok(sess) = session.open_memory(clock.fixed(at: 1000))
     as "the memory session must open"
   let events = process.new_subject()
-  let name = process.new_name(prefix: "writer_under_test")
+  let assert Ok(namespace) = address.start() as "the namespace must start"
+  let name = address.new_address(namespace)
   let assert Ok(started) =
     writer.start(
       writer.Options(session: sess, after_commit: fn(_) { Nil }, subscribers: [
-        events,
+        writer.Direct(events),
       ]),
       name,
     )
     as "the writer must start"
-  let w = started.data
+  let w = name
   let commit_tx =
     Tx(
       writes: [
@@ -55,7 +57,7 @@ pub fn writer_publishes_committed_events_test() {
     as "the subscriber must see the first committed event"
   // A late subscriber sees subsequent commits.
   let late = process.new_subject()
-  writer.subscribe(w, late)
+  writer.subscribe(w, writer.Direct(late))
   let second_tx =
     Tx(
       writes: [
@@ -76,6 +78,7 @@ pub fn writer_publishes_committed_events_test() {
   let assert Ok(Some(_)) = writer.get_register(w, register.FactCustom, "note")
     as "the read must find the committed register"
   process.send_exit(started.pid)
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 pub fn follow_up_is_drained_at_may_finish_test() {

@@ -56,12 +56,15 @@ built out of.
   string), explicit env pairs, optional cwd. `utf8_prefix` splits a byte
   chunk into its valid-UTF-8 prefix and a held tail of at most three
   bytes, since the pipe cuts characters in half.
-- `mcp/client.{Client, Options, Msg, ClientError, StartError, start,
-  list_tools, call_tool, stop}` — the actor. `Client` and `Msg` are both
+- `mcp/client.{Client, Options, Msg, ClientError, StartError, RetirementError,
+  prepare, prepare_owned, connect, start, shutdown, list_tools, call_tool, stop}` — the
+  state machine. `Client` and `Msg` are both
   opaque, so nothing outside can forge a settlement or an expiry.
   `ClientError` is `Unavailable | CallTimedOut | ServerError |
   ResultMalformed | TooManyPages`; `StartError` is `TransportFailed |
-  HandshakeFailed | VersionUnsupported | ToolsNotDeclared`.
+  HandshakeFailed | VersionUnsupported | ToolsNotDeclared |
+  CleanupUnconfirmed(Client)`. `shutdown` returns `RetirementTimedOut` or
+  `RetirementUnconfirmed` when explicit retirement cannot be established.
 - `mcp/schema.{Plan, Typed, WholeValue, Param, ParamType, Optional,
   plan}` — the total three-tier reading of a raw `inputSchema`.
   `Simple`/`ListOf` are the typed subset, `Structured(reason)` is
@@ -91,7 +94,8 @@ built out of.
 - **Depends on**: `gleam_stdlib`; `core` (the `JsonValue` ADT with its
   total parser and serializer, and `CorruptionReport`); `gleam_erlang`
   (`Subject`, `Selector`, `Port`, monitors — the client actor and the
-  port transport); `gleam_otp` (`actor`). `mcp/{jsonrpc, protocol, stdio,
+  port transport); `gleam_otp` (actor start errors); `weft` (the lifecycle
+  state machine and monotonic deadline clock). `mcp/{jsonrpc, protocol, stdio,
   schema, name, codegen, interchange}` import none of the last two and are pure
   functions of their arguments, but the package as a whole is impure and
   is **not** in the portable subset lint R6 gates.
@@ -104,9 +108,11 @@ built out of.
 - **FFI**: `mcp/internal/ffi_port` over `src/mcp_ffi.erl` — the package's
   complete inventory of impurity. `erlang:open_port/2` with
   `spawn_executable` (binary stream mode, `exit_status`, deliberately no
-  `stderr_to_stdout`), `port_command/2`, `port_close/1`, `port_info/2`
+  `stderr_to_stdout`), `port_command/2`, `port_info/2`
   for the OS pid, `os:cmd` running `kill -KILL`, and the shim that takes
   a raw port message apart into `PortBytes | PortClosed | PortJunk`.
+  There is deliberately **no** `port_close/1` here, where `broker`'s
+  sibling module has one: see the SIGKILL-only invariant below.
 
 ## Traffic
 
@@ -116,8 +122,12 @@ built out of.
   `start`'s handshake, `list_tools` and `call_tool`. `Notify(message)` is
   a cast, used for `notifications/initialized`. `FromTransport(event)`
   arrives from the port selector or a `ChannelTransport` peer.
-  `Expire(id)` is the actor's own `process.send_after` timer. `Shutdown`
-  is a cast from `stop`.
+  `Expire(id)` is the actor's own `process.send_after` timer. `Open(reply)`
+  opens a parked client after its cleanup handle has been published.
+  `Shutdown` is a request-only cast from `stop`; `Retire(reply)` waits
+  through `Closing` until `TransportClosed`, returns explicit evidence,
+  and then stops normally. A parked client returns explicit no-resource
+  evidence without ever opening a transport.
 - **Commits**: none. Nothing here touches a session store.
 - **Registers**: none.
 - **Wire**: the MCP stdio wire — newline-delimited JSON-RPC 2.0, one
@@ -138,6 +148,34 @@ built out of.
 
 ## Invariants
 
+- **Publish before third-party execution.** `prepare` allocates a parked
+  state machine, never a native process. The harness publishes every prepared
+  client in one immutable cleanup census before `connect` opens any server.
+  Failed handshakes and listings remain in that census, even though they do
+  not contribute tools to the successful layer. `prepare_owned` monitors a
+  custodian independently from the startup builder. Builder loss leaves a
+  parked client's no-resource proof available to that custodian; loss of both
+  lifetimes does not leave an unclaimed parked actor. An active client whose
+  custodian dies still waits for real native exit before stopping.
+- **Termination requests are not retirement evidence.** The transport keeps
+  the exact port open while requesting its current child's termination.
+  `shutdown` requires either explicit no-resource evidence or that port's
+  native `TransportClosed`, followed by the original normal actor `DOWN`.
+  Both receives share one deadline. A timeout or unexpected actor death
+  returns uncertainty; it cannot authorize replacement. Existing unjailed
+  MCP servers are operator-trusted: PID lookup and SIGKILL have a TOCTOU
+  window, and native exit proves neither descendant drain nor rollback of
+  remote effects. This is not the sandbox helper's containment contract.
+- **Shutdown is SIGKILL only, and the missing stdin EOF is the price of
+  the witness.** A stdio server's documented shutdown signal is EOF on
+  its stdin, and `erlang:port_close/1` is the only way a BEAM port can
+  deliver one — but it destroys the port, and with it the `exit_status`
+  message the invariant above rests on. The two cannot both be had
+  without an FFI shim that half-closes the child's stdin, which
+  `open_port/2` has no supported way to do, so custody wins and
+  `mcp/transport.Connection`'s doc carries the argument. The package
+  therefore declares no port-closing external at all: an unused one
+  would read as an oversight and invite its restoration.
 - **Every decoder is total.** Wrong `jsonrpc`, missing fields, wrong
   types anywhere, a float or null id, `result` and `error` both present
   or both absent, a non-object list entry, an oversized line — each

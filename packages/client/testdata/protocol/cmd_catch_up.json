@@ -1,1 +1,1 @@
-{"v":1,"id":7,"cmd":"catch_up","body":{"from_seq":42}}
+{"v":2,"id":7,"cmd":"catch_up","body":{"from_seq":42}}

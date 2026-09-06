@@ -372,6 +372,7 @@ pub fn a_user_entry_is_not_scannable_test() {
       message: message.UserMessage(
         content: [message.UserText(text: "ALTER TABLE", text_signature: None)],
         timestamp: 0,
+        origin: None,
       ),
     )
   assert rules.scannable_text(user) == None

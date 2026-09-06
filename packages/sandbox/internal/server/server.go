@@ -36,10 +36,16 @@ func New(conn *framing.Conn, feat jail.Features, selfExe string, basePol policy.
 }
 
 // Run performs the hello exchange and serves frames until the peer
-// closes the channel or a protocol violation forces us to. Per spec
-// §3.3.6 a malformed frame closes the channel (after an error frame so
-// the broker can settle the effect in-band).
+// requests shutdown, closes the channel, or a protocol violation forces us
+// to stop. Every return joins the current jail before the helper exits.
+// Per spec §3.3.6 a malformed frame closes the channel (after an error
+// frame so the broker can settle the effect in-band).
 func (s *Server) Run() error {
+	// A native exit can witness retirement only after the execution's Wait
+	// completes. Keep this obligation on every return, including malformed
+	// traffic during an execution, rather than on selected dispatch branches.
+	defer s.reapRunning()
+
 	// The helper introduces itself first: the broker learns the honest
 	// feature set before it commits any work to us.
 	if err := s.conn.Write(s.originID(), framing.KindHello, framing.Hello{
@@ -54,19 +60,16 @@ func (s *Server) Run() error {
 	for {
 		f, err := s.conn.Read()
 		if err == io.EOF {
-			s.reapRunning()
 			return nil
 		}
 		if err != nil {
 			// Malformed frame: report in-band, then close.
 			_ = s.conn.WriteError(0, framing.ErrCodeMalformed, err.Error())
-			s.reapRunning()
 			return fmt.Errorf("server: malformed frame: %w", err)
 		}
 
 		if !helloSeen && f.Kind != framing.KindHello {
 			_ = s.conn.WriteError(f.ID, framing.ErrCodeProto, "expected hello before "+f.Kind)
-			s.reapRunning()
 			return fmt.Errorf("server: %s before hello", f.Kind)
 		}
 
@@ -80,7 +83,6 @@ func (s *Server) Run() error {
 			if h.Proto != framing.ProtoVersion {
 				_ = s.conn.WriteError(f.ID, framing.ErrCodeProto,
 					fmt.Sprintf("unsupported proto %d", h.Proto))
-				s.reapRunning()
 				return fmt.Errorf("server: proto mismatch %d", h.Proto)
 			}
 			helloSeen = true
@@ -100,6 +102,19 @@ func (s *Server) Run() error {
 			if s.running != nil {
 				s.running.Cancel()
 			}
+
+		case framing.KindShutdown:
+			var body map[string]any
+			if err := framing.DecodeBody(f.Body, &body); err != nil || body == nil || len(body) != 0 {
+				_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "shutdown: expected empty map")
+				return fmt.Errorf("server: shutdown requires an empty map")
+			}
+
+			// Stop dispatch before cancellation. The deferred join emits the
+			// running execution's terminal frame, then allows native exit.
+			// Stdin stays open so the broker can retain its exit-status witness;
+			// neither a reply frame nor port closure is that witness.
+			return nil
 
 		default:
 			// Unknown kind: unlike a malformed frame this parses fine,
@@ -207,8 +222,9 @@ func (s *Server) outputSink(id uint64) jail.OutputSink {
 	}
 }
 
-// reapRunning kills and joins any in-flight execution when the channel
-// dies: a helper whose broker is gone must leave no jail behind.
+// reapRunning cancels and joins any in-flight execution before server exit.
+// Joining proves completion of the jail runner's existing cleanup, not a
+// stronger descendant-containment guarantee than the platform provides.
 func (s *Server) reapRunning() {
 	if s.running == nil {
 		return

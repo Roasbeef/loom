@@ -17,11 +17,12 @@
 //// once hand-rolled are weft's: `weft.start_detached` runs the task under a
 //// scope linked to the terminal, so a terminal that dies mid-switch takes the
 //// attempt down with it, and `weft.pull` with a zero wait is the non-blocking
-//// poll the tick makes. One window is accepted and stated here rather than
-//// closed with a handshake: between the task returning its socket and the
-//// terminal linking it in `connection.adopt`, the socket is linked to nobody.
-//// That window is inside the terminal's own tick handler, and a terminal that
-//// dies there ends the VM the socket lives in.
+//// poll the tick makes. After handshake, the socket's guardian monitors both
+//// this attempt and the terminal-owned inbox. Normal task completion leaves
+//// the socket with the terminal; cancellation or terminal death closes it.
+//// `connection.adopt` checks liveness without linking a fallible network
+//// actor directly to the terminal. Task exit initiates socket cleanup; it is
+//// not itself a witness that the socket has already exited.
 
 import etui/buffer
 import etui/geometry.{type Rect, Fill, Length}
@@ -454,13 +455,10 @@ pub fn resolve_and_connect(
   }
 }
 
-// The socket actor links to the task's process inside `connection.connect`,
-// so a killed task takes an unadopted socket down with it. The terminal
-// re-links on adoption, and the task's later normal exit does not disturb
-// an actor that traps nothing. One window is accepted: between the actor's
-// starter exiting and `connect` linking it to this process, a kill leaves an
-// authenticated but unread socket alive. It is microseconds wide and no link
-// order inside `connect` can close it, so do not reorder that.
+// Connection startup retains the socket's ordinary link until its guardian
+// has adopted it. The guardian monitors this task and the terminal-owned
+// inbox, preserving cancellation while allowing a successful task to return
+// normally. Adoption no longer links a fallible socket to the terminal.
 fn connect_target(
   choice: SessionChoice,
   options: Options,

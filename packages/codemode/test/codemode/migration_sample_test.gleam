@@ -92,7 +92,8 @@ const expected_completion_order = [
 
 pub fn code_mode_migration_sample_test() {
   case rig.prerequisites() {
-    Error(reason) -> io.println("SKIP code_mode_migration_sample: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP code_mode_migration_sample: " <> reason)
     Ok(prerequisites) -> run_sample(prerequisites)
   }
 }

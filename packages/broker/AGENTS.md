@@ -45,6 +45,20 @@ protocol (spec Part 1.4). WP-G.
   `ExecResult.cancelled` says the helper truncated the run;
   `ExecResult.enforcement` is the ground truth `required_layers` and
   `unapplied_layers` check the policy's demands against.
+- `broker/exec.{close, close_pool, RetirementFailure}` separates shutdown
+  requests from retirement proof. `Ok(Nil)` requires selected native exit
+  status 0 followed by the original normal BEAM monitor event. A timeout,
+  lost port, nonzero native status, or dead owner remains unconfirmed. A
+  parked owner can also confirm that it never acquired a native transport;
+  that result still requires normal BEAM retirement.
+- `broker/exec.{prepare, prepare_helper, begin}` stages acquisition. The
+  prepared helper owns no transport or policy file. A pool records its
+  handle and original monitor before `begin`, then waits the configured
+  handshake budget plus 1 second. The daemon's native factory is
+  `prepare_helper`, so failed handshakes remain in the pool inventory.
+  Weft's parent-exit policy also stops the owner when its preparer returns
+  normally, including before `begin`. This lifetime bound is not native
+  retirement proof; callers that lose the owner retain an unconfirmed result.
 - `broker/exec.{SpawnConfig, HostPlatform}` — how a real helper is
   started, and whether this host has a jail for it to build.
   `SpawnConfig.helper_args` carries the two things the helper can only
@@ -109,10 +123,11 @@ protocol (spec Part 1.4). WP-G.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
     `Run(request, events, reply)`, `Stdin(data, eof)`, `CancelExec`,
     `CancelDeadline`, `HandshakeDeadline`, `HeartbeatTick`,
-    `Heartbeat(reply)`, `Shutdown`, `FromWire(event)`. The helper is a
+    `Heartbeat(reply)`, `Shutdown`, `AwaitRetirement(reply)`,
+    `ForgetRetired`, `FromWire(event)`. The helper is a
     `weft/state_machine`, not a `gleam/otp/actor`: its state is
-    `exec.Phase` — `AwaitingHello | Idle(features) | Running(features,
-    exec) | Cancelling(features, exec) | Dead(failure)` — and everything
+    `exec.Phase` — `Prepared | AwaitingHello | Idle(features) | Running(features,
+    exec) | Cancelling(features, exec) | Dead(failure, retirement)` — and everything
     else the process carries is `exec.Data`. `handle` is one exhaustive
     `case phase, message` matrix; `entered` is where each state's
     deadline is armed.
@@ -149,13 +164,13 @@ protocol (spec Part 1.4). WP-G.
     per-frame bookkeeping (the deframer, the id counter,
     `tick_outstanding`) lives in `Data` — putting any of it in `Phase`
     would have an ordinary inbound chunk restart the cancel escalation.
-  - `exec.PoolMsg` — `Checkout(reply)`, `Checkin(helper)`, `StopPool`.
-    `Checkout` answers immediately, `AllBusy` included: it never defers a
-    reply, because its one run-time borrower is the broker actor. It can
-    still answer *late* — spawning runs in the pool actor — and a
-    borrower that gave up by then leaves that helper counted as lent
-    with nobody to check it in. Bounded by the pool's size; see the
-    checkout invariant below.
+  - `exec.PoolMsg` includes checkout/checkin, stop, retirement queries,
+    helper retirement reports, and original helper monitors. The pool is a
+    Weft state machine with `PoolLive`, `PoolClosing`, and
+    `PoolFinished(outcome)` phases. Its single inventory retains idle,
+    borrowed, draining, and unconfirmed helpers. A late checkout reply
+    still leaves the helper in that inventory. Retirement queries are
+    postponed while draining and replayed when the outcome is available.
   - Outbound to callers: `broker.CallEvent` (`CallOutput`, `CallSettled`)
     and `exec.ExecEvent` (`Output`, `Exited`, `Failed`).
 - **Commits / registers**: none. The broker persists nothing; durability of
@@ -164,7 +179,11 @@ protocol (spec Part 1.4). WP-G.
 - **Wire** — `frame := u32_be length ++ msgpack(map)` with keys
   `"v":1, "id":u64, "kind":str, "body":map`. Kinds: `hello`, `exec_start`,
   `exec_stdin`, `exec_out`, `exec_exit`, `cap_call`, `cap_result`,
-  `hook_call`, `hook_result`, `cancel`, `heartbeat`, `error`.
+  `hook_call`, `hook_result`, `cancel`, `shutdown`, `heartbeat`, `error`.
+  `shutdown` carries an empty map after hello, only on the exec channel
+  (`protocol-change/014-helper-shutdown-witness.md`). The helper sends no
+  acknowledgement: it cancels and joins its jail, then exits. The BEAM
+  drains stdout and retains the port until `exit_status`.
   `protocol_version` is 1; `max_frame_bytes` is 16 MiB. The base policy
   additionally travels on fd 3 at spawn (see below). **`hook_call` and
   `hook_result` never cross the exec channel**: they belong to the
@@ -265,8 +284,10 @@ protocol (spec Part 1.4). WP-G.
   the checkout-failure path releases the budget slot and revokes the
   token before answering — so progress depends only on running
   executions ending, which their wall deadlines guarantee. `AllBusy(size:
-  0)` is not congestion and never waits: a pool that lends nothing has
-  nothing to check back in.
+  0)` is not congestion and never waits: `size` counts the entries that
+  can still return to lending, so zero means a pool that lends nothing or
+  one whose every slot is held by an unconfirmed retirement, and neither
+  has anything to check back in.
 - **Every waiter leaves within its own budget *and with a verdict*.**
   The second half is not free. The loop reserves `min_retry_window_ms`
   of the caller's budget for its last attempt rather than issuing
@@ -279,17 +300,20 @@ protocol (spec Part 1.4). WP-G.
   the in-band refusal the model can act on. A broker slower than the
   caller's whole budget, or one stopped underneath a parked waiter,
   answers `BrokerUnavailable`.
-- **A helper the pool cannot get an answer out of is retired, not
-  fatal.** `helper_ready` probes an idle helper before lending it, from
-  inside the pool actor — so a probe that faulted on a timeout would take
-  the pool down, and the broker with it, since the broker borrows through
-  a call of its own. That is what makes the cost accounting true: one
-  timeout per wedged helper, paid once, because the helper is shut down
-  and never probed again. The probe used to be a private `try_call`
-  because the public `exec.status` panicked; `status` now answers
-  `StatusUnresponsive` instead, so there is one probe and
-  `helper_ready` is the policy on its answer — only a helper that says
-  it is ready gets lent.
+- **An unresponsive helper retains capacity until retirement is proved.**
+  The readiness probe returns `StatusUnresponsive` without faulting the
+  pool. The pool stops lending that helper and requests shutdown once.
+  It releases the slot only after native status 0 and normal BEAM exit;
+  an unconfirmed helper stays in the inventory and is never probed again.
+- **Pool close includes borrowed helpers.** `close_pool` stops admissions
+  before requesting each helper's shutdown. Native proof is recorded
+  before `ForgetRetired` asks the helper actor to stop. The original
+  monitor must then report normal exit before the inventory entry is
+  removed. The caller's timeout only bounds its wait; it does not discard
+  the port, stop the pool, or erase unresolved entries. The final pool
+  reply is followed by a normal pool monitor event before `Ok(Nil)`.
+  This proof covers the helper's existing jail cleanup, not arbitrary
+  detached descendants on Darwin or remote effects.
 - **No exchange on the clearance path may fault where a refusal is
   owed.** The broker calls its checkout seam and dispatches to the
   borrowed helper synchronously inside its own message handler, so a

@@ -31,6 +31,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/operation.{ReplayNever, ReplaySafe}
 import runtime/effects
+import session/session
 import support/fake
 import support/harness.{type Scenario, Scenario}
 import support/recorder
@@ -74,6 +75,39 @@ pub fn simple_interleave_test() {
   // pre-armed, then run-start checkpoint, generation ready, request
   // intent, settlement, and the terminal transaction.
   assert base.commits == 5
+}
+
+pub fn terminal_report_waits_for_the_commit_observer_test() {
+  let parked = process.new_subject()
+  let finished = process.new_subject()
+  let _runner =
+    process.spawn_unlinked(fn() {
+      let report =
+        harness.run_observed(simple_scenario(), 0, fn(sess) {
+          case session.last_result(sess, "main") {
+            Ok(Some(_)) -> {
+              let release = process.new_subject()
+              process.send(parked, release)
+              process.receive_forever(release)
+            }
+            Ok(None) -> Nil
+            Error(_) -> panic as "the observer must read its durable session"
+          }
+        })
+      process.send(finished, report)
+    })
+
+  // The terminal transaction is already readable, but its boundary has
+  // not reached the recorder. Reporting now would omit the last crash point.
+  let assert Ok(release) = process.receive(parked, within: 1000)
+    as "the terminal commit observer must park before counting"
+  let premature = process.receive(finished, within: 100)
+  process.send(release, Nil)
+  assert premature == Error(Nil)
+  let assert Ok(report) = process.receive(finished, within: 1000)
+    as "releasing the observer must finish the report"
+  harness.assert_completed(report.outcome)
+  assert report.commits == 5
 }
 
 // --- scenario 2: prompt → assistant → two tools → assistant → finish ------

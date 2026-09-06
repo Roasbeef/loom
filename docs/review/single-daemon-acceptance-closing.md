@@ -1,0 +1,665 @@
+# Single-daemon acceptance follow-up review
+
+The closing review examined `33387530..ebe0f96c` on 2026-09-06. It was a
+fresh, report-only source review of idle authorization, domain revival,
+worker-owned control recovery, durable creation recovery and the shipped
+multiplayer fixture. It found no high-severity issue. The primary review
+checked reachability before accepting a finding; no production behavior
+changed in response to this pass.
+
+## Dispositions
+
+| Finding | Disposition |
+|---|---|
+| Gateway hints revalidate before their network-delivery guard. | Not reachable in shipped daemon assembly. Runtime subscribers are rules and history, not the gateway forwarder; no provider tap is installed. No production patch and no attribution of the CI latency failure to this path. |
+| A registry census proves a stale account was ignored. | The comment overstated the assertion. Retained and closing domains both count as occupied, and the settlement handler ignores the `Pass` payload. Subject identity and continued cadence discriminate the fault. Corrected the prose. |
+| The late-fence negative uses a 100 ms window. | Replaced it with a zero-wait check after the existing third-pass settled reply. A trigger only admits a follow-up and is not a completion barrier; the final reply is ordered after earlier fence replies from the same worker. |
+| Quiescing a dormant worker can lose its initial begin. | The abstract call sequence exists, but shipped assembly sends the initial begin before publishing its services. A preparing domain with no dependents is cancelled, not quiesced. No new state or replay branch. |
+| A revoked idle attachment can remain in presence. | Accepted consequence of checking authority at use. Admission and outbound delivery still revalidate. Presence is not authorization, and the protocol does not promise immediate idle eviction. |
+| Fixture cleanup can lack a valid native endpoint. | No speculative fallback. Bootstrap atomically publishes the native fence before releasing its paused child; the isolated fixture never corrupts that record. A malformed record must fail rather than authorize signalling an unknown process. |
+| The settle-subject accessor exposes a capability. | Intentional internal fixture seam, with no wire route or production caller. Its documentation now states that a holder can forge settlement. |
+| Parked replies could be an optional single subject. | Declined. Direct internal callers can supply distinct reply subjects. Production bounds repeated close/revive cycles by withdrawing the earlier fence. |
+| A withdrawn account can produce an unexpected-message warning. | Expected only when an already-decided reply arrives on the old subject. Resume normally drops parked replies, so this is not a warning on every revival. |
+
+The shipped fixture's missing-environment path prints an explicit skip to
+standard error. It is not live artifact coverage during ordinary package
+tests; the shipped bootstrap target sets the executable and runs it.
+
+## Evidence
+
+At `ebe0f96c`, the independently run combined `make check dist
+e2e-client-bootstrap e2e-multiplayer soak-daemon` gate exited 0 in 431.65
+seconds. It included 1,322 client tests and 206 TUI tests, then the enabled
+shipped multiplayer fixture. `make doc-check` exited 0 with zero errors and
+136 warnings. The paired soak assertion was unchanged.
+
+The registry regression passed seven tests, failed its intended identity
+assertion when fresh settle-subject allocation was removed, and passed
+after exact restoration and recompilation. The corrected cadence regression
+also failed when resume retained the withdrawn reply; this mutation compiled
+and failed a fence-reply assertion, not setup or dependency resolution.
+
+The rebuilt native clients were also driven in two live terminals against
+one packaged daemon and the Baseten example, with background extraction
+disabled. Both rendered the first reply without another keypress. One
+terminal created a second session and received an independent reply while
+the other stayed on the first, then rejoined the first and submitted a
+reply visible in both. Both clients detached, the daemon logged
+`daemon.stopped`, its process departed, and the enclosing command exited 0.
+This used two owner-authenticated terminals and no tools. It does not prove
+distinct-principal live-tool isolation or switching during a jailed effect.
+
+## Still required
+
+The parent PR's macOS CI run failed the paired latency bound: 399 ms against
+372 ms. Five exact local reproductions passed. Neither those passes nor
+this review establishes the cause; per-credit diagnostics preserve the
+unchanged bound for the next platform run.
+
+Shipping dependency adoption of the SQLite retirement repair, excluded
+filesystem confinement, the whole-VM publication crash sweep and the rest
+of the combined shipped acceptance drive remain open. A reviewed follow-up
+and green local gates do not complete those requirements.
+## Shipped reservation recovery follow-up
+
+The separate test-only follow-up received one fresh adversarial review.
+The reviewer traced capacity refusal through committed reservation, the
+birth-qualified SIGKILL, native departure and stale-endpoint takeover,
+metadata-only restoration, and same-key recovery of the original SQLite
+identity. No false-pass path was found. Production behavior was unchanged.
+
+The review identified an assumption rather than a missing safety check:
+VM departure does not itself prove that the separate lifetime-lock holder
+has consumed port EOF. The fixture now documents that the holder should
+exit while the replacement VM boots. A delayed holder makes startup fail
+visibly; no lock-probe loop or retry was added.
+
+Accepted corrections fix the cleanup-budget arithmetic, use `result.try`
+while preserving close-before-assert ordering, separate the retirement
+stanza and explain the slot-less `Saved` projection. Existing assertions
+and deadlines remain unchanged. A larger launch budget was not justified
+by an observed timeout. The fixture explicitly excludes the later
+identity-before-confirmation crash boundary.
+
+The corrected fixture passed in 1.98 seconds against the shipped daemon.
+Before the prose/combinator corrections, two fresh runs passed, the full
+extended bootstrap target passed in 28.26 seconds, and both enabled shipped
+fixtures passed together in the package runner. The complete local client
+suite passed 1,323 tests in 219.35 seconds; conditional shipped cases in
+that ordinary run were separately exercised by the enabled gates.
+
+CI at the earlier `e829a2a0` remains a failure: Linux's strict census caught
+the unset shipped prerequisite during ordinary check; macOS's paired soak
+took 2,062 ms against 346 ms. The CI repair supplies the built executable
+before both platform gates, without declaring or hiding a skip. Five
+isolated soak reproductions and the full local suite passed, but the
+macOS delay's cause is unestablished and its bound remains unchanged.
+
+## Shipped identity recovery follow-up
+
+The second shipped crash fixture received a separate fresh adversarial
+review. It covers identity publication before catalogue confirmation using
+an actual MCP initialize barrier, VM-only loss and postmortem durable
+assertions. Recovery waits for the unchanged writer lease to expire
+naturally; it never rewrites a lease timestamp or forces garbage collection.
+
+The review found no high-severity issue. Its medium finding was a coverage
+weakness: `Saved` and an unchanged lease alone could also follow an earlier
+configuration or helper failure. The accepted correction requires the same
+session's `storage_open_failed` event, with a bounded wait for log flushing.
+That establishes the refusal stage, not the exact storage error. Original
+lease identity and the later higher fence remain explicit assertions.
+
+Other accepted corrections reuse `endpoint.observe`, make result patterns
+explicit and explain the lock-holder and retirement ordering. Safety
+assertions and the helper's independent watchdog remain. No additional PID
+tracker was added for orderly MCP shutdown: the existing transport retains
+the native port until exit is observed, and session retirement retains that
+custody. VM departure alone is not that proof. These small corrections did
+not warrant another full review pass.
+
+The combined check, distribution, shipped bootstrap, multiplayer and soak
+gate at `563f3573` exited 0 in 494.21 seconds, including 1,324 client tests,
+206 TUI tests and all three enabled shipped fixtures in the dedicated
+target. After the review correction, the focused identity fixture exited 0
+in 61.59 seconds; most of that time is intentional natural lease expiry.
+
+Remote CI at the earlier `ffacaa5b` failed independently: Linux passed check,
+bootstrap and documentation before a Hex API rate limit broke shipment;
+macOS failed the unchanged paired soak at 498 ms against 370 ms. Both shipped
+fixtures available at that head passed in ordinary check. Neither a causal
+timing fix nor green platform acceptance is claimed by this follow-up.
+
+## Shipped presence recovery follow-up
+
+The next test-only increment extends the existing three-terminal fixture
+through Bob's detach and rejoin. A fresh source review found no high- or
+medium-severity issue. Each surviving terminal must first capture the exact
+two-principal roster; all three then capture the exact recovered roster
+with Bob's new daemon-minted attachment identity and Alice's unchanged
+configuration and author. An original driver monitor is not used as proof
+of server detach.
+
+The review confirmed that the coherent-cut decoder already rejects duplicate
+attachment IDs. The explicit uniqueness and old-ID assertions are retained
+as named acceptance observations, not additional production defenses. The
+factored shutdown helper preserves the original monitor, Normal-exit check
+and deadline. No further review or timeout expansion was needed.
+
+At `86d7b7ec`, the focused fixture passed in 2.49 seconds. All three enabled
+shipped fixtures passed together in 64.80 seconds, with six total matches
+under the package filter. This establishes presence recovery, not ordered
+prompt replay or a queued command's revocation boundary.
+
+## Shipped provider and durable ordering follow-up
+
+The finite loopback provider and the two-turn native-TUI extension received
+one fresh source review. It found no high-severity issue or false-pass path.
+The shipped daemon uses its ordinary HTTP transport and a public dummy key.
+The peer compares the latest user text against the next script step, not
+against a substring of accumulated history. It accepts the production
+human-attribution block, and records any refused, repeated or missing request
+as a failing report. All three terminals compare exact durable records and
+user authors, rendered answers and idle completion across Bob's reconnect.
+
+The medium finding was possible hosted-runner exposure in the eight-second
+per-terminal await, not an observed miss. The deadline and its diagnostics
+remain unchanged: the focused whole drive passed in 3.46 seconds and its
+combined-gate invocation in 3.32 seconds. A measured miss would justify
+revisiting that stage's budget; an outer timeout increase would not fix it.
+
+Accepted corrections annotate the helper's public and private contracts,
+retain the decoded model in request evidence, clarify callback failure
+reporting, and explain port publication. Script bounds and explicit safety
+assertions remain. The small chunked-response actor is intentional coverage
+of chunked HTTP through the shipped transport; replacing it with a finite
+Content-Length response would remove that wire case. No general provider
+server or new production process machinery was added.
+
+Before those small clarity corrections, the combined check, distribution,
+shipped bootstrap, multiplayer and soak gate exited 0 in 497.05 seconds,
+with 1,332 client tests and 206 TUI tests. All three shipped fixtures ran in
+the dedicated target. The documentation gate reported zero errors and 137
+warnings. The separate helper suite passed eight cases, including actual
+socket closure after callback failure. The final focused correction results
+are recorded in the handoff; no second review pass was needed.
+
+## Shipped invitation boundaries
+
+The next increment checks one invitation against a second resident session
+in another workspace. A fresh review found no high- or medium-severity issue.
+Both invited principals receive exact foreign-access refusals. The owner
+then reads the same incarnation and operation and upgrades the same route,
+so an absent target cannot explain those refusals. A raw observer mutation
+reaches the gateway independently of the terminal's local guard.
+
+Accepted corrections replace string dispatch with typed roles, separate the
+test's stages, and describe invitations as owner-only. The invitation probe
+uses the already-shared session because its guard does not consult the target.
+The observer guard also refuses unknown command names; Alice's successful
+configuration command is the positive control for the probe's wire name.
+The per-principal checks remain in one loop. Splitting that loop would add
+structure without preserving a different property.
+
+The pre-correction combined gate exited 0 in 499.78 seconds. The final
+focused drive at `d3a647b9` exited 0 in 3.87 seconds. Those results establish
+the named acceptance observations, not the validity of earlier skip counts.
+
+## Visible skip diagnostics
+
+Published `0bc46d32` reached the final macOS skip census, which failed on an
+apparently stale `/proc` declaration. Source inspection showed that the
+prerequisite still existed. A direct EUnit reproduction explained the missing
+marker: a passing test's stdout is captured, while stderr remains visible.
+The test did not acquire process-observation coverage on macOS. Its existing
+declaration remains necessary.
+
+The repair follows the native TUI fixture's existing stderr convention.
+Thirty-five emitters in ten Gleam test files change only from `io.println`
+to `io.println_error`, with ordinary formatting. Marker text, prerequisites,
+assertions and declarations remain unchanged. No reporter, new Erlang module
+or EUnit capture change is introduced.
+
+Direct review approved the repair. The new regression runs stock EUnit and
+feeds its visible marker through the actual census: an undeclared skip fails,
+a declared skip passes, and an unused declaration fails. Its source guard
+recognizes multiline and shared emitters without treating comments or string
+examples as calls. The documented literal-first convention bounds that check;
+it does not track values stored in variables. All twelve Python deadline and
+reporting tests passed in 3.53 seconds under the existing twenty-second bound.
+
+Earlier census results on both platforms are unverified until the repaired
+reporting path runs there. A test command's zero exit status is distinct from
+proof that all its conditional cases executed. The handoff records the first
+completed rerun and its remaining declared skips.
+
+## Live membership revocation
+
+The next shipped increment revokes Bob after the shared turns and reconnect.
+A fresh independent pass found no high-severity issue and one medium: the
+terminal's pre-revocation sample did not prove it was still connected. The
+fixture now waits for a live, writable cut before revocation, using the
+existing bounded helper so an ordinary capture cannot cause a false failure.
+
+The close assertion now requires the exact normal WebSocket close code 1000,
+followed by the native `closed` result. Mist's normal-stop path and Gramps'
+encoding establish that frame; a handler-crash close no longer satisfies it.
+The fixture explains that Bob disconnects when his own refresh is refused,
+not from a broadcast. Both record comparisons remain at their separate
+barriers. The existing one-second raw read bounds are unchanged.
+
+The owner acknowledgement follows the synchronous catalogue transaction.
+Consuming it before sending Bob's next command supplies causal ordering
+across the two connections without comparing clocks. Surviving clients'
+complete configuration and author are the positive control for Bob's retained
+view; control authentication distinguishes membership loss from credential
+revocation. No separate configuration revision exists in that view type.
+The admission/delivery interval is explicitly left to the scripted authority
+test. The nearby variant review found no other live issue.
+
+The pre-correction combined gate exited 0 in 566.05 seconds. Final focused
+`0606cb89` passed in 4.33 seconds; the strict local census passed with only
+the existing macOS `/proc` skip. No second independent pass was needed for
+these small corrections. The earlier published `33aa9ef1` independently
+passed both remote platform censuses and all four jobs in run 34043916766.
+
+## Failed selector preservation
+
+A fresh pass over the next shipped selector increment found no high- or
+medium-severity issue. The model's actual highlighted row supplies Enter's
+target; a consumed owner acknowledgement orders target-only revocation before
+selection. The exact refusal cannot be an earlier notice or a transport error.
+Structural identity and socket comparisons, an owner-positive target attachment,
+and later configuration traffic cover both sides of the failed replacement.
+
+Accepted cleanups correct the previous paragraph's stage name, add stanza
+boundaries and remove two redundant assertions already guaranteed by the
+returned sample's await predicate. The correct repeated retirement setup stays
+local instead of mixing a refactor into the assertion change. The exact notice
+could be overwritten by future metadata traffic, but this stage deliberately
+changes no original-session metadata until after the refusal is observed.
+No workaround or wider timeout was added for that hypothetical false failure.
+
+The package gate exited 0 in 290.78 seconds with 1,332 tests and all shipped
+fixtures enabled. Its strict local census passed. Final focused `e8ec249e`
+passed in 4.78 seconds after the small cleanups; no second review was needed.
+The separate published revocation head's macOS soak failure is recorded in
+the handoff and is not presented as a green platform result for this increment.
+
+## Paired-latency observations
+
+Direct independent review approved a bounded sampler after the recurring
+macOS soak failure. The original caller still measures the wire operations.
+A linked Weft run publishes its own stop inbox, samples four fixed original
+PIDs, and returns its bounded observation before `AllDelivered` witnesses
+worker retirement. Caller-failure cleanup follows that existing Weft ownership
+contract; this increment did not independently inject that failure.
+
+The call site selects six process-info fields and never reads messages,
+arguments or process dictionaries. Formatting follows the measurement.
+Both conditions use the same sampler, with 25 ms spacing, 128 samples, a
+3.2-second observation horizon and a separate five-second worker deadline.
+Termination reasons are typed and serialized explicitly. No production code,
+FFI, workload, latency bound or VM-global monitoring flag changed.
+
+Accepted review cleanups clarify the call-site allowlist and coarse resolution,
+type the completion reason and separate the sampling stanzas. The first run
+reported one to three observations per condition, with measured batch durations
+of 0–3 ms, not all zero as the initial review summary said. Those durations
+include the sampler's own scheduling; they do not establish zero perturbation.
+Heap growth is not itself a collection, and no sampled state establishes a
+host or native-I/O cause. Final focused `4744fe7a` passed in 11.75 seconds.
+
+Direct review then found that passing EUnit captures the report's stdout,
+while CI did not upload the fixture's JSONL. Commit `8089a4b9` adds only those
+reports to both existing always-upload artifacts. It changes no measurement.
+Run `34048567159` at `00076858` verified those files on both Linux success
+and macOS failure. It retained 18 current Linux pairs and two current macOS
+pairs, all with completed samplers. None of those stressed credits exceeded
+250 ms. Older cached fixture directories were also uploaded and are excluded
+from attribution. Missing samples from earlier green runs do not establish
+an absence of slow credits.
+
+The macOS failure measured 461 ms against 342 ms, with 398 ms in subscription
+setup. Sampling continued with gaps of 26 to 110 ms, and registry reductions
+advanced between samples. SQLite step frames and collection counters narrow
+the investigation, but the samples do not establish host descheduling, BEAM
+starvation or a collection's duration. The handoff records the exact phase
+times and platform results. No threshold was relaxed.
+
+A proposed rollback-journal diagnosis was rejected and retracted after
+following `catalogue.initialize` into `sqlite_policy`. The catalogue already
+applies the shared five-second busy timeout and verifies WAL admission.
+Authority reads use a deferred transaction, and no second catalogue writer
+was found in this soak path. Subscription also waits on the separate
+conversation snapshot reader, which these four sampled PIDs do not cover.
+The registry's sampled SQLite activity remains a hypothesis to investigate,
+not a reason to change journal policy or cache authorization.
+
+Direct review approved adding `b.storage_owner` to the existing owner list.
+The instance retains the original actor that services its snapshot reader;
+no lookup, FFI or production hook is needed. Commit `57788e76` adds only
+that one list entry. Root's focused soak passed in 11.41 seconds, with all
+18 pairs, five owners and normal sampler completion. The additional six
+field reads per sample affect both conditions and remain within the reported
+batch cost. Future measurements must examine phase durations as well as
+individual credits; a slow subscription is not a slow credit.
+
+## Successful switching with an active peer
+
+A fresh review of the four-turn shipped fixture found no high- or
+medium-severity issue. The extracted selector navigation preserves every
+failed-switch assertion, and the shared-history helper retains exact records
+and the observer's read-only check. Alice selects B and returns to A while
+Reader stays attached to A. Return compares the server-decoded epoch and
+incarnation against Reader's original attachment, not a reminted identity.
+
+The provider requests are sequenced by B's completion before the A request.
+Both runtimes coexist, but simultaneous inference is not claimed. After A
+completes, a fresh attributed configuration round-trip on B precedes exact
+B-only history checks. All three A terminals then compare complete records
+after Alice returns. The owner's expected principal comes from authenticated
+control and is checked against the owner's terminal attachment.
+
+Accepted low-severity suggestions add stanza comments and a final comparison
+of Reader's attachment. Earlier explicit identity and record equalities stay
+because they localize failures to the preceding stage. No deadline changed.
+The full client gate before those small review edits passed 1,332 tests in
+292.67 seconds, including all shipped fixtures, with a clean strict local
+census apart from the declared macOS prerequisite. The final focused result
+is recorded in the handoff.
+
+## Pending native selection across VM loss
+
+A fresh pass over the identity fixture's native-client addition found no
+high- or medium-severity issue. The driver is freshly selecting the session
+when control confirms its original opening operation. Actual VM departure
+precedes the failed-candidate observation. Only exact public control-loss
+outcomes pass; timeouts, startup expiry and unexpected reply shapes do not.
+The observed focused and composed runs reported disconnection.
+
+The pre-crash and failed models agree on session, channel, captured snapshot
+and records. Existing reservation, database identity, lease and metadata-only
+restore assertions remain at the same boundaries. After explicit recovery,
+the replacement terminal's epoch matches a separately authenticated control
+hello, differs from the old epoch and carries the current resident incarnation.
+Epochs are random identities, not ordered counters. The reused owner token
+also checks credential persistence across restart.
+
+Accepted low-severity edits shorten a diagnostic, remove the misleading word
+"original" from the shared driver-retirement message and clarify failure-class
+coverage. Explicit pre-crash equalities stay for failure localization. A
+driver round-trip does not prove that another scheduled worker already ran,
+so the exact allowlist retains handshake loss without claiming it was observed.
+No public type was expanded to expose the candidate worker's internal operation.
+
+The tightened focused run passed in 61.80 seconds. Root independently ran the
+composed shipped filter: six tests passed in 67.86 seconds. The final edits at
+`376da701` change comments and diagnostic labels only; format passes and the
+assertions and 200/230/270-second bounds remain unchanged. No further review
+was needed for those edits.
+
+## Exact HTTP tool exchanges
+
+A fresh review of the helper at `94894253` found two medium-severity gaps in
+test strength, both corrected before commit. Unordered assertions over SSE
+events could pass when an argument delta preceded its block start. The test
+now passes the actual HTTP response through the production Anthropic decoder
+and requires one settled call with the exact ID, name, JSON arguments and
+tool-use stop reason. A deliberate event reorder failed that assertion.
+
+The negative result tests originally accepted any HTTP 400. They now require
+the exact refusal reason, so removing the result-size cap cannot pass through
+the later script-mismatch check. Removing the cap failed that assertion.
+The final independent run passed all 13 helper tests in 0.97 seconds, and
+the existing shipped scenario passed in 5.27 seconds. Both mutations were
+restored; the narrow corrections did not require another review pass.
+
+Low-severity cleanups label the result constructor's fields and flatten its
+bound check. The two local mismatch arms remain instead of adding another
+helper. Arguments compare exactly as ordered `JsonValue`, not through an
+order-insensitive normalization. The result requires a present, false
+`is_error`, matching the encoder. Unknown-key tolerance remains, and duplicate
+script keys fail loudly in decoding rather than requiring more fixture logic.
+The helper preserves its eight-step cap, body limits and original cleanup.
+It establishes no shipped tool execution until a consumer drives that path.
+
+## Held jailed tool across session switches
+
+A fresh, report-only review examined the live-tool consumer against
+`37726c23`. It found no high- or medium-severity issue. The final implementation
+is `5ab802b9`; no production, protocol, dependency or native-policy code changed.
+
+The review traced the tools phase to the gateway's durable operation-state
+projection, not a local terminal label. The invocation and phase commit in
+one planner transaction. The script admits exactly one tool-use response,
+and A1's attached peers require its exact invocation, result and final answer.
+The single append-mode completion marker detects repeated execution. A2 and B
+turns finish before host release, so the test establishes continued execution
+custody rather than a tool that happened to finish before selection.
+
+Five low-severity corrections were accepted: marker reads now fail on errors
+other than absence, result assertions identify their individual failures,
+the start poll allows 15 seconds for cold jail startup, the owner-peer setup
+has its own explanatory stanza, and the post-B phase comment no longer claims
+fresh liveness. That phase observation alone can be stale; successful result
+delivery after release supplies the completion evidence. The diagnostic now
+names the measured interval. Outer cleanup and test deadlines are unchanged.
+
+Before these corrections, the full client gate passed 1,337 tests with all
+three shipped fixtures enabled; its test command exited 0 in 290.84 seconds.
+The strict local census accepted only the declared macOS prerequisite. The
+final independent focused run exited 0 in 7.76 seconds and observed 950 ms
+from start marker to release. Format and client lint exited 0. The small
+corrections did not require a second review pass.
+
+This covers actual benign jailed execution with A1 and A2 in one workspace
+and B in another. It does not establish an approval race, application
+filesystem confinement or the entire combined acceptance drive. The hosted
+run at `37726c23` predates the live-tool consumer; its later Hex 502 failures
+are recorded separately in the [handoff](../next.md).
+
+## HTTP response ownership
+
+Published `b0b4013a` exposed `Badarg` in Mist's socket transfer. Source review
+confirmed a fixture race: the response actor self-sent its work during
+initialization, then could finish before the request handler transferred the
+socket to it. Commit `ee7b5617` parks that actor until the handler returns from
+the transfer. Its readiness subject belongs to the handler; the start message
+is sent only afterward. No timer, retry or dependency patch is involved.
+
+The direct independent review approved this ordering. A concern that the
+diagnostic selected the oldest tool result was rejected after checking the
+terminal's newest-first record order. A short comment documents that worker
+startup failure cannot satisfy readiness. Typed response labels and clipped
+phase, notice and tool-result text exclude model dumps, credentials, headers
+and image bytes.
+
+Root independently passed all 13 HTTP helper tests in 0.82 seconds and the
+shipped multiplayer fixture in 7.51 seconds, with all eight response labels
+and no `Badarg` in either log. The final edit only documents failed startup;
+format passes. The race was established by source ordering, not a deterministic
+negative scheduling test.
+
+A deliberate exit-7 tool command then tested the marker diagnostic itself.
+The expected marker assertion failed, but the diagnostic reported a starting
+phase and no result. A read-only check of that fixture's session database
+found the exact tool error at sequence 80. The terminal capture was stale:
+the filesystem-only wait had not driven its asynchronous credited refresh,
+and one sample after expiry could start that refresh without observing its
+response. The repair retains a real terminal sample during the existing
+15-second marker wait; it adds no post-deadline wait. Repeating the negative
+failed in 21.22 seconds and printed the expected stderr and exit code 7.
+The original successful script was restored, and the positive fixture then
+exited 0 in 7.68 seconds.
+
+Before publication, root found that the new assertion itself defeated the
+bounded diagnostic: matching `RanOut(sample)` printed the retained model on
+failure. Commit `c9e043de` maps the poll outcome to a short `Result` after
+printing the bounded diagnostic, then asserts only that reduced value. The
+comment records why the model must not reach the assertion. The independent
+reviewer checked and approved this corrective delta. Its intentional exit-7
+negative failed in 21.06 seconds with the actual tool error and a 371-line
+report, rather than the earlier 34,811 lines. An exact-value check found no
+fixture owner credential in the new report. The earlier local report was
+restricted to its owner and not shared. The restored positive run exited 0
+in 7.60 seconds. No production credentials were used by this fixture.
+
+Linux also missed the tool-start marker, but its artifact contains no native
+tool result establishing the cause. macOS logged the same `Badarg` and passed
+the shipped fixture, then failed the separate paired latency bound. Neither
+local absence of the error nor its proximity to Linux's failure proves
+causation. The [handoff](../next.md) records both failures and the current
+five-process latency evidence without attributing collection or scheduling
+duration to sampled counters.
+
+## Shipped stop and operation recovery
+
+A fresh report-only review of the three new stop-fixture files and their
+Makefile invocation found one medium and five low-severity findings. The
+review traced actual socket closure, daemon retirement, interrupted-operation
+recovery, receiver-owned replies and nested cleanup deadlines. No production
+or native-policy code changed. The final test commit is `5d1decf2`.
+
+The medium finding was reachable: a driver restart before the requested stop
+could produce the same interrupted settlement and recovered answer. A latched
+closure alone did not establish that the original request remained held up to
+the stop. The helper now records validated request counts, and the fixture
+checks count and closure immediately before stop, before explicit reopen and
+after recovery. These observations reject evidence already recorded too early;
+they are not a cross-sender linearization guarantee. This also replaces the
+helper's presence-only request field with a count that has domain meaning.
+
+The timeout-scaling explanation and ownership stanzas were added. The bounded
+byte-at-a-time header reader remains deliberately narrow: it serves two known
+requests, not arbitrary HTTP traffic. Real socket negatives require successful
+connection and send before rejection, while pure negatives pin exact causes.
+Neither optional helper generalization nor a weaker negative was introduced.
+
+The independent reviewer approved the small corrective delta without another
+full review wave. Root then independently passed the shipped fixture in
+3.72 seconds and all five negative controls in 0.97 seconds. The earlier full
+client gate passed 1,343 tests in 294.19 seconds with all four shipped fixtures
+enabled, before these review corrections. Final format, client lint and
+documentation checks exited 0. The fixture proves cooperative stop and durable
+operation recovery with an unaffected peer, not a forced process kill or the
+entire acceptance drive.
+
+## Shipped saved schedule recovery
+
+Commit `aaa52741` adds a shipped one-shot schedule fixture. An expired
+configuration added while A is Saved remains inactive while B progresses.
+Explicit open fires it once; another open preserves the exact fired cell
+and every message record. Read-only observations use generated SQL and close
+the connection before decoding entries. Cleanup requires native retirement.
+
+The fresh independent review found no high-severity issue. Its medium finding
+is a fail-loud limitation: a Held or Failed first scanner tick retries after
+60 seconds, beyond the fixture's eight-second terminal await. The module now
+states this limitation; no timeout or scanner policy changed. Low-severity
+type annotations, stanzas, outcome wording and an equivalent `result.map`
+cleanup were applied. The explicit message-count assertion was retained.
+A proposed extra scanner-ran observation was unnecessary for the unchanged
+configuration and persisted compare-and-set path; the exact fired-cell and
+record comparisons remain the oracle. The reviewer approved these deltas.
+
+Root's final focused run exited 0 in 3.67 seconds. The preceding full client
+gate exited 0 with 1,344 tests in 296.01 seconds and all five shipped fixtures
+enabled; its strict skip census independently passed. That full run predates
+the final review corrections and the subsequent latency-policy unit test.
+Recurring cursors, detached future timers and whole-VM schedule recovery
+remain separate work in [issue #244](https://github.com/Roasbeef/loom/issues/244).
+
+## Hosted macOS latency policy
+
+The owner's closing direction in
+[issue #241](https://github.com/Roasbeef/loom/issues/241) makes the hosted
+macOS paired-latency assertion observational. Commit `39468f84` recognizes
+only the exact value `LOOM_SOAK_LATENCY_BOUND=observe`; absent or other values
+continue to enforce the existing bound. The macOS check step opts in.
+Observation logs all paired totals and phases without a skip marker. The
+workload, numeric budget, JSONL, sampler and every other assertion remain.
+
+An independent review approved this narrow policy delta. The regression
+checks the default, unknown and exact modes, the enforcement boundary and
+an observed over-budget value. Root's complete focused soak passed in both
+modes: 12.02 seconds enforcing and 11.92 seconds observing, with all 18
+observation lines emitted. This is an explicit gate-policy exception, not
+a performance repair or evidence that hosted macOS meets the bound.
+
+Closing scope ends with these reviewed changes, documentation and one hosted
+CI cycle without rerun. [Issues #240 through #248](../next.md#what-to-do-next)
+record the remaining product and release work; PR #239 records the closing
+published head and CI result. Historical parent failures remain explicit.
+
+## Test prerequisites after the closing CI failure
+
+Closing run `34056261144` failed on both platforms. Linux's new bounded
+diagnostic established demanded-enforcement refusal before the tool marker.
+The ordinary job lacks the delegated jail job's kernel prerequisites. macOS
+missed the initial terminal-opening wait; its artifacts do not contain the
+native daemon log needed to establish the cause. The owner authorized a
+test-only correction and another measured cycle.
+
+The independent direct review approved a real helper probe, a job-specific
+skip declaration, an unwaived shipped run in the delegated jail job, and a
+20-second bound only for the three initial terminal opens. All non-tool
+assertions remain; a typed mode selects both the exact provider suffix and
+its oracle. The marker, turn, body and cleanup deadlines are unchanged.
+
+Local verification found and corrected two probe assumptions before commit.
+An output event is not terminal completion, and Darwin has no `/bin/true`.
+The probe now drains events under one five-second deadline and invokes the
+existing shell with its no-op built-in. Source review also corrected the
+policy choice: `workspace_default` is narrower than the actual daemon base,
+so the probe calls the existing `serve.base_policy` instead. That source
+mismatch was real but did not establish the observed executable-not-found
+failure's cause. No production policy changed.
+
+The corrected shipped fixture exited 0 in 8.24 seconds. A deliberate noisy
+probe exited 1 in 0.82 seconds with the intended bounded error after original
+helper retirement; the silent command was restored. Census controls accepted
+the exact declaration only for the ordinary Linux job, rejected the same
+skip for the jail job, and rejected a stale unused declaration. The existing
+skip-reporting regressions also passed. These local results do not substitute
+for the next exact-head hosted cycle.
+
+The independent reviewer read and approved the final corrective delta,
+including the production policy/shell reuse, bounded output verdict and
+original close ordering. Two optional wording comments were left unchanged:
+the failed assertion already includes the bounded concrete error, and the
+final output variant remains an explicit refusal rather than a catch-all.
+
+On the restored final source, the full client gate exited 0 with all 1,345
+tests in 297.85 seconds. All five shipped fixtures were enabled, and the
+complete eight-exchange live-tool drive ran without a prerequisite skip.
+The strict local census passed with only the existing Darwin `/proc`
+declaration. Client lint and documentation checks also exited 0.
+
+## Linux departure observation and advisory macOS check
+
+Run `34058458721` verified the multiplayer correction: the delegated jail
+completed all eight exchanges with a clean unwaived census, macOS completed
+the same drive, and ordinary Linux ran its four exchanges with the exact
+prerequisite marker. Two different tests failed afterward or elsewhere.
+
+Linux's strict native-departure observation received `Error("esrch")`.
+The existing target-stat reader recognized only `ENOENT` as absence.
+Linux's [`proc_single_show`](https://github.com/torvalds/linux/blob/master/fs/proc/base.c)
+returns `ESRCH` when the referenced task no longer exists. One new clause
+classifies that target-read result as `ProcessAbsent`. Other errors, boot-id
+and self-stat reads, the birth comparison and the strict fixture remain
+unchanged. Independent direct review approved the boundary. No new external,
+test hook or general error suppression was added. The eight host tests passed
+in 0.42 seconds; this local Darwin result verifies the package, not the Linux
+race. The hosted failing witness and kernel semantics establish the regression
+being corrected.
+
+macOS instead missed the existing five-second in-process provider wait in
+`repeated_instance_assembly_does_not_allocate_atoms_test`. The owner had
+authorized relaxing flaky macOS CI. Localized review chose a step-level
+advisory `make check`, rather than another deadline increase or an advisory
+whole job. Other steps and their censuses still fail independently; logs are
+retained. Issues [#127](https://github.com/Roasbeef/loom/issues/127) and
+[#241](https://github.com/Roasbeef/loom/issues/241) retain the load-sensitivity
+and latency work. This policy is not a claim that either cause is fixed.

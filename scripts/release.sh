@@ -33,6 +33,7 @@ SEED="$ROOT/build/codemode-seed"
 REL_ROOT="$ROOT/build/release"
 REL="$REL_ROOT/loom"
 WORK="$REL_ROOT/work"
+SMOKE_SUPPORT="$REL_ROOT/smoke-support"
 SMOKE=0
 [ "${1-}" = "--smoke" ] && SMOKE=1
 
@@ -101,19 +102,38 @@ if [ "$SMOKE" = 1 ]; then
   [ -n "$SMOKE_ERTS" ] || {
     echo "release.sh: no erts-* in $REL — that is not a release" >&2; exit 1; }
 
-  SESSION="$REL_ROOT/smoke/session.db"
+  [ -f "$SMOKE_SUPPORT/client@release_probe_test.beam" ] || {
+    echo "release.sh: missing release smoke probe; rebuild with make release" >&2; exit 1; }
+  STATE="$REL_ROOT/smoke/state"
   WORKSPACE="$REL_ROOT/smoke/work"
-  rm -rf "$REL_ROOT/smoke"; mkdir -p "$(dirname "$SESSION")" "$WORKSPACE"
+  rm -rf "$REL_ROOT/smoke"; mkdir -p "$STATE" "$WORKSPACE"
   LOG="$REL_ROOT/smoke/server.log"
 
   # The release is run the way a downloaded one is: from a directory that
   # is not the repository, with nothing of Loom's on PATH, so a helper
   # found by accident cannot make the run look better than it is.
+  # Domain maintenance takes its configuration from daemon startup, while the
+  # probe supplies the same file for session admission. Both must stay offline.
   ( cd "$WORKSPACE" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
-      "$REL/bin/loomd" --session "$SESSION" --workspace "$WORKSPACE" \
+      "$REL/bin/loomd" --state-dir "$STATE" \
+      --config "$SMOKE_SUPPORT/release-smoke.toml" \
       --best-effort ) >"$LOG" 2>&1 &
   SERVER_PID=$!
-  trap 'kill -TERM "$SERVER_PID" 2>/dev/null || true' EXIT
+  cleanup_smoke() {
+    kill -TERM "$SERVER_PID" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      local observed
+      observed="$(ps -o stat= -p "$SERVER_PID" 2>/dev/null || true)"
+      case "$observed" in
+        ""|Z*) wait "$SERVER_PID" 2>/dev/null || true; return ;;
+      esac
+      sleep 0.2
+    done
+    echo "release.sh: failed smoke needed forced child cleanup" >&2
+    kill -KILL "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  }
+  trap cleanup_smoke EXIT
 
   LINE=""
   for _ in $(seq 1 150); do
@@ -124,13 +144,37 @@ if [ "$SMOKE" = 1 ]; then
   done
   [ -n "$LINE" ] || { echo "release.sh: the release never announced its port:" >&2; tail -40 "$LOG" >&2; exit 1; }
 
-  PORT="$(printf '%s\n' "$LINE" | sed -n 's|.*ws://[^:]*:\([0-9]*\)/v1/ws.*|\1|p')"
-  curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null
-  WS="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/ws")"
+  PORT="$(printf '%s\n' "$LINE" | sed -n 's|.*ws://[^:]*:\([0-9]*\)/v2/control.*|\1|p')"
+  LEGACY_HEALTH="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")"
+  [ "$LEGACY_HEALTH" = 404 ] || { echo "release.sh: unexpected legacy health route: $LEGACY_HEALTH" >&2; exit 1; }
+  WS="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v2/control")"
   [ "$WS" = 401 ] || { echo "release.sh: expected 401 from an unauthenticated ws upgrade, got $WS" >&2; exit 1; }
-  # The session file proves the esqlite NIF loaded and wrote: it is the
-  # one piece of native code in the release that is not the emulator.
-  [ -s "$SESSION" ] || { echo "release.sh: no session file was written — did the NIF load?" >&2; exit 1; }
+  # Startup restores only catalogue metadata. Explicit control admission below
+  # creates the first conversation and registers its tools.
+  [ -s "$STATE/catalogue.db" ] || { echo "release.sh: no catalogue was written — did the NIF load?" >&2; exit 1; }
+  if grep -q '"event":"server.tools"' "$LOG"; then
+    echo "release.sh: daemon boot unexpectedly assembled a session" >&2; exit 1
+  fi
+
+  # This module is a build-side test artifact, not part of the distributed
+  # server. Running it on the bundled emulator needs no host Erlang or Gleam,
+  # and reuses the production transport rather than adding a WebSocket codec.
+  # Its request and polling deadlines are finite; the outer release-smoke gate
+  # also bounds the entire smoke, including this child. The body is wrapped so
+  # a raise inside the probe halts with its own status and error text: an
+  # unwrapped -eval reports the failure as an emulator boot crash, writes an
+  # erl_crash.dump beside the workspace, and exits with the same 1 an ordinary
+  # probe failure uses.
+  ( cd "$WORKSPACE" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
+      "$REL/erts-$SMOKE_ERTS/bin/erl" \
+      -boot "$REL/bin/no_dot_erlang" -pa "$REL"/lib/*/ebin "$SMOKE_SUPPORT" \
+      -noshell -eval 'try application:ensure_all_started(client), client@release_probe_test:main(), io:format(standard_io, "", []), erlang:halt(0, [{flush, true}]) catch Class:Reason:Stack -> io:format(standard_error, "release probe failed: ~p:~p~n~p~n", [Class, Reason, Stack]), erlang:halt(3, [{flush, true}]) end.' \
+      -extra "$STATE" "$WORKSPACE" "$SMOKE_SUPPORT/release-smoke.toml" ) >"$REL_ROOT/smoke/probe.log" 2>&1 || {
+    echo "release.sh: daemon control/session probe failed:" >&2
+    tail -60 "$REL_ROOT/smoke/probe.log" >&2
+    tail -40 "$LOG" >&2
+    exit 1
+  }
 
   # #101. The launcher no longer injects `--helper`; this proves the
   # server finds the shipped one without it. It is not a test of the
@@ -139,13 +183,10 @@ if [ "$SMOKE" = 1 ]; then
   # tested where it can be, in client/install_test. What this witnesses
   # is that the injection is gone and nothing needed it, which is the
   # whole of what #101 asked for.
-  # `pwd -P` because code:root_dir() is what the emulator physically
-  # resolved, and $REL is only as physical as the path make was run from.
-  REL_PHYS="$(cd "$REL" && pwd -P)"
-  grep -q "\"helper\":\"$REL_PHYS/bin/loom-exec\"" "$LOG" || {
-    echo "release.sh: the release did not find the helper beside itself:" >&2
-    grep -m1 server.listening "$LOG" >&2 || tail -40 "$LOG" >&2
-    exit 1; }
+  # The probe checks the same managed resolver used on session admission,
+  # including the explicit missing-helper refusal, against this bundled root.
+  grep -q 'bundled helper found; explicit missing helper refused' "$REL_ROOT/smoke/probe.log" || {
+    echo "release.sh: managed helper resolution was not verified" >&2; exit 1; }
 
   # #102. `server.tools` is the registry this boot actually built. Code
   # mode registers only when discover() found a compiler, an emulator and
@@ -174,14 +215,11 @@ if [ "$SMOKE" = 1 ]; then
     esac
   fi
 
-  # #149. The distillation pass is a supervised child of every ordinary
-  # boot, so a release that shipped the consumer without the producer
-  # fails here. The claim is deliberately about the *lifecycle* rather
-  # than about a distillate: this directory holds one session file and
-  # the server holds its lease, so the pass reads nothing, asks no
-  # provider and completes — which is exactly the assertion that has
-  # teeth, since a missing worker, an unroutable catalogue or a crashed
-  # pass all fail it without needing an API key on the smoke host.
+  # #149 now belongs to the shared domain, not daemon startup or each guest.
+  # Explicit admission starts the pass. Both conversations are empty, so the
+  # pass must complete without a provider request. Whether the first pass sees
+  # a reserved or saved registration determines its skipped count; candidates
+  # and rows are zero in either ordering.
   PASS=""
   for _ in $(seq 1 50); do
     PASS="$(grep -m1 '"event":"memory.distill.completed"' "$LOG" || true)"
@@ -190,29 +228,26 @@ if [ "$SMOKE" = 1 ]; then
     sleep 0.2
   done
   [ -n "$PASS" ] || {
-    echo "release.sh: the release ran no distillation pass on boot." >&2
+    echo "release.sh: the release ran no distillation pass after admission." >&2
     echo "  The lines it did log about memory were:" >&2
     grep 'memory.distill' "$LOG" | sed 's/^/    /' >&2 || true
     exit 1; }
-  # The comma matters: without it the pattern also accepts "skipped":10
-  # and "skipped":12. `announce` always emits `candidates` next, so it is
-  # guaranteed to be there.
   case "$PASS" in
-    *'"skipped":1,'*) ;;
-    *) echo "release.sh: the pass did not skip the live session it runs" >&2
-       echo "  inside: $PASS" >&2
+    *'"candidates":0,"rows":0,'*) ;;
+    *) echo "release.sh: empty smoke sessions unexpectedly produced candidates or rows" >&2
+       echo "  pass: $PASS" >&2
        exit 1 ;;
   esac
 
-  # `server.stopped` is the structured log line the shutdown path emits
-  # after the listener is closed and the session lease released, so it is
+  # `daemon.stopped` is emitted only after the listener, session and shared
+  # domain owners have confirmed retirement, so it is
   # the witness that SIGTERM took the graceful route rather than killing a
   # server mid-lease.
   kill -TERM "$SERVER_PID" 2>/dev/null || true
   CLOSED=0
   STOPPED=0
   for _ in $(seq 1 50); do
-    if grep -q '"event":"server.stopped"' "$LOG"; then CLOSED=1; fi
+    if grep -q '"event":"daemon.stopped"' "$LOG"; then CLOSED=1; fi
     SERVER_STATE="$(ps -o stat= -p "$SERVER_PID" 2>/dev/null || true)"
     case "$SERVER_STATE" in
       ""|Z*) STOPPED=1 ;;
@@ -267,27 +302,9 @@ if [ "$SMOKE" = 1 ]; then
     fi
   fi
 
-  # And the other half of #101's ordering claim: an explicit --helper
-  # must still outrank the one beside the binary, because that flag is
-  # how an operator points at a helper they audited themselves. A ladder
-  # that had merely gained a rung too high would boot fine here; one that
-  # honours the flag refuses, naming the path it was given.
-  REFUSAL="$REL_ROOT/smoke/refusal.log"
-  if ( cd "$WORKSPACE" && env -i HOME="${HOME:-/tmp}" PATH=/usr/bin:/bin \
-         "$REL/bin/loomd" --session "$REL_ROOT/smoke/nope.db" \
-         --workspace "$WORKSPACE" --best-effort \
-         --helper /nonexistent/loom-exec ) >"$REFUSAL" 2>&1; then
-    echo "release.sh: --helper /nonexistent/loom-exec was ignored — the flag" >&2
-    echo "  no longer outranks the helper beside the binary." >&2
-    exit 1
-  fi
-  grep -q '/nonexistent/loom-exec' "$REFUSAL" || {
-    echo "release.sh: the refusal did not name the helper it was given:" >&2
-    cat "$REFUSAL" >&2; exit 1; }
-
-  echo "release.sh: smoke ok — no erl on PATH, healthz 200, ws 401 without a token,"
-  echo "            session written by the bundled NIF, a distillation pass run on"
-  echo "            boot that skipped the live session, clean close on SIGTERM,"
+  echo "release.sh: smoke ok — no erl on PATH, authenticated v2 readiness, ws 401 without a token,"
+  echo "            metadata-only startup, two explicitly admitted sessions,"
+  echo "            shared-domain distillation after admission, clean close on SIGTERM,"
   echo "            the helper found beside the binary with no --helper injected,"
   echo "            and an explicit --helper still winning"
   if [ -d "$REL/share/codemode-seed" ]; then
@@ -301,7 +318,10 @@ fi
 # ------------------------------------------------------------ the build
 
 echo "==> exporting the erlang shipment"
-( cd packages/client && gleam export erlang-shipment >/dev/null )
+( cd packages/client && gleam build --warnings-as-errors && gleam export erlang-shipment >/dev/null )
+mkdir -p "$SMOKE_SUPPORT"
+cp packages/client/build/dev/erlang/client/ebin/client@release_probe_test.beam "$SMOKE_SUPPORT/"
+cp scripts/release-smoke.toml "$SMOKE_SUPPORT/"
 
 rm -rf "$REL" "$WORK"
 mkdir -p "$WORK/libs"
@@ -400,7 +420,7 @@ fi
 # place; see #101 and packages/client/src/client/install.gleam.
 cat > "$REL/bin/loomd" <<EOF
 #!/bin/sh
-# Generated by scripts/release.sh. The Loom session server.
+# Generated by scripts/release.sh. The Loom multi-session daemon.
 set -eu
 here=\$(CDPATH= cd -- "\$(dirname -- "\$0")" && pwd -P)
 root=\$(dirname "\$here")
@@ -478,4 +498,4 @@ for p in $sizes; do
   du -sh "$p" | sed 's/^/  /'
 done
 echo "  helper sha256: $($SHA256 "$REL/bin/loom-exec" | cut -c1-16)…"
-echo "run it with: $REL/bin/loomd --session <path.db> --workspace <dir>"
+echo "run it with: $REL/bin/loomd --state-dir <private-state-directory>"

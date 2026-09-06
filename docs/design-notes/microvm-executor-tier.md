@@ -7,6 +7,16 @@ libkrun) or an ephemeral container instead of — or alongside — the
 bubblewrap process jail the tree ships, and it ends with four blocking
 items and an order to do them in.
 
+Current-source note: the microVM tier is still a proposal. The historical
+pool and enforcement observations below are not all current constraints.
+Managed assembly now publishes helper cleanup ownership before beginning
+prepared helpers, and the pool retains original helper monitors through
+retirement. `Transport` also has a deferred preparation variant. The
+enforcement matrix now follows the helper's advertised backend features,
+including Seatbelt, rather than assuming Linux from the broker's host.
+The updated symbol citations locate those boundaries in the current tree;
+they do not establish that a VM backend has been implemented.
+
 Every load-bearing claim below was checked against the tree at `290753e`
 (2026-08-27). Where a claim about the design docs turned out to be true
 only of half the system, the half it is false of is named rather than
@@ -60,10 +70,10 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2111`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:2479`)
 takes a `spawn` closure and hands helpers out through `checkout`
-(`packages/broker/src/broker/exec.gleam:1533`) and `checkin`
-(`packages/broker/src/broker/exec.gleam:1542`). "One microVM per helper"
+(`packages/broker/src/broker/exec.gleam:2515`) and `checkin`
+(`packages/broker/src/broker/exec.gleam:2527`). "One microVM per helper"
 and "a warm pool of snapshot-restored VMs" are both descriptions of what
 that closure does. Its own doc comment already flags the place a warm
 pool would change things. Spawning runs inside the pool actor, which
@@ -105,19 +115,19 @@ selected matrix described below. `required_layers_for_features` now chooses
 Linux or Darwin from the helper's hello features, and each backend names its
 own mechanisms. The discussion remains as the argument that led there.
 
-`required_layers` (`packages/broker/src/broker/exec.gleam:1174`) derives
+`required_layers` (`packages/broker/src/broker/exec.gleam:1456`) derives
 the layer tags an execution must be able to show as applied. Four are
 unconditional — `["bwrap", "mounts", "landlock", "no-new-privs"]` — and
 four more are conditional on what the policy asked for: `seccomp-net`
 when the network is off or proxied, `cgroup-v2` under a memory or pid
 ceiling, `rlimit-cpu` under a CPU ceiling, `rlimit-fsize` under a
 file-size ceiling. `unapplied_layers`
-(`packages/broker/src/broker/exec.gleam:936`) subtracts what the report
+(`packages/broker/src/broker/exec.gleam:1581`) subtracts what the report
 shows from what the policy demanded, splitting each report entry at its
 first `:` or `=` through `layer_tag`
-(`packages/broker/src/broker/exec.gleam:951`) so that `landlock:abi=5`
+(`packages/broker/src/broker/exec.gleam:1596`) so that `landlock:abi=5`
 counts as the landlock layer and `mounts:ro=2,rw=1,…` as the mount layer.
-`degraded_report` (`packages/broker/src/broker/exec.gleam:1330`) then
+`degraded_report` (`packages/broker/src/broker/exec.gleam:1612`) then
 fails a `FullEnforcement` demand on any of three grounds: the helper's
 degraded bool, any `skip:` entry, or any required layer simply absent
 from the list.
@@ -144,10 +154,10 @@ refuses everything.
 The fix is that the demanded set has to become a property of the driver
 rather than a constant, or be negotiated at handshake. The helper already
 sends a `hello` with a feature list the broker reads
-(`handle_hello`, `packages/broker/src/broker/exec.gleam:1424`), and at the time
+(`handle_hello`, `packages/broker/src/broker/exec.gleam:1769`), and at the time
 that list was consulted for exactly one thing: whether it contained
 `"degraded"` (`degraded_features`,
-`packages/broker/src/broker/exec.gleam:828`). Issue #64 already proposes
+`packages/broker/src/broker/exec.gleam:1425`). Issue #64 already proposes
 putting a protocol version in that frame and explicitly raises the
 adjacent question — "what is versioned, the frame protocol as a whole, or
 a feature set the client can negotiate against?" — while noting that
@@ -403,9 +413,10 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2057`), wired
-through `LOOM_HELPER_POOL` (`start_pool`,
-`packages/client/src/client/serve.gleam:894`), which means there are
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:2454`), wired
+through `LOOM_HELPER_POOL`
+(`packages/client/src/client/serve.gleam:826`) into `start_pool`
+(`packages/client/src/client/serve.gleam:389`), which means there are
 several cold slots to fill rather than one, and a wide first batch pays
 for each of them in turn. Snapshot restore is fast enough that a warm
 pool's checkout can beat a cold process spawn. This is a performance
@@ -420,7 +431,7 @@ and it is routinely absent on a developer laptop (macOS without HVF, a
 Linux VM without nested virt enabled) and inside CI containers. This is
 decisive for the shape of the work: the VM tier is an **additional tier,
 not a replacement**. The bwrap driver stays the local default, and
-`host_platform_for` (`packages/broker/src/broker/exec.gleam:1811`) grows
+`host_platform_for` (`packages/broker/src/broker/exec.gleam:2109`) grows
 a third answer rather than having its two replaced. Any plan that treats
 the microVM as the new baseline is a plan to make the tree untestable on
 the machines it is developed on.

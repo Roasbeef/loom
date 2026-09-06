@@ -6,6 +6,7 @@ gleam = ">= 1.18.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 core = { path = "../core" }
 sqlight = ">= 1.0.0 and < 2.0.0"
+parrot = ">= 2.3.0 and < 3.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"

@@ -199,6 +199,7 @@ pub fn intervention_admission_is_atomic_and_write_once_test() {
             UserText(text: "queued", text_signature: Some(identity)),
           ],
           timestamp: 0,
+          origin: None,
         )),
       ),
     )

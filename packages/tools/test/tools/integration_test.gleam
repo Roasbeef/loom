@@ -81,7 +81,7 @@ fn base_policy(workspace: String) -> policy.SandboxPolicy {
 
 pub fn real_broker_bash_echo_test() {
   case helper_config() {
-    Error(reason) -> io.println("SKIP real_broker_bash_echo: " <> reason)
+    Error(reason) -> io.println_error("SKIP real_broker_bash_echo: " <> reason)
     Ok(#(spawn_config, workspace)) ->
       case exec.spawn_helper(spawn_config) {
         Error(spawn_error) ->

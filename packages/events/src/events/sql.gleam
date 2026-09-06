@@ -102,6 +102,38 @@ pub fn get_cursor_decoder() -> decode.Decoder(GetCursor) {
   decode.success(GetCursor(generation:, high_water:))
 }
 
+pub type SearchAuthorizedEntries {
+  SearchAuthorizedEntries(session_id: String, entry_id: String, snippet: String)
+}
+
+pub fn search_authorized_entries(
+  query query: String,
+  sessions sessions: String,
+  max_hits max_hits: Int,
+) {
+  let sql =
+    "SELECT session_id, entry_id,
+  snippet(entry_fts, 2, '[', ']', '...', 12) AS snippet
+FROM entry_fts
+WHERE entry_fts.text MATCH ?1
+  AND session_id IN (SELECT value FROM json_each(CAST(?2 AS TEXT)))
+ORDER BY rank LIMIT ?3"
+  #(
+    sql,
+    [dev.ParamString(query), dev.ParamString(sessions), dev.ParamInt(max_hits)],
+    search_authorized_entries_decoder(),
+  )
+}
+
+pub fn search_authorized_entries_decoder() -> decode.Decoder(
+  SearchAuthorizedEntries,
+) {
+  use session_id <- decode.field(0, decode.string)
+  use entry_id <- decode.field(1, decode.string)
+  use snippet <- decode.field(2, decode.string)
+  decode.success(SearchAuthorizedEntries(session_id:, entry_id:, snippet:))
+}
+
 pub fn set_cursor(
   session_id session_id: String,
   generation generation: Int,

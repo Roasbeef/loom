@@ -1,11 +1,136 @@
 # The client plane
 
-**Transition in progress.** This page describes the implementation at
-`f019322`. [Sessions](sessions.md) documents the selected single-daemon
-replacement, and [multiplayer](multiplayer.md) documents shared-session
-identity and behavior. Those pages identify unimplemented requirements.
-The replacement will become the default without a legacy protocol path;
-the lifecycle and wire sections below will be reconciled as it lands.
+## Current default: one daemon, multiple sessions
+
+The current implementation runs one `loomd` per private state root, shared
+across workspaces. The daemon opens its catalogue and stable owner
+credential at startup; it restores session metadata without opening every
+conversation. Explicit create/open requests admit independent session assemblies.
+Each assembly owns one conversation database, runtime, gateway, broker, and helper
+pool. Sessions in the same persisted domain share history and maintenance owners.
+See [sessions](sessions.md) for the ownership and shutdown rules and
+[multiplayer](multiplayer.md) for identity and sharing policy. These describe the
+unreleased implementation, not the older shipped baseline below.
+
+```sh
+# Discover the shared daemon and show this workspace's saved sessions.
+loom --workspace /work/project
+
+# Explicitly open a saved canonical session ID.
+loom --workspace /work/project --session SESSION_ID
+
+# Start the daemon without choosing or opening a conversation.
+loomd --state-dir /private/loom --bind 127.0.0.1:0 --capacity 8
+```
+
+`/sessions` lists authorized catalogue records. Selecting one opens it through
+control, then prepares a candidate attachment. The terminal keeps its previous
+transcript and connection until the candidate's initial cut validates. Merely
+listing sessions never starts their runtimes. The old per-session daemon flags
+and `/v1/ws` endpoint are not compatibility modes of the default listener.
+
+### Discovery, credentials, and safe startup
+
+The state root defaults to `~/.loom`; `--state-dir` selects another root.
+`daemon.endpoint` stores the daemon's PID, birth identity, endpoint, and epoch.
+`owner.token` holds the stable owner bearer; only its digest is stored in the
+catalogue. `launch.lock` serializes discovery and paused-child publication, while
+`daemon.lock` protects the daemon's retained resource lifetime. Conversation
+files live under `sessions/`; their runtime state is separate from discovery.
+
+`tui/bootstrap.resolve_daemon` delegates to `tui/daemon/bootstrap`. It acquires
+the launch lock, checks the recorded native identity, and starts a paused child
+only when replacement is permitted. It records the child's PID+birth before
+releasing execution, then releases the launch lock so the child can claim its
+reservation. Readiness requires an authenticated v2 control exchange with the
+recorded epoch. The default listener exposes no `/healthz` route; a successful
+HTTP connection would not prove session or daemon readiness anyway.
+
+A failed probe never proves that the previous daemon or its native children
+retired. A still-live PID+birth pair, an identity-observation error, or an existing
+catalogue with no endpoint record prevents automatic replacement. The endpoint
+survives normal root shutdown until the VM departs. After releasing a child to
+execute, closing the launcher's handle is not a guarantee that the daemon died.
+Executable, helper, and configuration discovery comes from trusted launcher
+choices, not files selected by the workspace.
+
+### The authenticated v2 boundary
+
+The loopback listener serves `/v2/control` and
+`/v2/sessions/<session-id>/ws`. Both use text WebSocket frames with `v: 2`
+JSON envelopes. Control handles catalogue and lifecycle requests; the session
+socket carries conversation commands and credited transfers. The conversation
+vocabulary retains commands such as `prompt`, `steer`, and `fork`, but the v1
+envelopes and full-snapshot exchange shown in the historical sections below
+are not the current wire contract. [Protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
+defines that contract and its accepted transfer amendments.
+
+Each upgrade hashes the bearer and authenticates
+its current principal through the manager. The session route resolves an already
+resident incarnation; it never implicitly opens a saved session. Owner, Operator,
+and Observer are distinct authorities. A role change, credential revocation, or
+membership revocation closes an attachment at its next authorization check.
+Previously admitted work is not cancelled by revocation.
+
+The socket binds its original gateway and immutable daemon epoch, session ID,
+incarnation, principal, role, and connection identity. It transfers its root
+admission permit before parsing messages. Requests use stop-and-wait credit:
+one bounded request receives one bounded reply, and a timeout closes the socket
+without retrying an uncertain mutation. Metadata and entry bytes are fragmented;
+the initial recent window is explicitly incomplete, with older history loaded on
+request. Reconciliation covers metadata-only changes as well as new entries.
+
+Prompts, steers, follow-ups, configuration changes, and escalation decisions
+carry authenticated origins. Approve and deny both compare the exact current
+escalation sequence. The TUI renders presence, authors, shared configuration,
+and exact approval outcomes. Its recording format distinguishes provisional
+attachment attempts from adopted connections, so replay cannot mistake a failed
+switch for a visible session change. Automatic reconnect remains separate from
+explicit session replacement.
+
+Control recovery for an explicit list, open or create runs inside that
+action's managed worker, not the frame loop. A live control owner is borrowed;
+a replacement authenticates through the retained route and is closed with
+the worker. Cancellation also retires an unfinished handshake. This does not
+retry a mutation whose admission is unknown.
+
+### Submission during reconciliation
+
+Periodic reconciliation must not make ordinary Enter depend on finding a gap
+between snapshots. After the first validated cut, the channel can retain one
+unsent mutation behind its current capture. The encoded intent stays bound to
+the original attachment and approval/configuration selection. Another mutation,
+initial synchronization, or a closed channel still prevents admission.
+
+The composer keeps its text, attachments and mode visible but locked while the
+command waits. Escape cancels it locally and retains the draft; it does not send
+an abort. A valid completed capture refreshes authority before the channel sends
+the command exactly once. Only sending allocates its wire request ID and clears
+a composer-origin draft. An overlay action never clears unrelated composer text.
+
+Capture failure, revocation or a target change cancels unsent intent. Switching
+never moves it to the replacement connection, even if that replacement fails.
+Already-sent commands are different: replacement without a reply retains an
+unknown-outcome notice with the original session and request ID, never a retry.
+Recorded connection closure applies the same transition during replay.
+[ADR-010](../adr/010-retain-one-unsent-terminal-command.md) records the decision
+and the live failure that motivated it.
+
+The authoritative composition is
+[`client/daemon/main`](../../packages/client/src/client/daemon/main.gleam),
+[`client/daemon/server`](../../packages/client/src/client/daemon/server.gleam),
+[`client/daemon/session_socket`](../../packages/client/src/client/daemon/session_socket.gleam),
+and [`tui/daemon/bootstrap`](../../packages/tui/src/tui/daemon/bootstrap.gleam).
+The frozen wire amendment is [protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md).
+
+## Historical baseline at `f019322`
+
+The lifecycle, authentication, hub, wire, and terminal sections below preserve
+the earlier single-session implementation and its review evidence. Their v1
+commands, per-session tokens, health endpoint, unbounded replay, and TUI gaps
+are historical descriptions, not current launch instructions or default-server
+guarantees. Internal host/test adapters retain some of these seams; the default
+entrypoint does not select them.
 
 A session is a supervision tree inside one BEAM node: a writer holding
 the session file's lease, one driver actor per strand, a broker with a
@@ -25,7 +150,7 @@ and `tui` packages, through to the scripted acceptance that drives a
 whole session — prompt, tools, a subagent, an escalation, fork,
 navigate, compact, reconnect — through the protocol and nothing else.
 
-## From a terminal to a running session
+## Historical: from a terminal to a running session
 
 `loom` is the terminal client; `loomd` is the session server. One
 `loomd` opens or creates one SQLite session database and serves any
@@ -34,9 +159,11 @@ database under `~/.loom/sessions` into one server. Each locally managed
 session has its own daemon, gateway, and bearer token; `/sessions`
 discovers their launcher records and switches the terminal's connection.
 
-There are two entry paths:
+The old implementation had two entry paths. These commands document that
+baseline; use the current launch examples above for the default daemon.
 
 ```sh
+# Historical commands, not supported launch instructions for the default daemon.
 # Discover or start the default session for this workspace.
 loom --workspace /work/project
 
@@ -90,8 +217,9 @@ publishes endpoint records atomically as private files. Endpoint and
 token reads are bounded to 16 KiB; token reads also require a private,
 user-owned regular file. Reuse checks the record against the expected
 canonical workspace, database, derived session name, token/log paths,
-versions, and local address. Only `ws://127.0.0.1:<port>/v1/ws` is
-accepted by this automatic path.
+versions, and local address. That historical automatic path accepted only
+`ws://127.0.0.1:<port>/v1/ws`. Default daemon discovery instead probes
+`/v2/control`, as described under safe startup above.
 
 ### Safe auto-start
 
@@ -213,14 +341,22 @@ and consumes the new subscription's full snapshot. Each attempt has a
 separate terminal-owned inbox, so late frames and close notices from
 the previous connection cannot change the selected session.
 
-Manual switching is separate from reconnecting after a dropped socket.
-The gateway supports sequence-based replay, documented below, but the
-native client does not automatically reconnect or perform `catch_up`.
+A Weft lifetime actor owns each Stratus socket link after handshake. It
+monitors the terminal that owns the inbox and the background connection
+attempt. Normal attempt completion leaves the socket available; attempt
+cancellation or terminal exit closes it. An abnormal socket exit becomes
+a `Closed` notice, not a process exit propagated into the terminal.
+`connection.adopt` checks liveness without adding that unsafe link.
+Cancellation initiates socket cleanup; the attempt's exit alone does
+not prove the socket has finished closing.
 
 The implementation is in
 [`tui/bootstrap.gleam`](../../packages/tui/src/tui/bootstrap.gleam),
 [`tui/sessions.gleam`](../../packages/tui/src/tui/sessions.gleam), and
 [`client/serve.gleam`](../../packages/client/src/client/serve.gleam).
+The terminal and daemon share the OS primitives in
+[`host/bootstrap.gleam`](../../packages/host/src/host/bootstrap.gleam);
+startup policy remains in the callers' Gleam code.
 [`bootstrap_test.gleam`](../../packages/tui/test/bootstrap_test.gleam)
 covers path derivation, record validation, launch locking, and process
 identity. `make e2e-client-bootstrap` enables its real-server lifecycle
@@ -229,7 +365,7 @@ replacement snapshot to the adopting terminal. The ordinary unit-test
 run leaves that real-server case inactive unless
 `LOOM_BOOTSTRAP_E2E_SERVER` is set.
 
-## What a client is trusted with
+## Historical: what a client is trusted with
 
 A client is not a strand, not a process in the supervision tree, not a
 party to any commit. It holds no durable state: every fact the terminal
@@ -270,7 +406,7 @@ both; the triage accepted them without change on the same reasoning as
 the analogous provider case — a client that authenticated already holds
 the session.
 
-## The hub
+## Historical: the hub
 
 The hub is one actor per served session, registered under a process
 name so the composition seams can address it before it starts. It is
@@ -374,13 +510,14 @@ session supervision tree, and nothing restarts it. It is linked to the
 process that booted it, so a hub crash takes the server down rather than
 leaving connections attached to a corpse.
 
-## The wire
+## Historical: the wire
 
-Transport is websocket, text frames, one JSON envelope per frame, at
-`/v1/ws`. The envelope is frozen by the implementation spec Part 1.6;
+The historical transport used WebSocket text frames, one JSON envelope per
+frame, at `/v1/ws`. Its envelope was frozen by the implementation spec Part 1.6;
 the bodies under it are defined by
-[`packages/client/protocol.md`](../../packages/client/protocol.md), which both
-the gateway and native client build to.
+[`packages/client/protocol.md`](../../packages/client/protocol.md). That v1 body
+reference and its golden fixtures preserve the earlier contract; the default
+daemon and terminal use the v2 amendment linked above.
 
 ```
 c→s  {"v":1, "id":<uint>, "cmd":<name>, "body":{...}}
@@ -490,7 +627,7 @@ gateway fields. A client treats those as a nested document. The nested
 event is also the envelope's seq — a coincidence of this design, not a
 rule a client should lean on.
 
-## Attach, stream, steer
+## Historical: attach, stream, steer
 
 A connection scopes itself to a session with its first and only
 `subscribe`. With no `from_seq`, or zero, the reply is a **full
@@ -643,7 +780,7 @@ re-execution exactly what was approved — and the broker and the kernel
 enforce it again regardless, since this check is the first layer, not
 the only one.
 
-## Authentication and the token
+## Historical: authentication and the token
 
 The spec asked for unix-socket peer credentials locally and bearer
 tokens remotely. `mist`, the Gleam ecosystem's websocket server, listens
@@ -712,13 +849,14 @@ is a default and a documented invariant on
 caller binding a public interface under `LocalAuth`. And the token is
 all-or-nothing: whoever holds it holds the session.
 
-The pre-auth surface is deliberately bare. `/v1/ws` runs the bearer
-check before the upgrade, so a `401` is emitted with no websocket state
-in existence; `/healthz` answers a static `ok` with no session, version,
-or build information in it; every other path is a static `404`. No path
-reaches the websocket handler without passing the check.
+The historical pre-auth surface was deliberately bare. `/v1/ws` ran the bearer
+check before the upgrade, so a `401` was emitted with no WebSocket state
+in existence; `/healthz` answered a static `ok` with no session, version,
+or build information in it; every other path was a static `404`. The default
+daemon returns `404` for both of those retired routes. Its two v2 route families
+authenticate against the manager before upgrading.
 
-## The terminal client
+## Historical: the terminal client
 
 `loom` is the native Gleam client in `packages/tui`. Etui owns raw
 terminal input and frame diffs, Mork parses CommonMark into a structured tree,
@@ -754,7 +892,7 @@ reuses `loomd`. Manual attachment instead requires `--addr`, `--session`, and
 than part of the server archive. It does not carry a second ERTS, so the
 terminal host needs compatible Erlang/OTP 29 on `PATH`.
 
-## Recording and replaying a session
+## Historical: recording and replaying a session
 
 `--record <path>` qualifies any interactive launch and writes one JSON line
 per event as it arrives: every key, paste, resize, wheel notch, button
@@ -807,13 +945,6 @@ on how long ago it last drew, so which of the two `--at` and `--all` show for
 a key press depends on the machine; the settling tick that ends a replay is a
 flush point, so that frame is always the current one. Making every frame
 reproducible needs an injected clock, which is separate work.
-
-Two protocol behaviors remain deliberately incomplete. Pending escalations are
-visible, but the native client does not yet send protocol-change/007's exact
-action-and-grant echo, so it cannot approve or deny. A dropped websocket ends
-the current connection; automatic reconnect and sparse-sequence catch-up remain
-follow-up work. The server's approval and replay contracts are unchanged, and
-the client never claims either operation succeeded locally.
 
 ## Installing an extension
 
@@ -939,15 +1070,15 @@ environment and no log line.
 ## What the acceptance actually proves
 
 The real-client fan-out test in `client/tui_e2e_test` runs two independent
-TUI actors through the shipped virtual loop against `serve.boot`, SQLite,
-and real WebSockets. Each client submits a different prompt; both render
+TUI actors through the shipped virtual loop against the managed daemon,
+SQLite, and real v2 WebSockets. Each client submits a different prompt; both render
 the conditional provider replies and hold identical durable records once,
 in order. A fresh subscriber recovers both turns after the drivers leave.
 The existing native tmux drive remains. See
 [multiplayer](multiplayer.md#implemented-test-foundation) for the coverage
 boundary and the driver ownership model.
 
-`client/demo` drives the entire M3 flow **through the protocol alone**,
+The historical `client/demo` drives the M3 flow **through its protocol seam**,
 against a real session, a real runtime with scripted provider effects,
 and a served gateway: subscribe, prompt with a tool round-trip and
 streamed deltas, a subagent strand created and briefed, a durable report
@@ -957,7 +1088,7 @@ catch-up replay, and a final snapshot. It runs as a test inside `make
 check-client` and as a narrated command-line program. Nothing in it
 reaches around the wire.
 
-Underneath that sit the narrower proofs. The conformance test decodes
+The historical baseline also has narrower proofs. Its conformance test decodes
 and re-encodes all thirty-five golden fixtures byte for byte in both
 directions. The transport tests assert the token file's mode, that a
 pre-planted symlink is left untouched, and that a wrong token of the
@@ -967,16 +1098,26 @@ frames, a wrong version, unknown commands, commands before `subscribe`,
 a wrong session, a steer at idle, unknown strands, escalations,
 `set_config` keys, and model names. And boot is smoke-tested end to end:
 `serve.boot` over a temporary session file, `/healthz` answered, and a
-real websocket `subscribe` returning a snapshot.
+real websocket `subscribe` returning a snapshot. Those internal v1 tests
+are not evidence that the default listener serves v1 or `/healthz`.
+
+Current focused fixtures cover authenticated multi-principal operation and
+exact approval resolution (`tui_multiplayer_test`), real SQLite assembly,
+catalogue-only restart and replacement attachment (`tui_v2_persisted_test`),
+and attempt-tagged recording replay (`tui_recording_v2_test`). These are
+separate proofs with scripted provider effects, not a claim that every
+multiplayer scenario has run against production providers.
 
 ## Where the code lives
 
 | Path | What it holds |
 |---|---|
-| `client/protocol.gleam` | The Part 1.6 envelope and every body shape as total codecs; the grant wire vocabulary; `to_wire_text`. |
-| `client/gateway.gleam` | The hub actor: attach/detach/handle_text, the pull, command dispatch, snapshots and replay, `commit_forwarder` and `tap_provider`. |
-| `client/server.gleam` | The `mist` websocket transport on `/v1/ws`: routing, the bearer check, token minting, the atomic token file. |
-| `client/serve.gleam` | The `loomd` entry point: flags, environment, boot order, `SIGTERM` shutdown. |
+| `client/daemon/main.gleam`, `root.gleam`, `manager.gleam` | The default entrypoint, stable root ownership, catalogue admission, and session/domain retirement. |
+| `client/daemon/server.gleam`, `protocol.gleam`, `session_socket.gleam` | Authenticated v2 control codecs and routes, resident-only attachment, and bounded socket admission. |
+| `client/protocol.gleam` | Total conversation codecs, credited transfer envelopes, and grant vocabulary. |
+| `client/gateway.gleam`, `client/daemon/transfer.gleam` | Original authenticated connection handles, command admission, authorization, and bounded snapshot/reconciliation state. |
+| `client/server.gleam` | The historical v1 transport retained for internal host/test callers, not the default listener. |
+| `client/serve.gleam` | Session assembly, domain resource construction, and independent runtime configuration resolution. |
 | `client/catalog.gleam` | The `loom.toml` model catalogue: strict parser, role chains, the provider-gateway builder, name lookups. |
 | `client/grants.gleam` | The bridge between the runtime's stored escalation JSON and typed `broker/policy.Grant`; `first_unwanted`, the approval subset check. |
 | `client/wiring.gleam` | The production effect seam over the real provider gateway, broker, and tool registry. |
@@ -995,10 +1136,12 @@ real websocket `subscribe` returning a snapshot.
 | `packages/client/protocol.md` | The normative ClientGateway body document. |
 | `packages/client/testdata/protocol/` | The golden fixtures both implementations are pinned against. |
 | `packages/tui/src/tui.gleam` | The terminal model, update loop, transcript, overlays, and command dispatch. |
-| `packages/tui/src/tui/connection.gleam` | The websocket-owning actor and terminal inbox. |
-| `packages/tui/src/tui/bootstrap.gleam` | Canonical local identity, private endpoint records, authenticated readiness, and serialized daemon launch. |
-| `packages/tui/src/tui/sessions.gleam` | Local session selection and replacement connection ownership. |
-| `packages/tui/src/tui_ffi.erl` | Private file operations, kernel launch locks, paused process launch, and birth-qualified process identity. |
+| `packages/host/src/host/websocket.gleam`, `packages/tui/src/tui/connection.gleam` | Shared owned WebSocket transport and its thin terminal event adapter. |
+| `packages/host/src/host/bootstrap.gleam`, `endpoint.gleam` | Shared private files, kernel locks, paused launch, and birth-qualified endpoint fences. |
+| `packages/tui/src/tui/daemon/bootstrap.gleam` | Default daemon discovery, authenticated readiness, and serialized launch policy. |
+| `packages/tui/src/tui/daemon.gleam`, `attachment.gleam`, `session_channel.gleam` | Catalogue operations, candidate ownership, and credited conversation transfer. |
+| `packages/tui/src/tui/bootstrap.gleam`, `sessions.gleam` | The default bootstrap forwarding seam plus historical local-session helpers retained for internal tests. |
+| `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
 | `packages/tui/src/tui/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root —

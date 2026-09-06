@@ -35,6 +35,7 @@ import runtime/api
 import runtime/effects
 import runtime/lineage
 import session/session
+import support/addresses
 import tools/schedule as schedule_tool
 import tools/tool
 
@@ -83,7 +84,7 @@ fn harness(
   )
   // A name nothing is registered under: `poke` must tolerate it, which is
   // the restarting-scanner case in production.
-  let scanner = process.new_name(prefix: "loom_scheduleseam_test")
+  let scanner = addresses.new()
   let wiring =
     scheduleseam.Wiring(
       runtime: fn() { Ok(runtime) },
@@ -1141,7 +1142,7 @@ pub fn an_unavailable_runtime_refuses_in_band_test() {
       runtime: fn() { Error(Nil) },
       policy: schedule.ModelSchedulesWake,
       operator_schedules: [],
-      scanner: process.new_name(prefix: "loom_scheduleseam_absent"),
+      scanner: addresses.new(),
     ))
   let assert Error(schedule_tool.Unavailable(..)) =
     seam.create(ctx("main"), every("poll", 60, schedule_tool.SteersOnly))

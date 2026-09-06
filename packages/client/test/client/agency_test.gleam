@@ -23,7 +23,6 @@ import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/string
 import machine/strand as machine_strand
 import provider/stream
@@ -31,9 +30,11 @@ import runtime/api
 import runtime/effects
 import runtime/lineage
 import session/session
+import support/addresses
 import support/tool_registry
 import tools/agent.{type Caller, type Handle, Caller}
 import tools/tool
+import weft/actor
 
 // --- the harness -----------------------------------------------------------
 
@@ -104,7 +105,7 @@ fn start_harness_with(
     + process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
     * 104_729
   }
-  let name = process.new_name(prefix: "loom_agency_test")
+  let name = addresses.new()
   let agency_clock = counting_clock(1_756_000_000_000, 3)
   let config =
     shape(
@@ -358,7 +359,7 @@ pub fn an_unwired_plane_refuses_in_band_test() {
   // The seam closes over a name, so it exists before the holder does.
   // Every call through it must settle as a refusal rather than crash the
   // effect process that made it.
-  let name = process.new_name(prefix: "loom_agency_unstarted")
+  let name = addresses.new()
   let seam = agency.seam(agency.default_config(name, clock.fixed(at: 0)))
   let caller = caller_on("main", "turn-1:tools", 0)
   assert seam.roster(caller) == Error(agent.AgencyUnavailable)
@@ -1278,7 +1279,7 @@ pub fn agent_tools_are_registered_only_where_a_plane_exists_test() {
   // unwired host has five tools, not eleven that mostly refuse.
   assert tool.names(tool_registry.built_in(None, None, None, None, None))
     == ["bash", "fs_edit", "fs_read", "fs_write", "grep"]
-  let name = process.new_name(prefix: "loom_agency_registry_test")
+  let name = addresses.new()
   let seam = agency.seam(agency.default_config(name, clock.fixed(at: 0)))
   let wired =
     tool.names(tool_registry.built_in(Some(seam), None, None, None, None))

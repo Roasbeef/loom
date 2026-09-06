@@ -69,12 +69,12 @@ import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/msgpack.{type MsgPackValue}
 import gleam/dict.{type Dict}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
-import runtime/internal/ffi_sup
+import weft/actor
+import weft/registry as address
 
 /// How long the actor is given to stop every host it holds.
 pub const default_stop_timeout_ms = 30_000
@@ -237,13 +237,13 @@ type State {
 /// ```
 ///
 pub fn start(
-  name: Name(Message),
+  name: address.Address(Message),
   clock: Clock,
   extensions: List(Extension),
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new(State(known: extensions, clock:, held: dict.new()))
   |> actor.on_message(handle)
-  |> actor.named(name)
+  |> actor.addressed(name)
   |> actor.start
 }
 
@@ -254,7 +254,7 @@ pub fn start(
 /// answer a satellite that died would have produced, and the extension's
 /// tools go on being registered and go on refusing in band.
 pub fn supervised(
-  name: Name(Message),
+  name: address.Address(Message),
   clock: Clock,
   extensions: List(Extension),
 ) -> supervision.ChildSpecification(Subject(Message)) {
@@ -276,12 +276,12 @@ pub fn supervised(
 ///
 /// A registry that is not running, or does not answer, leaves the nodes
 /// to that same janitor.
-pub fn stop(name: Name(Message), timeout_ms timeout_ms: Int) -> Nil {
-  case process.named(name) {
+pub fn stop(name: address.Address(Message), timeout_ms timeout_ms: Int) -> Nil {
+  case address.lookup(name) {
     Error(Nil) -> Nil
-    Ok(pid) -> {
+    Ok(subject) -> {
       let reply = process.new_subject()
-      ffi_sup.send_to_pid(pid, #(name, StopAll(reply_with: reply)))
+      process.send(subject, StopAll(reply_with: reply))
       let _reports = process.receive(reply, timeout_ms)
       Nil
     }
@@ -311,7 +311,7 @@ pub fn stop(name: Name(Message), timeout_ms timeout_ms: Int) -> Nil {
 /// ```
 ///
 pub fn seam(
-  name: Name(Message),
+  name: address.Address(Message),
   clock clock: Clock,
   margin_ms margin_ms: Int,
 ) -> Hosts {
@@ -718,20 +718,26 @@ fn reap(state: State) -> List(#(String, enforcement.Report)) {
 // own process inside a live run, so the failure mode that must not happen
 // is exactly the one `call` has.
 fn ask(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms: Int,
   build: fn(Subject(Result(MsgPackValue, HookFailure))) -> Message,
 ) -> Result(MsgPackValue, HookFailure) {
-  case process.named(name) {
+  case address.lookup(name) {
     Error(Nil) -> Error(Gone("the extension host registry is not running"))
-    Ok(pid) -> {
+    Ok(subject) -> {
+      use pid <- result.try(
+        process.subject_owner(subject)
+        |> result.replace_error(Gone(
+          "the extension host registry is not running",
+        )),
+      )
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
       let selector =
         process.new_selector()
         |> process.select_map(reply, Answered)
         |> process.select_specific_monitor(monitor, RegistryDied)
-      ffi_sup.send_to_pid(pid, #(name, build(reply)))
+      process.send(subject, build(reply))
       let answer = case process.selector_receive(selector, timeout_ms) {
         Ok(Answered(answer:)) -> answer
         Ok(RegistryDied(..)) ->

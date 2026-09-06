@@ -2,9 +2,10 @@
 
 ## Purpose
 
-The shipped native terminal client. It attaches to the frozen ClientGateway
-websocket, renders the durable conversation and live strands, and turns
-keyboard input into slash commands. `make tui-shipment` exports its compiled
+The shipped native terminal client. It authenticates one daemon control
+connection, lists session metadata, and explicitly selects a v2 conversation
+connection. It renders completed coherent cuts and turns keyboard input into
+slash commands. `make tui-shipment` exports its compiled
 BEAM closure beside a thin `bin/loom` launcher, and `make dist` packages
 that tree separately from the self-contained server.
 
@@ -33,8 +34,8 @@ that tree separately from the self-contained server.
   opposite things — a `--demo` `Preview`, which answers a submitted prompt
   itself so the layout can be seen, and a `Replaying` run, which must
   invent nothing because the server's own reply is already in the
-  recording. `Attached` carries the websocket. Every submit and command
-  site enumerates the three.
+  recording. `Attached` carries the websocket. `Disconnected` retains the last
+  view but cannot fabricate preview responses or send commands.
 - `tui/virtual_backend.Backend` is an `etui/backend.Backend` whose `poll`
   answers a scripted list instead of a file descriptor, and whose
   `run_script` drives an application's own `update`/`view` under it and
@@ -65,28 +66,105 @@ that tree separately from the self-contained server.
 - `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
-- `tui/connection.Connection` is a websocket-owning Stratus actor. The
-  etui loop drains its mailbox on ticks, keeping networking out of `view` and
-  out of keyboard handling. Startup runs as a one-task `weft` run with a
-  deadline — the worker belongs to weft's scope, so an initialiser crash
-  cannot reach the terminal and a timeout reaps the half-started actor; a
-  successful connection restores the runtime link.
+- `tui/connection.Connection` is a thin typed adapter over `host/websocket`.
+  The shared host transport owns Stratus and deadline-bounded handshake
+  startup. The terminal owns the destination inbox. After handshake, the
+  shared Weft lifetime actor owns the Stratus link and
+  monitors both the connection attempt and the terminal-owned inbox. Network
+  failure becomes a `Closed` notice instead of killing the terminal. Terminal
+  death, including normal exit, or attempt cancellation closes the socket;
+  normal attempt completion leaves it available to the terminal.
+- `tui/daemon.Connection` owns a separate `/v2/control` connection and its
+  authenticated `Hello`. Its Weft state machine keeps the socket inbox through
+  `AwaitHello`, `Idle`, and `Waiting`; the terminal PID, not a short-lived
+  bootstrap worker, bounds its lifetime. One outstanding request has a deadline
+  and a monotonically increasing ID. An in-flight timeout closes control so a
+  stalled writer cannot accumulate requests after repeated timeouts. An explicit
+  replacement owns a new inbox; old replies cannot reach it. A lost mutation
+  reply returns `UnknownOutcome(command)` without resending it.
+  A retired owner is not a dead daemon. The route — address and credential —
+  outlives it, so `tui/daemon/selection.reconnect` mints a second owner on the
+  same route with a new inbox. `/sessions`, open and create borrow live control
+  or reconnect inside their existing managed worker, never in the frame loop.
+  A replacement monitors that worker and closes on cancellation or ordinary
+  completion; the model retains only the original host and its route. Once
+  that original owner retires, each explicit action pays another handshake.
+  Control has no background catalogue subscription to preserve, and nothing
+  is automatically resent. A borrowed control still has one outstanding slot:
+  concurrent requests can return `Busy` rather than queueing. Recovered actions
+  use separate temporary owners and their own authenticated hello epochs.
+  `tui/daemon/protocol` is the independent, total control codec:
+  `Page` is bounded to 100 authorized records, lifecycle requests use the hello
+  epoch, and `GetOperation` refuses an operation from another epoch locally.
+  Metadata/default reads never imply an open. Cleartext credentials are allowed
+  only for literal loopback endpoints — `127.0.0.1` and `[::1]`, bracketed
+  because that is the form `uri.parse` leaves in a parsed URI's host; remote
+  control requires `wss`. The codec
+  caps a complete frame before JSON parsing, but does not claim a preallocation
+  bound in the inherited Stratus parser.
 - `tui/bootstrap.Options` describes local-launch inputs, while
   `tui/bootstrap.Target` is the authenticated endpoint handed to the ordinary
   connection path. `tui/bootstrap.SessionChoice` is the canonical workspace
   and database identity recovered from one statically validated launcher
   record. Bootstrap policy, record validation, retry timing, executable
   discovery order, and lifecycle decisions remain in Gleam.
-- `tui/sessions.State` owns the `/sessions` selection cursor, while
-  `tui/sessions.SwitchStatus` holds the detached `weft` run whose one task
-  resolves and connects one replacement attachment, and the terminal-owned
-  frame inbox its socket delivers to. The run's deadline is the whole timeout
-  story, and the old connection remains authoritative until the terminal
-  pulls the outcome and adopts the socket.
-- `tui/internal/ffi_bootstrap` exposes only operating-system facts and actions
-  unavailable in pure Gleam: private and bounded file operations, process
-  identity and launch, a kernel lock, loopback port reservation, time, and
-  SHA-256. Its Erlang implementations must not acquire bootstrap policy. Every
+- `tui/bootstrap.resolve_daemon` returns a `tui/daemon/bootstrap.Connected`
+  independent of workspace selection. It uses the shared `host/endpoint`
+  record, releases the launch lock before the child adopts its native fence,
+  and checks v2 control hello against the published epoch. Existing live
+  daemons bypass executable/config discovery. Default startup highlights a
+  catalogue row and waits for Enter; an explicit `--session` selects it.
+- `tui/session_selector.State` retains one authorized, revision-fenced page.
+  `/sessions` does not scan workspace launch records. `tui/daemon/selection`
+  resolves the selected row and canonical workspace, attaches directly when
+  resident, or explicitly opens and observes the returned operation.
+- `tui/attachment.Status` owns one provisional replacement. A deadline-bounded
+  Weft task publishes its socket to terminal-owned subjects. The terminal
+  validates the initial cut, acknowledges it, observes task completion and
+  checks adoption before replacing the old socket. `start_relayed` lets the
+  native driver select the same outcomes as the interactive loop.
+- `tui/session_channel.Channel` is terminal-owned state, not another actor.
+  It admits one request at a time, grants one snapshot fragment per reply, and
+  reconciles at 250ms while idle. Its existing outgoing slot can retain one
+  immutable unsent mutation behind a capture of an already adopted session.
+  `Disposition` distinguishes `Waiting`, `Sent`, and `DefinitelyNotSent`;
+  waiting allocates no mutation ID or response deadline. A valid completed cut
+  refreshes authority before the retained command is sent exactly once.
+  `Model.pending_submission` stores only composer-versus-overlay ownership:
+  the visible text, attachments and mode stay in their original fields and
+  remain locked until sending or cancellation. Escape cancels unsent work
+  before abort handling; replacement cancels it on the original attachment.
+  Overlay sends never clear unrelated composer text. A sent request whose
+  reply is lost still becomes `UnknownOutcome`, never an automatic retry.
+  Explicit replacement uses `retire` before changing the visible session, so
+  a sent request keeps its original identity. Replay derives that same outcome
+  from the existing `Closed` marker for the current lane, not a candidate.
+  [ADR-010](../../docs/adr/010-retain-one-unsent-terminal-command.md) records
+  the waiting-state and cancellation rules.
+- `tui/snapshot` validates attachment identity, exact credits, fragment
+  offsets, immutable entry identity and payload limits. `tui/snapshot_view`
+  projects captured leaf ancestry with pure `core` and `machine` codecs.
+  Missing parents remain unloaded rather than being assigned to main.
+- `tui/approval.Review` binds the displayed action, requested grants and
+  register seq. Exact resolution lookups have their own channel lane; sparse
+  lookup metadata cannot replace conversation history or configuration.
+  `tui/approval_panel` displays the exact captured action, grants, tool and
+  sequence as escaped literal JSON in a scrollable panel. Its 16 KiB displayed
+  detail limit is a presentation bound: incomplete detail refuses approval,
+  while denial remains available under the captured sequence.
+  `tui/sessions` and workspace-record bootstrap remain historical host-test
+  seams, not the live default selector.
+- `host/bootstrap` is called directly, with no shim between. Shared
+  operating-system facts and actions — private and bounded file operations,
+  process identity and launch, a kernel lock, loopback port reservation, time,
+  and SHA-256 — live there because the daemon needs the same ones, and a
+  forwarding module over them was one more place for three copies of the same
+  doc comment to drift. `tui/internal/ffi_terminal` is what is left: the three
+  actions only a program that owns a terminal wants — `silence_logger`,
+  `run_forwarding` and `halt` — and `tui_ffi.erl` holds exactly those three.
+  `tui/internal/ffi_file` adds a weft deadline to `host/bootstrap`'s own
+  bounded reads rather than declaring externals of its own.
+  The shared Erlang implementation must not acquire bootstrap policy. Every
   path or name crossing into Erlang is converted with
   `unicode:characters_to_list/1`, never `binary_to_list/1`, which would split a
   UTF-8 binary into bytes and send an accented path to a directory nobody
@@ -115,11 +193,13 @@ that tree separately from the self-contained server.
 
 ## Relationships
 
-- **Depends on**: `core` for total entry decoding; `weft` for guarded,
+- **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
+  `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
   `702a88415d66acab7c977da41850a7e02cc2ebed` with bounded input bursts; Mork
   1.12.x for CommonMark;
-  Stratus for websockets; and small Gleam utility packages. Etui is pinned
+  and small Gleam utility packages. Stratus is a host dependency, not a direct
+  TUI dependency. Etui is pinned
   because its public API is still moving quickly.
 - **Counterpart**: `packages/client` speaks the other side of ClientGateway.
   `packages/client/protocol.md` remains the body-schema authority;
@@ -135,11 +215,13 @@ that tree separately from the self-contained server.
 
 - **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
   `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`,
-  standalone `compact`, `schedules`, and `schedule_cancel`.
-- **Events in**: full/strand/model/config/schedules snapshots, durable
-  entries, stream deltas, operation transitions, usage, escalation
-  notices, and server errors. Unknown event names are accepted and
-  ignored for forward compatibility.
+  standalone `compact`, `schedules`, `schedule_cancel`, `snapshot_next`,
+  `catch_up`, `escalations_get`, `approve`, and `deny`.
+- **Live events in**: correlated `snapshot_begin`, `snapshot_chunk`,
+  `snapshot_end`, `mutation_outcome`, bounded auxiliary snapshots, and errors.
+  Unknown tags, wrong versions and wrong reply IDs fail closed. Raw entries,
+  usage, presence, configuration, pending approvals and standalone stream
+  previews arrive through a completed cut, not unsolicited legacy events.
 - **Launch flags**: `--record <path>` qualifies any interactive launch and
   writes the session as a recording. `loom replay <path> [--at <frame>]
   [--all] [--width <w>] [--height <h>]` replays one and prints frames as
@@ -153,7 +235,9 @@ that tree separately from the self-contained server.
   <name> [target]` retires one a strand created (the target defaults to
   the active strand, and an operator `[[schedule]]` comes back as a
   `conflict` naming the configuration file),
-  `/sessions` opens the locally managed session selector, `/notes` opens the
+  `/sessions` opens the daemon's authorized metadata selector. `/approve <id>`
+  and `/deny <id>` answer the captured request; `/approvals <id>` loads an exact
+  decision. `/notes` opens the
   latest durable agent-note digest, `Shift+Tab` toggles the compact rail,
   `Ctrl+G` toggles reasoning/tool detail, and Page Up/Page Down traverse
   transcript scrollback. Escape closes an open surface before it requests an
@@ -191,8 +275,8 @@ that tree separately from the self-contained server.
 - **Prompt view**: the editor retains the exact source and cursor state used by
   history and submission. Rendering wraps that state by terminal cells into a
   bounded one-to-four-row viewport; it never inserts newlines into the prompt.
-- **Footer**: full snapshots establish the authoritative ledger and deltas add
-  input, output, cache-read, cache-write, and cost fields independently. The
+- **Footer**: completed coherent cuts establish cumulative input, output,
+  cache-read, cache-write, and cost fields. The
   footer never infers a price from a model name. It discovers the surrounding
   repository once before the event loop, then shows workspace and branch beside
   the model. Repository marker and HEAD reads validate and read one descriptor,
@@ -216,13 +300,12 @@ that tree separately from the self-contained server.
 
 ## Invariants
 
-- **Bootstrap records are hints, never authority.** A record must match the
-  canonical workspace, session path and name, loopback address, and protocol
-  version. Its private token must then authenticate a real `subscribe` whose
-  full snapshot names the expected session before the endpoint is reusable.
-  `/sessions` reads at most 1024 record names and omits malformed, misplaced,
-  incompatible, and duplicate records before presenting a choice. Selection
-  still runs the complete bootstrap resolution and authenticated probe.
+- **The global endpoint fences the native VM.** Shared `host/endpoint` paths
+  retain one Starting/Ready record, native PID and birth identity. A live or
+  unknown identity is never replaced after a failed probe; killing a BEAM root
+  while its VM survives does not permit another daemon. Malformed records and
+  an existing catalogue without a record fail closed. Reuse requires an
+  authenticated v2 control hello with the same epoch.
 - **A cold start is single-winner.** Launchers serialize on a kernel lock and
   re-check state after taking it. A live birth-qualified process is preserved
   through transient probe failure; stale identities and abandoned starting
@@ -326,8 +409,8 @@ that tree separately from the self-contained server.
   The normal view bounds long programs to twelve rows; detail mode reveals the
   whole source. Results label the returned report separately from the sandbox
   enforcement summary.
-- **Injected notes are not operator speech.** The frozen entry schema records
-  the server's run-start digest as a user message without a provenance bit. The
+- **Injected notes are not operator speech.** The server's run-start digest is
+  a user message. Human authorship does not identify host-injected notes, so the
   client recognizes only the exact server-owned preamble and `agent-notes`
   fence, hides that envelope from conversation, and exposes it through
   `/notes`. Do not broaden this into heuristic filtering.
@@ -349,34 +432,33 @@ that tree separately from the self-contained server.
   rows and cut each row to the width with `text_hygiene.fit_tail` first. A
   wrapped row would spend the next entry's rows and push the selection or the
   footer past the clip.
-- **Session replacement is fail-preserving.** Resolution, optional daemon
-  startup, and websocket startup run as one `weft` task under
-  `weft.start_detached` with a 90-second deadline; the terminal pulls its
-  outcome with a zero wait once per tick. Weft's deadline kills the task and
-  joins it before the outcome is delivered, so a timed-out attempt cannot
-  leak a result or socket into a later switch, and each attempt is its own
-  run, so a stale outcome has no later attempt to land on. Failure leaves the
-  old socket and model intact and discards any frames the attempt already
-  queued. Success gives the replacement a fresh
-  connection inbox, the terminal process links to its socket actor, and only
-  then does it close the prior socket and await the new authoritative full
-  snapshot. Late frames and close notices from the abandoned inbox cannot
-  mutate the replacement session.
+- **Session replacement is fail-preserving.** Explicit control selection,
+  WebSocket startup and initial capture share one 90-second Weft deadline.
+  Each attempt owns distinct terminal-created subjects. The old socket keeps
+  progressing until the terminal validates the new session/epoch/incarnation
+  and complete initial cut, observes original worker completion, and adopts
+  the socket. Failure closes only the provisional connection. Late packets
+  from old subjects cannot repaint the adopted view; a task outcome alone is
+  not a socket-drain proof.
 - **Every inbox the terminal reads is created by the terminal.** A `Subject`
   delivers to the process that created it, and receiving on one owned by
-  another process panics. `sessions.start` therefore creates the replacement
-  frame inbox in the terminal before starting the run; the task returns an
-  outcome that names no inbox, and `sessions.receive` attaches the terminal's
-  own. The real-server lifecycle test drains the full snapshot from that inbox
-  in the adopting process, which is the only check that catches a task-created
-  inbox. One window is accepted and documented in the module: between the
-  task returning its socket and `connection.adopt` linking it, the socket is
-  linked to nobody, inside the terminal's own tick handler.
-- **Approval is not implied by visibility.** A pending escalation is rendered
-  as a notice only. Until the exact action/grant echo contract is implemented,
-  this client cannot approve or deny an action. The server still enforces the
-  same frozen approval contract, and the client must not synthesize a weaker
-  approval from the visible policy diff.
+  another process panics. `attachment.start` creates frames, preparation and
+  outcome subjects in the terminal before the worker starts. The worker owns
+  only its acknowledgement subject. The shared socket guardian monitors the
+  terminal owner through cancellation and adoption. Actor-backed native tests
+  reduce already selected messages directly rather than requeueing them.
+- **Approval is an exact captured decision.** Approve echoes the displayed
+  action, requested grant set and register seq; deny echoes the same seq. An
+  observer cannot activate mutation controls. Disappearance triggers at most
+  eight exact lookups, never an inferred author or status. Sixteen resolved
+  summaries retain no grant payload; excess resolutions are explicitly not
+  loaded and can be requested by ID.
+- **Payload limits are not heap measurements.** Transfer validation permits
+  records through 32MiB, but decoded presentation is at most 4MiB per entry and
+  8MiB/100 entries in the retained window. Larger records are drained through
+  bounded fragments and leave an explicit immutable-ID/seq placeholder.
+  Metadata is at most 2MiB. Decoding a 4MiB record measured about 0.3 seconds;
+  these limits do not establish a 16ms frame budget or exact BEAM RSS.
 - **A frame leaves the loop by message, not by return.** Etui owns the
   backend state and hands a backend the *diff* between two frames rather
   than the grid, so a rendered `Buffer` is reachable in exactly one place:
@@ -423,26 +505,66 @@ that tree separately from the self-contained server.
   settled highlight under moving transcript is decoration, never authority.
 - **A recording is what the client was given, not what it made of it.**
   `update` writes the input event before interpreting it, and
-  `handle_connection_message` writes the message before decoding it, so a
+  the conversation channel writes each tagged message before decoding it, so a
   recording reproduces a decoding bug rather than hiding it. A gateway frame
   is stored as the gateway's own bytes because the protocol has one wire
   form and a second encoding of it could only ever disagree. A failed append
   is silent: etui owns the screen, so there is nowhere to print, and a
   recording that stops recording is not a reason to end a live session.
-- **Manual replacement is not catch-up.** `/sessions` deliberately opens a
-  fresh authenticated subscription and clears the prior projection while it
-  waits for the new full snapshot. A dropped websocket still ends the current
-  native connection. Automatic reconnect and sequence-based catch-up remain
-  follow-up work; the client never pretends a disconnected view is current.
+  New logs begin with local format 2 and tag request credits, raw frames,
+  and adoption with a terminal-local attempt identity. Replay uses the same
+  channel reducer without a socket or transport clock, retaining only the
+  current and provisional protocol state. Only an explicit adoption marker
+  changes the visible session. Mixed formats are rejected; historical
+  untagged logs remain replay-only. [ADR-009](../../docs/adr/009-record-terminal-attempt-custody.md)
+  records the ordering and the bounded nonsecret request selectors. These
+  are protocol-buffer limits, not a total replay-memory claim: the file
+  decoder still reads a complete local log before running its script.
+- **Manual replacement is not catch-up.** `/sessions` validates a provisional
+  attachment while preserving the old projection. The adopted channel runs
+  credited `catch_up` at 250ms and includes metadata-only changes. Equal cuts
+  do not restart animation or invalidate the transcript, and a replay goes
+  through that same reconciliation rather than repainting every recorded cut,
+  because a replay that draws frames the live client did not is not
+  reproducing the session; its outbound half, the decision lookup, is inert
+  while the peer is `Replaying`. Disconnect closes the channel without
+  automatic reconnect or mutation resend.
+- **Attachment identity is not a transient notice.** The committed cut supplies
+  the visible author name, role and presence count alongside configuration.
+  Model-list replies and other notices cannot replace that identity. A pending
+  candidate cannot repaint it; after disconnection it describes the retained
+  last view, while the closed channel refuses further mutation.
+- **Uncertainty survives attachment replacement.** The terminal retains one
+  bounded notice labelled `Last unconfirmed submission`, including the session,
+  command and request identity. Ordinary transcript updates do not clear it or
+  imply that the request failed. A newer unknown outcome may replace this last
+  notice without claiming that earlier uncertainty has been resolved.
 
 - **A passthrough forwards output, it does not interpret it.**
-  `ffi_bootstrap.run_forwarding` opens a port with `exit_status` and
+  `ffi_terminal.run_forwarding` opens a port with `exit_status` and
   `stderr_to_stdout` and writes every chunk to this process's stdout as
   it arrives. It is a new FFI rather than a reuse of `spawn_server`,
   which exists to start a *detached, paused* daemon and hand back its
   birth identity: nothing about a passthrough wants any of that.
   `stderr_to_stdout` because a passthrough that reordered the two streams
   would be worse than one that interleaves them as the child did.
+
+## V2 integration evidence
+
+The legacy recording decoder and golden replay tests remain available.
+Attempt replay tests cover failed replacements, equal socket-local IDs,
+missing credits and mixed logs; the real fast-start driver records and
+replays initial adoption, a committed turn and terminal closure. The client
+PTY fixture exports the native TUI, drives a real daemon through v2, and checks
+a provider-conditioned reply, durable fork and detach. Its independent credited
+subscriber checks SQLite content without using the TUI decoder. The persisted
+driver fixture additionally uses real shared history and lazy restart, with
+maintenance explicitly disabled. These deterministic transports do not prove
+external provider-network behavior or replace the manual Herdr multiplayer gate.
+The opt-in real-shipment bootstrap fixture also checks concurrent launch,
+cross-workspace daemon reuse, unadopted socket cancellation, stable credentials,
+native restart and metadata-only restoration before explicit reopening. Its
+existing hostile-shell lock and launcher checks remain separate target steps.
 
 ## Toolchain Boundary
 

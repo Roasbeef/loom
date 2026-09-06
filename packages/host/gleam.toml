@@ -1,0 +1,20 @@
+name = "host"
+version = "0.1.0"
+target = "erlang"
+gleam = ">= 1.18.0"
+
+[dependencies]
+core = { path = "../core" }
+envoy = ">= 1.0.0 and < 2.0.0"
+filepath = ">= 1.0.0 and < 2.0.0"
+gleam_crypto = ">= 1.0.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_http = ">= 4.0.0 and < 5.0.0"
+gleam_time = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
+stratus = ">= 3.0.0 and < 4.0.0"
+weft = "== 0.4.4"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

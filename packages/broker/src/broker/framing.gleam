@@ -151,6 +151,10 @@ pub type Body {
   /// whole helper.
   Cancel
 
+  /// Retires an exec helper after it cancels and joins its current jail.
+  /// The empty body has no acknowledgement; native exit is the witness.
+  Shutdown
+
   /// A liveness probe; the receiver echoes it with the same id.
   Heartbeat
 
@@ -235,6 +239,7 @@ fn kind_name(body: Body) -> String {
     HookCall(..) -> "hook_call"
     HookResult(..) -> "hook_result"
     Cancel -> "cancel"
+    Shutdown -> "shutdown"
     Heartbeat -> "heartbeat"
     ErrorBody(..) -> "error"
   }
@@ -353,6 +358,7 @@ fn body_to_msgpack(body: Body) -> MsgPackValue {
       ])
     HookResult(outcome:) -> outcome_to_msgpack(outcome)
     Cancel -> msgpack.MapValue([])
+    Shutdown -> msgpack.MapValue([])
     Heartbeat -> msgpack.MapValue([])
     ErrorBody(code:, message:) ->
       msgpack.MapValue([
@@ -467,6 +473,10 @@ fn decode_body(
     "hook_call" -> decode_hook_call(entries)
     "hook_result" -> decode_hook_result(entries)
     "cancel" -> Ok(Cancel)
+    "shutdown" -> {
+      use Nil <- result.try(check_keys(entries, []))
+      Ok(Shutdown)
+    }
     "heartbeat" -> Ok(Heartbeat)
     "error" -> decode_error_body(entries)
     _ -> Error(UnknownKind(id:, kind:))

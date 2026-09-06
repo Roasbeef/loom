@@ -16,7 +16,11 @@ import machine/operation.{
 
 /// A user message with one text block.
 pub fn user(text: String) -> AgentMessage {
-  UserMessage(content: [UserText(text:, text_signature: None)], timestamp: 1)
+  UserMessage(
+    content: [UserText(text:, text_signature: None)],
+    timestamp: 1,
+    origin: None,
+  )
 }
 
 /// A token usage with the given input/output counts.

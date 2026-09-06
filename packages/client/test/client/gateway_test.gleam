@@ -16,25 +16,37 @@ import core/entry as core_entry
 import core/ids
 import core/json
 import core/message
+import core/register
+import core/tx
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/string
+import machine/operation
 import machine/strand as machine_strand
 import provider/model
 import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/escalation as durable
+import runtime/writer
 import session/session
+import storage/access
 import storage/storage
+import support/addresses
 import support/tool_registry
 import tools/tool
+import weft/actor
+import weft/poll
 
 // --- wiring ----------------------------------------------------------------
 
-type Harness {
+@internal
+pub type Harness {
   Harness(
     hub: gateway.Gateway,
     connection: Int,
@@ -110,8 +122,26 @@ fn start_harness_full(
   registry: Option(tool.Registry),
   schedules: Option(scheduleadmin.Admin),
 ) -> Harness {
+  start_harness_reserved(catalogue, registry, schedules, None)
+}
+
+/// Builds the same scripted gateway against a daemon-reserved canonical ID.
+@internal
+pub fn reserved_fixture(id: ids.SessionId) -> Harness {
+  start_harness_reserved(None, None, None, Some(id))
+}
+
+fn start_harness_reserved(catalogue, registry, schedules, reserved) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
+  case reserved {
+    None -> Nil
+    Some(id) -> {
+      let assert Ok(_) = session.ensure_reserved_id(session, id)
+        as "the gateway fixture uses the daemon's canonical identity"
+      Nil
+    }
+  }
   let assert Ok(counter) =
     actor.new(1)
     |> actor.on_message(fn(next, reply: Subject(Int)) {
@@ -124,8 +154,8 @@ fn start_harness_full(
     + process.call(counter.data, waiting: 1000, sending: fn(reply) { reply })
     * 7919
   }
-  let name = process.new_name(prefix: "loom_gateway_test")
-  let forwarder_name = process.new_name(prefix: "loom_forwarder_test")
+  let name = addresses.new()
+  let forwarder_name = addresses.new()
   let assert Ok(_forwarder) =
     gateway.commit_forwarder(to: name, as_name: forwarder_name)
   let effects =
@@ -181,9 +211,36 @@ fn start_harness_full(
       session,
       effects,
       api.Options(..options, poll_interval_ms: 25, subscribers: [
-        process.named_subject(forwarder_name),
+        writer.Routed(forwarder_name),
       ]),
     )
+  // Network fixtures make every old whole-history path an executable failure.
+  // The separate snapshot_reader still borrows the real backend capability.
+  let runtime = case reserved {
+    None -> runtime
+    Some(_) ->
+      api.Runtime(
+        ..runtime,
+        session: session.Session(
+          ..runtime.session,
+          store: storage.Storage(
+            ..runtime.session.store,
+            scan_entries: fn(_, _) {
+              panic as "network path must not scan whole entries"
+            },
+            scan_branch: fn(_, _) {
+              panic as "network path must not scan whole branches"
+            },
+            scan_usage: fn(_, _) {
+              panic as "network path must not scan whole usage history"
+            },
+            get_entries: fn(_, _) {
+              panic as "network path must not decode whole entry records"
+            },
+          ),
+        ),
+      )
+  }
   let options = gateway.default_options("sess-01", runtime)
   let options = case catalogue {
     Some(catalogue) -> gateway.with_catalog(options, catalogue)
@@ -197,10 +254,15 @@ fn start_harness_full(
     Some(admin) -> gateway.with_schedules(options, admin)
     None -> options
   }
-  let assert Ok(_started) = gateway.start(options, name)
+  let assert Ok(_started) = case reserved {
+    None -> gateway.start_host_fixture(options, name)
+    Some(_) -> gateway.start(options, name)
+  }
   let hub = gateway.Gateway(name:)
   let inbox = process.new_subject()
-  let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+  let assert Ok(connection) =
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    as "the live gateway must attach the test client"
   Harness(hub:, connection:, inbox:, runtime:)
 }
 
@@ -209,10 +271,361 @@ fn send_raw(harness: Harness, frame: String) -> Nil {
 }
 
 fn send(harness: Harness, id: Int, command: protocol.Command) -> Nil {
+  // Historical host fixtures answer the question currently displayed. Tests
+  // for delayed answers supply an explicit sequence and bypass this shorthand.
+  let command = case command {
+    protocol.Approve(escalation_id, grants, action, 0) ->
+      protocol.Approve(
+        escalation_id,
+        grants,
+        action,
+        current_question_seq(harness, escalation_id),
+      )
+    protocol.Deny(escalation_id, 0) ->
+      protocol.Deny(escalation_id, current_question_seq(harness, escalation_id))
+    other -> other
+  }
   send_raw(
     harness,
     protocol.encode_command(protocol.CommandEnvelope(id:, command:)),
   )
+}
+
+fn current_question_seq(harness: Harness, id: String) -> Int {
+  case api.escalation_cell(harness.runtime, id) {
+    Ok(cell) -> cell.seq
+    _ -> 0
+  }
+}
+
+fn authenticated(
+  harness: Harness,
+  role: access.Authority,
+  socket: process.Pid,
+) {
+  let principal = access.Principal("alice", "Alice", access.MemberPrincipal)
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture digest is valid"
+  let closed = process.new_subject()
+  let assert Ok(auth) =
+    actor.new(Ok(#(principal, role)))
+    |> actor.on_message(fn(state, message) {
+      case message {
+        ReadAuth(reply) -> {
+          process.send(reply, state)
+          actor.continue(state)
+        }
+        ChangeAuth(value, reply) -> {
+          process.send(reply, Nil)
+          actor.continue(value)
+        }
+      }
+    })
+    |> actor.start
+    as "the authorization fixture starts"
+  let session_id = ids.session_id_to_string(api.session_id(harness.runtime))
+  let assert Ok(handle) =
+    gateway.attach_authenticated(
+      harness.hub,
+      gateway.Binding(
+        session_id,
+        "epoch",
+        "incarnation",
+        "connection-alice",
+        principal,
+        role,
+        digest,
+      ),
+      fn() { process.call(auth.data, waiting: 1000, sending: ReadAuth) },
+      fn(frame) { process.send(harness.inbox, frame) },
+      fn() { process.send(closed, Nil) },
+      fn() { Nil },
+      socket,
+    )
+    as "authenticated attachment succeeds"
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      700,
+      protocol.Subscribe(session_id, None),
+    )),
+  )
+  let _snapshot = next_reply(harness, 700, 8)
+  #(handle, auth.data, closed)
+}
+
+type AuthMessage {
+  ReadAuth(Subject(Result(#(access.Principal, access.Authority), String)))
+  ChangeAuth(
+    Result(#(access.Principal, access.Authority), String),
+    Subject(Nil),
+  )
+}
+
+pub fn authenticated_observer_cannot_mutate_test() {
+  let harness = start_harness()
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      701,
+      protocol.SetConfig(
+        None,
+        json.Object([#("queue_mode", json.String("one_at_a_time"))]),
+      ),
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    next_reply(harness, 701, 8).event
+    as "observers cannot change shared settings"
+  assert api.fact_cell(harness.runtime, "client/run_settings") == Ok(None)
+}
+
+pub fn authenticated_prompt_captures_human_origin_test() {
+  let harness = start_harness()
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      702,
+      protocol.Prompt("main", "hello"),
+    )),
+  )
+  let assert protocol.EntryEvent(protocol.EntryRecord(
+    entry: core_entry.MessageEntry(
+      message: message.UserMessage(origin: author, ..),
+      ..,
+    ),
+    ..,
+  )) = next_reply(harness, 702, 16).event
+    as "the prompt is admitted as a user entry"
+  assert author == Some(message.Origin("alice", "Alice"))
+}
+
+pub fn revoked_connection_closes_before_command_admission_test() {
+  let harness = start_harness()
+  let #(handle, auth, closed) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  process.call(auth, waiting: 1000, sending: ChangeAuth(Error("revoked"), _))
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      703,
+      protocol.SetConfig(
+        None,
+        json.Object([#("queue_mode", json.String("one_at_a_time"))]),
+      ),
+    )),
+  )
+  let assert Ok(Nil) = process.receive(closed, within: 1000)
+    as "revocation closes the socket"
+  assert api.fact_cell(harness.runtime, "client/run_settings") == Ok(None)
+}
+
+pub fn shared_configuration_commits_complete_defaults_and_origin_test() {
+  let harness = start_harness()
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      704,
+      protocol.SetConfig(
+        Some("main"),
+        json.Object([
+          #("queue_mode", json.String("one_at_a_time")),
+          #("tool_execution", json.String("sequential")),
+          #("thinking_level", json.String("high")),
+        ]),
+      ),
+    )),
+  )
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(_)) =
+    next_reply(harness, 704, 8).event
+    as "the committed shared value is returned"
+  let assert Ok(defaults) = api.run_defaults_cell(harness.runtime)
+    as "fresh reads see durable defaults"
+  assert defaults.settings.steering_mode == operation.OneAtATime
+  assert defaults.settings.tool_execution == operation.Sequential
+  assert defaults.origin == Some(message.Origin("alice", "Alice"))
+  let assert Ok(Some(cell)) =
+    api.fact_cell(harness.runtime, "client/config_origin/main")
+    as "the same transaction persisted strand attribution"
+  assert cell.value
+    == json.Object([
+      #(
+        "origin",
+        json.Object([
+          #("principal", json.String("alice")),
+          #("name", json.String("Alice")),
+        ]),
+      ),
+    ])
+}
+
+pub fn malformed_shared_defaults_refuse_new_admission_test() {
+  let harness = start_harness()
+  let assert Ok(_) =
+    writer.commit(
+      harness.runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.FactCustom,
+            "client/run_settings",
+            register.value(json.Null),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the corrupt fixture cell is written"
+  let assert Error(api.ReadFailed(_)) = api.run_defaults_cell(harness.runtime)
+    as "present corruption is not host defaults"
+  let assert Error(api.ReadFailed(_)) =
+    api.prompt(harness.runtime, [
+      message.UserMessage(
+        content: [message.UserText("must not run", None)],
+        timestamp: 1,
+        origin: None,
+      ),
+    ])
+    as "new execution must refuse malformed defaults"
+}
+
+pub fn original_socket_kill_removes_presence_without_detach_test() {
+  let harness = start_harness()
+  let assert Ok(socket) =
+    actor.new(Nil)
+    |> actor.on_message(fn(state, _: Nil) { actor.continue(state) })
+    |> actor.start
+    as "the socket lifetime fixture starts"
+  process.unlink(socket.pid)
+  let #(_, _, _) =
+    authenticated(harness, access.Participant(access.Operator), socket.pid)
+  assert gateway.attached(harness.hub) == 2
+  process.kill(socket.pid)
+  let monitor = process.monitor(socket.pid)
+  let assert Ok(Nil) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(within: 1000)
+    as "the original socket is dead"
+
+  // A mailbox barrier observes the monitor-driven removal, without on_close.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 1000, every: 1, attempt: fn() {
+      case gateway.attached(harness.hub) == 1 {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the dead socket no longer contributes presence"
+}
+
+pub fn changed_role_closes_original_attachment_test() {
+  let harness = start_harness()
+  let #(handle, auth, closed) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  let principal = access.Principal("alice", "Alice", access.MemberPrincipal)
+  process.call(auth, waiting: 1000, sending: ChangeAuth(
+    Ok(#(principal, access.Participant(access.Observer))),
+    _,
+  ))
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(705, protocol.ListModels)),
+  )
+  let assert Ok(Nil) = process.receive(closed, within: 1000)
+    as "a role change requires a new attachment, even for a read command"
+}
+
+pub fn shared_configuration_read_failure_leaves_no_partial_defaults_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(
+    harness,
+    706,
+    protocol.SetConfig(
+      Some("missing-strand"),
+      json.Object([
+        #("queue_mode", json.String("one_at_a_time")),
+        #("thinking_level", json.String("high")),
+      ]),
+    ),
+  )
+  let assert protocol.ErrorEvent(code: "bad_request", ..) =
+    next_reply(harness, 706, 8).event
+    as "a missing strand refuses the complete command"
+  assert api.fact_cell(harness.runtime, "client/run_settings") == Ok(None)
+  assert api.fact_cell(harness.runtime, "client/config_origin/missing-strand")
+    == Ok(None)
+}
+
+pub fn new_admission_reads_defaults_without_changing_existing_run_test() {
+  let harness = start_harness()
+  let settings =
+    operation.RunSettings(
+      ..harness.runtime.settings,
+      steering_mode: operation.OneAtATime,
+      follow_up_mode: operation.OneAtATime,
+      tool_execution: operation.Sequential,
+    )
+  let assert Ok(_) =
+    writer.commit(
+      harness.runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.FactCustom,
+            "client/run_settings",
+            register.value(api.encode_run_defaults(
+              settings,
+              Some(message.Origin("alice", "Alice")),
+            )),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the first complete defaults are durable"
+  let assert Ok(id) =
+    api.accept_quietly(harness.runtime, [
+      message.UserMessage([message.UserText("quiet run", None)], 1, None),
+    ])
+    as "the run is durably accepted"
+  let assert Ok(Some(session.Cell(
+    value: operation.RunState(settings: admitted, ..),
+    ..,
+  ))) = session.op_state(harness.runtime.session, id)
+    as "the admitted settings are readable"
+  assert admitted == settings
+  let assert Ok(_) =
+    writer.commit(
+      harness.runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.FactCustom,
+            "client/run_settings",
+            register.value(api.encode_run_defaults(
+              harness.runtime.settings,
+              None,
+            )),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "later defaults are separate from the running operation"
+  let assert Ok(Some(session.Cell(
+    value: operation.RunState(settings: retained, ..),
+    ..,
+  ))) = session.op_state(harness.runtime.session, id)
+    as "the live operation retains its snapshot"
+  assert retained == settings
 }
 
 fn next(harness: Harness) -> protocol.EventEnvelope {
@@ -265,7 +678,8 @@ pub fn attached_counts_live_connections_test() {
   assert gateway.attached(harness.hub) == 1
     as "the harness's own connection counts"
 
-  let second = gateway.attach(harness.hub, fn(_frame) { Nil })
+  let assert Ok(second) = gateway.attach(harness.hub, fn(_frame) { Nil })
+    as "the live gateway must attach the second client"
   assert gateway.attached(harness.hub) == 2
   gateway.detach(harness.hub, second)
   assert gateway.attached(harness.hub) == 1
@@ -285,8 +699,18 @@ pub fn attached_counts_live_connections_test() {
 /// caller — a server without a gateway is by definition not being
 /// watched, and the only caller is a tool effect process.
 pub fn attached_without_a_hub_is_zero_test() {
-  let name = process.new_name(prefix: "loom_absent_hub")
+  let name = addresses.new()
   assert gateway.attached(gateway.Gateway(name:)) == 0
+}
+
+pub fn attach_without_a_hub_refuses_the_connection_test() {
+  let name = addresses.new()
+  let delivered = process.new_subject()
+  assert gateway.attach(gateway.Gateway(name:), fn(frame) {
+      process.send(delivered, frame)
+    })
+    == Error(Nil)
+  assert process.receive(delivered, within: 0) == Error(Nil)
 }
 
 /// A hub that is alive but does not answer in time counts as nobody
@@ -297,11 +721,11 @@ pub fn attached_without_a_hub_is_zero_test() {
 /// asked about, and the driver would report a death with no stated
 /// reason where the seam's doc promises an in-band policy refusal.
 pub fn attached_is_zero_when_the_hub_does_not_answer_test() {
-  let name = process.new_name(prefix: "loom_silent_hub")
+  let name = addresses.new()
   let assert Ok(_silent) =
     actor.new(Nil)
     |> actor.on_message(fn(state, _message) { actor.continue(state) })
-    |> actor.named(name)
+    |> actor.addressed(name)
     |> actor.start
     as "the silent hub must start"
   assert gateway.attached(gateway.Gateway(name:)) == 0
@@ -310,11 +734,11 @@ pub fn attached_is_zero_when_the_hub_does_not_answer_test() {
 /// And a hub that dies while being asked answers zero too, rather than
 /// taking the asker down with it.
 pub fn attached_is_zero_when_the_hub_dies_mid_question_test() {
-  let name = process.new_name(prefix: "loom_dying_hub")
+  let name = addresses.new()
   let assert Ok(started) =
     actor.new(Nil)
     |> actor.on_message(fn(_state, _message) { actor.stop() })
-    |> actor.named(name)
+    |> actor.addressed(name)
     |> actor.start
     as "the dying hub must start"
   let _pid = started.pid
@@ -340,7 +764,7 @@ pub fn wrong_version_refused_with_reply_test() {
 pub fn unknown_command_unsupported_test() {
   let harness = start_harness()
   subscribe(harness)
-  send_raw(harness, "{\"v\":1,\"id\":4,\"cmd\":\"levitate\",\"body\":{}}")
+  send_raw(harness, "{\"v\":2,\"id\":4,\"cmd\":\"levitate\",\"body\":{}}")
   expect_error(harness, 4, "unsupported")
 }
 
@@ -426,7 +850,7 @@ pub fn prompt_content_admits_one_ordered_user_message_test() {
 pub fn unknown_escalation_refused_test() {
   let harness = start_harness()
   subscribe(harness)
-  send(harness, 7, protocol.Deny(escalation_id: "esc-none"))
+  send(harness, 7, protocol.Deny(escalation_id: "esc-none", expected_seq: 0))
   expect_error(harness, 7, "unknown_escalation")
 }
 
@@ -1049,7 +1473,12 @@ pub fn approve_of_a_refreshed_record_is_refused_test() {
   send(
     harness,
     30,
-    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-60"),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wall(60)],
+      action: "d-60",
+      expected_seq: 0,
+    ),
   )
   let envelope = next(harness)
   assert envelope.reply_to == Some(30)
@@ -1101,6 +1530,7 @@ pub fn approve_echoing_a_stale_action_is_refused_test() {
       escalation_id: "esc-1",
       grants: [to_registry()],
       action: "d-true",
+      expected_seq: 0,
     ),
   )
   let envelope = next(harness)
@@ -1127,7 +1557,12 @@ pub fn approve_echoing_a_stale_diff_is_refused_test() {
   send(
     harness,
     31,
-    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wall(60)],
+      action: "d-1",
+      expected_seq: 0,
+    ),
   )
   let envelope = next(harness)
   let assert protocol.ErrorEvent(code:, ..) = envelope.event
@@ -1157,6 +1592,7 @@ pub fn approve_cannot_widen_past_the_wanted_diff_test() {
       escalation_id: "esc-1",
       grants: [to_registry()],
       action: "d-1",
+      expected_seq: 0,
     ),
   )
   let envelope = next(harness)
@@ -1186,7 +1622,12 @@ pub fn approve_echoing_the_record_commits_those_grants_test() {
   send(
     harness,
     33,
-    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wall(60)],
+      action: "d-1",
+      expected_seq: 0,
+    ),
   )
   let envelope = next(harness)
   assert envelope.reply_to == Some(33)
@@ -1233,6 +1674,7 @@ pub fn a_record_with_no_action_still_renders_and_still_approves_test() {
       escalation_id: "esc-legacy",
       grants: [to_registry()],
       action: "",
+      expected_seq: 0,
     ),
   )
   let envelope = next(harness)
@@ -1260,18 +1702,72 @@ pub fn approve_of_a_decided_record_is_not_pending_test() {
   send(
     harness,
     35,
-    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wall(60)],
+      action: "d-1",
+      expected_seq: 0,
+    ),
   )
   let _ack = next(harness)
   send(
     harness,
     36,
-    protocol.Approve(escalation_id: "esc-1", grants: [wall(60)], action: "d-1"),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wall(60)],
+      action: "d-1",
+      expected_seq: 0,
+    ),
   )
   expect_error(harness, 36, "not_pending")
 }
 
 // --- provider tap cancellation --------------------------------------------
+
+pub fn delayed_approve_cannot_answer_reopened_same_action_test() {
+  let #(harness, displayed) = reopened_same_question()
+  send(
+    harness,
+    801,
+    protocol.Approve("same-question", [wall(60)], "same-action", displayed.seq),
+  )
+  let assert protocol.ErrorEvent(code: "stale_approval", ..) =
+    next_reply(harness, 801, 8).event
+    as "an old approval cannot answer the reopened question"
+  assert stored(harness, "same-question").status == durable.Pending
+  assert stored(harness, "same-question").origin == None
+}
+
+pub fn delayed_deny_cannot_answer_reopened_same_action_test() {
+  let #(harness, displayed) = reopened_same_question()
+  send(harness, 802, protocol.Deny("same-question", displayed.seq))
+  let assert protocol.ErrorEvent(code: "stale_approval", ..) =
+    next_reply(harness, 802, 8).event
+    as "an old denial cannot answer the reopened question"
+  assert stored(harness, "same-question").status == durable.Pending
+  assert stored(harness, "same-question").origin == None
+}
+
+fn reopened_same_question() {
+  let harness = start_harness()
+  subscribe(harness)
+  let action = durable.Action("bash", "same-action", "{}")
+  claim(harness, "same-question", scope_on("main", op_id(81)), action, [
+    wall(60),
+  ])
+  let displayed = next_escalation(harness)
+  let assert Ok(_) = api.deny_escalation(harness.runtime, "same-question")
+    as "the first question can be closed"
+  claim(harness, "same-question", scope_on("main", op_id(82)), action, [
+    wall(60),
+  ])
+  let assert Ok(current) = api.escalation_cell(harness.runtime, "same-question")
+    as "the reopened question exists"
+  assert current.seq > displayed.seq
+  assert current.record.action == Some("same-action")
+  #(harness, displayed)
+}
 
 fn cancellable_provider(cancelled: Subject(Nil)) -> effects.ProviderSurface {
   effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
@@ -1297,6 +1793,220 @@ fn cancellation_spec() -> effects.RequestSpec {
     stream_options: json.Object([]),
   )
 }
+
+pub fn preview_observation_drops_backlog_but_preserves_consumer_and_cancel_test() {
+  let supplied = process.new_subject()
+  let seen = process.new_subject()
+  let observer_ready = process.new_subject()
+  let cancelled = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 5000, request: fn(_) {
+      let events = process.new_subject()
+      process.send(supplied, events)
+      stream.immediate(events:, cancel: fn() {
+        process.send(cancelled, Nil)
+        process.send(events, stream.Failed(stream.ProviderCancelled))
+      })
+    })
+  let handle =
+    provider_relay.prepare_preview(surface, cancellation_spec(), fn() {
+      let release = process.new_subject()
+      process.send(observer_ready, release)
+      blocked_preview(seen, release)
+    })
+    |> stream.start_prepared
+  let witness = stream.watch_drain(handle)
+  let assert Ok(release) = process.receive(observer_ready, within: 1000)
+    as "the observer owns its release capability"
+  let assert Ok(events) = process.receive(supplied, within: 1000)
+    as "the inner stream is ready"
+  process.send(events, stream.Delta(stream.TextDelta(0, "first")))
+  let assert Ok(stream.Delta(_)) = process.receive(seen, within: 1000)
+    as "one preview callback is outstanding"
+
+  // Every authoritative delta passes the busy optional observer in order.
+  int.range(1, 51, Nil, fn(_, index) {
+    process.send(events, stream.Delta(stream.TextDelta(index, "next")))
+  })
+  int.range(0, 51, Nil, fn(_, index) {
+    let assert Ok(stream.Delta(stream.TextDelta(actual, _))) =
+      stream.next(handle, within: 1000)
+      as "the runtime receives every delta without waiting for preview"
+    assert actual == index
+    Nil
+  })
+  stream.cancel(handle)
+  assert process.receive(cancelled, within: 1000) == Ok(Nil)
+  assert process.receive(seen, within: 50) == Error(Nil)
+
+  // One release exposes the terminal immediately, not fifty queued callbacks.
+  process.send(release, Nil)
+  assert process.receive(seen, within: 1000)
+    == Ok(stream.Failed(stream.ProviderCancelled))
+  assert stream.next(handle, within: 1000)
+    == Ok(stream.Failed(stream.ProviderCancelled))
+  assert stream.await_drain_forever(witness) == stream.Drained
+}
+
+fn blocked_preview(seen, release) -> provider_relay.ObservationCallback {
+  provider_relay.ObservationCallback(fn(event) {
+    process.send(seen, event)
+    case event {
+      stream.Delta(_) -> {
+        let assert Ok(Nil) = process.receive(release, within: 1000)
+          as "the test releases its bounded outstanding observer"
+        blocked_preview(seen, release)
+      }
+      stream.Settled(..) | stream.Failed(..) -> blocked_preview(seen, release)
+    }
+  })
+}
+
+pub fn preview_sources_bound_blocked_gateway_and_disable_after_timeout_test() {
+  let harness = start_harness()
+  let #(connection, _, _) = authenticated(harness, access.Owner, process.self())
+  let pid = gateway.connection_pid(connection)
+  let baseline = process_monitor_count(pid)
+  let supplied = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 5000, request: fn(_) {
+      let events = process.new_subject()
+      process.send(supplied, events)
+      stream.immediate(events:, cancel: fn() {
+        process.send(events, stream.Failed(stream.ProviderCancelled))
+      })
+    })
+  let tapped = gateway.tap_preview_provider(surface, to: harness.hub.name)
+  let handles =
+    list.map(list.repeat(Nil, 17), fn(_) {
+      let handle =
+        effects.prepare_provider(tapped, cancellation_spec())
+        |> stream.start_prepared
+      let assert Ok(events) = process.receive(supplied, within: 1000)
+        as "the inner source is ready"
+      #(handle, events, stream.watch_drain(handle))
+    })
+  let assert poll.Answered(Nil) =
+    poll.until(within: 1000, every: 5, attempt: fn() {
+      case process_monitor_count(pid) == baseline + 16 {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "only sixteen original observers receive leases"
+  let assert True = suspend_test_process(pid) as "block the original gateway"
+
+  // Each admitted source contributes at most one bounded payload. The refused
+  // seventeenth source contributes none; after timeout, no source retries.
+  list.each(handles, fn(pair) {
+    process.send(
+      pair.1,
+      stream.Delta(stream.TextDelta(0, string.repeat("x", 40_000))),
+    )
+  })
+  process.sleep(300)
+  let initial_queue = process_queue_length(pid)
+  list.each(handles, fn(pair) {
+    int.range(0, 50, Nil, fn(_, index) {
+      process.send(pair.1, stream.Delta(stream.TextDelta(index, "later")))
+    })
+  })
+  process.sleep(100)
+  let later_queue = process_queue_length(pid)
+  let assert True = resume_test_process(pid) as "resume the original gateway"
+  assert initial_queue >= 16
+  assert initial_queue <= 17
+  assert later_queue <= 17
+
+  // Timed-out sources retain their permits until original terminal release,
+  // rather than allowing new sources to overlap their queued payloads.
+  assert process_monitor_count(pid) == baseline + 16
+  list.each(handles, fn(pair) { stream.cancel(pair.0) })
+  let assert poll.Answered(Nil) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case process_monitor_count(pid) == baseline {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "ordered terminal release reclaims every source"
+  list.each(handles, fn(pair) {
+    assert stream.await_drain_forever(pair.2) == stream.Drained
+  })
+  let _ = api.close(harness.runtime)
+  Nil
+}
+
+fn process_monitor_count(pid) {
+  let assert Ok(monitors) =
+    decode.run(
+      test_process_info(pid, atom.create("monitors")),
+      decode.at([1], decode.list(decode.dynamic)),
+    )
+    as "the gateway reports its monitor inventory"
+  list.length(monitors)
+}
+
+pub fn expired_preview_admission_cannot_allocate_after_caller_timeout_test() {
+  let harness = start_harness()
+  let #(connection, _, _) = authenticated(harness, access.Owner, process.self())
+  let pid = gateway.connection_pid(connection)
+  let baseline = process_monitor_count(pid)
+  let supplied = process.new_subject()
+  let surface =
+    effects.ProviderSurface(timeout_ms: 5000, request: fn(_) {
+      let events = process.new_subject()
+      process.send(supplied, events)
+      stream.immediate(events:, cancel: fn() {
+        process.send(events, stream.Failed(stream.ProviderCancelled))
+      })
+    })
+  let tapped = gateway.tap_preview_provider(surface, to: harness.hub.name)
+  let assert True = suspend_test_process(pid) as "delay the lease request"
+  let handle =
+    effects.prepare_provider(tapped, cancellation_spec())
+    |> stream.start_prepared
+  let witness = stream.watch_drain(handle)
+  let assert Ok(events) = process.receive(supplied, within: 1000)
+    as "the real stream does not depend on optional preview admission"
+  process.sleep(250)
+  let assert True = resume_test_process(pid)
+    as "process the already expired request"
+
+  // A synchronous mailbox barrier follows the expired request. No replacement
+  // lease may be granted, even though the observer remains alive.
+  assert gateway.attached(harness.hub) == 2
+  assert process_monitor_count(pid) == baseline
+  process.send(events, stream.Delta(stream.TextDelta(0, "still authoritative")))
+  assert stream.next(handle, within: 1000)
+    == Ok(stream.Delta(stream.TextDelta(0, "still authoritative")))
+  assert process_monitor_count(pid) == baseline
+  stream.cancel(handle)
+  assert stream.next(handle, within: 1000)
+    == Ok(stream.Failed(stream.ProviderCancelled))
+  assert stream.await_drain_forever(witness) == stream.Drained
+  let _ = api.close(harness.runtime)
+  Nil
+}
+
+fn process_queue_length(pid) {
+  let assert Ok(count) =
+    decode.run(
+      test_process_info(pid, atom.create("message_queue_len")),
+      decode.at([1], decode.int),
+    )
+    as "the original gateway reports its queue length"
+  count
+}
+
+@external(erlang, "erlang", "process_info")
+fn test_process_info(pid: process.Pid, item: atom.Atom) -> Dynamic
+
+@external(erlang, "erlang", "suspend_process")
+fn suspend_test_process(pid: process.Pid) -> Bool
+
+@external(erlang, "erlang", "resume_process")
+fn resume_test_process(pid: process.Pid) -> Bool
 
 fn prepared_probe(started: Subject(Nil)) -> stream.PreparedStream {
   let begin = process.new_subject()
@@ -1336,10 +2046,7 @@ fn prepared_provider(started: Subject(Nil)) -> effects.ProviderSurface {
 pub fn provider_tap_forwards_explicit_cancellation_once_test() {
   let cancelled = process.new_subject()
   let tapped =
-    gateway.tap_provider(
-      cancellable_provider(cancelled),
-      to: process.new_name(prefix: "loom_cancel_tap_test"),
-    )
+    gateway.tap_provider(cancellable_provider(cancelled), to: addresses.new())
   let handle = tapped.request(cancellation_spec())
 
   stream.cancel(handle)
@@ -1353,10 +2060,7 @@ pub fn provider_tap_forwards_explicit_cancellation_once_test() {
 pub fn provider_tap_cancel_before_begin_starts_no_inner_work_test() {
   let started = process.new_subject()
   let tapped =
-    gateway.tap_provider(
-      prepared_provider(started),
-      to: process.new_name(prefix: "loom_parked_tap_test"),
-    )
+    gateway.tap_provider(prepared_provider(started), to: addresses.new())
   let stream.PreparedStream(handle:, begin:) =
     effects.prepare_provider(tapped, cancellation_spec())
   let drain_witness = stream.watch_drain(handle)
@@ -1372,10 +2076,7 @@ pub fn provider_tap_cancels_when_its_consumer_dies_test() {
   let cancelled = process.new_subject()
   let ready = process.new_subject()
   let tapped =
-    gateway.tap_provider(
-      cancellable_provider(cancelled),
-      to: process.new_name(prefix: "loom_cancel_tap_death_test"),
-    )
+    gateway.tap_provider(cancellable_provider(cancelled), to: addresses.new())
   let consumer =
     process.spawn_unlinked(fn() {
       let handle = tapped.request(cancellation_spec())
@@ -1426,18 +2127,34 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
       process.send(events, stream.Failed(error: stream.ProviderCancelled))
       stream.immediate(events:, cancel: fn() { Nil })
     })
-  let handle =
-    provider_relay.wrap(surface, cancellation_spec(), fn(_event) { Nil })
+  let prepared =
+    provider_relay.prepare(surface, cancellation_spec(), fn(_event) { Nil })
+  let handle = prepared.handle
+
+  // The immediate terminal may retire the custodian before a begun request
+  // returns. Publish both original monitors while the relay is still parked.
   let drain_witness = stream.watch_drain(handle)
   let assert stream.StreamHandle(owner: Some(owner), ..) = handle
     as "the relay must publish a custodian-backed handle"
+  let owner_monitor = process.monitor(owner)
+  assert process.receive(callers, within: 20) == Error(Nil)
+    as "preparation must not release inner work before custody is published"
+  prepared.begin()
   let assert Ok(inner_consumer) = process.receive(callers, within: 1000)
 
   assert inner_consumer != owner
     as "fallible stream consumption must not be the public drain witness"
   let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
     stream.next(handle, within: 1000)
-  assert stream.await_drain_forever(drain_witness) == stream.Drained
+
+  // Deliberately await proof after retirement, not while racing the terminal.
+  // Only a monitor installed before begin can retain the original exit reason.
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "the original custodian must retire normally before drain is inspected"
+  assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
 }
 
 pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
@@ -1600,40 +2317,78 @@ pub fn provider_relay_consumer_death_observes_nothing_test() {
     })
   let assert Ok(handle) = process.receive(handles, within: 1000)
     as "the relay must be running before its consumer is killed"
+  let assert Some(owner) = handle.owner
+    as "the relay exposes its original custodian"
+  assert !monitored_by_test(owner)
+    as "no earlier test-owned monitor can satisfy the drain-witness barrier"
   let drain_witness = stream.watch_drain(handle)
 
+  // Monitoring the custodian and killing its consumer target different PIDs.
+  // Observe this test's monitor at the custodian before releasing that kill;
+  // creating the local reference alone is not the fixture's acknowledgement.
+  assert monitored_by_test(owner)
+    as "the custodian has installed this test's original drain monitor"
   process.kill(consumer)
 
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
     as "consumer death must cancel the inner stream"
-  assert stream.await_drain_forever(drain_witness) == stream.Drained
+  assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
     as "the custodian retires once the guard and observer are gone"
   assert process.receive(seen, within: 0) == Error(Nil)
     as "a terminal produced by consumer death must never reach the observer"
 }
 
+// Compare trusted OTP PID identities without an unchecked cast or new FFI.
+fn monitored_by_test(owner: process.Pid) -> Bool {
+  let assert Ok(watchers) =
+    decode.run(
+      test_process_info(owner, atom.create("monitored_by")),
+      decode.at([1], decode.list(decode.dynamic)),
+    )
+    as "the original live custodian reports its incoming monitors"
+  let current = string.inspect(process.self())
+  list.any(watchers, fn(watcher) { string.inspect(watcher) == current })
+}
+
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
   let cancelled = process.new_subject()
+  let streams = process.new_subject()
   let surface =
     effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
       let events = process.new_subject()
-      process.send(
-        events,
-        stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
-      )
+      process.send(streams, events)
       stream.immediate(events:, cancel: fn() { process.send(cancelled, Nil) })
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
       panic as "observer crash"
     })
+  let assert Some(owner) = handle.owner
+    as "the relay exposes its original custodian"
+  assert !monitored_by_test(owner)
+    as "no earlier test-owned monitor can satisfy the drain-witness barrier"
   let drain_witness = stream.watch_drain(handle)
+
+  // The observer's crash retires the custodian from a different process than
+  // the one installing this test's monitor, and two senders' signals carry no
+  // order between them. The delta that provokes the crash is therefore sent
+  // only once the custodian reports the monitor installed; a crash that beat
+  // the monitor would settle the witness as ProofLost for a Normal exit.
+  assert monitored_by_test(owner)
+    as "the custodian has installed this test's original drain monitor"
+  let assert Ok(events) = process.receive(streams, within: 1000)
+    as "the relay opened its inner stream"
+  process.send(
+    events,
+    stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
+  )
 
   let assert Ok(stream.Failed(error: stream.TransportFailed(reason:))) =
     stream.next(handle, within: 1000)
   assert reason == "provider relay worker stopped before a terminal response"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
-  assert stream.await_drain_forever(drain_witness) == stream.Drained
+  assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
+    as "the custodian retires once the crashed worker is gone"
 }
 
 pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {

@@ -2,8 +2,8 @@
 
 ## Purpose
 
-The ClientGateway and the session server: the outward face of a live
-session. It owns the Part 1.6 websocket protocol as total Gleam codecs,
+The single daemon and ClientGateway: one listener manages independently
+owned sessions. It owns the Part 1.6 websocket protocol as total Gleam codecs,
 a per-session hub actor that speaks it to any number of attached
 connections, the `mist` websocket transport under that hub, the bridge
 that decodes stored escalation JSON back into typed broker grants, the
@@ -16,11 +16,114 @@ repository's own history and a memory that outlives a session
 (`client/agency`, `client/codemode`, `client/history`, `client/memory`),
 the distillation pipeline that fills that memory
 (`client/distill`, a second entry point), plus the
-`loomd` entry point (`client/serve`) that boots the whole stack
-over one session file. WP-L.
+`loomd` entry point (`client/daemon/main`). Startup restores the private
+catalogue without opening runtimes. Explicit admission invokes
+`serve.resolve_managed` and `serve.assemble_in_domain` for one saved registration.
 
 ## Key Types
 
+- `client/daemon/admin.Request` is the one-shot `loomd access` command.
+  It reads existing private endpoint/owner-token records, verifies the hello
+  epoch, and sends one control mutation through `host/websocket`. It never
+  starts a daemon or opens a conversation. The caller's bounded principal ID
+  is printed before sending; only explicit successful invitation/rotation
+  output contains a bearer. A timeout does not trigger a retry.
+- `client/daemon/manager.Administration` carries digest-only invitation,
+  membership, and principal-scoped credential changes. `administer` checks
+  phase, current owner credential, and epoch in the same serialized dispatch
+  as the DAL mutation. Existing IDs conflict, revoked digests stay tombstoned,
+  and owner credentials are excluded from member rotation/revocation.
+  Invitation and membership-upserting role changes also require the persisted
+  `storage/domain.SessionOnly` scope. `isolate` checks owner, epoch, and absence
+  of every retained runtime slot before changing metadata; the wire requires
+  explicit acknowledgement that the existing transcript will be shared.
+  The domain record captures configuration at creation, not first admission.
+  These metadata checks do not substitute for mapped resource and recall
+  admission in the assembly layer.
+- `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
+  binding, capacity, and lazy session defaults. The binary rejects the removed
+  per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
+  Production startup reserves its OS PID/birth through `host/endpoint` before
+  opening the catalogue, then publishes the actual port and epoch only after
+  listener readiness. Shutdown retains the endpoint until the VM departs.
+- `client/daemon/root.Root` retains the private catalogue, stable `owner.token`,
+  kernel lock, registry witness, and original listener-owner monitor. Its
+  `start_listener` publishes a parked `client/daemon/listener.Listener` before
+  `begin` releases socket acquisition. `control_state` permits existing control
+  sockets to inspect drain progress without widening `ready` or new admission.
+  Connection admission caps 64 owners and 160MiB of accounted payload:
+  inbound message limits plus 8MiB of bounded delivery allowance per session
+  connection, with no exact BEAM heap/RSS claim. Only the original socket DOWN
+  releases a transferred reservation.
+- `client/daemon/listener.Bound` carries the selected port and original Mist
+  supervisor. `terminate_supervisor` only requests shutdown; the original
+  supervisor DOWN supplies retirement evidence. Root shutdown retires sessions
+  before closing control sockets and the listener. Lost listener proof retains
+  the root's recovery-blocked lock.
+- `serve.Settings.domain_paths` carries exact persisted memory and index paths,
+  including imported filenames and session-only mappings. The manager captures
+  the immutable `Domain` before `instance_host.prepare`, then passes it through
+  `Assembly.build` without exposing the catalogue connection. Managed resolution
+  uses the session registration's runtime configuration independently of the
+  domain's maintenance configuration. `None` preserves embedded fixtures' beside-session
+  layout. `serve.build_domain` resolves maintenance configuration independently;
+  `serve.assemble_in_domain` receives the original shared services capability.
+- `client/daemon/domain.Services` retains one original `history.Shared` and an
+  optional parked `distillpass.DomainMessage` owner. `build` publishes Services
+  cleanup before starting history and Runtime cleanup before starting cadence.
+  The registry's capacity-bounded domain book includes closing and blocked slots;
+  waiting sessions consume session slots. `DomainOpened`, `DomainFailed`,
+  `DomainRetired`, and `DomainSettled` carry exact domain incarnation identities.
+  A normal `DomainRetired` stops remaining dependents and remains authoritative
+  even if a late builder result or fault arrives.
+- `client/internal/shared_history` prepares a parked original coordinator,
+  then owns its search index and at most one read-only history source. Source
+  metadata and bounded descriptor/fragment reads advance between actor turns.
+  `history.seam_for` binds calls to the current session, while
+  `supervised_shared_commit_pull` forwards session-bound commit hints. Fresh
+  source authorization precedes ranking and exact reads; stored index locators
+  do not grant access. Retirement succeeds only after actual close results and
+  the original owner exits normally. Failed close retains the owner and handles.
+- `manager.Summary` reports session occupancy separately from `domain_capacity`,
+  `domain_occupied`, and `domain_blocked`. Saved session metadata does not prove
+  domain retirement. After the last clean session retirement, `notify_closed`
+  precedes `quiesce` from the same sender; the registry cancels the domain host
+  only after current and coalesced maintenance settles. A domain fenced while
+  admission is open is revived by the next open in the same domain, taking
+  back the same services with the cadence un-fenced along with them
+  (`domain.resume`), so a reopened workspace goes on distilling. Resume
+  withdraws the fence: the worker drops its parked replies, and the registry
+  replaces the settle subject. A reply already decided before resume can
+  still arrive, but the replacement selector cannot accept it as the account
+  of a later fence. A domain fenced during shutdown is never revived, and
+  neither is one whose maintenance
+  worker refuses the resume — that refusal fails the domain, exactly as a
+  refused quiesce does. An assembly fault reports `Stopping`
+  because Weft's ordered cleanup has already begun; only a cleanup failure
+  reports `RecoveryBlocked`, so `Summary.blocked` counts custody that will
+  never release. Failed cleanup retains admission capacity and prevents
+  normal daemon shutdown.
+- `client/daemon/manager.{frame_authority, FrameRefusal}` — per-frame
+  authorization is one registry dispatch that answers the daemon epoch, the
+  session incarnation and the session authority together, widest fence
+  first, and is still a live read on every check. The four refusals
+  (`StaleEpoch`, `StaleIncarnation`, `Unauthorized`, `RegistryUnavailable`)
+  stay distinct so the transport never reports a revocation as an outage.
+  The control listener keeps using `session_authority`.
+
+- `client/internal/instance_owner.{Owner, Part, CloseOutcome}` retains
+  published cleanup independently of a builder. Weft orders builder exit
+  before the holder's cleanup run; `StillClosing` and `RecoveryBlocked`
+  retain reservations rather than authorizing replacement. The publication
+  handoff in `instance_owner.start` and the registry handoff in
+  `lifetime.start` are both bounded at five seconds, and `distill_owner`'s
+  cleanup run carries a wall deadline, so a wedged start or close settles
+  with a verdict instead of holding the registry forever.
+- `client/internal/instance_host.Host` separates parked preparation from
+  assembly. The long-lived registry must call `prepare`, retain the witness
+  and monitor it before `begin`; Weft scope lifetime includes its creator.
+  The builder remains alive after a successful open. The daemon entrypoint
+  uses these owners through `manager.Assembly` and `serve.assemble_in_domain`.
 - `client/protocol.{CommandEnvelope, Command}` — the client→server
   envelope `{v, id, cmd, body}` and its seventeen commands (`Subscribe`,
   `CatchUp`, `Prompt`, `PromptContent`, `Steer`, `FollowUp`, `Abort`,
@@ -70,7 +173,9 @@ over one session file. WP-L.
   refused in band).
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
-  text, and nothing in the module knows about sockets.
+  text, and nothing in the module knows about sockets. `attach` returns
+  `Error(Nil)` when no hub incarnation is bound; the WebSocket transport
+  closes that attachment rather than retaining an invented connection ID.
 - `client/gateway.{commit_forwarder, supervised_commit_forwarder,
   tap_provider}` — the two composition-layer seams: the runtime writer's
   post-commit publication becomes a pull hint, and an injected
@@ -78,9 +183,9 @@ over one session file. WP-L.
   while the runtime's effect process consumes the stream unchanged. The
   wrapper forwards explicit cancellation and monitors that effect process;
   either cancellation or consumer death tears down the inner handle. The
-  forwarder registers under a name and the writer subscribes to that
-  name, which is what lets it be supervised and restarted without the
-  writer noticing.
+  forwarder binds a reclaimable Weft reference address. The writer's
+  `Routed` subscription resolves it for each hint, so a restart neither
+  requires resubscription nor interrupts the writer.
 - `client/provider_relay.{prepare, wrap}` — the shared provider-wrapper
   ownership seam: `prepare` returns a minimal public custodian before it
   releases the guard, while `wrap` is the prepare-and-begin compatibility
@@ -118,7 +223,11 @@ over one session file. WP-L.
   `sm.with_selector`.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
-  into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
+  into a `0600` file, `BearerAuth(token)` is the caller-supplied one. The
+  whole surface is `@internal`: it attaches through `gateway.attach` with
+  one shared bearer and no principal or role, which protocol-015 leaves no
+  production route for, so only this package's own tests may start it. The
+  daemon listener in `client/daemon/server` is the production route.
 - `client/install.{root, helper, helper_name, gleam_compiler, erl, seed,
   seed_directory, existing_file, existing_directory, bundled_helper,
   bundled_seed, first_of}` — where this Loom is installed, and what ships
@@ -182,6 +291,59 @@ over one session file. WP-L.
   The next prompt waits for the clients' idle phase, not merely the
   assistant entry. `tui` and the existing pinned `etui` are test-only
   dependencies; neither enters the server's production dependency graph.
+- `test/support/provider_http.{Exchange, Latest, ObservedRequest, with_server}` is
+  a finite loopback Anthropic peer for the separately shipped daemon. It
+  checks the latest user text or exact successful tool result before consuming
+  one script step, and returns bounded request evidence. `ToolUseExchange`
+  emits a fixed call; `ToolResultExchange` requires its nonempty ID and complete
+  single text result with `is_error: false`. Text steps retain the normal
+  human-attribution projection. Tests pass the actual HTTP tool-use stream
+  through the production decoder and encode results through the production
+  adapter. Exact refusal reasons distinguish limit checks from script mismatch.
+  A refused, replayed or missing request makes the final report fail. The
+  wrapper retains original listener and script-actor monitors outside its
+  bounded callback. `tui_shipped_multiplayer_test` uses ordinary provider
+  configuration and a public dummy key, then compares three native drivers'
+  exact durable records, authors, rendered answers and idle completion across
+  two turns and an operator's detach/rejoin. No fixture writes the answers
+  into the session store or injects a transport into the shipped VM.
+  The same fixture checks invitation boundaries against a second resident
+  session in another workspace. Owner-positive metadata, operation and upgrade
+  checks distinguish authorization refusal from a missing target. A raw valid
+  observer `set_config` frame checks the gateway independently of the TUI guard.
+  A later owner-acknowledged membership revocation closes Bob's live raw and
+  terminal attachments. Surviving clients receive Alice's next configuration;
+  Bob retains his old cut and cannot reattach, although control authentication
+  still succeeds. This is distinct from the scripted admission/delivery race.
+  The real `/sessions` selector also retains the original adopted channel when
+  membership in its highlighted target is revoked before Enter. An owner
+  attachment proves the target still works; Alice's next shared configuration
+  update proves the original attachment and socket still carry traffic.
+  After membership is restored, Alice switches A-to-B-to-A while Reader stays
+  on A. Two further provider turns establish independent histories, and Alice
+  returns to A's original epoch/incarnation with records equal to both peers.
+  The turns are sequenced; simultaneous provider execution is not claimed.
+  Its later live-tool stage creates A2 in A1's workspace. An ordinary bash
+  invocation remains held while Alice first fails to select A2, then completes
+  separate A2 and B turns. Host release follows both turns. Exact invocation,
+  result and final-answer records converge on the two A1 peers and Alice after
+  her return; fresh A2/B captures retain their own histories. This uses all
+  eight provider script steps and preserves the original cleanup deadlines.
+  Workspace markers prove benign execution, not filesystem confinement.
+  `daemon_shipped_stop_test` holds a real HTTP response in A while B completes
+  turns before and after A's stop. Exact provider-socket closure precedes the
+  owner's `Saved` observation. Explicit reopen resumes A in a new incarnation:
+  two equal HTTP requests correspond to one durable user admission, an
+  interrupted settlement and a final answer. The fixed held peer owns its
+  sockets in one managed worker and routes observations through an actor's
+  reply protocol. Framing and closure negatives exercise its actual boundaries.
+  This proves cooperative stop/recovery, not an uncooperative drain or a kill.
+  `daemon_shipped_schedule_test` changes only a Saved session's configuration
+  to add an overdue one-shot. A live peer progresses while a read-only SQLite
+  cut proves no firing or transcript mutation. Explicit open fires it once;
+  another stop/open preserves its exact durable fired cell and all message
+  records. This uses ordinary configuration and the real scanner, not a poke
+  or injected clock. It does not cover recurring cursors or memory-file absence.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent
@@ -253,9 +415,9 @@ over one session file. WP-L.
   index_beside, probe, over_session, with_source, sqlite_generation, start, supervised,
   stop, poke, synchronize, seam, commit_pull, supervised_commit_pull}` —
   the one process that owns this repository's `events/search` index, and
-  the seams that reach it. Addressed by process name, like the Agency and
-  the scratch store, so the tool seam is built before the holder exists
-  and a restart under the same name reopens the index file. `probe` is
+  the seams that reach it. Addressed by a Weft reference, like the Agency
+  and scratch store, so the tool seam is built before the holder exists
+  and a replacement binds that address and reopens the index. `probe` is
   the boot question: an index that will not open registers no
   `history_search` tool and logs one worded line, never a boot refusal.
   `over_session` binds the holder to one open session's store and takes
@@ -478,7 +640,7 @@ over one session file. WP-L.
 - `client/rulescan.{Options, default_options, with_logger, start,
   supervised, default_scan_limit, default_checkpoint_every}` — the
   session-scoped scanner actor. Its mailbox *is* `runtime/writer.Event`,
-  so it is the writer's second named subscriber beside the commit
+  so it is a routed writer subscriber beside the commit
   forwarder; on each hint it re-reads the store above a durable cursor
   and never trusts the hint for anything. A fire is one
   `api.steer_marking` — the injection and the rule's write-once
@@ -1074,21 +1236,25 @@ over one session file. WP-L.
   until `boot` has built it. An unrecognised flag value is a usage
   error, not a fallback — a typo that quietly served the workspace seam
   would look exactly like a server ignoring the flag.
-- `client/serve.Booted` — what `shutdown` takes apart, plus three things
-  it is asked about: `prompt: system_prompt.Assembled`, the exact bytes
-  this boot handed the wiring (so a test can prove the pinned prompt is
-  the one on the wire and the startup line can name its digest);
-  `services`, the supervisor over the restartable composition layer;
-  `stops`, the subject the host reports a `SIGTERM` or a fatal fault on,
-  owned by whichever process called `boot`; `helper_path`, the
-  `loom-exec` the ladder settled on, carried so the listening line can
-  name the binary that will enforce every jail this session builds; and
-  `rulescan`, the triggered-rule scanner's *name* — `None` on a boot
-  that configured no rules and therefore started no scanner, which is
-  the `codemode.unavailable` posture applied to a second optional
-  plane; and `schedulescan`, the same posture applied to a third —
-  scheduled heartbeats — carried the same way for the same reason,
-  though this scanner answers to no writer subscription at all.
+- `client/serve.Instance` owns one session's runtime, broker, helper pool,
+  MCP layer, gateway and composition-service supervisor.
+  Its `namespace` owns the 11 reclaimable service addresses and is retired
+  after the services stop. `prompt` retains the exact assembled prompt;
+  `helper_path` identifies the executable used by this session. Optional
+  `rulescan`, `schedulescan` and `memory_pass` addresses exist only when
+  their services are configured. `stops` belongs to the caller that opened
+  the instance. `open_instance` and `close_instance` expose this assembly
+  without a listener, token file, token directory or signal handler.
+  Each open generates a fresh random SQLite writer-owner identity. This
+  identity differs from the stable saved session ID: clean close removes
+  the lease row and permits fence one to recur, but an expired connection
+  must never match the replacement's owner-and-fence pair.
+- `client/serve.Booted` adds `served`, `token_path` and `bind_host` to an
+  `Instance`. `boot` retains the current single-session entry point while
+  sharing the same assembly. Listener setup failure closes the completed
+  instance. This is not yet daemon admission: partial-boot and owner-death
+  custody remain unfinished, and `close_instance` still discards the runtime
+  drain result instead of returning a reservation-release verdict.
 - `client/host.{Stop, adopt, relay_sigterm}` — the root of the server's
   process tree. `adopt` runs a boot on a dedicated exit-trapping process
   so every link an `actor.start` forms lands there rather than on the
@@ -1096,7 +1262,8 @@ over one session file. WP-L.
   the session lease — and reports `Faulted` afterwards, leaving the exit
   status to the entry point. `relay_sigterm` puts the signal on the same
   subject, so one receive covers both ways the server stops.
-- `client/serve.boot_with(settings, logger:)` — `boot` with an injected
+- `client/serve.boot_with(settings, logger:)` (`@internal`, like `boot`;
+  both start the legacy listener above) — `boot` with an injected
   `telemetry/log.Logger`, which is what `main` calls once it has
   installed the JSON handler. The logger is a capability, not a setting
   (§0.2): it is passed rather than parsed, and `boot` itself delegates
@@ -1531,7 +1698,8 @@ an install is under the extensions root.
 
 ## Relationships
 
-- **Depends on**: `core` (json, codec, entries, messages), `session`,
+- **Depends on**: `host` (shared daemon OS bootstrap and WebSocket transport),
+  `core` (json, codec, entries, messages), `session`,
   `runtime` (`api`, `effects`, `escalation`, `supervisor`, `writer`),
   `events` (the bus as a hint source), `storage` (catch-up scans),
   `machine` (`acceptance`, `queue`, `codec` — the commands with no api
@@ -1615,7 +1783,10 @@ an install is under the extensions root.
   creation); `compact` and `navigate`, which have no api entry point yet,
   build a `machine/acceptance` plan and commit it through
   `runtime/writer` — the same pattern the conformance simulation runner
-  uses. Nothing bypasses the writer.
+  uses. Nothing bypasses the writer. An absent runtime writer is a typed
+  `api.RuntimeUnavailable`, rendered as a retryable `conflict` by the gateway;
+  the rule and schedule scanners hold the attempted admission for a later
+  scan. This is distinct from a lost reply, whose commit may already exist.
 - **Registers**: reads `strand.*` (configuration, leaf, state, last
   result) and `op.meta`/`op.state` through the session's typed accessors
   to build snapshots and detect terminals; reads the runtime's escalation
@@ -2426,12 +2597,12 @@ an install is under the extensions root.
   builder the threshold and overflow hooks use — against the run's own
   settings snapshot.
 - **The server has two supervision tiers, and the line between them is
-  reachability.** A child under `Booted.services` — the commit
+  reachability.** A child under `Instance.services` — the commit
   forwarder, the Agency holder, the escalation holder, the scratch
   store, the rule scanner, the scheduled-heartbeat scanner, the
   search-index holder and its commit subscriber, the gateway hub —
   is addressed by
-  *name*, so a replacement under that name is the same address and a
+  a reclaimable reference, so a replacement binds the same address and a
   crash costs hints and the sockets already attached to the old hub
   rather than the server. The helper pool, the broker, and the summary
   sink are captured *by value* into closures built during the boot, so a

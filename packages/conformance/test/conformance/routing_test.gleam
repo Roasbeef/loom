@@ -575,7 +575,7 @@ fn switch_strand_model(
   let updated = StrandConfiguration(..value, model: identity)
   let assert Ok(_) =
     writer.commit(
-      process.named_subject(runtime.tree.writer),
+      runtime.tree.writer,
       tx.Tx(
         writes: [
           tx.SetRegister(
@@ -599,6 +599,7 @@ fn user(text: String) -> message.AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
+    origin: None,
   )
 }
 

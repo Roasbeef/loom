@@ -251,6 +251,119 @@ pub fn a_memory_session_ensures_without_a_catalog_test() {
   assert session.parent_id(sess) == Ok(None)
 }
 
+pub fn reserved_identity_persists_and_retry_writes_no_register_test() {
+  let path = fresh_path("reserved_identity")
+  let sess = open_file(path, "reserved-writer")
+  let #(reserved, _) = ids.mint_session(generator(31))
+  assert session.ensure_reserved_id(sess, reserved) == Ok(reserved)
+  let original =
+    storage.get_register(
+      sess.store,
+      register.FactCustom,
+      session.session_id_key,
+    )
+  assert session.close(sess) == Ok(Nil)
+  assert sqlite.identity(path:)
+    == Ok(#(Some(ids.session_id_to_string(reserved)), None))
+
+  let reopened = open_file(path, "reserved-retry")
+  let commits = process.new_subject()
+  let counted = counting_commits(reopened, commits)
+  assert session.ensure_reserved_id(counted, reserved) == Ok(reserved)
+  assert drained(commits, 0) == 0
+  assert storage.get_register(
+      reopened.store,
+      register.FactCustom,
+      session.session_id_key,
+    )
+    == original
+  let untouched = generator(32)
+  assert session.ensure_id(reopened, untouched) == Ok(#(reserved, untouched))
+  assert session.close(reopened) == Ok(Nil)
+}
+
+pub fn existing_session_identity_cannot_be_overwritten_by_a_reservation_test() {
+  let path = fresh_path("reserved_identity_conflict")
+  let sess = open_file(path, "existing-writer")
+  let assert Ok(#(existing, _)) = session.ensure_id(sess, generator(33))
+    as "file already has its own canonical identity"
+  let #(reserved, _) = ids.mint_session(generator(34))
+  assert existing != reserved
+  let commits = process.new_subject()
+  let counted = counting_commits(sess, commits)
+  let assert Error(session.StoreFailure(storage.BackendFault(_))) =
+    session.ensure_reserved_id(counted, reserved)
+    as "catalogue cannot rename an existing conversation"
+  assert drained(commits, 0) == 0
+  assert session.id(sess) == Ok(Some(existing))
+  assert session.close(sess) == Ok(Nil)
+  assert sqlite.identity(path:)
+    == Ok(#(Some(ids.session_id_to_string(existing)), None))
+}
+
+// Inject the competing commit after the caller read an absent identity. This
+// drives the actual SQLite CAS loss without relying on scheduler timing.
+fn identity_winner_before_commit(
+  sess: session.Session,
+  winner: ids.SessionId,
+) -> session.Session {
+  let store = sess.store
+  session.Session(
+    ..sess,
+    store: storage.Storage(..store, commit: fn(handle, transaction) {
+      let assert Ok(_) =
+        store.commit(
+          handle,
+          Tx(
+            writes: [
+              SetRegister(
+                register.FactCustom,
+                session.session_id_key,
+                register.value(json.String(ids.session_id_to_string(winner))),
+              ),
+            ],
+            expected: [
+              Expect(register.FactCustom, session.session_id_key, None),
+            ],
+          ),
+        )
+        as "competing initialization commits before the tested CAS"
+      store.commit(handle, transaction)
+    }),
+  )
+}
+
+pub fn reserved_identity_cas_loss_accepts_only_the_same_identity_test() {
+  let path = fresh_path("reserved_identity_same_race")
+  let sess = open_file(path, "same-reservation")
+  let #(reserved, _) = ids.mint_session(generator(35))
+  assert session.ensure_reserved_id(
+      identity_winner_before_commit(sess, reserved),
+      reserved,
+    )
+    == Ok(reserved)
+  assert session.id(sess) == Ok(Some(reserved))
+  assert session.close(sess) == Ok(Nil)
+  assert sqlite.identity(path:)
+    == Ok(#(Some(ids.session_id_to_string(reserved)), None))
+}
+
+pub fn reserved_identity_cas_loss_refuses_a_different_winner_test() {
+  let path = fresh_path("reserved_identity_other_race")
+  let sess = open_file(path, "conflicting-reservations")
+  let #(reserved, _) = ids.mint_session(generator(36))
+  let #(winner, _) = ids.mint_session(generator(37))
+  assert reserved != winner
+  let assert Error(session.StoreFailure(storage.BackendFault(_))) =
+    session.ensure_reserved_id(
+      identity_winner_before_commit(sess, winner),
+      reserved,
+    )
+    as "a lost CAS cannot adopt another reservation's identity"
+  assert session.id(sess) == Ok(Some(winner))
+  assert session.close(sess) == Ok(Nil)
+}
+
 // --- helpers ---------------------------------------------------------------
 
 fn configuration() -> strand.StrandConfiguration {

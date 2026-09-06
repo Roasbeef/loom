@@ -1,5 +1,16 @@
 # A tour of the code
 
+The transport walkthrough below predates the managed v2 daemon. The
+startup section, sections 1 through 3, and section 10 describe the
+historical anonymous host/test path, not the shipped network entrypoint.
+Current `loom` connects to one multi-session daemon, authenticates against
+v2 control, and attaches to an explicitly opened resident session. Its
+conversation transfer is bounded and request-driven, not the broadcast
+and full-history pull described here. Read
+[the current client lifecycle](architecture/client.md#current-default-one-daemon-multiple-sessions)
+first; the later durability and effect walkthrough remains useful for
+following an admitted run.
+
 Someone types `fix the flaky test in auth_test.gleam` into `loom` and
 presses enter. Between that key press and an answer appearing on their
 screen, the request crosses a native Gleam terminal process, a websocket, a
@@ -21,7 +32,8 @@ relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
 ## The shape of the thing
 
-Twenty packages, nineteen Gleam and one Go, split across three planes.
+Twenty-one packages, twenty Gleam and one Go, split across three planes.
+Shared host primitives sit below the client and terminal boundaries.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -60,6 +72,9 @@ property-testable with no processes involved and the system prompt
 byte-stable for a whole session.
 
 ## Before the key press
+
+This section describes historical per-session startup. The current daemon
+restores catalogue metadata without opening conversation stores.
 
 By the time anyone can type, `client/serve.boot` has already assembled
 the whole stack in one function, and its order is the dependency graph
@@ -114,6 +129,8 @@ binds.
 
 ## 1. The key press
 
+This and the next two sections follow the historical host/test protocol.
+
 Etui hands each key to `update_key` in
 `packages/tui/src/tui.gleam`. Modal keys stay with the open
 selector or inspector; ordinary keys update the textarea; Enter passes the
@@ -150,9 +167,9 @@ the reply table, and the three places the fixtures deliberately differ
 from `core/codec`.
 
 The connection was authenticated long before this frame: `route`
-(`client/server.gleam:232`) runs the bearer check ahead of the upgrade,
+(`client/server.gleam:259`) runs the bearer check ahead of the upgrade,
 so a `401` is emitted with no websocket state in existence.
-`authorized` (`client/server.gleam:257`) branches only on the public
+`authorized` (`client/server.gleam:284`) branches only on the public
 `Bearer ` prefix and then hands both operands to `crypto:hash_equals`
 through a shim that hashes each side first — the presented string is
 attacker-controlled, so a plain length-mismatch fast path would leak the
@@ -180,7 +197,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:1221`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:2633`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -202,9 +219,9 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:325`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:389`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
-(`runtime/api.gleam:270`), and its shape is the shape of every admission
+(`runtime/api.gleam:408`), and its shape is the shape of every admission
 in the system.
 
 It reads the strand state, the leaf, and the pending payloads — capturing
@@ -232,7 +249,7 @@ tree-write that moved the leaf refuses the acceptance rather than
 mis-parenting its entries.
 
 The commit itself is a call into one actor. `writer.commit` is
-`process.call_forever` into the StorageWriter (`runtime/writer.gleam:314`),
+`process.call_forever` into the StorageWriter (`runtime/writer.gleam:353`),
 whose mailbox *is* the serialization order for the session — "transactions
 on one session are serialized" is a property of the process topology, not
 a convention someone must remember. On success the writer publishes a
@@ -273,7 +290,7 @@ pub fn nudge(runtime: Runtime) -> Nil {
 }
 ```
 
-That is the doorbell doctrine in six lines (`runtime/api.gleam:405`).
+That is the doorbell doctrine in six lines (`runtime/api.gleam:746`).
 Every payload travels in a commit; the process message that follows
 carries nothing and asks only for promptness. Losing it costs one poll
 interval — 200 ms by default — because the driver's periodic `PollTick`
@@ -473,7 +490,7 @@ to rerun.
 
 ## 8. The request
 
-`start_effect` (`runtime/strand_runtime.gleam:1285`) projects the context
+`start_effect` (`runtime/strand_runtime.gleam:1291`) projects the context
 and hands a `RequestSpec` to the injected provider surface. The
 projection is a branch scan from the leaf that stops at the first
 compaction entry, run through `session.project_scan`
@@ -588,12 +605,16 @@ Atomic. The window is closed.
 
 ## 10. Back to the screen
 
+This is the historical host/test delivery path. Authenticated v2 uses the
+credited snapshot reader and explicit reconciliation instead; it does not
+subscribe the gateway to these unbounded commit or bus hints.
+
 The writer published `Committed` before it replied. A tiny forwarder
 actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
-(`client/gateway.gleam:349`).
+(`client/gateway.gleam:751`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:585`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:1917`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -621,7 +642,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:1821`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:3315`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -700,7 +721,7 @@ clearance proceeds under the base policy; a crash after consumption
 spends the approval without an execution. Both directions fail safe: one
 approval is worth at most one widened execution of exactly the call a
 human approved. What the clearance won then travels onto the dispatch it
-authorized — `take_cleared` (`runtime/strand_runtime.gleam:1338`) hands
+authorized — `take_cleared` (`runtime/strand_runtime.gleam:1557`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
 `Ctx.grants` (`run_grants`, `client/wiring.gleam:1167`). That is the
@@ -781,7 +802,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:1930`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2221`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1010,7 +1031,7 @@ Kill the tree at any instant and the session resumes without repeating
 itself. Three mechanisms make that true, and they compose.
 
 **The supervision tree is the recovery policy, written as data**
-(`runtime/supervisor.gleam:143`). It is rest-for-one over six children,
+(`runtime/supervisor.gleam:216`). It is rest-for-one over six children,
 in order:
 
 ```mermaid
@@ -1063,7 +1084,7 @@ failed check faults the strand rather than guessing.
 The booter is what makes recovery boot *all* strands rather than just
 `main`: it lists the `strand.*` registers and starts a driver for every
 strand it finds, routing each to its factory
-(`runtime/supervisor.gleam:285`). Cold open, a writer crash, and a booter
+(`runtime/supervisor.gleam:505`). Cold open, a writer crash, and a booter
 crash all converge on "list the store, start what is missing".
 
 **No effect crosses the next incarnation's start barrier.** This is the
@@ -1170,7 +1191,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:870`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:957`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1181,7 +1202,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1097`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1236`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3656`). Keying
@@ -1189,9 +1210,15 @@ on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
 
-Four corners of `fact.custom` are reserved and refused to `put_fact`:
-`escalation/`, `operation-result/`, `lineage/` and `prompt/`
-(`runtime/api.gleam:949`). Because reserving also *hides* a namespace
+Nine prefixes in `fact.custom` are reserved and refused to `put_fact`:
+`client/`, `escalation/`, `operation-result/`, `lineage/`, `prompt/`,
+`session/`, `rule/`, `schedule/` and `ext/`
+(`runtime/api.reserved_fact_key`). `client/` is the newest of them and
+holds the cells protocol-change/016 added for shared client state: a
+forged `client/config_origin/<strand>` would misattribute a shared
+configuration change to somebody who never made it, and a forged
+`client/run_settings` would change the queue and tool-execution defaults
+the next admitted run reads. Because reserving also *hides* a namespace
 from `facts`, harness code reads and writes those through
 `reserved_facts` / `put_reserved_fact`, which refuse everything outside
 the reserved set — the two doors are disjoint so neither can be pressed
@@ -1482,7 +1509,7 @@ give you the single instrumentation point that `after_commit` exploits.
 
 **Recovery as a data structure.** A rest-for-one supervisor with six
 ordered children *is* the recovery policy
-(`runtime/supervisor.gleam:143`). Blast radius is expressed by where a
+(`runtime/supervisor.gleam:216`). Blast radius is expressed by where a
 child sits in a list, and the "restart it and let it re-read durable
 state" strategy replaces the defensive coding a non-supervised runtime
 needs at every layer.

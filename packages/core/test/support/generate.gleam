@@ -450,7 +450,12 @@ pub fn agent_message(seed: Seed) -> #(AgentMessage, Seed) {
       let #(length, seed) = int_between(seed, 0, 3)
       let #(content, seed) = list_of(seed, length, user_block)
       let #(ts, seed) = timestamp(seed)
-      #(message.UserMessage(content:, timestamp: ts), seed)
+      let #(attributed, seed) = bool(seed)
+      let origin = case attributed {
+        True -> Some(message.Origin("historical-author", "Name at admission"))
+        False -> None
+      }
+      #(message.UserMessage(content:, timestamp: ts, origin:), seed)
     }
     1 -> {
       let #(length, seed) = int_between(seed, 0, 3)

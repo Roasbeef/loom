@@ -37,7 +37,8 @@
 import core/clock
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId}
 import core/json.{type JsonValue}
-import core/message.{type AgentMessage}
+import core/message.{type AgentMessage, type Origin}
+import core/origin
 import core/register
 import core/tx.{type CommitError}
 import gleam/bool
@@ -71,6 +72,7 @@ import session/session.{type Session}
 import storage/storage
 import telemetry/log.{type Logger}
 import weft/poll
+import weft/registry as address
 
 /// One blackboard cell as a compare-and-set caller sees it: the stored
 /// value and the seq of the write that put it there, which is what
@@ -123,7 +125,7 @@ pub type Options {
     subagent: fn(String) -> Bool,
     subagent_tolerance: Tolerance,
     after_commit: fn(Int) -> Nil,
-    subscribers: List(Subject(writer.Event)),
+    subscribers: List(writer.Subscriber),
     /// Where this session's strands log. Injected per §0.2 so a test
     /// captures records instead of emitting them; `log.discard()` is
     /// the default, so a runtime nobody configured is silent.
@@ -186,6 +188,10 @@ pub fn default_options(configuration: StrandConfiguration) -> Options {
 
 /// Why an api operation failed.
 pub type ApiError {
+  /// No writer incarnation could be reached before sending the request.
+  /// This is retryable availability, not an admission refusal or lost reply.
+  RuntimeUnavailable
+
   /// Acceptance refused the request; nothing was written.
   AcceptRejected(reason: RejectReason)
 
@@ -254,6 +260,33 @@ pub fn open(
   effects: Effects,
   options: Options,
 ) -> Result(Runtime, String) {
+  open_published(session, effects, options, fn(_runtime) { Ok(Nil) })
+}
+
+/// Transfers cleanup custody before the session can recover unfinished work.
+///
+/// `publish` receives the runtime handle before its writer and drivers start.
+/// It must acknowledge surviving custody or refuse startup. The callback
+/// cannot perform runtime operations or synchronous close: the root is still
+/// starting. Publication happens once per root, not on its internal restarts.
+///
+/// This boundary does not create a custodian. The caller must retain the
+/// handle and original drain evidence independently of its opening worker.
+/// Invoke it from an exit-trapping resource owner: a failed OTP root also
+/// sends its shutdown exit along the startup link, as in ordinary `open`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.open_published(session, effects, options, publish_to_custodian)
+/// ```
+@internal
+pub fn open_published(
+  session: Session,
+  effects: Effects,
+  options: Options,
+  publish: fn(Runtime) -> Result(Nil, String),
+) -> Result(Runtime, String) {
   use Nil <- result.try(
     session.ensure_strand(session, options.strand, options.configuration)
     |> result.map_error(describe_session_error),
@@ -271,6 +304,16 @@ pub fn open(
     )
     |> result.map_error(describe_session_error),
   )
+  let describe_runtime = fn(tree) {
+    Runtime(
+      tree:,
+      session:,
+      session_id:,
+      effects:,
+      strand: options.strand,
+      settings: options.settings,
+    )
+  }
   let config =
     supervisor.Config(
       writer_options: writer.Options(
@@ -278,32 +321,31 @@ pub fn open(
         after_commit: options.after_commit,
         subscribers: options.subscribers,
       ),
-      strand_options: strand_runtime.Options(
-        // Replaced by supervisor.start with the real writer name.
-        writer: process.new_name(prefix: "loom_writer_placeholder"),
-        strand: options.strand,
-        effects:,
-        stream_options: options.stream_options,
-        retry_policy: options.retry_policy,
-        poll_interval_ms: options.poll_interval_ms,
-        claim_reaper: fn(_strand, _reaper) { [] },
-        logger: options.logger,
-      ),
+      strand_options: fn(writer, claim_reaper) {
+        // Construct the template only after the supervisor has the real
+        // writer address. No placeholder can escape into a live driver.
+        strand_runtime.Options(
+          writer:,
+          strand: options.strand,
+          effects:,
+          stream_options: options.stream_options,
+          retry_policy: options.retry_policy,
+          poll_interval_ms: options.poll_interval_ms,
+          claim_reaper:,
+          logger: options.logger,
+        )
+      },
       tolerance: options.tolerance,
       subagent: options.subagent,
       subagent_tolerance: options.subagent_tolerance,
     )
   use tree <- result.try(
-    supervisor.start(config) |> result.map_error(describe_start_error),
+    supervisor.start_published(config, fn(tree) {
+      publish(describe_runtime(tree))
+    })
+    |> result.map_error(describe_start_error),
   )
-  Ok(Runtime(
-    tree:,
-    session:,
-    session_id:,
-    effects:,
-    strand: options.strand,
-    settings: options.settings,
-  ))
+  Ok(describe_runtime(tree))
 }
 
 /// This session's canonical id (`protocol-change/008`), minted by `open`
@@ -493,6 +535,7 @@ fn accept_request(
     ))
     use #(leaf_seq, leaf) <- result.try(read_leaf(runtime))
     use pending <- result.try(read_pending(runtime))
+    use defaults <- result.try(run_defaults_cell(runtime))
     let #(now, generator) = mint_context(runtime)
     let ctx =
       AcceptCtx(
@@ -503,7 +546,7 @@ fn accept_request(
         strand_state_seq:,
         leaf:,
         leaf_seq:,
-        settings: runtime.settings,
+        settings: defaults.settings,
         pending:,
       )
     use acceptance.AcceptancePlan(operation:, state: _, tx: plan_tx) <- or_rejected(
@@ -511,7 +554,16 @@ fn accept_request(
       fn(reason) { AcceptRejected(reason:) },
     )
     commit_admission(
-      writer.commit(w, marked(plan_tx, mark)),
+      writer.commit(
+        w,
+        marked(
+          tx.Tx(..plan_tx, expected: [
+            tx.Expect(register.FactCustom, run_settings_key, defaults.seq),
+            ..plan_tx.expected
+          ]),
+          mark,
+        ),
+      ),
       mark,
       on_ok: operation.id,
     )
@@ -530,9 +582,7 @@ fn target_exists(
     Some(entry) ->
       writer.get_entries(writer_subject(runtime), [entry])
       |> result.map(dict.has_key(_, entry))
-      |> result.map_error(fn(error) {
-        ReadFailed(reason: describe_storage(error))
-      })
+      |> result.map_error(fn(error) { read_failure(error) })
   }
 }
 
@@ -1019,7 +1069,7 @@ fn validate_fork_point(
       use found <- result.try(
         writer.get_entries(writer_subject(runtime), [entry])
         |> result.map_error(fn(error) {
-          SeedFailed(reason: describe_storage(error))
+          SeedFailed(reason: describe_writer_read(error))
         }),
       )
       use <- bool.guard(when: dict.has_key(found, entry), return: Ok(Nil))
@@ -1065,15 +1115,19 @@ fn seed_strand(
     )
   case writer.commit(writer_subject(runtime), seed) {
     Ok(_) -> Ok(Nil)
-    Error(tx.StaleExpectation(..)) -> Error(StrandExists(name:))
-    Error(tx.Corruption(report:)) -> Error(SeedFailed(reason: report.boundary))
-    Error(tx.Faulted(reason:)) -> Error(SeedFailed(reason:))
+    Error(writer.Unavailable) ->
+      Error(SeedFailed("the session writer is unavailable"))
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      Error(StrandExists(name:))
+    Error(writer.Underlying(tx.Corruption(report:))) ->
+      Error(SeedFailed(reason: report.boundary))
+    Error(writer.Underlying(tx.Faulted(reason:))) -> Error(SeedFailed(reason:))
 
     // `CreateStrandError` already flattens every backend refusal into a
     // reason, and its one consumer renders it as text; the distinction
     // that has to survive as a value is the one at the admission
     // surface, where a caller can act on it.
-    Error(tx.LeaseLost(held_by:)) ->
+    Error(writer.Underlying(tx.LeaseLost(held_by:))) ->
       Error(SeedFailed(reason: tx.describe_lease_loss(held_by)))
   }
 }
@@ -1200,7 +1254,7 @@ pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
   case
     writer.list_registers(writer_subject(runtime), register.StrandConfig, None)
   {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(cells) ->
       cells
       |> list.map(fn(pair) { pair.0 })
@@ -1265,11 +1319,89 @@ pub fn fact_cell(
   key: String,
 ) -> Result(Option(FactCell), ApiError) {
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, seq:))) ->
       Ok(Some(FactCell(value: value.payload, seq:)))
   }
+}
+
+/// Shared run defaults carry their original sequence so admission can compare
+/// the complete value in the same transaction that creates the run.
+@internal
+pub type RunDefaults {
+  RunDefaults(settings: RunSettings, origin: Option(Origin), seq: Option(Seq))
+}
+
+/// Reads shared defaults without replacing malformed state with host settings.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.run_defaults_cell(runtime)
+/// ```
+@internal
+pub fn run_defaults_cell(runtime: Runtime) -> Result(RunDefaults, ApiError) {
+  use cell <- result.try(fact_cell(runtime, run_settings_key))
+  case cell {
+    None -> Ok(RunDefaults(runtime.settings, None, None))
+    Some(FactCell(json.Object(fields), seq)) -> {
+      use queue <- result.try(case list.key_find(fields, "queue_mode") {
+        Ok(json.String("consume_all")) -> Ok(operation.ConsumeAll)
+        Ok(json.String("one_at_a_time")) -> Ok(operation.OneAtATime)
+        _ -> Error(ReadFailed("invalid shared queue mode"))
+      })
+      use execution <- result.try(case list.key_find(fields, "tool_execution") {
+        Ok(json.String("parallel")) -> Ok(operation.Parallel)
+        Ok(json.String("sequential")) -> Ok(operation.Sequential)
+        _ -> Error(ReadFailed("invalid shared tool execution"))
+      })
+      use author <- result.try(
+        origin.decode_field(fields)
+        |> result.map_error(fn(_) {
+          ReadFailed("invalid shared settings origin")
+        }),
+      )
+      Ok(RunDefaults(
+        RunSettings(
+          ..runtime.settings,
+          steering_mode: queue,
+          follow_up_mode: queue,
+          tool_execution: execution,
+        ),
+        author,
+        Some(seq),
+      ))
+    }
+    Some(_) -> Error(ReadFailed("invalid shared run settings"))
+  }
+}
+
+/// Encodes the complete shared value and its author in one register payload.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.encode_run_defaults(settings, author)
+/// ```
+@internal
+pub fn encode_run_defaults(
+  settings: RunSettings,
+  author: Option(Origin),
+) -> JsonValue {
+  let queue = case settings.steering_mode {
+    operation.ConsumeAll -> "consume_all"
+    operation.OneAtATime -> "one_at_a_time"
+  }
+  let execution = case settings.tool_execution {
+    operation.Parallel -> "parallel"
+    operation.Sequential -> "sequential"
+  }
+  json.Object([
+    #("queue_mode", json.String(queue)),
+    #("tool_execution", json.String(execution)),
+    #("origin", origin.encode(author)),
+  ])
 }
 
 /// Writes one `fact.custom` cell only if it is still at the seq the
@@ -1329,7 +1461,8 @@ fn commit_fact_expecting(
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(tx.CommitResult(first_seq:, ..)) -> Ok(first_seq)
-    Error(tx.StaleExpectation(..)) -> Error(FactConflict(key:))
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      Error(FactConflict(key:))
     Error(error) -> Error(commit_failure(error))
   }
 }
@@ -1372,7 +1505,7 @@ pub fn fact(
   key: String,
 ) -> Result(Option(JsonValue), ApiError) {
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, ..))) -> Ok(Some(value.payload))
   }
@@ -1394,9 +1527,7 @@ pub fn facts(
 ) -> Result(List(#(String, JsonValue)), ApiError) {
   use cells <- result.try(
     writer.list_registers(writer_subject(runtime), register.FactCustom, prefix)
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   Ok(
     list.filter_map(cells, fn(pair) {
@@ -1485,12 +1616,37 @@ pub const schedule_fact_prefix = "schedule/"
 /// on the harness side from the installed record's name.
 pub const ext_fact_prefix = "ext/"
 
+/// The reserved `fact.custom` key prefix the serving client keeps the
+/// settings a whole session shares under. One cell lives there today,
+/// `run_settings_key`.
+///
+/// Reserved for the sharpest version of the reason the others are: this
+/// is not durable state a forged write would *corrupt*, it is the state
+/// every admission reads to decide how the run it is admitting behaves.
+/// A model that could `put_fact` here would choose its own queue mode
+/// and tool-execution mode — turning a `OneAtATime` session into one
+/// that consumes its whole queue, or a `Sequential` one into parallel
+/// dispatch — for every later run of the session, including the
+/// operator's own.
+pub const client_fact_prefix = "client/"
+
+/// The one cell under `client_fact_prefix`: the run settings a session
+/// shares, holding its queue mode, its tool-execution mode and the
+/// origin that last set them.
+///
+/// It is a constant rather than a literal because the key is the CAS
+/// expectation `accept_request` folds into the admission transaction
+/// (`run_defaults_cell` reads the same cell to build it). A typo at
+/// either site would not fail to compile; it would silently drop the
+/// compare-and-set and admit runs against settings nobody checked.
+pub const run_settings_key = "client/run_settings"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The eight corners, and what each would let a forged write do:
+/// The nine corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -1501,7 +1657,9 @@ pub const ext_fact_prefix = "ext/"
 /// `schedule/` — mark a scheduled heartbeat's occurrence as already
 /// fired, so it never fires either; `ext/` — forge or read an installed
 /// extension's durable memory, which is the one durable thing an
-/// out-of-tree extension owns.
+/// out-of-tree extension owns; `client/` — rewrite the run settings
+/// every admission compares against, and so choose the queue mode and
+/// tool-execution mode of every later run of the session.
 ///
 /// ## Examples
 ///
@@ -1514,7 +1672,8 @@ pub const ext_fact_prefix = "ext/"
 /// ```
 ///
 pub fn reserved_fact_key(key: String) -> Bool {
-  string.starts_with(key, escalation.key_prefix)
+  string.starts_with(key, client_fact_prefix)
+  || string.starts_with(key, escalation.key_prefix)
   || string.starts_with(key, operation.result_fact_prefix)
   || string.starts_with(key, lineage.key_prefix)
   || string.starts_with(key, prompt_fact_prefix)
@@ -1720,9 +1879,7 @@ pub fn reserved_facts(
       register.FactCustom,
       Some(prefix),
     )
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   Ok(
     list.map(cells, fn(pair) {
@@ -1913,7 +2070,7 @@ pub fn escalations_below(runtime: Runtime, cap: Int) -> Result(Bool, ApiError) {
     Some(escalation.key_prefix),
   )
   |> result.map(fn(cells) { cap > 0 && list.drop(cells, cap - 1) == [] })
-  |> result.map_error(fn(error) { ReadFailed(reason: describe_storage(error)) })
+  |> result.map_error(fn(error) { read_failure(error) })
 }
 
 /// Records a raised escalation with no call attribution. Deliberately
@@ -1960,7 +2117,8 @@ fn commit_raised(
     )
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
-    Error(tx.StaleExpectation(..)) -> Error(EscalationExists(id:))
+    Error(writer.Underlying(tx.StaleExpectation(..))) ->
+      Error(EscalationExists(id:))
     Error(error) -> Error(commit_failure(error))
   }
 }
@@ -1980,9 +2138,7 @@ pub fn escalations(runtime: Runtime) -> Result(List(Escalation), ApiError) {
       register.FactCustom,
       Some(escalation.key_prefix),
     )
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   list.try_map(cells, fn(pair) {
     let #(_key, storage.Register(value:, ..)) = pair
@@ -2048,6 +2204,16 @@ pub fn escalation_cell(
 /// are used, so a lost race or a crash spends the approval without a
 /// widened execution, never the reverse.
 ///
+/// The decision is **single-shot**, exactly as the attributed door
+/// `approve_escalation_at` is: this reads the record once and commits at
+/// the seq it read, so a `claim_escalation` that moved the record in
+/// between answers `RaceLost` rather than being retried. That is the
+/// contract rather than a limitation — a retry would reread the record
+/// and approve whatever question is standing there now, which is how one
+/// human answer comes to approve a different question. A caller holding a
+/// human's answer to a question that has moved on owes them a fresh
+/// look, not another attempt.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -2059,13 +2225,18 @@ pub fn approve_escalation(
   id: String,
   grants: List(JsonValue),
 ) -> Result(Nil, ApiError) {
-  decide_escalation(runtime, id, escalation.Approved, fn(record) {
-    escalation.approve(record, grants)
-  })
+  use cell <- result.try(escalation_cell(runtime, id))
+  approve_escalation_at(runtime, cell, grants, None)
+  |> result.replace(Nil)
 }
 
 /// Rejects a pending escalation. No re-execution will run under its
 /// wanted grants.
+///
+/// Single-shot on the same terms as `approve_escalation`: the rejection
+/// commits at the seq this call read, and a record a later claimant
+/// moved in between answers `RaceLost` instead of being retried. A
+/// refusal aimed at one question must not land on the next one.
 ///
 /// ## Examples
 ///
@@ -2074,7 +2245,94 @@ pub fn approve_escalation(
 /// ```
 ///
 pub fn deny_escalation(runtime: Runtime, id: String) -> Result(Nil, ApiError) {
-  decide_escalation(runtime, id, escalation.Rejected, escalation.reject)
+  use cell <- result.try(escalation_cell(runtime, id))
+  deny_escalation_at(runtime, cell, None)
+  |> result.replace(Nil)
+}
+
+/// Approves exactly the pending question the caller observed, once.
+///
+/// The supplied origin is resolved by the authenticated host, never by model
+/// arguments. A stale cell returns `RaceLost`; it cannot approve a reopened
+/// question by rereading and retrying the same human answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.approve_escalation_at(runtime, cell, grants, Some(author))
+/// ```
+pub fn approve_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  grants: List(JsonValue),
+  origin: Option(Origin),
+) -> Result(Escalation, ApiError) {
+  decide_escalation_at(
+    runtime,
+    cell,
+    escalation.Approved,
+    escalation.approve(cell.record, grants, origin),
+  )
+}
+
+/// Rejects exactly the pending question the caller observed, once.
+///
+/// A presentation layer may reread after a conflict to show the winning record,
+/// but that read never becomes another decision attempt or an invented author.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.deny_escalation_at(runtime, cell, Some(author))
+/// ```
+pub fn deny_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  origin: Option(Origin),
+) -> Result(Escalation, ApiError) {
+  decide_escalation_at(
+    runtime,
+    cell,
+    escalation.Rejected,
+    escalation.reject(cell.record, origin),
+  )
+}
+
+// The one commit both decision doors are built on: a status transition
+// checked against the status the caller read, then a CAS at that read's
+// seq. There is no retry ladder here on purpose — see
+// `approve_escalation_at` for why rereading a moved record would let one
+// human answer decide a question they were never shown.
+fn decide_escalation_at(
+  runtime: Runtime,
+  cell: EscalationCell,
+  to: escalation.Status,
+  next: Escalation,
+) -> Result(Escalation, ApiError) {
+  let record = cell.record
+  use <- bool.guard(
+    when: !escalation.may_become(record.status, to),
+    return: Error(EscalationWrongStatus(id: record.id, status: record.status)),
+  )
+  let key = escalation.register_key(record.id)
+  let plan =
+    tx.Tx(
+      writes: [
+        tx.SetRegister(
+          register.FactCustom,
+          key,
+          register.value(escalation.encode(next)),
+        ),
+      ],
+      expected: [tx.Expect(register.FactCustom, key, Some(cell.seq))],
+    )
+
+  // This sequence is the question the human answered, not a retry hint.
+  case writer.commit(writer_subject(runtime), plan) {
+    Ok(_) -> Ok(next)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
+    Error(error) -> Error(commit_failure(error))
+  }
 }
 
 /// Explicitly consumes an approved escalation, returning its grants —
@@ -2157,19 +2415,9 @@ pub fn consume_escalation_at(
 
     // The record moved under the decision that named it. Not a retry:
     // re-reading would consume a record the caller never checked.
-    Error(tx.StaleExpectation(..)) -> Error(RaceLost)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
     Error(error) -> Error(commit_failure(error))
   }
-}
-
-fn decide_escalation(
-  runtime: Runtime,
-  id: String,
-  to: escalation.Status,
-  change: fn(Escalation) -> Escalation,
-) -> Result(Nil, ApiError) {
-  decide_escalation_value(runtime, id, to, change)
-  |> result.map(fn(_record) { Nil })
 }
 
 fn decide_escalation_value(
@@ -2222,7 +2470,7 @@ fn read_escalation_cell(
 ) -> Result(Option(#(Seq, Escalation)), ApiError) {
   let key = escalation.register_key(id)
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
-    Error(error) -> Error(ReadFailed(reason: describe_storage(error)))
+    Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
     Ok(Some(storage.Register(value:, seq:))) ->
       case escalation.decode(value.payload) {
@@ -2241,19 +2489,18 @@ type Attempt(value) {
   Retry
 }
 
-// Classifies a commit failure for a caller. Only one of them is a
-// condition rather than a fault: a lost lease means another writer owns
-// this session, so nothing this runtime commits can ever land and the
-// remedy is to reopen (or stop), never to reload and retry. Everything
-// else stays an undifferentiated `CommitFailed` on purpose — a caller
+// Availability permits a later retry because no request was sent. A lost
+// lease instead means another writer owns this session, so the remedy is to
+// reopen (or stop), never to reload and retry. Other failures stay an
+// undifferentiated `CommitFailed` on purpose — a caller
 // that cannot act differently on a full disk than on a corrupt page
 // gains nothing from being told which it was, and the reason string is
 // there for the human.
-fn commit_failure(error: CommitError) -> ApiError {
+fn commit_failure(error: writer.Failure(CommitError)) -> ApiError {
   case error {
-    tx.LeaseLost(held_by:) -> SessionStolen(held_by:)
-    tx.StaleExpectation(..) | tx.Corruption(..) | tx.Faulted(..) ->
-      CommitFailed(error:)
+    writer.Unavailable -> RuntimeUnavailable
+    writer.Underlying(tx.LeaseLost(held_by:)) -> SessionStolen(held_by:)
+    writer.Underlying(error) -> CommitFailed(error:)
   }
 }
 
@@ -2302,12 +2549,12 @@ fn or_rejected(
 // spending the ladder's attempts against a fence that refuses all of
 // them would report `RaceLost` and name the wrong cause.
 fn commit_or_retry(
-  result: Result(tx.CommitResult, CommitError),
+  result: Result(tx.CommitResult, writer.Failure(CommitError)),
   on_ok on_ok: value,
 ) -> Result(Attempt(value), ApiError) {
   case result {
     Ok(_) -> Ok(Done(Ok(on_ok)))
-    Error(tx.StaleExpectation(..)) -> Ok(Retry)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Ok(Retry)
     Error(error) -> Ok(Done(Error(commit_failure(error))))
   }
 }
@@ -2345,7 +2592,7 @@ fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
 // the problem and then report `RaceLost`, which names the wrong cause —
 // the same mistake the lease branch was written to avoid.
 fn commit_admission(
-  result: Result(tx.CommitResult, CommitError),
+  result: Result(tx.CommitResult, writer.Failure(CommitError)),
   mark: Option(Mark),
   on_ok on_ok: value,
 ) -> Result(Attempt(value), ApiError) {
@@ -2357,24 +2604,27 @@ fn commit_admission(
 
 // The mark's key, when this commit failed on the mark's own expectation.
 fn conflicted_key(
-  result: Result(tx.CommitResult, CommitError),
+  result: Result(tx.CommitResult, writer.Failure(CommitError)),
   mark: Option(Mark),
 ) -> Option(String) {
   case result, mark {
-    Error(tx.StaleExpectation(failed:)), Some(Mark(key:, ..)) ->
+    Error(writer.Underlying(tx.StaleExpectation(failed:))), Some(Mark(key:, ..))
+    ->
       case failed {
         tx.Expect(ns: register.FactCustom, key: failed_key, seq: _)
           if failed_key == key
         -> Some(key)
         tx.Expect(..) -> None
       }
-    Error(tx.StaleExpectation(..)), None
-    | Error(tx.Corruption(..)), Some(_)
-    | Error(tx.Corruption(..)), None
-    | Error(tx.Faulted(..)), Some(_)
-    | Error(tx.Faulted(..)), None
-    | Error(tx.LeaseLost(..)), Some(_)
-    | Error(tx.LeaseLost(..)), None
+    Error(writer.Underlying(tx.StaleExpectation(..))), None
+    | Error(writer.Underlying(tx.Corruption(..))), Some(_)
+    | Error(writer.Underlying(tx.Corruption(..))), None
+    | Error(writer.Underlying(tx.Faulted(..))), Some(_)
+    | Error(writer.Underlying(tx.Faulted(..))), None
+    | Error(writer.Underlying(tx.LeaseLost(..))), Some(_)
+    | Error(writer.Underlying(tx.LeaseLost(..))), None
+    | Error(writer.Unavailable), Some(_)
+    | Error(writer.Unavailable), None
     | Ok(_), Some(_)
     | Ok(_), None
     -> None
@@ -2419,13 +2669,13 @@ fn read_op_state(
 }
 
 fn require(
-  read: Result(Option(value), String),
+  read: Result(Option(value), ApiError),
   missing: String,
 ) -> Result(value, ApiError) {
   case read {
     Ok(Some(value)) -> Ok(value)
     Ok(None) -> Error(ReadFailed(reason: missing))
-    Error(reason) -> Error(ReadFailed(reason:))
+    Error(error) -> Error(error)
   }
 }
 
@@ -2438,9 +2688,7 @@ fn read_leaf(
   let w = writer_subject(runtime)
   use cell <- result.try(
     writer.get_register(w, register.StrandLeaf, runtime.strand)
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   case cell {
     None -> Ok(#(None, None))
@@ -2457,9 +2705,7 @@ fn read_pending(
   let w = writer_subject(runtime)
   use cells <- result.try(
     writer.list_registers(w, register.PendingEntry, None)
-    |> result.map_error(fn(error) {
-      ReadFailed(reason: describe_storage(error))
-    }),
+    |> result.map_error(fn(error) { read_failure(error) }),
   )
   cells
   |> list.try_map(fn(pair) {
@@ -2476,10 +2722,10 @@ fn read_decoded(
   ns: register.RegisterNs,
   key: String,
   decode: fn(json.JsonValue) -> Result(payload, corruption_report),
-) -> Result(Option(#(Int, payload)), String) {
+) -> Result(Option(#(Int, payload)), ApiError) {
   let w = writer_subject(runtime)
   use cell <- result.try(
-    writer.get_register(w, ns, key) |> result.map_error(describe_storage),
+    writer.get_register(w, ns, key) |> result.map_error(read_failure),
   )
   case cell {
     None -> Ok(None)
@@ -2490,7 +2736,7 @@ fn read_decoded(
       decode(value.payload)
       |> result.map(fn(payload) { Some(#(seq, payload)) })
       |> result.map_error(fn(_) {
-        "a stored register payload failed to decode: " <> key
+        ReadFailed("a stored register payload failed to decode: " <> key)
       })
   }
 }
@@ -2500,8 +2746,8 @@ fn mint_context(runtime: Runtime) -> #(Int, ids.Generator) {
   #(now, ids.generator(clock.fixed(at: now), seed: runtime.effects.entropy()))
 }
 
-fn writer_subject(runtime: Runtime) -> Subject(writer.Message) {
-  process.named_subject(runtime.tree.writer)
+fn writer_subject(runtime: Runtime) -> address.Address(writer.Message) {
+  runtime.tree.writer
 }
 
 fn describe_storage(error: storage.StorageError) -> String {
@@ -2510,6 +2756,20 @@ fn describe_storage(error: storage.StorageError) -> String {
     storage.UnknownEntry(id:) -> "unknown entry " <> ids.entry_id_to_string(id)
     storage.BackendFault(reason:) -> reason
     storage.HandleClosed -> "storage handle closed"
+  }
+}
+
+fn read_failure(error: writer.Failure(storage.StorageError)) -> ApiError {
+  case error {
+    writer.Unavailable -> RuntimeUnavailable
+    writer.Underlying(error) -> ReadFailed(describe_storage(error))
+  }
+}
+
+fn describe_writer_read(error: writer.Failure(storage.StorageError)) -> String {
+  case error {
+    writer.Unavailable -> "the session writer is unavailable"
+    writer.Underlying(error) -> describe_storage(error)
   }
 }
 

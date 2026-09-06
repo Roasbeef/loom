@@ -8,9 +8,9 @@
 ////
 //// # It is a command, not a resident
 ////
-//// Nothing inside `loomd` runs this. It is cron, or a post-session
-//// hook, or a person at a terminal — "not a per-turn hook", as the
-//// design note demands — and it holds the memory session's ordinary
+//// The standalone command and `client/distillpass` invoke this bounded pass;
+//// it owns no resident process or scheduling policy. It holds the memory
+//// session's ordinary
 //// writer lease for the length of the run. That lease *is* the
 //// consolidation's single-writer guarantee: a second concurrent
 //// `distill` loses `LeaseHeld` at the open and says so, and a `remember`
@@ -19,13 +19,19 @@
 ////
 //// # Which sessions it reads, and how it skips the live ones
 ////
-//// It walks the session directory's `*.db` files, excluding
+//// The standalone adapter walks the session directory's `*.db` files, excluding
 //// `loom-memory.db` and the search index, and opens each with the
 //// ordinary writer lease. **A live server holds its session's lease, so
 //// the open fails and the pipeline skips that file.** That is the whole
 //// of the "skip sessions that are still in use" rule: no clock
 //// arithmetic, no idle heuristic, no second read path — the lease
 //// already answers the question exactly.
+////
+//// A daemon can instead supply explicit canonical identities and paths through
+//// `with_sources`. Those files need not be beside the memory destination. An
+//// empty list stays empty, and a file whose opened identity differs contributes
+//// no entries and advances no cursor. The host owns domain authorization;
+//// this module neither discovers catalogue membership nor chooses credentials.
 ////
 //// Per-source progress is a `{seq, rewrite generation}` cursor in the
 //// memory session (`client/memory.cursor_key`). A generation that no
@@ -116,13 +122,14 @@
 import argv
 import broker/token
 import client/catalog
+import client/internal/distill_owner as custody
 import client/internal/ffi_os
 import client/memory.{type Cursor, type Opened, type Provenance}
 import client/notes
 import client/rules
 import core/clock.{type Clock}
 import core/entry.{type Entry}
-import core/ids.{type Generator, type Seq}
+import core/ids.{type Generator, type Seq, type SessionId}
 import core/json
 import core/message.{type AgentMessage, type Usage}
 import core/tx.{InsertUsage, Tx}
@@ -146,6 +153,7 @@ import storage/storage
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
+import weft
 
 // --- the seams -------------------------------------------------------------
 
@@ -439,15 +447,36 @@ fn unbulleted(line: String) -> String {
 
 // --- the run ---------------------------------------------------------------
 
+/// A host-selected source, whose identity is checked after opening its file.
+pub type Source {
+  Source(
+    /// The catalogue's expected canonical conversation identity.
+    session: SessionId,
+    /// The host-validated absolute conversation path.
+    path: String,
+  )
+}
+
+/// Source discovery is independent of the memory and digest destinations.
+pub type Sources {
+  /// The standalone adapter scans `Config.directory` as before.
+  DirectorySources
+
+  /// Only these sources may contribute; an empty list never scans a directory.
+  ExplicitSources(sources: List(Source))
+}
+
 /// Everything one run needs.
-///
-/// Constructor invariants: `directory` is the session directory (the
-/// fold); `memory_path` and `digest_path` are the memory store and its
-/// sidecar inside it; `distiller` has already chosen its dispatch
-/// target; `entropy` seeds a fresh id generator per open.
+/// `directory` is used only by the standalone source adapter. The memory and
+/// digest paths select destinations independently; the distiller has already
+/// chosen its dispatch target. Entropy seeds a fresh generator per open.
 pub type Config {
   Config(
     directory: String,
+    /// The discovery mode; explicit records never fall back to directory scans.
+    sources: Sources,
+    /// Managed runs retain the original builder and resource ledger.
+    custody: Option(#(weft.Ledger, process.Pid)),
     memory_path: String,
     digest_path: String,
     distiller: Distiller,
@@ -475,6 +504,8 @@ pub fn config_for(
 ) -> Config {
   Config(
     directory:,
+    sources: DirectorySources,
+    custody: None,
     memory_path: directory <> "/" <> memory.memory_file,
     digest_path: directory <> "/" <> memory.digest_file,
     distiller:,
@@ -490,6 +521,49 @@ pub fn with_logger(config: Config, logger: Logger) -> Config {
   Config(..config, logger:)
 }
 
+/// Selects catalogue sources without changing either destination.
+/// The pass rejects more than `scan_limit` records before opening any file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config |> distill.with_sources([distill.Source(session: id, path: path)])
+/// ```
+pub fn with_sources(config: Config, sources: List(Source)) -> Config {
+  Config(..config, sources: ExplicitSources(sources))
+}
+
+// Validate the bounded explicit list before opening even the memory store.
+// These checks prevent accidental projection feedback; they are not a substitute
+// for the host's canonical path validation or the opened identity check below.
+fn validate_sources(config: Config) -> Result(Nil, String) {
+  case config.sources {
+    DirectorySources -> Ok(Nil)
+    ExplicitSources(sources) -> {
+      use <- bool.guard(
+        when: config.scan_limit <= 0
+          || list.length(list.take(sources, config.scan_limit + 1))
+          > config.scan_limit,
+        return: Error("explicit sources exceed the positive scan limit"),
+      )
+      use <- bool.guard(
+        when: list.any(sources, fn(source) {
+          !string.starts_with(source.path, "/")
+          || source.path == config.memory_path
+          || source.path == config.digest_path
+          || list.any(excluded_files, fn(name) {
+            string.ends_with(source.path, "/" <> name)
+          })
+        }),
+        return: Error(
+          "explicit source must name a conversation, not a projection",
+        ),
+      )
+      Ok(Nil)
+    }
+  }
+}
+
 /// Runs one whole pass: walk, extract, consolidate, render.
 ///
 /// The write order is the crash contract and it is visible here — rows,
@@ -502,6 +576,7 @@ pub fn with_logger(config: Config, logger: Logger) -> Config {
 /// ```
 ///
 pub fn run(config: Config) -> Result(Report, String) {
+  use Nil <- result.try(validate_sources(config))
   let generator = ids.generator(config.clock, seed: config.entropy())
   use opened <- result.try(
     memory.open(
@@ -522,6 +597,70 @@ pub fn run(config: Config) -> Result(Report, String) {
   outcome
 }
 
+/// Prepares a managed pass with fresh authorized sources and ledger-bound HTTP.
+/// The supplied gateway replaces the standalone configuration's distiller. The
+/// source resolver runs after builder custody exists and never falls back to a
+/// directory scan. Only the enclosing managed run's retirement verdict permits
+/// replacement; a returned report alone is not that verdict.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // weft.new_prepared([distill.prepare(config, sources, gateway, target, 5000)])
+/// ```
+@internal
+pub fn prepare(
+  config: Config,
+  sources: fn() -> Result(List(Source), String),
+  gateway: provider_gateway.Gateway,
+  target: RequestTarget,
+  request_timeout_ms: Int,
+) -> weft.PreparedTask(Report, String) {
+  weft.managed(fn(ledger) {
+    use builder <- result.try(custody.builder(ledger))
+    use selected <- result.try(sources())
+    let configured =
+      Config(
+        ..with_sources(config, selected),
+        custody: Some(#(ledger, builder)),
+        distiller: owned_gateway_distiller(
+          gateway,
+          target,
+          request_timeout_ms,
+          ledger,
+          builder,
+        ),
+      )
+    use Nil <- result.try(validate_sources(configured))
+    use owned <- result.try(
+      custody.open(
+        ledger,
+        builder,
+        config.memory_path,
+        distill_owner,
+        memory.run_lease_ttl_ms,
+        config.clock,
+      )
+      |> result.map_error(string.inspect),
+    )
+    let outcome = {
+      use opened <- result.try(
+        memory.from_owned_session(
+          custody.session(owned),
+          ids.generator(config.clock, seed: config.entropy()),
+        )
+        |> result.map_error(describe_fault),
+      )
+      pass(configured, opened)
+    }
+
+    // The head may already have committed. A close failure reports lost cleanup,
+    // never rollback, and the surviving holder retains the original connection.
+    use Nil <- result.try(custody.close(owned))
+    outcome
+  })
+}
+
 /// The lease owner a distillation run takes the memory session under —
 /// the name a `remember` call refused mid-run is told is holding it.
 pub const distill_owner = "loom-distill"
@@ -533,7 +672,7 @@ fn pass(config: Config, opened: Opened) -> Result(Report, String) {
   use current <- result.try(
     memory.head_rows(opened) |> result.map_error(describe_fault),
   )
-  let #(harvests, skipped) = harvest_all(config, opened)
+  use #(harvests, skipped) <- result.try(harvest_all(config, opened))
   use notes_cursor <- result.try(read_notes_cursor(opened))
   use notes <- result.try(
     memory.notes_after(opened, notes_cursor, limit: max_notes_per_run)
@@ -1054,22 +1193,38 @@ type Harvested {
 
   /// Could not be opened or read at all.
   Unreadable(reason: String)
+
+  /// Cleanup failed; continuing would allocate beside unconfirmed custody.
+  RetirementFailed(reason: String)
 }
 
 // Opens every candidate source, harvesting what is new.
-fn harvest_all(config: Config, opened: Opened) -> #(List(Harvest), Int) {
-  case source_files(config.directory) {
+fn harvest_all(
+  config: Config,
+  opened: Opened,
+) -> Result(#(List(Harvest), Int), String) {
+  let selected = case config.sources {
+    DirectorySources ->
+      source_files(config.directory)
+      |> result.map(list.map(_, fn(path) { #(path, None) }))
+    ExplicitSources(sources) ->
+      Ok(list.map(sources, fn(source) { #(source.path, Some(source.session)) }))
+  }
+  case selected {
     Error(reason) -> {
       log.warn(config.logger, "distill.walk_failed", [
         field.text(key: "reason", value: reason),
       ])
-      #([], 0)
+      Ok(#([], 0))
     }
     Ok(paths) ->
-      list.fold(paths, #([], 0), fn(carried, path) {
+      list.try_fold(paths, #([], 0), fn(carried, selected) {
+        let #(path, expected) = selected
         let #(found, skipped) = carried
-        case harvest_one(config, opened, path) {
-          Ready(harvest:) -> #([harvest, ..found], skipped)
+        case harvest_one(config, opened, path, expected) {
+          Ready(harvest:) -> Ok(#([harvest, ..found], skipped))
+
+          RetirementFailed(reason) -> Error(reason)
 
           // Per-source visibility, at a level nobody has to read: a
           // machine somebody is using has a live session in every walk
@@ -1082,28 +1237,79 @@ fn harvest_all(config: Config, opened: Opened) -> #(List(Harvest), Int) {
               field.text(key: "session", value: path),
               field.text(key: "reason", value: "its writer lease is held"),
             ])
-            #(found, skipped + 1)
+            Ok(#(found, skipped + 1))
           }
           Quiet -> {
             log.debug(config.logger, "distill.source_quiet", [
               field.text(key: "session", value: path),
               field.text(key: "reason", value: "nothing above its cursor"),
             ])
-            #(found, skipped)
+            Ok(#(found, skipped))
           }
           Unreadable(reason:) -> {
             log.warn(config.logger, "distill.source_unreadable", [
               field.text(key: "session", value: path),
               field.text(key: "reason", value: reason),
             ])
-            #(found, skipped + 1)
+            Ok(#(found, skipped + 1))
           }
         }
       })
   }
 }
 
-fn harvest_one(config: Config, opened: Opened, path: String) -> Harvested {
+fn harvest_one(
+  config: Config,
+  opened: Opened,
+  path: String,
+  expected: Option(SessionId),
+) -> Harvested {
+  case config.custody {
+    Some(#(ledger, builder)) ->
+      harvest_owned(config, opened, path, expected, ledger, builder)
+    None -> harvest_standalone(config, opened, path, expected)
+  }
+}
+
+fn harvest_owned(
+  config: Config,
+  opened: Opened,
+  path: String,
+  expected: Option(SessionId),
+  ledger: weft.Ledger,
+  builder: process.Pid,
+) -> Harvested {
+  case
+    custody.open(
+      ledger,
+      builder,
+      path,
+      distill_owner,
+      memory.lease_ttl_ms,
+      config.clock,
+    )
+  {
+    Error(custody.OpenFailed(session.SqliteOpenFailed(sqlite.LeaseHeld(..)))) ->
+      Leased
+    Error(custody.OpenFailed(error)) -> Unreadable(string.inspect(error))
+    Error(custody.CustodyFailed(reason)) -> RetirementFailed(reason)
+    Ok(owned) -> {
+      let outcome =
+        harvested(config, opened, path, custody.session(owned), expected)
+      case custody.close(owned) {
+        Ok(Nil) -> outcome
+        Error(reason) -> RetirementFailed(reason)
+      }
+    }
+  }
+}
+
+fn harvest_standalone(
+  config: Config,
+  opened: Opened,
+  path: String,
+  expected: Option(SessionId),
+) -> Harvested {
   case
     session.open_sqlite(
       path:,
@@ -1117,7 +1323,7 @@ fn harvest_one(config: Config, opened: Opened, path: String) -> Harvested {
     Error(session.SqliteOpenFailed(error: sqlite.LeaseHeld(..))) -> Leased
     Error(error) -> Unreadable(reason: string.inspect(error))
     Ok(source) -> {
-      let outcome = harvested(config, opened, path, source)
+      let outcome = harvested(config, opened, path, source, expected)
       let _closed = session.close(source)
       outcome
     }
@@ -1129,8 +1335,9 @@ fn harvested(
   opened: Opened,
   path: String,
   source: session.Session,
+  expected: Option(SessionId),
 ) -> Harvested {
-  case readable(config, opened, path, source) {
+  case readable(config, opened, path, source, expected) {
     Error(reason) -> Unreadable(reason:)
     Ok(None) -> Quiet
     Ok(Some(harvest)) -> Ready(harvest:)
@@ -1142,6 +1349,7 @@ fn readable(
   opened: Opened,
   path: String,
   source: session.Session,
+  expected: Option(SessionId),
 ) -> Result(Option(Harvest), String) {
   use named <- result.try(
     session.id(source)
@@ -1162,6 +1370,13 @@ fn readable(
     named,
     "the session has no canonical id; open it with a server once",
   ))
+
+  // A replaced file cannot advance the expected source's cursor or contribute
+  // another conversation's material to this domain.
+  use Nil <- result.try(case expected {
+    Some(id) if id != named -> Error("source identity does not match catalogue")
+    Some(_) | None -> Ok(Nil)
+  })
   let session_id = ids.session_id_to_string(named)
   use generation <- result.try(
     sqlite.generation(path:)
@@ -1378,6 +1593,42 @@ pub fn gateway_distiller(
   target: RequestTarget,
   timeout_ms timeout_ms: Int,
 ) -> Distiller {
+  bound_gateway_distiller(gateway, target, timeout_ms, fn(_handle) { Ok(Nil) })
+}
+
+// The scope monitors the original parked request owner before any HTTP begins.
+// The builder remains its parent, so cleanup cannot race a live fold step.
+fn owned_gateway_distiller(
+  gateway: provider_gateway.Gateway,
+  target: RequestTarget,
+  timeout_ms: Int,
+  ledger: weft.Ledger,
+  builder: process.Pid,
+) -> Distiller {
+  bound_gateway_distiller(gateway, target, timeout_ms, fn(handle) {
+    case handle.owner {
+      None -> Ok(Nil)
+      Some(owner) ->
+        case
+          weft.adopt_under(ledger, parent: builder, owner:, cancel: fn() {
+            stream.cancel(handle)
+          })
+        {
+          weft.Adopted -> Ok(Nil)
+          weft.Refused -> Error("distillation provider custody is cancelling")
+        }
+    }
+  })
+}
+
+// The standalone adapter has no enclosing ledger; the managed adapter publishes
+// request custody here, before begin, without changing the provider protocol.
+fn bound_gateway_distiller(
+  gateway: provider_gateway.Gateway,
+  target: RequestTarget,
+  timeout_ms: Int,
+  publish: fn(stream.StreamHandle) -> Result(Nil, String),
+) -> Distiller {
   Distiller(ask: fn(prompt) {
     let stream.PreparedStream(handle:, begin:) =
       provider_gateway.prepare(
@@ -1395,6 +1646,7 @@ pub fn gateway_distiller(
     // has gone. Retaining the monitor before begin makes the later drain wait
     // an observation of the real exit rather than a `noproc` guess.
     let drain_witness = stream.watch_drain(handle)
+    use Nil <- result.try(publish(handle))
     begin()
     case stream.await_terminal(handle, within: timeout_ms) {
       Error(Nil) -> {
@@ -1431,6 +1683,7 @@ fn user(text: String) -> AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
+    origin: None,
   )
 }
 

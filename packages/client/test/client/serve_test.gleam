@@ -1,30 +1,38 @@
-//// Boot smoke for the server entry point: `serve.boot` over a fresh
-//// SQLite session with a scripted (dead-transport) provider gateway —
-//// the demo rig pattern, injected through `Settings`' gateway seam —
-//// then the served surface proven from outside: `/healthz` over plain
-//// HTTP, and a real websocket upgrade + `subscribe` answered with the
-//// full snapshot. No generation is driven and no tool runs, so the
-//// provider transport never sends and the helper never spawns — which
-//// is exactly the keyless-environment boot story the module documents.
+//// Assembly and lifecycle tests use real SQLite with scripted providers.
+//// Wire tests admit that assembly through the real daemon's authenticated v2
+//// listener and credited snapshots; the legacy health route must be absent.
+//// Internal host fixtures retain focused lease, supervision and policy checks.
 
 import broker/broker
 import broker/exec
 import broker/policy
 import client/catalog
 import client/codemode
+import client/daemon/domain as domain_service
+import client/daemon/main as daemon_main
+import client/daemon/manager
+import client/daemon/root as daemon_root
+import client/daemon/session_socket
+import client/daemon_server_test as wire
 import client/distillpass
 import client/host
-import client/protocol
+import client/internal/ffi_os
 import client/rules
 import client/schedule
 import client/serve
+import client/server
+import client/session_socket_test as transfer
 import client/system_prompt
 import core/clock
+import core/ids
+import core/json
 import core/message
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/http/request
 import gleam/httpc
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -39,8 +47,15 @@ import provider/secret
 import runtime/api
 import session/session
 import simplifile
+import storage/sqlite
+import support/addresses
 import support/internal/ffi_ws
 import support/provider as provider_test
+import telemetry/log
+import tui/connection
+import weft
+import weft/poll
+import weft/registry as address
 
 // A home directory that does not exist, so a server booted here never
 // picks up the developer's own `~/.agents/AGENTS.md`. A home with no
@@ -103,6 +118,7 @@ fn settings_under(root: String) -> serve.Settings {
   let root = absolute(root)
   serve.Settings(
     session_path: root <> "/session.db",
+    domain_paths: option.None,
     bind_host: "127.0.0.1",
     bind_port: 0,
     token_path: root <> "/session.db.token",
@@ -198,39 +214,460 @@ pub fn a_linked_worktree_widens_the_base_to_its_git_directories_test() {
 }
 
 pub fn boot_serves_healthz_and_ws_subscribe_test() {
-  // A fresh root per run so the session always starts empty.
-  let _stale = simplifile.delete(root)
-  let assert Ok(booted) = serve.boot(settings())
-    as "the server must boot on an ephemeral port"
-
-  // The bearer token landed in the announced file, mode 0600.
-  let assert Ok(token) = simplifile.read(root <> "/session.db.token")
-  assert token == booted.served.token
-  let assert Ok(info) = simplifile.file_info(root <> "/session.db.token")
+  use serving, instance, incarnation, token <- with_daemon_instance
+  let token_path = serving.ready.state_root <> "/owner.token"
+  assert simplifile.read(token_path) == Ok(token)
+  let assert Ok(info) = simplifile.file_info(token_path)
+    as "the stable daemon credential is a real private file"
   assert info.mode % 0o1000 == 0o600
-
-  // /healthz answers without auth.
-  let base = "http://127.0.0.1:" <> int.to_string(booted.served.port)
+  let base = "http://127.0.0.1:" <> int.to_string(serving.listener.port)
   let assert Ok(health) = request.to(base <> "/healthz")
+    as "the legacy route probe is a valid URL"
   let assert Ok(health_response) = httpc.send(health)
-  assert health_response.status == 200
+    as "the daemon listener answers HTTP"
+  assert health_response.status == 404
+  let assert Ok(control) = request.to(base <> "/v2/control")
+    as "the protected route probe is a valid URL"
+  let assert Ok(control_response) = httpc.send(control)
+    as "the daemon rejects an unauthenticated request"
+  assert control_response.status == 401
+  subscribed_cut(serving, instance, incarnation, token)
+}
 
-  // A real websocket subscribe: upgrade with the token from the file,
-  // send the command, and the reply is the full snapshot for the
-  // session id the server derived from the file name.
-  let subscribe =
-    protocol.encode_command(protocol.CommandEnvelope(
-      id: 1,
-      command: protocol.Subscribe(session: "session", from_seq: None),
+// The root remains outside the bounded assertion task, so a failed wire or
+// lifecycle assertion cannot bypass its original transitive shutdown witness.
+fn with_daemon_instance(run) {
+  // Default prompt rendering checks the helper's advertised jail capabilities.
+  // Its peer must speak the helper protocol and confirm retirement at shutdown.
+  let settings =
+    serve.Settings(
+      ..settings_under(fresh_instance_root()),
+      helper_path: absolute("../sandbox/loom-exec"),
+    )
+  let assert Ok(config) =
+    daemon_main.parse(["--state-dir", settings.workspace <> "/daemon"])
+    as "the fixture selects one fresh daemon directory"
+  let assert Ok(daemon) =
+    daemon_root.start(
+      daemon_root.Config(config.state_root, "Fixture owner", 2),
+      manager.Assembly(
+        domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
+        build: fn(record, _domain, _services, owner) {
+          let assert Ok(id) = ids.parse_session_id(record.id)
+            as "the catalogue reserved a canonical identity"
+          serve.assemble_owned(
+            serve.Settings(
+              ..settings,
+              session_path: record.path,
+              session_id: record.id,
+            ),
+            id,
+            log.discard(),
+            owner,
+          )
+        },
+        fatal: serve.instance_children,
+      ),
+    )
+    as "the root owns every admitted SQLite instance"
+  let outcomes =
+    weft.new([
+      fn() -> Result(Nil, Nil) {
+        let assert Ok(serving) =
+          daemon_main.listen(config, daemon, fn(request, attachment) {
+            session_socket.upgrade(
+              daemon,
+              request,
+              attachment,
+              attachment.instance.gateway,
+            )
+          })
+          as "the original root owns the real v2 listener"
+        let assert Ok(token) = daemon_root.listener_credential(daemon)
+          as "the owner credential is available only to the fixture"
+        let assert Ok(view) =
+          manager.create(
+            serving.ready.registry,
+            manager.Creation("serve-wire", settings.workspace, "Fixture", ""),
+            directory: serving.ready.sessions_directory,
+            generator: ids.generator(clock.fixed(1000), 887),
+          )
+          as "an explicit command admits one real session"
+        let assert poll.Answered(instance) =
+          poll.until(within: 10_000, every: 5, attempt: fn() {
+            case manager.resolve(serving.ready.registry, view.registration.id) {
+              Ok(instance) -> poll.Done(instance)
+              Error(_) -> poll.Retry
+            }
+          })
+          as "the explicitly admitted SQLite instance becomes resident"
+        let assert Ok(manager.View(status: manager.Resident(incarnation), ..)) =
+          manager.get(serving.ready.registry, view.registration.id)
+          as "the fixture captures the original incarnation"
+        run(serving, instance, incarnation, token)
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(30_000)
+    |> weft.start
+
+  // Report only the fixed task classification: assertion payloads can contain
+  // the fixture credential, and a cleanup failure must not hide task failure.
+  list.each(outcomes, fn(outcome) {
+    let status = case outcome {
+      weft.Completed(..) -> "completed"
+      weft.Failed(..) -> "failed"
+      weft.Crashed(..) -> "crashed"
+      weft.Abandoned(..) -> "abandoned"
+      weft.NeverStarted(..) -> "never_started"
+      weft.DrainProofLost(..) -> "drain_proof_lost"
+      weft.CancellationUnconfirmed(..) -> "cancellation_unconfirmed"
+    }
+    io.println("serve daemon fixture task: " <> status)
+  })
+  assert daemon_root.shutdown(daemon, within: 15_000) == Ok(Nil)
+    as "original listener and instance retirement completes even after assertion failure"
+  assert outcomes == [weft.Completed(0, Nil)]
+    as "the bounded daemon fixture completed every assertion"
+}
+
+fn subscribed_cut(
+  serving: daemon_main.Serving(serve.Instance),
+  instance: serve.Instance,
+  incarnation,
+  token,
+) {
+  let id = ids.session_id_to_string(api.session_id(instance.runtime))
+  let #(socket, headers) =
+    wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
+  assert string.contains(headers, "101 Switching Protocols")
+  let #(begin, snapshot_id) = transfer.begin(socket, id)
+  assert wire_field(begin, "session_id") == json.String(id)
+  assert wire_field(begin, "epoch") == json.String(serving.ready.epoch)
+  assert wire_field(begin, "incarnation") == json.String(incarnation)
+  assert wire_field(begin, "role") == json.String("owner")
+  assert transfer.drain(socket, snapshot_id, 0, [], 32) != []
+  let _closed = ffi_ws.tcp_close(socket)
+  Nil
+}
+
+fn wire_field(value, key) {
+  let assert json.Object(fields) = value as "the frame body is an object"
+  let assert Ok(value) = list.key_find(fields, key)
+    as "the authoritative attachment field is present"
+  value
+}
+
+pub fn a_socket_crash_does_not_kill_its_terminal_test() {
+  use served <- with_instance_listener
+  let inbox = connection.new_inbox()
+  let socket = open_test_socket(served, inbox)
+  let assert Ok(owner) = connection.owner(socket)
+    as "the connected socket must have an owner"
+  process.kill(owner)
+  let assert Ok(connection.Closed(_)) = process.receive(inbox, 1000)
+    as "a socket crash must become a close notice in the surviving terminal"
+  assert connection.adopt(socket) != Ok(Nil)
+}
+
+pub fn normal_terminal_exit_closes_its_socket_test() {
+  use served <- with_instance_listener
+  let sockets = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let socket = open_test_socket(served, connection.new_inbox())
+    process.send(sockets, socket)
+
+    // Returning normally must release the socket without an explicit close.
+    Nil
+  })
+  let assert Ok(socket) = process.receive(sockets, 1000)
+    as "the terminal must publish its socket before exiting"
+  await_socket_exit(socket)
+}
+
+pub fn cancelled_connection_attempt_closes_its_socket_test() {
+  use served <- with_instance_listener
+  let sockets = process.new_subject()
+  let inbox = connection.new_inbox()
+  let attempt =
+    process.spawn_unlinked(fn() {
+      let assert Ok(socket) =
+        connection.connect(socket_address(served), served.token, inbox)
+        as "the background connection attempt must succeed"
+      process.send(sockets, socket)
+      process.sleep_forever()
+    })
+  let assert Ok(socket) = process.receive(sockets, 1000)
+    as "the attempt must publish its socket before cancellation"
+  process.kill(attempt)
+  await_socket_exit(socket)
+}
+
+pub fn a_returned_socket_remains_owned_by_its_inbox_test() {
+  use served <- with_instance_listener
+  let sockets = process.new_subject()
+  let inbox = connection.new_inbox()
+  let attempt =
+    process.spawn_unlinked(fn() {
+      let assert Ok(socket) =
+        connection.connect(socket_address(served), served.token, inbox)
+        as "the background connection attempt must succeed"
+      process.send(sockets, socket)
+    })
+  let monitor = process.monitor(attempt)
+  let assert Ok(socket) = process.receive(sockets, 1000)
+    as "the successful attempt must return its socket"
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "the attempt must exit before the terminal adopts its socket"
+  assert connection.adopt(socket) == Ok(Nil)
+  connection.close(socket)
+  await_socket_exit(socket)
+}
+
+fn with_instance_listener(run: fn(server.Server) -> Nil) -> Nil {
+  let assert Ok(instance) =
+    serve.open_instance(instance_settings(fresh_instance_root()), log.discard())
+    as "the lifecycle fixture must open a real instance"
+  let assert Ok(served) =
+    server.serve(server.Config(
+      gateway: instance.gateway,
+      bind: "127.0.0.1",
+      port: 0,
+      auth: server.BearerAuth("socket-lifetime-test"),
+      entropy: ffi_os.unique_positive_integer,
     ))
-  let assert Ok(frame) =
-    ffi_ws.ws_roundtrip("127.0.0.1", booted.served.port, token, subscribe)
-    as "the websocket round trip must complete"
-  let assert Ok(envelope) = protocol.decode_event(frame)
-  assert envelope.reply_to == Some(1)
-  let assert protocol.SnapshotEvent(protocol.FullSnapshot(..)) = envelope.event
+    as "the lifecycle fixture must expose a real listener"
+  run(served)
+  server.stop(served)
+  serve.close_instance(instance)
+}
 
-  serve.shutdown(booted)
+fn socket_address(served: server.Server) -> String {
+  "ws://127.0.0.1:" <> int.to_string(served.port) <> "/v1/ws"
+}
+
+fn open_test_socket(
+  served: server.Server,
+  inbox: Subject(connection.Message),
+) -> connection.Connection {
+  let assert Ok(socket) =
+    connection.connect(socket_address(served), served.token, inbox)
+    as "the fixture socket must authenticate"
+  let assert Ok(connection.Connected) = process.receive(inbox, 1000)
+    as "the fixture socket must complete its handshake"
+  socket
+}
+
+fn await_socket_exit(socket: connection.Connection) -> Nil {
+  case connection.owner(socket) {
+    Error(Nil) -> Nil
+    Ok(pid) -> {
+      let monitor = process.monitor(pid)
+      let assert Ok(_) =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down })
+        |> process.selector_receive(1000)
+        as "the abandoned socket must actually exit"
+      Nil
+    }
+  }
+}
+
+pub fn two_instances_have_independent_lifetimes_test() {
+  let root = fresh_instance_root()
+  let first_settings = instance_settings(root <> "/a")
+  let second_settings = instance_settings(root <> "/b")
+  let assert Ok(first) = serve.open_instance(first_settings, log.discard())
+    as "session A must open without a listener"
+  let assert Ok(second) = serve.open_instance(second_settings, log.discard())
+    as "session B must open beside session A in the same VM"
+  assert api.session_id(first.runtime) != api.session_id(second.runtime)
+  assert address.owner(first.namespace) != address.owner(second.namespace)
+  complete_instance_turn(first)
+
+  // Session assembly must ignore transport settings. Both fixtures carry an
+  // invalid bind address and port, and neither may publish a token file.
+  assert simplifile.is_file(first_settings.token_path) == Ok(False)
+  assert simplifile.is_file(second_settings.token_path) == Ok(False)
+  assert simplifile.is_directory(absolute(root <> "/a/transport-only"))
+    == Ok(False)
+  serve.close_instance(first)
+  assert !process.is_alive(address.owner(first.namespace))
+  assert address.lookup(first.gateway.name) == Error(Nil)
+  assert process.is_alive(second.runtime.tree.supervisor)
+  complete_instance_turn(second)
+  serve.close_instance(second)
+  assert !process.is_alive(address.owner(second.namespace))
+}
+
+pub fn listener_failure_closes_the_opened_instance_test() {
+  let root = fresh_instance_root()
+  let settings = instance_settings(root)
+
+  // Session assembly creates the workspace directory. A token cannot replace
+  // that directory, so listener setup fails after the whole instance opens.
+  let refused =
+    serve.boot(serve.Settings(..settings, token_path: settings.workspace))
+  let assert Error(reason) = refused as "the token path must refuse a directory"
+  assert string.contains(reason, "the websocket server did not start")
+  let assert Ok(reopened) =
+    session.open_sqlite(
+      path: settings.session_path,
+      owner: "listener-failure-probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.from_function(ffi_os.system_time_ms),
+    )
+    as "a failed listener must close the instance and release its writer lease"
+  assert session.close(reopened) == Ok(Nil)
+}
+
+pub fn reopened_instance_does_not_revive_an_expired_writer_test() {
+  let root = fresh_instance_root()
+  let settings = instance_settings(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(absolute(root))
+    as "the stale writer's database directory must exist"
+
+  // Retain an expired fence-one connection without a runtime renewing it.
+  // This is the old daemon's constant identity, not the new incarnation's.
+  let assert Ok(stale) =
+    session.open_sqlite(
+      path: settings.session_path,
+      owner: "loomd",
+      lease_ttl_ms: 1000,
+      clock: clock.fixed(at: 0),
+    )
+    as "the stale writer must acquire the original fence"
+  let assert Ok(first) = serve.open_instance(settings, log.discard())
+    as "the first instance must take over the expired writer lease"
+  let first_owner = held_writer_owner(settings.session_path)
+  let session_id = api.session_id(first.runtime)
+  serve.close_instance(first)
+
+  // Closing removes the row. The next incarnation returns to fence one,
+  // which would make the stale connection authoritative under a fixed owner.
+  let assert Ok(second) = serve.open_instance(settings, log.discard())
+    as "a cleanly closed session must reopen"
+  let second_owner = held_writer_owner(settings.session_path)
+  assert result.is_error(stale.renew_lease())
+    as "reopening must not revive the expired fence-one writer"
+  assert first_owner != second_owner
+  assert api.session_id(second.runtime) == session_id
+
+  // A delayed close from the stale connection must not delete the current
+  // lease. A complete provider turn proves the current writer can still commit.
+  assert session.close(stale) == Ok(Nil)
+  assert held_writer_owner(settings.session_path) == second_owner
+  complete_instance_turn(second)
+  serve.close_instance(second)
+}
+
+fn held_writer_owner(path: String) -> String {
+  let assert Error(session.SqliteOpenFailed(sqlite.LeaseHeld(owner:, ..))) =
+    session.open_sqlite(
+      path:,
+      owner: "lease-identity-probe",
+      lease_ttl_ms: 60_000,
+      clock: clock.from_function(ffi_os.system_time_ms),
+    )
+    as "a second connection must be refused with the live writer identity"
+  owner
+}
+
+type Counter {
+  AtomCount
+}
+
+@external(erlang, "erlang", "system_info")
+fn system_count(counter: Counter) -> Int
+
+pub fn repeated_instance_assembly_does_not_allocate_atoms_test() {
+  let root = fresh_instance_root()
+
+  // Warm module loading and every measured loop path in this VM. Each cycle
+  // still creates a new SQLite database and executes through the real wiring.
+  int.range(from: 0, to: 2, with: Nil, run: fn(_, index) {
+    instance_cycle(root <> "/warm-" <> int.to_string(index))
+  })
+  let before = system_count(AtomCount)
+  int.range(from: 0, to: 10, with: Nil, run: fn(_, index) {
+    instance_cycle(root <> "/measured-" <> int.to_string(index))
+  })
+  assert system_count(AtomCount) == before
+    as "session services must not leave permanent process-name atoms"
+}
+
+fn fresh_instance_root() -> String {
+  root
+  <> "/instances-"
+  <> int.to_string(ffi_os.system_time_ms())
+  <> "-"
+  <> int.to_string(ffi_os.unique_positive_integer())
+}
+
+fn instance_settings(root: String) -> serve.Settings {
+  serve.Settings(
+    ..settings_under(root),
+    bind_host: "not an interface",
+    bind_port: -1,
+    token_path: absolute(root) <> "/transport-only/daemon.token",
+    // Startup probes a helper's jail capabilities. Use the built protocol peer,
+    // not /bin/sh, whose missing hello waits out every handshake deadline.
+    helper_path: absolute("../sandbox/loom-exec"),
+    gateway: completed_gateway(),
+  )
+}
+
+fn instance_cycle(root: String) -> Nil {
+  let assert Ok(instance) =
+    serve.open_instance(instance_settings(root), log.discard())
+    as "the complete session assembly must open"
+  complete_instance_turn(instance)
+  serve.close_instance(instance)
+  assert !process.is_alive(instance.runtime.tree.supervisor)
+  assert !process.is_alive(instance.services)
+  assert !process.is_alive(address.owner(instance.namespace))
+}
+
+fn complete_instance_turn(instance: serve.Instance) -> Nil {
+  let assert Ok(helper) = exec.checkout(instance.pool, waiting: 1000)
+    as "the instance must have a real, handshaken helper"
+  exec.checkin(instance.pool, helper)
+  let assert Ok(op) = api.prompt(instance.runtime, [user("finish this turn")])
+    as "the instance must admit through its own writer"
+  let assert Ok(operation.RunLastResult(outcome: operation.RunCompleted(_), ..)) =
+    api.await_result(instance.runtime, op, within_ms: 5000)
+    as "the instance must complete through the real provider wiring"
+  Nil
+}
+
+fn completed_gateway() -> provider_gateway.Gateway {
+  catalog.gateway(
+    scripted_catalog(),
+    transport: provider_test.transport(fn(_request, events) {
+      process.send(
+        events,
+        http.ResponseStatus(200, [
+          #("content-type", "text/event-stream"),
+        ]),
+      )
+      process.send(
+        events,
+        http.ResponseChunk(bit_array.from_string(
+          "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"instance\",\"model\":\"loom-1\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"
+          <> "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+          <> "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"finished\"}}\n\n"
+          <> "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
+          <> "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        )),
+      )
+      process.send(events, http.ResponseEnd)
+    }),
+    secrets: secret.from_list([#("ACME_KEY", "instance-test-key")]),
+    clock: clock.fixed(at: 0),
+  )
 }
 
 // --- the catalogue's thinking level, seeded (issue #14, ruling 3) ----------
@@ -259,7 +696,7 @@ pub fn a_boot_seeds_the_main_strand_from_the_entrys_thinking_test() {
 
   // The seed landed durably…
   let assert Ok(Some(session.Cell(value: seeded, ..))) =
-    session.strand_configuration(booted.runtime.session, "main")
+    session.strand_configuration(booted.instance.runtime.session, "main")
     as "the main strand's configuration must read cleanly"
   assert seeded.thinking_level == machine_strand.ThinkingHigh
 
@@ -267,7 +704,7 @@ pub fn a_boot_seeds_the_main_strand_from_the_entrys_thinking_test() {
   // Driven through the whole real stack — the boot's own wiring, gateway
   // and Anthropic adapter — so this is the bytes on the wire and not a
   // restatement of the seed. High is `budget_tokens: 16384`.
-  let assert Ok(_op) = api.prompt(booted.runtime, [user("think hard")])
+  let assert Ok(_op) = api.prompt(booted.instance.runtime, [user("think hard")])
     as "the prompt must be accepted"
   let assert Ok(body) = process.receive(bodies, within: 10_000)
     as "the boot must dispatch one generation"
@@ -280,6 +717,7 @@ fn user(text: String) -> message.AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
+    origin: None,
   )
 }
 
@@ -366,12 +804,12 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
 
   let assert Ok(first) = serve.boot(settings_under(prompt_root))
     as "the first boot must succeed"
-  let assert Ok(Some(pinned)) = system_prompt.pinned(first.runtime)
+  let assert Ok(Some(pinned)) = system_prompt.pinned(first.instance.runtime)
     as "the first boot must pin a system prompt"
   // A first boot renders the shipped pack and owes the pin it just paid.
-  assert first.prompt.origin == system_prompt.Shipped
-  assert first.prompt.text == pinned
-  assert first.prompt.warnings == []
+  assert first.instance.prompt.origin == system_prompt.Shipped
+  assert first.instance.prompt.text == pinned
+  assert first.instance.prompt.warnings == []
   // It is the rendered pack against this host, not an empty string and
   // not a placeholder: the workspace, the shell, and the repository's own
   // guidance are all in it, framed as project-authored data.
@@ -391,12 +829,12 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
     as "the guidance file must be rewritten"
   let assert Ok(second) = serve.boot(settings_under(prompt_root))
     as "the second boot must succeed"
-  let assert Ok(Some(resumed)) = system_prompt.pinned(second.runtime)
+  let assert Ok(Some(resumed)) = system_prompt.pinned(second.instance.runtime)
     as "the second boot must read the pinned prompt"
   // The second boot took the pin rather than the pack: nothing was
   // rendered, so nothing could have moved.
-  assert second.prompt.origin == system_prompt.Pinned
-  assert !second.prompt.fresh
+  assert second.instance.prompt.origin == system_prompt.Pinned
+  assert !second.instance.prompt.fresh
   assert resumed == pinned
   assert !string.contains(resumed, "different now")
   serve.shutdown(second)
@@ -416,26 +854,26 @@ pub fn a_changed_enforcement_demand_repins_the_system_prompt_test() {
   let best_effort = settings_under(demand_root)
   let assert Ok(first) = serve.boot(best_effort)
     as "the first boot must succeed"
-  assert first.prompt.origin == system_prompt.Shipped
-  assert string.contains(first.prompt.text, "best-effort mode")
-  let best_effort_text = first.prompt.text
+  assert first.instance.prompt.origin == system_prompt.Shipped
+  assert string.contains(first.instance.prompt.text, "best-effort mode")
+  let best_effort_text = first.instance.prompt.text
   serve.shutdown(first)
 
   let platform = serve.Settings(..best_effort, demand: exec.PlatformEnforcement)
   let assert Ok(second) = serve.boot(platform)
     as "the changed demand must render a truthful replacement"
-  assert second.prompt.origin == system_prompt.Shipped
-  assert second.prompt.fresh
-  assert second.prompt.text != best_effort_text
-  assert !string.contains(second.prompt.text, "best-effort mode")
-  let platform_text = second.prompt.text
+  assert second.instance.prompt.origin == system_prompt.Shipped
+  assert second.instance.prompt.fresh
+  assert second.instance.prompt.text != best_effort_text
+  assert !string.contains(second.instance.prompt.text, "best-effort mode")
+  let platform_text = second.instance.prompt.text
   serve.shutdown(second)
 
   let assert Ok(third) = serve.boot(platform)
     as "the unchanged demand must reuse the replacement"
-  assert third.prompt.origin == system_prompt.Pinned
-  assert !third.prompt.fresh
-  assert third.prompt.text == platform_text
+  assert third.instance.prompt.origin == system_prompt.Pinned
+  assert !third.instance.prompt.fresh
+  assert third.instance.prompt.text == platform_text
   serve.shutdown(third)
 }
 
@@ -452,7 +890,7 @@ pub fn an_explicit_override_bypasses_the_pack_test() {
       ),
     )
     as "the boot must succeed with an override"
-  let assert Ok(Some(pinned)) = system_prompt.pinned(booted.runtime)
+  let assert Ok(Some(pinned)) = system_prompt.pinned(booted.instance.runtime)
     as "the override must be pinned"
   assert pinned == "operator words only"
   serve.shutdown(booted)
@@ -478,14 +916,15 @@ pub fn the_pinned_prompt_reaches_the_provider_request_test() {
       ),
     )
     as "the boot must succeed"
-  let assert Ok(Some(pinned)) = system_prompt.pinned(booted.runtime)
+  let assert Ok(Some(pinned)) = system_prompt.pinned(booted.instance.runtime)
     as "the boot must pin a system prompt"
 
   let assert Ok(_operation) =
-    api.prompt(booted.runtime, [
+    api.prompt(booted.instance.runtime, [
       message.UserMessage(
         content: [message.UserText(text: "hello", text_signature: None)],
         timestamp: 1,
+        origin: None,
       ),
     ])
     as "the prompt must be accepted"
@@ -537,11 +976,11 @@ pub fn a_fatal_drain_ledger_death_keeps_the_lease_test() {
   // absent-witness condition deterministic instead of racing the ledger's
   // orderly exit after a separately killed root.
   let assert Ok(ledger) =
-    process.subject_owner(process.named_subject(booted.runtime.tree.drains))
+    process.subject_owner(booted.instance.runtime.tree.drains)
   process.kill(ledger)
 
   let assert Ok(host.Faulted(child:, ..)) =
-    process.receive(booted.stops, within: 10_000)
+    process.receive(booted.instance.stops, within: 10_000)
     as "the host must report the fault rather than take the node with it"
   assert child == "the session tree"
 
@@ -556,7 +995,7 @@ pub fn a_fatal_drain_ledger_death_keeps_the_lease_test() {
       clock: clock.fixed(at: 0),
     )
     as "a missing drain witness must leave the lease held"
-  let _sealed = session.close(booted.runtime.session)
+  let _sealed = session.close(booted.instance.runtime.session)
 
   // And the front door is shut: the teardown ran in full, not just far
   // enough to reach the lease.
@@ -566,25 +1005,23 @@ pub fn a_fatal_drain_ledger_death_keeps_the_lease_test() {
     as "the listener must be closed once the host has torn the stack down"
 }
 
-/// A linked child — the broker is one, started with a plain
-/// `actor.start` on the boot process and captured by value rather than
-/// watched by name — reaches the host through its exit trap rather than
-/// through a monitor, and costs the same orderly shutdown. Nothing names
-/// it to the host, so the report says only that a linked service died.
+/// The broker is captured by value, so its original process is a named fatal
+/// child rather than a restartable service. Its death must report that exact
+/// identity and release the writer lease through orderly host teardown.
 pub fn a_linked_childs_death_releases_the_lease_test() {
   let fault_root = "build/serve-test-linked-fault"
   let _stale = simplifile.delete(fault_root)
   let assert Ok(booted) = serve.boot(settings_under(fault_root))
     as "the server must boot"
 
-  let assert Ok(broker_pid) = broker.pid(booted.broker)
+  let assert Ok(broker_pid) = broker.pid(booted.instance.broker)
     as "the broker must be alive"
   process.kill(broker_pid)
 
   let assert Ok(host.Faulted(child:, ..)) =
-    process.receive(booted.stops, within: 10_000)
+    process.receive(booted.instance.stops, within: 10_000)
     as "a linked child's death must be reported, not fatal by side effect"
-  assert string.starts_with(child, "a linked service")
+  assert child == "the capability broker"
 
   let assert Ok(reopened) =
     session.open_sqlite(
@@ -604,41 +1041,39 @@ pub fn a_linked_childs_death_releases_the_lease_test() {
 /// replaced in place — and the session is untouched, so the websocket
 /// surface answers again.
 pub fn a_hub_crash_restarts_rather_than_ending_the_server_test() {
-  let restart_root = "build/serve-test-restart"
-  let _stale = simplifile.delete(restart_root)
-  let assert Ok(booted) = serve.boot(settings_under(restart_root))
-    as "the server must boot"
-
-  let assert Ok(before) = hub_pid(booted)
+  use serving, instance, incarnation, token <- with_daemon_instance
+  let original_runtime = instance.runtime.tree.supervisor
+  let runtime_monitor = process.monitor(original_runtime)
+  let assert Ok(before) = addresses.owner(instance.gateway.name)
     as "the hub must be registered before the crash"
   process.kill(before)
-
-  let assert Ok(after) = replacement_hub_pid(booted, before, 400)
+  let assert poll.Answered(after) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case addresses.owner(instance.gateway.name) {
+        Ok(pid) if pid != before -> poll.Done(pid)
+        _ -> poll.Retry
+      }
+    })
     as "the hub must come back under the same name"
   assert after != before
-  assert process.receive(booted.stops, within: 250) == Error(Nil)
-    as "a restartable child's crash must not stop the server"
-
-  // Proof it is a working hub and not just a live pid: a real subscribe
-  // over a real socket, answered with the full snapshot.
-  let subscribe =
-    protocol.encode_command(protocol.CommandEnvelope(
-      id: 7,
-      command: protocol.Subscribe(session: "session", from_seq: None),
-    ))
-  let assert Ok(frame) =
-    ffi_ws.ws_roundtrip(
-      "127.0.0.1",
-      booted.served.port,
-      booted.served.token,
-      subscribe,
-    )
-    as "the restarted hub must answer a fresh subscription"
-  let assert Ok(envelope) = protocol.decode_event(frame)
-  assert envelope.reply_to == Some(7)
-  let assert protocol.SnapshotEvent(protocol.FullSnapshot(..)) = envelope.event
-
-  serve.shutdown(booted)
+  // The assembly owns its stop subject. This caller instead observes the
+  // original runtime directly, without receiving another process's mailbox.
+  assert process.new_selector()
+    |> process.select_specific_monitor(runtime_monitor, fn(down) { down })
+    |> process.selector_receive(250)
+    == Error(Nil)
+    as "a restartable child's crash must not stop the original runtime"
+  process.demonitor_process(runtime_monitor)
+  let id = ids.session_id_to_string(api.session_id(instance.runtime))
+  let assert Ok(current) = manager.resolve(serving.ready.registry, id)
+    as "hub recovery does not reopen or replace the admitted instance"
+  assert current.runtime.tree.supervisor == original_runtime
+  assert process.is_alive(original_runtime)
+  let assert Ok(manager.View(status: manager.Resident(current_incarnation), ..)) =
+    manager.get(serving.ready.registry, id)
+    as "the same registry slot remains resident"
+  assert current_incarnation == incarnation
+  subscribed_cut(serving, current, incarnation, token)
 }
 
 /// A crash loop spends the service supervisor's restart budget, and then
@@ -659,7 +1094,7 @@ pub fn an_unrecoverable_service_still_releases_the_lease_test() {
   )
 
   let assert Ok(host.Faulted(child:, ..)) =
-    process.receive(booted.stops, within: 10_000)
+    process.receive(booted.instance.stops, within: 10_000)
     as "a spent restart budget must end the server, in order"
   assert child == "the service supervisor"
 
@@ -725,7 +1160,7 @@ fn replacement_hub_pid(
 // The hub registers under a name the boot minted, so the only handle a
 // test has on it is the gateway record the server holds.
 fn hub_pid(booted: serve.Booted) -> Result(process.Pid, Nil) {
-  process.subject_owner(process.named_subject(booted.gateway.name))
+  addresses.owner(booted.instance.gateway.name)
 }
 
 // The pid once the supervisor has finished replacing it, or `Error(Nil)`
@@ -836,7 +1271,7 @@ pub fn a_boot_with_no_rules_starts_no_scanner_test() {
   let _stale = simplifile.delete(rules_root)
   let assert Ok(booted) = serve.boot(settings_under(rules_root))
     as "the server must boot with no rules configured"
-  assert booted.rulescan == None
+  assert booted.instance.rulescan == None
   serve.shutdown(booted)
 }
 
@@ -856,9 +1291,9 @@ pub fn a_boot_with_rules_runs_a_supervised_scanner_test() {
       ]),
     )
     as "the server must boot with a rule configured"
-  let assert Some(name) = booted.rulescan
+  let assert Some(name) = booted.instance.rulescan
     as "a configured rule must name a scanner"
-  let assert Ok(_pid) = process.named(name)
+  let assert Ok(_pid) = addresses.owner(name)
     as "the scanner must be registered under that name"
   serve.shutdown(booted)
 }
@@ -871,7 +1306,7 @@ pub fn a_boot_with_no_schedules_starts_no_scanner_test() {
   let _stale = simplifile.delete(schedules_root)
   let assert Ok(booted) = serve.boot(settings_under(schedules_root))
     as "the server must boot with no schedules configured"
-  assert booted.schedulescan == None
+  assert booted.instance.schedulescan == None
   serve.shutdown(booted)
 }
 
@@ -899,9 +1334,9 @@ pub fn a_boot_with_schedules_runs_a_supervised_scanner_test() {
       ]),
     )
     as "the server must boot with a schedule configured"
-  let assert Some(name) = booted.schedulescan
+  let assert Some(name) = booted.instance.schedulescan
     as "a configured schedule must name a scanner"
-  let assert Ok(_pid) = process.named(name)
+  let assert Ok(_pid) = addresses.owner(name)
     as "the scanner must be registered under that name"
   serve.shutdown(booted)
 }

@@ -7,11 +7,13 @@
 
 import gleam/erlang/process
 import runtime/internal/drain_registry
+import weft/registry as address
 
 /// Killing a claimed reaper must poison the ledger rather than remove the
 /// generation as though it had drained normally.
 pub fn abnormal_reaper_exit_poisoned_ledger_test() {
-  let name = process.new_name(prefix: "drain-ledger-fault")
+  let assert Ok(namespace) = address.start() as "the namespace must start"
+  let name = address.new_address(namespace)
   let assert Ok(started) = drain_registry.start(name)
   let ledger = started.data
   let assert Ok(ledger_pid) = process.subject_owner(ledger)
@@ -31,12 +33,14 @@ pub fn abnormal_reaper_exit_poisoned_ledger_test() {
     |> process.selector_receive(1000)
   assert reason == process.Killed
     as "an abnormal reaper must make the ledger fail closed"
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 /// A replacement claim must be released by the ledger's original monitor,
 /// not by a late monitor which can observe only `noproc` after a clean exit.
 pub fn replacement_claim_waits_for_ledger_authored_drain_test() {
-  let name = process.new_name(prefix: "drain-ledger-barrier")
+  let assert Ok(namespace) = address.start() as "the namespace must start"
+  let name = address.new_address(namespace)
   let assert Ok(started) = drain_registry.start(name)
   let ledger = started.data
   let #(first, stop_first) = parked_reaper()
@@ -58,6 +62,7 @@ pub fn replacement_claim_waits_for_ledger_authored_drain_test() {
   // Leave the ledger with a clean final generation so the test exercises the
   // same positive acknowledgement used by an orderly session shutdown.
   process.send(stop_second, Nil)
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 /// A claim can outlive the reaper it names: the reaper drains and exits
@@ -65,7 +70,8 @@ pub fn replacement_claim_waits_for_ledger_authored_drain_test() {
 /// answers `noproc`. That is a departure, not a destroyed proof, and the
 /// session must survive it.
 pub fn claim_naming_an_already_departed_reaper_retires_it_test() {
-  let name = process.new_name(prefix: "drain-ledger-departed")
+  let assert Ok(namespace) = address.start() as "the namespace must start"
+  let name = address.new_address(namespace)
   let assert Ok(started) = drain_registry.start(name)
   let ledger = started.data
   let assert Ok(ledger_pid) = process.subject_owner(ledger)
@@ -92,6 +98,7 @@ pub fn claim_naming_an_already_departed_reaper_retires_it_test() {
     as "a claim met as noproc must not fail the session closed"
 
   process.send(stop, Nil)
+  assert address.stop(namespace) == Ok(Nil)
 }
 
 // A reaper that has finished and gone, confirmed by its own `Down`, so the

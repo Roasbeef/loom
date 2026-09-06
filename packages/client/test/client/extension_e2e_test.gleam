@@ -82,7 +82,6 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/strand as machine_strand
@@ -91,10 +90,13 @@ import runtime/api
 import runtime/effects
 import session/session
 import simplifile
+import support/addresses
 import support/extensions
 import support/origin
 import telemetry/log
 import tools/tool
+import weft/actor
+import weft/registry as address
 
 /// The value the operator's environment holds and nothing else may see.
 /// Distinctive enough that a substring search over a few thousand frame
@@ -136,7 +138,9 @@ pub fn an_installed_extension_reaches_the_network_test_() -> EunitTest {
 fn run_e2e() -> Nil {
   case prerequisites() {
     Error(reason) ->
-      io.println("SKIP an_installed_extension_reaches_the_network: " <> reason)
+      io.println_error(
+        "SKIP an_installed_extension_reaches_the_network: " <> reason,
+      )
     Ok(ready) -> drive(ready)
   }
 }
@@ -157,13 +161,15 @@ fn drive(ready: Ready) -> Nil {
   case install_fixture(ready, host) {
     Error(reason) -> {
       origin.stop(server)
-      io.println("SKIP an_installed_extension_reaches_the_network: " <> reason)
+      io.println_error(
+        "SKIP an_installed_extension_reaches_the_network: " <> reason,
+      )
     }
 
     Ok(installed_at) -> {
       let taps = process.new_subject()
       let specs = process.new_subject()
-      let hosts_name = process.new_name(prefix: "loom_e2e_hosts")
+      let hosts_name = addresses.new()
       let config =
         dispatch.Config(
           host: installed_at.host,
@@ -363,9 +369,10 @@ fn drive(ready: Ready) -> Nil {
 // list crossed the capability channel and came back.
 fn hooks_fire(installed_at: Installed) -> Nil {
   case install_beside(installed_at, extensions.gatekeeper(), "gatekeeper-src") {
-    Error(reason) -> io.println("SKIP the gatekeeper extension: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP the gatekeeper extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
-      let hosts_name = process.new_name(prefix: "loom_e2e_gate")
+      let hosts_name = addresses.new()
       let seam = hosts.seam(hosts_name, clock: wall_clock(), margin_ms: 20_000)
       let config =
         dispatch.Config(
@@ -552,6 +559,7 @@ fn a_user_message(text: String) -> message.AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
     timestamp: 0,
+    origin: None,
   )
 }
 
@@ -571,13 +579,13 @@ fn a_user_message(text: String) -> message.AgentMessage {
 // record, and no argument on the channel contributes to it.
 fn memory_persists(installed_at: Installed) -> Nil {
   case install_beside(installed_at, extensions.keeper(first_keeper), "k1-src") {
-    Error(reason) -> io.println("SKIP the keeper extensions: " <> reason)
+    Error(reason) -> io.println_error("SKIP the keeper extensions: " <> reason)
     Ok(one) ->
       case
         install_beside(installed_at, extensions.keeper(second_keeper), "k2-src")
       {
         Error(reason) ->
-          io.println("SKIP the second keeper extension: " <> reason)
+          io.println_error("SKIP the second keeper extension: " <> reason)
         Ok(two) -> keepers_remember(installed_at, one, two)
       }
   }
@@ -597,12 +605,12 @@ fn keepers_remember(
 ) -> Nil {
   let path = installed_at.live_root <> "/keeper-session.db"
   case open_session(path) {
-    Error(reason) -> io.println("SKIP the keeper session: " <> reason)
+    Error(reason) -> io.println_error("SKIP the keeper session: " <> reason)
     Ok(first) ->
       case open_runtime(first) {
         Error(reason) -> {
           let _sealed = session.close(first)
-          io.println("SKIP the keeper runtime: " <> reason)
+          io.println_error("SKIP the keeper runtime: " <> reason)
         }
 
         Ok(runtime) -> {
@@ -612,7 +620,7 @@ fn keepers_remember(
           // arrangement in which "it survived the reopen" is a claim
           // about the disk rather than about the node.
           let holder = start_holder(runtime)
-          let hosts_name = process.new_name(prefix: "loom_e2e_keepers")
+          let hosts_name = addresses.new()
           let registry =
             keeper_registry(
               installed_at,
@@ -665,12 +673,12 @@ fn keepers_prove(
   let _sealed = session.close(first)
 
   case open_session(path) {
-    Error(reason) -> io.println("SKIP the keeper reopen: " <> reason)
+    Error(reason) -> io.println_error("SKIP the keeper reopen: " <> reason)
     Ok(second) ->
       case open_runtime(second) {
         Error(reason) -> {
           let _closed = session.close(second)
-          io.println("SKIP the reopened keeper runtime: " <> reason)
+          io.println_error("SKIP the reopened keeper runtime: " <> reason)
         }
 
         Ok(reopened) -> {
@@ -723,7 +731,7 @@ fn keeper_call(
 // through, over one memory door.
 fn keeper_registry(
   installed_at: Installed,
-  hosts_name: process.Name(hosts.Message),
+  hosts_name: address.Address(hosts.Message),
   keepers: List(#(record.Record, extension_manifest.Manifest, String)),
   memory: extension_memory.Door,
 ) -> tool.Registry {
@@ -887,10 +895,11 @@ fn start_entropy() -> Result(fn() -> Int, String) {
 // leave a satellite the harness had stopped trusting still running.
 fn oversleeps(
   installed_at: Installed,
-  hosts_name: process.Name(hosts.Message),
+  hosts_name: address.Address(hosts.Message),
 ) -> Nil {
   case install_beside(installed_at, extensions.sleeper(), "sleeper-src") {
-    Error(reason) -> io.println("SKIP the oversleeping extension: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP the oversleeping extension: " <> reason)
     Ok(#(written, decoded, artifact)) -> {
       let config =
         dispatch.Config(
@@ -901,7 +910,7 @@ fn oversleeps(
           launch: dispatch.jailed_node,
           memory: extension_memory.shut("this fixture has no session"),
         )
-      let sleeper_hosts_name = process.new_name(prefix: "loom_e2e_sleeper")
+      let sleeper_hosts_name = addresses.new()
       let assert Ok(_started) =
         hosts.start(sleeper_hosts_name, wall_clock(), [
           dispatch.hosting(

@@ -11,6 +11,11 @@
 //// command line (`cd packages/client && gleam run -m client/demo`) and
 //// prints the narrative.
 ////
+//// This historical M3 demo uses the explicit internal HostOnly gateway seam.
+//// Its anonymous callback attachment and event replay are not the managed
+//// daemon's authenticated, credited v2 transport. Starting a Network gateway
+//// here would correctly refuse that attachment's asynchronous commands.
+////
 //// The effect surface follows the conformance simulation's shape —
 //// generation requests are answered by the *content and phase of the
 //// projected context*, tools settle scripted results, compaction
@@ -44,7 +49,6 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/operation
@@ -56,8 +60,11 @@ import provider/secret
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/writer
 import session/session
 import storage/storage
+import weft/actor
+import weft/registry as address
 
 import broker/escalation as broker_escalation
 import broker/policy
@@ -98,14 +105,21 @@ pub fn main() -> Nil {
 /// ```
 ///
 pub fn run() -> Result(Narrative, String) {
+  use namespace <- result.try(address.start())
+  let outcome = run_in(namespace)
+  let _stopped = address.stop(namespace)
+  outcome
+}
+
+fn run_in(namespace: address.Registry) -> Result(Narrative, String) {
   // --- a real session, a real runtime, scripted effects ------------------
   use session <- result.try(
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
     |> result.map_error(fn(_) { "the memory session did not open" }),
   )
   use entropy <- result.try(start_entropy())
-  let name = process.new_name(prefix: "loom_gateway_demo")
-  let forwarder_name = process.new_name(prefix: "loom_forwarder_demo")
+  let name = address.new_address(namespace)
+  let forwarder_name = address.new_address(namespace)
   use _forwarder <- result.try(
     gateway.commit_forwarder(to: name, as_name: forwarder_name)
     |> result.map_error(fn(_) { "the commit forwarder did not start" }),
@@ -138,13 +152,16 @@ pub fn run() -> Result(Narrative, String) {
     session,
     effects,
     api.Options(..options, poll_interval_ms: 25, subscribers: [
-      process.named_subject(forwarder_name),
+      writer.Routed(forwarder_name),
     ]),
   ))
 
   // --- the served gateway -------------------------------------------------
   use _gateway <- result.try(
-    gateway.start(gateway.default_options(session_id, runtime), name)
+    gateway.start_host_fixture(
+      gateway.default_options(session_id, runtime),
+      name,
+    )
     |> result.map_error(fn(_) { "the gateway did not start" }),
   )
   let hub = gateway.Gateway(name:)
@@ -181,7 +198,10 @@ fn drive(
   let recovery_ids = process.new_subject()
   process.send(observed_seq, 0)
   process.send(recovery_ids, 1_000_000)
-  let connection = gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+  use connection <- result.try(
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    |> result.replace_error("the gateway is unavailable"),
+  )
   let client =
     Client(hub:, connection:, inbox:, deferred:, observed_seq:, recovery_ids:)
   use lines <- result.try(acceptance_flow(client, runtime))
@@ -272,6 +292,7 @@ fn acceptance_flow(
         message: message.UserMessage(
           content: [message.UserText(text: report_text, text_signature: None)],
           timestamp: 0,
+          origin: None,
         ),
       )
     {
@@ -313,7 +334,7 @@ fn acceptance_flow(
     )
     |> result.map_error(fn(_) { "raising the escalation failed" }),
   )
-  use _pending <- result.try(await(
+  use pending <- result.try(await(
     client,
     escalation_status(_, "esc-1", "pending"),
     "escalation surfaced as pending",
@@ -324,7 +345,12 @@ fn acceptance_flow(
     5,
     // Raised through the unscoped door, so the record names no action
     // and the echo the gateway checks is the empty one.
-    protocol.Approve(escalation_id: "esc-1", grants: [wanted], action: ""),
+    protocol.Approve(
+      escalation_id: "esc-1",
+      grants: [wanted],
+      action: "",
+      expected_seq: option.unwrap(pending.seq, 0),
+    ),
     escalation_reply(_, "esc-1", "approved"),
     "approve esc-1",
   ))
@@ -983,8 +1009,10 @@ fn final_snapshot(client: Client) -> Result(protocol.Snapshot, String) {
   let recovery_ids = process.new_subject()
   process.send(observed_seq, 0)
   process.send(recovery_ids, 1_000_000)
-  let connection =
+  use connection <- result.try(
     gateway.attach(client.hub, fn(frame) { process.send(inbox, frame) })
+    |> result.replace_error("the gateway is unavailable"),
+  )
   let second =
     Client(
       hub: client.hub,

@@ -10,6 +10,9 @@
 //// schedules for SQLite sessions. Ownership: exactly one StorageWriter
 //// process should commit through a session; reads may come from anywhere
 //// (both shipped backends serialize through their own actor mailbox).
+//// The separate snapshot reader borrows that same backend for a coherent
+//// bounded metadata cut and immutable byte fragments. It owns no transaction
+//// or process between calls and does not widen the frozen Storage behaviour.
 ////
 //// A session also has a name of its own: `ensure_id` mints the canonical
 //// `core/ids.SessionId` once at creation and persists it in the reserved
@@ -31,9 +34,10 @@ import core/message.{
   ToolResultText, UserMessage, UserText,
 }
 import core/register.{type RegisterNs}
-import core/tx.{Expect, SetRegister, Tx}
+import core/tx.{type Tx, Expect, SetRegister, Tx}
 import gleam/bool
 import gleam/dict.{type Dict}
+import gleam/erlang/process.{type Pid}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -43,6 +47,7 @@ import machine/operation.{
 }
 import machine/strand.{type StrandConfiguration, type StrandState, StrandState}
 import storage/memory
+import storage/snapshot
 import storage/sqlite
 import storage/storage.{type Storage, type StorageError, Storage}
 
@@ -59,6 +64,8 @@ import storage/storage.{type Storage, type StorageError, Storage}
 pub type Session {
   Session(
     store: Storage(Nil),
+    /// Read-only bounded snapshot access, borrowed from this backend actor.
+    snapshot_reader: snapshot.Reader,
     renew_lease: fn() -> Result(Nil, StorageError),
     lease_interval_ms: Option(Int),
     record_identity: fn(SessionId, Option(SessionId)) ->
@@ -98,6 +105,7 @@ pub fn open_memory(clock: Clock) -> Result(Session, OpenError) {
     Ok(store) ->
       Ok(Session(
         store: erase(store),
+        snapshot_reader: memory.snapshot_reader(store.handle),
         renew_lease: fn() { Ok(Nil) },
         lease_interval_ms: None,
         // No catalog row to project onto: for a memory session the
@@ -130,15 +138,77 @@ pub fn open_sqlite(
   lease_ttl_ms lease_ttl_ms: Int,
   clock clock: Clock,
 ) -> Result(Session, OpenError) {
+  open_sqlite_owned(path:, owner:, lease_ttl_ms:, clock:)
+  |> result.map(fn(owned) { owned.0 })
+}
+
+/// Opens SQLite with a separate capability to close and retire its actor.
+///
+/// The session keeps the ordinary idempotent close contract. Its resource
+/// owner retains the second capability and invokes it only after all runtime
+/// work and storage readers have drained. A failed close never retires the
+/// actor or becomes a successful cleanup on retry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(session, retire)) =
+/// //   session.open_sqlite_owned(path:, owner:, lease_ttl_ms: 30_000, clock:)
+/// // Publish `retire` to the instance owner before starting its runtime.
+/// ```
+@internal
+pub fn open_sqlite_owned(
+  path path: String,
+  owner owner: String,
+  lease_ttl_ms lease_ttl_ms: Int,
+  clock clock: Clock,
+) -> Result(#(Session, fn() -> Result(Nil, StorageError)), OpenError) {
+  use #(opened, retire, _transfer) <- result.map(open_sqlite_custody(
+    path:,
+    owner:,
+    lease_ttl_ms:,
+    clock:,
+  ))
+  #(opened, retire)
+}
+
+/// Opens storage with separate retirement and startup-link transfer capabilities.
+///
+/// Publish retirement to the surviving owner before invoking transfer. Until
+/// that acknowledgement the connection remains linked to its initializer; after
+/// it, builder death cannot discard the connection or its lease-release proof.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(#(session, retire, transfer)) =
+/// //   session.open_sqlite_custody(path:, owner:, lease_ttl_ms:, clock:)
+/// // Publish retire, then call transfer before beginning runtime assembly.
+/// ```
+@internal
+pub fn open_sqlite_custody(
+  path path: String,
+  owner owner: String,
+  lease_ttl_ms lease_ttl_ms: Int,
+  clock clock: Clock,
+) -> Result(
+  #(
+    Session,
+    fn() -> Result(Nil, StorageError),
+    fn() -> Result(Pid, StorageError),
+  ),
+  OpenError,
+) {
   let config =
     sqlite.config(path:, owner:)
     |> sqlite.lease_ttl(lease_ttl_ms)
   case sqlite.open_with_migrations(config, clock, migration_chain()) {
     Ok(store) -> {
       let handle = store.handle
-      Ok(
+      let opened =
         Session(
           store: erase(store),
+          snapshot_reader: sqlite.snapshot_reader(handle),
           renew_lease: fn() { sqlite.renew_lease(handle) },
           lease_interval_ms: Some(int_max(1, lease_ttl_ms / 3)),
           record_identity: fn(id, parent) {
@@ -148,6 +218,15 @@ pub fn open_sqlite(
               parent_session_id: option.map(parent, ids.session_id_to_string),
             )
           },
+        )
+      Ok(
+        #(
+          opened,
+          fn() {
+            use Nil <- result.try(storage.close(store))
+            sqlite.retire_closed(handle)
+          },
+          fn() { sqlite.transfer_startup(handle) },
         ),
       )
     }
@@ -296,20 +375,7 @@ fn mint_identity(
   generator: Generator,
 ) -> Result(#(SessionId, Generator), SessionError) {
   let #(minted, generator) = ids.mint_session(generator)
-  let seed =
-    Tx(
-      writes: [
-        SetRegister(
-          ns: register.FactCustom,
-          key: session_id_key,
-          value: register.value(json.String(ids.session_id_to_string(minted))),
-        ),
-      ],
-      expected: [
-        Expect(ns: register.FactCustom, key: session_id_key, seq: None),
-      ],
-    )
-  case storage.commit(session.store, seed) {
+  case storage.commit(session.store, identity_seed(minted)) {
     Ok(_) -> {
       use Nil <- result.map(project_identity(session, minted))
       #(minted, generator)
@@ -318,6 +384,86 @@ fn mint_identity(
     // A concurrent minter won; the session's id is theirs, not ours.
     Error(tx.StaleExpectation(..)) -> adopt_minted_identity(session, generator)
     Error(error) -> Error(commit_refusal(error))
+  }
+}
+
+// Both creation paths compare against absence before establishing identity.
+// The daemon supplies a reserved ID; standalone boot supplies a freshly minted ID.
+fn identity_seed(identity: SessionId) -> Tx {
+  Tx(
+    writes: [
+      SetRegister(
+        ns: register.FactCustom,
+        key: session_id_key,
+        value: register.value(json.String(ids.session_id_to_string(identity))),
+      ),
+    ],
+    expected: [
+      Expect(ns: register.FactCustom, key: session_id_key, seq: None),
+    ],
+  )
+}
+
+/// Establishes the daemon's reserved identity before runtime assembly begins.
+///
+/// The initializer owns the fresh file and its writer lease. This function
+/// writes the reserved ID only while the identity register is absent. A retry
+/// accepts the same ID without another commit; an existing different ID is
+/// refused, including when a competing initializer wins the absence CAS.
+/// The SQLite identity projection follows the same repair policy as `ensure_id`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session.ensure_reserved_id(session, reserved_id)
+/// ```
+@internal
+pub fn ensure_reserved_id(
+  session: Session,
+  reserved: SessionId,
+) -> Result(SessionId, SessionError) {
+  use existing <- result.try(id(session))
+  case existing {
+    Some(_) -> accept_reserved_identity(session, reserved, existing)
+    None -> {
+      case storage.commit(session.store, identity_seed(reserved)) {
+        Ok(_) -> project_identity(session, reserved) |> result.replace(reserved)
+
+        // A losing initializer may accept only its own reserved ID. Adopting
+        // an arbitrary winner would route the catalogue identity to another file.
+        Error(tx.StaleExpectation(..)) -> {
+          use existing <- result.try(id(session))
+          accept_reserved_identity(session, reserved, existing)
+        }
+        Error(error) -> Error(commit_refusal(error))
+      }
+    }
+  }
+}
+
+fn accept_reserved_identity(
+  session: Session,
+  reserved: SessionId,
+  existing: Option(SessionId),
+) -> Result(SessionId, SessionError) {
+  case existing {
+    Some(identity) if identity == reserved ->
+      project_identity(session, reserved) |> result.replace(reserved)
+    Some(identity) ->
+      Error(
+        StoreFailure(storage.BackendFault(
+          "session identity "
+          <> ids.session_id_to_string(identity)
+          <> " differs from reserved identity "
+          <> ids.session_id_to_string(reserved),
+        )),
+      )
+    None ->
+      Error(
+        StoreFailure(storage.BackendFault(
+          "the reserved session id was refused as present and read as absent",
+        )),
+      )
   }
 }
 
@@ -961,6 +1107,7 @@ fn project_entry(
       UserMessage(
         content: [UserText(text: summary, text_signature: None)],
         timestamp: ts,
+        origin: None,
       ),
       ..retained_tail
     ]
@@ -968,6 +1115,7 @@ fn project_entry(
       UserMessage(
         content: [UserText(text: summary, text_signature: None)],
         timestamp: ts,
+        origin: None,
       ),
     ]
     entry.CustomEntry(id:, custom_type:, data:, ts:, ..) ->

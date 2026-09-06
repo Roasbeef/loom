@@ -20,7 +20,6 @@ import core/json
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
-import gleam/otp/actor
 import gleam/result
 import gleam/string
 import machine/strand as machine_strand
@@ -28,6 +27,8 @@ import provider/stream
 import runtime/api
 import runtime/effects
 import session/session
+import support/addresses
+import weft/actor
 
 // --- the rig ---------------------------------------------------------------
 
@@ -65,7 +66,7 @@ fn harness(operator: List(schedule.Schedule)) -> Result(Rig, String) {
 
   // A scanner name nothing is registered under: the poke every cancel
   // performs must tolerate it.
-  let scanner = process.new_name(prefix: "loom_scheduleadmin_test")
+  let scanner = addresses.new()
   let wiring =
     scheduleseam.Wiring(
       runtime: fn() { Ok(runtime) },
@@ -238,7 +239,7 @@ pub fn the_listing_counts_the_occurrences_already_spent_test() {
 /// different answers, and only one of them should reach an operator as a
 /// table.
 pub fn a_listing_without_a_runtime_says_so_test() {
-  let scanner = process.new_name(prefix: "loom_scheduleadmin_absent")
+  let scanner = addresses.new()
   let admin =
     scheduleadmin.admin(scheduleseam.Wiring(
       runtime: fn() { Error(Nil) },

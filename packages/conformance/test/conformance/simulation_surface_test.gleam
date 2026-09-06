@@ -24,6 +24,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/operation.{ReplaySafe}
 import runtime/api
+import runtime/supervisor
 import session/session
 import storage/storage
 
@@ -108,6 +109,36 @@ pub fn refused_follow_up_is_recorded_test() {
   teardown(ctl, vc, runtime)
   assert list.any(notes, fn(note) { string.contains(note, "follow-up") })
     as { "the refused follow-up was not recorded: " <> string.inspect(notes) }
+}
+
+pub fn unavailable_admission_defers_the_untouched_suffix_test() {
+  let #(ctl, vc, raw, runtime) = idle_session()
+  let trigger = script.DuringTurn(turn: 0)
+  let scripted =
+    script.Script(..idle_script(), interventions: [
+      script.Steer(trigger:, text: "first"),
+      script.FollowUp(trigger:, text: "second"),
+      script.Abort(trigger:),
+    ])
+
+  // Stop routing but retain the raw store for admission reconciliation. This
+  // fixes the unavailable boundary independently of scheduler timing. A dead
+  // root ends retries, so all three obligations must remain unobserved; in
+  // particular, the abort must not run ahead of the unavailable admissions.
+  assert supervisor.shutdown(runtime.tree, grace_ms: 1000) == Ok(Nil)
+  surface.fire_due(ctl, scripted, raw, trigger)
+  assert control.notes(ctl) == []
+  assert control.waits(ctl)
+    == [
+      "intervening@steer-during-effect",
+      "intervening@follow-up-during-effect",
+      "intervening@abort-during-effect",
+    ]
+  assert list.contains(control.marks(ctl), "admission-unobserved")
+
+  assert session.close(raw) == Ok(Nil)
+  vclock.stop(vc)
+  control.stop(ctl)
 }
 
 /// The signature passed to the runtime is the deterministic identity the

@@ -104,6 +104,7 @@ fn main_request() -> model.ProviderRequest {
       message.UserMessage(
         content: [message.UserText(text: "hi", text_signature: None)],
         timestamp: 1,
+        origin: None,
       ),
     ],
     tools: [],

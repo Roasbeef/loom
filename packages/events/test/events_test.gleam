@@ -49,6 +49,8 @@ fn generated_queries() -> List(#(String, String)) {
   let #(search_entries_in_session, _, _) =
     sql.search_entries_in_session(text: "", session_id: "", limit: 0)
   let #(get_cursor, _, _) = sql.get_cursor(session_id: "")
+  let #(search_authorized_entries, _, _) =
+    sql.search_authorized_entries("", "", 0)
   let #(set_cursor, _) =
     sql.set_cursor(session_id: "", generation: 0, high_water: 0)
   let #(delete_cursor, _) = sql.delete_cursor(session_id: "")
@@ -61,6 +63,7 @@ fn generated_queries() -> List(#(String, String)) {
     #("SearchEntries", search_entries),
     #("SearchEntriesInSession", search_entries_in_session),
     #("GetCursor", get_cursor),
+    #("SearchAuthorizedEntries", search_authorized_entries),
     #("SetCursor", set_cursor),
     #("DeleteCursor", delete_cursor),
     #("RegisterSource", register_source),
@@ -119,9 +122,15 @@ fn query_name(line: String) -> Result(String, Nil) {
 }
 
 // The generated strings carry no statement terminator; the source file's
-// statements do.
+// statements do. SQLC assigns these named parameters positional bindings in
+// first-use order. Preserve the positions so swapping bindings still fails.
 fn normalize_query(sql: String) -> String {
-  let normalized = normalize(sql)
+  let normalized =
+    sql
+    |> string.replace("@query", "?1")
+    |> string.replace("@sessions", "?2")
+    |> string.replace("@max_hits", "?3")
+    |> normalize
   case string.ends_with(normalized, ";") {
     True -> string.drop_end(normalized, 1)
     False -> normalized

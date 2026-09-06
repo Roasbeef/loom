@@ -28,6 +28,7 @@ import core/clock
 import core/ids
 import core/json
 import core/msgpack
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option
@@ -35,7 +36,9 @@ import gleam/string
 import mcp/client as mcp_client
 import mcp/codegen
 import mcp/protocol
+import mcp/transport
 import support/fake_mcp
+import weft/poll
 
 const t = 1_700_000_000_000
 
@@ -59,11 +62,12 @@ fn started_client(
 // server's *name*, and what a façade compiles to is `mcp/codegen`'s
 // business, proven there.
 fn layer_of(call: fn(String, json.JsonValue) -> fake_mcp.Answer) -> mcp.Layer {
+  let client = started_client([fake_mcp.tool("search", ["query"])], call)
   mcp.Layer(
     servers: [
       mcp.Server(
         name: "alpha",
-        client: started_client([fake_mcp.tool("search", ["query"])], call),
+        client:,
         generated: codegen.Generated(
           module_name: "cap/mcp/alpha",
           source: "// alpha\n",
@@ -73,6 +77,7 @@ fn layer_of(call: fn(String, json.JsonValue) -> fake_mcp.Answer) -> mcp.Layer {
       ),
     ],
     call_timeout_ms: 5000,
+    custody: [client],
   )
 }
 
@@ -532,7 +537,72 @@ pub fn concurrent_refusals_come_back_in_catalogue_order_test() {
     == ["unspawnable_first", "unkeyed_second"]
   let assert [_first, second] = refusals as "both configured servers refused"
   assert string.contains(second.reason, unset_key_env)
-  mcp.stop(layer)
+  assert list.length(layer.custody) == 1
+  assert mcp.close(layer, within: 1000) == Ok(Nil)
+}
+
+pub fn prepared_layer_keeps_parked_cleanup_after_builder_loss_test() {
+  let owner = process.self()
+  let published = process.new_subject()
+  let builder =
+    process.spawn_unlinked(fn() {
+      let prepared =
+        mcp.prepare_owned(
+          [unspawnable_server("parked")],
+          mcp.default_options(),
+          owner,
+        )
+      process.send(published, prepared)
+      process.sleep_forever()
+    })
+  let assert Ok(prepared) = process.receive(published, 1000)
+    as "the layer publishes its immutable cleanup census"
+  process.kill(builder)
+  assert mcp.close_prepared(prepared, within: 1000) == Ok(Nil)
+}
+
+pub fn layer_cleanup_uses_one_deadline_for_failed_starters_test() {
+  let opened = process.new_subject()
+  let clients =
+    list.map(list.repeat(Nil, 8), fn(_) {
+      let spec =
+        transport.ChannelTransport(fn(inbound) {
+          process.send(opened, inbound)
+          transport.Connection(send: fn(_) { Ok(Nil) }, close: fn() { Nil })
+        })
+      let assert Ok(client) = mcp_client.prepare(spec)
+        as "the silent starter is parked before opening"
+      let assert Error(mcp_client.HandshakeFailed(_)) =
+        mcp_client.connect(
+          client,
+          mcp_client.options("test") |> mcp_client.with_handshake_timeout(1),
+        )
+        as "a silent server refuses the handshake"
+      let assert Ok(inbound) = process.receive(opened, 1000)
+        as "the test controls each exact native-close event"
+      #(client, inbound, process.monitor(mcp_client.pid(client)))
+    })
+  let layer =
+    mcp.Layer(
+      servers: [],
+      call_timeout_ms: 1000,
+      custody: list.map(clients, fn(entry) { entry.0 }),
+    )
+  let clock = poll.monotonic()
+  let started = clock.now()
+  assert mcp.close(layer, within: 100) != Ok(Nil)
+
+  // Eight unavailable servers must not consume eight sequential budgets.
+  // The generous bound tolerates scheduling noise but rejects an 800ms wait.
+  assert clock.now() - started < 500
+  list.each(clients, fn(entry) {
+    process.send(entry.1, transport.TransportClosed("selected native exit"))
+    let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+      process.new_selector()
+      |> process.select_specific_monitor(entry.2, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "late native retirement completes after the aggregate deadline"
+  })
 }
 
 // --- what the layer publishes ----------------------------------------------

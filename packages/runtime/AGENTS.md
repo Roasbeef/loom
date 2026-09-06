@@ -21,14 +21,23 @@ extended by the M3 runtime wave.
   (`protocol-change/008`).
   It addresses **one strand at a time**; `api.on_strand` rebinds the same
   tree to a sibling, so every operation works for subagents too.
+- `runtime/api.open_published` and `runtime/supervisor.start_published`
+  expose an internal publication boundary before recovery. The first
+  child-start callback publishes the exact root and direct drain witness
+  before the writer, factories or drivers start. Refusal prevents recovery;
+  restarts below the significant temporary drain ledger do not republish.
+  The callback only transfers custody: runtime calls and synchronous close
+  would block startup. The caller is an exit-trapping resource owner and
+  must establish surviving custody itself; the API does not create it.
 - `runtime/api.{CreateStrandError, Delivery}` — subagent creation, and
   whether a cross-strand message landed as a `Steered(entry)` on an open
   run or `Started(operation)` on an idle strand. `create_strand` is
   `validate` + `seed_strand` + `adopt_strand`; `adopt_strand` is exposed
   on its own because a crash between the seed commit and the brief commit
   leaves a strand nothing else can finish.
-- `runtime/api.ApiError` — why an operation failed, and the two variants
-  worth telling apart are `CommitFailed(error:)` and
+- `runtime/api.ApiError` — why an operation failed. `RuntimeUnavailable`
+  means the writer address had no live binding before a request was sent;
+  a caller can retry later. This differs from `CommitFailed(error:)` and
   `SessionStolen(held_by:)`. The second is `tx.LeaseLost` classified at
   the admission surface (`commit_failure`): another writer owns the
   session, so nothing this runtime commits can land and the remedy is to
@@ -72,7 +81,14 @@ extended by the M3 runtime wave.
   second factory with its own tolerance, for strands a host's `subagent`
   predicate names), and the **strand booter** (a worker whose start lists
   the `strand.*` registers and starts a driver for every strand found,
-  routing each to its factory).
+  routing each to its factory). The writer, registry and drain ledger bind
+  reference addresses in `SessionTree.namespace`; its routing-only lifetime
+  ends when the root exits. It ends *only* there: the namespace owner is
+  spawn-linked to whoever assembled the tree, and `start_published`
+  unlinks it alongside the root once publication has acknowledged
+  custody, so a transient builder's abnormal exit can no longer strand a
+  fully assembled session behind addresses that resolve to nothing. `SessionTree.drains` retains the ledger's direct
+  subject independently, because routing death cannot certify effect drain.
 - `runtime/supervisor.shutdown(tree, grace_ms:)` — the orderly stop
   `api.close` is built on: children terminated in reverse start order
   with reason `shutdown`. The grace bounds the `sys:terminate` handshake, but
@@ -87,7 +103,13 @@ extended by the M3 runtime wave.
   detach flag, and the durable reap mark. `is_descendant` is the walk the
   addressing rule is decided by, and it fails closed.
 - `runtime/registry.Message` — the strand-incarnation registry actor: strand
-  name ↔ the process name its driver registers under. Reaper claims live only
+  name ↔ its driver's reclaimable `weft/registry.Address`. This actor owns
+  the reference namespace; repeated strand allocation creates no atoms.
+  It also retains the current typed OTP handles for the `Primary` and
+  `Subagent` factories. Their child-start callbacks publish before the booter
+  runs, and lookup rejects a dead predecessor until replacement publishes.
+  The factories themselves are unnamed.
+  Reaper claims live only
   in `runtime/internal/drain_registry`; keeping them out of this restartable
   actor prevents a name-registry restart from erasing ownership barriers.
 - `runtime/internal/drain_registry.Message` — the session-local actor owning
@@ -117,6 +139,11 @@ extended by the M3 runtime wave.
   every late delta produces.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
+- `runtime/writer.Subscriber` distinguishes `Direct(Subject(Event))`
+  observers from `Routed(Address(Event))` restartable services. Publication
+  sends a lossy hint without executing subscriber callbacks in the writer.
+  A routed destination is resolved afresh; an absent binding never fails a
+  commit or queues a hint for a future incarnation.
 - `runtime/strand_runtime.Message` — the driver's mailbox.
 - `runtime/api.Options.logger` / `runtime/strand_runtime.Options.logger`
   — the injected `telemetry/log.Logger` every strand of the session
@@ -286,7 +313,8 @@ extended by the M3 runtime wave.
     deferred poll permit), `RetryDue`, `RequestAbort`,
     `ProviderDone(token, terminal)`, `ToolDone(token, outcome)`,
     `EffectExit(down)`. Callers use the stable
-    registered subject, while the reaper, effect workers, and timers use a
+    address resolved to the current subject, while the reaper, effect workers,
+    and timers use a
     private direct subject bound to this driver incarnation. The split prevents
     a predecessor's late result from resolving the stable name to a replacement
     and settling newly replayed work with the same durable token. The ledger
@@ -295,8 +323,11 @@ extended by the M3 runtime wave.
     queues in the mailbox and is handled once the barrier opens, so no effect
     is driven before it and no intent needs hand-carrying through a gate.
   - `registry.Message` (all calls): `Ensure(strand, reply_with)` — mint or
-    return the process name a strand's driver registers under — plus
+    return the reference address a strand's driver binds — plus
     `Lookup(strand, reply_with)` and `Known(reply_with)`.
+    `PublishFactory(kind, factory, reply_with)` replaces one typed factory
+    handle; `LookupFactory(kind, reply_with)` reads it. The root's child-start
+    callbacks are the only publishers, so replacement follows start order.
     Senders: `runtime/supervisor`'s strand factory and booter, and
     `runtime/api` when it rings a doorbell or addresses a sibling strand.
   - `runtime/internal/drain_registry.Message` (call):
@@ -317,9 +348,9 @@ extended by the M3 runtime wave.
     handler; meanwhile an abort simply queues in the mailbox behind the
     barrier. Sender: `runtime/strand_runtime` through the closure the
     supervisor injects.
-  - `writer.Event.Committed` fan-out to subscribers — a simple typed
-    pub/sub over process subjects, which `events/bus.bridge` and
-    `client/gateway.commit_forwarder` adopt as their hint source.
+  - `writer.Event.Committed` fan-out uses `writer.Subscriber`: direct
+    subjects for incarnation-local observers, reference addresses for
+    restartable services such as `client/gateway.commit_forwarder`.
 - **Commits**: every post-boot `Tx` in the session flows through
   `writer.commit`, whose mailbox *is* the serialization order. The driver
   commits exactly what the planner hands it — `Transition`/`Finish`
@@ -366,13 +397,20 @@ extended by the M3 runtime wave.
   repopulates it), and a booter crash all converge on "list the store,
   start what is missing". Subagents created mid-session seed their
   registers first, which is why every later reboot finds them.
-- **Process names are minted once per strand and outlive their drivers.**
+- **Reference addresses are minted once per strand and outlive their drivers.**
   The registry precedes the writer in the rest-for-one order, so it survives
-  writer and strand crashes; a replacement driver registers under the *same*
-  name and stays addressable, and doorbells resolve through `lookup` at ring
-  time rather than caching pids. A registry crash remints names while the
+  writer and strand crashes; a replacement driver binds the *same*
+  reference and stays addressable, and doorbells resolve through `lookup` at
+  ring time rather than caching pids. A registry crash replaces its namespace
+  while the
   earlier drain ledger preserves effect ordering; only a whole-tree reboot
   starts both actors empty.
+- **Factory handles belong to an incarnation, not a permanent name.** The
+  root publishes each unnamed factory's PID and typed OTP handle in the
+  registry before acknowledging its start. Each strand start resolves that
+  slot again. A subagent-factory restart replaces only its own slot, retaining
+  the primary factory and its drivers; registry restart rebuilds both slots
+  through the existing rest-for-one order.
 - **Inter-strand messaging is the queue machinery, not a mailbox.**
   `send_to_strand` durably enqueues a steer onto the target's open run — or
   accepts a fresh run when it is idle — and only then rings the doorbell,
@@ -422,13 +460,13 @@ extended by the M3 runtime wave.
   closed. A reaper the ledger meets as `noproc` is the one exception, and
   retires: the pid is gone, and a weft scope cannot be gone with effects
   still running. `SessionTree`
-  retains the ledger's stable name, so
+  retains the ledger's direct subject, so
   `shutdown` waits it independently even when the root supervisor was killed
-  abnormally. This transitive drain barrier, rather than scheduler
+  abnormally and the service namespace has stopped. This transitive drain barrier, rather than scheduler
   timing, makes the incarnation-local `live` list sound.
 - **Internal events are addressed to one incarnation, not one logical
-  strand.** The public registered subject remains the address for `Nudge` and
-  external abort requests across a restart. Provider completions, tool
+  strand.** Public `Nudge` and external abort requests resolve the logical
+  reference address across a restart. Provider completions, tool
   completions, recovery acknowledgements, poll ticks, retry wakes, and internal
   abort retries instead capture the driver's direct subject. A durable effect
   token is intentionally reused when recovery replays an effect, so token-only
@@ -473,15 +511,23 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Eight corners of `fact.custom` are reserved, and reserving hides as
+- **Nine corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
-  `prompt/`, `session/`, `rule/`, `schedule/` and `ext/` are refused to
+  `prompt/`, `session/`, `rule/`, `schedule/`, `ext/` and `client/` are
+  refused to
   `put_fact` and filtered out of `facts`, so no blackboard write can
   forge an approval, shadow a terminal result, rewrite a parent edge,
   overwrite the pinned system prompt, re-point the session's own
   identity, mark an operator's triggered project rule or scheduled
-  heartbeat as already fired so that it never fires, or forge and read
-  an installed extension's durable memory. Because
+  heartbeat as already fired so that it never fires, forge and read
+  an installed extension's durable memory, or rewrite the shared run
+  settings — `client/run_settings`, the one cell under `client/` — that
+  every admission compares against, and so choose the queue mode and
+  tool-execution mode of every later run of the session. Both are named
+  constants, `api.client_fact_prefix` and `api.run_settings_key`: the
+  key is a CAS expectation folded into the admission transaction, and a
+  typo in a literal spelling of it would not fail to compile, it would
+  silently drop the compare-and-set. Because
   the reservation also hides a namespace from its own owner, harness code
   reads and writes it through `reserved_facts` / `put_reserved_fact`,
   which refuse everything *outside* the reserved set — the two doors are
@@ -629,7 +675,7 @@ extended by the M3 runtime wave.
   make the writer — and the whole rest-for-one tree beneath it — hostage
   to that subscriber's restart window. Events are hints and pulls are
   truth (design §3.6), so dropping one costs latency and nothing else.
-  `publish` resolves a named subscriber's pid **exactly once** — via
+  `publish_direct` resolves a named direct subscriber's pid **exactly once** — via
   `process.named`, straight into `ffi_sup.send_to_pid` — rather than
   resolving it a second time inside an ordinary `process.send`, which is
   what `process.send` does internally for a `NamedSubject` on every call.
@@ -637,22 +683,29 @@ extended by the M3 runtime wave.
   unregistered in the gap between them still crashed the writer for a
   hint nobody needed; a plain, pid-backed subject never had this problem
   at all; `process.send` on it never re-resolves anything.
+  Routed subscribers use Weft's reference lookup and send instead. The
+  destination survives service replacement, but missed hints are not replayed.
 - **A lost lease stops the writer abnormally** so the supervisor reboots
   the tree, whose reopen path re-acquires or fails loudly. Renewal runs on
   an idle timer at a third of the TTL. That timer targets a private subject
-  bound to the current writer PID; the public registered name remains only
-  the caller address. Otherwise each predecessor timer would resolve the name
+  bound to the current writer PID; the public reference address is only
+  for callers. Otherwise each predecessor timer would resolve the address
   to the replacement and add another permanent renewal cadence after every
   restart. A commit that races the renewal loses too, and arrives as
   `tx.LeaseLost`: `runtime/api` turns it into `SessionStolen`, and
   `runtime/strand_runtime` halts the strand on it rather than reloading,
   because reloading reads the same file and meets the same fence.
-- **The names, not the pids, are the addresses.** The writer and each
-  strand register under fresh process names so restarts keep them
-  addressable. Loss-tolerant public strand messages resolve that name once and
+- **Logical addresses, not cached pids, identify restartable services.** The
+  writer and strand drivers bind reclaimable reference addresses.
+  Loss-tolerant public strand messages resolve the address once and
   send the tagged envelope directly to the resolved PID; checking and then
   sending through the name would leave an unregistration race between two
-  lookups.
+  lookups. Writer calls also resolve once: an absent binding yields
+  `writer.Unavailable`, while a reply carries `writer.Underlying(cause)` on
+  failure. Death after sending is still an unknown outcome, not a safe retry.
+  The runtime allocates no dynamic process names. A 50-cycle test executes a
+  turn per session, closes it, checks root/driver/namespace death and stale
+  address failure, and asserts zero atom growth after a fresh-VM warm-up.
 - **Log context reaches an effect process because the closure carries
   it, not because anything is inherited.** `spawn_effect` takes the
   step-scoped logger as an argument, and the body that runs on the new

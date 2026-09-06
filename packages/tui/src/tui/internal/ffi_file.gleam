@@ -1,24 +1,24 @@
 //// Narrow file reads that the terminal image classifier needs.
 
 import gleam/string
+import host/bootstrap
 import weft
 
 const read_timeout_ms = 1000
 
-@external(erlang, "tui_ffi", "read_prefix")
-fn read_prefix_raw(path: String, bytes: Int) -> Result(BitArray, String)
-
 /// Reads no more than `bytes` from the beginning of one file.
 ///
-/// This calls Erlang/OTP's `file:open`, `file:read`, and `file:close` because
-/// `simplifile` exposes only whole-file reads. The bounded read lets the image
-/// classifier inspect magic bytes before admitting a whole file into memory.
+/// The positioned bounded read itself is `host/bootstrap`'s, shared with
+/// daemon startup, because `simplifile` exposes only whole-file reads. What
+/// this module adds is the deadline: the classifier inspects magic bytes
+/// before admitting a whole file into memory, and it must not block the
+/// terminal while it does.
 pub fn read_prefix(path: String, bytes: Int) -> Result(BitArray, String) {
-  read_safely_within(fn() { read_prefix_raw(path, bytes) }, read_timeout_ms)
+  read_safely_within(
+    fn() { bootstrap.read_prefix(path, bytes) },
+    read_timeout_ms,
+  )
 }
-
-@external(erlang, "tui_ffi", "read_bounded")
-fn read_bounded_raw(path: String, limit: Int) -> Result(BitArray, String)
 
 /// Reads one regular file without ever retaining more than `limit` bytes.
 ///
@@ -27,7 +27,10 @@ fn read_bounded_raw(path: String, limit: Int) -> Result(BitArray, String)
 /// runs in a monitored worker with a bounded wait, so a path swapped to a FIFO
 /// cannot block the terminal process indefinitely before descriptor checking.
 pub fn read_bounded(path: String, limit: Int) -> Result(BitArray, String) {
-  read_safely_within(fn() { read_bounded_raw(path, limit) }, read_timeout_ms)
+  read_safely_within(
+    fn() { bootstrap.read_bounded(path, limit) },
+    read_timeout_ms,
+  )
 }
 
 /// Runs one descriptor-level read outside the terminal process.

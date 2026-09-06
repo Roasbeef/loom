@@ -480,11 +480,13 @@ fn or_unavailable(
 
 // Whether a clearance came back because the pool is momentarily full,
 // as opposed to because something decided this call may not run. Only
-// `AllBusy` on a pool that has slots at all qualifies: a pool sized
-// zero lends nothing and is checked nothing back in, so waiting on one
-// would stall the caller for its whole budget to reach the same answer
-// (which is exactly the seam tests wire when they want a broker that
-// always refuses).
+// `AllBusy` with slots that can still lend qualifies. `size` counts the
+// entries that may return to lending, not the configured pool size, so
+// zero means either a pool sized zero (the seam tests wire when they want
+// a broker that always refuses) or a pool whose every slot is held by an
+// unconfirmed retirement. Neither will ever check a helper back in, so
+// waiting on one would stall the caller for its whole budget to reach the
+// same answer.
 fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
   case outcome {
     Error(NoHelper(error: exec.AllBusy(size:))) -> size > 0

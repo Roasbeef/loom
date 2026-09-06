@@ -1,18 +1,21 @@
 //// Non-ASCII paths across the bootstrap FFI boundary.
 ////
 //// A Gleam string is a UTF-8 binary, and `binary_to_list/1` turns that binary
-//// into one codepoint per byte. Every path the shim converted that way
-//// reached `filename`, `file`, `os:getenv` and `open_port` double-encoded:
+//// into one codepoint per byte. Every path converted that way reached
+//// `filename`, `file`, `os:getenv` and `open_port` double-encoded:
 //// `/tmp/é` arrived as `/tmp/Ã©`, so a `HOME` or a `--workspace` holding an
 //// accent failed before any Gleam policy saw it. These tests drive the
-//// externals against a directory whose name really is not ASCII, which is the
-//// only way to tell a correct conversion from a lucky one.
+//// shared `host/bootstrap` surface against a directory whose name really is
+//// not ASCII, which is the only way to tell a correct conversion from a lucky
+//// one. It now covers both halves of that surface: the remaining Erlang
+//// externals, and the operations rewritten in Gleam over `simplifile`,
+//// `envoy` and `filepath`, which have their own encoding boundary.
 
 import filepath
 import gleam/bit_array
 import gleam/string
+import host/bootstrap as host_bootstrap
 import simplifile
-import tui/internal/ffi_bootstrap
 
 /// The accented name every case builds its fixture from.
 ///
@@ -24,7 +27,7 @@ const accented_name = "caf\u{e9}-é"
 pub fn absolute_path_preserves_non_ascii_segments_test() {
   let relative = "build/" <> accented_name
 
-  let assert Ok(absolute) = ffi_bootstrap.absolute_path(relative)
+  let assert Ok(absolute) = host_bootstrap.absolute_path(relative)
     as "absolute_path must accept a non-ASCII relative path"
 
   assert string.starts_with(absolute, "/")
@@ -39,7 +42,7 @@ pub fn canonical_directory_resolves_a_non_ascii_directory_test() {
 
   // `canonical_directory` hands the path to a `realpath` port, so this covers
   // both the conversion and the port argument encoding behind it.
-  let resolved = ffi_bootstrap.canonical_directory(directory)
+  let resolved = host_bootstrap.canonical_directory(directory)
   let _ = simplifile.delete(root)
 
   let assert Ok(canonical) = resolved
@@ -54,7 +57,7 @@ pub fn ensure_private_directory_accepts_a_non_ascii_path_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(directory)
     as "the accented directory must be creatable"
 
-  let outcome = ffi_bootstrap.ensure_private_directory(directory)
+  let outcome = host_bootstrap.ensure_private_directory(directory)
   let info = simplifile.file_info(directory)
   let _ = simplifile.delete(root)
 
@@ -76,9 +79,9 @@ pub fn private_records_round_trip_through_a_non_ascii_path_test() {
   // A launcher record is written, read back, and then discovered by name, so
   // a mangled path anywhere in that chain shows up as a missing file rather
   // than as corrupt bytes.
-  let written = ffi_bootstrap.atomic_write_private(record, contents)
-  let read = ffi_bootstrap.read_private_bounded(record, 4096)
-  let listed = ffi_bootstrap.list_directory_bounded(directory, 16)
+  let written = host_bootstrap.atomic_write_private(record, contents)
+  let read = host_bootstrap.read_private_bounded(record, 4096)
+  let listed = host_bootstrap.list_directory_bounded(directory, 16)
   let _ = simplifile.delete(root)
 
   let assert Ok(Nil) = written
@@ -103,10 +106,10 @@ pub fn executable_discovery_accepts_a_non_ascii_path_test() {
   let assert Ok(Nil) = simplifile.set_permissions_octal(script, 0o755)
     as "the accented script must be made executable"
 
-  let found = ffi_bootstrap.find_executable(script)
-  let canonical = ffi_bootstrap.canonical_path(script)
-  let executable = ffi_bootstrap.is_executable_file(script)
-  let exists = ffi_bootstrap.path_exists(script)
+  let found = host_bootstrap.find_executable(script)
+  let canonical = host_bootstrap.canonical_path(script)
+  let executable = host_bootstrap.is_executable_file(script)
+  let exists = host_bootstrap.path_exists(script)
   let _ = simplifile.delete(root)
 
   let assert Ok(found) = found
@@ -127,5 +130,5 @@ fn test_root(name: String) -> String {
   "build/ffi-path-test-"
   <> name
   <> "-"
-  <> string.inspect(ffi_bootstrap.system_time_ms())
+  <> string.inspect(host_bootstrap.system_time_ms())
 }

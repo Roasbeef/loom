@@ -98,6 +98,7 @@ fn message(ctx: Ctx, parent: Option(EntryId), text: String) -> #(Entry, Ctx) {
       message: UserMessage(
         content: [UserText(text:, text_signature: None)],
         timestamp: 0,
+        origin: None,
       ),
       terminate: False,
     )
@@ -256,6 +257,7 @@ fn atomicity_checks(backend: Backend(handle)) -> Nil {
           message: UserMessage(
             content: [UserText(text: "b", text_signature: None)],
             timestamp: 0,
+            origin: None,
           ),
           terminate: False,
         )),

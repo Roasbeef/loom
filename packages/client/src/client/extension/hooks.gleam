@@ -726,6 +726,7 @@ fn note_tokens(block: String) -> Int {
   runtime_hooks.estimate_message(message.UserMessage(
     content: [message.UserText(text: block, text_signature: None)],
     timestamp: 0,
+    origin: None,
   ))
 }
 
@@ -1396,6 +1397,7 @@ fn injected(one: Injection, now: Int) -> AgentMessage {
       ),
     ],
     timestamp: now,
+    origin: None,
   )
 }
 

@@ -251,6 +251,80 @@ pub fn fenced_out_writer_commit_refused_test() {
   let assert Ok(Nil) = storage.close(thief)
 }
 
+pub fn failed_close_is_not_reported_as_success_on_retry_test() {
+  let path = fresh_path("failed_close_retry")
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "closing-writer") |> sqlite.busy_timeout(10),
+      clock.fixed(at: 10_000),
+    )
+    as "the writer must acquire its lease"
+  let assert Ok(blocker) = sqlight.open(path)
+    as "the lock holder must open the same database"
+  let assert Ok(Nil) = sqlight.exec("BEGIN IMMEDIATE", on: blocker)
+    as "the lock must prevent the writer's lease deletion"
+  let assert Error(failure) = storage.close(store)
+    as "close must report that its lease deletion failed"
+
+  // The connection is sealed even when lease deletion fails. Releasing
+  // the other lock cannot make this closed handle retry the deletion.
+  let assert Ok(Nil) = sqlight.exec("ROLLBACK", on: blocker)
+    as "the blocker must release its write lock"
+  let assert Ok(Nil) = sqlight.close(blocker)
+    as "the blocker connection must close"
+  assert storage.close(store) == Error(failure)
+    as "a repeated close must retain the original failed outcome"
+  assert sqlite.retire_closed(store.handle) == Error(failure)
+    as "actor retirement cannot erase a failed lease release"
+  assert storage.stats(store) == Error(storage.HandleClosed)
+  let assert Error(sqlite.LeaseHeld(owner: "closing-writer", ..)) =
+    sqlite.open(
+      sqlite.config(path:, owner: "replacement"),
+      clock.fixed(at: 10_001),
+    )
+    as "the failed close must not claim to have released the retained lease"
+}
+
+pub fn quoted_writer_identity_closes_idempotently_test() {
+  let path = fresh_path("quoted_close_owner")
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "writer's incarnation"),
+      clock.fixed(at: 10_000),
+    )
+    as "a quoted owner is a literal lease identity"
+  assert storage.close(store) == Ok(Nil)
+  assert storage.close(store) == Ok(Nil)
+  let assert Ok(replacement) =
+    sqlite.open(
+      sqlite.config(path:, owner: "replacement"),
+      clock.fixed(at: 10_001),
+    )
+    as "the quoted owner's successful close must release its lease"
+  assert storage.close(replacement) == Ok(Nil)
+}
+
+pub fn owned_actor_retires_only_after_successful_close_test() {
+  let store = open_store("owned_retirement", "owned-writer")
+  let assert Ok(pid) = process.subject_owner(store.handle)
+    as "store has a local owner"
+  let watch = process.monitor(pid)
+  let assert Error(storage.BackendFault(_)) = sqlite.retire_closed(store.handle)
+    as "retirement cannot bypass live storage ownership"
+  let assert Ok(_) = storage.stats(store)
+    as "refused retirement leaves reads available"
+  assert storage.close(store) == Ok(Nil)
+  assert storage.close(store) == Ok(Nil)
+  assert sqlite.retire_closed(store.handle) == Ok(Nil)
+
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "successful retirement includes normal actor exit"
+  assert !process.is_alive(pid)
+}
+
 // How one racer in the concurrent-create test ended: an opened (and then
 // closed) handle, an in-band refusal, or the corruption/crash outcomes
 // the M3-05 fix forbids.

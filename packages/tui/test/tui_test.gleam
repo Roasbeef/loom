@@ -49,6 +49,21 @@ pub fn prompt_test() {
   assert command.parse("hello") == command.Prompt("hello")
 }
 
+pub fn keyboard_socket_drain_retains_message_beyond_its_budget_test() {
+  let model =
+    tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+  int.range(from: 0, to: 64, with: Nil, run: fn(_, _) {
+    process.send(model.inbox, connection.Connected)
+  })
+  let retained = connection.Incoming("message sixty-five must remain queued")
+  process.send(model.inbox, retained)
+  let updated = tui.update(backend.KeyPress("a"), model)
+  assert text_area.value(updated.input) == "a"
+  assert connection.receive(model.inbox) == Ok(retained)
+    as "the input path consumes at most64 messages and never discards message65"
+  assert connection.receive(model.inbox) == Error(Nil)
+}
+
 pub fn websocket_startup_panic_becomes_an_error_test() {
   let result =
     connection.start_safely(fn() { panic as "dependency initialiser crashed" })
@@ -425,9 +440,9 @@ pub fn schedule_commands_test() {
 
 pub fn schedule_frames_test() {
   assert protocol.schedules(10)
-    == "{\"v\":1,\"id\":10,\"cmd\":\"schedules\",\"body\":{}}"
+    == "{\"v\":2,\"id\":10,\"cmd\":\"schedules\",\"body\":{}}"
   assert protocol.schedule_cancel(11, "main", "heartbeat")
-    == "{\"v\":1,\"id\":11,\"cmd\":\"schedule_cancel\",\"body\":"
+    == "{\"v\":2,\"id\":11,\"cmd\":\"schedule_cancel\",\"body\":"
     <> "{\"target\":\"main\",\"name\":\"heartbeat\"}}"
 }
 
@@ -698,14 +713,14 @@ pub fn steer_and_queue_commands_test() {
 
 pub fn steer_and_follow_up_frames_test() {
   assert protocol.steer(7, "main", "now")
-    == "{\"v\":1,\"id\":7,\"cmd\":\"steer\",\"body\":{\"strand\":\"main\",\"text\":\"now\"}}"
+    == "{\"v\":2,\"id\":7,\"cmd\":\"steer\",\"body\":{\"strand\":\"main\",\"text\":\"now\"}}"
   assert protocol.follow_up(8, "main", "later")
-    == "{\"v\":1,\"id\":8,\"cmd\":\"follow_up\",\"body\":{\"strand\":\"main\",\"text\":\"later\"}}"
+    == "{\"v\":2,\"id\":8,\"cmd\":\"follow_up\",\"body\":{\"strand\":\"main\",\"text\":\"later\"}}"
 }
 
 pub fn config_readback_frame_test() {
   assert protocol.config(6, "main")
-    == "{\"v\":1,\"id\":6,\"cmd\":\"set_config\",\"body\":{\"strand\":\"main\",\"config\":{}}}"
+    == "{\"v\":2,\"id\":6,\"cmd\":\"set_config\",\"body\":{\"strand\":\"main\",\"config\":{}}}"
 }
 
 pub fn model_argument_test() {
@@ -1013,7 +1028,7 @@ pub fn supported_image_paste_keeps_path_out_of_the_wire_block_test() {
   let frame = protocol.prompt_content(18, "main", content)
   assert !string.contains(frame, path)
   assert frame
-    == "{\"v\":1,\"id\":18,\"cmd\":\"prompt_content\",\"body\":{\"strand\":\"main\",\"content\":[{\"type\":\"text\",\"text\":\"inspect this\"},{\"type\":\"image\",\"data\":\"iVBORw0KGgoB\",\"mimeType\":\"image/png\"}]}}"
+    == "{\"v\":2,\"id\":18,\"cmd\":\"prompt_content\",\"body\":{\"strand\":\"main\",\"content\":[{\"type\":\"text\",\"text\":\"inspect this\"},{\"type\":\"image\",\"data\":\"iVBORw0KGgoB\",\"mimeType\":\"image/png\"}]}}"
 }
 
 pub fn unsupported_regular_file_stays_ordinary_text_test() {
@@ -1221,6 +1236,7 @@ pub fn injected_agent_notes_are_recognized_as_machine_context_test() {
         ),
       ],
       timestamp: 1,
+      origin: None,
     )
 
   assert tui.agent_notes_payload(value) == Some("perf/cache = true")
@@ -1231,6 +1247,7 @@ pub fn ordinary_user_text_is_not_mistaken_for_agent_notes_test() {
     message.UserMessage(
       content: [message.UserText(text: "show my notes", text_signature: None)],
       timestamp: 1,
+      origin: None,
     )
 
   assert tui.agent_notes_payload(value) == None

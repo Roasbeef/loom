@@ -58,14 +58,14 @@
 
 import codemode/workspace.{type KvRefusal, EntryTooLarge, StoreUnavailable}
 import gleam/bit_array
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
-import runtime/internal/ffi_sup
+import weft/actor
+import weft/registry as address
 
 /// The largest value one key may hold.
 pub const default_max_entry_bytes = 262_144
@@ -201,13 +201,13 @@ type State {
 /// ```
 ///
 pub fn start(
-  name: Name(Message),
+  name: address.Address(Message),
   bounds: Bounds,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   let bounds = coherent(bounds)
   actor.new(State(bounds:, entries: [], total_bytes: 0, count: 0))
   |> actor.on_message(handle)
-  |> actor.named(name)
+  |> actor.addressed(name)
   |> actor.start
 }
 
@@ -218,18 +218,16 @@ pub fn start(
 /// restart costs a running program is a cache miss it was already written
 /// to handle.
 pub fn supervised(
-  name: Name(Message),
+  name: address.Address(Message),
   bounds: Bounds,
 ) -> supervision.ChildSpecification(Subject(Message)) {
   supervision.worker(fn() { start(name, bounds) })
 }
 
 /// Stops the store and everything in it.
-pub fn stop(name: Name(Message)) -> Nil {
-  case process.named(name) {
-    Error(Nil) -> Nil
-    Ok(pid) -> ffi_sup.send_to_pid(pid, #(name, Stop))
-  }
+pub fn stop(name: address.Address(Message)) -> Nil {
+  let _sent = address.send(name, Stop)
+  Nil
 }
 
 /// The `kv.*` closures over the store registered under `name`.
@@ -252,7 +250,10 @@ pub fn stop(name: Name(Message)) -> Nil {
 /// // scratch.seam(name).get("k") == Ok(option.None)
 /// ```
 ///
-pub fn seam(name: Name(Message), timeout_ms timeout_ms: Int) -> Scratch {
+pub fn seam(
+  name: address.Address(Message),
+  timeout_ms timeout_ms: Int,
+) -> Scratch {
   Scratch(
     get: fn(key) { ask(name, timeout_ms, Get(key, _)) },
     // Two `Result`s, because two different things can refuse: the store
@@ -302,19 +303,23 @@ fn wedged() -> KvRefusal {
 // dead callee, and this runs on a served-call process inside a live
 // execution, where a dead caller is a capability call that never settles.
 fn ask(
-  name: Name(Message),
+  name: address.Address(Message),
   timeout_ms: Int,
   message: fn(Subject(answer)) -> Message,
 ) -> Result(answer, KvRefusal) {
-  case process.named(name) {
+  case address.lookup(name) {
     Error(Nil) -> Error(no_store())
-    Ok(pid) -> {
+    Ok(subject) -> {
+      use pid <- result.try(
+        process.subject_owner(subject)
+        |> result.replace_error(no_store()),
+      )
       let reply = process.new_subject()
       let monitor = process.monitor(pid)
 
       // Keep delivery on the same process the failure selector monitors. A
       // second name lookup would turn an ordinary restart into a caller crash.
-      ffi_sup.send_to_pid(pid, #(name, message(reply)))
+      process.send(subject, message(reply))
       let answered =
         process.new_selector()
         |> process.select_map(reply, Some)
@@ -436,7 +441,10 @@ fn evict(state: State) -> State {
 ///
 /// For a test and for an operator's line. Nothing in the capability path
 /// reads it, and no program can reach it: `cap/kv` has no such call.
-pub fn stat(name: Name(Message), timeout_ms timeout_ms: Int) -> #(Int, Int) {
+pub fn stat(
+  name: address.Address(Message),
+  timeout_ms timeout_ms: Int,
+) -> #(Int, Int) {
   // The eager fallback is right here: a bare tuple of two integers is
   // cheaper to build than the guard that would defer it.
   result.unwrap(ask(name, timeout_ms, Stat), #(0, 0))

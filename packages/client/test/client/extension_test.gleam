@@ -875,7 +875,8 @@ fn real_jailed_build() -> Nil {
       clock: clock.from_function(ffi_os.system_time_ms),
     )
   {
-    Error(reason) -> io.println("SKIP a_real_jailed_build_installs: " <> reason)
+    Error(reason) ->
+      io.println_error("SKIP a_real_jailed_build_installs: " <> reason)
     Ok(plane) -> {
       let tree =
         extensions.materialise(

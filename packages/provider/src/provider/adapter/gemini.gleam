@@ -61,6 +61,7 @@ import core/message.{
   Length, Stop, ToolCall, ToolResultImage, ToolResultMessage, ToolResultText,
   ToolUse, Usage, UsageCost, UserImage, UserMessage, UserText,
 }
+import core/origin
 import gleam/bit_array
 import gleam/bool
 import gleam/int
@@ -300,8 +301,13 @@ fn encode_contents(messages: List(AgentMessage)) -> List(JsonValue) {
 // Turns are accumulated head-first, so the turn in progress is the head.
 fn push_message(turns: List(Turn), message: AgentMessage) -> List(Turn) {
   case message {
-    UserMessage(content:, timestamp: _) ->
-      push_turn(turns, "user", list.map(content, encode_user_block), Ordinary)
+    UserMessage(content:, origin:, ..) ->
+      push_turn(
+        turns,
+        "user",
+        list.map(origin.project(content, origin), encode_user_block),
+        Ordinary,
+      )
     AssistantMessage(content:, ..) ->
       push_turn(
         turns,

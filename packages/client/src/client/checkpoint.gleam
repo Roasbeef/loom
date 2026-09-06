@@ -466,6 +466,7 @@ pub fn reminder(clock: Clock, remaining remaining: Int) -> AgentMessage {
       ),
     ],
     timestamp: now,
+    origin: None,
   )
 }
 
