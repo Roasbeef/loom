@@ -247,7 +247,8 @@ Alice's original A1 identity, records, inbox and socket while the tool is live.
 Restoring that membership permits a real switch and a completed A2 turn.
 Alice then selects B and completes its own turn before the host releases A1.
 
-The script uses exactly eight exchanges, including the four earlier turns.
+On a host with the demanded enforcement, the script uses exactly eight
+exchanges, including the four earlier turns.
 No further A1 input can merge with its tool result. A1's complete records must
 contain the original user author, exact invocation, successful result and
 final answer in order, with one completion marker. Reader and an independent
@@ -255,6 +256,21 @@ owner terminal remain on A1 and converge before Alice returns. Fresh owner
 attachments then compare A2 and B against their pre-release histories.
 The markers prove this benign tool ran; they do not prove filesystem
 confinement or an approval decision.
+
+Before choosing that suffix, the fixture probes the shipped helper with the
+daemon's own base policy and a silent shell built-in. Only an explicit
+enforcement-degradation result skips the live-tool section; the four earlier
+exchanges and all non-tool assertions still run. The probe requires original
+helper retirement before interpreting its result. The ordinary Linux CI job
+declares this missing prerequisite. The delegated jail job runs the same
+fixture and rejects that skip, so the declaration cannot replace real tool
+coverage. macOS retains the full drive when its probe succeeds.
+
+The three initial terminal opens have a named 20-second deadline after a
+hosted macOS run exceeded the component helper's eight-second wait. Other
+terminal assertions, the 15-second tool marker, and the overall body and
+cleanup deadlines are unchanged. This allowance is not a diagnosis of the
+hosted delay.
 
 This shipped-artifact fixture has a bounded body and a separate native
 cleanup check, including on assertion failure. The loopback provider retains

@@ -591,3 +591,47 @@ Closing scope ends with these reviewed changes, documentation and one hosted
 CI cycle without rerun. [Issues #240 through #248](../next.md#what-to-do-next)
 record the remaining product and release work; PR #239 records the closing
 published head and CI result. Historical parent failures remain explicit.
+
+## Test prerequisites after the closing CI failure
+
+Closing run `34056261144` failed on both platforms. Linux's new bounded
+diagnostic established demanded-enforcement refusal before the tool marker.
+The ordinary job lacks the delegated jail job's kernel prerequisites. macOS
+missed the initial terminal-opening wait; its artifacts do not contain the
+native daemon log needed to establish the cause. The owner authorized a
+test-only correction and another measured cycle.
+
+The independent direct review approved a real helper probe, a job-specific
+skip declaration, an unwaived shipped run in the delegated jail job, and a
+20-second bound only for the three initial terminal opens. All non-tool
+assertions remain; a typed mode selects both the exact provider suffix and
+its oracle. The marker, turn, body and cleanup deadlines are unchanged.
+
+Local verification found and corrected two probe assumptions before commit.
+An output event is not terminal completion, and Darwin has no `/bin/true`.
+The probe now drains events under one five-second deadline and invokes the
+existing shell with its no-op built-in. Source review also corrected the
+policy choice: `workspace_default` is narrower than the actual daemon base,
+so the probe calls the existing `serve.base_policy` instead. That source
+mismatch was real but did not establish the observed executable-not-found
+failure's cause. No production policy changed.
+
+The corrected shipped fixture exited 0 in 8.24 seconds. A deliberate noisy
+probe exited 1 in 0.82 seconds with the intended bounded error after original
+helper retirement; the silent command was restored. Census controls accepted
+the exact declaration only for the ordinary Linux job, rejected the same
+skip for the jail job, and rejected a stale unused declaration. The existing
+skip-reporting regressions also passed. These local results do not substitute
+for the next exact-head hosted cycle.
+
+The independent reviewer read and approved the final corrective delta,
+including the production policy/shell reuse, bounded output verdict and
+original close ordering. Two optional wording comments were left unchanged:
+the failed assertion already includes the bounded concrete error, and the
+final output variant remains an explicit refusal rather than a catch-all.
+
+On the restored final source, the full client gate exited 0 with all 1,345
+tests in 297.85 seconds. All five shipped fixtures were enabled, and the
+complete eight-exchange live-tool drive ran without a prerequisite skip.
+The strict local census passed with only the existing Darwin `/proc`
+declaration. Client lint and documentation checks also exited 0.

@@ -6,11 +6,12 @@ release gates deliberately left open. Rewrite it after the next completed
 body of work. Commit and review history belongs in Git and the review records,
 not in another chronological addition to this file.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `39468f84`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `854a3b7d`
+and the subsequent test-only CI correction described below.
 Claims below were checked against that tree, exact local command results,
 or the named hosted run.
-The closing scope ends after the schedule fixture, its review, documentation
-and one publication/CI cycle. It does not include further acceptance slices.
+After the closing run failed, the owner authorized a test-only CI correction
+and another measured cycle. This does not start further acceptance slices.
 
 ## Where the tree is
 
@@ -26,10 +27,11 @@ runtime. The broader release acceptance is not complete.
 | TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery remains client-driven reconciliation, not pushed token streaming. |
 | Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
 
-Draft [PR #239](https://github.com/Roasbeef/loom/pull/239) targets
+[PR #239](https://github.com/Roasbeef/loom/pull/239) targets
 `client/daemon-review-fixes` ([#238](https://github.com/Roasbeef/loom/pull/238)),
 above [#237](https://github.com/Roasbeef/loom/pull/237) in native stack 231.
-All remain unmerged. The integration worktree is
+All three are out of draft but remain unmerged. Review readiness does not
+mean green CI or completed release acceptance. The integration worktree is
 `.claude/worktrees/daemon-candidate`. Preserve the separate
 `.claude/worktrees/single-daemon` tree and its excluded native-policy,
 planner and protocol 017 edits; do not build them into this candidate.
@@ -66,6 +68,14 @@ tool error and only a short assertion error. See the
 [closing review](review/single-daemon-acceptance-closing.md).
 
 ### Verified results and their limits
+
+The subsequent CI-correction gate exited 0 with **1,345 tests in 297.85
+seconds**, with all five shipped fixtures enabled and the complete live-tool
+suffix executed. Its strict census independently passed with only the
+existing Darwin `/proc` prerequisite. Client lint and documentation checks
+passed. The focused revised fixture passed in 8.24 seconds; a deliberately
+noisy probe failed its intended bounded error in 0.82 seconds after helper
+retirement, then the no-op was restored before the full gate.
 
 The full client gate passed all **1,344 tests in 296.01 seconds**, with all
 five shipped fixtures enabled. Its command exited 0; the strict skip census
@@ -119,21 +129,30 @@ principal authority nor filesystem confinement.
 
 ### Hosted evidence
 
-The closing push is authorized for **one measured CI cycle, with no rerun**.
-At this baseline, PR #239 still publishes `b0b4013a`; the closing commits
-are local. PR #239's verification section records the exact closing head
-and terminal result after publication; this committed handoff records the
-pre-publication baseline. Do not call a queued or partial run green.
+The first closing cycle finished red at `854a3b7d`. The owner then authorized
+a test-only correction and another measured cycle; this is not a blind rerun
+of the failed head. PR #239's verification section records the exact next
+published head and terminal result. Do not call a queued or partial run green.
+
+The correction probes the actual shipped helper under `serve.base_policy`
+with a portable shell no-op. Only explicit enforcement degradation omits the
+final live-tool section, with a visible marker and an ordinary-Linux-only
+declaration. The delegated jail job now runs the same shipped fixture without
+that declaration. The three initial opens get a named 20-second bound;
+all turn, marker and cleanup bounds remain. macOS's existing latency
+observation policy is unchanged. Neither correction diagnoses the macOS
+opening delay or weakens the production sandbox.
 
 | Head and run | Observed result |
 |---|---|
+| `854a3b7d`, [34056261144](https://github.com/Roasbeef/loom/actions/runs/34056261144) | Linux's tool marker failed after explicit demanded-enforcement refusal. macOS's initial terminal opening exceeded eight seconds, cause unknown. Both reported 1,344 client passes and one failure; both final censuses were skipped. Jail and 200 seeds passed. Current 18 soak pairs per platform passed their numeric bounds, with all five-owner samplers completed. |
 | `b0b4013a`, [34051513588](https://github.com/Roasbeef/loom/actions/runs/34051513588) | Linux failed the 15-second tool marker assertion. macOS failed paired latency, 506 ms against 342 ms. Each had 1,336 client passes and one failure; both final censuses were skipped. Jail and 200 seeds passed. |
 | `37726c23`, [34050399218](https://github.com/Roasbeef/loom/actions/runs/34050399218) | Both platform check/bootstrap steps passed; later dependency resolution failed on Hex 502. Neither final census ran. Jail and 200 seeds passed. |
 | `5df064c8`, [34046753887](https://github.com/Roasbeef/loom/actions/runs/34046753887) | All four jobs and both independently checked censuses passed. This older green head is not acceptance for later commits. |
 
 The latest failing macOS pair measured baseline 46 ms (HTTP 7, subscribe 20,
 drain 19) and stressed 506 ms (HTTP 88, subscribe 397, drain 21). Its twelve
-credit waits were at most 6 ms. Current artifacts retained six macOS and
+credit waits were at most 6 ms. That `b0b4013a` run retained six macOS and
 18 Linux pairs, with all five process samplers completed. Older cached fixture
 reports were excluded.
 
@@ -156,7 +175,7 @@ path continues to enforce the bound. This is an explicit gate-policy change,
 not a performance fix or proof that the missed bound is met. Do not extend
 that exception or infer a cause from the coarse counters.
 
-Linux's native daemon log and tool result were not retained in that run, so
+Linux's native daemon log and tool result were not retained in that earlier run, so
 the missing marker's cause remains unestablished. The new diagnostic makes a
 future failed marker useful; it is not a claimed causal repair.
 
