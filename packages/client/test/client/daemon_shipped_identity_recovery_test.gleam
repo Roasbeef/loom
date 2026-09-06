@@ -4,9 +4,13 @@
 //// exact SQLite identity, not the marker alone, prove the interrupted boundary.
 //// Recovery observes the original lease and waits for its natural expiry before
 //// retrying the same creation key. No provider or code-mode program is executed.
+//// A native terminal selecting the pending operation must finish without
+//// adopting a cut after the crash; explicit recovery permits a fresh terminal
+//// to capture the original session under the replacement daemon's identity.
 
 import broker/token
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/tui_v2_test
 import core/json
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -25,11 +29,15 @@ import storage/catalogue
 import storage/domain
 import storage/sqlite
 import support/internal/ffi_proc
+import support/tui_driver
+import tui/attachment
 import tui/bootstrap as terminal_bootstrap
 import tui/daemon
 import tui/daemon/bootstrap
 import tui/daemon/protocol
+import tui/session_channel
 import weft
+import weft/actor
 import weft/poll
 
 /// Exercises reservation recovery against the supplied shipped executable.
@@ -121,6 +129,10 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   write_configuration(configuration, escript, script, marker, release)
   let assert Ok(first) = launch(server, paths, configuration)
     as "the shipped daemon authenticates through native bootstrap"
+  let assert Ok(first_address) = endpoint.address(first.record)
+    as "the native terminal uses the authenticated daemon's published address"
+  let assert Ok(owner) = simplifile.read(first.paths.token)
+    as "fixture setup reads only its private owner credential"
   let request =
     protocol.CreateSession(
       "identity-at-crash",
@@ -134,15 +146,68 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   let #(reserved, selected) = durable(paths)
   assert reserved.id == created.session_id
   assert reserved.state == catalogue.Reserved
+  let assert protocol.Opening(original_operation) = created.status
+    as "creation returns the parked operation before initialization completes"
 
   // Receipt is an observation, not an indefinite latch: MCP can time out and
   // let assembly continue without that server. Do not inspect files in a loop
   // hoping to kill in time; the checks after native departure decide the proof.
   let mcp_fence = await_initialize(marker)
+  let assert Ok(pending) =
+    tui_driver.start(first_address, string.trim(owner), reserved.id)
+    as "the native terminal begins selection of the real assembling session"
+  let selecting =
+    tui_v2_test.await(pending.data, fn(sample) {
+      attachment.busy(sample.model.candidate)
+    })
+  assert selecting.model.channel == None
+  assert selecting.model.captured == None
+  let assert Ok(protocol.SessionReply(still_opening)) =
+    daemon.request(
+      first.control,
+      protocol.GetOperation(
+        reserved.id,
+        original_operation,
+        daemon.hello(first.control).epoch,
+      ),
+      2000,
+    )
+    as "the original operation stays parked while selection is pending"
+  assert still_opening.status == protocol.Opening(original_operation)
   let original = first.record
   crash(paths, original)
   daemon.close(first.control)
   departed(mcp_fence)
+
+  // This observes pending selection, not a particular outstanding wire frame
+  // or an ambiguous prompt. No completed conversation may appear after loss.
+  let failed =
+    tui_v2_test.await(pending.data, fn(sample) {
+      !attachment.busy(sample.model.candidate)
+    })
+
+  // Accept only the worker's closed set of control-loss outcomes. This fixture
+  // need not exercise every class; none permits a timeout to stand for loss.
+  assert list.contains(
+    [
+      "open session: daemon control disconnected; reconnect explicitly",
+      "open session: unknown outcome for sessions.open; request was not retried",
+      "open session: daemon authentication did not complete",
+    ],
+    failed.model.notice,
+  )
+    as "native departure ends selection in an exact control-loss failure class"
+  io.println_error(
+    "pending selection after native departure: " <> failed.model.notice,
+  )
+  assert failed.model.session == selecting.model.session
+  assert failed.model.channel == selecting.model.channel
+  assert failed.model.captured == selecting.model.captured
+  assert failed.model.records == selecting.model.records
+  assert failed.model.channel == None
+  assert failed.model.captured == None
+  assert failed.model.records == []
+  stop_driver(pending)
   assert durable(paths) == #(reserved, selected)
   assert reserved.state == catalogue.Reserved
   assert_identity(reserved.path, reserved.id)
@@ -208,6 +273,34 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   assert new_owner != old_owner
   assert new_fence > old_fence
 
+  // A fresh driver uses newly discovered routing, never retries through the
+  // dead control. Its complete cut must match the replacement's resident ID.
+  let assert Ok(second_address) = endpoint.address(second.record)
+    as "replacement discovery supplies the fresh terminal's endpoint"
+  let assert Ok(protocol.SessionReply(resident)) =
+    daemon.request(second.control, protocol.GetSession(reserved.id), 5000)
+    as "the recovered runtime supplies the authoritative incarnation"
+  let assert protocol.Resident(incarnation) = resident.status
+    as "same-key recovery completed before the terminal attaches"
+  let assert Ok(recovered) =
+    tui_driver.start(second_address, string.trim(owner), reserved.id)
+    as "the unchanged owner credential attaches through replacement discovery"
+  let captured =
+    tui_v2_test.await(recovered.data, fn(sample) {
+      case sample.model.channel {
+        Some(channel) -> session_channel.mutation_available(channel)
+        None -> False
+      }
+    })
+  let assert Some(#(cut, _)) = captured.model.captured
+    as "the fresh native terminal validates a complete credited capture"
+  assert captured.model.session == reserved.id
+  assert cut.attachment.expected.session == reserved.id
+  assert cut.attachment.expected.epoch
+    == daemon.hello(second.control).epoch.value
+  assert cut.attachment.expected.incarnation == incarnation
+  stop_driver(recovered)
+
   // Recovered custody retires before orderly shutdown ends the fixture.
   let assert Ok(_) =
     daemon.request(second.control, protocol.StopSession(reserved.id), 5000)
@@ -217,6 +310,19 @@ fn exercise(server, directory, paths: endpoint.Paths) {
     as "the recovered daemon accepts orderly shutdown"
   daemon.close(second.control)
   departed(second.record.fence)
+}
+
+fn stop_driver(
+  driver: actor.Started(process.Subject(tui_driver.Message)),
+) -> Nil {
+  let monitor = process.monitor(driver.pid)
+  tui_driver.stop(driver.data)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the native terminal retires normally before fixture cleanup"
+  Nil
 }
 
 fn write_configuration(path, escript, script, marker, release) -> Nil {
