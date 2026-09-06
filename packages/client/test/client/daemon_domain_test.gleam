@@ -482,12 +482,11 @@ pub fn a_withdrawn_fences_late_account_does_not_settle_the_next_fence_test() {
   // The withdrawn fence's account arrives now, after the second fence was
   // issued. The census that follows is the barrier: it is sent by this
   // process to the same registry process as the account, so it is handled
-  // after the account was. Its answer rules out one wrong reading, a refusal
-  // taken as a recovery block; it cannot tell a retained slot from one the
-  // registry is closing, because both count as occupied. The discriminator
-  // for that reading is what follows: a registry that took the account as
-  // the settle would have cancelled the host, and a cancelled host cannot
-  // run the coalesced pass the fixture then waits for.
+  // after the account was. These counts cannot distinguish a retained slot
+  // from one being closed: the registry ignores the account's Pass payload
+  // and treats either Completed or Refused as settlement. The fresh-subject
+  // assertion above and the continuing cadence below are the discriminators;
+  // a cancelled host cannot run that coalesced pass.
   process.send(withdrawn, distillpass.Refused("decided before the revival"))
   let assert Ok(manager.Summary(
     occupied: 0,
@@ -495,7 +494,7 @@ pub fn a_withdrawn_fences_late_account_does_not_settle_the_next_fence_test() {
     domain_blocked: 0,
     ..,
   )) = manager.summary(registry)
-    as "a withdrawn fence's account neither retires nor blocks the domain"
+    as "the domain remains counted and unblocked after the mailbox barrier"
 
   // The worker finishes the parked pass and the follow-up the two closes
   // coalesced, then answers the standing fence, which retires the domain.
