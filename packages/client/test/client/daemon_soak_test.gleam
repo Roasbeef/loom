@@ -797,6 +797,7 @@ fn drive(
         #("registry", manager.pid(serving.ready.registry)),
         #("a_gateway", a_gateway),
         #("b_gateway", b_gateway),
+        #("b_storage", b.storage_owner),
       ]
       let #(unstalled, baseline_entries) =
         measure_snapshot(serving, token, b_id, owners)
