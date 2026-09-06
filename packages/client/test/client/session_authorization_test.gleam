@@ -13,6 +13,7 @@ import client/gateway_test
 import client/protocol
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/option.{None}
 import gleam/otp/actor
@@ -157,4 +158,69 @@ pub fn a_revocation_between_admission_and_delivery_drops_the_reply_test() {
     == Error("revoked")
   let assert Ok(Nil) = process.receive(closed, 1000)
     as "the delivery check closes the attachment"
+}
+
+/// Idle retention ticks do not ask authority or retire a healthy attachment.
+pub fn idle_maintenance_does_not_query_authority_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id())
+  let allowed =
+    Ok(#(
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Participant(access.Operator),
+    ))
+  let script = scripted([allowed, allowed, allowed])
+  let closed = process.new_subject()
+  let handle = attach(harness, script, closed)
+  let attached = consumed(script)
+  let connections = gateway.attached(harness.hub)
+
+  // Let two real maintenance periods pass without a request. The following
+  // gateway call orders the observation after its queued maintenance work;
+  // the script count catches probes even when they would have succeeded.
+  assert process.receive(closed, 2200) == Error(Nil)
+  assert gateway.attached(harness.hub) == connections
+  assert consumed(script) == attached
+
+  let assert Ok(_) = gateway.connection_request(handle, subscribe(harness, 902))
+    as "the idle attachment still admits a command"
+  assert consumed(script) - attached == 2
+  assert process.receive(closed, 0) == Error(Nil)
+}
+
+/// Revocation during idle time is enforced before the next mutation writes.
+pub fn idle_revocation_refuses_the_next_mutation_before_write_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id())
+  let allowed =
+    Ok(#(
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Participant(access.Operator),
+    ))
+  let script = scripted([allowed, allowed, allowed, Error("revoked")])
+  let closed = process.new_subject()
+  let handle = attach(harness, script, closed)
+  let assert Ok(_) = gateway.connection_request(handle, subscribe(harness, 903))
+    as "subscription permits the later configuration command"
+  let admitted = consumed(script)
+  let connections = gateway.attached(harness.hub)
+
+  // The next answer is already revoked, but no command is asking for it.
+  // Maintenance must leave it untouched until the operator submits work.
+  assert process.receive(closed, 2200) == Error(Nil)
+  assert gateway.attached(harness.hub) == connections
+  assert consumed(script) == admitted
+  assert api.fact_cell(harness.runtime, api.run_settings_key) == Ok(None)
+
+  let mutation =
+    protocol.encode_command(protocol.CommandEnvelope(
+      904,
+      protocol.SetConfig(
+        None,
+        json.Object([#("queue_mode", json.String("one_at_a_time"))]),
+      ),
+    ))
+  assert gateway.connection_request(handle, mutation)
+    == Error("attachment is closed")
+  assert process.receive(closed, 1000) == Ok(Nil)
+  assert consumed(script) == admitted + 1
+  assert api.fact_cell(harness.runtime, api.run_settings_key) == Ok(None)
 }

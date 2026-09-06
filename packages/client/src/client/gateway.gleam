@@ -980,7 +980,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     Request(connection, text, reply) ->
       actor.continue(request_frame(state, connection, text, reply))
-    MaintainTransfers -> actor.continue(expire_transfers(revalidate_all(state)))
+
+    // Idle maintenance owns retention only. Authority is checked at command
+    // admission and delivery, where failure must refuse the operation; asking
+    // here would let registry latency close an attachment doing no work.
+    MaintainTransfers -> actor.continue(expire_transfers(state))
     Attach(sink:, reply:) -> {
       let id = state.next_connection
       process.send(reply, id)
