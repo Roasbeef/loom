@@ -195,7 +195,7 @@ Hook points (`before_run`, `before_request`, `before_tool`, `after_tool`, `trans
 
 ### 4.6 Inter-agent communication: durable payloads, ephemeral doorbells
 
-Strands are processes, so raw `Process.send` between subagents is *possible* — and forbidden as a transport, because a BEAM mailbox evaporates on crash. An unread "found the bug in the authentication module" is simply gone after a supervisor restart: never in the transcript, invisible to recovery, believed delivered. That is exactly the ghost-state the durability plane exists to kill.
+Strands are processes, so raw `Process.send` between subagents is *possible* — and forbidden as a transport, because a BEAM mailbox evaporates on crash. An unread "found the bug at auth.gleam:42" is simply gone after a supervisor restart: never in the transcript, invisible to recovery, believed delivered. That is exactly the ghost-state the durability plane exists to kill.
 
 > **Doctrine: payloads travel durably; process messages are only doorbells.** Sending a message to another strand = a `steer`/`follow_up` enqueue onto that strand (one commit writing its `pending.entry` register), plus an ephemeral nudge so the target wakes immediately instead of at its next checkpoint poll. A lost nudge costs latency, never data.
 

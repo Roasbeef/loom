@@ -1,6 +1,6 @@
 # Sessions in one daemon
 
-**Status: implemented in the unreleased working tree; acceptance remains
+**Status: implemented on an unmerged branch; acceptance remains
 incomplete.** The default entrypoint now runs one managed daemon, with no
 legacy client/server compatibility path. [Client](client.md) describes the
 current startup and protocol and labels the historical `f019322` baseline
@@ -43,7 +43,7 @@ admitted domain. It captures the immutable domain record before preparing the
 host, publishes cleanup before starting effects, and passes the original shared
 history capability to each session. Session commit forwarders notify that owner
 with the committing session's ID. History checks the current domain source list
-before ranking results or reading an exact entry; stored index locators do not
+before returning ranked results or reading an exact entry; stored index locators do not
 authorize reads.
 
 The domain book has the same capacity as the session book. Preparing, quiescing,

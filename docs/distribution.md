@@ -45,6 +45,16 @@ checks the code-mode and helper behavior described below. The target has an
 independent 180-second process deadline and requires Python for that watchdog;
 the downloaded daemon does not require Python.
 
+One dependency in that closure is not the one hex publishes. The websocket
+listener needs a per-connection frame ceiling, which mist and gramps do not
+expose upstream, so the client shipment resolves both from forks:
+`mist` at `Roasbeef/mist` revision `65b29375`, and `gramps` at
+`Roasbeef/gramps` revision `a37a8ae3`, pulled in transitively by the mist
+fork. The forked framing code is therefore inside the artifact people
+download, and reproducing a build needs both git remotes rather than only
+hex. [ADR-011](adr/011-bounded-websocket-forks.md) has the reasoning, the
+upstream pull requests, and the maintenance cost.
+
 The build places one compiled test probe in `build/release/smoke-support`,
 outside the distributed `loom` tree. The smoke runs that probe on the bundled
 emulator, using the server's existing WebSocket transport. It adds no test

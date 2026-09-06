@@ -88,13 +88,30 @@ catalogue without opening runtimes. Explicit admission invokes
   `domain_occupied`, and `domain_blocked`. Saved session metadata does not prove
   domain retirement. After the last clean session retirement, `notify_closed`
   precedes `quiesce` from the same sender; the registry cancels the domain host
-  only after current and coalesced maintenance settles. Failed cleanup retains
-  admission capacity and prevents normal daemon shutdown.
+  only after current and coalesced maintenance settles. A domain fenced while
+  admission is open is revived by the next open in the same domain, taking
+  back the same services with its cadence still fenced; a domain fenced
+  during shutdown is never revived. An assembly fault reports `Stopping`
+  because Weft's ordered cleanup has already begun; only a cleanup failure
+  reports `RecoveryBlocked`, so `Summary.blocked` counts custody that will
+  never release. Failed cleanup retains admission capacity and prevents
+  normal daemon shutdown.
+- `client/daemon/manager.{frame_authority, FrameRefusal}` — per-frame
+  authorization is one registry dispatch that answers the daemon epoch, the
+  session incarnation and the session authority together, widest fence
+  first, and is still a live read on every check. The four refusals
+  (`StaleEpoch`, `StaleIncarnation`, `Unauthorized`, `RegistryUnavailable`)
+  stay distinct so the transport never reports a revocation as an outage.
+  The control listener keeps using `session_authority`.
 
 - `client/internal/instance_owner.{Owner, Part, CloseOutcome}` retains
   published cleanup independently of a builder. Weft orders builder exit
   before the holder's cleanup run; `StillClosing` and `RecoveryBlocked`
-  retain reservations rather than authorizing replacement.
+  retain reservations rather than authorizing replacement. The publication
+  handoff in `instance_owner.start` and the registry handoff in
+  `lifetime.start` are both bounded at five seconds, and `distill_owner`'s
+  cleanup run carries a wall deadline, so a wedged start or close settles
+  with a verdict instead of holding the registry forever.
 - `client/internal/instance_host.Host` separates parked preparation from
   assembly. The long-lived registry must call `prepare`, retain the witness
   and monitor it before `begin`; Weft scope lifetime includes its creator.
@@ -199,7 +216,11 @@ catalogue without opening runtimes. Explicit admission invokes
   `sm.with_selector`.
 - `client/server.{Config, Auth, Server, serve}` — the `mist` websocket
   transport on `/v1/ws`; `LocalAuth(token_path)` mints a startup token
-  into a `0600` file, `BearerAuth(token)` is the caller-supplied one.
+  into a `0600` file, `BearerAuth(token)` is the caller-supplied one. The
+  whole surface is `@internal`: it attaches through `gateway.attach` with
+  one shared bearer and no principal or role, which protocol-015 leaves no
+  production route for, so only this package's own tests may start it. The
+  daemon listener in `client/daemon/server` is the production route.
 - `client/install.{root, helper, helper_name, gleam_compiler, erl, seed,
   seed_directory, existing_file, existing_directory, bundled_helper,
   bundled_seed, first_of}` — where this Loom is installed, and what ships
@@ -1181,7 +1202,8 @@ catalogue without opening runtimes. Explicit admission invokes
   the session lease — and reports `Faulted` afterwards, leaving the exit
   status to the entry point. `relay_sigterm` puts the signal on the same
   subject, so one receive covers both ways the server stops.
-- `client/serve.boot_with(settings, logger:)` — `boot` with an injected
+- `client/serve.boot_with(settings, logger:)` (`@internal`, like `boot`;
+  both start the legacy listener above) — `boot` with an injected
   `telemetry/log.Logger`, which is what `main` calls once it has
   installed the JSON handler. The logger is a capability, not a setting
   (§0.2): it is passed rather than parsed, and `boot` itself delegates

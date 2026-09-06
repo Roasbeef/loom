@@ -118,6 +118,14 @@ the host defaults, while malformed state refuses admission. Existing runs
 retain their already-admitted settings. Presence remains ephemeral and
 does not write conversation entries.
 
+Both cells sit under a `client/` prefix that `runtime/api.reserved_fact_key`
+adds to the reserved set, so `put_fact` refuses a model-supplied key there
+and `facts` hides the namespace. The reservation is what makes the two cells
+safe to trust: without it a forged `client/config_origin/<strand>` would
+misattribute a shared configuration change to somebody who never made it,
+and a forged `client/run_settings` would change the queue and
+tool-execution defaults the next admitted run reads.
+
 ## Alternatives considered
 
 A connection ID alone was rejected because connections disappear on

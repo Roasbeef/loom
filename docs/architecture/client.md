@@ -344,10 +344,6 @@ a `Closed` notice, not a process exit propagated into the terminal.
 Cancellation initiates socket cleanup; the attempt's exit alone does
 not prove the socket has finished closing.
 
-Manual switching is separate from reconnecting after a dropped socket.
-The gateway supports sequence-based replay, documented below, but the
-native client does not automatically reconnect or perform `catch_up`.
-
 The implementation is in
 [`tui/bootstrap.gleam`](../../packages/tui/src/tui/bootstrap.gleam),
 [`tui/sessions.gleam`](../../packages/tui/src/tui/sessions.gleam), and
@@ -943,13 +939,6 @@ on how long ago it last drew, so which of the two `--at` and `--all` show for
 a key press depends on the machine; the settling tick that ends a replay is a
 flush point, so that frame is always the current one. Making every frame
 reproducible needs an injected clock, which is separate work.
-
-Two protocol behaviors remain deliberately incomplete. Pending escalations are
-visible, but the native client does not yet send protocol-change/007's exact
-action-and-grant echo, so it cannot approve or deny. A dropped websocket ends
-the current connection; automatic reconnect and sparse-sequence catch-up remain
-follow-up work. The server's approval and replay contracts are unchanged, and
-the client never claims either operation succeeded locally.
 
 ## Installing an extension
 

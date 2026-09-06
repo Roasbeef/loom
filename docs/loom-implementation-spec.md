@@ -252,18 +252,21 @@ change 010 records the full ownership and race law.
 
 ### 1.6 Client protocol (WP-L; thin clients)
 
-Websocket, JSON (client-friendliness beats msgpack here), versioned:
+Websocket, JSON (client-friendliness beats msgpack here), versioned. One listener carries two authenticated endpoints, because daemon metadata and one session's conversation are separate authorities ([protocol-change/015](../protocol-change/015-daemon-control-and-session-attachments.md)):
 
 ```
-c→s: {v:1, id, cmd: "prompt"|"prompt_content"|"steer"|"follow_up"|"abort"|"approve"|"deny"
-              |"fork"|"navigate"|"compact"|"create_strand"|"set_config"
-              |"subscribe"|"catch_up"|"models"|"schedules"
-              |"schedule_cancel", body}
-s→c: {v:1, reply_to?, event: "snapshot"|"entry"|"op_transition"|"stream_delta"
-              |"usage"|"escalation"|"strand_result"|"error", seq?, body}
+/v2/control                              daemon metadata and lifecycle
+/v2/sessions/<canonical-session-id>/ws   one resident session
+
+c→s: {v:2, id, cmd, body}
+s→c: {v:2, reply_to?, event, seq?, body}
 ```
 
-`subscribe{session, from_seq}` → `snapshot` (strands, leaves, open ops, recent entries) then live events; reconnect = `catch_up{from_seq}` (events are rebuildable from `scan_*`). Stream deltas are ephemeral (never persisted; pi's non-goal preserved) and flagged `ephemeral:true`.
+Control commands are `status`, `sessions.list`, `sessions.get`, `sessions.default`, `sessions.set_default`, `sessions.create`, `sessions.open`, `sessions.stop`, `operations.get` and `daemon.shutdown`. The server's opening `hello` event carries no `reply_to`, and names the protocol version, the daemon epoch, the authenticated principal and the advertised limits; every later reply repeats its command's name as the `event`. Metadata reads never open a conversation database.
+
+Session commands are `subscribe`, `catch_up`, `history`, `snapshot_next`, `escalations_get`, `prompt`, `prompt_content`, `steer`, `follow_up`, `abort`, `approve`, `deny`, `fork`, `navigate`, `compact`, `create_strand`, `set_config`, `models`, `schedules` and `schedule_cancel`. Session events are `snapshot_begin`, `snapshot_chunk`, `snapshot_end`, `snapshot`, `entry`, `op_transition`, `stream_delta`, `usage`, `escalation`, `strand_result`, `mutation_outcome`, `attachment`, `presence` and `error`.
+
+`subscribe{session, from_seq}` over the authenticated transport answers with a bounded transfer rather than one unbounded frame: `snapshot_begin` fixes the durable high-water and names the transfer, each `snapshot_next{snapshot_id, index}` grants exactly one `snapshot_chunk`, and `snapshot_end` closes it, after which live events follow. Because that snapshot no longer carries every open escalation, `escalations_get{ids}` reads up to eight exact cells, and `history{after_seq, before_seq}` pages older entries; reconnect remains `catch_up{from_seq}` (events are rebuildable from `scan_*`). The in-process host fixture has no transport to bound, so it keeps the single `snapshot` event (strands, leaves, open ops, recent entries) and refuses the three bounded-transfer commands. Stream deltas are ephemeral (never persisted; pi's non-goal preserved) and flagged `ephemeral:true`.
 
 ---
 

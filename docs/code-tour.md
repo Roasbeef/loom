@@ -32,8 +32,8 @@ relative to `packages/sandbox`, so `internal/jail/stage2.go:43` lives there.
 
 ## The shape of the thing
 
-The packages split across three planes, with shared host primitives below
-the client and terminal boundaries.
+Twenty-one packages, twenty Gleam and one Go, split across three planes.
+Shared host primitives sit below the client and terminal boundaries.
 
 **The durability plane** stores rows and answers queries and decides
 nothing: `core` (ids, the four write-once entry shapes, transactions, the
@@ -167,9 +167,9 @@ the reply table, and the three places the fixtures deliberately differ
 from `core/codec`.
 
 The connection was authenticated long before this frame: `route`
-(`client/server.gleam:232`) runs the bearer check ahead of the upgrade,
+(`client/server.gleam:259`) runs the bearer check ahead of the upgrade,
 so a `401` is emitted with no websocket state in existence.
-`authorized` (`client/server.gleam:257`) branches only on the public
+`authorized` (`client/server.gleam:284`) branches only on the public
 `Bearer ` prefix and then hands both operands to `crypto:hash_equals`
 through a shim that hashes each side first — the presented string is
 attacker-controlled, so a plain length-mismatch fast path would leak the
@@ -197,7 +197,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:2448`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:2633`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -612,9 +612,9 @@ subscribe the gateway to these unbounded commit or bus hints.
 The writer published `Committed` before it replied. A tiny forwarder
 actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
-(`client/gateway.gleam:349`).
+(`client/gateway.gleam:751`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:1728`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:1903`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -642,7 +642,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:3138`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:3315`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -802,7 +802,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:2201`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2221`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1210,10 +1210,15 @@ on the strand register alone had a hole: a child that starts a second
 run overwrites it, and a parent still waiting on the first run's result
 would read the second's.
 
-Eight prefixes in `fact.custom` are reserved and refused to `put_fact`:
-`escalation/`, `operation-result/`, `lineage/`, `prompt/`, `session/`,
-`rule/`, `schedule/` and `ext/` (`runtime/api.gleam:1558`). Because
-reserving also *hides* a namespace
+Nine prefixes in `fact.custom` are reserved and refused to `put_fact`:
+`client/`, `escalation/`, `operation-result/`, `lineage/`, `prompt/`,
+`session/`, `rule/`, `schedule/` and `ext/`
+(`runtime/api.reserved_fact_key`). `client/` is the newest of them and
+holds the cells protocol-change/016 added for shared client state: a
+forged `client/config_origin/<strand>` would misattribute a shared
+configuration change to somebody who never made it, and a forged
+`client/run_settings` would change the queue and tool-execution defaults
+the next admitted run reads. Because reserving also *hides* a namespace
 from `facts`, harness code reads and writes those through
 `reserved_facts` / `put_reserved_fact`, which refuse everything outside
 the reserved set — the two doors are disjoint so neither can be pressed

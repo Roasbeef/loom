@@ -1,8 +1,9 @@
 # Several operators on one session
 
-**Status: implemented in the unreleased working tree.** The managed v2
-daemon, per-principal credentials, attributed commands, presence, and native
-TUI integration replace the baseline surveyed at `f019322`. The focused
+**Status: implemented on an unmerged branch; acceptance remains
+incomplete.** The managed v2 daemon, per-principal credentials, attributed
+commands, presence, and native TUI integration replace the baseline surveyed
+at `f019322`. The focused
 fixtures below cover distinct parts of that contract; the scenario matrix
 is an acceptance target, not a claim that one test exercises every row.
 

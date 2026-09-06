@@ -21,6 +21,8 @@ timeout-as-drain success and automatic mutation resend.
 
 No new actionable finding was reported in the inspected paths.
 
+## Checked and sound
+
 Request admission and final delivery recheck attachment authority. Observer
 mutations are refused before dispatch. Session and domain slots remain
 occupied through stopping or failed cleanup, and the retained original

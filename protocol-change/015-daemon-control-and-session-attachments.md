@@ -227,17 +227,26 @@ The interval is `[old.next_seq,new.next_seq)`: the reader's exclusive lower
 bound is therefore `old.next_seq - 1`, not `old.next_seq`.
 
 A connection retains only one transfer. Its absolute deadline is 30 seconds
-from capture and does not reset with fragments. Admission checks the deadline;
-one Weft heartbeat also expires retained state by scanning the bounded
-connection book. There are no per-client timer handles. A slow transfer fails
-explicitly and requires a new request rather than adopting a partial view.
+from capture and does not reset with fragments. Admission checks the deadline,
+and one Weft heartbeat also expires retained state by scanning the bounded
+connection book, so there are no per-client timer handles. A slow transfer
+therefore fails explicitly and requires a new request rather than adopting a
+partial view.
+
 Reader exchanges wait at most five seconds and, for continuations, no longer
-than the remaining transfer budget. Timeout is not cancellation: the original
-SQLite request may remain queued or running. A timeout or unavailable reader
-permanently poisons that gateway, closes attachments and requests an atomic
-stop of its original incarnation. The callback acknowledges `Stopping`, never
-waits for its own retirement. The original custody must drain before reopen;
-lost proof retains `RecoveryBlocked` rather than starting a fresh reader.
+than the remaining transfer budget. A continuation is never funded below the
+reader minimum: when the transfer has less than that left, the step answers
+an exhausted refusal instead of issuing a read, so a client cannot turn its
+own deadline into evidence about the reader. Timeout is not cancellation: the
+original SQLite request may remain queued or running. Only a reader that was
+given its whole budget and did not answer, or an unavailable reader, is
+treated as wedged; that permanently poisons the gateway, closes attachments
+and requests an atomic stop of its original incarnation. A timeout on a
+caller-paced remainder answers that request with `snapshot_failed`, drops
+that one transfer and touches nothing else. The callback acknowledges
+`Stopping` and never waits for its own retirement, because the original
+custody must drain before reopen; lost proof retains `RecoveryBlocked` rather
+than starting a fresh reader.
 
 Mutation responses distinguish admission from completion. Lost responses have
 unknown outcomes and must not cause automatic mutation retries. Durable
@@ -248,15 +257,17 @@ delivery promise. Authentication is checked at each request and response.
 Network gateways subscribe to neither writer commit hints nor event-bus hints.
 The provider relay forwards every authoritative delta to its real consumer in
 order, but offers only one optional preview while its observer callback is
-busy. Further preview observations are omitted; the terminal is retained and
-never reordered or dropped. Each observer acquires one of sixteen leases on
-the original gateway. Expired admission requests allocate nothing. Each lease
-allows one outstanding synchronous payload of at most 24 KiB; a timeout stops
-future sends from that source. Its original monitor remains until observer
-death or acknowledged ordered release, so queued payloads cannot overlap a
-replacement lease. Metadata's optional `stream_preview` contains revision,
-operation, text and `discontinuous:true`. Clients display it as a standalone
-preview, never concatenate nonadjacent fragments.
+busy. Further preview observations are therefore omitted; the terminal is
+retained and never reordered or dropped.
+
+Each observer acquires one of sixteen leases on the original gateway, and an
+expired admission request allocates nothing. Each lease allows one outstanding
+synchronous payload of at most 24 KiB, and a timeout stops future sends from
+that source. Its original monitor remains until observer death or acknowledged
+ordered release, so queued payloads cannot overlap a replacement lease.
+Metadata's optional `stream_preview` contains revision, operation, text and
+`discontinuous:true`, so clients display it as a standalone preview and never
+concatenate nonadjacent fragments.
 
 These observation bounds do not claim to bound the provider-to-relay mailbox
 in bytes of BEAM memory. The built-in SSE parser separately caps cumulative
@@ -281,7 +292,7 @@ and resolution origin, and an explicit `missing` list. The receiver updates
 only those questions; it does not replace its history cursor or full pending
 projection. Exact selection avoids prefix neighbors and never captures the
 unbounded history of every resolved question. A missing record does not name
-an author. Authorization, poison behavior and continuation limits are unchanged.
+an author. Authorization, gateway-failure behavior and continuation limits are unchanged.
 
 Verification must include metadata larger than 64 KiB, fragmented large
 entries, forbidden whole-history reads, a blocked receiver, writes during a
@@ -455,3 +466,14 @@ A joined manager/cadence test holds the initial real pass, closes two sessions,
 then holds the coalesced final pass. Both original domain resource owners remain
 alive until that final pass settles. Only then does the original custody witness
 retire normally and domain occupancy reach zero.
+
+## Addendum: reader timeouts are classified by whose budget expired
+
+The independent review of the pinned daemon slice found that a continuation
+could fund a reader exchange with the last few milliseconds of its own
+transfer budget, and that the resulting timeout was treated as a wedged
+reader. An observer could stop an operator's session by timing one frame.
+The rule above now names the floor and the two classes: a read below the
+reader minimum is not issued, a timeout on the reader's full budget poisons,
+and a timeout on a caller-paced remainder fails only that request. The wire
+shape is unchanged; only the server's classification narrowed.
