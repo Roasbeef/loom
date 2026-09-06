@@ -281,6 +281,9 @@ e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the r
 		chmod 0755 "$$hostile_bin/cat" && \
 		PATH="$$hostile_bin:$$PATH" \
 		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-120}" \
+		bash scripts/test.sh client --match client@tui_shipped_multiplayer_test:
 
 .PHONY: conformance
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
