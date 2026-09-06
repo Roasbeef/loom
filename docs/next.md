@@ -6,7 +6,8 @@ completion. Rewrite it after the next verified milestone; do not append
 another checkpoint above it.
 
 Re-baselined on 2026-09-06 against `client/instance-custody` at
-`5af17a7e` (code and build changes through `46312646`). Current claims below were checked against the tree, recorded
+`13969336` (production/build changes through `46312646`, followed by the
+paired-soak test correction). Current claims below were checked against the tree, recorded
 test results, or GitHub. Historical claims that were not reverified are
 identified as such. The project-wide plan remains [issue-plan.md](issue-plan.md);
 the active work follows [the single-daemon plan](design-notes/single-daemon.md)
@@ -24,7 +25,7 @@ for startup and `/sessions`; it does not retain the old per-session server path.
 | Contracts and reusable sessions, phases 0 and 1 | Reviewed protocols 014, 015 and 016; reclaimable addresses; owned assembly and retained cleanup failures. Weft 0.4.4 is pinned. |
 | Daemon lifecycle and routing, phases 2 and 3 | Private catalogue, singleton ownership, bounded admission, current-credential checks, session routes, and snapshot transfer are implemented. |
 | TUI and lifecycle integration, phases 4 and 5 | Server-backed selection, safe replacement, uncertain submissions, shared domains, detached scheduling and lazy restart have targeted tests. |
-| Default and release acceptance, phase 6 | macOS distribution, smoke and bootstrap E2E pass. Clean full gate passes at `46312646`; documentation gate passes at `5af17a7e`. SQLite adoption, platform verification and filesystem confinement remain open. |
+| Default and release acceptance, phase 6 | Clean local full gate and Linux CI pass. macOS CI exposed the aggregate soak timing assertion; its paired correction passes targeted tests. Independent review found production blockers. SQLite adoption and filesystem confinement remain open. |
 | Filesystem follow-up | Unfinished work is preserved outside the committed daemon slice. No workspace-overlap confidentiality claim is established. |
 
 The plan has seven phases numbered 0 through 6, not a separate phase 7.
@@ -33,7 +34,8 @@ Do not revive those historical migration items while reading the original plan.
 
 ### Review and commit scope
 
-The daemon slice is above lifecycle PR
+The daemon slice is published as draft
+[#237](https://github.com/Roasbeef/loom/pull/237), above lifecycle PR
 [#235](https://github.com/Roasbeef/loom/pull/235). Native `gh stack view`
 reports the preceding open branches as session-services (#233),
 session-ownership (#234), and instance-lifecycle (#235), with no rebase needed
@@ -45,10 +47,12 @@ architecture documentation (`f066cd7e`), and test monitor ordering
 (`d2597a6c`), followed by the terminal fork assertion (`bdffaf78`), recovery
 documentation (`e9e30b02`), acknowledged monitor delivery (`d59ba83d`), and
 developer command updates (`46312646`). Current launch guidance is updated in
-`5af17a7e`. The
-[source review](review/single-daemon-final-surface.md) and
-[triage](review/single-daemon-final-triage.md) report no new actionable source
-findings. That review is not release sign-off.
+`5af17a7e`; the paired soak correction is `13969336`. The
+[source review](review/single-daemon-final-surface.md) reported no new
+actionable finding. A subsequent independent review of published head
+`3cc360b5` found blockers; the updated
+[triage](review/single-daemon-final-triage.md) distinguishes those passes.
+The PR is not ready to merge.
 
 The primary worktree is `.claude/worktrees/single-daemon`. Its remaining
 uncommitted filesystem policy, planner, native helper and protocol 017 work is
@@ -163,6 +167,22 @@ collection to conceal the retention.
 
 ### Platform evidence
 
+The published head `3cc360b5` completed
+[CI run 34026704945](https://github.com/Roasbeef/loom/actions/runs/34026704945).
+Linux full checks, client bootstrap and deliverable smokes passed, as did
+Linux jail enforcement/E2E and the 200-seed soak. macOS failed one client
+soak assertion: an authenticated B snapshot took 3070 milliseconds against
+a fixed 1000-millisecond aggregate budget. Its other 1297 client tests
+passed. Five unchanged focused local runs and a single-scheduler variant
+passed, so that CI failure's exact cause remains unestablished. The test's
+measured work grows with B's transcript. The corrected test pairs the same
+immutable B snapshot before and while A is unread, with a stressed limit of
+twice the same-cycle baseline plus 250 milliseconds. Five corrected runs
+passed; delaying stressed credits failed the intended comparison, and the
+restored source passed in 17.80 seconds, followed by an independent run in
+17.33 seconds. The recorded diagnostics now precede
+the assertion. These targeted results do not replace the next platform gate.
+
 Local CI was attempted both through automatic discovery and explicit
 `ci.yml` selection. Linux jobs stopped during OTP installation because the
 runner's `otp/Install` executable was missing; repository tests did not run.
@@ -177,15 +197,24 @@ Neither run verifies this daemon branch.
 
 ## What to do next
 
-### 1. Finish the clean daemon gate and publish the intermediate PR
+### 1. Verify the soak correction and independent review fixes
 
 The bounded full check on `46312646` and documentation gate on `5af17a7e`
-have passed. Run the documentation gate once more after this handoff commit.
-Use native `gh stack submit` to keep the
-PR based on #235; leave it draft while the acceptance gaps below remain.
+passed, and final publication head `3cc360b5` passed the documentation gate.
+PR #237 is correctly based on #235. The paired full-snapshot correction in
+`13969336` has its delayed-credit negative control and independent restored
+pass. It remains separate from production fixes and needs the next CI verdict.
 
-Exit: the committed slice has a reproducible full gate, accurate review
-evidence and a correctly stacked PR. This step does not discard unfinished
+Freeze the branch for the independent reviewer's fix wave, which will
+use a separate worktree and branch above that head. The confirmed readiness
+timeout can request daemon shutdown before authentication; a near-expired
+transfer can also turn its caller's budget into session-wide reader failure.
+Review and test the fixes, plus the consolidated remaining findings, before
+integrating that branch with native `gh stack`. Preserve transitive retirement
+proof when evaluating any proposal to reuse a slot after nonzero helper exit.
+
+Exit: the corrected slice has green platform gates, verified review fixes,
+accurate evidence and a correctly stacked PR. This step does not discard unfinished
 filesystem work or declare the overall goal complete.
 
 ### 2. Adopt the SQLite repair and rerun resource acceptance

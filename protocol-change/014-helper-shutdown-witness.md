@@ -1,7 +1,7 @@
 # protocol-change/014: retain native exit on helper shutdown
 
 **Status**: ACCEPTED 2026-09-05 · **Affects**: Part 1.4 executor channel ·
-**Raised by**: single-daemon session retirement · **Implementation**: broker + sandbox, in progress
+**Raised by**: single-daemon session retirement · **Implementation**: broker + sandbox implemented; release acceptance remains open
 
 ## Problem
 

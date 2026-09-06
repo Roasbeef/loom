@@ -1,7 +1,7 @@
 # protocol-change/015: separate daemon control from session attachments
 
 **Status**: ACCEPTED 2026-09-05 · **Affects**: Part 1.6 client protocol ·
-**Raised by**: single-daemon and multiplayer execution ruling · **Implementation**: in progress
+**Raised by**: single-daemon and multiplayer execution ruling · **Implementation**: daemon and TUI implemented; independent review and release acceptance remain open
 
 ## Problem
 

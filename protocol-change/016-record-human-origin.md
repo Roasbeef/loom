@@ -1,7 +1,7 @@
 # protocol-change/016: record human origin with admitted work
 
 **Status**: ACCEPTED 2026-09-05 · **Affects**: Part 1.1 messages, Part 1.6 session events ·
-**Raised by**: multiplayer implementation · **Implementation**: durable origin and exact-cell APIs implemented; gateway/TUI integration in progress
+**Raised by**: multiplayer implementation · **Implementation**: durable origin, exact-cell APIs, gateway and TUI integrated; release acceptance remains open
 
 ## Problem
 

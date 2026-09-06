@@ -1,6 +1,6 @@
 # Single-daemon review triage
 
-**Date**: 2026-09-06 · **Status**: review complete, acceptance in progress
+**Date**: 2026-09-06 · **Status**: follow-up review found blockers; acceptance in progress
 
 The [source review](single-daemon-final-surface.md) examined the daemon and
 multiplayer working tree against the pinned lifecycle baseline. A separate
@@ -9,11 +9,22 @@ review examined the private-query SQLite repair now submitted as
 
 ## Bottom line
 
-**No new actionable source finding was reported; release acceptance remains open.**
+**The first source pass reported no new actionable finding. The subsequent
+independent PR review found blockers; the PR is not ready to merge.**
 
-There are no new finding IDs to disposition. The review did not turn the
-previously measured resource defect or the missing platform evidence into
-passing results.
+The later review is pinned to `3cc360b5`. It identified a readiness query
+whose timeout requests daemon shutdown before HTTP authentication, and a
+caller-controlled transfer budget whose expiry poisons the session reader.
+Both paths were verified against the source. The reviewer is leading a
+separate fix branch; its final report and verified fixes must supersede this
+checkpoint before merge.
+
+Additional reports cover domain reopen during quiescence and serialized
+catalogue/authorization work. A proposed helper-slot repair remains under
+review: nonzero native exit proves process termination, not necessarily
+joined retirement of its effect descendants. Preserve that distinction when
+triaging it. These findings do not close the previously measured SQLite
+retention or missing filesystem confinement.
 
 ## Where this stands
 
@@ -43,6 +54,30 @@ including 1,298 client tests, 204 TUI tests, 69 conformance tests, native Go
 checks and lint (zero errors, 615 warnings). The documentation-only descendant
 `5af17a7e` passed `make doc-check`. These results all predate adoption of the
 SQLite repair.
+
+[CI run 34026704945](https://github.com/Roasbeef/loom/actions/runs/34026704945)
+on `3cc360b5` passed the Linux full gate, bootstrap and deliverable smokes,
+Linux jail job, and 200-seed soak. The macOS job failed one client soak
+assertion: B's authenticated full-snapshot transfer took 3070 milliseconds
+against an aggregate 1000-millisecond bound. The other 1297 client tests
+passed. Five unchanged local reproductions and a single-scheduler run passed;
+neither the failing cycle nor the responsible stage was recorded in CI.
+The paired full-snapshot correction compares the same immutable B entries
+before and while A is unread in each cycle. It bounds the stressed total by
+twice that cycle's baseline plus 250 milliseconds. Individual receive deadlines,
+finite credits, full transfer validation and provider/retirement assertions
+remain. This measures the stalled peer's penalty rather than imposing a fixed
+deadline on a growing number of serial credits. The independent reviewer
+rejected an initial-response-only bound because it could miss later credit
+slowdown; the paired design retains that check.
+
+Five corrected runs passed. A temporary delay before each stressed credit
+failed the paired assertion: baseline 102 milliseconds, stressed 866, allowed
+454, with two credits and no receive timeout. The restored source passed in
+17.80 seconds; independent verification passed in 17.33 seconds. The test-only
+correction is `13969336`. Both totals and stage timings are emitted before the assertion
+and saved in the fixture JSONL. This does not establish which stage caused
+the earlier CI delay, nor dismiss that failure as a flake.
 
 The original soak adds 192 database/WAL descriptors over 16 measured cycles.
 An explicit evaluation of the repaired binding holds the count at 68 across
