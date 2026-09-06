@@ -120,6 +120,16 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
 - **Non-finite floats are corruption**, in JSON and msgpack alike: the
   BEAM cannot represent NaN or infinity. JSON ints are arbitrary
   precision; msgpack ints outside `[-2^63, 2^64-1]` are encode errors.
+- **A tool call's arguments are always a JSON object, even when the model
+  did not send one.** Argument text the streaming adapters could not parse
+  settles as `message.malformed_arguments`, an object under the reserved
+  `malformed_arguments_field` carrying the raw text and the parser's
+  complaint. That keeps the durable value replayable — the Anthropic and
+  Gemini dialects refuse a tool call whose input is not an object — and
+  gives `machine/planner` something to recognize and refuse in-band
+  (issue #189). The raw excerpt is bounded at the constructor, as
+  `corruption.report`'s context is, because it is unparsed model output
+  that a durable entry replays on every later turn.
 - **Minting is pure and reproducible.** The same `Generator` value always
   mints the same ids; the runtime seeds it from real entropy, tests from a
   constant. Production wiring must supply seeds that never repeat within a

@@ -25,6 +25,7 @@
 
 import core/json.{type JsonValue}
 import gleam/option.{type Option}
+import gleam/string
 
 /// Historical human attribution captured by the authenticated admission host.
 /// This carries no credential or authority; `core/origin` validates its bounds.
@@ -147,8 +148,10 @@ pub type ToolResultBlock {
 /// Constructor invariants: `id` is the provider's call id, unique within
 /// its assistant message and echoed by the matching tool result;
 /// `arguments` is a `Json` object matching the tool's schema (validated at
-/// the tool boundary, not here); `thought_signature` and `namespace` are
-/// provider-specific opaque metadata.
+/// the tool boundary, not here), or the sentinel `malformed_arguments`
+/// builds when the model's argument text was not JSON at all;
+/// `thought_signature` and `namespace` are provider-specific opaque
+/// metadata.
 pub type ToolCall {
   ToolCall(
     id: String,
@@ -157,6 +160,124 @@ pub type ToolCall {
     thought_signature: Option(String),
     namespace: Option(String),
   )
+}
+
+/// The reserved field name a tool call's `arguments` carries when the
+/// model's argument text was not a JSON document.
+///
+/// A streaming adapter accumulates a call's arguments as text and parses
+/// that text once the block closes. One unbalanced brace there used to end
+/// the whole turn, because the parse failure was the stream's failure and a
+/// malformed stream is terminal — so a response whose other blocks were
+/// perfectly good died, and the model never learned which call it had got
+/// wrong. The failure now travels *as* the arguments instead: the adapter
+/// settles the call, the planner refuses it in-band, and the model reads
+/// the refusal next turn like any other invalid-arguments error.
+///
+/// The name is namespaced so no tool schema can collide with it, and the
+/// value stays a JSON *object* because the Anthropic and Gemini dialects
+/// reject a replayed tool call whose input is anything else.
+pub const malformed_arguments_field = "$loom/malformed_arguments"
+
+/// The most graphemes of the model's argument text `malformed_arguments`
+/// keeps. The text is unparsed model output of any size the wire allows,
+/// and it lands in a durable entry that is replayed to the provider on
+/// every later turn, so the excerpt is bounded at the constructor exactly
+/// as `corruption.report` bounds its own. Long enough for the model to
+/// recognize the call it botched; short enough that a megabyte of garbage
+/// cannot be made to ride along forever.
+pub const max_malformed_arguments_length = 1024
+
+/// Builds the sentinel `arguments` for a tool call whose argument text did
+/// not parse: `raw` is what the model emitted, bounded to
+/// `max_malformed_arguments_length` graphemes, and `reason` says why the
+/// parser refused it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert message.malformed_arguments(raw: "{\"a\":", reason: "eof")
+///   == json.Object([
+///     #(
+///       message.malformed_arguments_field,
+///       json.Object([
+///         #("raw", json.String("{\"a\":")),
+///         #("reason", json.String("eof")),
+///       ]),
+///     ),
+///   ])
+/// ```
+///
+pub fn malformed_arguments(
+  raw raw: String,
+  reason reason: String,
+) -> JsonValue {
+  json.Object([
+    #(
+      malformed_arguments_field,
+      json.Object([
+        #("raw", json.String(bound_raw(raw))),
+        #("reason", json.String(reason)),
+      ]),
+    ),
+  ])
+}
+
+/// Reads the sentinel back as `#(raw, reason)`, or `Error(Nil)` for
+/// arguments of any other shape — an ordinary object included, and also an
+/// object that merely borrows the reserved name with a differently shaped
+/// payload, which nothing in the tree produces and which must therefore not
+/// be mistaken for one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert message.malformed_arguments_of(message.malformed_arguments(
+///   raw: "{",
+///   reason: "eof",
+/// ))
+///   == Ok(#("{", "eof"))
+/// ```
+///
+pub fn malformed_arguments_of(
+  arguments: JsonValue,
+) -> Result(#(String, String), Nil) {
+  case arguments {
+    json.Object([
+      #(
+        field,
+        json.Object([
+          #("raw", json.String(raw)),
+          #("reason", json.String(reason)),
+        ]),
+      ),
+    ])
+      if field == malformed_arguments_field
+    -> Ok(#(raw, reason))
+
+    json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(Nil)
+  }
+}
+
+// Truncates an oversized raw excerpt, marking the cut with an ellipsis.
+//
+// Asked with `drop_start`, which walks at most the bound and stops, rather
+// than with `string.length`, which would walk the whole excerpt to answer a
+// question settled long before its end — the R5 shape, and here the walk
+// would be proportional to whatever the model chose to emit.
+fn bound_raw(raw: String) -> String {
+  case string.drop_start(raw, max_malformed_arguments_length) {
+    "" -> raw
+    _ ->
+      string.slice(raw, at_index: 0, length: max_malformed_arguments_length)
+      <> "…"
+  }
 }
 
 /// Why a provider response ended. Mirrors pi's `StopReason` union; the
