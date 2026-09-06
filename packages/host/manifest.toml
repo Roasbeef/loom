@@ -7,44 +7,28 @@
 # You should check this file into your source control repository.
 
 packages = [
-  { name = "argv", version = "1.1.0", build_tools = ["gleam"], requirements = [], otp_app = "argv", source = "hex", outer_checksum = "3277D100448BDB4A29B6D58C0F36F631CBC349E8BDD09766C6309DF202831140" },
-  { name = "casefold", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "casefold", source = "hex", outer_checksum = "6E1EBB01B945448EE43BE5618F122341F9D876442E65F28FD3948009C31CE3E5" },
   { name = "core", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], source = "local", path = "../core" },
-  { name = "etui", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_javascript", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/etui.git", commit = "702a88415d66acab7c977da41850a7e02cc2ebed" },
   { name = "exception", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "6BDEA95248093599391C3B5DF1835C5C6A86C353C2F99CE539B450E3432FE117" },
   { name = "filepath", version = "1.1.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "B06A9AF0BF10E51401D64B98E4B627F1D2E48C154967DA7AF4D0914780A6D40A" },
   { name = "gleam_crypto", version = "1.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_crypto", source = "hex", outer_checksum = "2DE9E4EF53CF6FEE049D4F765731F7178F7A11AEFAE00EEE63BF7536B354AD3F" },
   { name = "gleam_erlang", version = "1.3.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_erlang", source = "hex", outer_checksum = "1124AD3AA21143E5AF0FC5CF3D9529F6DB8CA03E43A55711B60B6B7B3874375C" },
-  { name = "gleam_http", version = "4.3.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_http", source = "hex", outer_checksum = "82EA6A717C842456188C190AFB372665EA56CE13D8559BF3B1DD9E40F619EE0C" },
-  { name = "gleam_javascript", version = "1.0.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_javascript", source = "hex", outer_checksum = "D542C4B4F40E942F5D3372D524419FA521A7BB92D621AF696CC286E89D882D55" },
+  { name = "gleam_http", version = "4.4.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_http", source = "hex", outer_checksum = "F065CE9941A7756ABBAEAE7F9F32A96CAD29DA3311A381DB2D926EA8E8C156DC" },
   { name = "gleam_otp", version = "1.3.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "gleam_otp", source = "hex", outer_checksum = "DE4CA6850842F0266EE95317A25DD6A0A0F20CDFAB7C0ADC2E63251D7C3C72EC" },
-  { name = "gleam_regexp", version = "1.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_regexp", source = "hex", outer_checksum = "9C215C6CA84A5B35BB934A9B61A9A306EC743153BE2B0425A0D032E477B062A9" },
   { name = "gleam_stdlib", version = "1.0.5", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "CEE5B6C076A85B45F60C585F4316C63EC8B7127C119D5738C3958A9C4D50404E" },
-  { name = "gleamy_bench", version = "0.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleamy_bench", source = "hex", outer_checksum = "DEF68E4B097A56781282F0F9D48371A0ABBCDDCF89CAD05B28C3BEDD6B2E8DF3" },
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gramps", source = "hex", outer_checksum = "D55636072DEE173F6586A5679D3C02EC7A0DE3F8646B78C351B72908FF223DF7" },
-  { name = "host", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_http", "gleam_stdlib", "stratus", "weft"], source = "local", path = "../host" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
-  { name = "machine", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../machine" },
-  { name = "mork", version = "1.12.1", build_tools = ["gleam"], requirements = ["casefold", "gleam_regexp", "gleam_stdlib", "splitter"], otp_app = "mork", source = "hex", outer_checksum = "73CEB1DBF2C4E827D420970729EEE8931D324D23612869938F729DEFFEDBB820" },
-  { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
-  { name = "splitter", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "3DFD6B6C49E61EDAF6F7B27A42054A17CFF6CA2135FF553D0CB61C234D281DD0" },
+  { name = "simplifile", version = "1.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "1D5DFA3A2F9319EC85825F6ED88B8E449F381B0D55A62F5E61424E748E7DDEB0" },
   { name = "stratus", version = "3.0.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "gramps", "logging"], otp_app = "stratus", source = "hex", outer_checksum = "21C93D657E4E7964E36EACDE83609459F259289DF403B5FEBD3C60612594BE24" },
   { name = "weft", version = "0.4.4", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "47B5002E788B95CD8BEF47DC3BE72526524EF16D88479871662CA0A81C088A31" },
 ]
 
 [requirements]
-argv = { version = ">= 1.1.0 and < 2.0.0" }
 core = { path = "../core" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "702a88415d66acab7c977da41850a7e02cc2ebed" }
-filepath = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.0.0 and < 5.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
-gleamy_bench = { version = ">= 0.6.0 and < 1.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
-host = { path = "../host" }
-machine = { path = "../machine" }
-mork = { version = ">= 1.12.1 and < 1.13.0" }
-simplifile = { version = ">= 2.0.0 and < 3.0.0" }
+simplifile = { version = ">= 1.0.0 and < 2.0.0" }
+stratus = { version = ">= 3.0.0 and < 4.0.0" }
 weft = { version = "== 0.4.4" }

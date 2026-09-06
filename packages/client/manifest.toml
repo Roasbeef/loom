@@ -33,29 +33,30 @@ packages = [
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "glexer", version = "2.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "splitter"], otp_app = "glexer", source = "hex", outer_checksum = "D423CF63B8D4F9654EF53D0AF4904B249EB0679BD41C63440170AC508C9CC65E" },
   { name = "glisten", version = "9.0.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "logging"], otp_app = "glisten", source = "hex", outer_checksum = "7795AA50830656F3A0316A6B26595F893C83272DA901B3405E31339CAA31A10B" },
-  { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gramps", source = "hex", outer_checksum = "D55636072DEE173F6586A5679D3C02EC7A0DE3F8646B78C351B72908FF223DF7" },
+  { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/gramps.git", commit = "a37a8ae3fe2531375b49b865c155eb2987d4d22a" },
+  { name = "host", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_http", "gleam_stdlib", "stratus", "weft"], source = "local", path = "../host" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "machine", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../machine" },
-  { name = "mcp", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib"], source = "local", path = "../mcp" },
-  { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "1B07F321D5FA0CB162D81496F2DE96AEB6EF8980F4F38230A4CC3F849497E020" },
+  { name = "mcp", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "weft"], source = "local", path = "../mcp" },
+  { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], source = "git", repo = "https://github.com/Roasbeef/mist.git", commit = "65b29375ecefc9a5d58bf4190a2eee41d7dd1db5" },
   { name = "mork", version = "1.12.1", build_tools = ["gleam"], requirements = ["casefold", "gleam_regexp", "gleam_stdlib", "splitter"], otp_app = "mork", source = "hex", outer_checksum = "73CEB1DBF2C4E827D420970729EEE8931D324D23612869938F729DEFFEDBB820" },
   { name = "parrot", version = "2.3.0", build_tools = ["gleam"], requirements = ["argv", "envoy", "filepath", "gleam_crypto", "gleam_httpc", "gleam_json", "gleam_stdlib", "gleam_time", "glearray", "repeatedly", "simplifile", "tom"], otp_app = "parrot", source = "hex", outer_checksum = "236C3B20EF03468AFD665C3107C5E7D9128344D06A5950F55822FC5B3B35FBC3" },
   { name = "prompt", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../prompt" },
   { name = "provider", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "weft"], source = "local", path = "../provider" },
   { name = "repeatedly", version = "2.1.2", build_tools = ["gleam"], requirements = [], otp_app = "repeatedly", source = "hex", outer_checksum = "93AE1938DDE0DC0F7034F32C1BF0D4E89ACEBA82198A1FE21F604E849DA5F589" },
   { name = "runtime", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "machine", "provider", "session", "storage", "telemetry", "weft"], source = "local", path = "../runtime" },
-  { name = "session", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib", "machine", "storage"], source = "local", path = "../session" },
+  { name = "session", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib", "machine", "storage"], source = "local", path = "../session" },
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "splitter", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "3DFD6B6C49E61EDAF6F7B27A42054A17CFF6CA2135FF553D0CB61C234D281DD0" },
   { name = "sqlight", version = "1.2.0", build_tools = ["gleam"], requirements = ["esqlite", "gleam_stdlib"], otp_app = "sqlight", source = "hex", outer_checksum = "841768D0A81107EE2DB46B949354F284A68B2E8098315C28A1FE3C07D206C17A" },
-  { name = "storage", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "simplifile", "sqlight"], source = "local", path = "../storage" },
+  { name = "storage", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_otp", "gleam_stdlib", "parrot", "simplifile", "sqlight"], source = "local", path = "../storage" },
   { name = "stratus", version = "3.0.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "gramps", "logging"], otp_app = "stratus", source = "hex", outer_checksum = "21C93D657E4E7964E36EACDE83609459F259289DF403B5FEBD3C60612594BE24" },
   { name = "telemetry", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_erlang", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tools", version = "0.1.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_stdlib", "simplifile"], source = "local", path = "../tools" },
-  { name = "tui", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "mork", "simplifile", "stratus", "weft"], source = "local", path = "../tui" },
-  { name = "weft", version = "0.4.3", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "21782197C8C94F2211FCAB5D50E05674E64B4BC1B7BE81F938EF919F23589DBC" },
+  { name = "tui", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "etui", "filepath", "gleam_erlang", "gleam_http", "gleam_stdlib", "host", "machine", "mork", "simplifile", "weft"], source = "local", path = "../tui" },
+  { name = "weft", version = "0.4.4", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], otp_app = "weft", source = "hex", outer_checksum = "47B5002E788B95CD8BEF47DC3BE72526524EF16D88479871662CA0A81C088A31" },
 ]
 
 [requirements]
@@ -74,17 +75,19 @@ gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_time = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
+host = { path = "../host" }
 machine = { path = "../machine" }
 mcp = { path = "../mcp" }
-mist = { version = ">= 6.0.3 and < 7.0.0" }
+mist = { git = "https://github.com/Roasbeef/mist.git", ref = "65b29375ecefc9a5d58bf4190a2eee41d7dd1db5" }
 prompt = { path = "../prompt" }
 provider = { path = "../provider" }
 runtime = { path = "../runtime" }
 session = { path = "../session" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
+sqlight = { version = ">= 1.0.0 and < 2.0.0" }
 storage = { path = "../storage" }
 telemetry = { path = "../telemetry" }
 tom = { version = ">= 2.1.0 and < 3.0.0" }
 tools = { path = "../tools" }
 tui = { path = "../tui" }
-weft = { version = ">= 0.4.3 and < 1.0.0" }
+weft = { version = "== 0.4.4" }
