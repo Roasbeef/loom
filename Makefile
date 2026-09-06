@@ -287,6 +287,9 @@ e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the r
 	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
 		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-150}" \
 		bash scripts/test.sh client --match client@daemon_shipped_recovery_test:
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-270}" \
+		bash scripts/test.sh client --match client@daemon_shipped_identity_recovery_test:
 
 .PHONY: conformance
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
