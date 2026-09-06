@@ -150,9 +150,11 @@ jobs:
               dist/loomd-0.1.0-linux-x86_64.tar.gz
           } | tee -a distribution-linux.log
 
-      # The gate installed every prerequisite above, so any skip left in
-      # the log is coverage this run is not entitled to claim.
+      # Only the live-tool subsection may lack the helper's demanded kernel
+      # enforcement here. The delegated jail job runs it without this waiver.
       - name: Skip census
+        env:
+          LOOM_DECLARED_SKIPS: .github/declared-skips-linux-gate
         run: .github/scripts/skip_census.sh "gate (linux)" check.log
 
       # actions/upload-artifact v7.0.1
@@ -447,6 +449,22 @@ jobs:
       - name: Skip census (end to end)
         run: .github/scripts/skip_census.sh "jail (linux, e2e)" e2e.log e2e-codemode.log
 
+      # The ordinary gate can observe a missing enforcement prerequisite, but
+      # this job has already supplied and verified the delegated kernel setup.
+      - name: Shipped multiplayer with delegated enforcement
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_TEST_TIMEOUT_SECONDS: 180
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          make binaries server-shipment
+          bash scripts/test.sh client --match client@tui_shipped_multiplayer_test: \
+            2>&1 | tee shipped-multiplayer.log
+
+      - name: Skip census (shipped multiplayer)
+        run: .github/scripts/skip_census.sh "jail (linux, shipped multiplayer)" shipped-multiplayer.log
+
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -457,6 +475,7 @@ jobs:
             go-jail.log
             e2e.log
             e2e-codemode.log
+            shipped-multiplayer.log
           retention-days: 14
 
   # ------------------------------------------------------------- the oracle
