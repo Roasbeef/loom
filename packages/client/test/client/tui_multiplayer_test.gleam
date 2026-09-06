@@ -15,7 +15,6 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/dict
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -171,10 +170,6 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
             _ -> False
           }
         })
-      case string.contains(inspected.frame, "same-action") {
-        True -> Nil
-        False -> io.println(inspected.frame)
-      }
       assert string.contains(inspected.frame, "same-action")
       assert string.contains(inspected.frame, "wall_seconds")
       assert string.contains(
@@ -213,19 +208,38 @@ pub fn tui_multiplayer_operators_race_exact_approval_and_observer_sees_winner_te
       as "the exact lookup supplies the committed winner"
     assert decision(b, pending.id) == Ok(winner)
     assert decision(o, pending.id) == Ok(winner)
-    assert winner.seq > a_question.seq
+
+    // Both commands carry the same captured seq and the escalation register's
+    // compare-and-set admits exactly one of them, so the winning write sits
+    // one sequence above the question. Without that fence both decisions
+    // commit in turn and the terminal record sits two above — an outcome
+    // "greater than" cannot tell from this one.
+    assert winner.seq == a_question.seq + 1
     let assert Some(author) = winner.origin
       as "resolution author comes from the winning durable record"
-    case winner.status {
+    let loser = case winner.status {
       approval.Approved -> {
         assert author.principal == "alice"
+        bob.data
       }
       approval.Rejected -> {
         assert author.principal == "bob"
+        alice.data
       }
       approval.Pending | approval.Consumed ->
         panic as "exactly one explicit decision wins"
     }
+
+    // The losing operator is refused rather than quietly ignored, but that
+    // refusal is not asserted here. `append_error` puts it in the transcript
+    // and the notice, and the very cut that carries the winner's resolution
+    // replaces the transcript while the next presence line replaces the
+    // notice, so the loser's terminal holds no durable trace of it by the time
+    // this driver samples. The wire-level refusal (`stale_approval`) is pinned
+    // by tui_approval_effect_test, and the seq arithmetic above already proves
+    // exactly one decision committed. Making local refusals survive a cut is
+    // a terminal change recorded as a follow-up, not a test to loosen.
+    let _ = loser
     assert string.contains(o.frame, author.name)
     let assert Some(#(after_cut, after_view)) = o.model.captured
       as "decision lookup never substitutes its sparse metadata for the conversation view"

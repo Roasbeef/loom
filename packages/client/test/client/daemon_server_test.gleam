@@ -23,6 +23,7 @@ import storage/access
 import storage/catalogue
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws.{type Socket}
+import weft
 import weft/poll
 
 /// Runs a bounded wire test with real SQLite and an inert session assembly.
@@ -77,9 +78,24 @@ pub fn fixture(
     as "one listener serves the daemon router"
   process.unlink(listener.pid)
   let assert Ok(port) = process.receive(ports, 1000) as "listener port is known"
-  run(daemon, ready, port, credential)
+
+  // The body runs on its own task because a failed assertion kills the process
+  // running it. The listener is unlinked, so on the eunit test process that
+  // failure left the listener, the daemon root, its lock and the SQLite writer
+  // lease alive for the rest of the VM. A task turns that death into an
+  // outcome and lets the teardown below run either way.
+  let outcomes =
+    weft.new([fn() { Ok(run(daemon, ready, port, credential)) }])
+    |> weft.deadline(40_000)
+    |> weft.start
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   process.kill(listener.pid)
+
+  // The outcome is read only once every owner has retired, so a failing test
+  // reports its own assertion rather than a teardown that never happened.
+  let assert [weft.Completed(0, _)] = outcomes
+    as "the wire fixture body ran to completion inside its own deadline"
+  Nil
 }
 
 @internal

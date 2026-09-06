@@ -18,6 +18,7 @@ import simplifile
 import storage/domain
 import tui/daemon
 import tui/daemon/protocol
+import weft
 import weft/poll
 
 fn address(port) {
@@ -250,54 +251,86 @@ fn controlled_peer(run) {
 }
 
 fn peer_listener(initial, run) {
-  let ports = process.new_subject()
-  let peers = process.new_subject()
-  let incoming = process.new_subject()
-  let closed = process.new_subject()
-  let assert Ok(listener) =
-    mist.new(fn(request) {
-      mist.websocket_with_options(
-        request:,
-        options: mist.WebsocketOptions(65_536, 65_536, mist.CompressionDisabled),
-        on_init: fn(_) {
-          let commands = process.new_subject()
-          process.send(peers, commands)
-          case initial {
-            Some(text) -> process.send(commands, Send(text))
-            None -> Nil
-          }
-          #(Nil, Some(process.new_selector() |> process.select(commands)))
-        },
-        on_close: fn(_) { process.send(closed, Nil) },
-        handler: fn(_, event, socket) {
-          case event {
-            mist.Text(text) -> {
-              process.send(incoming, text)
-              mist.continue(Nil)
-            }
-            mist.Custom(Send(text)) -> {
-              let assert Ok(Nil) = mist.send_text_frame(socket, text)
-                as "controlled peer sends its scheduled frame"
-              mist.continue(Nil)
-            }
-            mist.Custom(Disconnect)
-            | mist.Closed
-            | mist.Shutdown
-            | mist.Binary(_) -> mist.stop()
-          }
-        },
-      )
-    })
-    |> mist.bind("127.0.0.1")
-    |> mist.port(0)
-    |> mist.after_start(fn(port, _, _) { process.send(ports, port) })
-    |> mist.start
-    as "controlled listener starts"
-  process.unlink(listener.pid)
-  let assert Ok(port) = process.receive(ports, 1000)
-    as "controlled port is published"
-  run(port, peers, incoming, closed)
-  process.kill(listener.pid)
+  let listeners = process.new_subject()
+
+  // The listener and the body share one task. They have to: the peer, arrival
+  // and close subjects can only be received on by the process that owns them,
+  // and the body is what receives on all three. The task is also what makes a
+  // failed assertion survivable — it kills the process running the body, and
+  // an unlinked listener would otherwise keep serving for the rest of the VM's
+  // life. Publishing the pid before the body runs is what lets this process
+  // retire the listener whether the body passed, failed, or ran out of time.
+  let outcomes =
+    weft.new([
+      fn() {
+        let ports = process.new_subject()
+        let peers = process.new_subject()
+        let incoming = process.new_subject()
+        let closed = process.new_subject()
+        let assert Ok(listener) =
+          mist.new(fn(request) {
+            mist.websocket_with_options(
+              request:,
+              options: mist.WebsocketOptions(
+                65_536,
+                65_536,
+                mist.CompressionDisabled,
+              ),
+              on_init: fn(_) {
+                let commands = process.new_subject()
+                process.send(peers, commands)
+                case initial {
+                  Some(text) -> process.send(commands, Send(text))
+                  None -> Nil
+                }
+                #(Nil, Some(process.new_selector() |> process.select(commands)))
+              },
+              on_close: fn(_) { process.send(closed, Nil) },
+              handler: fn(_, event, socket) {
+                case event {
+                  mist.Text(text) -> {
+                    process.send(incoming, text)
+                    mist.continue(Nil)
+                  }
+                  mist.Custom(Send(text)) -> {
+                    let assert Ok(Nil) = mist.send_text_frame(socket, text)
+                      as "controlled peer sends its scheduled frame"
+                    mist.continue(Nil)
+                  }
+                  mist.Custom(Disconnect)
+                  | mist.Closed
+                  | mist.Shutdown
+                  | mist.Binary(_) -> mist.stop()
+                }
+              },
+            )
+          })
+          |> mist.bind("127.0.0.1")
+          |> mist.port(0)
+          |> mist.after_start(fn(port, _, _) { process.send(ports, port) })
+          |> mist.start
+          as "controlled listener starts"
+        process.send(listeners, listener.pid)
+        process.unlink(listener.pid)
+        let assert Ok(port) = process.receive(ports, 1000)
+          as "controlled port is published"
+        Ok(run(port, peers, incoming, closed))
+      },
+    ])
+    |> weft.deadline(40_000)
+    |> weft.start
+
+  // The publication precedes everything that can fail, so this answers at once
+  // for a listener that started. Only the case where the bind itself failed
+  // waits, and it waits for a bounded moment rather than reading the empty
+  // mailbox of a task whose send has not landed yet.
+  case process.receive(listeners, 100) {
+    Ok(pid) -> process.kill(pid)
+    Error(Nil) -> Nil
+  }
+  let assert [weft.Completed(0, _)] = outcomes
+    as "the controlled-peer body ran to completion inside its own deadline"
+  Nil
 }
 
 fn received(incoming) {
@@ -314,6 +347,15 @@ fn reply(id, event, body) {
   text
 }
 
+/// An expired request retires its owner: the deadline is the only thing that
+/// ends it, every later request answers `Disconnected`, and the reply that
+/// arrives afterwards matches nothing. The in-flight refusal is a separate
+/// question and lives in its own case below, because asserting it here meant
+/// racing this test's own 100 ms deadline.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_timeout_never` runs this case.
 pub fn tui_daemon_timeout_never_resends_or_matches_a_late_reply_test() {
   controlled_peer(fn(control, peer, incoming) {
     let outcomes = process.new_subject()
@@ -327,7 +369,6 @@ pub fn tui_daemon_timeout_never_resends_or_matches_a_late_reply_test() {
       })
     let first = received(incoming)
     assert first.command == server_protocol.Shutdown("controlled")
-    assert daemon.request(control, protocol.Status, 1000) == Error(daemon.Busy)
     assert process.receive(outcomes, 1000)
       == Ok(Error(daemon.UnknownOutcome("daemon.shutdown")))
     let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
@@ -348,10 +389,13 @@ pub fn tui_daemon_timeout_never_resends_or_matches_a_late_reply_test() {
 
     // Even reused request IDs belong to a new socket and new control inbox.
     controlled_peer(fn(replacement, replacement_peer, replacement_incoming) {
+      // This nested body owns its own process, so its worker reports here
+      // rather than into the outstanding subject the enclosing body owns.
+      let replacements = process.new_subject()
       let _worker =
         process.spawn(fn() {
           process.send(
-            outcomes,
+            replacements,
             daemon.request(
               replacement,
               protocol.WorkspaceDefault("/work"),
@@ -380,10 +424,48 @@ pub fn tui_daemon_timeout_never_resends_or_matches_a_late_reply_test() {
           ]),
         )),
       )
-      assert process.receive(outcomes, 1000)
+      assert process.receive(replacements, 1000)
         == Ok(Error(daemon.Refused("not_found", "request refused")))
       assert process.receive(replacement_incoming, 0) == Error(Nil)
     })
+  })
+}
+
+/// A control owner serves one request at a time, and the refusal that says so
+/// must not be reachable by a retired owner: `Busy` and `Disconnected` are
+/// different answers to different questions, and a test that asserted `Busy`
+/// inside the outstanding request's own 100 ms window was asking both at once.
+/// Here the peer holds the first request open under a deadline that cannot
+/// fire during the assertion, so only the phase decides.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_a_second_request` runs this case.
+pub fn tui_daemon_a_second_request_while_one_is_in_flight_is_busy_test() {
+  controlled_peer(fn(control, peer, incoming) {
+    let outcomes = process.new_subject()
+    let _worker =
+      process.spawn(fn() {
+        process.send(
+          outcomes,
+          daemon.request(control, protocol.Shutdown, 30_000),
+        )
+      })
+    let first = received(incoming)
+    assert first.command == server_protocol.Shutdown("controlled")
+    assert daemon.request(control, protocol.Status, 1000) == Error(daemon.Busy)
+
+    // The held request is settled by an answer rather than left to expire, so
+    // nothing in this test depends on a timer and no worker outlives it.
+    process.send(
+      peer,
+      Send(reply(
+        first.id,
+        "daemon.shutdown",
+        json.Object([#("state", json.String("draining"))]),
+      )),
+    )
+    assert process.receive(outcomes, 1000) == Ok(Ok(protocol.ShutdownReply))
   })
 }
 

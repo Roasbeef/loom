@@ -36,6 +36,7 @@ import runtime/writer
 import storage/domain
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import weft
 import weft/poll
 import weft/registry
 
@@ -118,10 +119,29 @@ pub fn fixture(run) {
   process.unlink(listener.pid)
   let assert Ok(port) = process.receive(ports, within: 1000)
     as "the bound port arrives"
-  run(port, credential, view.registration.id, ready.epoch, harness)
+
+  // The body runs on its own task because a failed assertion kills the process
+  // running it. The listener is unlinked, so on the eunit test process that
+  // failure left the listener, the daemon root, its lock and the SQLite writer
+  // lease alive for the rest of the VM, beside every later test. A task turns
+  // that death into an outcome and lets the teardown below run either way.
+  let outcomes =
+    weft.new([
+      fn() {
+        Ok(run(port, credential, view.registration.id, ready.epoch, harness))
+      },
+    ])
+    |> weft.deadline(40_000)
+    |> weft.start
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   let _ = api.close(harness.runtime)
   process.kill(listener.pid)
+
+  // The outcome is read only once every owner has retired, so a failing test
+  // reports its own assertion rather than a teardown that never happened.
+  let assert [weft.Completed(0, _)] = outcomes
+    as "the fixture body ran to completion inside its own deadline"
+  Nil
 }
 
 fn field(value, name) {
@@ -162,7 +182,11 @@ pub fn drain(socket, snapshot_id, index, chunks, remaining) {
         remaining - 1,
       )
     json.String("snapshot_end") -> list.reverse(chunks)
-    _ -> panic as "a credited transfer yields a chunk or its end"
+    other ->
+      panic as {
+        "a credited transfer yields a chunk or its end, not "
+        <> string.inspect(other)
+      }
   }
 }
 

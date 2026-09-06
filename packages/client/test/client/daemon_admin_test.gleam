@@ -21,6 +21,7 @@ import storage/catalogue
 import storage/domain
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
+import weft
 import weft/poll
 
 fn field(value, key) {
@@ -54,45 +55,76 @@ pub fn admin_cli_has_no_implicit_identity_or_owner_role_test() {
 }
 
 pub fn withheld_hello_reports_not_sent_and_sends_no_mutation_test() {
-  let commands = process.new_subject()
-  let ports = process.new_subject()
-  let assert Ok(listener) =
-    mist.new(fn(request) {
-      mist.websocket_with_options(
-        request:,
-        options: mist.WebsocketOptions(65_536, 65_536, mist.CompressionDisabled),
-        on_init: fn(_) { #(Nil, None) },
-        on_close: fn(_) { Nil },
-        handler: fn(_, message, _) {
-          case message {
-            mist.Text(text) -> {
-              process.send(commands, text)
-              mist.continue(Nil)
-            }
-            mist.Custom(Nil) -> mist.continue(Nil)
-            mist.Binary(_) | mist.Closed | mist.Shutdown -> mist.stop()
-          }
-        },
-      )
-    })
-    |> mist.bind("127.0.0.1")
-    |> mist.port(0)
-    |> mist.after_start(fn(port, _, _) { process.send(ports, port) })
-    |> mist.start
-    as "the test listener upgrades but deliberately withholds its hello"
-  process.unlink(listener.pid)
-  let assert Ok(port) = process.receive(ports, 1000)
-    as "listener reports its port"
-  let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
-  assert admin.exchange(
-      address,
-      string.repeat("a", 64),
-      "epoch",
-      parsed(["rotate", "member"]),
-    )
-    == Error("control handshake failed; request not sent")
-  assert process.receive(commands, 0) == Error(Nil)
-  process.kill(listener.pid)
+  let listeners = process.new_subject()
+
+  // The listener and the assertions share one task: the subject that observes
+  // the withheld mutation can only be received on by the process that owns it,
+  // and a failed assertion must not leave a live loopback listener behind. The
+  // pid is published before the body runs, so this process can retire the
+  // listener whether the body passed, failed, or ran out of time.
+  let outcomes =
+    weft.new([
+      fn() {
+        let commands = process.new_subject()
+        let ports = process.new_subject()
+        let assert Ok(listener) =
+          mist.new(fn(request) {
+            mist.websocket_with_options(
+              request:,
+              options: mist.WebsocketOptions(
+                65_536,
+                65_536,
+                mist.CompressionDisabled,
+              ),
+              on_init: fn(_) { #(Nil, None) },
+              on_close: fn(_) { Nil },
+              handler: fn(_, message, _) {
+                case message {
+                  mist.Text(text) -> {
+                    process.send(commands, text)
+                    mist.continue(Nil)
+                  }
+                  mist.Custom(Nil) -> mist.continue(Nil)
+                  mist.Binary(_) | mist.Closed | mist.Shutdown -> mist.stop()
+                }
+              },
+            )
+          })
+          |> mist.bind("127.0.0.1")
+          |> mist.port(0)
+          |> mist.after_start(fn(port, _, _) { process.send(ports, port) })
+          |> mist.start
+          as "the test listener upgrades but deliberately withholds its hello"
+        process.send(listeners, listener.pid)
+        process.unlink(listener.pid)
+        let assert Ok(port) = process.receive(ports, 1000)
+          as "listener reports its port"
+        let address = "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control"
+        assert admin.exchange(
+            address,
+            string.repeat("a", 64),
+            "epoch",
+            parsed(["rotate", "member"]),
+          )
+          == Error("control handshake failed; request not sent")
+        assert process.receive(commands, 0) == Error(Nil)
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(40_000)
+    |> weft.start
+
+  // The publication precedes everything that can fail, so this answers at once
+  // for a listener that started. Only the case where the bind itself failed
+  // waits, and it waits for a bounded moment rather than reading the empty
+  // mailbox of a task whose send has not landed yet.
+  case process.receive(listeners, 100) {
+    Ok(pid) -> process.kill(pid)
+    Error(Nil) -> Nil
+  }
+  let assert [weft.Completed(0, Nil)] = outcomes
+    as "the withheld-hello exchange completed on its own task"
+  Nil
 }
 
 pub fn owner_explicit_isolation_control_preserves_transcript_consent_test() {
