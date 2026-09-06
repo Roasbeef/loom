@@ -338,9 +338,27 @@ fn control(
       }
       case outcome {
         Ok(#(event, body)) -> {
+          // Which commands drain the daemon after their acknowledgement is
+          // written, enumerated for the reason `control_use` beside it is: a
+          // second shutdown-shaped command must arrive with a compiler prompt
+          // rather than inheriting "keep serving" from a catch-all.
           let after = case request.command {
             protocol.Shutdown(_) -> DrainDaemon
-            _ -> KeepServing
+            protocol.Status
+            | protocol.ListSessions(..)
+            | protocol.GetSession(_)
+            | protocol.WorkspaceDefault(_)
+            | protocol.GetOperation(..)
+            | protocol.SetDefault(..)
+            | protocol.IsolateSession(..)
+            | protocol.Invite(..)
+            | protocol.SetRole(..)
+            | protocol.RevokeMembership(..)
+            | protocol.RotateCredential(..)
+            | protocol.RevokeCredentials(..)
+            | protocol.CreateSession(..)
+            | protocol.OpenSession(..)
+            | protocol.StopSession(..) -> KeepServing
           }
           #(protocol.event(Some(request.id), event, body), after)
         }

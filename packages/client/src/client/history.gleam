@@ -40,8 +40,8 @@
 ////
 //// The shared adapter below uses one original, custody-published coordinator
 //// per workspace domain. It reads fresh catalogue sources without their writer
-//// leases, indexes bounded pages after commit hints, and filters current domain
-//// membership before ranking. Its original owner is not automatically replaced
+//// leases, indexes bounded pages after commit hints, and filters ranked
+//// results by current domain membership before the limit is applied. Its original owner is not automatically replaced
 //// after a failed retirement. The named holder described above remains the
 //// standalone adapter; its accepted gaps below do not describe shared domains.
 ////

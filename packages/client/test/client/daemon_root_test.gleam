@@ -180,6 +180,31 @@ pub fn missing_or_malformed_owner_token_never_resets_identity_test() {
     == Ok(<<"malformed":utf8>>)
 }
 
+// Readiness is a bounded query and nothing else. It is asked on the
+// unauthenticated HTTP path before a bearer is even read, and again on every
+// inbound session frame, both with a one-second budget — and it answered its
+// own timeout by casting `Stop`, which drains the whole daemon. A caller's
+// budget stops the caller's wait; the server's cleanup belongs to `main`,
+// which calls `shutdown` itself when startup readiness never arrives.
+pub fn a_timed_out_readiness_query_leaves_the_root_serving_test() {
+  let path = directory("ready-timeout")
+  let assert Ok(daemon) = root.start(configuration(path), inert())
+    as "root preparation returns an inert owned handle"
+
+  // The first readiness request starts the ladder and is postponed until the
+  // root serves, so a one-millisecond budget cannot be answered inside it —
+  // the shortest honest way to make a caller's wait expire against a root that
+  // is perfectly healthy.
+  assert root.ready(daemon, within: 1) == Error("daemon root request timed out")
+
+  let assert Ok(ready) = root.ready(daemon, within: 10_000)
+    as "an expired caller budget does not retire the root it asked"
+  assert ready.state_root == path
+  assert bootstrap.try_launch_lock(path <> "/daemon.lock") == Error("busy")
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+  released_lock(path)
+}
+
 pub fn second_root_cannot_take_the_live_lifetime_lock_test() {
   let path = directory("exclusive")
   let #(first, _) = start(path, inert())

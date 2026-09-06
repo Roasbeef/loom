@@ -1246,6 +1246,13 @@ fn env_catalog() -> catalog.Catalog {
 /// // serve.shutdown(booted)
 /// ```
 ///
+/// Internal to this package. The listener it raises is `client/server`'s,
+/// which attaches anonymously — one shared bearer, no principal, no role — and
+/// there is no v2 adapter behind it. Production serving is the daemon
+/// (`client/daemon/main`), and `main` above refuses this entry point outright;
+/// keeping the boot out of the package's public surface makes the
+/// unauthenticated attachment unreachable rather than merely unused.
+@internal
 pub fn boot(settings: Settings) -> Result(Booted, String) {
   boot_with(settings, logger: log.discard())
 }
@@ -1261,6 +1268,8 @@ pub fn boot(settings: Settings) -> Result(Booted, String) {
 /// // serve.boot_with(settings, logger: handler.install(level.Info))
 /// ```
 ///
+/// Internal to this package, for the reason `boot` is.
+@internal
 pub fn boot_with(
   settings: Settings,
   logger logger: Logger,

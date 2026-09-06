@@ -25,6 +25,7 @@
 //// and refuse replacement while that VM remains alive. This module publishes
 //// no endpoint and therefore does not claim to implement that final fence.
 
+import broker/internal/call
 import broker/token
 import client/daemon/lifetime
 import client/daemon/listener
@@ -254,7 +255,13 @@ pub fn start(
 }
 
 /// Starts or queries readiness with a bounded wait and no implicit session open.
-/// A timeout requests shutdown but leaves the caller holding its root handle.
+///
+/// This is a pure bounded query: the caller's budget stops the caller's wait
+/// and nothing else. It used to request a daemon-wide drain on its own
+/// timeout, which put whole-daemon shutdown behind a one-second budget on the
+/// unauthenticated HTTP path and on every inbound session frame. Startup is
+/// the one caller that owns "readiness never arrived", and `main.listen`
+/// already answers a failure there by calling `shutdown` itself.
 ///
 /// ## Examples
 ///
@@ -266,13 +273,7 @@ pub fn ready(
   root: Root(instance),
   within within: Int,
 ) -> Result(Ready(instance), String) {
-  case exchange(root, within, Readiness) {
-    Error("daemon root request timed out") -> {
-      request_shutdown(root)
-      Error("daemon root request timed out")
-    }
-    outcome -> outcome
-  }
+  exchange(root, within, Readiness)
 }
 
 /// Returns metadata authority for an existing control socket during drain.
@@ -496,25 +497,24 @@ pub fn shutdown(
   answer
 }
 
+// Every question put to the root is a monitored call with a budget, so a root
+// that dies mid-answer is reported rather than exiting the asker. The two ways
+// to get no reply stay distinct as `call.CallFault` values rather than as error
+// text a reader elsewhere has to recognize: a branch that turned on the exact
+// wording of a message produced here is how a caller's timeout came to request
+// the daemon's shutdown.
 fn exchange(
   root: Root(instance),
   within: Int,
   message: fn(Subject(Result(a, String))) -> Message(instance),
 ) -> Result(a, String) {
-  let watch = process.monitor(root.pid)
-  let replies = process.new_subject()
-  process.send(root.commands, message(replies))
-  let answer =
-    process.new_selector()
-    |> process.select(replies)
-    |> process.select_specific_monitor(watch, fn(_) {
-      Error("daemon root is unavailable")
-    })
-    |> process.selector_receive(int.max(within, 0))
-    |> result.replace_error("daemon root request timed out")
-    |> result.flatten
-  process.demonitor_process(watch)
-  answer
+  case
+    call.try_call(root.commands, waiting: int.max(within, 0), sending: message)
+  {
+    Ok(answer) -> answer
+    Error(call.NoReply) -> Error("daemon root request timed out")
+    Error(call.CalleeGone) -> Error("daemon root is unavailable")
+  }
 }
 
 fn handle(
@@ -625,15 +625,47 @@ fn ready_value(stage: Stage(instance)) {
   }
 }
 
+// This is the one door the owner credential leaves the root through, so the
+// pairs are written out rather than collapsed: a new `Phase` that should also
+// serve it, or a new `Stage` that must not, then arrives with a compiler
+// prompt instead of silently inheriting whichever side a catch-all picked.
+// Only a serving root holding a live registry serves it; everything else fails
+// closed.
 fn credential_for(phase: Phase, stage: Stage(instance)) {
   case phase, stage {
     Serving, Live(running) -> Ok(running.identity.credential)
-    _, _ -> Error("daemon listener credential is unavailable")
+
+    // A serving phase with no live stage is unreachable — `start_registry` is
+    // the only writer of both — and refusing keeps it that way.
+    Serving, Empty
+    | Serving, Directory(_)
+    | Serving, Locked(_)
+    | Serving, Catalogued(_)
+    | Serving, Authenticated(_)
+    | Serving, WitnessedClosed(_)
+    -> Error("daemon listener credential is unavailable")
+
+    // Before Serving the identity may not exist yet; after it, the listener
+    // is being retired or the root is fenced, and neither may mint a new one.
+    Dormant, _
+    | Starting, _
+    | Stopping, _
+    | Refused(_), _
+    | RecoveryBlocked(_), _
+    | Closed, _
+    -> Error("daemon listener credential is unavailable")
   }
 }
 
 // Each turn commits its acquired handle into Book before advancing. Cancel or
 // caller DOWN can run between stages; no admission capability escapes early.
+//
+// `advance` runs only in phase `Starting`, so the stages it can actually
+// observe are the startup ladder `Empty` through `Authenticated`. `Live` is
+// written by `start_registry`, which transitions to `Serving` in the same
+// turn, and `WitnessedClosed` only by `witness_gone`, which cannot run before
+// `Live` — so the last two arms are unreachable and record what the ordering
+// would have to become for them to fire, rather than an ordering that exists.
 fn advance(
   book: Book(instance),
 ) -> sm.Next(Phase, Book(instance), Message(instance)) {

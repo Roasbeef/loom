@@ -2,6 +2,15 @@
 //// the gateway, not work hidden in this module. Each successful continuation
 //// emits one bounded fragment; it never accumulates history or a reply queue.
 //// The gateway owns authorization, the absolute deadline and read failure.
+////
+//// A requested read carries the wait it may be answered in, and this module
+//// computes that wait rather than publishing the deadline for a caller to do
+//// the arithmetic with. The distinction is load-bearing: a transfer one
+//// millisecond short of its retention deadline used to fund a reader exchange
+//// with that millisecond, and the timeout which inevitably came back was then
+//// read as proof the storage actor was wedged — one read-only client's
+//// pacing stopping the session for every attachment. A read it cannot fund
+//// is now not a read at all but `Exhausted`.
 
 import client/protocol
 import core/ids
@@ -23,6 +32,19 @@ pub const metadata_encoded_limit = 2_097_152
 
 /// One transfer expires from capture, not from the last successful fragment.
 pub const lifetime_ms = 30_000
+
+/// The longest a single bounded reader exchange may wait (protocol-015).
+pub const reader_maximum_ms = 5000
+
+/// The shortest one may wait, below which no read is requested at all.
+///
+/// A read funded with the last few milliseconds of a retention window is a
+/// timeout with extra steps: the reader is asked a question it cannot answer
+/// in the time given, and the answer — `snapshot.ReadTimedOut` — is then
+/// read as evidence about the reader rather than the budget. Refusing under
+/// this floor is what keeps a client's own pacing out of the reader's health
+/// record; the gateway's split of that verdict is the second half of it.
+pub const reader_minimum_ms = 1000
 
 /// The history window is explicit; recent entries do not imply parent closure.
 pub type Window {
@@ -67,13 +89,25 @@ pub type Step {
   End(event: protocol.Event)
 
   /// Fetch at most one hundred descriptors between exclusive bounds.
-  ReadPage(after_seq: Int, before_seq: Int)
+  ///
+  /// `within_ms` is the wait this exchange is funded with, and it is carried
+  /// here rather than recomputed by the caller so that a read the transfer
+  /// cannot fund is unrepresentable: `step` answers `Exhausted` instead of
+  /// handing back a request with a budget nobody can wait out.
+  ReadPage(after_seq: Int, before_seq: Int, within_ms: Int)
 
   /// Fetch one storage-sized fragment, never a complete large record.
-  ReadFragment(descriptor: snapshot.Descriptor, offset: Int)
+  ///
+  /// `within_ms` is funded exactly as `ReadPage`'s is.
+  ReadFragment(descriptor: snapshot.Descriptor, offset: Int, within_ms: Int)
 
   /// Corruption or an inconsistent reader response refuses the transfer.
   Refused(reason: String)
+
+  /// Neither the retention window nor this request's own wall has enough left
+  /// to fund a bounded reader exchange, so none is requested. The transfer is
+  /// over from the client's point of view and it must capture a fresh one.
+  Exhausted
 }
 
 /// Starts a transfer only after the complete metadata fits its encoded budget.
@@ -143,28 +177,36 @@ pub fn expired(transfer: Transfer, now: Int) -> Bool {
   now >= transfer.deadline
 }
 
-/// Returns the remaining absolute budget, capped by the bounded reader seam.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // transfer.waiting(current, now)
-/// ```
-pub fn waiting(transfer: Transfer, now: Int) -> Int {
-  int.max(0, int.min(5000, transfer.deadline - now))
-}
-
 /// Produces one response or one bounded reader request without performing I/O.
 ///
+/// `now` is the current monotonic instant and `until` the instant by which the
+/// request being answered must have its reply, which the caller derives from
+/// the socket's own wait. A reader exchange is funded with whichever of the
+/// two remainders is smaller, capped at `reader_maximum_ms`; when that is
+/// below `reader_minimum_ms` the answer is `Exhausted` and no read is asked
+/// for. The budget arithmetic lives here, beside the deadline it is computed
+/// from, so no caller can spend a window this module knows to be gone.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // transfer.step(current)
+/// // transfer.step(current, now: 1000, until: 6000)
 /// ```
-pub fn step(transfer: Transfer) -> Step {
+pub fn step(transfer: Transfer, now now: Int, until until: Int) -> Step {
+  let budget =
+    int.min(reader_maximum_ms, int.min(transfer.deadline - now, until - now))
   case bit_array.byte_size(transfer.metadata) > 0 {
     True -> metadata_piece(transfer)
-    False -> entry_piece(transfer)
+    False -> entry_piece(transfer, budget)
+  }
+}
+
+// Every read request passes through here, which is what makes an under-funded
+// one unrepresentable rather than merely unlikely.
+fn funded(budget: Int, read: fn(Int) -> Step) -> Step {
+  case budget >= reader_minimum_ms {
+    True -> read(budget)
+    False -> Exhausted
   }
 }
 
@@ -200,11 +242,12 @@ fn metadata_piece(transfer: Transfer) -> Step {
   }
 }
 
-fn entry_piece(transfer: Transfer) -> Step {
+fn entry_piece(transfer: Transfer, budget: Int) -> Step {
   case transfer.entries {
     [] ->
       case transfer.range {
-        Some(#(after, before)) -> ReadPage(after, before)
+        Some(#(after, before)) ->
+          funded(budget, fn(within) { ReadPage(after, before, within) })
         None ->
           End(
             protocol.SnapshotEnd(
@@ -220,14 +263,18 @@ fn entry_piece(transfer: Transfer) -> Step {
             ),
           )
       }
-    [descriptor, ..rest] -> buffered_entry_piece(transfer, descriptor, rest)
+    [descriptor, ..rest] ->
+      buffered_entry_piece(transfer, descriptor, rest, budget)
   }
 }
 
 // A retained backend fragment is split without fetching or decoding the entry.
-fn buffered_entry_piece(transfer: Transfer, descriptor, rest) -> Step {
+fn buffered_entry_piece(transfer: Transfer, descriptor, rest, budget) -> Step {
   case bit_array.byte_size(transfer.fragment) {
-    0 -> ReadFragment(descriptor, transfer.offset)
+    0 ->
+      funded(budget, fn(within) {
+        ReadFragment(descriptor, transfer.offset, within)
+      })
     total -> {
       let size = int.min(piece_bytes, total - transfer.fragment_offset)
       case bit_array.slice(transfer.fragment, transfer.fragment_offset, size) {

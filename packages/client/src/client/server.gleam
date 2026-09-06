@@ -2,6 +2,15 @@
 //// that upgrades `/v1/ws`, authenticates the upgrade, and pipes frames
 //// between the socket and a `client/gateway` hub.
 ////
+//// It is package-internal. An upgrade here proves possession of one shared
+//// bearer token and nothing more, so it attaches with `gateway.attach` and
+//// the resulting connection carries no principal and no role: a trusted
+//// host fixture rather than a session member. Production serving is the
+//// daemon's authenticated route (`client/daemon/server` and
+//// `client/daemon/session_socket`), which resolves an identity before the
+//// socket exists and hands the hub a `Binding`. The constructor is
+//// `@internal` so that difference is enforced rather than described.
+////
 //// ## Why mist
 ////
 //// Gleam ships no websocket server in its core libraries. `mist` is the
@@ -104,6 +113,16 @@ pub type ServeError {
 /// //   auth: server.LocalAuth("/tmp/session.token"), entropy:))
 /// ```
 ///
+/// Internal to this package. This listener attaches with `gateway.attach` —
+/// one shared bearer token, no principal, no role — which is a trusted-host
+/// fixture rather than a network identity, and protocol-015 leaves no v1
+/// adapter or legacy server mode for it to be. The daemon's own listener
+/// (`client/daemon/server`) is the production route. Keeping the constructor
+/// out of the package's public surface is what makes an unauthenticated
+/// gateway attachment unreachable from outside rather than merely unused;
+/// `gateway.attach`'s doc already said so, and this is the type system
+/// saying it.
+@internal
 pub fn serve(config: Config) -> Result(Server, ServeError) {
   use token <- result.try(case config.auth {
     BearerAuth(token:) -> Ok(token)
@@ -157,6 +176,8 @@ pub fn serve(config: Config) -> Result(Server, ServeError) {
 /// // server.stop(server)
 /// ```
 ///
+/// Internal to this package, for the reason `serve` is.
+@internal
 pub fn stop(server: Server) -> Nil {
   process.kill(server.supervisor)
 }
@@ -169,6 +190,9 @@ pub fn stop(server: Server) -> Nil {
 /// // server.mint_token(entropy)
 /// ```
 ///
+/// Internal to this package: it mints the credential only this listener
+/// checks, so it travels with `serve`.
+@internal
 pub fn mint_token(entropy: fn() -> Int) -> String {
   [entropy(), entropy(), entropy(), entropy()]
   |> take_hex([])
@@ -346,11 +370,23 @@ fn upgrade(
       },
     )
 
-  // Mist transfers TCP ownership only after on_init returns. A self-message
-  // from on_init could stop the new actor before that transfer and crash the
-  // HTTP handler. The request process releases a refusal after websocket has
-  // completed the transfer; on_init already queued it before acknowledging
-  // startup, so this receive does not wait for work or depend on a timer.
+  // Why the refusal travels out to this process and back rather than being a
+  // self-message from `on_init`: mist transfers TCP ownership only after
+  // `mist.websocket` returns (`mist.websocket_with_options` calls
+  // `transport.controlling_process` on the started child, and asserts on its
+  // result), so a socket that stopped itself inside its own initializer would
+  // crash this handler.
+  //
+  // What mist does guarantee is that `on_init` has already run: the websocket
+  // child is started synchronously through the factory supervisor, and
+  // `on_init` runs inside that child's initializer, so the send above happened
+  // before `mist.websocket` returned. What nothing guarantees is arrival
+  // order: the refusal travels child → here while the startup acknowledgement
+  // travels child → supervisor → here, and the BEAM orders signals only
+  // between one pair of processes. So this receive is best effort, and it is
+  // written with a zero timeout because waiting would be worse than losing:
+  // the handler's `Error(Nil)` arm already stops such a socket on its first
+  // message, so the whole mechanism only buys an *idle* peer a prompt close.
   case process.receive(refused, within: 0) {
     Ok(outbound) -> process.send(outbound, GatewayUnavailable)
     Error(Nil) -> Nil

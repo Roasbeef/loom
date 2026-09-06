@@ -7,9 +7,78 @@
 //// and metadata are fragmented under explicit client credit. No writer or bus
 //// hint subscription feeds this path. Optional provider previews use sixteen
 //// original observer leases and one bounded, explicitly discontinuous sample.
-//// Authentication is rechecked before admission and delivery. A failed reader
+//// Authentication is rechecked before admission and delivery. A reader that
+//// is gone, or that spends its whole budget on the server's own capture,
 //// permanently poisons this actor and invokes its exact incarnation's stop
 //// capability, without waiting for the requesting gateway itself to retire.
+//// A continuation's reads are funded from the client's remaining retention
+//// window and from the wall of the request they answer, so exhausting one of
+//// those refuses that request and drops that transfer and touches nothing
+//// else: a caller's timeout stops the caller's wait, never the server's
+//// cleanup.
+////
+//// ## Authority
+////
+//// Nothing a client sends names a principal, a role or an origin. The
+//// attachment's identity is the `Binding` the upgrade router resolved before
+//// this actor saw the socket, it is immutable for the life of the
+//// attachment, and every durable origin this module writes is minted from it.
+//// The socket supplies frames; it does not supply who it is.
+////
+//// Membership can be revoked while an attachment is open, so authority is
+//// resolved twice per command rather than cached at attach. `request_frame`
+//// resolves it before the command is dispatched, which is the **admission**
+//// point; `send_response` and `deliver` resolve it again before anything
+//// leaves, which is the **delivery** point. Both go through `check_binding`,
+//// which compares the freshly resolved principal and role against the ones
+//// the `Binding` was admitted under and fails on any change, not only on a
+//// revocation. A revocation between the two points therefore closes the
+//// attachment and drops the reply: work already admitted is allowed to
+//// finish — the writer has no way to un-commit it — but its answer does
+//// not reach a peer that has lost the right to it, and no further command
+//// from that socket is admitted.
+////
+//// Roles differ only in what they may ask for. An `Observer` is refused
+//// before any effect: `run_command`'s first act is to reject a command that
+//// `read_only` does not classify as a read, and `read_only` is exhaustive
+//// over `Command`, so a command added later cannot be admitted for an
+//// observer by omission.
+////
+//// ## Command dispatch
+////
+//// Commands map onto `runtime/api` (prompt/steer/follow-up/abort,
+//// escalation approve/deny, strand creation) and — for compaction and
+//// navigation, which have no api entry point yet — onto
+//// `machine/acceptance` plans committed through the session's one
+//// writer, the same pattern the conformance simulation runner uses.
+//// Nothing bypasses the writer.
+////
+//// ## Conversation command semantics
+////
+//// Five answers this module gives where the wire format alone does not
+//// determine one. Each is invisible at the call site and each is what a
+//// client's rendering has to be written against.
+////
+//// - `fork` (both scopes) forks **in place**: a new strand whose leaf
+////   is the source strand's current leaf. The protocol's reply is a
+////   `strands` snapshot of *this* session, which cannot name a separate
+////   forked session file; `session/repo.fork` stays an admin surface.
+//// - `steer`/`follow_up` acks: the queued item is durable as a pending
+////   register, not yet a placed tree entry, so the ack `entry` event
+////   carries the reserved id and the message with no envelope seq; the
+////   placed entry is broadcast (with its real parent and seq) when the
+////   run consumes it.
+//// - `follow_up` on an idle strand starts a run (protocol.md open
+////   question 7 answered queue-as-prompt, matching `send_to_strand`'s
+////   idle behavior).
+//// - `strand_result` is emitted for every operation kind — runs,
+////   compactions, navigations — because all three publish
+////   `strand.last_result`.
+//// - Escalation `op`/`strand` come off the record's own `CallScope` —
+////   the operation, strand, step, source index, and call id the denial
+////   was raised for. A record raised through a door that names no call
+////   reaches the client with both fields empty; nothing is inferred
+////   from which strand happens to be busy.
 ////
 //// ## Internal host fixture mode
 ////
@@ -45,38 +114,6 @@
 //// composition layer via `commit_forwarder`) and any events-bus
 //// publications both merely trigger a pull from storage above the hub's
 //// high-water seq. A lost hint costs latency, never an event.
-////
-//// ## Command dispatch
-////
-//// Commands map onto `runtime/api` (prompt/steer/follow-up/abort,
-//// escalation approve/deny, strand creation) and — for compaction and
-//// navigation, which have no api entry point yet — onto
-//// `machine/acceptance` plans committed through the session's one
-//// writer, the same pattern the conformance simulation runner uses.
-//// Nothing bypasses the writer.
-////
-//// ## Conversation command semantics retained from WP-L
-////
-//// - `fork` (both scopes) forks **in place**: a new strand whose leaf
-////   is the source strand's current leaf. The protocol's reply is a
-////   `strands` snapshot of *this* session, which cannot name a separate
-////   forked session file; `session/repo.fork` stays an admin surface.
-//// - `steer`/`follow_up` acks: the queued item is durable as a pending
-////   register, not yet a placed tree entry, so the ack `entry` event
-////   carries the reserved id and the message with no envelope seq; the
-////   placed entry is broadcast (with its real parent and seq) when the
-////   run consumes it.
-//// - `follow_up` on an idle strand starts a run (protocol.md open
-////   question 7 answered queue-as-prompt, matching `send_to_strand`'s
-////   idle behavior).
-//// - `strand_result` is emitted for every operation kind — runs,
-////   compactions, navigations — because all three publish
-////   `strand.last_result`.
-//// - Escalation `op`/`strand` come off the record's own `CallScope` —
-////   the operation, strand, step, source index, and call id the denial
-////   was raised for. A record raised through a door that names no call
-////   reaches the client with both fields empty; nothing is inferred
-////   from which strand happens to be busy.
 ////
 //// ## Internal host fixture stream deltas
 ////
@@ -172,8 +209,25 @@ pub opaque type ConnectionHandle {
   ConnectionHandle(subject: Subject(Message), id: Int, pid: process.Pid)
 }
 
+// How a connection was admitted, and therefore what it may be trusted with.
+// This is the module's security boundary: `deliver`, `reader_failed`,
+// `remove_socket` and `roster` all branch on it, so which variant a transport
+// can produce is the whole of what that transport is allowed to be.
 type Authentication {
+  /// A trusted in-VM sink registered through `attach` — the demo, a test, an
+  /// embedded host. It carries no principal, so it is in no presence roster
+  /// and no durable origin is ever minted from it. Only `@internal` callers
+  /// can produce it; a network listener must use `attach_authenticated`.
   HostFixture
+
+  /// A network socket whose principal, role and credential digest were
+  /// resolved by the upgrade router before this actor saw it.
+  ///
+  /// `binding` is that resolved identity and never changes. `check` re-asks
+  /// the registry who this credential is now, and is called at admission and
+  /// again at delivery. `close` retires the transport when the answer has
+  /// changed. `watch` monitors the socket process, so presence is removed
+  /// even when the transport's own `on_close` cannot run.
   Authenticated(
     binding: Binding,
     check: fn() -> Result(#(access.Principal, access.Authority), String),
@@ -313,14 +367,40 @@ pub opaque type Message {
   ProviderDelta(operation: OpId, delta: stream.Delta)
 }
 
+// Whether a connection has completed the `subscribe` handshake. It gates three
+// separate things — broadcasts, the presence roster, and every command past
+// `subscribe` itself — which is why it is a domain type rather than a flag: a
+// `Bool` here made each of those read as a polarity to be remembered.
+type Subscription {
+  /// The handshake completed: durable broadcasts, presence and stream deltas
+  /// reach this connection and it may issue every command its role allows.
+  Subscribed
+
+  /// Attached but not yet subscribed: it sees replies to its own requests and
+  /// nothing else, and no command but `subscribe` is admitted.
+  Unsubscribed
+}
+
 type Connection {
   Connection(
+    /// Encoded frames leave through here; it runs on the hub process.
     sink: fn(String) -> Nil,
-    subscribed: Bool,
+    /// Whether the `subscribe` handshake has completed.
+    subscription: Subscription,
+    /// How this connection was admitted, which is the module's trust boundary.
     authentication: Authentication,
+    /// The authenticated principal as a durable message origin, refreshed by
+    /// every revalidation so a renamed principal writes under its new name.
     origin: Option(message.Origin),
+    /// At most one snapshot transfer, retained between the client's credits.
     transfer: Option(transfer.Transfer),
+    /// Where the reply to the one in-flight request goes. Held only for the
+    /// duration of that request: `request_frame` sets it, and clears it before
+    /// returning, so nothing unsolicited can ever find a reply destination.
     response: Option(Subject(Result(String, String))),
+    /// Stops this connection's exact session incarnation after the hub has
+    /// judged its storage reader wedged. Supplied by the transport, because
+    /// the hub must not wait on its own retirement.
     read_failed: fn() -> Nil,
   )
 }
@@ -912,7 +992,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             id,
             Connection(
               sink:,
-              subscribed: False,
+              subscription: Unsubscribed,
               authentication: HostFixture,
               origin: None,
               transfer: None,
@@ -943,7 +1023,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           let link =
             Connection(
               sink:,
-              subscribed: False,
+              subscription: Unsubscribed,
               authentication: Authenticated(
                 binding,
                 check,
@@ -1102,7 +1182,29 @@ fn network_command(
       begin_transfer(state, connection, id, transfer.History(after, before))
     protocol.EscalationsGet(ids) ->
       begin_transfer(state, connection, id, transfer.Escalations(ids))
-    _ -> run_command(state, connection, id, command)
+
+    // Everything that is not a bounded transfer goes to the shared dispatch,
+    // which is where the observer guard and the subscribe gate live. The
+    // variants are written out rather than swept up by a catch-all: a new
+    // transfer-shaped command added above would otherwise be routed down the
+    // non-transfer path silently, and the compiler is the only reader that
+    // will reliably ask the question at the next protocol change.
+    protocol.Prompt(..)
+    | protocol.PromptContent(..)
+    | protocol.Steer(..)
+    | protocol.FollowUp(..)
+    | protocol.Abort(..)
+    | protocol.Approve(..)
+    | protocol.Deny(..)
+    | protocol.Fork(..)
+    | protocol.Navigate(..)
+    | protocol.Compact(..)
+    | protocol.CreateStrand(..)
+    | protocol.ListModels
+    | protocol.SetConfig(..)
+    | protocol.ListSchedules
+    | protocol.CancelSchedule(..)
+    | protocol.UnknownCommand(..) -> run_command(state, connection, id, command)
   }
 }
 
@@ -1113,7 +1215,11 @@ fn snapshot_plan(recent: Int) -> snapshot.Plan {
       snapshot.Selection(register.StrandLeaf, "", snapshot.All),
       snapshot.Selection(register.StrandState, "", snapshot.All),
       snapshot.Selection(register.StrandLastResult, "", snapshot.All),
-      snapshot.Selection(register.FactCustom, "client/", snapshot.All),
+      snapshot.Selection(
+        register.FactCustom,
+        api.client_fact_prefix,
+        snapshot.All,
+      ),
       snapshot.Selection(
         register.FactCustom,
         runtime_escalation.key_prefix,
@@ -1151,16 +1257,19 @@ fn begin_transfer(
     connection,
     id,
   )
-  use <- bool.lazy_guard(link.transfer != None || !link.subscribed, fn() {
-    reply_error(
-      state,
-      connection,
-      id,
-      "stale_snapshot",
-      "finish the current transfer or subscribe first",
-    )
-    state
-  })
+  use <- bool.lazy_guard(
+    link.transfer != None || link.subscription == Unsubscribed,
+    fn() {
+      reply_error(
+        state,
+        connection,
+        id,
+        "stale_snapshot",
+        "finish the current transfer or subscribe first",
+      )
+      state
+    },
+  )
   let recent = case window {
     transfer.Recent -> int.min(100, state.recent_entries)
     _ -> 0
@@ -1180,8 +1289,12 @@ fn begin_transfer(
       )
     _ -> snapshot_plan(recent)
   }
+
+  // The capture is the server's own question, funded with the reader's whole
+  // budget rather than with anything a client paced, so an expiry here is
+  // evidence about the storage actor.
   case state.runtime.session.snapshot_reader.capture(plan, 5000) {
-    Error(error) -> reader_failed(state, connection, id, error)
+    Error(error) -> reader_failed(state, connection, id, error, ReaderBudget)
     Ok(cut) -> captured_transfer(state, connection, id, link, cut, window, now)
   }
 }
@@ -1306,22 +1419,34 @@ fn advance_transfer(
     use link <- result.try(dict.get(state.connections, connection))
     option.to_result(link.transfer, Nil)
   }
+  let now = bootstrap.monotonic_time_ms()
   case current {
     Ok(current) ->
-      case
-        transfer.matches(
-          current,
-          snapshot_id,
-          index,
-          bootstrap.monotonic_time_ms(),
-        )
-      {
-        True -> drive_transfer(state, connection, id, current, 2)
+      case transfer.matches(current, snapshot_id, index, now) {
+        True ->
+          drive_transfer(
+            state,
+            connection,
+            id,
+            current,
+            2,
+            now + continuation_wall_ms,
+          )
         False -> stale_transfer(state, connection, id)
       }
     Error(Nil) -> stale_transfer(state, connection, id)
   }
 }
+
+// One continuation may need two reader exchanges — a descriptor page, then
+// the first fragment of that page's first record — and both are answered
+// inside the single `connection_request` the socket waits on. That wait is
+// `6000`, so the pair shares one wall a second below it: bounding each read
+// alone let a slow-but-alive reader hold the gateway for ten seconds while the
+// socket had already given up at six and issued `mist.stop()`, so the refusal
+// the code was about to send landed in a dying mailbox and every other
+// attachment on the session waited out the difference.
+const continuation_wall_ms = 5000
 
 fn stale_transfer(state: State, connection: Int, id: Int) -> State {
   reply_error(
@@ -1334,18 +1459,22 @@ fn stale_transfer(state: State, connection: Int, id: Int) -> State {
   state
 }
 
+// `until` is the instant this continuation's reads must be answered by; it is
+// established once by `advance_transfer` and threaded through the recursion so
+// the second read spends what the first left rather than a second full budget.
 fn drive_transfer(
   state: State,
   connection: Int,
   id: Int,
   current: transfer.Transfer,
   reads: Int,
+  until: Int,
 ) -> State {
-  use <- bool.lazy_guard(
-    transfer.expired(current, bootstrap.monotonic_time_ms()),
-    fn() { stale_transfer(state, connection, id) },
-  )
-  case transfer.step(current) {
+  let now = bootstrap.monotonic_time_ms()
+  use <- bool.lazy_guard(transfer.expired(current, now), fn() {
+    stale_transfer(state, connection, id)
+  })
+  case transfer.step(current, now:, until:) {
     transfer.Emit(event, next) -> {
       let state = retain_transfer(state, connection, Some(next))
       reply(state, connection, id, event)
@@ -1360,30 +1489,35 @@ fn drive_transfer(
       reply_error(state, connection, id, "snapshot_failed", reason)
       retain_transfer(state, connection, None)
     }
-    transfer.ReadPage(after, before) if reads > 0 -> {
+
+    // Neither window can fund a read, so none is issued. The client's next
+    // move is the same one an expired transfer asks for — capture a fresh
+    // snapshot — so it gets the same refusal, and the retained state goes
+    // rather than inviting a continuation that would be refused again.
+    transfer.Exhausted -> {
+      let state = retain_transfer(state, connection, None)
+      stale_transfer(state, connection, id)
+    }
+    transfer.ReadPage(after, before, within) if reads > 0 -> {
       let outcome =
-        state.runtime.session.snapshot_reader.page(
-          after,
-          before,
-          100,
-          transfer.waiting(current, bootstrap.monotonic_time_ms()),
-        )
+        state.runtime.session.snapshot_reader.page(after, before, 100, within)
       continue_read(
         state,
         connection,
         id,
         current,
         reads,
+        until,
         outcome,
         transfer.accept_page,
       )
     }
-    transfer.ReadFragment(descriptor, offset) if reads > 0 -> {
+    transfer.ReadFragment(descriptor, offset, within) if reads > 0 -> {
       let outcome =
         state.runtime.session.snapshot_reader.fragment(
           descriptor,
           offset,
-          transfer.waiting(current, bootstrap.monotonic_time_ms()),
+          within,
         )
       continue_read(
         state,
@@ -1391,6 +1525,7 @@ fn drive_transfer(
         id,
         current,
         reads,
+        until,
         outcome,
         transfer.accept_fragment,
       )
@@ -1406,11 +1541,15 @@ fn continue_read(
   id: Int,
   current: transfer.Transfer,
   reads: Int,
+  until: Int,
   outcome: Result(a, snapshot.Error),
   accept: fn(transfer.Transfer, a) -> Result(transfer.Transfer, String),
 ) -> State {
   case outcome {
-    Error(error) -> reader_failed(state, connection, id, error)
+    // A continuation's reads are funded from what is left of the client's own
+    // retention window and of this request's wall, never from the reader's
+    // whole budget, so an expiry here is the caller's wait running out.
+    Error(error) -> reader_failed(state, connection, id, error, CallerRemainder)
     Ok(value) -> {
       use next <- or_reply(
         accept(current, value)
@@ -1419,7 +1558,7 @@ fn continue_read(
         connection,
         id,
       )
-      drive_transfer(state, connection, id, next, reads - 1)
+      drive_transfer(state, connection, id, next, reads - 1, until)
     }
   }
 }
@@ -1436,16 +1575,37 @@ fn retain_transfer(
   }
 }
 
+// What an expired read wait actually proves about the reader.
+//
+// The capture that opens a transfer waits the reader's own whole budget, so
+// nothing but a wedged storage actor can exhaust it. A continuation's reads are
+// funded from the remainder of the client's retention window and of this
+// request's wall, and the client paces those continuations, so exhausting one
+// says the caller ran out of time and nothing at all about the reader. Reading
+// the second as the first is what let a read-only observer, by timing one
+// frame, poison the hub and stop the session for every attachment.
+type ReadWait {
+  /// The reader was given its whole budget and did not answer.
+  ReaderBudget
+
+  /// The wait was whatever a caller-paced transfer had left.
+  CallerRemainder
+}
+
 fn reader_failed(
   state: State,
   connection: Int,
   id: Int,
   error: snapshot.Error,
+  waited: ReadWait,
 ) -> State {
-  case error {
-    snapshot.ReadTimedOut | snapshot.ReaderUnavailable -> {
-      // Timeout does not cancel the original query. Fence this actor before
-      // requesting exact-incarnation cleanup; never synchronously await it.
+  case error, waited {
+    // The reader actor was absent or died before replying, which is evidence
+    // about the reader whoever was waiting on it; and a full budget spent with
+    // no answer is the storage actor wedged. Timeout does not cancel the
+    // original query, so fence this actor before requesting exact-incarnation
+    // cleanup, and never synchronously await it.
+    snapshot.ReaderUnavailable, _ | snapshot.ReadTimedOut, ReaderBudget -> {
       let poisoned = State(..state, health: ReaderPoisoned)
       list.each(dict.values(state.connections), fn(link) {
         case link.authentication {
@@ -1464,11 +1624,26 @@ fn reader_failed(
         }),
       )
     }
-    snapshot.StorageFailure(_)
-    | snapshot.InvalidRequest
-    | snapshot.MetadataTooLarge
-    | snapshot.RecordTooLarge(..)
-    | snapshot.MissingRecord -> {
+
+    // A caller's timeout stops the caller's wait, never the server's cleanup:
+    // this request is refused in band, this transfer is dropped so nothing
+    // retries the read, and the hub and every other attachment carry on.
+    snapshot.ReadTimedOut, CallerRemainder -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        "snapshot_failed",
+        "bounded snapshot read did not answer within this request",
+      )
+      retain_transfer(state, connection, None)
+    }
+    snapshot.StorageFailure(_), _
+    | snapshot.InvalidRequest, _
+    | snapshot.MetadataTooLarge, _
+    | snapshot.RecordTooLarge(..), _
+    | snapshot.MissingRecord, _
+    -> {
       reply_error(
         state,
         connection,
@@ -1642,11 +1817,15 @@ fn role_text(authority: access.Authority) {
   }
 }
 
+// Presence is a fact about the network protocol, so only an authenticated,
+// subscribed connection is a peer: a host fixture is a test sink with no
+// identity to publish, and an attachment that has not subscribed has not yet
+// told anyone it is here.
 fn roster(state: State) {
   dict.values(state.connections)
   |> list.filter_map(fn(link) {
-    case link.authentication, link.subscribed {
-      Authenticated(binding, _, _, _), True ->
+    case link.authentication, link.subscription {
+      Authenticated(binding, _, _, _), Subscribed ->
         Ok(
           json.Object([
             #("connection_id", json.String(binding.connection_id)),
@@ -1654,7 +1833,10 @@ fn roster(state: State) {
             #("role", json.String(role_text(binding.authority))),
           ]),
         )
-      _, _ -> Error(Nil)
+      Authenticated(..), Unsubscribed
+      | HostFixture, Subscribed
+      | HostFixture, Unsubscribed
+      -> Error(Nil)
     }
   })
 }
@@ -1662,10 +1844,13 @@ fn roster(state: State) {
 fn publish_presence(state: State) {
   let event = protocol.PresenceEvent(roster(state))
   dict.each(state.connections, fn(id, link) {
-    case link.authentication, link.subscribed {
-      Authenticated(..), True ->
+    case link.authentication, link.subscription {
+      Authenticated(..), Subscribed ->
         send_to(state, id, EventEnvelope(None, None, event))
-      _, _ -> Nil
+      Authenticated(..), Unsubscribed
+      | HostFixture, Subscribed
+      | HostFixture, Unsubscribed
+      -> Nil
     }
   })
 }
@@ -2407,9 +2592,9 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
   let frame =
     protocol.encode_event(EventEnvelope(reply_to: None, seq: None, event:))
   dict.each(state.connections, fn(_id, link: Connection) {
-    case link.subscribed {
-      True -> deliver(link, frame)
-      False -> Nil
+    case link.subscription {
+      Subscribed -> deliver(link, frame)
+      Unsubscribed -> Nil
     }
   })
 }
@@ -2513,11 +2698,14 @@ fn run_command(
       state
     },
   )
-  let subscribed = case dict.get(state.connections, connection) {
-    Ok(Connection(subscribed:, ..)) -> subscribed
-    Error(Nil) -> False
+
+  // A connection that has gone away between admission and dispatch is treated
+  // as unsubscribed, which refuses the command rather than acting on it.
+  let subscription = case dict.get(state.connections, connection) {
+    Ok(Connection(subscription:, ..)) -> subscription
+    Error(Nil) -> Unsubscribed
   }
-  case command, subscribed {
+  case command, subscription {
     protocol.UnknownCommand(cmd:, ..), _ -> {
       reply_error(
         state,
@@ -2528,9 +2716,9 @@ fn run_command(
       )
       state
     }
-    protocol.Subscribe(session:, from_seq:), False ->
+    protocol.Subscribe(session:, from_seq:), Unsubscribed ->
       subscribe(state, connection, id, session, from_seq)
-    protocol.Subscribe(..), True -> {
+    protocol.Subscribe(..), Subscribed -> {
       reply_error(
         state,
         connection,
@@ -2540,7 +2728,7 @@ fn run_command(
       )
       state
     }
-    _, False -> {
+    _, Unsubscribed -> {
       reply_error(
         state,
         connection,
@@ -2550,14 +2738,14 @@ fn run_command(
       )
       state
     }
-    protocol.CatchUp(from_seq:), True -> {
+    protocol.CatchUp(from_seq:), Subscribed -> {
       let state = pull_and_broadcast(state)
       replay(state, connection, id, from_seq)
       state
     }
-    protocol.SnapshotNext(..), True
-    | protocol.History(..), True
-    | protocol.EscalationsGet(..), True
+    protocol.SnapshotNext(..), Subscribed
+    | protocol.History(..), Subscribed
+    | protocol.EscalationsGet(..), Subscribed
     -> {
       reply_error(
         state,
@@ -2568,16 +2756,18 @@ fn run_command(
       )
       state
     }
-    protocol.Prompt(strand:, text:), True ->
+    protocol.Prompt(strand:, text:), Subscribed ->
       prompt(state, connection, id, strand, text)
-    protocol.PromptContent(strand:, content:), True ->
+    protocol.PromptContent(strand:, content:), Subscribed ->
       prompt_content(state, connection, id, strand, content)
-    protocol.Steer(strand:, text:), True ->
+    protocol.Steer(strand:, text:), Subscribed ->
       steer(state, connection, id, strand, text)
-    protocol.FollowUp(strand:, text:), True ->
+    protocol.FollowUp(strand:, text:), Subscribed ->
       follow_up(state, connection, id, strand, text)
-    protocol.Abort(strand:), True -> abort(state, connection, id, strand)
-    protocol.Approve(escalation_id:, grants:, action:, expected_seq:), True ->
+    protocol.Abort(strand:), Subscribed -> abort(state, connection, id, strand)
+    protocol.Approve(escalation_id:, grants:, action:, expected_seq:),
+      Subscribed
+    ->
       approve(
         state,
         connection,
@@ -2587,21 +2777,21 @@ fn run_command(
         action,
         expected_seq,
       )
-    protocol.Deny(escalation_id:, expected_seq:), True ->
+    protocol.Deny(escalation_id:, expected_seq:), Subscribed ->
       deny(state, connection, id, escalation_id, expected_seq)
-    protocol.Fork(strand:, scope: _, name:), True ->
+    protocol.Fork(strand:, scope: _, name:), Subscribed ->
       fork(state, connection, id, strand, name)
-    protocol.Navigate(strand:, to_entry:), True ->
+    protocol.Navigate(strand:, to_entry:), Subscribed ->
       navigate(state, connection, id, strand, to_entry)
-    protocol.Compact(strand:, instructions:), True ->
+    protocol.Compact(strand:, instructions:), Subscribed ->
       compact(state, connection, id, strand, instructions)
-    protocol.CreateStrand(name:), True ->
+    protocol.CreateStrand(name:), Subscribed ->
       create_strand(state, connection, id, name)
-    protocol.ListModels, True -> list_models(state, connection, id)
-    protocol.SetConfig(strand:, config:), True ->
+    protocol.ListModels, Subscribed -> list_models(state, connection, id)
+    protocol.SetConfig(strand:, config:), Subscribed ->
       set_config(state, connection, id, strand, config)
-    protocol.ListSchedules, True -> list_schedules(state, connection, id)
-    protocol.CancelSchedule(target:, name:), True ->
+    protocol.ListSchedules, Subscribed -> list_schedules(state, connection, id)
+    protocol.CancelSchedule(target:, name:), Subscribed ->
       cancel_schedule(state, connection, id, target, name)
   }
 }
@@ -2686,7 +2876,7 @@ fn mark_subscribed(state: State, connection: Int) -> State {
         connections: dict.insert(
           state.connections,
           connection,
-          Connection(..link, subscribed: True),
+          Connection(..link, subscription: Subscribed),
         ),
       )
   }
@@ -3195,9 +3385,9 @@ fn broadcast_except(
       ))
     dict.each(state.connections, fn(link_id, link: Connection) {
       let suppressed = link_id == connection && Some(emit) == matched
-      case link.subscribed && !suppressed {
-        True -> deliver(link, frame)
-        False -> Nil
+      case link.subscription, suppressed {
+        Subscribed, False -> deliver(link, frame)
+        Subscribed, True | Unsubscribed, False | Unsubscribed, True -> Nil
       }
     })
   })
@@ -4155,9 +4345,12 @@ fn set_config(
   )
   let event = protocol.SnapshotEvent(protocol.ConfigSnapshot(committed))
   dict.each(state.connections, fn(other, link) {
-    case other != connection && link.subscribed {
-      True -> send_to(state, other, EventEnvelope(None, None, event))
-      False -> Nil
+    case link.subscription, other == connection {
+      Subscribed, False ->
+        send_to(state, other, EventEnvelope(None, None, event))
+
+      // The issuing connection already has this snapshot as its own reply.
+      Subscribed, True | Unsubscribed, False | Unsubscribed, True -> Nil
     }
   })
   state
@@ -4236,13 +4429,13 @@ fn apply_config(
         writes: [
           tx.SetRegister(
             register.FactCustom,
-            "client/run_settings",
+            api.run_settings_key,
             register.value(api.encode_run_defaults(settings, author)),
           ),
           ..transaction.writes
         ],
         expected: [
-          tx.Expect(register.FactCustom, "client/run_settings", defaults.seq),
+          tx.Expect(register.FactCustom, api.run_settings_key, defaults.seq),
           ..transaction.expected
         ],
       )

@@ -7,9 +7,13 @@
 //// This reader does not assign entries to strands or interpret machine state.
 ////
 //// Every call accepts its remaining wait budget, capped at five seconds.
-//// ReadTimedOut does not cancel the queued or running read. The caller must
-//// fail the original gateway/session without retrying; session custody must
-//// drain the original store or retain RecoveryBlocked before reopening it.
+//// ReadTimedOut does not cancel the queued or running read, so a caller may
+//// never retry the same request against the same reader. Whether the timeout
+//// says anything about the reader depends on whose budget expired: a reader
+//// that was given its whole budget and did not answer is wedged, and session
+//// custody must then drain the original store or retain RecoveryBlocked
+//// before reopening it; a caller that chose a shorter wait has learned only
+//// that its own deadline passed and must refuse that one request.
 ////
 //// Register plans are declarative. Reference expansion follows a named JSON
 //// field in already bounded source cells, so storage need not import machine
