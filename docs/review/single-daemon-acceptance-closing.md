@@ -493,6 +493,18 @@ failed in 21.22 seconds and printed the expected stderr and exit code 7.
 The original successful script was restored, and the positive fixture then
 exited 0 in 7.68 seconds.
 
+Before publication, root found that the new assertion itself defeated the
+bounded diagnostic: matching `RanOut(sample)` printed the retained model on
+failure. Commit `c9e043de` maps the poll outcome to a short `Result` after
+printing the bounded diagnostic, then asserts only that reduced value. The
+comment records why the model must not reach the assertion. The independent
+reviewer checked and approved this corrective delta. Its intentional exit-7
+negative failed in 21.06 seconds with the actual tool error and a 371-line
+report, rather than the earlier 34,811 lines. An exact-value check found no
+fixture owner credential in the new report. The earlier local report was
+restricted to its owner and not shared. The restored positive run exited 0
+in 7.60 seconds. No production credentials were used by this fixture.
+
 Linux also missed the tool-start marker, but its artifact contains no native
 tool result establishing the cause. macOS logged the same `Badarg` and passed
 the shipped fixture, then failed the separate paired latency bound. Neither
@@ -532,3 +544,50 @@ enabled, before these review corrections. Final format, client lint and
 documentation checks exited 0. The fixture proves cooperative stop and durable
 operation recovery with an unaffected peer, not a forced process kill or the
 entire acceptance drive.
+
+## Shipped saved schedule recovery
+
+Commit `aaa52741` adds a shipped one-shot schedule fixture. An expired
+configuration added while A is Saved remains inactive while B progresses.
+Explicit open fires it once; another open preserves the exact fired cell
+and every message record. Read-only observations use generated SQL and close
+the connection before decoding entries. Cleanup requires native retirement.
+
+The fresh independent review found no high-severity issue. Its medium finding
+is a fail-loud limitation: a Held or Failed first scanner tick retries after
+60 seconds, beyond the fixture's eight-second terminal await. The module now
+states this limitation; no timeout or scanner policy changed. Low-severity
+type annotations, stanzas, outcome wording and an equivalent `result.map`
+cleanup were applied. The explicit message-count assertion was retained.
+A proposed extra scanner-ran observation was unnecessary for the unchanged
+configuration and persisted compare-and-set path; the exact fired-cell and
+record comparisons remain the oracle. The reviewer approved these deltas.
+
+Root's final focused run exited 0 in 3.67 seconds. The preceding full client
+gate exited 0 with 1,344 tests in 296.01 seconds and all five shipped fixtures
+enabled; its strict skip census independently passed. That full run predates
+the final review corrections and the subsequent latency-policy unit test.
+Recurring cursors, detached future timers and whole-VM schedule recovery
+remain separate work in [issue #244](https://github.com/Roasbeef/loom/issues/244).
+
+## Hosted macOS latency policy
+
+The owner's closing direction in
+[issue #241](https://github.com/Roasbeef/loom/issues/241) makes the hosted
+macOS paired-latency assertion observational. Commit `39468f84` recognizes
+only the exact value `LOOM_SOAK_LATENCY_BOUND=observe`; absent or other values
+continue to enforce the existing bound. The macOS check step opts in.
+Observation logs all paired totals and phases without a skip marker. The
+workload, numeric budget, JSONL, sampler and every other assertion remain.
+
+An independent review approved this narrow policy delta. The regression
+checks the default, unknown and exact modes, the enforcement boundary and
+an observed over-budget value. Root's complete focused soak passed in both
+modes: 12.02 seconds enforcing and 11.92 seconds observing, with all 18
+observation lines emitted. This is an explicit gate-policy exception, not
+a performance repair or evidence that hosted macOS meets the bound.
+
+Closing scope ends with these reviewed changes, documentation and one hosted
+CI cycle without rerun. [Issues #240 through #248](../next.md#what-to-do-next)
+record the remaining product and release work; PR #239 records the closing
+published head and CI result. Historical parent failures remain explicit.

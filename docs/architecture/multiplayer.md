@@ -60,6 +60,26 @@ are admitted in the session's existing order and carry their authors
 through the queue into eventual user turns. No controlling terminal,
 global command queue, transcript CRDT, or per-strand ACL is introduced.
 
+### Current network delivery is pull-only
+
+Attached network terminals request credited reconciliation; the gateway does
+not push new committed records or token deltas to them. Network mode guards
+both durable broadcast and stream-delta broadcast, and the outbound adapter
+also discards unsolicited envelopes. Removing only the broadcast guards would
+not implement pushed delivery.
+
+After a successful capture, the client schedules its next refresh for 250 ms
+later and starts it when the channel is ready. That is neither a fixed-rate
+poll nor a delivery-latency guarantee. It can paint a peer's completed answer
+without another keypress, but does not stream that peer's generated tokens.
+A second prompt conflicts only when its target strand has a live operation;
+independent sessions and strands can still progress concurrently.
+
+[Issue #240](https://github.com/Roasbeef/loom/issues/240) tracks push on commit,
+streaming to network peers, and ordered concurrent submissions. Those changes
+need explicit delivery-authority and ordering decisions. The current shipped
+fixtures prove shared state through reconciliation, not that proposed behavior.
+
 ```mermaid
 sequenceDiagram
     participant A as Alice

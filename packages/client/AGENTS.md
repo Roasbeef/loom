@@ -338,6 +338,12 @@ catalogue without opening runtimes. Explicit admission invokes
   sockets in one managed worker and routes observations through an actor's
   reply protocol. Framing and closure negatives exercise its actual boundaries.
   This proves cooperative stop/recovery, not an uncooperative drain or a kill.
+  `daemon_shipped_schedule_test` changes only a Saved session's configuration
+  to add an overdue one-shot. A live peer progresses while a read-only SQLite
+  cut proves no firing or transcript mutation. Explicit open fires it once;
+  another stop/open preserves its exact durable fired cell and all message
+  records. This uses ordinary configuration and the real scanner, not a poke
+  or injected clock. It does not cover recurring cursors or memory-file absence.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

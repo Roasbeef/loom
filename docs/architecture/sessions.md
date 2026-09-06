@@ -266,6 +266,15 @@ mutation whose acknowledgement was lost. These are different responsibilities:
 the runtime recovers durable intent, while the terminal preserves uncertainty
 about whether its command was admitted.
 
+Schedules follow the same residency boundary. `wake = true` wakes an idle
+strand inside a resident runtime; it does not open a Saved session. An overdue
+operator-configured one-shot is considered when an explicit open creates its
+scanner. The scanner persists its fired marker, so another stop/open does not
+admit that occurrence again. The shipped schedule fixture checks that a peer
+session can progress while the Saved session's cut and absent fired marker
+remain unchanged, then compares the exact durable marker and message records
+after the first firing and another reopen.
+
 After a whole-daemon restart, restore the catalogue and leave every
 session closed. Open a session lazily when an authorized operator selects
 it or explicitly requests an open. Catalogue listing and metadata preview
