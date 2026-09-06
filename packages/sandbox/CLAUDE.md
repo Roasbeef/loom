@@ -73,6 +73,11 @@ only Go module.
   replays a `MountPlan` the same way `AuditMounts` does and names every
   `PathMissing` protected path whose parent the plan leaves read-only, so
   `run.go` can refuse before bwrap ever runs instead of a bare `code=1`.
+- `internal/jail.MissingMountSources` — the same treatment for #63: it
+  stats every source the plan binds read-write (a `writable_roots` entry,
+  a host-path `scratch`) and names the ones that are not on this host,
+  with the list each came from. `readable_roots` is absent by design; it
+  binds with `--ro-bind-try` and tolerates absence.
 - `internal/jail.{SeatbeltPlan, SeatbeltPlanFor}`: the Darwin backend's
   deny-default profile, path definitions, audit digest, and enforcement
   tags. Model-influenced paths travel through `sandbox-exec -D`, never as
@@ -514,8 +519,17 @@ only Go module.
     lists (`writable_roots`, `protected`, and a host-path `scratch`) do
     not tolerate absence the same way, and each has its own reason: see
     "which path lists tolerate a missing path" above `readableRootOp` in
-    bwrap.go for the decision and the two lists (`writable_roots`, a
-    host-path `scratch`) left as an open gap rather than fixed here.
+    bwrap.go for the decision.
+  - A `writable_roots` entry or the host-path form of `scratch` that
+    does not exist. Both render as `--bind`, which requires the source,
+    so bwrap refuses with `Can't bind mount SRC: No such file or
+    directory` and exit 1. Refusing is the decision and not the defect —
+    a tool that believes it has write access it does not have is a
+    correctness hazard, and a silently narrower jail is the quiet
+    failure the design forbids — so `internal/jail.MissingMountSources`
+    (mounts.go) supplies the half that was missing, the diagnosis:
+    `run.go` stats both lists before the argv exists and refuses naming
+    the path, the list it came from, and the kernel's own reason (#63).
 - **That rigour applies to every probe, not one.** Two probes asserted
   only the *absence* of an effect — an untouched secret file, a prompt
   `Wait` — and nothing having run satisfies both. With a `bwrap` on PATH
