@@ -635,3 +635,31 @@ tests in 297.85 seconds. All five shipped fixtures were enabled, and the
 complete eight-exchange live-tool drive ran without a prerequisite skip.
 The strict local census passed with only the existing Darwin `/proc`
 declaration. Client lint and documentation checks also exited 0.
+
+## Linux departure observation and advisory macOS check
+
+Run `34058458721` verified the multiplayer correction: the delegated jail
+completed all eight exchanges with a clean unwaived census, macOS completed
+the same drive, and ordinary Linux ran its four exchanges with the exact
+prerequisite marker. Two different tests failed afterward or elsewhere.
+
+Linux's strict native-departure observation received `Error("esrch")`.
+The existing target-stat reader recognized only `ENOENT` as absence.
+Linux's [`proc_single_show`](https://github.com/torvalds/linux/blob/master/fs/proc/base.c)
+returns `ESRCH` when the referenced task no longer exists. One new clause
+classifies that target-read result as `ProcessAbsent`. Other errors, boot-id
+and self-stat reads, the birth comparison and the strict fixture remain
+unchanged. Independent direct review approved the boundary. No new external,
+test hook or general error suppression was added. The eight host tests passed
+in 0.42 seconds; this local Darwin result verifies the package, not the Linux
+race. The hosted failing witness and kernel semantics establish the regression
+being corrected.
+
+macOS instead missed the existing five-second in-process provider wait in
+`repeated_instance_assembly_does_not_allocate_atoms_test`. The owner had
+authorized relaxing flaky macOS CI. Localized review chose a step-level
+advisory `make check`, rather than another deadline increase or an advisory
+whole job. Other steps and their censuses still fail independently; logs are
+retained. Issues [#127](https://github.com/Roasbeef/loom/issues/127) and
+[#241](https://github.com/Roasbeef/loom/issues/241) retain the load-sensitivity
+and latency work. This policy is not a claim that either cause is fixed.

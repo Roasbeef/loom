@@ -7,11 +7,12 @@ body of work. Commit and review history belongs in Git and the review records,
 not in another chronological addition to this file.
 
 Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `854a3b7d`
-and the subsequent test-only CI correction described below.
+and the subsequent CI corrections described below.
 Claims below were checked against that tree, exact local command results,
 or the named hosted run.
-After the closing run failed, the owner authorized a test-only CI correction
-and another measured cycle. This does not start further acceptance slices.
+After the closing run failed, the owner authorized CI corrections and measured
+verification. This includes the narrow Linux process-absence correction and
+the explicit macOS advisory policy below, not further acceptance slices.
 
 ## Where the tree is
 
@@ -145,6 +146,7 @@ opening delay or weakens the production sandbox.
 
 | Head and run | Observed result |
 |---|---|
+| `de2fc5fd`, [34058458721](https://github.com/Roasbeef/loom/actions/runs/34058458721) | Repaired multiplayer passed: ordinary Linux ran four non-tool exchanges with the exact prerequisite marker; the delegated jail and macOS ran all eight. Jail's three censuses passed. Linux's strict native-departure check exposed `ESRCH`; macOS's separate in-process provider wait expired. Both had 1,344 client passes and one failure; their final censuses were skipped. Seeds passed. |
 | `854a3b7d`, [34056261144](https://github.com/Roasbeef/loom/actions/runs/34056261144) | Linux's tool marker failed after explicit demanded-enforcement refusal. macOS's initial terminal opening exceeded eight seconds, cause unknown. Both reported 1,344 client passes and one failure; both final censuses were skipped. Jail and 200 seeds passed. Current 18 soak pairs per platform passed their numeric bounds, with all five-owner samplers completed. |
 | `b0b4013a`, [34051513588](https://github.com/Roasbeef/loom/actions/runs/34051513588) | Linux failed the 15-second tool marker assertion. macOS failed paired latency, 506 ms against 342 ms. Each had 1,336 client passes and one failure; both final censuses were skipped. Jail and 200 seeds passed. |
 | `37726c23`, [34050399218](https://github.com/Roasbeef/loom/actions/runs/34050399218) | Both platform check/bootstrap steps passed; later dependency resolution failed on Hex 502. Neither final census ran. Jail and 200 seeds passed. |
@@ -178,6 +180,27 @@ that exception or infer a cause from the coarse counters.
 Linux's native daemon log and tool result were not retained in that earlier run, so
 the missing marker's cause remains unestablished. The new diagnostic makes a
 future failed marker useful; it is not a claimed causal repair.
+
+### Final process-observation and macOS policy corrections
+
+The Linux target-stat reader now classifies `ESRCH`, like `ENOENT`, as
+confirmed absence. Procfs can open a target entry before its task disappears;
+the later read then reports no such process. Only that target read changes:
+boot-id and self-stat reads, other errors and birth matching stay strict.
+The shipped departure assertion is unchanged. The existing host package's
+eight tests pass locally; its Darwin run does not exercise this Linux race.
+The failed shipped run and the kernel's target-read semantics are the
+regression evidence, not a deterministic injected test.
+
+Under the owner's macOS relaxation, only hosted macOS's `make check` step is
+now advisory (`continue-on-error`). Every test still runs and its log remains
+an artifact. Bootstrap, Seatbelt checks, E2Es, documentation and the final
+census keep their own failure verdicts. No additional test deadline changes.
+[Issue #127](https://github.com/Roasbeef/loom/issues/127) tracks the separate
+load-sensitive provider wait; [#241](https://github.com/Roasbeef/loom/issues/241)
+tracks latency. A successful workflow under this policy does not establish
+that the advisory package check passed. Inspect and report that step's actual
+result separately. The next exact-head cycle is recorded on PR #239.
 
 ## What to do next
 
