@@ -5,10 +5,11 @@
 //// unpublished close capability. The session reaches the builder only after
 //// retirement is retained and the startup link has transferred.
 ////
-//// Cancellation follows the builder's death. Cleanup runs on a Weft worker;
-//// only successful close and original SQLite actor retirement permit this
-//// holder's normal exit. Failure retains the holder and therefore the ledger's
-//// unconfirmed custody. There is no second PID registry here.
+//// Cancellation follows the builder's death. Cleanup runs on a Weft worker
+//// under a wall deadline, so a wedged close is reported rather than waited on
+//// forever; only successful close and original SQLite actor retirement permit
+//// this holder's normal exit. Failure retains the holder and therefore the
+//// ledger's unconfirmed custody. There is no second PID registry here.
 
 import core/clock.{type Clock}
 import gleam/erlang/process.{type Pid, type Subject}
@@ -254,27 +255,64 @@ fn handle(
       blocked(book, string.inspect(reason))
     Closing, Reported(weft.AllDelivered) ->
       blocked(book, "distillation cleanup ended without an account")
+    Closing, Reported(weft.NotYet) -> sm.keep(book)
     Blocked(reason), Close(reply) -> {
       process.send(reply, Error(reason))
       sm.keep(book)
     }
-    _, Open(reply) -> {
+
+    // Acquisition happens exactly once, in the parked phase. A second `Open`
+    // is a caller holding a handle it already spent, never a retry.
+    Live, Open(reply) | Closing, Open(reply) | Blocked(_), Open(reply) -> {
       process.send(
         reply,
         Error(CustodyFailed("distillation holder is no longer parked")),
       )
       sm.keep(book)
     }
-    _, Close(reply) -> {
+
+    // Unreachable through `close`, which needs an `Owned` and so an answered
+    // `Open`. A parked holder has acquired nothing, so there is nothing to
+    // retire and nothing for the caller to keep waiting on.
+    Parked, Close(reply) -> {
+      process.send(reply, Error("distillation holder has opened nothing"))
+      sm.keep(book)
+    }
+
+    // A second close during cleanup is the caller asking again for an answer
+    // already on its way to the first one.
+    Closing, Close(reply) -> {
       process.send(reply, Error("distillation retirement is already pending"))
       sm.keep(book)
     }
-    _, Cancel | _, Reported(_) -> sm.keep(book)
+
+    // Cancellation is the builder's death arriving. A parked holder stops
+    // without opening anything and a live one begins cleanup, both above; once
+    // cleanup is running or has failed there is nothing further to ask for.
+    Closing, Cancel | Blocked(_), Cancel -> sm.keep(book)
+
+    // Reports belong to the one cleanup run, which only `Closing` has started.
+    // A blocked holder keeps its failure rather than reopening on a late one.
+    Parked, Reported(_report)
+    | Live, Reported(_report)
+    | Blocked(_), Reported(_report)
+    -> sm.keep(book)
   }
 }
 
+// Cleanup is the only unbounded thing this holder does, and `close` waits for
+// its account with no deadline of its own: bounding the caller instead would
+// leave the holder's verdict unclaimed. So the bound goes on the run. A close
+// that wedges — which is exactly the case `Blocked` exists for — reports
+// `Abandoned` at the deadline and blocks, rather than hanging every caller
+// behind a SQLite handle that will never answer.
+const retirement_deadline_ms = 5000
+
 fn cleaning(book: Book) -> sm.Next(Phase, Book, Message) {
-  let _relay = weft.new([book.retire]) |> weft.start_relayed(to: book.reports)
+  let _relay =
+    weft.new([book.retire])
+    |> weft.deadline(retirement_deadline_ms)
+    |> weft.start_relayed(to: book.reports)
   sm.transition(Closing, book)
 }
 

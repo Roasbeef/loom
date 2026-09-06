@@ -5,6 +5,7 @@
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
 import client/daemon/manager
+import client/distill
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import core/clock
@@ -1004,6 +1005,192 @@ pub fn outer_lifetime_survives_repeated_incarnations_with_one_registry_test() {
     as "the unchanged outer witness retires after all repeated opens"
   assert catalogue.close(store) == Ok(Nil)
   process.trap_exits(False)
+}
+
+/// One registry turn answers every question a socket frame's authority rests
+/// on: the daemon's lifetime, the session's retained incarnation, and the
+/// credential's current membership.
+///
+/// Each refusal is distinct, because the transport reports "revoked" and
+/// "stale" to the attached client in different words, and a collapsed answer
+/// that could not tell them apart would report a revocation as an outage.
+pub fn one_turn_answers_epoch_incarnation_and_authority_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 700)
+  let assert Ok(owner_digest) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest is valid"
+  let assert Ok(member_digest) =
+    access.credential_digest(string.repeat("b", 64))
+    as "member digest is valid"
+  let assert Ok(owner) =
+    access.bootstrap_owner(store, "owner", "Owner", owner_digest)
+    as "the durable owner is established"
+  let assert Ok(member) =
+    access.create_member(store, "reader", "Reader", member_digest)
+    as "the participant exists"
+  let assert Ok(Nil) =
+    access.grant(store, member.id, record.id, access.Observer)
+    as "membership grants only this session"
+  let registry = start(store, 2, fn(record, _) { Ok(record.id) })
+
+  // Nothing is resident, so the credential is never read: the answer is
+  // already no, and reading it would make a stale socket a membership probe.
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: "daemon-test:0",
+      digest: owner_digest,
+    )
+    == Error(manager.StaleIncarnation)
+
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, record.id)
+    as "explicit admission"
+  await_status(registry, record.id, manager.Resident(operation))
+
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: operation,
+      digest: owner_digest,
+    )
+    == Ok(#(owner, access.Owner))
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: operation,
+      digest: member_digest,
+    )
+    == Ok(#(member, access.Participant(access.Observer)))
+  assert manager.frame_authority(
+      registry,
+      epoch: "previous",
+      id: record.id,
+      incarnation: operation,
+      digest: owner_digest,
+    )
+    == Error(manager.StaleEpoch)
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: "daemon-test:99",
+      digest: owner_digest,
+    )
+    == Error(manager.StaleIncarnation)
+
+  // Revocation is answered by the same call, live, with no cached membership.
+  assert access.revoke_membership(store, member.id, record.id) == Ok(Nil)
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: operation,
+      digest: member_digest,
+    )
+    == Error(manager.Unauthorized)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+/// Domain source enumeration walks its pages on the builder's own process.
+///
+/// A hundred and twenty sources span two pages, so a walk that stopped at the
+/// first one would answer with a hundred and would look exactly like a domain
+/// that is smaller than it is.
+pub fn domain_sources_are_enumerated_across_pages_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let records = shared_domain_sessions(store, 120)
+  let enumerated = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, sources, _) {
+          process.send(enumerated, sources())
+          Ok(domain_service.inert())
+        },
+        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "domain-sources",
+      limit: 2,
+    )
+    as "registry starts"
+  let assert Ok(first) = list.first(records) as "the fixture has a session"
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, first.id)
+    as "opening one session builds the shared domain"
+  let assert Ok(Ok(sources)) = process.receive(enumerated, 5000)
+    as "the domain builder resolves its own sources"
+  assert list.length(sources) == 120
+  assert list.contains(
+    list.map(sources, fn(source: distill.Source) { source.path }),
+    first.path,
+  )
+  await_status(registry, first.id, manager.Resident(operation))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+/// The bounded source cap survives moving the walk off the registry: an
+/// oversized domain is refused rather than truncated to an
+/// authorized-looking prefix.
+pub fn an_oversized_domain_refuses_its_source_enumeration_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let records = shared_domain_sessions(store, 513)
+  let enumerated = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, sources, _) {
+          process.send(enumerated, sources())
+          Ok(domain_service.inert())
+        },
+        build: fn(record, _domain, _services, _) { Ok(record.id) },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "domain-cap",
+      limit: 2,
+    )
+    as "registry starts"
+  let assert Ok(first) = list.first(records) as "the fixture has a session"
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, first.id)
+    as "opening one session builds the shared domain"
+  assert process.receive(enumerated, 10_000)
+    == Ok(Error("domain exceeds the bounded source limit"))
+  await_status(registry, first.id, manager.Resident(operation))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Every registration shares one workspace, so all of them bind to the same
+// `WorkspacePrivate` domain and its source enumeration has to page.
+fn shared_domain_sessions(
+  store: catalogue.Catalogue,
+  count: Int,
+) -> List(catalogue.Registration) {
+  let anchor = raw_saved(store, 6000)
+  let shared =
+    domain.Domain(
+      domain.key(domain.WorkspacePrivate, anchor.workspace, anchor.id),
+      domain.WorkspacePrivate,
+      anchor.workspace,
+      "",
+      "/fixture-domains/shared/memory.db",
+      "/fixture-domains/shared/search.db",
+    )
+  assert domain.bind(store, anchor.id, shared) == Ok(shared)
+  let rest =
+    list.index_map(list.repeat(Nil, count - 1), fn(_, offset) {
+      let index = offset + 1
+      let record = raw_saved(store, 6000 + index)
+      assert domain.bind(store, record.id, shared) == Ok(shared)
+      record
+    })
+  [anchor, ..rest]
 }
 
 // Saved describes the session. Reopening also requires the last shared domain's

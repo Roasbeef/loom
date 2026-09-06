@@ -313,6 +313,127 @@ pub fn failed_domain_cleanup_retains_admission_and_original_witness_test() {
   process.trap_exits(False)
 }
 
+/// Closing the last session in a workspace fences that domain's maintenance,
+/// and the next open takes it back rather than waiting the fence out.
+///
+/// The pass is parked inside its own source resolver for the whole of this
+/// test, so the fence cannot settle by itself: without revival the second
+/// admission is refused `Unavailable` until the pass wall expires, which by
+/// default is ten minutes, and the ordinary close-and-reopen loop is exactly
+/// the path that hits it.
+pub fn a_fenced_idle_domain_is_revived_by_the_next_open_test() {
+  let settings = owned_assembly_test.settings()
+  let directory = filepath.directory_name(settings.session_path)
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
+    as "the joined fixture owns a private domain directory"
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let arrivals = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      cadenced_assembly(arrivals, "manager-revive"),
+      epoch: "domain-revival",
+      limit: 2,
+    )
+    as "registry starts"
+  let admit = fn(key) {
+    manager.create_scoped(
+      registry,
+      manager.Creation(int.to_string(key), settings.workspace, "Session", ""),
+      directory: directory <> "/sessions",
+      generator: ids.generator(clock.fixed(1), key),
+      scope: domain.WorkspacePrivate,
+      configuration: "",
+    )
+  }
+  let assert Ok(first) = admit(50) as "the first session is admitted"
+  resident(registry, first.registration.id)
+  let assert Ok(initial) = process.receive(arrivals, 2000)
+    as "the domain's first pass parks inside its finite source resolver"
+
+  // The last dependent retires, so the registry coalesces a close pass and
+  // fences the cadence. The parked resolver is what keeps it fenced.
+  let assert Ok(_) = manager.stop_session(registry, first.registration.id)
+    as "the only session closes cleanly"
+  saved(registry, first.registration.id)
+  let assert Ok(manager.Summary(
+    occupied: 0,
+    domain_occupied: 1,
+    domain_blocked: 0,
+    ..,
+  )) = manager.summary(registry)
+    as "the fenced domain is retained rather than retired"
+
+  let assert Ok(second) = admit(51)
+    as "a new session in the same workspace revives the fenced domain"
+  resident(registry, second.registration.id)
+  assert process.receive(arrivals, 0) == Error(Nil)
+
+  // The account the fence asked for arrives after revival and is ignored,
+  // because the slot's phase is no longer quiescing.
+  process.send(initial, Ok([]))
+  let assert Ok(final) = process.receive(arrivals, 2000)
+    as "the coalesced close pass still runs to completion"
+  process.send(final, Ok([]))
+  assert process.receive(arrivals, 200) == Error(Nil)
+  let assert Ok(manager.Summary(
+    occupied: 1,
+    resident: 1,
+    domain_occupied: 1,
+    domain_blocked: 0,
+    ..,
+  )) = manager.summary(registry)
+    as "the account the fence asked for does not retire a revived domain"
+
+  // Shutdown fences the same domain irreversibly, and no admission crosses it.
+  let watch = process.monitor(manager.pid(registry))
+  manager.shutdown(registry)
+  assert admit(52) == Error(manager.Unavailable)
+  assert process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down.reason })
+    |> process.selector_receive(5000)
+    == Ok(process.Normal)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A real domain: live shared history plus a real distillation cadence whose
+// pass parks inside a finite source resolver, so a test decides when a fenced
+// domain settles instead of racing it.
+fn cadenced_assembly(arrivals, lane) -> manager.Assembly(String) {
+  manager.Assembly(
+    domain_build: fn(selected: domain.Domain, sources, owner) {
+      let assert Ok(Nil) =
+        bootstrap.ensure_private_directory(filepath.directory_name(
+          selected.memory_path,
+        ))
+        as "domain destinations exist before published resource startup"
+      domain_service.build(
+        domain_service.Config(
+          history: history.SharedConfig(selected.index_path, sources, 5000, 100),
+          maintenance: fn(name) {
+            let base = distillpass_domain_test.config(name, arrivals, lane)
+            Ok(Some(
+              distillpass.DomainConfig(
+                ..base,
+                pipeline: distill.Config(
+                  ..base.pipeline,
+                  memory_path: selected.memory_path,
+                  digest_path: domain.digest_beside(selected.memory_path),
+                ),
+              ),
+            ))
+          },
+        ),
+        owner,
+      )
+    },
+    build: fn(record: catalogue.Registration, _domain, _services, _owner) {
+      Ok(record.id)
+    },
+    fatal: fn(_) { [] },
+  )
+}
+
 pub fn last_clean_close_waits_coalesced_real_cadence_before_domain_retirement_test() {
   let settings = owned_assembly_test.settings()
   let directory = filepath.directory_name(settings.session_path)

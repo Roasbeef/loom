@@ -23,6 +23,11 @@ pub opaque type Lifetime(instance) {
   Lifetime(registry: manager.Manager(instance), witness: weft.Witnessed)
 }
 
+// How long the daemon root waits for the scope to publish its registry. Five
+// times the registry's own startup budget, so a slow host is not mistaken for
+// a wedged one.
+const registry_handoff_deadline_ms = 5000
+
 /// Starts a registry beneath a single transitive Weft owner.
 ///
 /// The caller is the long-lived daemon root and must trap exits, since loss of
@@ -51,6 +56,12 @@ pub fn start(
       }),
     ])
     |> weft.start_witnessed
+
+  // Everything the managed worker does before it answers is bounded — the
+  // registry's own one-second initialiser and one adoption — so a wait with no
+  // deadline could only ever hold the daemon's boot open on a host that will
+  // not answer at all. Expiry refuses the start; the scope keeps whatever it
+  // took and reports it through the witness the caller is already monitoring.
   let watch = process.monitor(weft.witness_pid(witness))
   let outcome =
     process.new_selector()
@@ -60,7 +71,8 @@ pub fn start(
         "daemon custody ended during startup: " <> string.inspect(down.reason),
       )
     })
-    |> process.selector_receive_forever()
+    |> process.selector_receive(registry_handoff_deadline_ms)
+    |> result.unwrap(Error("daemon custody did not publish a registry in time"))
   process.demonitor_process(watch)
   result.map(outcome, fn(registry) { Lifetime(registry:, witness:) })
 }

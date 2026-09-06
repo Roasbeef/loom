@@ -57,14 +57,18 @@ pub fn upgrade(
         ))
         gateway.attach_authenticated(
           hub,
+          // Four of these are adjacent strings that the source record happens
+          // to declare in the same order, so positional arguments would let a
+          // field added to either record compile into a binding whose repeated
+          // authorization compares the wrong identity.
           gateway.Binding(
-            attachment.session_id,
-            attachment.epoch,
-            attachment.incarnation,
-            attachment.connection_id,
-            attachment.principal,
-            attachment.authority,
-            attachment.digest,
+            session_id: attachment.session_id,
+            epoch: attachment.epoch,
+            incarnation: attachment.incarnation,
+            connection_id: attachment.connection_id,
+            principal: attachment.principal,
+            authority: attachment.authority,
+            digest: attachment.digest,
           ),
           fn() { authorize(daemon, attachment) },
           fn(_) { Nil },
@@ -96,8 +100,7 @@ pub fn upgrade(
     handler: fn(admitted, event, socket) {
       case admitted, event {
         Error(_), _ -> mist.stop()
-        Ok(connection), mist.Text(frame) ->
-          respond(daemon, attachment, connection, frame, socket)
+        Ok(connection), mist.Text(frame) -> respond(connection, frame, socket)
         Ok(_), mist.Binary(_)
         | Ok(_), mist.Closed
         | Ok(_), mist.Shutdown
@@ -117,20 +120,15 @@ pub fn upgrade(
 
 // The synchronous exchange admits one request at a time. A missing response is
 // an unknown outcome, so closing the socket must not retry the command.
-fn respond(
-  daemon,
-  attachment: server.Attachment(instance),
-  connection,
-  frame,
-  socket,
-) {
+//
+// Authorization is not re-asked here. The gateway checks the binding twice for
+// this one command — once when it admits it and once immediately before it
+// hands back the reply — and closes the attachment itself when either answer
+// has changed, so a third check on this side would repeat the second with the
+// same evidence and add another round trip to every frame.
+fn respond(connection, frame, socket) {
   let sent = {
     use response <- result.try(gateway.connection_request(connection, frame))
-    use #(_, authority) <- result.try(authorize(daemon, attachment))
-    use Nil <- result.try(case authority == attachment.authority {
-      True -> Ok(Nil)
-      False -> Error("attachment role changed")
-    })
     mist.send_text_frame(socket, response)
     |> result.replace_error("socket delivery failed")
   }
@@ -155,24 +153,31 @@ fn failed_reader(daemon, attachment: server.Attachment(instance)) -> Nil {
   Nil
 }
 
+// One registry turn answers the three facts a frame's authority rests on: this
+// daemon's lifetime, the session's retained incarnation, and the credential's
+// current membership. Asking them separately cost three cross-actor calls per
+// check, and the gateway performs two checks for every command. It is asked
+// afresh each time rather than cached, so a credential revoked between a
+// command's admission and its delivery still closes the attachment.
 fn authorize(daemon, attachment: server.Attachment(instance)) {
   use ready <- result.try(root.ready(daemon, within: 1000))
-  use Nil <- result.try(case ready.epoch == attachment.epoch {
-    True -> Ok(Nil)
-    False -> Error("stale epoch")
-  })
-  use _ <- result.try(
-    manager.resolve_incarnation(
-      ready.registry,
-      attachment.session_id,
-      attachment.incarnation,
-    )
-    |> result.replace_error("stale incarnation"),
-  )
-  manager.session_authority(
+  manager.frame_authority(
     ready.registry,
-    attachment.digest,
-    attachment.session_id,
+    epoch: attachment.epoch,
+    id: attachment.session_id,
+    incarnation: attachment.incarnation,
+    digest: attachment.digest,
   )
-  |> result.replace_error("unauthorized")
+  |> result.map_error(refusal)
+}
+
+// A refusal keeps the words the attached client already saw for each of these,
+// so collapsing three calls into one did not change what a closed socket says.
+fn refusal(refused: manager.FrameRefusal) -> String {
+  case refused {
+    manager.StaleEpoch -> "stale epoch"
+    manager.StaleIncarnation -> "stale incarnation"
+    manager.Unauthorized -> "unauthorized"
+    manager.RegistryUnavailable -> "daemon registry is unavailable"
+  }
 }

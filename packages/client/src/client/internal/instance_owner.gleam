@@ -101,6 +101,11 @@ type Book {
   )
 }
 
+// How long the caller waits for the scope to publish its cleanup door. Five
+// times the state machine's own startup budget, so a slow host is not mistaken
+// for a wedged one.
+const publication_deadline_ms = 5000
+
 /// Starts custody before the parked builder begins acquiring resources.
 ///
 /// `stop_builder` must stop and join no descendants: the scope waits for the
@@ -137,6 +142,12 @@ pub fn start(
 
   // The scope may lose its starter before publication. Its death is an error,
   // never permission for an unowned builder to proceed.
+  //
+  // The wait is bounded because its caller is the daemon registry's own
+  // handler: everything the managed task does before the handoff is itself
+  // bounded — a state machine's one-second initialiser and two adoptions — so
+  // an expiry is a preparation that will not arrive, and refusing it keeps the
+  // registry answering while the scope reports through its own witness.
   let watch = process.monitor(weft.witness_pid(run))
   let outcome =
     process.new_selector()
@@ -144,7 +155,8 @@ pub fn start(
     |> process.select_specific_monitor(watch, fn(_down) {
       Error("instance custody stopped before publication")
     })
-    |> process.selector_receive_forever()
+    |> process.selector_receive(publication_deadline_ms)
+    |> result.unwrap(Error("instance custody did not publish in time"))
   process.demonitor_process(watch)
   result.map(outcome, fn(publication) { Owner(run:, publication:) })
 }
