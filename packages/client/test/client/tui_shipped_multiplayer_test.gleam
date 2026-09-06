@@ -11,6 +11,8 @@
 //// observer's raw mutation must be refused independently of the TUI guard.
 //// Revoking Bob's membership then closes his existing attachments while the
 //// remaining members continue exchanging authoritative configuration updates.
+//// A revoked selector target must fail without replacing Alice's original
+//// channel, which must still accept and deliver a later configuration change.
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting failure.
 
@@ -42,6 +44,7 @@ import support/internal/ffi_ws
 import support/provider_http
 import support/tui_driver
 import tui
+import tui/attachment
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
@@ -351,11 +354,163 @@ fn exercise(
     rejoined,
     reader,
   )
+  failed_switch_preserves_channel(
+    host,
+    address,
+    owner,
+    epoch,
+    foreign.expected.session,
+    alice,
+    reader,
+  )
 
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
   list.each([alice, rejoined, reader], stop_driver)
   daemon.close(connected.control)
+}
+
+fn failed_switch_preserves_channel(
+  host: selection.Host,
+  address: String,
+  owner: String,
+  epoch: String,
+  target: String,
+  alice: actor.Started(process.Subject(tui_driver.Message)),
+  reader: actor.Started(process.Subject(tui_driver.Message)),
+) -> Nil {
+  // Reuse the foreign runtime only after the earlier isolation refusals.
+  // Session-only sharing requires actual retirement and explicit owner consent.
+  let control = selection.control(host)
+  let assert Ok(_) = daemon.request(control, protocol.StopSession(target), 5000)
+    as "the owner stops the target before changing its isolation scope"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case daemon.request(control, protocol.GetSession(target), 2000) {
+        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
+          poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+    as "the target's original runtime retires before transcript sharing"
+  list.each(
+    [
+      ["isolate", target, "--share-existing-transcript"],
+      ["set-role", target, "alice", "operator"],
+    ],
+    fn(arguments) {
+      let assert Ok(request) = admin.parse(arguments)
+        as "the owner uses existing public isolation and membership commands"
+      let assert Ok(_) = admin.exchange(address, owner, epoch, request)
+        as "the existing Alice principal receives only target session membership"
+    },
+  )
+  let assert Ok(_) = selection.open(host, target)
+    as "the selectable target is a real resident session before revocation"
+
+  // The page itself is the barrier: no synthetic row or guessed list delay can
+  // stand in for Alice having obtained this target while it was authorized.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("/sessions"),
+      backend.KeyPress("enter"),
+    ])
+  let listed =
+    tui_v2_test.await(alice.data, fn(sample) {
+      case sample.model.overlay {
+        tui.DaemonSelector(selector) ->
+          sample.model.catalogue_request == None
+          && list.any(selector.page.sessions, fn(row) {
+            row.session_id == target
+          })
+        _ -> False
+      }
+    })
+  let assert tui.DaemonSelector(selector) = listed.model.overlay
+    as "the actual authorized selector supplies the target row and selection"
+
+  // Navigation uses the model's row index, never a position guessed from a frame.
+  let target_index =
+    list.index_fold(selector.page.sessions, -1, fn(found, row, index) {
+      case row.session_id == target {
+        True -> index
+        False -> found
+      }
+    })
+  let direction = case target_index >= selector.selected {
+    True -> "down"
+    False -> "up"
+  }
+  let distance = int.absolute_value(target_index - selector.selected)
+  let highlighted =
+    tui_driver.play(
+      alice.data,
+      list.repeat(backend.KeyPress(direction), distance),
+    )
+  let assert tui.DaemonSelector(selected) = highlighted.model.overlay
+    as "real navigation keeps the catalogue open until explicit Enter"
+  let assert Ok(row) =
+    list.first(list.drop(selected.page.sessions, selected.selected))
+    as "the highlighted row exists in the server's page"
+  assert row.session_id == target
+  let original = attachment_of(highlighted)
+  let assert Some(original_channel) = highlighted.model.channel
+    as "Alice retains her already synchronized original session channel"
+
+  // The acknowledgement happens before Enter across these two connections.
+  // No command was queued before revocation, and only the target grant changes.
+  let assert Ok(revoke) = admin.parse(["revoke", target, "alice"])
+    as "revocation is scoped to the highlighted target, not Alice's credential"
+  let assert Ok(_) = admin.exchange(address, owner, epoch, revoke)
+    as "the owner observes target membership removal before selection executes"
+  let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
+  let refused =
+    tui_v2_test.await(alice.data, fn(sample) {
+      !attachment.busy(sample.model.candidate)
+      && sample.model.notice == "open session: not_found: request refused"
+      && writable(sample)
+    })
+
+  // Refusal ends the candidate without transferring custody of the old view.
+  assert refused.model.session == highlighted.model.session
+  assert attachment_of(refused) == original
+  assert refused.model.records == highlighted.model.records
+  assert refused.model.inbox == highlighted.model.inbox
+  let assert Some(retained_channel) = refused.model.channel
+    as "candidate refusal preserves the adopted original channel"
+  assert session_channel.socket(retained_channel)
+    == session_channel.socket(original_channel)
+
+  // A separate owner terminal must still attach to the exact refused target.
+  // This excludes target unavailability without touching Alice's retained view.
+  let assert Ok(probe) = tui_driver.start(address, owner, target)
+    as "the target remains attachable to its authorized owner after Alice's refusal"
+  let _ =
+    tui_v2_test.await(probe.data, fn(sample) {
+      writable(sample) && sample.model.session == target
+    })
+  stop_driver(probe)
+
+  // The original channel must still perform work after the failed replacement.
+  // Both terminals were low after Bob's revocation, so high is a new update.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("/effort high"),
+      backend.KeyPress("enter"),
+    ])
+  let alice_updated = tui_v2_test.await(alice.data, changed)
+  let reader_updated = tui_v2_test.await(reader.data, changed)
+
+  // The fresh cut and later traffic still belong to the original attachment.
+  assert alice_updated.model.session == highlighted.model.session
+  assert reader_updated.model.session == highlighted.model.session
+  assert configuration_of(alice_updated) == configuration_of(reader_updated)
+  assert attachment_of(alice_updated) == original
+  let assert Some(updated_channel) = alice_updated.model.channel
+    as "continued traffic uses Alice's original adopted channel"
+  assert session_channel.socket(updated_channel)
+    == session_channel.socket(original_channel)
 }
 
 fn revoke_live_member(
