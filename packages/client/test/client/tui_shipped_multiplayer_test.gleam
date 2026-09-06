@@ -3,7 +3,8 @@
 //// The owner creates and explicitly isolates one session before issuing real
 //// member credentials. Only Alice's terminal changes configuration; Bob and
 //// the observer must receive its value and server-assigned origin over their
-//// own sockets. No provider request or fixture-written register is involved.
+//// own sockets. Two real provider requests then establish shared durable order;
+//// the loopback peer answers only the exact latest user text in its script.
 //// Bob then leaves and rejoins; every remaining terminal must observe both
 //// presence transitions without confusing principal and attachment identity.
 //// The coordinator retains the endpoint path outside the bounded body, so a
@@ -12,7 +13,9 @@
 import client/daemon/admin
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
+import core/entry
 import core/json
+import core/message
 import etui/backend
 import filepath
 import gleam/dict
@@ -26,6 +29,7 @@ import host/bootstrap as native
 import host/endpoint
 import machine/strand
 import simplifile
+import support/provider_http
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon
@@ -33,25 +37,43 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/session_channel
 import tui/snapshot
+import tui/snapshot_view
 import weft
 import weft/actor
 import weft/poll
 
 pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> EunitTest {
-  // The runner scales EUnit timeouts by ten. Leave cleanup outside the body's
-  // 90-second budget, but inside this 110-second enclosing test deadline.
-  Timeout(11, fn() {
+  // The runner scales EUnit timeouts by ten. The provider callback has 120
+  // seconds around the native body's 90-second budget and its cleanup. Leave
+  // both original listener witnesses inside this 150-second outer deadline.
+  Timeout(15, fn() {
     case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
       Error(Nil) ->
         io.println_error(
           "SKIP shipped multiplayer: LOOM_BOOTSTRAP_E2E_SERVER is unset",
         )
-      Ok(server) -> fixture(server)
+      Ok(server) -> {
+        assert native.getenv("LOOM_TEST_PROVIDER_KEY")
+          == Ok(provider_http.dummy_key)
+          as "the shipped provider receives only the fixture's public dummy key"
+        let #(Nil, report) =
+          provider_http.with_server(
+            [
+              provider_http.Exchange("first shipped turn", "shippedanswerone"),
+              provider_http.Exchange("second shipped turn", "shippedanswertwo"),
+            ],
+            fn(base_url) { fixture(server, base_url) },
+          )
+        let assert Ok(observed) = report
+          as "both exact provider requests complete without a refused or extra call"
+        assert list.map(observed, fn(request) { request.prompt })
+          == ["first shipped turn", "second shipped turn"]
+      }
     }
   })
 }
 
-fn fixture(server: String) {
+fn fixture(server: String, provider_url: String) -> Nil {
   let directory =
     "build/shipped-multiplayer-"
     <> int.to_string(native.current_process_id())
@@ -67,7 +89,7 @@ fn fixture(server: String) {
   let outcomes =
     weft.new([
       fn() {
-        exercise(server, directory, paths)
+        exercise(server, directory, paths, provider_url)
         Ok(Nil)
       },
     ])
@@ -83,7 +105,12 @@ fn fixture(server: String) {
   Nil
 }
 
-fn exercise(server: String, directory: String, paths: endpoint.Paths) {
+fn exercise(
+  server: String,
+  directory: String,
+  paths: endpoint.Paths,
+  provider_url: String,
+) -> Nil {
   let workspace = filepath.join(directory, "workspace")
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
     as "the session workspace exists independently of private daemon state"
@@ -91,9 +118,11 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) {
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
-      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \""
+        <> provider_url
+        <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n[memory]\ndistill = \"off\"\n",
     )
-    as "metadata-only configuration requires no provider or maintenance request"
+    as "normal provider configuration selects the loopback peer with maintenance off"
   let options =
     bootstrap.Options(workspace, "", server, paths.root, configuration)
   let assert Ok(connected) =
@@ -187,6 +216,22 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) {
   assert string.contains(reader_view.frame, "changed by Alice")
   assert !writable(reader_view)
 
+  // Only the terminal submits the prompt. The network peer checks the latest
+  // user message before responding; all clients must render the durable turn
+  // and observe completion before the next actor changes the conversation.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("first shipped turn"),
+      backend.KeyPress("enter"),
+    ])
+  assert_shared_turns(
+    [alice, bob, reader],
+    [
+      #("alice", "first shipped turn"),
+    ],
+    ["shippedanswerone"],
+  )
+
   // Driver exit is not a server detach barrier. Wait for both surviving
   // terminals to lose Bob before reusing his credential on a fresh socket.
   let old_bob = attachment_of(bob_view).connection_id
@@ -233,13 +278,99 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) {
     assert configuration_of(returned) == configuration_of(alice_view)
   })
 
+  // Rejoining must recover the first durable turn before Bob submits another.
+  // The second request includes history, so an old prompt marker alone cannot
+  // select its response from the finite provider script.
+  assert_shared_turns(
+    [alice, rejoined, reader],
+    [
+      #("alice", "first shipped turn"),
+    ],
+    ["shippedanswerone"],
+  )
+  let _ =
+    tui_driver.play(rejoined.data, [
+      backend.Paste("second shipped turn"),
+      backend.KeyPress("enter"),
+    ])
+  assert_shared_turns(
+    [alice, rejoined, reader],
+    [
+      #("alice", "first shipped turn"),
+      #("bob", "second shipped turn"),
+    ],
+    ["shippedanswerone", "shippedanswertwo"],
+  )
+
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
   list.each([alice, rejoined, reader], stop_driver)
   daemon.close(connected.control)
 }
 
-fn stop_driver(driver: actor.Started(process.Subject(tui_driver.Message))) {
+fn assert_shared_turns(
+  drivers: List(actor.Started(process.Subject(tui_driver.Message))),
+  turns: List(#(String, String)),
+  answers: List(String),
+) -> Nil {
+  let expected_users =
+    list.reverse(turns)
+    |> list.map(fn(turn) {
+      let #(principal, text) = turn
+      #([message.UserText(text, None)], Some(principal))
+    })
+  let expected_answers =
+    list.reverse(answers)
+    |> list.map(fn(text) { [message.AssistantText(text, None)] })
+  let samples =
+    list.map(drivers, fn(driver) {
+      tui_v2_test.await(driver.data, fn(sample) {
+        let users =
+          list.filter_map(sample.model.records, fn(record) {
+            case record.entry {
+              entry.MessageEntry(
+                message: message.UserMessage(content:, origin:, ..),
+                ..,
+              ) ->
+                Ok(#(
+                  content,
+                  option.map(origin, fn(author) { author.principal }),
+                ))
+              _ -> Error(Nil)
+            }
+          })
+        let replies =
+          list.filter_map(sample.model.records, fn(record) {
+            case record.entry {
+              entry.MessageEntry(
+                message: message.AssistantMessage(content:, ..),
+                ..,
+              ) -> Ok(content)
+              _ -> Error(Nil)
+            }
+          })
+        users == expected_users
+        && replies == expected_answers
+        && sample.model.streams == []
+        && sample.model.submitting == None
+        && list.any(sample.model.strands, fn(strand) {
+          strand.id == "main" && strand.live_phase == None
+        })
+        && list.all(answers, fn(answer) {
+          string.contains(sample.frame, answer)
+        })
+      })
+    })
+  let assert [first, second, observer] = samples
+    as "the two operators and observer each completed their own credited capture"
+  assert first.model.records == second.model.records
+  assert first.model.records == observer.model.records
+  assert !writable(observer)
+}
+
+fn stop_driver(
+  driver: actor.Started(process.Subject(tui_driver.Message)),
+) -> Nil {
   let monitor = process.monitor(driver.pid)
   tui_driver.stop(driver.data)
   let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
@@ -250,19 +381,19 @@ fn stop_driver(driver: actor.Started(process.Subject(tui_driver.Message))) {
   Nil
 }
 
-fn attachment_of(sample: tui_driver.Sample) {
+fn attachment_of(sample: tui_driver.Sample) -> snapshot.Attachment {
   let assert Some(#(cut, _)) = sample.model.captured
     as "attachment identity comes from the terminal's authenticated capture"
   cut.attachment
 }
 
-fn peers_of(sample: tui_driver.Sample) {
+fn peers_of(sample: tui_driver.Sample) -> List(snapshot_view.Peer) {
   let assert Some(#(_, view)) = sample.model.captured
     as "presence comes from the terminal's coherent capture"
   view.peers
 }
 
-fn has_principals(sample: tui_driver.Sample, principals: List(String)) {
+fn has_principals(sample: tui_driver.Sample, principals: List(String)) -> Bool {
   case sample.model.captured {
     Some(#(_, view)) ->
       list.length(view.peers) == list.length(principals)

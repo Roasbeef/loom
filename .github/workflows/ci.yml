@@ -60,6 +60,8 @@ env:
   GO_VERSION: "1.24.7"
   # Bump to invalidate every cache at once.
   CACHE_EPOCH: "1"
+  # Public dummy credential used only by the local scripted provider fixture.
+  LOOM_TEST_PROVIDER_KEY: "loom-provider-fixture-key"
 
 jobs:
   # ---------------------------------------------------------------- the gate

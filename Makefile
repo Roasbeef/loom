@@ -282,7 +282,8 @@ e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the r
 		PATH="$$hostile_bin:$$PATH" \
 		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test
 	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-120}" \
+		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
 		bash scripts/test.sh client --match client@tui_shipped_multiplayer_test:
 	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
 		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-150}" \
