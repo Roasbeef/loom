@@ -173,8 +173,13 @@ close and long before `Storage` does.
 The deadline is fixed at start and never renewed. Four enforcers agree on
 it by construction because they all read the same number: the token, the
 relay's receive deadline, the helper's own wall timer, and the budget
-ledger. A model that needs longer starts a new job. Renewal would need a
-second clock and a new frame, and neither is worth what it buys.
+ledger. Renewal at runtime would need the helper's timer to move, and
+that timer is armed once from `exec_start` (`sandbox/internal/jail/run.go:500`),
+so extending it is a new frame and a protocol change. Long-lived servers
+are covered the other way round: the clamp is an operator knob, a
+`[jobs]` table in `loom.toml` with `max_wall` (parsed beside the known
+tables in `client/catalog.gleam:278`), so a workspace that runs a dev
+server for a day says so once, and the default clamp stays an hour.
 
 ## Policy, approval and the pool
 
@@ -195,11 +200,14 @@ A running job occupies one helper for its whole life, and the pool is
 four to sixteen processes sized from the scheduler count
 (`broker/exec.gleam:2454-2465`). That is the honest cost of the design
 and the reason for a ceiling: a `tail -f` held for a session is one
-fewer helper for every parallel tool batch. The ceiling on concurrent
-jobs per session is `min(4, pool_size / 2)`, refused in band as a
-`job_ceiling` failure the way the orchestration seam refuses `spawn_ceiling`.
-If real use shows the pool starving, a dedicated job pool is the
-follow-up, and it is a pool-sizing change rather than a design change.
+fewer helper for every parallel tool batch. The ceiling is per strand,
+four concurrent jobs, refused in band as a `job_ceiling` failure the way
+the orchestration seam refuses `spawn_ceiling`; there is no session-wide
+limit in this cut. Sixteen strands each holding four jobs would exhaust
+the largest pool, so the note records the arithmetic rather than
+pretending it away: if real use shows the pool starving, a dedicated
+job pool is the follow-up, and it is a pool-sizing change rather than a
+design change.
 
 Jobs are not tool effects, so `tool_may_start`'s exclusivity
 (`strand_runtime.gleam:2295-2311`) does not see them, and a background
@@ -261,10 +269,11 @@ than the `detach: Bool` that `agent_spawn` carries today and that the
 no-naked-`Bool` rule would refuse. In background mode the call admits a
 job and returns the handle at once: the job id, the deadline, and the
 composed wall the policy allowed. Timeout follows the same clamp path as
-today, against a job-specific ceiling of one hour rather than `bash`'s
-ten minutes; §3.5 says the tool's own clamp is the wall ceiling and
-policy narrows from there, and a job is a different tool call with a
-different clamp.
+today, against a job-specific default and clamp of one hour rather than
+`bash`'s ten minutes, with `[jobs].max_wall` raising the clamp for a
+workspace that needs it; §3.5 says the tool's own clamp is the wall
+ceiling and policy narrows from there, and a job is a different tool
+call with a different clamp.
 
 `job_poll(job_id?, wait_ms?, since?)` returns the job's state, the tail
 since the cursor for each stream, the new cursors, and the `ExecResult`
@@ -289,8 +298,8 @@ than it looks: the helper wire already has `exec_stdin`
 (`broker.gleam:543`); today's `bash` closes stdin immediately
 (`bash.gleam:112`) and nothing above the broker writes to it. A
 background job leaves stdin open until `eof` or kill. It is the
-difference between "watch a log" and "drive a REPL", and it is listed
-last so it can be cut without touching the other three.
+difference between "watch a log" and "drive a REPL", and it ships in
+the first cut.
 
 Converting a foreground call that overruns its budget into a job (the
 second half of #183) is deferred to a second cut with its own decision:
@@ -298,19 +307,44 @@ the approval that admitted a bounded call did not admit an unbounded one,
 so conversion needs either an explicit opt-in on the call or a policy
 rule, and neither is obvious enough to take here.
 
-## The cap seam
+## Top-level tools versus code mode
 
-`cap/job` follows `cap/schedule`'s arrangement: the same door
-`tools/job` opens, reached from inside a code-mode program, both landing
-on one implementation (`client/jobseam.Door`, mirroring
-`client/scheduleseam`). It routes `ServedHere` in the workspace router
-(`codemode/workspace.gleam:625`, plus `serviced_caps`), lands on
+Both surfaces open the same door. `tools/job` is the model-facing
+surface for the wire tool array: the schema, the wording, the shape of
+a refusal. `cap/job` is the same four operations (`start`, `poll`,
+`kill`, `send`) as typed Gleam a vetted program calls from a satellite.
+Both are values over one seam of closures that the host fills in,
+`client/jobseam.Door`, mirroring exactly how `tools/schedule` and
+`cap/schedule` land on `client/scheduleseam`. The tool owns nothing
+durable and enforces nothing; the door owns the ceiling, the policy
+composition, the fact writes and the actor. So a job started from a
+tool call and a job started from a program are the same kind of thing
+with the same `job/<id>` record, and either surface can poll or kill a
+job the other started, because ownership is the strand, not the caller.
+
+The split in *use* falls where the two surfaces already differ. A
+top-level call is one round trip and one cached tool definition, so it
+is what the model reaches for interactively: start the build, come back
+three turns later, read the tail. A code-mode program is a loop with no
+round-trip cost, so it is where the composed shapes live without the
+harness having to grow them as tool features: start a server, poll
+until a line matches, run the tests, kill the server, return one
+result. "Wait until the output contains X" is a five-line program, not
+a `job_poll` argument, and keeping it that way is what keeps the tool
+surface at three definitions.
+
+The cap routes `ServedHere` in the workspace router
+(`codemode/workspace.gleam:625`, plus `serviced_caps`) rather than as a
+jailed `ClearedCall`, because the operation is answered by the harness
+actor and only the job's own process is jailed. It lands on
 `default_cap_modules` and nowhere else so the `{cap/report}` intersection
 test keeps passing (`codemode/vet/policy.gleam:79-84`), and costs one
-`make gen-prelude`. A loop calling `job.poll` in code mode pays none of
-the round-trip cost that throttles a tool call, so the same
-`job_ceiling` applies there and a tight poll loop is bounded by the
-`wait_ms` clamp, which is at least a slice.
+`make gen-prelude`. The per-strand ceiling applies through the door, so
+a program spawning in a loop is refused at the same count a tool call
+would be, and a tight poll loop is bounded by the `wait_ms` clamp, which
+is at least a slice. A program's own `within_ms` is unrelated to the
+job's deadline: the satellite ends when the program returns, and the
+job it started keeps running under its own token.
 
 ## What the client sees
 
@@ -329,8 +363,9 @@ and under `Network` delivery today they would be pull-only anyway.
 
 | Bound | Default | Enforced by |
 |---|---|---|
-| concurrent jobs per session | `min(4, pool_size / 2)` | actor admission |
-| job wall | 30 min requested, 1 h clamp, policy narrows | token, relay, helper timer, ledger |
+| concurrent jobs per strand | 4 | door admission |
+| concurrent jobs per session | none in this cut | see the pool arithmetic above |
+| job wall | 1 h default and clamp, `[jobs].max_wall` raises, policy narrows | token, relay, helper timer, ledger |
 | tail retained per stream | 8 KiB | runner |
 | spill | helper `output_bytes` cap | helper, existing |
 | poll wait | `agency.max_wait_ms` | tool clamp |
@@ -390,13 +425,10 @@ to. WP5 is the shipped fixture and the docs: an `effects.md` section, the
 package `CLAUDE.md`s, and `docs/next.md`. #74 lands before WP2 as its
 own small change.
 
-## Open questions
+## Settled on review
 
-Whether `min(4, pool_size / 2)` is the right ceiling, or whether a
-dedicated job pool should come in the first cut rather than the second.
-Whether the job wall clamp should be an hour or the same ten minutes as
-`bash`, leaving longer jobs entirely to policy. Whether an abort of the
-starting operation should kill its jobs (this note says yes, because the
-broker already does it and it matches what an operator means). And
-whether `job_send` is worth its definition in the cached prefix on day
-one.
+The ceiling is per strand with no session-wide limit yet; the wall
+defaults to an hour with an operator knob for longer; an abort of the
+starting operation kills its jobs; and `job_send` ships in the first
+cut. The one question still open is whether a dedicated job pool should
+come before real use shows the shared pool starving.
