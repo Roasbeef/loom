@@ -607,13 +607,13 @@ node boot for nothing, and an extension could keep no state at all
 between calls — no HTTP client, no cache, no actor of its own.
 
 **Two frames, in the direction the channel never had one.**
-`framing.HookCall` (`broker/framing.gleam:135`) carries a token, a kind
+`framing.HookCall` (`broker/framing.gleam:184`) carries a token, a kind
 (`tool` or `event`), a name, the arguments and a deadline; `HookResult`
 (`broker/framing.gleam:147`) carries the `CapOutcome` that answers it,
 correlated by the same frame id. Spec §1.4's frozen `kinds` list gained
 both names. They cross the *capability* socket and nothing else: a helper
 on the exec channel that sends one is marked dead as a protocol violation
-(`framing.HookCall` at `broker/exec.gleam:1757`), because the two
+(`framing.HookCall` at `broker/exec.gleam:1771`), because the two
 channels are two protocols and a peer that confuses them is a peer whose
 next frame cannot be trusted either.
 
