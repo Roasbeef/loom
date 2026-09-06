@@ -232,3 +232,33 @@ Earlier census results on both platforms are unverified until the repaired
 reporting path runs there. A test command's zero exit status is distinct from
 proof that all its conditional cases executed. The handoff records the first
 completed rerun and its remaining declared skips.
+
+## Live membership revocation
+
+The next shipped increment revokes Bob after the shared turns and reconnect.
+A fresh independent pass found no high-severity issue and one medium: the
+terminal's pre-revocation sample did not prove it was still connected. The
+fixture now waits for a live, writable cut before revocation, using the
+existing bounded helper so an ordinary capture cannot cause a false failure.
+
+The close assertion now requires the exact normal WebSocket close code 1000,
+followed by the native `closed` result. Mist's normal-stop path and Gramps'
+encoding establish that frame; a handler-crash close no longer satisfies it.
+The fixture explains that Bob disconnects when his own refresh is refused,
+not from a broadcast. Both record comparisons remain at their separate
+barriers. The existing one-second raw read bounds are unchanged.
+
+The owner acknowledgement follows the synchronous catalogue transaction.
+Consuming it before sending Bob's next command supplies causal ordering
+across the two connections without comparing clocks. Surviving clients'
+complete configuration and author are the positive control for Bob's retained
+view; control authentication distinguishes membership loss from credential
+revocation. No separate configuration revision exists in that view type.
+The admission/delivery interval is explicitly left to the scripted authority
+test. The nearby variant review found no other live issue.
+
+The pre-correction combined gate exited 0 in 566.05 seconds. Final focused
+`0606cb89` passed in 4.33 seconds; the strict local census passed with only
+the existing macOS `/proc` skip. No second independent pass was needed for
+these small corrections. The earlier published `33aa9ef1` independently
+passed both remote platform censuses and all four jobs in run 34043916766.

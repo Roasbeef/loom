@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `e2480830`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `0606cb89`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The plan remains
 [issue-plan.md](issue-plan.md), with required observations in the
@@ -22,8 +22,8 @@ release goal is not complete.
 |---|---|
 | Contracts and ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
-| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, presence recovery and two real HTTP prompt/reply turns. |
-| Default and release acceptance, phase 6 | Full local, packaging, multiplayer, soak and refreshed live-terminal checks pass for the named implementation. Remote platform acceptance, SQLite adoption, confinement and the remaining combined drive are open. |
+| TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitation boundaries, presence recovery, two real HTTP turns and live membership revocation. |
+| Default and release acceptance, phase 6 | Published `33aa9ef1` passes both platform gates and their corrected skip censuses. The reviewed revocation follow-up passes locally; its publication/platform gate, SQLite adoption, confinement and the remaining combined drive are open. |
 
 The plan numbers its seven phases 0 through 6. Backwards compatibility and
 legacy import were explicitly excluded; do not revive their historical cases.
@@ -40,8 +40,9 @@ Draft [#239](https://github.com/Roasbeef/loom/pull/239) publishes
 whole-VM recovery boundaries. The reviewed follow-up through `df960471` adds
 presence recovery and two real HTTP turns across Bob's reconnect, published
 at `0bc46d32`. The reviewed follow-up through `e2480830` adds shipped
-invitation boundaries and repairs hidden prerequisite diagnostics. All
-remain unmerged.
+invitation boundaries and repairs hidden prerequisite diagnostics, published
+with docs at `33aa9ef1`. Commit `0606cb89` adds the reviewed live membership
+revocation drive. All remain unmerged.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -77,6 +78,23 @@ dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
 
+The live-revocation candidate's combined check, distribution, bootstrap,
+multiplayer and soak gate exited 0 in **566.05 seconds**. It reported 1,332
+client tests and 206 TUI tests, with all three shipped fixtures enabled in
+ordinary check and the dedicated target. Its strict local macOS census
+exited 0 with the existing `/proc` prerequisite skip and no undeclared skips.
+After the review's small assertion corrections, the final shipped fixture
+at `0606cb89` passed in **4.33 seconds**. The full gate preceded those
+corrections; the focused result verifies them. No deadline was widened.
+
+Bob must be live and writable before the owner revokes his membership. His
+raw socket then receives exact normal close code 1000 and actual TCP closure;
+his terminal disconnects on its next refresh. Alice and Reader receive the
+same subsequent configuration and author while Bob retains his old cut.
+Bob's credential still authenticates control, but cannot list, inspect or
+reattach to the revoked session. The narrow admission/delivery race remains
+separate scripted authority coverage, not a claimed shipped observation.
+
 The final combined `make check dist e2e-client-bootstrap e2e-multiplayer
 soak-daemon` gate exited 0 in **563.63 seconds** at `e2480830`. It reported
 1,332 client tests and 206 TUI tests. The executable and public dummy
@@ -101,9 +119,9 @@ which previously hid conditional skips from the census. Twelve bounded
 Python regressions passed in **3.53 seconds**, including actual EUnit output
 and declared, undeclared and stale census cases. No prerequisite, assertion,
 skip declaration or runner capture behavior changed. Earlier remote census
-results on both platforms under-counted skips and remain unverified until
-the repaired reporting runs there. The local census above is not remote
-platform acceptance.
+results on both platforms under-counted skips. The repaired reporting has
+since passed both platform censuses at `33aa9ef1`; this does not retroactively
+validate the earlier counts or establish remote coverage for `0606cb89`.
 
 The provider/ordering candidate's combined `make check dist
 e2e-client-bootstrap e2e-multiplayer soak-daemon` gate exited 0 in
@@ -159,6 +177,16 @@ declaration matched no visible diagnostic. This exposed the stdout capture
 problem above; deleting the declaration would hide it. That run had neither
 a Hex failure nor a paired-soak assertion failure. The next published head
 must rerun both platform censuses with the reporting repair.
+
+Published `33aa9ef1` then passed
+[run 34043916766](https://github.com/Roasbeef/loom/actions/runs/34043916766):
+Linux, macOS, jailed E2E and 200-seed soak all succeeded. Both platform logs
+report 1,332 client and 206 TUI tests. Their censuses were independently read:
+Linux emitted no skip, and macOS emitted the existing `/proc` marker and
+matched its declaration. These are the first verified remote censuses after
+the reporting repair. The declaration's old explanation incorrectly said
+the MCP exchange had run; source inspection shows the whole fixture skips
+before setup. Only that explanation is corrected, not its marker or waiver.
 
 The new shipped recovery fixture fills runtime capacity, receives the exact
 capacity refusal after durable reservation, then kills the birth-verified
@@ -233,14 +261,22 @@ crash-at-every-publication-step sweep.
 
 ## What to do next
 
-### 1. Publish the follow-up and verify its platforms
+### 1. Publish the revocation follow-up and verify its platforms
 
-Push the reviewed authority and skip-reporting follow-up to #239, send its
+Push the reviewed live-revocation follow-up to #239, send its
 exact head and gate evidence, and monitor both platform jobs, including
 their repaired skip censuses. Native stack 231 already places it above
 #238. Keep the PR draft while release acceptance is incomplete. Re-baseline
 this handoff after new CI evidence; do not carry an earlier run's result
 as the new head's result.
+
+The next bounded shipped-client increment is failed-switch preservation.
+Reuse the existing second session after its foreign-access checks: isolate
+it and grant the existing Alice principal with `set-role`, not `invite`.
+Load and highlight its real `/sessions` row, revoke only that membership,
+then select it. The candidate must fail without replacing the original
+session's identity, records, inbox or socket; a subsequent shared config
+change must still flow. This is a plan, not completed evidence.
 
 Exit: the reviewed follow-up is correctly stacked and its own platform
 results are known and triaged. This does not authorize merging the Loom

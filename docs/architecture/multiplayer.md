@@ -181,6 +181,22 @@ the server's updated presence. This covers presence recovery, not ordered
 replay beyond the two scripted turns or admission of a command queued before
 revocation.
 
+The final stage revokes Bob's session membership while his terminal and a
+separate credited socket are attached. The coordinator consumes the owner's
+revocation acknowledgement before submitting a valid mutation on Bob's raw
+socket. That socket must receive a WebSocket close and actual TCP closure;
+a timeout is not closure. Bob's terminal disconnects, and Alice and Reader
+observe the remaining roster without a configuration change from Bob.
+Alice then changes configuration successfully. Reader receives the same
+authoritative value and author; Bob retains his last authorized view.
+
+Bob's credential still authenticates control, but its catalogue is empty and
+the old session cannot be inspected or upgraded. This distinguishes membership
+revocation from credential revocation. The shipped check establishes the
+post-acknowledgement admission boundary, not the narrow race between admission
+and delivery. `session_authorization_test` covers that interval separately
+with scripted authority; already admitted work is not required to cancel.
+
 This shipped-artifact fixture has a bounded body and a separate native
 cleanup check, including on assertion failure. The loopback provider retains
 its original listener witness outside the bounded callback. The composed

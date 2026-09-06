@@ -306,6 +306,10 @@ catalogue without opening runtimes. Explicit admission invokes
   session in another workspace. Owner-positive metadata, operation and upgrade
   checks distinguish authorization refusal from a missing target. A raw valid
   observer `set_config` frame checks the gateway independently of the TUI guard.
+  A later owner-acknowledged membership revocation closes Bob's live raw and
+  terminal attachments. Surviving clients receive Alice's next configuration;
+  Bob retains his old cut and cannot reattach, although control authentication
+  still succeeds. This is distinct from the scripted admission/delivery race.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent
