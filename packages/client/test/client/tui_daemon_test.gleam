@@ -12,6 +12,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/system
 import mist
 import simplifile
 import storage/domain
@@ -435,9 +436,8 @@ pub fn tui_daemon_terminal_normal_exit_reaps_control_after_starter_exit_test() {
         let test_watch = process.monitor(test_owner)
         process.send(terminal_ready, stop)
 
-        // Only the explicit stop may end a live test's terminal. A separate
-        // timeout could retire control before its original monitor is installed;
-        // the test owner's death still reaps this fixture on assertion failure.
+        // Only the explicit stop may end a live test's terminal. The test
+        // owner's death still reaps this fixture on assertion failure.
         process.new_selector()
         |> process.select(stop)
         |> process.select_specific_monitor(test_watch, fn(_) { Nil })
@@ -459,6 +459,11 @@ pub fn tui_daemon_terminal_normal_exit_reaps_control_after_starter_exit_test() {
     let assert Ok(Ok(control)) = process.receive(connections, 1000)
       as "short-lived bootstrap returns authenticated control"
     let watch = process.monitor(daemon.owner(control))
+
+    // The terminal is a different sender from this monitor's owner. A system
+    // reply acknowledges our preceding monitor signal before we let that
+    // terminal cause control to exit; is_alive alone does not prove receipt.
+    let _ = system.get_state(daemon.owner(control))
     let assert Ok(_) =
       process.new_selector()
       |> process.select_specific_monitor(starter_watch, fn(down) { down })
