@@ -10,6 +10,12 @@
 //// `--error=R5` and nothing else; the census is what argues for or against
 //// doing so, and for R3 it argues permanently against.
 ////
+//// It also applies the one exemption the rules themselves know nothing
+//// about: a source a generator wrote is dropped before either pass, because
+//// the literate rules bind whoever writes the source and that is the
+//// generator, not the reader who finds the file. `lint.is_generated` has
+//// the argument.
+////
 //// Manifests are linted too, and are found rather than given: `make lint`
 //// points at `packages/*/src`, so R6's `gleam.toml` half would never be
 //// reached if it waited to be named. Every source tree the run touched
@@ -146,7 +152,13 @@ fn run(options: Options) -> Nil {
   // `use`-compatible combinator the run can see before it can judge any one
   // call site: a combinator defined in `tools/tool` is called from sixteen
   // other modules, and a per-file table saw none of them (issue #73, D).
-  let read = list.filter_map(files, contents)
+  //
+  // A generated source is dropped between the reading and either pass: it
+  // is nobody's to fix, so a finding in one is noise that never clears.
+  let read =
+    files
+    |> list.filter_map(contents)
+    |> list.filter(fn(source) { !lint.is_generated(source.1) })
   let combinators =
     list.flat_map(read, fn(source) {
       lint.exported_combinators(display(source.0), source.1)
