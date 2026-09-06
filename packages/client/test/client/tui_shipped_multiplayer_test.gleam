@@ -492,7 +492,7 @@ fn live_tool_switches(
       backend.Paste("hold A tool"),
       backend.KeyPress("enter"),
     ])
-  let assert poll.Answered(Nil) =
+  let started =
     poll.until(within: 15_000, every: 10, attempt: fn() {
       case simplifile.read(filepath.join(workspace, "live-started")) {
         Ok("started") -> poll.Done(Nil)
@@ -500,6 +500,11 @@ fn live_tool_switches(
         Error(reason) -> poll.Fail(reason)
       }
     })
+  case started {
+    poll.Answered(Nil) -> Nil
+    _ -> marker_diagnostic(tui_driver.play(alice.data, []))
+  }
+  let assert poll.Answered(Nil) = started
     as "the ordinary shipped bash command actually starts"
   let observed_start = native.monotonic_time_ms()
   list.each([alice, peer, reader], fn(driver) {
@@ -655,6 +660,66 @@ fn select_live(
       writable(sample) && sample.model.session == target
     })
   Nil
+}
+
+// Failure diagnostics deliberately exclude the model, credentials and requests.
+fn marker_diagnostic(sample: tui_driver.Sample) -> Nil {
+  let phase = case
+    list.find(sample.model.strands, fn(row) { row.id == "main" })
+  {
+    Ok(row) ->
+      case row.live_phase {
+        Some(value) -> value
+        None -> "idle"
+      }
+    Error(Nil) -> "missing"
+  }
+  io.println_error(
+    "held tool marker absent: phase="
+    <> string.slice(phase, 0, 64)
+    <> " notice="
+    <> string.inspect(string.slice(sample.model.notice, 0, 512)),
+  )
+  let latest =
+    list.find(sample.model.records, fn(record) {
+      case record.entry {
+        entry.MessageEntry(message: message.ToolResultMessage(..), ..) -> True
+        _ -> False
+      }
+    })
+  case latest {
+    Ok(record) -> marker_result(record.entry)
+    Error(Nil) -> io.println_error("held tool latest result: absent")
+  }
+}
+
+// Clip individual text blocks before joining; image bytes never enter logs.
+fn marker_result(record: entry.Entry) -> Nil {
+  case record {
+    entry.MessageEntry(
+      message: message.ToolResultMessage(content:, is_error:, ..),
+      ..,
+    ) -> {
+      let status = case is_error {
+        True -> "error"
+        False -> "success"
+      }
+      let output =
+        list.map(list.take(content, 2), fn(block) {
+          case block {
+            message.ToolResultText(text, _) -> string.slice(text, 0, 512)
+            message.ToolResultImage(..) -> "[image omitted]"
+          }
+        })
+      io.println_error(
+        "held tool latest result: "
+        <> status
+        <> " "
+        <> string.inspect(string.join(output, "\n")),
+      )
+    }
+    _ -> Nil
+  }
 }
 
 // The gateway projects this phase from the durable main-strand operation.

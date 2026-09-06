@@ -15,6 +15,7 @@ import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -251,23 +252,44 @@ fn serve(
       |> response.set_body(mist.Bytes(bytes_tree.from_string(reason)))
     // Keep real chunked HTTP here: the shipped daemon must traverse its native
     // streaming transport, rather than receiving one buffered fixture body.
-    Ok(answer) ->
-      mist.chunked(
-        req,
-        response.new(200)
-          |> response.set_header("content-type", "text/event-stream"),
-        init: fn(subject) {
-          process.send(subject, Send)
-          answer
-        },
-        loop: fn(answer, _message, socket) {
-          list.each(transcript(answer), fn(chunk) {
-            assert mist.send_chunk(socket, bit_array.from_string(chunk))
-              == Ok(Nil)
-          })
-          mist.chunk_stop()
-        },
-      )
+    Ok(answer) -> {
+      // This subject belongs to the HTTP handler, not the new chunk worker.
+      // The worker stays parked until Mist has transferred the original socket.
+      let ready = process.new_subject()
+      let response =
+        mist.chunked(
+          req,
+          response.new(200)
+            |> response.set_header("content-type", "text/event-stream"),
+          init: fn(subject) {
+            process.send(ready, subject)
+            answer
+          },
+          loop: fn(answer, _message, socket) {
+            list.each(transcript(answer), fn(chunk) {
+              assert mist.send_chunk(socket, bit_array.from_string(chunk))
+                == Ok(Nil)
+            })
+            mist.chunk_stop()
+          },
+        )
+      // A failed worker start has no ready message and fails this fixture
+      // explicitly; it cannot masquerade as a successfully streamed response.
+      let assert Ok(subject) = process.receive(ready, within: 1000)
+        as "the initialized chunk worker publishes before socket transfer returns"
+      io.println_error("provider fixture response: " <> response_kind(answer))
+      process.send(subject, Send)
+      response
+    }
+  }
+}
+
+// Labels expose only the script variant, never prompts, arguments or headers.
+fn response_kind(exchange: Exchange) -> String {
+  case exchange {
+    Exchange(..) -> "text"
+    ToolUseExchange(..) -> "tool_use"
+    ToolResultExchange(..) -> "tool_result"
   }
 }
 
