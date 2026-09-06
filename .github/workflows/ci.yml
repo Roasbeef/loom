@@ -166,6 +166,7 @@ jobs:
             server-shipment-smoke.log
             distribution-linux.log
             e2e-client-bootstrap.log
+            packages/client/build/owned-assembly-*/daemon-soak.jsonl
           retention-days: 14
 
   # --------------------------------------------------------- the second OS
@@ -254,6 +255,7 @@ jobs:
             e2e-macos.log
             e2e-codemode-macos.log
             e2e-client-bootstrap-macos.log
+            packages/client/build/owned-assembly-*/daemon-soak.jsonl
           retention-days: 14
 
   # ------------------------------------------------------------- the jail
