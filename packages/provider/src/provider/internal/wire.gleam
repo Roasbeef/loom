@@ -6,6 +6,12 @@
 //// omit fields — while structurally malformed documents are still
 //// rejected by `core/json.parse` before these helpers ever run.
 ////
+//// `tool_arguments` is the one helper here that is not a field lookup. It
+//// lives beside them because two dialects accumulate a tool call's
+//// arguments as text and must settle that text the same way, and because
+//// how a malformed one settles is a leniency decision of exactly the kind
+//// this module's header is about.
+////
 //// ## Usage-counter clamping
 ////
 //// `core/json` integers are arbitrary precision, but usage counters
@@ -25,7 +31,9 @@
 //// that any sum of clamped counters (totals are composed from at most a
 //// handful) stays msgpack-encodable.
 
+import core/corruption
 import core/json.{type JsonValue}
+import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -156,5 +164,54 @@ fn parse_int(text: String) -> Result(Int, Nil) {
   case int.parse(string.trim(text)) {
     Ok(number) if number >= 0 -> Ok(number)
     _ -> Error(Nil)
+  }
+}
+
+/// The settled `arguments` for one tool call, from the argument text the
+/// model streamed.
+///
+/// Empty text is how a provider spells a call to a tool that takes no
+/// arguments, so it settles as the empty object. Text that is not JSON at
+/// all is the case worth explaining. It used to fail the whole stream:
+/// `build_blocks` propagated the parse error, the adapter settled it as
+/// `MalformedStream`, and `provider/retry.classify` marks that terminal —
+/// so one unbalanced brace inside one call ended a turn whose other blocks
+/// were perfectly good, with nothing the model could read and correct.
+///
+/// The parse failure is now carried rather than raised. It settles as
+/// `core/message.malformed_arguments`, an ordinary JSON object holding the
+/// raw text and the parser's complaint, which `machine/planner` recognizes
+/// and refuses in-band as an `is_error` tool result before the call can
+/// reach clearance or execution. `MalformedStream` is left to mean what it
+/// says: bytes the *provider* produced that were not the protocol.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wire.tool_arguments("") == json.Object([])
+/// assert wire.tool_arguments("{\"path\":\"a\"}")
+///   == json.Object([#("path", json.String("a"))])
+/// assert result.is_ok(message.malformed_arguments_of(
+///   wire.tool_arguments("{\"path\":"),
+/// ))
+/// ```
+///
+pub fn tool_arguments(arguments_json: String) -> JsonValue {
+  case arguments_json {
+    "" -> json.Object([])
+    text ->
+      case json.parse(text) {
+        Ok(arguments) -> arguments
+
+        // The report names the offset, what a well-formed document would
+        // have had there, and a bounded excerpt of what was found; that is
+        // exactly the correction the model needs, so it goes through
+        // verbatim rather than being reworded into something vaguer.
+        Error(report) ->
+          message.malformed_arguments(
+            raw: text,
+            reason: corruption.describe(report),
+          )
+      }
   }
 }

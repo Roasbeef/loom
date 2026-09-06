@@ -934,3 +934,99 @@ pub fn cache_write_counts_toward_overflow_test() {
   assert string.contains(error_message, "221000")
   assert raw_stop_reason == Some("end_turn")
 }
+
+// --- malformed tool arguments ---------------------------------------------
+
+// A turn in which the model streams good text, then a tool call whose
+// argument text is missing its closing brace, then a second call that is
+// perfectly well formed. Before issue #189 the parse failure in the middle
+// block failed the whole stream as `MalformedStream`, which
+// `retry.classify` marks terminal — so the text and the good call died with
+// it and the model was never told which brace it had dropped.
+fn one_malformed_tool_call_transcript() -> String {
+  message_start(80, 0, 0)
+  <> sse_event(
+    "content_block_start",
+    "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+  )
+  <> sse_event(
+    "content_block_delta",
+    "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Checking both.\"}}",
+  )
+  <> sse_event(
+    "content_block_stop",
+    "{\"type\":\"content_block_stop\",\"index\":0}",
+  )
+  <> sse_event(
+    "content_block_start",
+    "{\"type\":\"content_block_start\",\"index\":1,\"content_block\":"
+      <> "{\"type\":\"tool_use\",\"id\":\"toolu_bad\",\"name\":\"get_weather\",\"input\":{}}}",
+  )
+  <> sse_event(
+    "content_block_delta",
+    "{\"type\":\"content_block_delta\",\"index\":1,\"delta\":"
+      <> "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\": \\\"Paris\\\"\"}}",
+  )
+  <> sse_event(
+    "content_block_stop",
+    "{\"type\":\"content_block_stop\",\"index\":1}",
+  )
+  <> sse_event(
+    "content_block_start",
+    "{\"type\":\"content_block_start\",\"index\":2,\"content_block\":"
+      <> "{\"type\":\"tool_use\",\"id\":\"toolu_good\",\"name\":\"get_weather\",\"input\":{}}}",
+  )
+  <> sse_event(
+    "content_block_delta",
+    "{\"type\":\"content_block_delta\",\"index\":2,\"delta\":"
+      <> "{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Rome\\\"}\"}}",
+  )
+  <> sse_event(
+    "content_block_stop",
+    "{\"type\":\"content_block_stop\",\"index\":2}",
+  )
+  <> message_delta("tool_use", 30)
+  <> message_stop()
+}
+
+pub fn malformed_tool_arguments_settle_the_stream_test() {
+  let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
+  let assert [
+    stream.Delta(_),
+    stream.Delta(_),
+    stream.Delta(_),
+    stream.Delta(_),
+    stream.Delta(_),
+    stream.Settled(message: settled, usage: _),
+  ] = events
+  let assert message.AssistantMessage(content:, stop_reason:, ..) =
+    stream.message(settled)
+
+  // The turn settles as the tool-use turn it was; nothing about it failed.
+  assert stop_reason == message.ToolUse
+
+  // The text and the well-formed call are untouched, and the bad call is
+  // still a call — same id, same name, same position in the response.
+  let assert [
+    message.AssistantText(text: "Checking both.", text_signature: None),
+    message.AssistantToolCall(call: bad),
+    message.AssistantToolCall(call: good),
+  ] = content
+  assert bad.id == "toolu_bad"
+  assert bad.name == "get_weather"
+  assert good.id == "toolu_good"
+  assert good.arguments == json.Object([#("city", json.String("Rome"))])
+}
+
+pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
+  let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
+  let assert Ok(stream.Settled(message: settled, usage: _)) = list.last(events)
+  let assert message.AssistantMessage(
+    content: [_text, message.AssistantToolCall(call: bad), _good],
+    ..,
+  ) = stream.message(settled)
+
+  let assert Ok(#(raw, reason)) = message.malformed_arguments_of(bad.arguments)
+  assert raw == "{\"city\": \"Paris\""
+  assert string.contains(reason, "core/json.parse")
+}

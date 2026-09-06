@@ -263,6 +263,17 @@ processful shell around that sans-io core. WP-F.
   counters read as zero, unknown event and delta types are ignored per the
   Messages API versioning policy. The total-decoder doctrine governs *our*
   durability boundaries, not foreign wire vocabularies.
+- **A tool call the model got wrong is not a malformed stream** (issue
+  #189). The Anthropic and OpenAI dialects accumulate a call's arguments as
+  text and parse it at settlement; a parse failure there used to fail the
+  whole stream as `MalformedStream`, which `retry.classify` marks terminal,
+  killing a turn whose other blocks were fine. `wire.tool_arguments` now
+  settles that one call carrying `core/message.malformed_arguments` — the
+  raw text and the parser's complaint — and `machine/planner` turns it into
+  an in-band `is_error` result the model can correct. `MalformedStream`
+  keeps its narrower meaning: bytes the *provider* produced that were not
+  the protocol. Gemini needs none of this; its `args` arrive already parsed
+  inside the response document.
 - **Usage counters are clamped, not trusted.** `wire.count_field_or` /
   `optional_count_field` clamp into `[0, max_usage_count]` (1e12) at the
   read, so no count an untrusted proxy reports can reach a settled message
