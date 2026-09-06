@@ -59,6 +59,7 @@ import core/corruption.{type CorruptionReport}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import runtime/api
@@ -157,7 +158,14 @@ pub type JobState {
   /// carrying `timed_out` or `cancelled` is attributed to `Killed` by
   /// the transition that reads it, so neither flag is ever true in a
   /// state this constructor built.
-  Exited(result: ExecResult)
+  ///
+  /// `spill` is the content-addressed `sha256-` ref of the run's
+  /// complete output, which is what a model reads through `fs_read`
+  /// once the tail's retained window has scrolled past what it wants.
+  /// `None` means there was nothing to seal or the runner lost the
+  /// staging file before it could — a poll says so rather than offering
+  /// a ref that resolves to nothing.
+  Exited(result: ExecResult, spill: Option(String))
 
   /// The job was stopped and the helper reported the stopped execution.
   /// `by` is who asked, `result.cancelled` is the helper's own witness
@@ -167,7 +175,10 @@ pub type JobState {
   /// `by` is the cause the stop named when a stop passed through the
   /// actor, and the cause deduced from the report when one did not; the
   /// deduction is `exit_state` and its reasoning is written there.
-  Killed(by: KillCause, result: ExecResult)
+  /// `spill` is the same ref `Exited` carries: a killed job printed
+  /// something before it was stopped, and that output is the reason an
+  /// operator looks at a killed job at all.
+  Killed(by: KillCause, result: ExecResult, spill: Option(String))
 
   /// The job can no longer be spoken for and no `ExecResult` was ever
   /// observed. Terminal, and deliberately so: a record that stayed live
@@ -244,7 +255,13 @@ pub type JobEvent {
 
   /// The helper reported the execution's end. The terminal event for a
   /// run that was accepted; exactly one arrives per accepted run.
-  ExitReported(result: ExecResult)
+  ///
+  /// `spill` rides along because the runner seals the output at the same
+  /// moment it hears the report, and the terminal state is written once:
+  /// a ref that arrived in a second event would have nowhere to land.
+  /// The sealing is the runner's — this module names the ref and never
+  /// touches a file.
+  ExitReported(result: ExecResult, spill: Option(String))
 
   /// Custody of the job was lost without an exit report.
   RunnerLost(reason: LossReason)
@@ -434,7 +451,7 @@ fn from_starting(event: JobEvent) -> JobState {
 
     KillRequested(by:) -> Draining(by:)
 
-    ExitReported(result:) -> exit_state(result)
+    ExitReported(result:, spill:) -> exit_state(result, spill)
 
     RunnerLost(reason:) -> Lost(reason:)
   }
@@ -452,7 +469,7 @@ fn from_running(event: JobEvent) -> Result(JobState, IllegalTransition) {
 
     KillRequested(by:) -> Ok(Draining(by:))
 
-    ExitReported(result:) -> Ok(exit_state(result))
+    ExitReported(result:, spill:) -> Ok(exit_state(result, spill))
 
     RunnerLost(reason:) -> Ok(Lost(reason:))
   }
@@ -474,7 +491,7 @@ fn from_draining(by: KillCause, event: JobEvent) -> JobState {
 
     KillRequested(..) -> Draining(by:)
 
-    ExitReported(result:) -> Killed(by:, result:)
+    ExitReported(result:, spill:) -> Killed(by:, result:, spill:)
 
     RunnerLost(reason:) -> Lost(reason:)
   }
@@ -502,13 +519,13 @@ fn from_draining(by: KillCause, event: JobEvent) -> JobState {
 // `job_kill` and session stop both pass through the actor, which drains
 // the record before the ladder starts, and a helper lost with the runner
 // reports nothing at all.
-fn exit_state(result: ExecResult) -> JobState {
+fn exit_state(result: ExecResult, spill: Option(String)) -> JobState {
   case result.timed_out, result.cancelled {
-    True, _ -> Killed(by: ByDeadline, result:)
+    True, _ -> Killed(by: ByDeadline, result:, spill:)
 
-    False, True -> Killed(by: ByOperationAbort, result:)
+    False, True -> Killed(by: ByOperationAbort, result:, spill:)
 
-    False, False -> Exited(result:)
+    False, False -> Exited(result:, spill:)
   }
 }
 
@@ -559,17 +576,19 @@ fn encode_state(state: JobState) -> JsonValue {
         #("by", json.String(cause_to_string(by))),
       ])
 
-    Exited(result:) ->
+    Exited(result:, spill:) ->
       json.Object([
         #("phase", json.String("exited")),
         #("result", encode_result(result)),
+        #("spill", encode_spill(spill)),
       ])
 
-    Killed(by:, result:) ->
+    Killed(by:, result:, spill:) ->
       json.Object([
         #("phase", json.String("killed")),
         #("by", json.String(cause_to_string(by))),
         #("result", encode_result(result)),
+        #("spill", encode_spill(spill)),
       ])
 
     Lost(reason:) ->
@@ -577,6 +596,23 @@ fn encode_state(state: JobState) -> JsonValue {
         #("phase", json.String("lost")),
         #("reason", json.String(reason_to_string(reason))),
       ])
+  }
+}
+
+// The spill ref, written as a field that is always present and sometimes
+// null rather than a field that is sometimes absent.
+//
+// The difference decides what every later build has to carry. A field
+// added once cells exist can only be read with an absent-means-`None`
+// arm, and that arm is permanent: it cannot tell a job whose runner never
+// sealed a ref from a cell some future writer forgot to fill. Nothing has
+// written a `job/` cell yet, so the field is required from the first one
+// and the decoder never has to guess.
+fn encode_spill(spill: Option(String)) -> JsonValue {
+  case spill {
+    Some(ref) -> json.String(ref)
+
+    None -> json.Null
   }
 }
 
@@ -725,13 +761,15 @@ fn decode_state(
 
     "exited" -> {
       use result <- result.try(decode_result(state, where))
-      Ok(Exited(result:))
+      use spill <- result.try(decode_spill(state, where))
+      Ok(Exited(result:, spill:))
     }
 
     "killed" -> {
       use by <- result.try(decode_cause(state, where))
       use result <- result.try(decode_result(state, where))
-      Ok(Killed(by:, result:))
+      use spill <- result.try(decode_spill(state, where))
+      Ok(Killed(by:, result:, spill:))
     }
 
     "lost" -> {
@@ -784,6 +822,32 @@ fn decode_reason(
         on: "state.reason",
         expected: "vm_restart, owner_restart or helper_loss",
         context: other,
+      ))
+  }
+}
+
+// A null says the job sealed no ref; a missing field says the cell is
+// broken — see `encode_spill` for why the two are kept apart rather than
+// collapsed into a default. A present value of any other type is refused
+// as well: a number or an object where a ref belongs is a writer this
+// decoder does not know, and reading it as `None` would tell a model its
+// job printed nothing.
+fn decode_spill(
+  state: List(#(String, JsonValue)),
+  where: String,
+) -> Result(Option(String), CorruptionReport) {
+  use value <- result.try(require(state, "spill", where))
+  case value {
+    json.String(ref) -> Ok(Some(ref))
+
+    json.Null -> Ok(None)
+
+    other ->
+      Error(corruption.report(
+        at: where,
+        on: "state.spill",
+        expected: "a content-addressed ref or null",
+        context: json.to_string(other),
       ))
   }
 }
