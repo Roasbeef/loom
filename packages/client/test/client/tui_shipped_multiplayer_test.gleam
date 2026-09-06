@@ -7,10 +7,13 @@
 //// the loopback peer answers only the exact latest user text in its script.
 //// Bob then leaves and rejoins; every remaining terminal must observe both
 //// presence transitions without confusing principal and attachment identity.
+//// Member credentials cannot reach a second workspace's session, and an
+//// observer's raw mutation must be refused independently of the TUI guard.
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting failure.
 
 import client/daemon/admin
+import client/daemon_server_test as wire
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
 import core/entry
@@ -29,6 +32,7 @@ import host/bootstrap as native
 import host/endpoint
 import machine/strand
 import simplifile
+import support/internal/ffi_ws
 import support/provider_http
 import support/tui_driver
 import tui/bootstrap
@@ -170,6 +174,32 @@ fn exercise(
   let assert Ok(_) = selection.open(host, id)
     as "only the owner's explicit reopen starts the isolated session"
 
+  // A real second runtime makes refusal distinguish authorization from absence.
+  // Its owner-issued incarnation also makes operation lookup a valid request.
+  let foreign_workspace = filepath.join(directory, "workspace-b")
+  let assert Ok(Nil) = simplifile.create_directory_all(foreign_workspace)
+    as "the uninvited session has a distinct real workspace mapping"
+  let assert Ok(foreign) =
+    selection.create(
+      host,
+      "uninvited-session",
+      foreign_workspace,
+      configuration,
+    )
+    as "the owner creates an independently resident uninvited session"
+  let assert endpoint.Ready(port:, ..) = connected.record
+    as "authenticated bootstrap retains the published listener port"
+  invitation_boundaries(
+    address,
+    port,
+    owner,
+    [#(alice_token, snapshot.Operator), #(reader_token, snapshot.Observer)],
+    id,
+    foreign.expected,
+    connected.control,
+  )
+  observer_mutation_refused(port, reader_token, id)
+
   let assert Ok(alice) = tui_driver.start(address, alice_token, id)
     as "Alice owns one native terminal and socket"
   let assert Ok(bob) = tui_driver.start(address, bob_token, id)
@@ -306,6 +336,152 @@ fn exercise(
   // any preceding assertion instead closes them through their worker links.
   list.each([alice, rejoined, reader], stop_driver)
   daemon.close(connected.control)
+}
+
+fn invitation_boundaries(
+  address: String,
+  port: Int,
+  owner: String,
+  members: List(#(String, snapshot.Role)),
+  invited: String,
+  foreign: snapshot.Expected,
+  control: daemon.Connection,
+) -> Nil {
+  let epoch = daemon.hello(control).epoch
+  list.each(members, fn(credential) {
+    let #(bearer, role) = credential
+    let assert Ok(member) =
+      daemon.connect(address, bearer, process.self(), 5000)
+      as "a valid invited credential authenticates a public control connection"
+
+    // A nonempty page carries a cursor even when its continuation is empty.
+    let assert Ok(protocol.SessionsReply(page)) =
+      daemon.request(member, protocol.ListSessions("", None), 5000)
+      as "membership filters the real catalogue before pagination"
+    assert list.map(page.sessions, fn(session) { session.session_id })
+      == [invited]
+    assert page.after == Some(invited)
+    let assert Ok(protocol.SessionsReply(last)) =
+      daemon.request(
+        member,
+        protocol.ListSessions(invited, Some(page.revision)),
+        5000,
+      )
+      as "the authorized continuation contains no foreign registration"
+    assert last.sessions == []
+    assert last.after == None
+
+    // An observer may attach to a resident session but cannot open execution.
+    case role {
+      snapshot.Observer -> {
+        assert daemon.request(member, protocol.OpenSession(invited), 5000)
+          == Error(daemon.Refused("forbidden", "request refused"))
+          as "observer membership grants attachment but never runtime admission"
+      }
+      snapshot.Operator | snapshot.Owner -> Nil
+    }
+
+    // Valid foreign identities must be indistinguishable from absent ones.
+    list.each(
+      [
+        protocol.GetSession(foreign.session),
+        protocol.OpenSession(foreign.session),
+        protocol.GetOperation(foreign.session, foreign.incarnation, epoch),
+      ],
+      fn(command) {
+        assert daemon.request(member, command, 5000)
+          == Error(daemon.Refused("not_found", "request refused"))
+          as "a foreign registration and its valid operation disclose no metadata"
+      },
+    )
+
+    // Session membership grants no owner-only lifecycle authority.
+    list.each(
+      [protocol.StopSession(foreign.session), protocol.Shutdown],
+      fn(command) {
+        assert daemon.request(member, command, 5000)
+          == Error(daemon.Refused("forbidden", "request refused"))
+          as "member credentials cannot retire a session or its shared daemon"
+      },
+    )
+
+    // The owner already invited members here, so the target permits sharing.
+    let assert Ok(invitation) =
+      admin.parse([
+        "invite",
+        invited,
+        "intruder",
+        "operator",
+        "Intruder",
+      ])
+      as "the attempted invitation has a valid public command shape"
+    assert admin.exchange(address, bearer, epoch.value, invitation)
+      == Error("forbidden")
+      as "member credentials cannot issue invitations"
+    daemon.close(member)
+
+    // The upgrade refusal is an HTTP response, not a timeout or socket failure.
+    let #(socket, response) =
+      wire.connect(port, bearer, "/v2/sessions/" <> foreign.session <> "/ws")
+    assert string.starts_with(response, "HTTP/1.1 409 ")
+      as "an authenticated member cannot attach to the foreign runtime"
+    let _ = ffi_ws.tcp_close(socket)
+  })
+
+  // Positive owner reads and upgrade run after the refusals. They prove the
+  // foreign target still exists and shutdown was not silently accepted.
+  let assert Ok(protocol.SessionReply(session)) =
+    daemon.request(control, protocol.GetSession(foreign.session), 5000)
+    as "the foreign runtime remains available to its owner"
+  assert session.status == protocol.Resident(foreign.incarnation)
+  let assert Ok(_) =
+    daemon.request(
+      control,
+      protocol.GetOperation(foreign.session, foreign.incarnation, epoch),
+      5000,
+    )
+    as "the denied operation is independently valid for its owner"
+  let #(socket, response) =
+    wire.connect(port, owner, "/v2/sessions/" <> foreign.session <> "/ws")
+  assert string.starts_with(response, "HTTP/1.1 101 ")
+    as "the same foreign route permits its owner's websocket upgrade"
+  let _ = ffi_ws.tcp_close(socket)
+  Nil
+}
+
+fn observer_mutation_refused(
+  port: Int,
+  bearer: String,
+  session: String,
+) -> Nil {
+  // The gateway's observer guard precedes subscription dispatch. This valid
+  // set_config reaches the shipped server without the terminal's local guard;
+  // Alice's later /effort command proves the same mutation shape is supported.
+  // That positive control matters because the guard also refuses unknown names.
+  let #(socket, response) =
+    wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
+  assert string.starts_with(response, "HTTP/1.1 101 ")
+
+  // Correlation distinguishes the command's refusal from an unrelated frame.
+  let denied =
+    wire.send(
+      socket,
+      901,
+      "set_config",
+      json.Object([
+        #("strand", json.String("main")),
+        #("config", json.Object([#("thinking_level", json.String("high"))])),
+      ]),
+    )
+  let assert json.Object(fields) = denied
+    as "the server returns a complete envelope"
+  assert list.key_find(fields, "reply_to") == Ok(json.Int(901))
+  assert list.key_find(fields, "event") == Ok(json.String("error"))
+  let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+    as "the refusal carries structured server evidence"
+  assert list.key_find(body, "code") == Ok(json.String("forbidden"))
+  let _ = ffi_ws.tcp_close(socket)
+  Nil
 }
 
 fn assert_shared_turns(
