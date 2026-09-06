@@ -9,11 +9,14 @@
 //// presence transitions without confusing principal and attachment identity.
 //// Member credentials cannot reach a second workspace's session, and an
 //// observer's raw mutation must be refused independently of the TUI guard.
+//// Revoking Bob's membership then closes his existing attachments while the
+//// remaining members continue exchanging authoritative configuration updates.
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting failure.
 
 import client/daemon/admin
 import client/daemon_server_test as wire
+import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
 import core/entry
@@ -21,7 +24,9 @@ import core/json
 import core/message
 import etui/backend
 import filepath
+import gleam/bit_array
 import gleam/dict
+import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -32,13 +37,16 @@ import host/bootstrap as native
 import host/endpoint
 import machine/strand
 import simplifile
+import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import support/provider_http
 import support/tui_driver
+import tui
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/protocol as conversation
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -332,10 +340,128 @@ fn exercise(
     ["shippedanswerone", "shippedanswertwo"],
   )
 
+  revoke_live_member(
+    address,
+    port,
+    owner,
+    epoch,
+    id,
+    bob_token,
+    alice,
+    rejoined,
+    reader,
+  )
+
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
   list.each([alice, rejoined, reader], stop_driver)
   daemon.close(connected.control)
+}
+
+fn revoke_live_member(
+  address: String,
+  port: Int,
+  owner: String,
+  epoch: String,
+  session: String,
+  bearer: String,
+  alice: actor.Started(process.Subject(tui_driver.Message)),
+  bob: actor.Started(process.Subject(tui_driver.Message)),
+  reader: actor.Started(process.Subject(tui_driver.Message)),
+) -> Nil {
+  // Complete one real credited capture before revoking this idle raw socket.
+  // Unlike the terminal, this client cannot pre-reject the subsequent mutation.
+  let #(socket, response) =
+    wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
+  assert string.starts_with(response, "HTTP/1.1 101 ")
+  let #(_, transfer) = session_socket_test.begin(socket, session)
+  let _ = session_socket_test.drain(socket, transfer, 0, [], 32)
+
+  // An already-disconnected terminal cannot witness membership revocation.
+  // Wait through any normal capture before retaining its live, writable cut.
+  let before = tui_v2_test.await(bob.data, writable)
+  let assert Ok(revoke) = admin.parse(["revoke", session, "bob"])
+    as "membership revocation names the existing principal and session"
+  let assert Ok(_) = admin.exchange(address, owner, epoch, revoke)
+    as "the owner receives acknowledgement of durable membership revocation"
+
+  // Only work sent after that acknowledgement is tested. Earlier admitted
+  // commands may finish; this fixture does not isolate the admission/reply gap.
+  let bytes =
+    bit_array.from_string(conversation.set_thinking(902, "main", "low"))
+  let size = bit_array.byte_size(bytes)
+  assert size < 126 as "the fixed mutation fits one short masked client frame"
+  assert ffi_daemon_socket.send(socket, <<0x81, 1:1, size:7, 0:32, bytes:bits>>)
+    == Ok(Nil)
+    as "the raw client submits a valid post-revocation mutation"
+  let assert Ok(<<0x88, 2, 1000:16>>) = ffi_ws.tcp_receive(socket, 4, 1000)
+    as "the server returns a normal WebSocket close, not a mutation reply or crash"
+  let assert Error(reason) = ffi_ws.tcp_receive(socket, 1, 1000)
+    as "the peer retires the transport after its close frame"
+  assert reason == atom.to_dynamic(atom.create("closed"))
+    as "actual TCP closure, never timeout, proves transport retirement"
+  let _ = ffi_ws.tcp_close(socket)
+
+  // Bob receives no revocation broadcast. His next idle refresh is refused
+  // at admission, closing the terminal's independently owned socket too.
+  let closed =
+    tui_v2_test.await(bob.data, fn(sample) {
+      sample.model.peer == tui.Disconnected
+    })
+  assert closed.model.records == before.model.records
+  list.each([alice, reader], fn(driver) {
+    let remaining =
+      tui_v2_test.await(driver.data, fn(sample) {
+        has_principals(sample, ["alice", "reader"])
+      })
+    assert configuration_of(remaining) == configuration_of(before)
+      as "the refused mutation did not change the shared configuration"
+  })
+
+  // A positive update after observed closure replaces a timed absence check.
+  // Reader receives Alice's new value; Bob retains his last authorized cut.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("/effort low"),
+      backend.KeyPress("enter"),
+    ])
+  let updates =
+    list.map([alice, reader], fn(driver) {
+      let sample =
+        tui_v2_test.await(driver.data, fn(sample) {
+          let config = configuration_of(sample)
+          config.configuration.thinking_level == strand.ThinkingLow
+          && config.origin == Some(message.Origin("alice", "Alice"))
+        })
+      configuration_of(sample)
+    })
+  let assert [alice_configuration, reader_configuration] = updates
+    as "both surviving terminals have completed their own authoritative capture"
+  assert alice_configuration == reader_configuration
+  let retained = tui_driver.play(bob.data, [])
+  assert retained.model.peer == tui.Disconnected
+  assert retained.model.records == before.model.records
+  assert configuration_of(retained) == configuration_of(before)
+
+  // Membership loss does not revoke the credential itself. An authenticated
+  // control remains usable but cannot discover or reattach to this session.
+  let assert Ok(control) = daemon.connect(address, bearer, process.self(), 5000)
+    as "Bob's unchanged credential still authenticates after membership loss"
+  assert daemon.hello(control).principal == "bob"
+  let assert Ok(protocol.SessionsReply(page)) =
+    daemon.request(control, protocol.ListSessions("", None), 5000)
+    as "the revoked member can still request his authorized catalogue"
+  assert page.sessions == []
+  assert page.after == None
+  assert daemon.request(control, protocol.GetSession(session), 5000)
+    == Error(daemon.Refused("not_found", "request refused"))
+  daemon.close(control)
+  let #(socket, response) =
+    wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
+  assert string.starts_with(response, "HTTP/1.1 409 ")
+    as "the same credential cannot replace its revoked attachment"
+  let _ = ffi_ws.tcp_close(socket)
+  Nil
 }
 
 fn invitation_boundaries(
