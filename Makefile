@@ -193,33 +193,33 @@ install: codemode-seed release $(CLIENT_ARTIFACT) ## Install loom and loomd unde
 # ------------------------------------------------------------------- running
 
 WORKSPACE ?= .
+STATE_DIR ?= $(CURDIR)/build/dev/state
 
 .PHONY: run-server
-run-server: binaries ## Run the server from source: make run-server SESSION=path [ARGS=--best-effort]
-	@test -n "$(SESSION)" || { \
-		echo "usage: make run-server SESSION=path/to/session.db [WORKSPACE=dir] [ARGS=...]"; \
-		exit 1; }
-	@cd packages/client && gleam run -m client/serve -- \
-		--session "$(abspath $(SESSION))" \
-		--workspace "$(abspath $(WORKSPACE))" \
+run-server: binaries ## Run the daemon from source: [STATE_DIR=path] [ARGS=--best-effort]
+	@cd packages/client && gleam run -m client -- \
+		--state-dir "$(abspath $(STATE_DIR))" \
 		--helper "$(abspath bin/loom-exec)" $(ARGS)
 
 .PHONY: run-tui
-run-tui: binaries ## Attach the TUI: make run-tui ADDR=ws://host:port/v1/ws SESSION=id [TOKEN_FILE=path]
-	@test -n "$(ADDR)" && test -n "$(SESSION)" || { \
-		echo "usage: make run-tui ADDR=ws://host:port/v1/ws SESSION=id [TOKEN_FILE=path]"; \
-		exit 1; }
-	@if [ -n "$(TOKEN_FILE)" ]; then \
-		./bin/loom --addr "$(ADDR)" --session "$(SESSION)" \
-			--token-file "$(TOKEN_FILE)"; \
-	else ./bin/loom --addr "$(ADDR)" --session "$(SESSION)"; fi
+run-tui: binaries server-shipment ## Open the daemon session picker: [STATE_DIR=path] [WORKSPACE=dir] [SESSION=id]; remote: ADDR=ws://host:port/v2/sessions/id/ws TOKEN_FILE=path
+	@if [ -n "$(ADDR)" ]; then \
+		test -n "$(SESSION)" && test -n "$(TOKEN_FILE)" || { \
+			echo "remote attachment requires SESSION=id and TOKEN_FILE=path" >&2; exit 1; }; \
+		./bin/loom --addr "$(ADDR)" --session "$(SESSION)" --token-file "$(TOKEN_FILE)"; \
+	else \
+		set -- --state-dir "$(abspath $(STATE_DIR))" --workspace "$(abspath $(WORKSPACE))" \
+			--server "$(abspath bin/loomd)"; \
+		if [ -n "$(SESSION)" ]; then set -- "$$@" --session "$(SESSION)"; fi; \
+		./bin/loom "$$@"; \
+	fi
 
 .PHONY: bench-tui
 bench-tui: ## Benchmark the TUI frame-rendering hot paths
 	@cd packages/tui && gleam dev
 
 .PHONY: dev
-dev: ## Build, start a server on a scratch session, attach the TUI (interactive)
+dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh
 
 # -------------------------------------------------------------- the sandbox
