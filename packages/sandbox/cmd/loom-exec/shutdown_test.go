@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,5 +252,41 @@ func TestShutdownRejectsMalformedBody(t *testing.T) {
 				t.Fatal("malformed shutdown reported orderly native exit")
 			}
 		})
+	}
+}
+
+// A broker built against a different vocabulary is refused at the
+// handshake, and the refusal carries both numbers. A bare "unsupported
+// proto 2" is the shape that cost issue #61 an hour: the peer learns that
+// something is unsupported and nothing about what this binary wanted
+// instead, so the reader is left to bisect binaries for the answer.
+func TestHelloVersionMismatchNamesBothVersions(t *testing.T) {
+	h := startHelperProcess(t)
+	stale := framing.ExecProtocolVersion - 1
+	if err := h.conn.Write(1, framing.KindHello, framing.Hello{
+		Proto: stale, Peer: "broker",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	f := h.read(t)
+	var failure framing.ErrorBody
+	if f.Kind != framing.KindError || framing.DecodeBody(f.Body, &failure) != nil {
+		t.Fatalf("expected an error frame, got %+v", f)
+	}
+	if failure.Code != framing.ErrCodeProto {
+		t.Fatalf("error code = %q, want %q", failure.Code, framing.ErrCodeProto)
+	}
+	both := []string{strconv.Itoa(stale), strconv.Itoa(framing.ExecProtocolVersion)}
+	for _, want := range both {
+		if !strings.Contains(failure.Msg, want) {
+			t.Fatalf("refusal %q does not name version %s", failure.Msg, want)
+		}
+	}
+
+	// And the channel closes: a peer that cannot agree on what a frame body
+	// means is not one this helper keeps serving.
+	if err := h.wait(t); err == nil {
+		t.Fatal("version mismatch reported orderly native exit")
 	}
 }

@@ -1,3 +1,4 @@
+import broker/exec
 import core/json
 import core/message
 import gleam/erlang/process
@@ -209,6 +210,29 @@ pub fn failure_outcome_maps_to_is_error_message_test() {
       timestamp: 0,
     )
   let assert message.ToolResultMessage(is_error: True, ..) = result
+}
+
+// A version disagreement has to reach the reader as two numbers and a
+// remedy. Issue #61 was an hour lost to a stale `bin/loom-exec` whose only
+// symptom was "the sandbox channel broke protocol", so the assertions here
+// are on the parts a reader acts on: both versions, and which build to
+// rebuild. The two directions have different remedies and must not
+// collapse into one symmetric sentence.
+
+pub fn a_helper_behind_this_build_names_its_rebuild_test() {
+  let text =
+    tool.exec_failure_text(exec.ProtocolVersionMismatch(helper: 1, broker: 3))
+  assert string.contains(text, "1")
+  assert string.contains(text, "3")
+  assert string.contains(text, "make binaries")
+}
+
+pub fn a_helper_ahead_of_this_build_blames_the_harness_test() {
+  let text =
+    tool.exec_failure_text(exec.ProtocolVersionMismatch(helper: 4, broker: 3))
+  assert string.contains(text, "4")
+  assert string.contains(text, "3")
+  assert string.contains(text, "rebuild the harness")
 }
 
 // --- seams the snippet census needs ----------------------------------------
