@@ -2352,26 +2352,43 @@ fn monitored_by_test(owner: process.Pid) -> Bool {
 
 pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
   let cancelled = process.new_subject()
+  let streams = process.new_subject()
   let surface =
     effects.ProviderSurface(timeout_ms: 10_000, request: fn(_spec) {
       let events = process.new_subject()
-      process.send(
-        events,
-        stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
-      )
+      process.send(streams, events)
       stream.immediate(events:, cancel: fn() { process.send(cancelled, Nil) })
     })
   let handle =
     provider_relay.wrap(surface, cancellation_spec(), fn(_event) {
       panic as "observer crash"
     })
+  let assert Some(owner) = handle.owner
+    as "the relay exposes its original custodian"
+  assert !monitored_by_test(owner)
+    as "no earlier test-owned monitor can satisfy the drain-witness barrier"
   let drain_witness = stream.watch_drain(handle)
+
+  // The observer's crash retires the custodian from a different process than
+  // the one installing this test's monitor, and two senders' signals carry no
+  // order between them. The delta that provokes the crash is therefore sent
+  // only once the custodian reports the monitor installed; a crash that beat
+  // the monitor would settle the witness as ProofLost for a Normal exit.
+  assert monitored_by_test(owner)
+    as "the custodian has installed this test's original drain monitor"
+  let assert Ok(events) = process.receive(streams, within: 1000)
+    as "the relay opened its inner stream"
+  process.send(
+    events,
+    stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
+  )
 
   let assert Ok(stream.Failed(error: stream.TransportFailed(reason:))) =
     stream.next(handle, within: 1000)
   assert reason == "provider relay worker stopped before a terminal response"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
-  assert stream.await_drain_forever(drain_witness) == stream.Drained
+  assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
+    as "the custodian retires once the crashed worker is gone"
 }
 
 pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
