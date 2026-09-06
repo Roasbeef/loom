@@ -4,6 +4,7 @@ import broker/support/fake_helper
 import core/msgpack
 import gleam/erlang/process
 import gleam/option.{None}
+import weft/poll
 
 // The wire is deliberately silent until the test supplies native exit. A
 // transport-close notification is independent from that exit witness.
@@ -135,6 +136,13 @@ pub fn pool_timeout_keeps_custody_until_native_exit_test() {
   assert exec.close_pool(pool, waiting: 1000) == Ok(Nil)
 }
 
+/// A nonzero native exit proves the OS process is gone but attests
+/// nothing about its jail's descendants, so the slot stays occupied and
+/// `close_pool` keeps reporting the unclean verdict. What the refusal
+/// must not do is look like congestion: nothing transitions out of
+/// `Unconfirmed`, so a borrower told `AllBusy(1)` here would nap out its
+/// whole clearance budget, once per call, for the life of the session.
+/// A count of zero is the pool saying waiting cannot help.
 pub fn pool_native_failure_retains_capacity_test() {
   let assert Ok(pool) =
     exec.start_pool(size: 1, spawn: fn() {
@@ -145,8 +153,52 @@ pub fn pool_native_failure_retains_capacity_test() {
     as "helper borrowed"
   process.send(exec.wire(helper), exec.WireClosed(137))
   exec.checkin(pool, helper)
-  assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(1))
+  assert_hopeless(pool)
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementExit(137))
+}
+
+/// The count is the *lendable* remainder, not "any entry is unconfirmed":
+/// a borrower still holding the pool's other helper will check it back
+/// in, so that refusal is ordinary congestion and waiting is the right
+/// answer to it.
+pub fn pool_reports_the_helpers_that_can_still_return_test() {
+  let assert Ok(pool) =
+    exec.start_pool(size: 2, spawn: fn() {
+      Ok(fake_helper.start_helper(fake_helper.EchoArgv))
+    })
+    as "pool starts"
+  let assert Ok(dying) = exec.checkout(pool, waiting: 1000) as "first checkout"
+  let assert Ok(_held) = exec.checkout(pool, waiting: 1000) as "second checkout"
+  process.send(exec.wire(dying), exec.WireClosed(137))
+  exec.checkin(pool, dying)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case exec.checkout(pool, waiting: 1000) {
+        Error(exec.AllBusy(size: 1)) -> poll.Done(Nil)
+        Error(exec.AllBusy(size: 2)) -> poll.Retry
+        other -> poll.Fail(other)
+      }
+    })
+    as "the borrowed helper is still counted as able to return"
+  assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementExit(137))
+}
+
+// Waits for the pool to finish recording a retirement failure and then
+// pins the refusal it settles on. The verdict travels as a message from
+// the helper to the pool, so a checkout issued in the same breath can
+// still be handled ahead of it; the property under test is the state the
+// pool converges to and stays in, not the microsecond it gets there.
+fn assert_hopeless(pool: exec.Pool) -> Nil {
+  let assert poll.Answered(Nil) =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case exec.checkout(pool, waiting: 1000) {
+        Error(exec.AllBusy(size: 0)) -> poll.Done(Nil)
+        Error(exec.AllBusy(size: 1)) -> poll.Retry
+        other -> poll.Fail(other)
+      }
+    })
+    as "a pool with nothing left to lend refuses without promising more"
+  Nil
 }
 
 pub fn shutdown_body_requires_an_empty_map_test() {
@@ -308,7 +360,7 @@ pub fn prepared_pool_handshake_failure_keeps_acquired_owner_test() {
     as "pool starts"
   assert exec.checkout(pool, waiting: 1000)
     == Error(exec.SpawnFailed(exec.HandshakeFailed(exec.HandshakeTimeout)))
-  assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(1))
+  assert_hopeless(pool)
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementProofLost)
   let assert Ok(helper) = process.receive(owners, 1000)
     as "failed owner is retained"

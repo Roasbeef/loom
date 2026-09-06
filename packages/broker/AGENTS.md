@@ -284,8 +284,10 @@ protocol (spec Part 1.4). WP-G.
   the checkout-failure path releases the budget slot and revokes the
   token before answering — so progress depends only on running
   executions ending, which their wall deadlines guarantee. `AllBusy(size:
-  0)` is not congestion and never waits: a pool that lends nothing has
-  nothing to check back in.
+  0)` is not congestion and never waits: `size` counts the entries that
+  can still return to lending, so zero means a pool that lends nothing or
+  one whose every slot is held by an unconfirmed retirement, and neither
+  has anything to check back in.
 - **Every waiter leaves within its own budget *and with a verdict*.**
   The second half is not free. The loop reserves `min_retry_window_ms`
   of the caller's budget for its last attempt rather than issuing

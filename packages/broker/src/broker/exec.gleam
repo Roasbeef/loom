@@ -404,10 +404,30 @@ pub type RetirementFailure {
 
 // Native evidence belongs to the terminal state, not the actor's liveness.
 // Changing PendingExit to a verdict replays postponed retirement requests.
+//
+// These four are protocol-014's whole evidence model, and only the third
+// of them is evidence at all.
 type Retirement {
+  /// No OS process was ever acquired, so there is nothing to witness and
+  /// the actor may retire on its own. A parked helper that never reached
+  /// `begin` ends here.
   NoNativeResource
+
+  /// A shutdown was requested and the port is deliberately still open.
+  /// This is the state a caller's timeout answers `RetirementPending`
+  /// from, and the only one a later exit event can still improve.
   PendingExit
+
+  /// The port reported the child's exit status while it was retained.
+  /// Status 0 is the joined-cancellation witness the shutdown frame asks
+  /// for; any other status proves the process is gone but attests
+  /// nothing about the jail's descendants.
   NativeExit(status: Int)
+
+  /// The channel was discarded — killed, faulted, or the transport
+  /// closed — before any exit status could be selected. The OS process
+  /// may still be running, and no later event can repair this: proof
+  /// lost is permanent, which is why it is a state and not an absence.
   LostExit
 }
 
@@ -2310,6 +2330,16 @@ pub opaque type PoolMsg {
 /// Why a checkout was refused.
 pub type CheckoutError {
   /// Every slot is borrowed or still held by an unreaped helper.
+  ///
+  /// `size` is how many of those slots can still come back to lending:
+  /// the pool's configured size while the occupants are merely lent out
+  /// or draining, and smaller once a slot is held by a helper whose
+  /// retirement could not be confirmed, since nothing ever clears one of
+  /// those. **Zero means waiting cannot help**, which is what separates
+  /// congestion from a pool that has run out of helpers it can ever
+  /// lend: `broker.congested` naps and retries on a positive count and
+  /// refuses a zero at once, instead of spending a caller's whole
+  /// clearance budget re-asking a question whose answer cannot change.
   AllBusy(size: Int)
 
   /// A fresh helper could not be spawned.
@@ -2344,17 +2374,50 @@ type PoolEntry {
   )
 }
 
+/// Where one inventoried helper stands with respect to lending and to
+/// custody. The pool's custody model in five states: the first two are
+/// the ordinary lending cycle, the middle two are the two retirement
+/// boundaries protocol-014 demands in order, and the last is the
+/// terminal state of a helper that cleared neither.
 type Availability {
+  /// Idle and lendable, subject to the readiness probe at checkout.
   Available
+
+  /// Lent to a borrower. Custody is unchanged: a checkout reply lost to
+  /// the borrower's deadline leaves the helper here, owned and counted.
   Borrowed
+
+  /// Shutdown and `AwaitRetirement` have been sent; the first boundary,
+  /// native exit, has not been reported yet.
   Draining
+
+  /// Native exit status 0 was reported and `ForgetRetired` was sent. The
+  /// entry leaves the inventory only on the second boundary: the
+  /// original monitor's normal `Down` for the helper actor.
   RetiringActor
+
+  /// Retirement could not be established, and nothing clears this. The
+  /// slot stays occupied because the helper's jail descendants may still
+  /// be running, and `close_pool` reports this failure for the life of
+  /// the pool: an unconfirmed cleanup keeps the session's custody.
   Unconfirmed(failure: RetirementFailure)
 }
 
+/// The pool's own lifecycle. `PoolClosing` is the window in which every
+/// helper has been asked to retire and the answers are still arriving;
+/// `PoolFinished` is reached exactly once, and its outcome is the reply
+/// every postponed `AwaitPoolRetirement` is replayed onto.
 type PoolPhase {
+  /// Lending and spawning. The only phase in which a checkout can succeed.
   PoolLive
+
+  /// Admissions are closed and retirement is in flight for every entry.
   PoolClosing
+
+  /// Every entry settled. `Ok` means the inventory emptied through both
+  /// retirement boundaries; an `Error` names the first entry that could
+  /// not, and holds the pool actor alive so its custody is not silently
+  /// dropped by `ForgetPool`.
   PoolFinished(outcome: Result(Nil, RetirementFailure))
 }
 
@@ -2713,9 +2776,31 @@ fn next_helper(
       }
     Error(Nil) ->
       case state.size > 0 && list.drop(state.entries, state.size - 1) == [] {
-        False -> #(state, Error(AllBusy(size: state.size)))
+        // A refusal has to say whether waiting can change it. Reporting
+        // the configured size here made a pool whose every slot was held
+        // by an unconfirmed helper indistinguishable from a busy one, so
+        // each later clearance napped out its whole budget to be refused
+        // for the same permanent reason. Counting the entries that can
+        // still return to lending answers the borrower's actual question.
+        False -> {
+          let returning = list.count(state.entries, lendable_again)
+          #(state, Error(AllBusy(size: returning)))
+        }
         True -> spawn_new(state)
       }
+  }
+}
+
+// Whether this entry's slot can still come back to lending. Borrowed
+// helpers return on checkin; draining and retiring ones free their slot
+// when their retirement completes and the entry leaves the inventory.
+// An `Unconfirmed` entry does neither: nothing transitions out of it, by
+// design, because the helper's jail descendants may still be running and
+// the slot is what keeps a replacement from doubling them.
+fn lendable_again(entry: PoolEntry) -> Bool {
+  case entry.availability {
+    Available | Borrowed | Draining | RetiringActor -> True
+    Unconfirmed(_) -> False
   }
 }
 
