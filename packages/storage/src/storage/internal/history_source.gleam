@@ -13,7 +13,7 @@ import gleam/bit_array
 import gleam/bool
 import gleam/dynamic/decode
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
@@ -161,7 +161,12 @@ pub fn inspect(source: Source, expected: ids.SessionId) -> Result(Cut, String) {
 /// // history_source.page(source, cut, after: 0, limit: 10)
 /// ```
 @internal
-pub fn page(source: Source, cut: Cut, after: Int, limit: Int) {
+pub fn page(
+  source: Source,
+  cut: Cut,
+  after: Int,
+  limit: Int,
+) -> Result(List(snapshot.Descriptor), String) {
   snapshot_sqlite.page(source.connection, after, cut.next_seq, limit)
   |> result.map_error(string.inspect)
 }
@@ -174,7 +179,11 @@ pub fn page(source: Source, cut: Cut, after: Int, limit: Int) {
 /// // history_source.entry(source, cut, entry_id)
 /// ```
 @internal
-pub fn entry(source: Source, cut: Cut, id: ids.EntryId) {
+pub fn entry(
+  source: Source,
+  cut: Cut,
+  id: ids.EntryId,
+) -> Result(snapshot.Descriptor, String) {
   use rows <- result.try(query(
     source,
     sql.history_source_entry(ids.entry_id_to_string(id), Some(cut.next_seq)),
@@ -198,7 +207,11 @@ pub fn entry(source: Source, cut: Cut, id: ids.EntryId) {
 /// // history_source.fragment(source, descriptor, 0)
 /// ```
 @internal
-pub fn fragment(source: Source, descriptor: snapshot.Descriptor, offset: Int) {
+pub fn fragment(
+  source: Source,
+  descriptor: snapshot.Descriptor,
+  offset: Int,
+) -> Result(BitArray, String) {
   snapshot_sqlite.fragment(source.connection, descriptor, offset)
   |> result.map_error(string.inspect)
 }
@@ -215,25 +228,37 @@ pub fn close(source: Source) -> Result(Nil, String) {
   sqlight.close(source.connection) |> result.map_error(describe)
 }
 
-fn statement(source: Source, text: String) {
+// Transaction control and the two ROLLBACK paths above; every other statement
+// on this connection is a generated query.
+fn statement(source: Source, text: String) -> Result(Nil, String) {
   sqlight.exec(text, source.connection) |> result.map_error(describe)
 }
 
-fn result_from_option(value) {
+// A nullable column that the reader requires. The source file is another
+// process's database, so a missing value is bad data rather than a bug here.
+fn result_from_option(value: Option(a)) -> Result(a, String) {
   case value {
     Some(value) -> Ok(value)
     None -> Error("history source contains a missing required field")
   }
 }
 
-fn query(source: Source, generated) {
+fn query(
+  source: Source,
+  generated: #(String, List(dev.Param), decode.Decoder(a)),
+) -> Result(List(a), String) {
   let #(statement, params, decoder) = generated
   use params <- result.try(list.try_map(params, parameter))
   sqlight.query(statement, source.connection, params, decoder)
   |> result.map_error(describe)
 }
 
-fn one(source, generated: #(String, List(dev.Param), decode.Decoder(a))) {
+// The session catalog holds exactly one row, so both "no row" and "several"
+// mean the file is not the single-session database this reader was given.
+fn one(
+  source: Source,
+  generated: #(String, List(dev.Param), decode.Decoder(a)),
+) -> Result(a, String) {
   use rows <- result.try(query(source, generated))
   case rows {
     [row] -> Ok(row)
@@ -241,13 +266,23 @@ fn one(source, generated: #(String, List(dev.Param), decode.Decoder(a))) {
   }
 }
 
-fn parameter(value) {
+// The history queries bind only non-null strings and nullable integers. The
+// remaining variants are listed rather than caught, so a future generator
+// change breaks the build here instead of binding something unintended, the
+// way the catalogue and snapshot bridges already do.
+fn parameter(value: dev.Param) -> Result(sqlight.Value, String) {
   case value {
     dev.ParamInt(value) -> Ok(sqlight.int(value))
     dev.ParamString(value) -> Ok(sqlight.text(value))
     dev.ParamNullable(Some(value)) -> parameter(value)
     dev.ParamNullable(None) -> Ok(sqlight.null())
-    _ -> Error("unsupported history query parameter")
+    dev.ParamFloat(_)
+    | dev.ParamBool(_)
+    | dev.ParamBitArray(_)
+    | dev.ParamTimestamp(_)
+    | dev.ParamDate(_)
+    | dev.ParamList(_)
+    | dev.ParamDynamic(_) -> Error("unsupported history query parameter")
   }
 }
 

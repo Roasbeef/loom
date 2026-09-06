@@ -35,6 +35,9 @@ by WP-C-full.
   override a database's busy timeout, foreign-key enforcement, journal mode or
   optional cache target. Connection configuration precedes admission; journal
   configuration follows successful file validation and ownership acquisition.
+  `configure_database` runs the journal pragma as a query and compares the mode
+  SQLite reports back, so success means the database is in the requested mode
+  rather than that the statement ran.
 - `storage/access.{Principal, PrincipalKind, Digest, Role, Authority}` holds
   stable daemon identities, current display names, SHA-256 credential digests,
   and per-session operator/observer membership. `bootstrap_owner` creates the
@@ -73,9 +76,13 @@ by WP-C-full.
   embeds conversation `sql/session.sql`. Generation loads both schemas for
   query checking, but each database executes only its own schema. `make gen-sql`
   regenerates these artifacts, and tests pin them to their sources.
-- `storage/catalogue.{query, statement, atomic}` are internal generated-query
-  adapters for access metadata. They reuse the catalogue connection and its
-  existing daemon owner; they introduce neither a connection nor an actor.
+- `storage/catalogue.{query, statement, atomic, coherent}` are internal
+  generated-query adapters for access metadata. They reuse the catalogue
+  connection and its existing daemon owner; they introduce neither a connection
+  nor an actor. `atomic` is the write seam (`BEGIN IMMEDIATE`) and `coherent`
+  its read-intent sibling (`BEGIN DEFERRED`); neither may be nested inside the
+  other, since SQLite has no nested transactions and the inner rollback would
+  discard the outer transaction's writes.
 - `storage/storage.Storage(handle)` — a record of functions closed over a
   backend handle: `commit`, `get_entries`, `get_register`,
   `list_registers`, `scan_branch`, `scan_entries`, `scan_usage`, `stats`,
@@ -224,9 +231,32 @@ by WP-C-full.
   strictly increasing per session; gaps are legal.
 - **Transaction intent is explicit, not inferred from generated cardinality.**
   Catalogue pages and compound default reads use `BEGIN DEFERRED`; they read a
-  coherent snapshot without reserving the writer. Catalogue mutations and
-  access changes use `BEGIN IMMEDIATE`, including read-then-write operations.
-  A generated `:many` query is not necessarily read-only: writes can return rows.
+  coherent snapshot without reserving the writer. So does `access.authorization`,
+  whose three lookups answer one question about authority and must see one state
+  of the world without depending on the daemon's lifetime lock. Catalogue
+  mutations and access changes use `BEGIN IMMEDIATE`, including read-then-write
+  operations. A generated `:many` query is not necessarily read-only: writes can
+  return rows.
+- **The journal mode is verified, never assumed.** A journal change SQLite
+  declines is reported as the mode the database kept, not as an error, and an
+  exec discards that row. `configure_database` reads it and fails unless it
+  matches the requested mode, accepting only the `memory` an in-memory database
+  answers with. Without that check a session could run in rollback-journal mode
+  while every caller believed it had readers-alongside-one-writer.
+- **A snapshot prefix selection is an index range, not a namespace scan.**
+  `snapshot_sqlite` computes the prefix's successor in Gleam and the generated
+  queries bound `registers(ns, key)` with `key >= @prefix AND key <
+  @prefix_upper`, so the per-row JSON predicate only runs inside the prefix
+  window. An empty successor means the prefix has none — it is empty, or all
+  maximum code points — and the range stays open above, which a BLOB upper bound
+  expresses because every BLOB sorts after every TEXT. Prefixes stay literal:
+  nothing in them is a pattern, so nothing needs escaping.
+- **A test that opens a real database owns a scratch directory.**
+  `support/fixtures.scratch` deletes the directory, proves it absent, and
+  recreates it, so an interrupted run cannot leave a `-wal`/`-shm` sibling that
+  makes the next open see the database as locked (issue #119). Deleting the
+  `.db` alone is not enough, and a fixture must not depend on the journal mode
+  a previous run left behind.
 - **Every session write transaction opens with `BEGIN IMMEDIATE`.** Allocating the
   seq range reads `session.next_seq` before writing it, so every commit
   reads before it writes; a deferred `BEGIN` takes a read snapshot it

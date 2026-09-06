@@ -9,6 +9,7 @@ import simplifile
 import storage/catalogue
 import storage/domain
 import storage/sql
+import support/fixtures
 
 pub fn generated_domain_queries_match_sqlc_input_test() {
   let assert Ok(source) = simplifile.read("src/storage/sql/domain.sql")
@@ -112,10 +113,7 @@ fn isolated(record: catalogue.Registration) {
 }
 
 pub fn domains_restore_metadata_and_preserve_selected_config_test() {
-  let assert Ok(Nil) = simplifile.create_directory_all("build/test_db")
-    as "fixture directory exists"
-  let path = "build/test_db/domain-restore.db"
-  let _ = simplifile.delete(path)
+  let path = fixtures.scratch("domain-restore") <> "/catalogue.db"
   let assert Ok(store) = catalogue.open(path) as "catalogue opens"
   let first = registration(1)
   let second = registration(2)

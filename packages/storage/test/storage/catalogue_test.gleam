@@ -13,6 +13,7 @@ import sqlight
 import storage/catalogue
 import storage/sql
 import storage/sql_schema
+import support/fixtures
 
 pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(schema) = simplifile.read("sql/schema.sql")
@@ -56,11 +57,7 @@ fn normalize_queries(source: String) -> String {
 }
 
 fn fresh_path(name: String) -> String {
-  let assert Ok(Nil) = simplifile.create_directory_all("build/test_db")
-    as "catalogue test directory exists"
-  let path = "build/test_db/catalogue-" <> name <> ".db"
-  let _removed = simplifile.delete(path)
-  path
+  fixtures.scratch("catalogue-" <> name) <> "/catalogue.db"
 }
 
 pub fn read_snapshots_do_not_reserve_the_writer_but_mutations_do_test() {

@@ -664,7 +664,20 @@ fn transact(
 }
 
 /// Groups internal catalogue changes in one immediate transaction.
-/// Callers must not nest this within another catalogue transaction.
+///
+/// The seam exists because several metadata changes are only meaningful whole:
+/// a registration with its domain mapping, an invitation with its credential
+/// and first membership. Inside a body, use the in-transaction pieces —
+/// `reserve_in_transaction`, `query` and `statement` — never another
+/// transactional function from this module.
+///
+/// Callers must not nest this inside another catalogue transaction, `coherent`
+/// included. SQLite has no nested transactions: the inner `BEGIN` fails, and the
+/// `ROLLBACK` the inner call then issues aborts the *outer* transaction, so
+/// writes the caller believes are staged are discarded and the failure is
+/// reported as an unrelated database error. Every call site is checked by hand
+/// today; making the nesting unrepresentable means passing the body an opaque
+/// in-transaction token, which changes this function's shape and every caller's.
 ///
 /// ## Examples
 ///
@@ -677,6 +690,26 @@ pub fn atomic(
   run: fn() -> Result(a, Error),
 ) -> Result(a, Error) {
   transaction(catalogue.connection, run)
+}
+
+/// Groups internal catalogue reads in one deferred transaction.
+///
+/// This is `atomic`'s read-intent sibling: a compound read answers from one
+/// coherent snapshot without reserving the writer. It carries the same
+/// no-nesting rule, and for the same reason. Reads that already wrap themselves
+/// — `page`, `member_page`, `workspace_default` — must not be called inside it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.coherent(store, fn() { principal_and_membership(store) })
+/// ```
+@internal
+pub fn coherent(
+  catalogue: Catalogue,
+  run: fn() -> Result(a, Error),
+) -> Result(a, Error) {
+  snapshot(catalogue.connection, run)
 }
 
 fn execute(connection: sqlight.Connection, sql: String) -> Result(Nil, Error) {

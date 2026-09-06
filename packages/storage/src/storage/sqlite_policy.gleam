@@ -10,9 +10,11 @@
 //// typed record when another PRAGMA is needed rather than accepting arbitrary
 //// statement strings. Every command uses the binding's busy-total exec path.
 
+import gleam/dynamic/decode
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import sqlight
 
 /// Enforcement of schema-declared foreign-key relationships.
@@ -102,8 +104,11 @@ pub fn configure_connection(
 
 /// Applies journal policy after the caller has established file ownership.
 ///
-/// SQLite keeps an in-memory database in memory mode even when WAL is requested.
-/// No caller may treat this function as proof of session lease acquisition.
+/// Success means the database is in the requested mode, not merely that the
+/// statement ran: the pragma answers with the mode the database ended up in,
+/// which is not always the one asked for. SQLite keeps an in-memory database in
+/// memory mode even when WAL is requested, and that answer is accepted. No
+/// caller may treat this function as proof of session lease acquisition.
 ///
 /// ## Examples
 ///
@@ -118,7 +123,51 @@ pub fn configure_database(
     Wal -> "WAL"
     Delete -> "DELETE"
   }
-  sqlight.exec("PRAGMA journal_mode = " <> journal, on: connection)
+
+  // The pragma answers with the mode the database ended up in, which is not
+  // always the one asked for: a temporary or in-memory database keeps its own
+  // journal and declines the change by returning that row rather than by
+  // failing. An exec discards rows, so it answers Ok to a change that happened
+  // and to one that did not. The property at stake is the one this module's doc
+  // advertises — readers alongside one writer — which a database left in
+  // rollback-journal mode does not have.
+  use reported <- result.try(sqlight.query(
+    "PRAGMA journal_mode = " <> journal,
+    on: connection,
+    with: [],
+    expecting: decode.at([0], decode.string),
+  ))
+  case reported {
+    [mode] -> confirm(journal, mode)
+
+    // The pragma answers with exactly one row in every SQLite version this
+    // binding supports, so no row at all is a binding change, not a decline.
+    [] | [_, _, ..] ->
+      Error(declined(
+        "SQLite reported no journal mode for the requested " <> journal,
+      ))
+  }
+}
+
+// SQLite reports modes in lower case. An in-memory database legitimately stays
+// in "memory" whatever the file policy asks for, which the caller-facing doc
+// records; every other disagreement is a declined change wearing a plain reply.
+fn confirm(requested: String, reported: String) -> Result(Nil, sqlight.Error) {
+  let reported = string.lowercase(reported)
+  case reported == string.lowercase(requested) || reported == "memory" {
+    True -> Ok(Nil)
+    False ->
+      Error(declined(
+        "SQLite declined journal mode "
+        <> requested
+        <> " and remains in "
+        <> reported,
+      ))
+  }
+}
+
+fn declined(message: String) -> sqlight.Error {
+  sqlight.SqlightError(code: sqlight.Misuse, message:, offset: -1)
 }
 
 fn validate(options: Options) -> Result(Nil, sqlight.Error) {

@@ -1,5 +1,6 @@
 //// Deterministic fixtures for storage tests: seeded id generation and
-//// small entry/usage builders threaded through a test context.
+//// small entry/usage builders threaded through a test context, plus the
+//// scratch directory a test owns when it opens a real database file.
 
 import core/clock
 import core/entry.{
@@ -10,6 +11,30 @@ import core/ids.{type EntryId, type UsageId}
 import core/json
 import core/message.{Usage, UsageCost, UserMessage, UserText}
 import gleam/option.{type Option, None, Some}
+import simplifile
+
+/// A directory owned by one test, removed whole and proven absent before use.
+///
+/// A database is never alone on disk: WAL mode leaves `-wal` and `-shm`
+/// siblings, and an interrupted run once left a stale journal behind that made
+/// the next open see the database as locked (issue #119). Deleting a directory
+/// takes the siblings with the file, and the absence check is what turns a
+/// failed delete into a failed test rather than a confusing lock error later.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let path = fixtures.scratch("access-owner") <> "/catalogue.db"
+/// ```
+pub fn scratch(name: String) -> String {
+  let directory = "build/test_db/" <> name
+  let _removed = simplifile.delete(directory)
+  let assert Ok(False) = simplifile.is_directory(directory)
+    as "the scratch directory is gone before the test recreates it"
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the scratch directory is created"
+  directory
+}
 
 /// A threaded fixture context: a deterministic id generator.
 pub type Ctx {

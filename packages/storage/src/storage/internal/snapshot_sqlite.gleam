@@ -18,6 +18,7 @@ import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import parrot/dev
 import sqlight
 import storage/snapshot.{type Error}
@@ -114,6 +115,13 @@ fn headers(
     snapshot.StringFieldEquals(field, expected) -> #(field, expected)
   }
 
+  // Both statements bound the prefix as a key range rather than testing every
+  // key in the namespace, so the successor has to be computed before either
+  // runs. An empty string is how they spell "no upper bound"; a real successor
+  // always has at least one code point, so the two cannot be confused.
+  use upper <- result.try(prefix_successor(prefix))
+  let upper = option.unwrap(upper, "")
+
   // Keys are variable-size payloads too. Account the complete selection before
   // returning even its headers, not merely before fetching register values.
   use budget <- result.try(one(
@@ -121,6 +129,7 @@ fn headers(
     sql.snapshot_register_budget(
       register.ns_to_string(namespace),
       prefix,
+      upper,
       field,
       expected,
     ),
@@ -134,6 +143,7 @@ fn headers(
     sql.snapshot_register_headers(
       register.ns_to_string(namespace),
       prefix,
+      upper,
       field,
       expected,
     ),
@@ -142,6 +152,45 @@ fn headers(
     use byte_length <- result.map(required(row.value_bytes))
     snapshot.Header(namespace, row.key, row.seq, byte_length)
   })
+}
+
+// The smallest string sorting above every key that carries `prefix`. `None` is
+// the prefix that has no successor: the empty one, or one whose code points are
+// all the maximum. For those the lower bound alone already admits exactly the
+// prefixed keys, so the range stays open above rather than borrowing a bound
+// that would drop keys. Working in code points keeps the literal-prefix
+// property of `Selection` intact: no character in the prefix is a pattern, so
+// none needs escaping.
+fn prefix_successor(prefix: String) -> Result(Option(String), Error) {
+  let trimmed =
+    string.to_utf_codepoints(prefix)
+    |> list.reverse
+    |> list.drop_while(fn(point) {
+      string.utf_codepoint_to_int(point) == maximum_code_point
+    })
+  case trimmed {
+    [] -> Ok(None)
+    [last, ..earlier] -> {
+      use next <- result.map(next_code_point(string.utf_codepoint_to_int(last)))
+      Some(string.from_utf_codepoints(list.reverse([next, ..earlier])))
+    }
+  }
+}
+
+// The largest code point a string can hold, and so the one with no successor.
+const maximum_code_point = 0x10FFFF
+
+// The next code point after one taken from an existing string. The trailing
+// maximum has already been dropped, so the increment stays in range, and the
+// only value whose increment is not a code point at all is the one just below
+// the UTF-16 surrogate block. An unrepresentable answer would silently widen
+// the scan past the prefix, so it fails the read instead.
+fn next_code_point(code: Int) -> Result(UtfCodepoint, Error) {
+  case code {
+    0xD7FF -> string.utf_codepoint(0xE000)
+    other -> string.utf_codepoint(other + 1)
+  }
+  |> result.replace_error(snapshot.InvalidRequest)
 }
 
 fn header(

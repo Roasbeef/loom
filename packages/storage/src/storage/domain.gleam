@@ -65,16 +65,16 @@ pub fn key(scope: Scope, workspace: String, session_id: String) -> String {
 pub fn get(store: Catalogue, id: String) -> Result(Domain, Error) {
   use rows <- result.try(catalogue.query(store, sql.domain_by_id(id)))
   use row <- result.try(one(rows))
-  decode(
-    row.domain_id,
-    row.scope,
-    row.scope_key,
-    row.workspace,
-    row.configuration,
-    row.memory_path,
-    row.index_path,
-    row.digest_path,
-  )
+  decode(Row(
+    id: row.domain_id,
+    scope: row.scope,
+    scope_key: row.scope_key,
+    workspace: row.workspace,
+    configuration: row.configuration,
+    memory_path: row.memory_path,
+    index_path: row.index_path,
+    digest_path: row.digest_path,
+  ))
 }
 
 /// Reads the exact persisted mapping of a conversation.
@@ -93,16 +93,18 @@ pub fn for_session(
     sql.domain_for_session(session_id),
   ))
   use row <- result.try(one(rows))
-  use domain <- result.try(decode(
-    row.domain_id,
-    row.scope,
-    row.scope_key,
-    row.workspace,
-    row.configuration,
-    row.memory_path,
-    row.index_path,
-    row.digest_path,
-  ))
+  use domain <- result.try(
+    decode(Row(
+      id: row.domain_id,
+      scope: row.scope,
+      scope_key: row.scope_key,
+      workspace: row.workspace,
+      configuration: row.configuration,
+      memory_path: row.memory_path,
+      index_path: row.index_path,
+      digest_path: row.digest_path,
+    )),
+  )
   use record <- result.try(catalogue.get(store, session_id))
   use Nil <- result.try(matches(record, domain))
   Ok(domain)
@@ -147,7 +149,15 @@ pub fn bind(
   })
 }
 
-fn bind_initial(store, record: catalogue.Registration, domain) {
+// The shared body of reservation and explicit binding, always called inside a
+// catalogue transaction so the mapping and the revision bump commit with the
+// registration. An exact repeat of an existing mapping is the idempotent retry;
+// a different one is a conflict rather than a silent replacement.
+fn bind_initial(
+  store: Catalogue,
+  record: catalogue.Registration,
+  domain: Domain,
+) -> Result(Domain, Error) {
   use Nil <- result.try(matches(record, domain))
   case for_session(store, record.id) {
     Ok(existing) ->
@@ -251,20 +261,23 @@ pub fn page(
 ) -> Result(List(Domain), Error) {
   use rows <- result.try(catalogue.query(store, sql.domain_page(after)))
   list.try_map(rows, fn(row) {
-    decode(
-      row.domain_id,
-      row.scope,
-      row.scope_key,
-      row.workspace,
-      row.configuration,
-      row.memory_path,
-      row.index_path,
-      row.digest_path,
-    )
+    decode(Row(
+      id: row.domain_id,
+      scope: row.scope,
+      scope_key: row.scope_key,
+      workspace: row.workspace,
+      configuration: row.configuration,
+      memory_path: row.memory_path,
+      index_path: row.index_path,
+      digest_path: row.digest_path,
+    ))
   })
 }
 
-fn insert_domain(store, domain: Domain) {
+// Inserts a domain, or accepts an identical one that is already stored. Both
+// callers run inside a transaction, so a conflict discovered here rolls back
+// the binding that asked for it.
+fn insert_domain(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
   use Nil <- result.try(validate(domain))
   case get(store, domain.id) {
     Ok(existing) ->
@@ -277,7 +290,10 @@ fn insert_domain(store, domain: Domain) {
   }
 }
 
-fn insert_absent(store, domain: Domain) {
+// The destination check and the insert are one step on purpose: memory, index
+// and the derived digest sidecar are compared against every destination column
+// already stored, so two domains can never share a file.
+fn insert_absent(store: Catalogue, domain: Domain) -> Result(Domain, Error) {
   use conflicts <- result.try(catalogue.query(
     store,
     sql.domain_path_conflicts(
@@ -307,7 +323,13 @@ fn insert_absent(store, domain: Domain) {
   Ok(domain)
 }
 
-fn matches(record: catalogue.Registration, domain: Domain) {
+// A domain may only be bound to a registration whose workspace and identity
+// derive it. This is what keeps a session from being bound to another
+// session's domain, and it runs before any bind, not after.
+fn matches(
+  record: catalogue.Registration,
+  domain: Domain,
+) -> Result(Nil, Error) {
   use Nil <- result.try(validate(domain))
   case
     record.workspace == domain.workspace
@@ -318,7 +340,10 @@ fn matches(record: catalogue.Registration, domain: Domain) {
   }
 }
 
-fn validate(domain: Domain) {
+// Everything a stored domain must satisfy on the way in and on the way out:
+// canonical absolute destinations, three distinct files once the digest sidecar
+// is derived, and an identity that matches its own scope.
+fn validate(domain: Domain) -> Result(Nil, Error) {
   use Nil <- result.try(absolute(domain.workspace))
   use Nil <- result.try(absolute(domain.memory_path))
   use Nil <- result.try(absolute(domain.index_path))
@@ -355,7 +380,9 @@ fn validate(domain: Domain) {
   }
 }
 
-fn absolute(path) {
+// Paths are host-canonicalized before they reach this module; the bound and the
+// NUL check are what keep a wire-supplied string from becoming a destination.
+fn absolute(path: String) -> Result(Nil, Error) {
   case
     string.starts_with(path, "/")
     && string.byte_size(path) <= 4096
@@ -388,23 +415,47 @@ pub fn digest_beside(memory_path: String) -> String {
   directory <> "/loom-memory.digest"
 }
 
-fn scope_fields(domain: Domain) {
+// The persisted (scope, scope_key) pair. The key is redundant with the identity
+// by construction, which is exactly why decode re-derives and compares it.
+fn scope_fields(domain: Domain) -> #(String, String) {
   case domain.scope {
     WorkspacePrivate -> #("workspace_private", domain.workspace)
     SessionOnly -> #("session_only", string.drop_start(domain.id, 8))
   }
 }
 
-fn decode(
-  id,
-  scope,
-  scope_key,
-  workspace,
-  configuration,
-  memory_path,
-  index_path,
-  digest_path,
-) {
+// The persisted columns of one domain row, as every generated row type spells
+// them. Four call sites read four different generated types into this one
+// record, and naming the fields is what stops a transposition of two same-typed
+// paths -- memory for index, say -- from type-checking and being written back.
+type Row {
+  Row(
+    id: String,
+    scope: String,
+    scope_key: String,
+    workspace: String,
+    configuration: String,
+    memory_path: String,
+    index_path: String,
+    digest_path: String,
+  )
+}
+
+// Turns a stored row into a validated domain, or refuses it. Persisted scope
+// strings are decoded totally, and the derived digest sidecar and scope key are
+// re-checked against the identity so a hand-edited catalogue cannot widen what
+// this record points at.
+fn decode(row: Row) -> Result(Domain, Error) {
+  let Row(
+    id:,
+    scope:,
+    scope_key:,
+    workspace:,
+    configuration:,
+    memory_path:,
+    index_path:,
+    digest_path:,
+  ) = row
   use scope <- result.try(case scope {
     "workspace_private" -> Ok(WorkspacePrivate)
     "session_only" -> Ok(SessionOnly)
@@ -422,7 +473,10 @@ fn decode(
   }
 }
 
-fn one(rows) {
+// Domain lookups are keyed by a unique column, so more than one row means the
+// catalogue disagrees with its own schema and is refused rather than picked
+// from. Missing stays a distinct answer: callers branch on it to insert.
+fn one(rows: List(a)) -> Result(a, Error) {
   case rows {
     [row] -> Ok(row)
     [] -> Error(Missing)

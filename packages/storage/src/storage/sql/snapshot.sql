@@ -1,3 +1,10 @@
+-- Prefix selection is an index range on registers(ns, key), never a scan of
+-- the namespace: @prefix_upper is the prefix's successor, computed in Gleam,
+-- so wildcard characters keep carrying no special meaning. An empty
+-- @prefix_upper means the prefix has no successor and the range is open
+-- above; a BLOB sorts after every TEXT value in SQLite, which is how one
+-- statement expresses both cases. The JSON predicate then runs only on the
+-- narrowed window.
 -- name: SnapshotSession :one
 SELECT next_seq, message_count, length(usage_payload) AS usage_bytes
 FROM session LIMIT 2;
@@ -8,7 +15,9 @@ SELECT usage_payload FROM session LIMIT 2;
 -- name: SnapshotRegisterHeaders :many
 SELECT key, seq, length(value) AS value_bytes
 FROM registers
-WHERE ns = @namespace AND substr(key, 1, length(CAST(@prefix AS TEXT))) = @prefix
+WHERE ns = @namespace AND key >= @prefix AND key <
+  CASE WHEN CAST(@prefix_upper AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(@prefix_upper AS TEXT) END
 AND CASE
   WHEN CAST(@field AS TEXT) = '' THEN 1
   WHEN length(value) > 1048576 THEN 1
@@ -22,7 +31,9 @@ ORDER BY key LIMIT 1025;
 SELECT COUNT(*) AS cell_count,
   CAST(COALESCE(SUM(length(value) + length(CAST(key AS BLOB)) + length(CAST(ns AS BLOB)) + 65), 0) AS INTEGER) AS total_bytes
 FROM registers
-WHERE ns = @namespace AND substr(key, 1, length(CAST(@prefix AS TEXT))) = @prefix
+WHERE ns = @namespace AND key >= @prefix AND key <
+  CASE WHEN CAST(@prefix_upper AS TEXT) = '' THEN CAST('' AS BLOB)
+  ELSE CAST(@prefix_upper AS TEXT) END
 AND CASE
   WHEN CAST(@field AS TEXT) = '' THEN 1
   WHEN length(value) > 1048576 THEN 1

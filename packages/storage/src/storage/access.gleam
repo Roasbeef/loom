@@ -452,6 +452,12 @@ pub fn revoke_membership(
 /// Resolves current authority for one existing session by indexed lookups.
 /// A role in another session grants nothing here, and missing is not observer.
 ///
+/// The three lookups read one deferred snapshot, like every other compound read
+/// in the catalogue. Serializing the daemon's metadata calls under the lifetime
+/// lock already keeps a membership change from landing between them, but the
+/// read that answers "may this principal act on this session" should not depend
+/// on a lock held in another module to see one state of the world.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -463,13 +469,15 @@ pub fn authorization(
   principal_id: String,
   session_id: String,
 ) -> Result(Authority, Error) {
-  use found <- result.try(get(store, principal_id))
-  use _session <- result.try(catalogue.get(store, session_id))
-  case found.kind {
-    OwnerPrincipal -> Ok(Owner)
-    MemberPrincipal ->
-      membership(store, principal_id, session_id) |> result.map(Participant)
-  }
+  catalogue.coherent(store, fn() {
+    use found <- result.try(get(store, principal_id))
+    use _session <- result.try(catalogue.get(store, session_id))
+    case found.kind {
+      OwnerPrincipal -> Ok(Owner)
+      MemberPrincipal ->
+        membership(store, principal_id, session_id) |> result.map(Participant)
+    }
+  })
 }
 
 fn membership(store: Catalogue, principal_id: String, session_id: String) {

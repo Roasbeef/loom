@@ -3,9 +3,9 @@
 
 import gleam/dynamic/decode
 import gleam/option.{Some}
-import simplifile
 import sqlight
 import storage/sqlite_policy as policy
+import support/fixtures
 
 fn number(connection: sqlight.Connection, pragma: String) {
   let assert Ok([value]) =
@@ -50,15 +50,19 @@ pub fn database_overrides_do_not_change_shared_defaults_test() {
   assert number(second, "PRAGMA busy_timeout") == defaults.busy_timeout_ms
   assert number(second, "PRAGMA foreign_keys") == 0
   assert journal(first) == "memory"
+
+  // An in-memory database stays in memory mode whatever the file policy asks
+  // for. That answer is the documented exception to journal verification, so it
+  // must remain a success rather than becoming a refusal.
+  assert policy.configure_database(first, defaults) == Ok(Nil)
+  assert journal(first) == "memory"
   assert policy.defaults() == defaults
   assert sqlight.close(first) == Ok(Nil)
   assert sqlight.close(second) == Ok(Nil)
 }
 
 pub fn journal_policy_is_separate_from_pre_admission_settings_test() {
-  let assert Ok(Nil) = simplifile.create_directory_all("build/test_db")
-    as "fixture directory exists"
-  let path = "build/test_db/sqlite-policy.db"
+  let path = fixtures.scratch("sqlite-policy-journal") <> "/policy.db"
   let assert Ok(connection) = sqlight.open(path) as "fixture opens"
   let defaults = policy.defaults()
   assert policy.configure_database(
@@ -72,6 +76,19 @@ pub fn journal_policy_is_separate_from_pre_admission_settings_test() {
   assert policy.configure_database(connection, defaults) == Ok(Nil)
   assert journal(connection) == "wal"
   assert sqlight.close(connection) == Ok(Nil)
+}
+
+pub fn declined_journal_change_is_not_reported_as_success_test() {
+  // An empty path opens SQLite's private temporary database, which cannot be
+  // moved into WAL. It declines by answering with the mode it kept instead of
+  // by failing the statement, so this is the reachable case that separates
+  // running the pragma from reading its answer.
+  let assert Ok(temporary) = sqlight.open("") as "temporary database opens"
+  let declined = policy.configure_database(temporary, policy.defaults())
+  let assert Error(sqlight.SqlightError(code: sqlight.Misuse, ..)) = declined
+    as "a declined journal change is an error, not a silent success"
+  assert journal(temporary) == "delete"
+  assert sqlight.close(temporary) == Ok(Nil)
 }
 
 pub fn invalid_options_fail_before_any_pragma_changes_test() {

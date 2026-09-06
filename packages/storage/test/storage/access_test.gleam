@@ -12,13 +12,10 @@ import sqlight
 import storage/access
 import storage/catalogue
 import storage/sql
+import support/fixtures
 
 fn path(name: String) {
-  let assert Ok(Nil) = simplifile.create_directory_all("build/test_db")
-    as "the access fixture directory exists"
-  let file = "build/test_db/access-" <> name <> ".db"
-  let _removed = simplifile.delete(file)
-  file
+  fixtures.scratch("access-" <> name) <> "/catalogue.db"
 }
 
 fn digest(char: String) {
@@ -92,6 +89,45 @@ pub fn member_invitation_recovery_preserves_identity_and_tombstones_test() {
   assert access.rotate_member(store, member.id, digest("f")) == Ok(member)
   assert access.authorization(store, member.id, session.id)
     == Ok(access.Participant(access.Observer))
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn authorization_reads_one_snapshot_without_reserving_the_writer_test() {
+  let file = path("authorization-snapshot")
+  let assert Ok(store) = catalogue.open(file) as "catalogue opens"
+  let session = registration(451)
+  assert catalogue.reserve(store, session) == Ok(session)
+  let assert Ok(member) =
+    access.invite_member(
+      store,
+      "snapshot-member",
+      "Member",
+      digest("b"),
+      session.id,
+      access.Operator,
+    )
+    as "the member exists before authority is resolved"
+  let assert Ok(writer) = sqlight.open(file)
+    as "an independent connection can contend for the writer"
+  assert catalogue.statement(store, #("PRAGMA busy_timeout = 1", [])) == Ok(Nil)
+  assert sqlight.exec("BEGIN IMMEDIATE", on: writer) == Ok(Nil)
+
+  // Three lookups answer one question, so they read one deferred snapshot. A
+  // read snapshot coexists with the pending writer; taking the writer instead
+  // would fail immediately against this busy timeout.
+  assert access.authorization(store, member.id, session.id)
+    == Ok(access.Participant(access.Operator))
+  assert sqlight.exec("ROLLBACK", on: writer) == Ok(Nil)
+  assert sqlight.close(writer) == Ok(Nil)
+
+  // The snapshot is a real transaction on this connection, which is why the
+  // module's no-nesting rule applies to authorization as well: called inside a
+  // catalogue transaction it is refused rather than reading outside the cut.
+  assert catalogue.statement(store, #("BEGIN DEFERRED", [])) == Ok(Nil)
+  let assert Error(catalogue.Database(_)) =
+    access.authorization(store, member.id, session.id)
+    as "a nested authorization read is refused, not silently unwrapped"
+  assert catalogue.statement(store, #("ROLLBACK", [])) == Ok(Nil)
   assert catalogue.close(store) == Ok(Nil)
 }
 

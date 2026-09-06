@@ -257,6 +257,79 @@ pub fn exact_key_capture_excludes_prefix_neighbors_and_omits_missing_test() {
   })
 }
 
+// Keys chosen around the boundaries a key range gets wrong when its upper bound
+// is computed carelessly: the prefix itself, the prefix with a following byte
+// below and above the separator, the code point just under the UTF-16 surrogate
+// block, and the maximum code point, which has no successor at all.
+const boundary_keys = [
+  "client", "client.", "client/", "client/\u{0}", "client/a", "client/z",
+  "client0", "clients", "runtime/a", "\u{D7FF}", "\u{D7FF}z", "\u{E000}",
+  "\u{10FFFF}", "\u{10FFFF}a",
+]
+
+pub fn prefix_selection_is_a_key_range_over_the_same_members_test() {
+  list.each([Memory, Sqlite], fn(backend) {
+    let fixture = open(backend, "prefix-range")
+    let _committed =
+      write(
+        fixture,
+        list.map(boundary_keys, fn(key) {
+          tx.SetRegister(
+            register.FactCustom,
+            key,
+            register.value(json.String(key)),
+          )
+        }),
+      )
+
+    // The SQLite backend answers a prefix with an index range, the memory
+    // backend with a literal starts_with. Both must select exactly the keys
+    // carrying the prefix, including for the two prefixes with no successor:
+    // the empty one and the one made of the maximum code point.
+    list.each(["client/", "clientz", "\u{D7FF}", "\u{10FFFF}", ""], fn(prefix) {
+      let selection =
+        snapshot.Selection(register.FactCustom, prefix, snapshot.All)
+      let assert Ok(cut) =
+        fixture.reader.capture(snapshot.Plan([selection], [], 0), 1000)
+        as "a bounded prefix selection is readable"
+      let selected =
+        cut.cells
+        |> list.map(fn(cell) { cell.key })
+        |> list.sort(string.compare)
+      let carrying =
+        boundary_keys
+        |> list.filter(string.starts_with(_, prefix))
+        |> list.sort(string.compare)
+      assert selected == carrying
+    })
+    assert fixture.close() == Ok(Nil)
+  })
+}
+
+pub fn prefix_header_plan_is_an_index_range_not_a_namespace_scan_test() {
+  let assert Ok(conn) = sqlight.open(path("prefix-plan"))
+    as "plan fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  let #(statement, _params, _decoder) =
+    sql.snapshot_register_headers("", "", "", "", "")
+  let assert Ok(plan) =
+    sqlight.query(
+      "EXPLAIN QUERY PLAN " <> statement,
+      on: conn,
+      with: list.repeat(sqlight.text(""), 5),
+      expecting: decode.at([3], decode.string),
+    )
+    as "SQLite explains the generated header query"
+
+  // The bounds are what keeps a client attach off a namespace-wide scan, and
+  // with them the per-row JSON predicate only runs inside the prefix window.
+  // A plan without the upper bound still returns the right rows, so only this
+  // assertion notices if the range decays back into a filter.
+  assert list.any(plan, string.contains(_, "SEARCH registers"))
+  assert list.any(plan, string.contains(_, "key>? AND key<?"))
+  assert sqlight.close(conn) == Ok(Nil)
+}
+
 pub fn exact_key_preflight_refuses_before_fetch_and_never_scans_prefix_test() {
   let fetched = process.new_subject()
   let source =
@@ -735,8 +808,8 @@ pub fn conversation_schema_and_generated_queries_match_sources_test() {
   let generated = [
     sql.snapshot_session().0,
     sql.snapshot_usage_value().0,
-    sql.snapshot_register_headers("", "", "", "").0,
-    sql.snapshot_register_budget("", "", "", "").0,
+    sql.snapshot_register_headers("", "", "", "", "").0,
+    sql.snapshot_register_budget("", "", "", "", "").0,
     sql.snapshot_register_value("", "", 0).0,
     sql.snapshot_register_header("", "").0,
     sql.snapshot_entry_page(Some(0), Some(1), 1).0,
@@ -781,6 +854,9 @@ fn normalized_sql(source: String) -> String {
     list.fold(
       [
         "namespace",
+        // Longer names first: replacing "@prefix" would otherwise eat the head
+        // of "@prefix_upper" and leave the tail behind.
+        "prefix_upper",
         "prefix",
         "field",
         "expected",

@@ -650,8 +650,16 @@ pub fn query(
   )
 }
 
-/// Filters current authorized source identities before FTS ranking and LIMIT.
-/// Stale indexed rows never become authority merely because a locator exists.
+/// Returns hits only from the current authorized sessions, and spends the whole
+/// limit on them: the filter is applied before `LIMIT`, so an unauthorized match
+/// never consumes one of the caller's rows.
+///
+/// It is not applied before ranking. `session_id` is `UNINDEXED` in the FTS5
+/// table, so SQLite filters rows the match has already produced and ordered by
+/// rank. What authorization bounds is the result, not the work: a member of one
+/// session issuing a common term still makes SQLite rank the match set of an
+/// index that spans the workspace. Stale indexed rows never become authority
+/// merely because a locator exists.
 ///
 /// ## Examples
 ///
