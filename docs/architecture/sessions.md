@@ -368,9 +368,10 @@ These fixtures retain bounded execution and remain in the ordinary client
 suite. The [six mutation checks](../review/single-daemon-mutation-gates.md)
 show which deliberately broken protections the focused tests rejected.
 
-The default is implemented. Published `5df064c8` passed the Linux, macOS,
-jailed E2E and 200-seed CI jobs, including both strict skip censuses. Exact
-heads and later local results are recorded in
+The default is implemented. Published `00076858` passed Linux, jailed E2E
+and the 200-seed CI job, but macOS failed the paired-latency assertion.
+An earlier head passed both platforms; that result does not make this head
+green. Exact heads, retained samples and local results are recorded in
 [the handoff](../next.md#verified-results-and-their-limits). Those results do
 not validate an unadopted dependency or establish the entire joined drive.
 

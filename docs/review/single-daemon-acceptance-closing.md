@@ -313,9 +313,28 @@ host or native-I/O cause. Final focused `4744fe7a` passed in 11.75 seconds.
 Direct review then found that passing EUnit captures the report's stdout,
 while CI did not upload the fixture's JSONL. Commit `8089a4b9` adds only those
 reports to both existing always-upload artifacts. It changes no measurement.
-The first hosted run carrying that commit must verify the files are present;
-missing samples from earlier green runs do not establish an absence of slow
-credits.
+Run `34048567159` at `00076858` verified those files on both Linux success
+and macOS failure. It retained 18 current Linux pairs and two current macOS
+pairs, all with completed samplers. None of those stressed credits exceeded
+250 ms. Older cached fixture directories were also uploaded and are excluded
+from attribution. Missing samples from earlier green runs do not establish
+an absence of slow credits.
+
+The macOS failure measured 461 ms against 342 ms, with 398 ms in subscription
+setup. Sampling continued with gaps of 26 to 110 ms, and registry reductions
+advanced between samples. SQLite step frames and collection counters narrow
+the investigation, but the samples do not establish host descheduling, BEAM
+starvation or a collection's duration. The handoff records the exact phase
+times and platform results. No threshold was relaxed.
+
+A proposed rollback-journal diagnosis was rejected and retracted after
+following `catalogue.initialize` into `sqlite_policy`. The catalogue already
+applies the shared five-second busy timeout and verifies WAL admission.
+Authority reads use a deferred transaction, and no second catalogue writer
+was found in this soak path. Subscription also waits on the separate
+conversation snapshot reader, which these four sampled PIDs do not cover.
+The registry's sampled SQLite activity remains a hypothesis to investigate,
+not a reason to change journal policy or cache authorization.
 
 ## Successful switching with an active peer
 

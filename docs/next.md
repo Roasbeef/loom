@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `376da701`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `00076858`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The seven daemon
 phases are in the [single-daemon plan](design-notes/single-daemon.md), with
@@ -24,7 +24,7 @@ release goal is not complete.
 | Contracts and ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
 | TUI and domains, phases 4–5 | Idle authorization, maintenance revival and worker-owned control recovery are fixed and tested. The shipped fixture covers distinct-principal configuration, invitation boundaries, presence recovery, live revocation and A-to-B-to-A switching with four HTTP turns. |
-| Default and release acceptance, phase 6 | Published `5df064c8` passes all four jobs and both corrected censuses. The successful-switch follow-up passes locally. SQLite adoption, confinement and the remaining combined drive remain open. |
+| Default and release acceptance, phase 6 | Published `00076858` passes Linux, jailed E2E and the 200-seed job. macOS fails the unchanged paired-latency assertion. SQLite adoption, confinement and the remaining combined drive remain open. |
 
 The plan numbers its seven phases 0 through 6. Backwards compatibility and
 legacy import were explicitly excluded; do not revive their historical cases.
@@ -55,8 +55,8 @@ diagnostic evidence, not a claimed timing repair.
 Commit `8089a4b9` retains its JSONL in both platform artifacts, and
 `85e767d4` adds reviewed successful switching with an active peer.
 Commit `376da701` joins pending native selection to whole-VM identity recovery.
-These three commits have local evidence below; the earlier hosted run does
-not test them.
+These three commits are published with docs at `00076858`. Local and hosted
+evidence below names the head each run tested.
 
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
@@ -276,9 +276,31 @@ Neither passing log contains the paired JSON reports. EUnit captured their
 stdout, and that head's artifact list omitted the fixture JSONL. Slow-credit
 near-misses, sampler costs and termination reasons are therefore unavailable,
 not proven absent. Commit `8089a4b9` adds those exact files to both existing
-always-upload artifacts; their presence needs verification on its first
-hosted run. This green run does not establish the earlier timing failure's
-cause.
+always-upload artifacts. This green run does not establish the earlier timing
+failure's cause.
+
+Published `00076858` failed macOS in
+[run 34048567159](https://github.com/Roasbeef/loom/actions/runs/34048567159):
+cycle one measured 461 ms against 342 ms. The client command exited 1 in
+340.90 seconds, with one failure and 1,331 passes; its census was not reached.
+Linux, jailed E2E and the 200-seed job passed. Linux's strict census was clean.
+
+Both platform artifacts retained their current JSONL, verifying the new upload
+path on success and failure. Linux recorded all 18 pairs; macOS recorded two
+before its assertion failed. Every sampler completed without truncation.
+Current stressed credits reached at most 8 ms on Linux and 47 ms on macOS.
+The artifacts also include five older Linux files and two older macOS files
+from restored build caches. Their fixture timestamps predate this run, so
+they are not evidence for its head.
+
+The failing pair's baseline was 46 ms: HTTP 12, subscribe 25 and drain 9.
+Its stressed measurement was 461 ms: HTTP 11, subscribe 398 and drain 52.
+Sampling gaps ranged from 26 to 110 ms, with batch costs of 0 to 10 ms.
+The registry made progress between samples and frequently appeared runnable
+inside SQLite's step function. The counters also recorded collections, but
+do not time them. These observations do not assign the delay to host
+scheduling, BEAM scheduling or a particular collection. No timing waiver,
+threshold change or blind rerun followed.
 
 The new shipped recovery fixture fills runtime capacity, receives the exact
 capacity refusal after durable reservation, then kills the birth-verified
@@ -353,17 +375,17 @@ crash-at-every-publication-step sweep.
 
 ## What to do next
 
-### 1. Publish the joined-client follow-up and classify platform timing
+### 1. Continue joined acceptance and classify platform timing
 
-Push the reviewed joined-client follow-up to #239, send its
-exact head and gate evidence, and monitor both platform jobs, including
-their repaired skip censuses. Native stack 231 already places it above
-#238. Keep the PR draft while release acceptance is incomplete. Re-baseline
-this handoff after new CI evidence; do not carry an earlier run's result
-as the new head's result.
+The reviewed joined-client follow-up is published to #239 at `00076858`;
+the reviewer received its exact head and gate evidence. Native stack 231
+already places it above #238. Keep the PR draft while release acceptance is
+incomplete. The latest macOS failure still needs a measured diagnosis.
 
-The next hosted run must retain the process observations beside the paired
-soak, including when it passes. The sampler retains at most 128 observations
+Both platform artifacts now retain process observations beside the paired
+soak, including when it passes. Attribute only files created by the current
+run; older fixture directories can arrive through build caches.
+The sampler retains at most 128 observations
 at a 25 ms cadence within
 a 3.2-second horizon, names truncation and joins before the pair is evaluated.
 It watches fixed measurement, registry and gateway PIDs through the existing
