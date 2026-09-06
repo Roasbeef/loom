@@ -2,17 +2,17 @@
 
 -include_lib("kernel/include/file.hrl").
 
+%% Every export here is a mechanism no Gleam package reaches. Clocks,
+%% digests, the environment, `stat`, directory listing and permission bits
+%% used to live here too; they are now Gleam in `host/bootstrap` over
+%% `gleam_time`, `gleam_crypto`, `envoy` and `simplifile`, which is why this
+%% list is shorter than the module's history suggests.
 -export([read_prefix/2, read_bounded/2,
-         system_time_ms/0, monotonic_time_ms/0, sha256/1, getenv/1,
-         current_process_id/0,
-         canonical_directory/1, canonical_path/1, path_exists/1,
-         absolute_path/1,
-         ensure_private_directory/1,
-         list_directory_bounded/2,
+         current_process_id/0, current_uid/0,
+         canonical_directory/1, canonical_path/1,
          try_launch_lock/1, release_launch_lock/1,
-         read_regular_bounded/2, read_private_bounded/2,
          atomic_write_private/2, find_executable/1,
-         is_executable_file/1, reserve_loopback_port/0,
+         reserve_loopback_port/0,
          spawn_server/4, release_server_process/1, close_server_process/1,
          terminate_process_group/1, process_identity/1,
          current_log_tail/3]).
@@ -90,21 +90,6 @@ read_bounded_loop(Handle, Limit, Total, Chunks) ->
             {error, describe(Reason)}
     end.
 
-system_time_ms() ->
-    erlang:system_time(millisecond).
-
-monotonic_time_ms() ->
-    erlang:monotonic_time(millisecond).
-
-sha256(Bytes) ->
-    crypto:hash(sha256, Bytes).
-
-getenv(Name) ->
-    case os:getenv(unicode:characters_to_list(Name)) of
-        false -> {error, nil};
-        Value -> {ok, unicode:characters_to_binary(Value)}
-    end.
-
 canonical_directory(Path0) ->
     case path_or_cwd(Path0) of
         {error, _} = Error ->
@@ -147,76 +132,6 @@ canonical_path(PathBinary) ->
             end
     end.
 
-path_exists(PathBinary) ->
-    case file:read_link_info(unicode:characters_to_list(PathBinary),
-                             [{time, posix}]) of
-        {ok, _} -> true;
-        {error, _} -> false
-    end.
-
-absolute_path(Path) ->
-    try
-        {ok, unicode:characters_to_binary(
-            filename:absname(unicode:characters_to_list(Path))
-        )}
-    catch
-        Class:Reason -> {error, describe({Class, Reason})}
-    end.
-
-ensure_private_directory(PathBinary) ->
-    case os:type() of
-        {unix, darwin} -> ensure_private_unix(PathBinary);
-        {unix, linux} -> ensure_private_unix(PathBinary);
-        _ -> {error, <<"automatic local startup is supported only on macOS and Linux">>}
-    end.
-
-list_directory_bounded(PathBinary, Limit)
-  when is_integer(Limit), Limit >= 0 ->
-    case file:list_dir(unicode:characters_to_list(PathBinary)) of
-        {ok, Entries} when length(Entries) =< Limit ->
-            {ok, lists:filtermap(fun utf8_entry/1, Entries)};
-        {ok, _Entries} ->
-            {error, <<"directory exceeds the entry limit">>};
-        {error, Reason} ->
-            {error, describe(Reason)}
-    end;
-list_directory_bounded(_PathBinary, _Limit) ->
-    {error, <<"directory entry limit must be non-negative">>}.
-
-%% A directory entry that is not valid Unicode has no launcher record name
-%% Gleam could match, so it is omitted rather than handed over as the error
-%% tuple `unicode:characters_to_binary/1` would otherwise return.
-utf8_entry(Entry) ->
-    case unicode:characters_to_binary(Entry) of
-        Binary when is_binary(Binary) -> {true, Binary};
-        _ -> false
-    end.
-
-ensure_private_unix(PathBinary) ->
-    Path = unicode:characters_to_list(PathBinary),
-    case filelib:ensure_dir(filename:join(Path, ".loom-private")) of
-        ok ->
-            case file:read_link_info(Path, [{time, posix}]) of
-                {ok, #file_info{type = directory, uid = Uid}} ->
-                    case current_uid() of
-                        {ok, Uid} ->
-                            case file:change_mode(Path, 8#700) of
-                                ok -> {ok, nil};
-                                {error, Reason} -> {error, describe(Reason)}
-                            end;
-                        {ok, _Other} ->
-                            {error, describe({not_owned_by_current_user, Path})};
-                        {error, _} = Error -> Error
-                    end;
-                {ok, #file_info{type = Type}} ->
-                    {error, describe({state_path_is_not_a_directory, Type, Path})};
-                {error, Reason} ->
-                    {error, describe(Reason)}
-            end;
-        {error, Reason} ->
-            {error, describe(Reason)}
-    end.
-
 try_launch_lock(PathBinary) ->
     Path = unicode:characters_to_list(PathBinary),
     case lock_command(Path) of
@@ -244,28 +159,6 @@ try_launch_lock(PathBinary) ->
 release_launch_lock(Port) ->
     _ = safe_port_close(Port),
     nil.
-
-read_regular_bounded(Path, Limit) ->
-    read_bounded(Path, Limit).
-
-read_private_bounded(PathBinary, Limit) ->
-    Path = unicode:characters_to_list(PathBinary),
-    case file:read_link_info(Path, [{time, posix}]) of
-        {ok, #file_info{type = regular, uid = Uid, mode = Mode}} ->
-            case current_uid() of
-                {ok, Uid} when Mode band 8#077 =:= 0 ->
-                    read_bounded(PathBinary, Limit);
-                {ok, Uid} ->
-                    {error, <<"file is accessible to other users">>};
-                {ok, _Other} ->
-                    {error, <<"file is not owned by the current user">>};
-                {error, _} = Error -> Error
-            end;
-        {ok, _} ->
-            {error, <<"path is not a regular file">>};
-        {error, Reason} ->
-            {error, describe(Reason)}
-    end.
 
 atomic_write_private(PathBinary, Contents) ->
     Path = unicode:characters_to_list(PathBinary),
@@ -312,9 +205,6 @@ find_executable(CandidateBinary) ->
                 Path -> {ok, unicode:characters_to_binary(filename:absname(Path))}
             end
     end.
-
-is_executable_file(Path) ->
-    is_executable_path(unicode:characters_to_list(Path)).
 
 reserve_loopback_port() ->
     case gen_tcp:listen(0, [inet, {ip, {127, 0, 0, 1}},
@@ -393,8 +283,16 @@ current_log_tail(PathBinary, StartedAtMs, Limit) ->
                 {ok, Handle} ->
                     Offset = erlang:max(0, Size - Limit),
                     _ = file:position(Handle, Offset),
+                    %% The bytes are handed over untouched. `Offset` is a
+                    %% byte position with no regard for codepoint
+                    %% boundaries, so a slice of an arbitrary child's
+                    %% stdout may begin mid-codepoint; `string:trim/1`
+                    %% raises `badarg` on that, which would take down the
+                    %% caller on the one path whose job is to report why
+                    %% startup failed. Decoding and trimming belong to the
+                    %% Gleam side, where the partiality is in the type.
                     Result = case file:read(Handle, Limit) of
-                        {ok, Data} -> {ok, string:trim(Data)};
+                        {ok, Data} -> {ok, Data};
                         eof -> {ok, <<>>};
                         {error, _} -> {error, nil}
                     end,

@@ -12,8 +12,15 @@ import stratus
 import weft
 import weft/actor
 
+/// A command for the socket actor, carried as a Stratus user message.
+///
+/// These never reach the caller's inbox: they travel the other way, from a
+/// caller that must not block on socket I/O into the process that owns it.
 type Outbound {
+  /// Write one text frame; an I/O failure becomes a `NetworkFault` notice.
   SendText(String)
+
+  /// Close the websocket gracefully and stop the socket actor.
   Stop
 }
 
@@ -100,8 +107,18 @@ pub fn connect_mapped(
     value ->
       request.set_header(websocket_request, "authorization", "Bearer " <> value)
   }
+
+  // `Connected` is minted inside the socket actor's own initialiser, which
+  // Stratus runs after the upgrade and before the actor's first loop pass.
+  // Sending it from here instead would let a gateway that pushes a snapshot
+  // on connect, or a peer that closes at once, land an `Incoming` or `Closed`
+  // in the inbox first: `stratus.start` returns only after the handshake, so
+  // the socket actor is already delivering by the time this function resumes.
   let builder =
-    stratus.new(websocket_request, inbox)
+    stratus.new_with_initialiser(websocket_request, fn() {
+      process.send(inbox, map(Connected))
+      Ok(stratus.initialised(inbox))
+    })
     |> stratus.on_message(fn(inbox, message, socket) {
       case message {
         stratus.Text(text) -> {
@@ -143,7 +160,6 @@ pub fn connect_mapped(
     True -> Ok(Nil)
     False -> Error("the websocket actor exited during startup")
   })
-  process.send(inbox, map(Connected))
   Ok(Connection(started))
 }
 
@@ -158,6 +174,20 @@ type LifetimeMessage {
   LinkedExit(process.ExitMessage)
 }
 
+/// Starts the socket and hands its custody to a guardian without a gap.
+///
+/// This is the function the module exists for. Three processes are involved:
+/// this startup worker `W`, the Stratus socket `S`, and the guardian `G`.
+/// `stratus.start` links `S` to `W`; `G` starts linked to `W` and links `S`
+/// in its own initialiser; only then does `W` unlink `S`. At every instant
+/// between those steps at least one live owner holds a link to `S`, so a
+/// cancelled or crashed startup can never leave a socket with a TCP
+/// connection and nobody to close it.
+///
+/// The one exit that used to break that invariant is the guardian failing to
+/// start: `W` then returns an error and exits *normally*, and a normal exit
+/// over a link is ignored by the non-trapping socket. That path now kills the
+/// socket explicitly.
 fn start_owned_socket(
   builder: stratus.Builder(Subject(event), Outbound),
   inbox: Subject(event),
@@ -210,12 +240,26 @@ fn start_owned_socket(
     })
     |> actor.on_shutdown(fn(socket, _reason) { process.kill(socket) })
     |> actor.start
-    |> result.map_error(string.inspect),
+    |> result.map_error(fn(reason) {
+      // The socket outlives this worker's normal exit by design, which is
+      // what makes a successful start safe and this failure a leak. Kill it
+      // here so the only exit that leaves `S` running is the successful one.
+      process.kill(socket.pid)
+      string.inspect(reason)
+    }),
   )
   process.unlink(socket.pid)
   Ok(socket.data)
 }
 
+/// Decides which linked exit ends the socket's custody.
+///
+/// The guardian traps exits and holds links to two different things, so this
+/// is where their meanings are separated. An exit from the socket itself ends
+/// the guardian either way, and an abnormal one is also the caller's close
+/// notice. An exit from anything else is the startup worker: its normal exit
+/// is the successful handoff and must be ignored, while cancellation or a
+/// crash arrives abnormally and must still take a half-started socket down.
 fn socket_exit(
   socket: process.Pid,
   exited: process.Pid,
@@ -242,6 +286,12 @@ fn socket_exit(
 /// A websocket dependency is allowed to return an ordinary error, but a bug
 /// in its actor initialiser must not take the interactive terminal down. The
 /// child is unlinked and monitored so both outcomes become typed data.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // websocket.start_safely(fn() { start_owned_socket(builder, inbox, caller, map) })
+/// ```
 @internal
 pub fn start_safely(start: fn() -> Result(a, String)) -> Result(a, String) {
   start_safely_within(start, 5000)
@@ -256,6 +306,12 @@ pub fn start_safely(start: fn() -> Result(a, String)) -> Result(a, String) {
 /// starts survives its worker's normal exit exactly as before — a normal
 /// exit signal does not propagate over its link — and a timed-out worker's
 /// kill still takes the half-started actor down with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // websocket.start_safely_within(fn() { Error("no") }, 50)
+/// ```
 @internal
 pub fn start_safely_within(
   start: fn() -> Result(a, String),

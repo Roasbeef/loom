@@ -1,14 +1,10 @@
 -module(tui_ffi).
 
--export([read_prefix/2, read_bounded/2, silence_logger/0,
-         run_forwarding/2, halt/1]).
-
-%% File readers share the same bounded implementation as daemon bootstrap.
-read_prefix(Path, Bytes) ->
-    host_bootstrap_ffi:read_prefix(Path, Bytes).
-
-read_bounded(Path, Limit) ->
-    host_bootstrap_ffi:read_bounded(Path, Limit).
+%% The terminal's own three actions. Bounded file reads, locks, process
+%% identity and launch are shared with the daemon and live in
+%% `host_bootstrap_ffi`, which `host/bootstrap` declares directly; nothing
+%% here forwards to it.
+-export([silence_logger/0, run_forwarding/2, halt/1]).
 
 silence_logger() ->
     ok = logger:set_primary_config(level, none),

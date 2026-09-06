@@ -337,6 +337,11 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
   let fence = Fence(pid, birth, started)
   case status {
     "starting" -> {
+      // Six required keys were each found above, so an object with nothing
+      // past its sixth field cannot also carry a duplicate: a repeat of any
+      // key would make a seventh. That is what refuses a record whose second
+      // `pid` a different parser might have preferred. `list.drop` rather
+      // than `list.length` because the question stops at the bound.
       use <- bool.guard(
         list.drop(fields, 6) != [],
         Error("invalid daemon endpoint"),
@@ -347,6 +352,9 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
       use host <- result.try(text_field(fields, "host"))
       use port <- result.try(number(fields, "port"))
       use epoch <- result.try(text_field(fields, "epoch"))
+
+      // Nine required keys, so nothing past the ninth field, for the same
+      // reason the starting record allows nothing past its sixth.
       use <- bool.guard(
         !{
           list.drop(fields, 9) == []

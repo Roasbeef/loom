@@ -1,10 +1,11 @@
 //// The public shared API preserves private files and exposes lock-port death.
-//// The TUI's bootstrap suite exercises process birth and paused launch ordering
-//// through its compatibility wrappers over this same implementation.
+//// The TUI's bootstrap suite exercises process birth, paused launch ordering
+//// and non-ASCII paths against this same module.
 
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
+import gleam/string
 import host/bootstrap
 import simplifile
 
@@ -56,4 +57,26 @@ pub fn shared_digest_keeps_workspace_identity_stable_test() {
   assert bootstrap.sha256(bit_array.from_string("abc"))
     |> bit_array.base16_encode
     == "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+}
+
+pub fn a_log_tail_cut_inside_a_codepoint_still_reports_test() {
+  let root = root()
+  assert bootstrap.ensure_private_directory(root) == Ok(Nil)
+  let path = root <> "/daemon.log"
+  let started = bootstrap.system_time_ms()
+  assert bootstrap.atomic_write_private(path, string.repeat("é", 40)) == Ok(Nil)
+
+  // Eighty bytes of two-byte codepoints, so a nine-byte tail begins on a
+  // continuation byte. The offset is chosen in bytes and cannot know that,
+  // which is why the bytes cross the boundary undecoded: trimming them as a
+  // string on the Erlang side raised `badarg` and killed the caller on the
+  // one path whose job is to say why the daemon would not start.
+  assert bootstrap.current_log_tail(path, started, 9) == Ok("éééé")
+
+  // A tail that happens to land on a codepoint boundary is unaffected.
+  assert bootstrap.current_log_tail(path, started, 8) == Ok("éééé")
+
+  // A log older than the launch attempt is still no diagnostic at all.
+  assert bootstrap.current_log_tail(path, started + 60_000, 9) == Error(Nil)
+  assert simplifile.delete(root) == Ok(Nil)
 }
