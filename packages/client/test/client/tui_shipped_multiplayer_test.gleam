@@ -13,6 +13,8 @@
 //// remaining members continue exchanging authoritative configuration updates.
 //// A revoked selector target must fail without replacing Alice's original
 //// channel, which must still accept and deliver a later configuration change.
+//// A subsequent successful A-to-B-to-A switch keeps Reader attached to A;
+//// two more provider turns prove independent histories and complete catch-up.
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting failure.
 
@@ -76,13 +78,23 @@ pub fn tui_shipped_multiplayer_configuration_fans_out_with_author_test_() -> Eun
             [
               provider_http.Exchange("first shipped turn", "shippedanswerone"),
               provider_http.Exchange("second shipped turn", "shippedanswertwo"),
+              provider_http.Exchange("isolated B turn", "isolatedbanswer"),
+              provider_http.Exchange(
+                "A continues during switch",
+                "continuingaanswer",
+              ),
             ],
             fn(base_url) { fixture(server, base_url) },
           )
         let assert Ok(observed) = report
-          as "both exact provider requests complete without a refused or extra call"
+          as "all four exact provider requests complete without a refused or extra call"
         assert list.map(observed, fn(request) { request.prompt })
-          == ["first shipped turn", "second shipped turn"]
+          == [
+            "first shipped turn",
+            "second shipped turn",
+            "isolated B turn",
+            "A continues during switch",
+          ]
       }
     }
   })
@@ -363,6 +375,16 @@ fn exercise(
     alice,
     reader,
   )
+  successful_switches(
+    address,
+    owner,
+    epoch,
+    daemon.hello(connected.control).principal,
+    id,
+    foreign.expected.session,
+    alice,
+    reader,
+  )
 
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
@@ -409,51 +431,7 @@ fn failed_switch_preserves_channel(
   let assert Ok(_) = selection.open(host, target)
     as "the selectable target is a real resident session before revocation"
 
-  // The page itself is the barrier: no synthetic row or guessed list delay can
-  // stand in for Alice having obtained this target while it was authorized.
-  let _ =
-    tui_driver.play(alice.data, [
-      backend.Paste("/sessions"),
-      backend.KeyPress("enter"),
-    ])
-  let listed =
-    tui_v2_test.await(alice.data, fn(sample) {
-      case sample.model.overlay {
-        tui.DaemonSelector(selector) ->
-          sample.model.catalogue_request == None
-          && list.any(selector.page.sessions, fn(row) {
-            row.session_id == target
-          })
-        _ -> False
-      }
-    })
-  let assert tui.DaemonSelector(selector) = listed.model.overlay
-    as "the actual authorized selector supplies the target row and selection"
-
-  // Navigation uses the model's row index, never a position guessed from a frame.
-  let target_index =
-    list.index_fold(selector.page.sessions, -1, fn(found, row, index) {
-      case row.session_id == target {
-        True -> index
-        False -> found
-      }
-    })
-  let direction = case target_index >= selector.selected {
-    True -> "down"
-    False -> "up"
-  }
-  let distance = int.absolute_value(target_index - selector.selected)
-  let highlighted =
-    tui_driver.play(
-      alice.data,
-      list.repeat(backend.KeyPress(direction), distance),
-    )
-  let assert tui.DaemonSelector(selected) = highlighted.model.overlay
-    as "real navigation keeps the catalogue open until explicit Enter"
-  let assert Ok(row) =
-    list.first(list.drop(selected.page.sessions, selected.selected))
-    as "the highlighted row exists in the server's page"
-  assert row.session_id == target
+  let highlighted = highlight_target(alice, target)
   let original = attachment_of(highlighted)
   let assert Some(original_channel) = highlighted.model.channel
     as "Alice retains her already synchronized original session channel"
@@ -511,6 +489,153 @@ fn failed_switch_preserves_channel(
     as "continued traffic uses Alice's original adopted channel"
   assert session_channel.socket(updated_channel)
     == session_channel.socket(original_channel)
+}
+
+fn successful_switches(
+  address: String,
+  owner: String,
+  epoch: String,
+  owner_principal: String,
+  original: String,
+  target: String,
+  alice: actor.Started(process.Subject(tui_driver.Message)),
+  reader: actor.Started(process.Subject(tui_driver.Message)),
+) -> Nil {
+  let assert Ok(grant) = admin.parse(["set-role", target, "alice", "operator"])
+    as "the existing principal regains only the explicit target membership"
+  let assert Ok(_) = admin.exchange(address, owner, epoch, grant)
+    as "membership is restored before Alice requests a fresh catalogue"
+  let reader_before = tui_driver.play(reader.data, [])
+  let reader_attachment = attachment_of(reader_before)
+
+  // Alice's fresh catalogue must include the regranted target before selection.
+  let _ = highlight_target(alice, target)
+  let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
+  let b_ready =
+    tui_v2_test.await(alice.data, fn(sample) {
+      writable(sample) && sample.model.session == target
+    })
+  let b_attachment = attachment_of(b_ready)
+  assert b_attachment.expected.session == target
+  assert b_attachment.origin.principal == "alice"
+  assert configuration_of(b_ready).origin == None
+    as "B has no earlier human configuration that could satisfy its later barrier"
+
+  // A separate authorized terminal stays on A while Alice uses B. Requests
+  // are sequenced for the finite provider, but both runtimes remain attached.
+  let assert Ok(peer) = tui_driver.start(address, owner, original)
+    as "the independent owner terminal attaches to the original session"
+  let peer_ready = tui_v2_test.await(peer.data, writable)
+  assert attachment_of(peer_ready).origin.principal == owner_principal
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("isolated B turn"),
+      backend.KeyPress("enter"),
+    ])
+  let assert [b_completed] =
+    captured_turns([alice], [#("alice", "isolated B turn")], ["isolatedbanswer"])
+    as "B captures exactly its own first turn, without A's previous history"
+  assert b_completed.model.session == target
+
+  let _ =
+    tui_driver.play(peer.data, [
+      backend.Paste("A continues during switch"),
+      backend.KeyPress("enter"),
+    ])
+  let a_turns = [
+    #("alice", "first shipped turn"),
+    #("bob", "second shipped turn"),
+    #(owner_principal, "A continues during switch"),
+  ]
+  let a_answers = ["shippedanswerone", "shippedanswertwo", "continuingaanswer"]
+  let assert [a_completed, observed] =
+    captured_turns([peer, reader], a_turns, a_answers)
+    as "A's remaining terminals receive its independently authored third turn"
+  assert a_completed.model.records == observed.model.records
+  assert attachment_of(observed) == reader_attachment
+  assert observed.model.session == original
+  assert !writable(observed)
+
+  // After A positively completes, an attributed B configuration change forces
+  // a fresh B cut. Exact turn lists then reject cross-session delivery without
+  // accepting an unchanged local sample as a server reconciliation barrier.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("/effort high"),
+      backend.KeyPress("enter"),
+    ])
+  let _ = tui_v2_test.await(alice.data, changed)
+  let assert [b_retained] =
+    captured_turns([alice], [#("alice", "isolated B turn")], ["isolatedbanswer"])
+    as "Alice remains on B with only B's complete turn after A makes progress"
+  assert b_retained.model.records == b_completed.model.records
+  assert attachment_of(b_retained) == b_attachment
+
+  // Returning to the resident original must preserve its epoch and incarnation.
+  let _ = highlight_target(alice, original)
+  let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
+  let returned =
+    tui_v2_test.await(alice.data, fn(sample) {
+      writable(sample) && sample.model.session == original
+    })
+  assert attachment_of(returned).expected == reader_attachment.expected
+  assert attachment_of(returned).origin.principal == "alice"
+  assert attachment_of(returned).connection_id != b_attachment.connection_id
+  assert_shared_turns([peer, alice, reader], a_turns, a_answers)
+  assert attachment_of(tui_driver.play(reader.data, [])) == reader_attachment
+  stop_driver(peer)
+}
+
+fn highlight_target(
+  alice: actor.Started(process.Subject(tui_driver.Message)),
+  target: String,
+) -> tui_driver.Sample {
+  // The page itself is the barrier: no synthetic row or guessed list delay can
+  // stand in for Alice having obtained this target while it was authorized.
+  let _ =
+    tui_driver.play(alice.data, [
+      backend.Paste("/sessions"),
+      backend.KeyPress("enter"),
+    ])
+  let listed =
+    tui_v2_test.await(alice.data, fn(sample) {
+      case sample.model.overlay {
+        tui.DaemonSelector(selector) ->
+          sample.model.catalogue_request == None
+          && list.any(selector.page.sessions, fn(row) {
+            row.session_id == target
+          })
+        _ -> False
+      }
+    })
+  let assert tui.DaemonSelector(selector) = listed.model.overlay
+    as "the actual authorized selector supplies the target row and selection"
+
+  // Navigation uses the model's row index, never a position guessed from a frame.
+  let target_index =
+    list.index_fold(selector.page.sessions, -1, fn(found, row, index) {
+      case row.session_id == target {
+        True -> index
+        False -> found
+      }
+    })
+  let direction = case target_index >= selector.selected {
+    True -> "down"
+    False -> "up"
+  }
+  let distance = int.absolute_value(target_index - selector.selected)
+  let highlighted =
+    tui_driver.play(
+      alice.data,
+      list.repeat(backend.KeyPress(direction), distance),
+    )
+  let assert tui.DaemonSelector(selected) = highlighted.model.overlay
+    as "real navigation keeps the catalogue open until explicit Enter"
+  let assert Ok(row) =
+    list.first(list.drop(selected.page.sessions, selected.selected))
+    as "the highlighted row exists in the server's page"
+  assert row.session_id == target
+  highlighted
 }
 
 fn revoke_live_member(
@@ -770,6 +895,18 @@ fn assert_shared_turns(
   turns: List(#(String, String)),
   answers: List(String),
 ) -> Nil {
+  let assert [first, second, observer] = captured_turns(drivers, turns, answers)
+    as "the two operators and observer each completed their own credited capture"
+  assert first.model.records == second.model.records
+  assert first.model.records == observer.model.records
+  assert !writable(observer)
+}
+
+fn captured_turns(
+  drivers: List(actor.Started(process.Subject(tui_driver.Message))),
+  turns: List(#(String, String)),
+  answers: List(String),
+) -> List(tui_driver.Sample) {
   let expected_users =
     list.reverse(turns)
     |> list.map(fn(turn) {
@@ -818,11 +955,7 @@ fn assert_shared_turns(
         })
       })
     })
-  let assert [first, second, observer] = samples
-    as "the two operators and observer each completed their own credited capture"
-  assert first.model.records == second.model.records
-  assert first.model.records == observer.model.records
-  assert !writable(observer)
+  samples
 }
 
 fn stop_driver(
