@@ -88,6 +88,12 @@ attachment attempts from adopted connections, so replay cannot mistake a failed
 switch for a visible session change. Automatic reconnect remains separate from
 explicit session replacement.
 
+Control recovery for an explicit list, open or create runs inside that
+action's managed worker, not the frame loop. A live control owner is borrowed;
+a replacement authenticates through the retained route and is closed with
+the worker. Cancellation also retires an unfinished handshake. This does not
+retry a mutation whose admission is unknown.
+
 ### Submission during reconciliation
 
 Periodic reconciliation must not make ordinary Enter depend on finding a gap

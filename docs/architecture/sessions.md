@@ -59,6 +59,12 @@ and coalesced maintenance, then cancels the domain host. Ordered cleanup retires
 maintenance before shared history. Only the original normal domain witness
 releases its reservation; failed cleanup retains capacity.
 
+While daemon admission remains open, an explicit session open can revive a
+quiescing domain before cancellation starts. It resumes maintenance and
+replaces the domain's settle subject. A late reply to the withdrawn fence
+cannot settle a later close, even if the worker decided that reply before
+processing resume. Shutdown and blocked cleanup never permit revival.
+
 The control `status` response reports `domain_capacity`, `domain_occupied`, and
 `domain_blocked` separately from session counts. A `Saved` session can therefore
 coexist with a retained closing domain. Normal daemon shutdown waits for both
@@ -143,6 +149,13 @@ minting an identity or path. `session.ensure_reserved_id` persists that exact
 identity and refuses a conflicting file. Workspace defaults are durable
 catalogue mappings, validated against the selected registration's workspace.
 Reading or changing a default never opens its conversation.
+
+Durable recovery fixtures reopen the catalogue after a saved reservation and
+after database identity publication but before catalogue confirmation. Listing
+does not initialize the runtime. Retrying the creation key preserves the exact
+session ID, path and domain, and a held cleanup witness prevents a second
+builder from taking writer custody. These controlled builder and registry
+failures do not constitute a whole-VM crash sweep.
 
 `client/daemon/manager` serializes catalogue access and bounds live instances,
 including instances whose cleanup is stopping or blocked. Creation explicitly
@@ -280,6 +293,13 @@ and never automatically resends a mutation with an unknown outcome. Current
 terminal failure handling marks the connection disconnected; it does not
 start an automatic reconnect loop. Internal tests and the live drive verify
 recovery through explicit session selection, not automatic reconnection.
+
+If the original control owner has retired, list, open and create reconnect
+inside their managed action worker. The frame loop remains responsive during
+the handshake. Each replacement belongs to that worker and closes when it
+finishes or is cancelled; the model retains the original route rather than
+adopting a new background control owner. Subsequent explicit actions may pay
+another handshake, but an uncertain creation is not automatically resent.
 
 ### Implemented shared endpoint boundary
 

@@ -91,11 +91,12 @@ catalogue without opening runtimes. Explicit admission invokes
   only after current and coalesced maintenance settles. A domain fenced while
   admission is open is revived by the next open in the same domain, taking
   back the same services with the cadence un-fenced along with them
-  (`domain.resume`), so a reopened workspace goes on distilling; the fence's
-  own answer, when it arrives after the revival, is withheld until nothing is
-  owed and then sent without touching admission, so it cannot fence a domain
-  that has a live session again. A domain fenced
-  during shutdown is never revived, and neither is one whose maintenance
+  (`domain.resume`), so a reopened workspace goes on distilling. Resume
+  withdraws the fence: the worker drops its parked replies, and the registry
+  replaces the settle subject. A reply already decided before resume can
+  still arrive, but the replacement selector cannot accept it as the account
+  of a later fence. A domain fenced during shutdown is never revived, and
+  neither is one whose maintenance
   worker refuses the resume — that refusal fails the domain, exactly as a
   refused quiesce does. An assembly fault reports `Stopping`
   because Weft's ordered cleanup has already begun; only a cleanup failure

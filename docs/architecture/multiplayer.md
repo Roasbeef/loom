@@ -142,6 +142,19 @@ in [sessions](sessions.md#verification-required-before-release).
 
 ### Coordinating real clients
 
+`tui_shipped_multiplayer_test` also drives the built `bin/loomd` through its
+real bootstrap and administration APIs. The owner creates a session, waits
+for its retirement, explicitly isolates it, invites two operators and an
+observer, and reopens it. Three independent native TUI drivers verify their
+principal and role, then converge on Alice's configuration change and its
+server-assigned origin. No provider call or fixture-written register supplies
+that result. `make e2e-client-bootstrap` enables this fixture; ordinary package
+tests explicitly skip it when `LOOM_BOOTSTRAP_E2E_SERVER` is unset.
+
+This shipped-artifact fixture has a bounded body and a separate native
+cleanup check, including on assertion failure. Its configuration round trip
+does not establish live-tool switching or the entire acceptance matrix.
+
 Each driver creates its inbox and runs its terminal loop in the same
 process. Sharing a model or constructing both inboxes in the coordinator
 would bypass the ownership rules that the shipped client relies on.

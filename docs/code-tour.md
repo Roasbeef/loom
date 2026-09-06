@@ -614,7 +614,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:751`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:1903`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:1917`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed

@@ -67,7 +67,7 @@ The standalone `run` adapter can still scan a directory; it is not the
 managed daemon's source authority.
 
 **The lifecycle worker** is parked by
-`client/distillpass.gleam:748` (`prepare_domain`) before publication, then
+`client/distillpass.gleam:770` (`prepare_domain`) before publication, then
 started through `begin_domain`. It coalesces authorized triggers while a
 pass runs and retains the original cleanup witness.
 
@@ -128,12 +128,19 @@ is no periodic timer. A failed pass discards the pending follow-up rather
 than retrying automatically; a later authorized trigger may start again.
 
 When the last session retires, the manager sends the final close hint and
-then `request_quiesce` (`client/distillpass.gleam:910`) in order. Quiescence
+then `request_quiesce` (`client/distillpass.gleam:933`) in order. Quiescence
 fences new triggers and waits for the current pass and any already
 coalesced follow-up. Only then does the manager cancel the domain host.
 Its original normal retirement, not the quiescence reply alone, reclaims
 the domain slot. Lost cleanup proof keeps that slot blocked. Normal daemon
 shutdown drains sessions before domains.
+
+An explicit open can revive a quiescing domain while daemon admission is
+still open. The manager resumes its cadence and replaces the settle reply
+subject before publishing the revived slot. Resume discards the worker's
+parked replies. A reply already decided before resume may still arrive;
+the replacement subject prevents it from settling a later close. Shutdown
+and failed maintenance do not permit revival.
 
 The old `start`/`settled` one-pass adapter remains for standalone and
 internal callers. Its per-session boot cadence is not the managed path.

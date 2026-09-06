@@ -84,12 +84,15 @@ that tree separately from the self-contained server.
   reply returns `UnknownOutcome(command)` without resending it.
   A retired owner is not a dead daemon. The route — address and credential —
   outlives it, so `tui/daemon/selection.reconnect` mints a second owner on the
-  same route with a new inbox, and `/sessions`, open and create take that step
-  before they use control. That is not automatic reconnection: the operator's
-  own action pays for the handshake, and nothing is resent. One control slot
-  plus `selection.await`'s 50 ms poll also means a saved-session open answers
-  every concurrent control request with `Busy` for as long as it runs, which
-  is the accepted cost of never queueing.
+  same route with a new inbox. `/sessions`, open and create borrow live control
+  or reconnect inside their existing managed worker, never in the frame loop.
+  A replacement monitors that worker and closes on cancellation or ordinary
+  completion; the model retains only the original host and its route. Once
+  that original owner retires, each explicit action pays another handshake.
+  Control has no background catalogue subscription to preserve, and nothing
+  is automatically resent. A borrowed control still has one outstanding slot:
+  concurrent requests can return `Busy` rather than queueing. Recovered actions
+  use separate temporary owners and their own authenticated hello epochs.
   `tui/daemon/protocol` is the independent, total control codec:
   `Page` is bounded to 100 authorized records, lifecycle requests use the hello
   epoch, and `GetOperation` refuses an operation from another epoch locally.
