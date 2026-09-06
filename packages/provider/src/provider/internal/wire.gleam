@@ -201,7 +201,25 @@ pub fn tool_arguments(arguments_json: String) -> JsonValue {
     "" -> json.Object([])
     text ->
       case json.parse(text) {
-        Ok(arguments) -> arguments
+        Ok(json.Object(_) as arguments) -> arguments
+
+        // Text that parses but is not an object is the same failure from
+        // the model's side: a tool call's arguments are an object by
+        // contract, every dialect's encoder replays them as one, and the
+        // Anthropic and Gemini dialects refuse a request whose historical
+        // `input` is `null` or a list. So the value is carried as
+        // malformed rather than stored, for the same reason the parse
+        // failure is.
+        Ok(json.Array(_))
+        | Ok(json.String(_))
+        | Ok(json.Int(_))
+        | Ok(json.Float(_))
+        | Ok(json.Bool(_))
+        | Ok(json.Null) ->
+          message.malformed_arguments(
+            raw: text,
+            reason: "tool call arguments must be a JSON object",
+          )
 
         // The report names the offset, what a well-formed document would
         // have had there, and a bounded excerpt of what was found; that is
