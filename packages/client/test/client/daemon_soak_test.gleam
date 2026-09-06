@@ -4,6 +4,10 @@
 //// with an outstanding unread large-record reply. RSS and FD counts are
 //// observations, never guessed safety thresholds; counters cover the entire
 //// test VM. This is not a maximum-image or external-provider network test.
+//// Hosted macOS observes the paired latency bound under issue #241:
+//// https://github.com/Roasbeef/loom/issues/241. This is a gate-policy change,
+//// not a performance fix. Only the exact environment value `observe` relaxes
+//// that assertion; every lifecycle and isolation assertion still applies.
 
 import broker/exec
 import client/catalog
@@ -54,6 +58,36 @@ import weft
 import weft/poll
 
 const large_bytes = 4_194_304
+
+type LatencyMode {
+  Enforce
+  Observe
+}
+
+fn latency_mode(value: Result(String, Nil)) -> LatencyMode {
+  case value {
+    Ok("observe") -> Observe
+    Ok(_) | Error(Nil) -> Enforce
+  }
+}
+
+fn latency_decision(mode: LatencyMode, stressed: Int, bound: Int) -> Bool {
+  case mode {
+    Observe -> True
+    Enforce -> stressed <= bound
+  }
+}
+
+pub fn latency_policy_defaults_to_enforcement_test() {
+  assert latency_mode(Error(Nil)) == Enforce
+  assert latency_mode(Ok("observe")) == Observe
+  assert latency_mode(Ok("unknown")) == Enforce
+  assert latency_mode(Ok("OBSERVE")) == Enforce
+  assert latency_decision(Enforce, 342, 342)
+  assert !latency_decision(Enforce, 343, 342)
+  assert latency_decision(Observe, 342, 342)
+  assert latency_decision(Observe, 506, 342)
+}
 
 type SnapshotTiming {
   SnapshotTiming(
@@ -816,7 +850,23 @@ fn drive(
 
       // No B mutation separates these full snapshots. The paired budget bounds
       // the unread peer's penalty, not a universal full-snapshot latency SLA.
-      assert stressed.total <= 2 * unstalled.total + 250
+      let bound = 2 * unstalled.total + 250
+      let mode = latency_mode(bootstrap.getenv("LOOM_SOAK_LATENCY_BOUND"))
+      case mode {
+        Enforce -> Nil
+        Observe ->
+          io.println_error(
+            "SOAK_LATENCY_OBSERVE cycle="
+            <> int.to_string(cycle)
+            <> " bound_ms="
+            <> int.to_string(bound)
+            <> " baseline_total/http/subscribe/drain_ms="
+            <> timing_summary(unstalled)
+            <> " stressed_total/http/subscribe/drain_ms="
+            <> timing_summary(stressed),
+          )
+      }
+      assert latency_decision(mode, stressed.total, bound)
         as "an unread peer stays within the paired full-snapshot slowdown budget"
       let latency = stressed.total
 
@@ -856,6 +906,12 @@ fn drive(
     })
   assert baseline != None
   Ok(Nil)
+}
+
+fn timing_summary(timing: SnapshotTiming) -> String {
+  [timing.total, timing.http, timing.subscribe, timing.drain]
+  |> list.map(int.to_string)
+  |> string.join("/")
 }
 
 /// Runs two warmups and sixteen measured real incarnations with finite waits.

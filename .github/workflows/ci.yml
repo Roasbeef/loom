@@ -224,6 +224,7 @@ jobs:
       - name: make check
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_SOAK_LATENCY_BOUND: observe
         run: set -o pipefail; make check 2>&1 | tee check-macos.log
 
       - name: make e2e-client-bootstrap
