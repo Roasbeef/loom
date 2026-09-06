@@ -272,6 +272,17 @@ processful shell around that sans-io core. WP-F.
   decision — so a lying proxy can at worst waste a compact-and-retry cycle.
 - **Usage costs are zeroed**; token extraction only. Pricing tables are a
   ledger-side concern, not an adapter's.
+- **Human attribution is projected here and nowhere else.** All three
+  adapters encode a `UserMessage` through `core/origin.project`
+  (`adapter/anthropic.gleam:199`, `adapter/openai.gleam:190`,
+  `adapter/gemini.gleam:308`), which prepends one JSON-quoted author label
+  to the *transient* content list it builds for the wire. The stored blocks
+  are unchanged, so a message keeps one durable form no matter how many
+  dialects render it, and the label reaches the model as data inside the
+  user turn rather than as a role or a system instruction
+  (`protocol-change/016`). One pure helper serves the three dialects
+  because the label's wording is part of the durable contract, not an
+  adapter's taste.
 - **Cache breakpoint placement is deterministic and adapter-local.** No
   caching knob crosses the package boundary: the four positions are a
   function of the request's own contents, so two builds of the same

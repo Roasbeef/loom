@@ -2,6 +2,20 @@
 //// The decoder distinguishes absent historical attribution from corruption.
 //// Provider projection adds one quoted label to a transient content list,
 //// leaving stored blocks unchanged, including image-first messages.
+////
+//// That label is **attribution hint text and nothing more**. It is an
+//// ordinary user block in the rendered request, so anything a message
+//// body can contain it can also contain — including a second line
+//// shaped exactly like this one, naming a different principal. `validate`
+//// bounds the real label's own fields and `json.to_string` quotes them,
+//// so nothing can break out of the label the harness wrote; what is not
+//// defendable here is a forgery written *beside* it, and no delimiter
+//// would be, since a delimiter is text too. The defence is elsewhere and
+//// is structural: authority is decided server-side from the
+//// authenticated principal, and **nothing downstream may parse this
+//// label back out of a transcript and turn it into an authority
+//// decision**. A reader that did would be trusting the model's context
+//// window as an access-control record.
 
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
@@ -89,14 +103,26 @@ pub fn decode_field(
   }
 }
 
-fn text(fields, key) {
+// Reads one required string field. A field of another JSON type is a
+// corruption report rather than an absence: `decode_field` has already
+// established that an origin object is present, so a `principal` that is
+// a number is malformed attribution, not attribution that was never
+// written.
+fn text(
+  fields: List(#(String, JsonValue)),
+  key: String,
+) -> Result(String, CorruptionReport) {
   case list.key_find(fields, key) {
     Ok(json.String(value)) -> Ok(value)
     Ok(_) | Error(Nil) -> Error(invalid())
   }
 }
 
-fn invalid() {
+// The single report every rejection in this module answers with. One
+// wording for every shape of malformed attribution, because the reader
+// of a corruption report can act on "this message's author is not
+// readable" and can do nothing at all with which field it was.
+fn invalid() -> CorruptionReport {
   corruption.report(
     at: "core/origin",
     on: "origin",
@@ -109,6 +135,11 @@ fn invalid() {
 ///
 /// Call only at the provider boundary, once per stored message. JSON quoting
 /// presents the name as data; the content retains the provider's user role.
+///
+/// The label is a hint to the model and never an authority record: a
+/// message body can contain a line shaped exactly like it, so nothing
+/// downstream may read one back out of a transcript and decide anything
+/// from it. The module doc has the whole argument.
 ///
 /// ## Examples
 ///
