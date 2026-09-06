@@ -195,6 +195,70 @@ passed. The later [nightly](https://github.com/Roasbeef/loom/actions/runs/339624
 failed only in the long `seeds 1001..` soak job; its cold Linux gate passed.
 Neither run verifies this daemon branch.
 
+## The independent review fix wave
+
+The review of `3cc360b5` and its fix wave are complete. The wave lives on
+`fix/daemon-review-wave`, based on `a72b3d70` (the relay fixture child above
+frozen `3ec78b9e`), as atomic commits, one per slice: broker pool
+reporting, runtime namespace unlink and reserved-prefix constants, MCP
+shutdown policy, origin documentation, storage journal verification and
+prefix ranges, the regenerated SQL, the host FFI collapse, the tui control
+reconnect, the daemon's readiness and transfer blockers, domain revival and
+one-call authorization, fixture teardown, the test runner, the records, the
+relay crash barrier, the watchdog group kill, and the attachment registry.
+`make check` passed with its own exit code at `615a26f3` (client 1309, tui
+206, lint 0 errors / 613 warnings); the last two commits changed one Erlang
+path decode and the attachment record and were verified by their package
+checks. The gate logs are under the review session's scratchpad.
+
+Two blockers and ten majors from the consolidated review are fixed; the
+findings, the fixers' reports and the closing Fable pass are recorded beside
+those logs. The closing pass found no high finding and left these open, each
+verified against the code and deferred deliberately rather than forgotten:
+
+- **Broadcast and tick revalidation.** `gateway.gleam`'s broadcast loops and
+  the one-second `MaintainTransfers` tick re-authorize every network
+  attachment, then hand the frame to the daemon transport's no-op sink. The
+  broadcasts are unreachable for network gateways today; the tick is live and
+  closes every attachment if the registry answers late. The fix is to skip
+  delivery for pull-only links and to type the check's refusal so a
+  background tick tolerates an unavailable registry while admission and
+  delivery keep failing closed.
+- **A revived domain stays fenced.** `DomainQuiescing(Idle, _)` revival hands
+  back the services with the maintenance cadence still in `Quiescing`, so a
+  reopened workspace runs no scheduled distillation until the domain retires
+  and is rebuilt. The completion is one `DomainResume` message in
+  `distillpass` that moves `Quiescing` back to `Accepting` when no cancel was
+  issued, with the pending quiesce counted so a stale, postponed quiesce
+  answered after revival does not re-fence it.
+- **Source enumeration still reads per row.** The registry handler no longer
+  resolves registrations itself, but `storage/domain.sources` validates each
+  id with a `catalogue.get` and the builder reads each again; the worst turn
+  fell from about 1130 reads in one turn to about 200 across twelve. Returning
+  records from `domain.sources` removes the duplicate and the second message.
+- **Control reconnect is synchronous.** `with_live_control` rebuilds a
+  retired control owner on the terminal process with a five-second budget; a
+  slow daemon stalls the frame loop that long per action where it used to
+  fail instantly and permanently. Moving the reconnect into the worker each
+  call site already spawns, and returning the new host with the reply, is
+  the fix.
+- **Local transcript lines do not survive a cut.** `append_error` puts a
+  refusal in the transcript and the notice, and the next cut replaces the
+  transcript while the next presence line replaces the notice, so a losing
+  operator's `stale_approval` refusal has no durable trace; the multiplayer
+  test therefore pins the sequence fence only. Keeping local lines through a
+  cut is a terminal change.
+- **Helper slot quarantine after a nonzero exit.** The slot stays occupied
+  because per-execution cgroups are named `exec-<frame id>-<stage-1 pid>`
+  with frame ids restarting per helper, so a recycled pid could share a
+  group with a dead helper's residue. A per-helper token in the cgroup name
+  would let the slot free while `close_pool` keeps its unclean verdict.
+- **Smaller follow-ups.** `catalogue.atomic` nesting is prevented by prose
+  and wants an opaque token; `tui.gleam` lines 3913 to 4468 move to
+  `tui/transcript.gleam` once one client test reads `transcript.Failure`;
+  the log tail realigns leading bytes only; `session_channel` still splices
+  its encoder's JSON.
+
 ## What to do next
 
 ### 1. Verify the soak correction and independent review fixes
@@ -205,13 +269,11 @@ PR #237 is correctly based on #235. The paired full-snapshot correction in
 `13969336` has its delayed-credit negative control and independent restored
 pass. It remains separate from production fixes and needs the next CI verdict.
 
-Freeze the branch for the independent reviewer's fix wave, which will
-use a separate worktree and branch above that head. The confirmed readiness
-timeout can request daemon shutdown before authentication; a near-expired
-transfer can also turn its caller's budget into session-wide reader failure.
-Review and test the fixes, plus the consolidated remaining findings, before
-integrating that branch with native `gh stack`. Preserve transitive retirement
-proof when evaluating any proposal to reuse a slot after nonzero helper exit.
+The independent fix wave above is done and green. Integrate
+`fix/daemon-review-wave` with native `gh stack`, then the acceptance
+entrypoints from `test/daemon-acceptance-gates`, and let the next CI verdict
+decide the soak oracle. Preserve transitive retirement proof when evaluating
+any proposal to reuse a slot after nonzero helper exit.
 
 Exit: the corrected slice has green platform gates, verified review fixes,
 accurate evidence and a correctly stacked PR. This step does not discard unfinished
