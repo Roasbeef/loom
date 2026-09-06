@@ -202,6 +202,19 @@ maintenance must also use these mappings; see the accepted domain addendum in
 
 ### Implemented test foundation
 
+Run `make e2e-multiplayer` for the native terminal, multi-principal approval,
+persisted restart, approved effect and fault-containment fixtures described
+below. The target builds the real helper and runs each fixture module through
+the existing test runner. Each module has a 180-second outer deadline by
+default; `LOOM_TEST_TIMEOUT_SECONDS` overrides that budget. The target stops
+on the first failure. These tests also remain in the ordinary client suite.
+
+Run `make soak-daemon` separately for repeated real session lifecycles with
+an unread peer. `make soak` instead runs deterministic conformance seeds.
+Neither command replaces the shipped-artifact and platform acceptance drive.
+The [mutation checks](../review/single-daemon-mutation-gates.md) record six
+tested failure cases behind the lifecycle and transfer assertions.
+
 `packages/client/test/support/tui_driver.gleam` runs each TUI in its own
 actor, with the shipped connection handshake and virtual terminal loop.
 `two_virtual_tuis_share_one_real_session_test_` in
