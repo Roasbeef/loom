@@ -341,6 +341,13 @@ reporting status. Limits need measured defaults and executable tests.
 
 ## Verification required before release
 
+`make e2e-multiplayer` runs the terminal, authority, persisted-restart,
+approved-effect and fault-containment fixtures. `make soak-daemon` runs the
+real-daemon lifecycle soak; it is distinct from the simulated `make soak`.
+These fixtures retain bounded execution and remain in the ordinary client
+suite. The [six mutation checks](../review/single-daemon-mutation-gates.md)
+show which deliberately broken protections the focused tests rejected.
+
 The default is implemented. An earlier working-tree client gate passed all
 1298 tests in 213.88 seconds, but subsequent clean runs exposed test-ordering
 failures. Those failures and the current committed verification results are
