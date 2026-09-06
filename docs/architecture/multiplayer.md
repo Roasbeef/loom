@@ -112,7 +112,8 @@ Switching the viewed strand or session changes only that terminal's view.
 After disconnect, the view is visibly stale until an authoritative snapshot
 and catch-up complete. Durable cursors are session-scoped and may be sparse.
 Old stream fragments and presence do not survive a new session incarnation.
-An uncertain prompt or approval is reconciled, not blindly resent.
+An uncertain prompt or approval remains explicitly unconfirmed and is never
+automatically resent. Ordinary transcript updates do not resolve that notice.
 
 ## End-to-end proof
 

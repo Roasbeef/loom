@@ -278,7 +278,8 @@ owns its inbox and deadline. Old messages and failed attempts cannot
 change the adopted view. A replacement connection reconciles durable state
 and never automatically resends a mutation with an unknown outcome. Current
 terminal failure handling marks the connection disconnected; it does not
-start an automatic reconnect loop. End-to-end recovery remains to be verified.
+start an automatic reconnect loop. Internal tests and the live drive verify
+recovery through explicit session selection, not automatic reconnection.
 
 ### Implemented shared endpoint boundary
 
@@ -340,11 +341,13 @@ reporting status. Limits need measured defaults and executable tests.
 
 ## Verification required before release
 
-The default is implemented, and the local full client gate passed all 1298 tests
-in 213.88 seconds. The release build and smoke passed in 18.93 and 2.80 seconds.
-Those are results for the tested tree, not evidence for subsequent dependency
-changes or Linux. Both automatic local CI discovery and the explicit `ci.yml`
-attempt stopped during setup because the runner lacked an OTP 29 install.
+The default is implemented. An earlier working-tree client gate passed all
+1298 tests in 213.88 seconds, but subsequent clean runs exposed test-ordering
+failures. Those failures and the current committed verification results are
+recorded in [the handoff](../next.md#verification-and-its-limits). Local release
+results do not establish Linux support or validate an unadopted dependency.
+Both automatic local CI discovery and the explicit `ci.yml` attempt stopped
+during setup because the runner lacked an OTP 29 install.
 
 Live owner-authenticated terminals have verified rendering and submission
 without another keypress, recovery through explicit selection, and switching
