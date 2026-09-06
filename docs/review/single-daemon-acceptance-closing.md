@@ -336,6 +336,15 @@ conversation snapshot reader, which these four sampled PIDs do not cover.
 The registry's sampled SQLite activity remains a hypothesis to investigate,
 not a reason to change journal policy or cache authorization.
 
+Direct review approved adding `b.storage_owner` to the existing owner list.
+The instance retains the original actor that services its snapshot reader;
+no lookup, FFI or production hook is needed. Commit `57788e76` adds only
+that one list entry. Root's focused soak passed in 11.41 seconds, with all
+18 pairs, five owners and normal sampler completion. The additional six
+field reads per sample affect both conditions and remain within the reported
+batch cost. Future measurements must examine phase durations as well as
+individual credits; a slow subscription is not a slow credit.
+
 ## Successful switching with an active peer
 
 A fresh review of the four-turn shipped fixture found no high- or
@@ -389,3 +398,28 @@ composed shipped filter: six tests passed in 67.86 seconds. The final edits at
 `376da701` change comments and diagnostic labels only; format passes and the
 assertions and 200/230/270-second bounds remain unchanged. No further review
 was needed for those edits.
+
+## Exact HTTP tool exchanges
+
+A fresh review of the helper at `94894253` found two medium-severity gaps in
+test strength, both corrected before commit. Unordered assertions over SSE
+events could pass when an argument delta preceded its block start. The test
+now passes the actual HTTP response through the production Anthropic decoder
+and requires one settled call with the exact ID, name, JSON arguments and
+tool-use stop reason. A deliberate event reorder failed that assertion.
+
+The negative result tests originally accepted any HTTP 400. They now require
+the exact refusal reason, so removing the result-size cap cannot pass through
+the later script-mismatch check. Removing the cap failed that assertion.
+The final independent run passed all 13 helper tests in 0.97 seconds, and
+the existing shipped scenario passed in 5.27 seconds. Both mutations were
+restored; the narrow corrections did not require another review pass.
+
+Low-severity cleanups label the result constructor's fields and flatten its
+bound check. The two local mismatch arms remain instead of adding another
+helper. Arguments compare exactly as ordered `JsonValue`, not through an
+order-insensitive normalization. The result requires a present, false
+`is_error`, matching the encoder. Unknown-key tolerance remains, and duplicate
+script keys fail loudly in decoding rather than requiring more fixture logic.
+The helper preserves its eight-step cap, body limits and original cleanup.
+It establishes no shipped tool execution until a consumer drives that path.

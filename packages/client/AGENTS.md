@@ -291,10 +291,15 @@ catalogue without opening runtimes. Explicit admission invokes
   The next prompt waits for the clients' idle phase, not merely the
   assistant entry. `tui` and the existing pinned `etui` are test-only
   dependencies; neither enters the server's production dependency graph.
-- `test/support/provider_http.{Exchange, ObservedRequest, with_server}` is
+- `test/support/provider_http.{Exchange, Latest, ObservedRequest, with_server}` is
   a finite loopback Anthropic peer for the separately shipped daemon. It
-  checks the latest user text, including the normal human-attribution block,
-  before consuming one script step, and returns bounded request evidence.
+  checks the latest user text or exact successful tool result before consuming
+  one script step, and returns bounded request evidence. `ToolUseExchange`
+  emits a fixed call; `ToolResultExchange` requires its nonempty ID and complete
+  single text result with `is_error: false`. Text steps retain the normal
+  human-attribution projection. Tests pass the actual HTTP tool-use stream
+  through the production decoder and encode results through the production
+  adapter. Exact refusal reasons distinguish limit checks from script mismatch.
   A refused, replayed or missing request makes the final report fail. The
   wrapper retains original listener and script-actor monitors outside its
   bounded callback. `tui_shipped_multiplayer_test` uses ordinary provider

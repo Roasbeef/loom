@@ -5,7 +5,7 @@ work: implemented boundaries, verified results and remaining release
 requirements. Rewrite it after the next verified milestone rather than
 adding another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `00076858`.
+Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `57788e76`.
 The implementation, review dispositions and evidence below were checked
 against that tree or the explicitly named earlier gate. The seven daemon
 phases are in the [single-daemon plan](design-notes/single-daemon.md), with
@@ -58,6 +58,11 @@ Commit `376da701` joins pending native selection to whole-VM identity recovery.
 These three commits are published with docs at `00076858`. Local and hosted
 evidence below names the head each run tested.
 
+Commit `94894253` adds reviewed, finite HTTP tool-use/result script steps;
+`57788e76` adds B's original snapshot-reader PID to the diagnostic sampler.
+Both have focused local evidence below. The shipped live-tool consumer is
+the next implementation step, not coverage supplied by the helper alone.
+
 The previous handoff said the reviewed slice awaited publication and that
 idle authorization, cadence revival and synchronous control recovery
 remained unfinished. Those statements are now superseded:
@@ -91,6 +96,21 @@ them. `.claude/worktrees/daemon-candidate` is the integration tree; its
 dependency caches have not been patched to manufacture a pass.
 
 ### Verified results and their limits
+
+The reviewed HTTP helper passed all 13 tests in **0.97 seconds** under an
+independent run. The existing shipped multiplayer fixture passed in
+**5.27 seconds** after its typed-evidence migration. The helper passes actual
+HTTP response bytes through the production Anthropic decoder and checks the
+exact settled call and tool-use stop reason. Its positive result request
+comes from the production encoder. Removing the result cap failed the exact
+refusal assertion; reordering the tool-use delta before its start failed the
+decoded-argument assertion. Both mutations were restored before the final run.
+
+The five-PID sampler's focused soak passed in **11.41 seconds**. All 18 pairs
+retained the original B storage actor, and every sampler completed. Conditions
+recorded one to three samples, with batch durations of 0 to 2 ms. Those costs
+do not measure the sampler's total effect on other processes. The addition
+changes diagnostics only; it does not repair or explain the hosted failure.
 
 The composed shipped filter passed **six tests in 67.86 seconds**: the three
 shipped integration fixtures and three existing scratch/system-prompt tests.
@@ -388,7 +408,8 @@ run; older fixture directories can arrive through build caches.
 The sampler retains at most 128 observations
 at a 25 ms cadence within
 a 3.2-second horizon, names truncation and joins before the pair is evaluated.
-It watches fixed measurement, registry and gateway PIDs through the existing
+It watches five original PIDs: measurement, registry, both gateways and B's
+conversation storage actor. It uses the existing
 process-info wrapper; no new FFI or VM-global monitor is installed. Both
 conditions pay that diagnostic overhead. Process state, queue and GC counters
 can suggest causes, not prove them; an absence of observed activity cannot
