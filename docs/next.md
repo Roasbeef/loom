@@ -1,436 +1,220 @@
 # Next
 
 Read this first. This is the handoff for the single-daemon and multiplayer
-work: what is implemented, what has been verified, and what still prevents
-completion. Rewrite it after the next verified milestone; do not append
+work: the implemented boundaries, verified results, and remaining acceptance
+requirements. Rewrite it after the next verified milestone rather than adding
 another checkpoint above it.
 
-Re-baselined on 2026-09-06 against `client/instance-custody` at
-`13969336` (production/build changes through `46312646`, followed by the
-paired-soak test correction). Current claims below were checked against the tree, recorded
-test results, or GitHub. Historical claims that were not reverified are
-identified as such. The project-wide plan remains [issue-plan.md](issue-plan.md);
-the active work follows [the single-daemon plan](design-notes/single-daemon.md)
-and [the multiplayer brief](design-notes/multiplayer.md).
+Re-baselined on 2026-09-06 against `client/daemon-review-fixes` at `bc7ff235`.
+The architecture and review claims below were checked against that tree;
+verification names the commit actually exercised. The project plan remains
+[issue-plan.md](issue-plan.md), with the active acceptance criteria in
+[single-daemon](design-notes/single-daemon.md#the-acceptance-drive) and the
+[multiplayer brief](design-notes/multiplayer.md).
 
 ## Where the tree is
 
-**The single-daemon experience is implemented, but final acceptance is incomplete.**
-One listener manages sessions across workspaces. Restart restores the catalogue,
-and explicit authorized selection opens a runtime. The client uses the daemon
-for startup and `/sessions`; it does not retain the old per-session server path.
+One daemon manages sessions across workspaces. Restart restores catalogue
+metadata; authorized explicit selection opens a runtime. The implementation
+is present, but the broader release goal is not complete.
 
 | Body of work | Current state |
 |---|---|
-| Contracts and reusable sessions, phases 0 and 1 | Reviewed protocols 014, 015 and 016; reclaimable addresses; owned assembly and retained cleanup failures. Weft 0.4.4 is pinned. |
-| Daemon lifecycle and routing, phases 2 and 3 | Private catalogue, singleton ownership, bounded admission, current-credential checks, session routes, and snapshot transfer are implemented. |
-| TUI and lifecycle integration, phases 4 and 5 | Server-backed selection, safe replacement, uncertain submissions, shared domains, detached scheduling and lazy restart have targeted tests. |
-| Default and release acceptance, phase 6 | Clean local full gate and Linux CI pass. macOS CI exposed the aggregate soak timing assertion; its paired correction passes targeted tests. Independent review found production blockers. SQLite adoption and filesystem confinement remain open. |
-| Filesystem follow-up | Unfinished work is preserved outside the committed daemon slice. No workspace-overlap confidentiality claim is established. |
+| Contracts and session ownership, phases 0–1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
+| Daemon lifecycle and routing, phases 2–3 | Singleton ownership, durable creation keys, bounded admission, lazy catalogue restore, current authority and snapshot transfer are implemented. |
+| TUI and shared domains, phases 4–5 | Server-backed selection, uncertain submissions, multiplayer and detached maintenance have executable tests. Revived-domain cadence and synchronous control reconnect still need completion. |
+| Default and release acceptance, phase 6 | The final reviewed slice has local full, multiplayer, soak and packaging passes. Its remote platform run remains pending publication. SQLite adoption and filesystem confinement remain open. |
 
-The plan has seven phases numbered 0 through 6, not a separate phase 7.
-The owner rejected backwards compatibility and legacy import for this work.
-Do not revive those historical migration items while reading the original plan.
+The plan numbers its seven phases 0 through 6. Backwards compatibility and
+legacy import were explicitly excluded; do not revive their historical cases.
 
-### Review and commit scope
+### Review and branch scope
 
-The daemon slice is published as draft
-[#237](https://github.com/Roasbeef/loom/pull/237), above lifecycle PR
-[#235](https://github.com/Roasbeef/loom/pull/235). Native `gh stack view`
-reports the preceding open branches as session-services (#233),
-session-ownership (#234), and instance-lifecycle (#235), with no rebase needed
-at this checkpoint.
+Draft [#237](https://github.com/Roasbeef/loom/pull/237) is frozen at `3ec78b9e`,
+above lifecycle [#235](https://github.com/Roasbeef/loom/pull/235). The reviewed
+follow-up branch is `client/daemon-review-fixes`, based on #237. It separates
+production changes, generated SQL, dependency locks, fixture repairs, bounded
+runner changes, acceptance targets and documentation into atomic commits.
 
-The commits separate bounded test execution (`c32c1f44`), daemon implementation
-(`c12d22eb`), generated SQL (`7699065e`), dependency locks (`e9b46e1f`),
-architecture documentation (`f066cd7e`), and test monitor ordering
-(`d2597a6c`), followed by the terminal fork assertion (`bdffaf78`), recovery
-documentation (`e9e30b02`), acknowledged monitor delivery (`d59ba83d`), and
-developer command updates (`46312646`). Current launch guidance is updated in
-`5af17a7e`; the paired soak correction is `13969336`. The
-[source review](review/single-daemon-final-surface.md) reported no new
-actionable finding. A subsequent independent review of published head
-`3cc360b5` found blockers; the updated
-[triage](review/single-daemon-final-triage.md) distinguishes those passes.
-The PR is not ready to merge.
+Readiness is now a query, not authority to shut down the daemon. A snapshot
+caller's expiring budget drops that transfer without declaring the reader
+dead. Genuine reader failure requests exact-incarnation cleanup directly from
+the registry captured by the attachment. Live admission and response checks
+remain separate; neither consults root readiness first.
 
-The primary worktree is `.claude/worktrees/single-daemon`. Its remaining
-uncommitted filesystem policy, planner, native helper and protocol 017 work is
-not part of these commits. Preserve it. The clean verification worktree,
-`.claude/worktrees/daemon-candidate`, contains only committed work; no
-dependency cache has been patched to make its gates pass.
+The review also repaired journal-mode verification, generated register-prefix
+scans, hopeless helper-pool reporting, namespace publication ordering and
+bootstrap FFI duplication. Unconfirmed helper retirement still retains its
+slot. A timed-out test group receives its final signal before its leader is
+reaped, including when a descendant ignores the initial termination signal.
 
-### Verification and its limits
+The closing independent review found no high-severity finding. Its remaining
+functional findings are not a release waiver: background authorization ticks
+can close idle attachments on registry delay, revived domains retain a fenced
+maintenance cadence, and control reconnect can block the TUI for five seconds.
+The first two have active follow-up slices; the third remains required work.
+Source enumeration is bounded but still performs per-row catalogue reads.
+It must not be described as eliminating those reads.
 
-The clean full `make check` at `46312646` passed in 377.69 seconds. It
-includes all 1,298 client tests (220.78 seconds), 204 TUI tests, 69 conformance
-tests, the remaining Gleam packages, native Go checks and house-rule lint.
-Lint reports zero errors and 615 warnings. The outer deadline was 900 seconds,
-with 600-second package deadlines. No `SKIP` marker appeared in this log;
-that is not a substitute for the separate platform enforcement reports.
-The docs-only descendant `5af17a7e` passed `make doc-check` with zero errors.
+The primary worktree, `.claude/worktrees/single-daemon`, retains unfinished
+filesystem policy, planner, native helper and protocol 017 edits. Those edits
+are excluded and must be preserved. `.claude/worktrees/daemon-candidate` is
+the committed integration and verification tree; its dependency caches have
+not been patched to manufacture a pass.
 
-The earlier full client run passed all 1,298 tests in 213.88 seconds.
-A subsequent clean `make check` failed after 370.62 seconds, with 1,296 client
-tests passing and two failing. These are different runs; the earlier pass did
-not establish that the candidate was clean.
+### Verification and corrections
 
-The relay fixture started an immediately completing request before installing
-its drain witness. It now prepares, monitors, then begins. A negative control
-that installs the witness after confirmed retirement fails with `ProofLost`.
-The corrected relay group passes all nine tests in an independent 15.28-second
-run. The terminal fixture now follows explicit stop or test-parent death,
-rather than its own two-second timer. Removing the timer was insufficient:
-the same failure recurred in the clean run at `bdffaf78`.
+At `68c53aa2`, the independently captured results were:
 
-The next clean run failed one terminal E2E assertion after 332.19 seconds,
-with 1,297 client tests passing. The fork had succeeded, but the authoritative
-snapshot replaced its transient local notice before the test read it. Requiring
-the two-agent snapshot reproduced that failure deterministically. The corrected
-test verifies the exact durable strand identity and its stable name in
-`/agents`; the independent root run passed in 6.09 seconds.
+| Gate | Result |
+|---|---|
+| `make check` | Exit 0, 377.05 seconds; 1,309 client tests, 206 TUI tests; lint zero errors and 613 warnings. |
+| `make doc-check` | Exit 0, zero errors and 135 warnings. |
+| `make e2e-multiplayer soak-daemon` | Exit 0, 24.09 seconds; the paired latency assertion was unchanged. |
+| `make dist e2e-client-bootstrap` | Exit 0, 55.98 seconds; server/client packaging, release smokes and real bootstrap fixtures. |
 
-The clean run at `bdffaf78` failed after 318.15 seconds with 1,297 client
-tests passing. A process trace then captured the control owner's `Normal`
-exit while its original monitor reported `noproc`. The monitor request had
-not necessarily arrived before the terminal, a different sender, triggered
-shutdown. The corrected fixture waits for an OTP system reply from the
-control owner before releasing the terminal. Both strict `Normal` assertions
-remain. The traced barrier passed 100 repetitions, the untraced barrier
-passed 250, and the independent final module passed all 11 tests in 0.87
-seconds. The untraced negative did not reproduce; the traced schedule did.
+The subsequent production change is `e6023b7f`: attachment-local registry
+access and checked UTF-8 decoding of realpath output. At its docs descendant
+`bc7ff235`, the combined `make check dist e2e-client-bootstrap e2e-multiplayer
+soak-daemon` gate exited 0 in 425.67 seconds. This independently verifies the
+final production delta, including 1,309 client tests, 206 TUI tests, packaging,
+bootstrap, multiplayer fixtures and the unchanged paired soak. Remote CI for
+this follow-up remains pending publication.
 
-The clean release at `e9b46e1f` built in 30.99 seconds; its smoke passed in
-2.82 seconds. Subsequent changes through `d2597a6c` are docs and tests only.
-The smoke checks bundled runtime startup with no host Erlang on `PATH`,
-authenticated v2 readiness, two explicit sessions, shared-domain maintenance,
-helper discovery and normal daemon exit. It does not prove a model turn or a
-populated-catalogue restart. Seed preparation passed but explicitly did not
-verify the offline jailed build on this host.
+Six one-at-a-time production mutations at `a72b3d70` each compiled, failed
+their intended assertion, and passed after exact source restoration. The
+[mutation evidence](review/single-daemon-mutation-gates.md) covers premature
+execution, stale incarnation, duplicate admission, snapshot reconciliation,
+retained-byte accounting and runtime drain before releasing the SQLite lease.
+These examples are not an exhaustive crash-at-every-publication-step sweep.
+Two remaining durable-boundary tests are being added: restart after a saved
+reservation, and restart after database identity exists but before catalogue
+confirmation. They must assert exact identity and writer custody, not row count.
 
-At `d2597a6c`, the self-contained client build passed in 5.45 seconds and its
-smoke passed in 0.54 seconds. Real client bootstrap E2E passed in 35.15 seconds,
-including startup, detach/reuse and launcher-lifetime checks. `make dist`
-passed in 49.12 seconds and produced server, bundled-client and slim-client
-archives for macOS arm64. These artifacts still contain the original SQLite
-dependency, so packaging success does not close resource acceptance.
+The previous handoff's statement that Linux CI passed was tied to an older
+run and was insufficient as a current branch verdict. At frozen `3ec78b9e`,
+[run 34028143084](https://github.com/Roasbeef/loom/actions/runs/34028143084)
+failed on both platforms: Linux hit the relay consumer's monitor-ordering
+fixture; macOS hit the paired soak's unrelated-session latency bound. The
+relay tests now confirm monitor installation before triggering retirement.
+The paired assertion has not been relaxed. Local passes do not replace the
+next Linux and macOS result, nor establish the earlier timing failure's cause.
 
-A relocated installation of those artifacts passed an authenticated daemon
-probe in 1.89 seconds, including explicit sessions and confirmed native exit.
-That probe does not cover an interactive installed client. At `46312646`,
-the updated source-mode developer smoke passed in 11.51 seconds, and its
-shipment counterpart passed in 27.77 seconds. Both check catalogue-only startup,
-the authenticated control route and clean shutdown.
+The watchdog defect was independently reproduced on the original source and
+retested on `615a26f3`. All nine watchdog self-tests passed. Earlier multi-hour
+test gaps included host sleep; current wrappers have independent deadlines and
+scoped idle-sleep prevention. A timeout remains a failure, never drain proof.
 
-The packaged helper self-test passed all nine enforcement probes with zero
-skips in 1.61 seconds on macOS. That verifies the helper's declared probe
-policies, not the missing application filesystem dispatch or workspace-overlap
-confidentiality requirement.
-
-The internal multiplayer fixtures use real WebSockets, real SQLite and
-independent native TUI loops with scripted providers. Separate tests cover
-operator/observer authority, concurrent approval resolution, actual approved
-effects, session switching, shared domains, lazy restart, blocked provider
-drain and detached schedules. [Multiplayer architecture](architecture/multiplayer.md)
-names what each fixture proves.
-
-The live Herdr drive used two owner-authenticated terminals against one daemon.
-Both submitted and rendered replies without a second keypress; switching one
-terminal to the other session produced a shared transcript and presence of two.
-That establishes the live owner experience, not distinct-principal authority.
-The daemon was stopped cleanly after the drive. Its isolated evidence remains
-under `build/test_db/loom-live-multiplayer.tz67PE` in the primary worktree.
-
-The original resource soak added 192 SQLite database/WAL descriptors over
-16 measured cycles. The repaired binding kept 68 descriptors throughout an
-equivalent evaluation; atoms and helper count also remained stable. This was
-a shared test VM, not an isolated daemon RSS benchmark. A passing soak's
-assertions do not override its measured descriptor growth.
-
-### SQLite retirement is fixed upstream, not adopted here
-
-The fix is [esqlite PR #105](https://github.com/mmzeeman/esqlite/pull/105),
-commit `45dbb48ce28c4d78b5cb93de0e1e78bb79f859d9`. It is open and unmerged
-at this checkpoint. All 35 dependency tests pass; removing private-query
-cleanup makes all five new regressions fail. The fix has independent review.
-
-[ADR-002](adr/002-sqlite-binding.md) records the mechanism and packaging
-constraint. A query's private statements must finalize before it returns.
-Manual prepared statements keep their existing contract. Loom still uses
-sqlight; no custom database binding replaces it.
-
-Gleam 1.18.1 cannot build this native rebar dependency through an ordinary
-git or path dependency. The preferred adoption route is a patched esqlite
-Hex release. The evaluation used an explicit code-path override, which is
-not a shipping dependency. Do not alter build caches or force garbage
-collection to conceal the retention.
-
-### Platform evidence
-
-The published head `3cc360b5` completed
-[CI run 34026704945](https://github.com/Roasbeef/loom/actions/runs/34026704945).
-Linux full checks, client bootstrap and deliverable smokes passed, as did
-Linux jail enforcement/E2E and the 200-seed soak. macOS failed one client
-soak assertion: an authenticated B snapshot took 3070 milliseconds against
-a fixed 1000-millisecond aggregate budget. Its other 1297 client tests
-passed. Five unchanged focused local runs and a single-scheduler variant
-passed, so that CI failure's exact cause remains unestablished. The test's
-measured work grows with B's transcript. The corrected test pairs the same
-immutable B snapshot before and while A is unread, with a stressed limit of
-twice the same-cycle baseline plus 250 milliseconds. Five corrected runs
-passed; delaying stressed credits failed the intended comparison, and the
-restored source passed in 17.80 seconds, followed by an independent run in
-17.33 seconds. The recorded diagnostics now precede
-the assertion. These targeted results do not replace the next platform gate.
-
-Local CI was attempted both through automatic discovery and explicit
-`ci.yml` selection. Linux jobs stopped during OTP installation because the
-runner's `otp/Install` executable was missing; repository tests did not run.
-The explicit workflow also skipped its macOS VM job because Tart was absent.
-These are failed or skipped attempts, not Linux or macOS CI passes.
-
-GitHub main is `5e2112b1ace369f5e108072d64cffc1b9b466bf6`.
-Its [CI run](https://github.com/Roasbeef/loom/actions/runs/33935822041)
-passed. The later [nightly](https://github.com/Roasbeef/loom/actions/runs/33962443810)
-failed only in the long `seeds 1001..` soak job; its cold Linux gate passed.
-Neither run verifies this daemon branch.
-
-## The independent review fix wave
-
-The review of `3cc360b5` and its fix wave are complete. The wave lives on
-`fix/daemon-review-wave`, based on `a72b3d70` (the relay fixture child above
-frozen `3ec78b9e`), as atomic commits, one per slice: broker pool
-reporting, runtime namespace unlink and reserved-prefix constants, MCP
-shutdown policy, origin documentation, storage journal verification and
-prefix ranges, the regenerated SQL, the host FFI collapse, the tui control
-reconnect, the daemon's readiness and transfer blockers, domain revival and
-one-call authorization, fixture teardown, the test runner, the records, the
-relay crash barrier, the watchdog group kill, and the attachment registry.
-`make check` passed with its own exit code at `615a26f3` (client 1309, tui
-206, lint 0 errors / 613 warnings); the last two commits changed one Erlang
-path decode and the attachment record and were verified by their package
-checks. The gate logs are under the review session's scratchpad.
-
-Two blockers and ten majors from the consolidated review are fixed; the
-findings, the fixers' reports and the closing Fable pass are recorded beside
-those logs. The closing pass found no high finding and left these open, each
-verified against the code and deferred deliberately rather than forgotten:
-
-- **Broadcast and tick revalidation.** `gateway.gleam`'s broadcast loops and
-  the one-second `MaintainTransfers` tick re-authorize every network
-  attachment, then hand the frame to the daemon transport's no-op sink. The
-  broadcasts are unreachable for network gateways today; the tick is live and
-  closes every attachment if the registry answers late. The fix is to skip
-  delivery for pull-only links and to type the check's refusal so a
-  background tick tolerates an unavailable registry while admission and
-  delivery keep failing closed.
-- **A revived domain stays fenced.** `DomainQuiescing(Idle, _)` revival hands
-  back the services with the maintenance cadence still in `Quiescing`, so a
-  reopened workspace runs no scheduled distillation until the domain retires
-  and is rebuilt. The completion is one `DomainResume` message in
-  `distillpass` that moves `Quiescing` back to `Accepting` when no cancel was
-  issued, with the pending quiesce counted so a stale, postponed quiesce
-  answered after revival does not re-fence it.
-- **Source enumeration still reads per row.** The registry handler no longer
-  resolves registrations itself, but `storage/domain.sources` validates each
-  id with a `catalogue.get` and the builder reads each again; the worst turn
-  fell from about 1130 reads in one turn to about 200 across twelve. Returning
-  records from `domain.sources` removes the duplicate and the second message.
-- **Control reconnect is synchronous.** `with_live_control` rebuilds a
-  retired control owner on the terminal process with a five-second budget; a
-  slow daemon stalls the frame loop that long per action where it used to
-  fail instantly and permanently. Moving the reconnect into the worker each
-  call site already spawns, and returning the new host with the reply, is
-  the fix.
-- **Local transcript lines do not survive a cut.** `append_error` puts a
-  refusal in the transcript and the notice, and the next cut replaces the
-  transcript while the next presence line replaces the notice, so a losing
-  operator's `stale_approval` refusal has no durable trace; the multiplayer
-  test therefore pins the sequence fence only. Keeping local lines through a
-  cut is a terminal change.
-- **Helper slot quarantine after a nonzero exit.** The slot stays occupied
-  because per-execution cgroups are named `exec-<frame id>-<stage-1 pid>`
-  with frame ids restarting per helper, so a recycled pid could share a
-  group with a dead helper's residue. A per-helper token in the cgroup name
-  would let the slot free while `close_pool` keeps its unclean verdict.
-- **Smaller follow-ups.** `catalogue.atomic` nesting is prevented by prose
-  and wants an opaque token; `tui.gleam` lines 3913 to 4468 move to
-  `tui/transcript.gleam` once one client test reads `transcript.Failure`;
-  the log tail realigns leading bytes only; `session_channel` still splices
-  its encoder's JSON.
+Historical live Herdr evidence showed two owner-authenticated terminals using
+one daemon, model replies without a second keypress, session switching and
+shared presence. It does not establish distinct-principal authorization or a
+live drive of the current artifacts. Internal multiplayer fixtures exercise
+real WebSockets, SQLite and native TUI loops with scripted providers; consult
+[multiplayer architecture](architecture/multiplayer.md) for their exact scope.
 
 ## What to do next
 
-### 1. Verify the soak correction and independent review fixes
+### 1. Publish the reviewed slice and finish functional follow-ups
 
-The bounded full check on `46312646` and documentation gate on `5af17a7e`
-passed, and final publication head `3cc360b5` passed the documentation gate.
-PR #237 is correctly based on #235. The paired full-snapshot correction in
-`13969336` has its delayed-credit negative control and independent restored
-pass. It remains separate from production fixes and needs the next CI verdict.
+Record the final delta's own combined gate, publish it above #237 with native
+`gh stack`, and send the exact head and evidence for review. Keep the PR draft
+while acceptance remains incomplete. Complete idle authorization, maintenance
+resumption, asynchronous TUI control recovery and the two durable crash tests
+in independent slices, preserving live revocation and original cleanup proof.
 
-The independent fix wave above is done and green. Integrate
-`fix/daemon-review-wave` with native `gh stack`, then the acceptance
-entrypoints from `test/daemon-acceptance-gates`, and let the next CI verdict
-decide the soak oracle. Preserve transitive retirement proof when evaluating
-any proposal to reuse a slot after nonzero helper exit.
+Exit: the final combined tree has reviewed fixes, green platform gates and an
+accurate stacked PR. This does not authorize merging the Loom stack or dropping
+the remaining requirements below.
 
-Exit: the corrected slice has green platform gates, verified review fixes,
-accurate evidence and a correctly stacked PR. This step does not discard unfinished
-filesystem work or declare the overall goal complete.
+### 2. Adopt the SQLite retirement repair
 
-### 2. Adopt the SQLite repair and rerun resource acceptance
+Shipping dependencies still resolve sqlight 1.2.0 and Hex esqlite 0.9.0, not
+the evaluated fork. [esqlite PR #105](https://github.com/mmzeeman/esqlite/pull/105)
+at `45dbb48c` is open and unmerged at this checkpoint. The preferred adoption
+route is a patched native Hex release; [ADR-002](adr/002-sqlite-binding.md)
+records why an ordinary Gleam git/path dependency cannot build this rebar
+package. Do not patch build caches, force garbage collection or publish a
+parallel package to conceal that constraint.
 
-Use a reproducible native package containing PR #105. Rebuild without an
-evaluation override, then repeat the combined tests, open/close measurements
-and release smoke. Measure descriptors, atoms, mailboxes, helpers, memory and
-unrelated-session latency; state which quantities have asserted bounds and
-which are observations.
+The earlier evaluation observed 192 additional database/WAL descriptors over
+16 cycles with the original binding and a stable 68 with the repair. Those
+are historical evaluation results, not the current shipping artifact's
+resource guarantee. Repeat the measurements without a code-path override.
 
-Exit: the shipping dependency graph reproduces the fix and resource retirement.
-Do not publish a parallel public package or replace the database binding merely
-to bypass the current packaging constraint.
+Exit: the reproducible shipping dependency graph contains the fix, and combined
+resource, release and platform acceptance verifies that graph.
 
-### 3. Complete confinement and platform acceptance
+### 3. Complete confinement and shipped acceptance
 
-Application filesystem dispatch still bypasses the jailed planner. The
-separate native PrivateScratch work under protocol 017 remains restricted and
-unverified. Neither planner tests nor multiplayer authorization tests prove
-that a model in A cannot read daemon credentials or alter B's database through
-overlapping workspaces. Preserve the unfinished slice; do not describe it as
-implemented confinement.
+Application filesystem dispatch and the separate PrivateScratch work remain
+unresolved. Authorization fixtures do not prove that a model in workspace A
+cannot read daemon credentials or alter B's database through overlap. Do not
+retry restricted native implementation work through another worker or tool,
+and do not describe the excluded planner slice as implemented confinement.
 
-Run installation/startup and declared enforcement checks on macOS and Linux.
-Exercise the final packaged client+daemon together, including concurrent
-startup, selection, detach, restart and resource pressure.
+Finish the joined shipped-daemon/native-client acceptance drive, including
+concurrent startup, distinct principals, switching during live work, restart,
+failure containment and resource pressure. Report platform skips explicitly.
 
-Exit: the final artifact meets the remaining
-[acceptance drive](design-notes/single-daemon.md#the-acceptance-drive), with
-scope and skips stated. Owner administration of branch protection is separate;
-do not bypass it to manufacture merge readiness.
+Exit: the remaining [acceptance drive](design-notes/single-daemon.md#the-acceptance-drive)
+has actual evidence for the final artifact. Neither green package tests nor a
+helper's declared enforcement probes substitute for the application boundary.
 
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
 
-**One daemon owns sessions across workspaces; restart restores metadata only.**
-Listing and preview never resume work. Authorized explicit opens for the same
-saved session converge on one runtime. The
-[execution ruling](design-notes/single-daemon.md#execution-ruling) excludes
-legacy compatibility and leaves existing user data untouched.
+**One daemon, metadata-only restart.** The
+[execution ruling](design-notes/single-daemon.md#execution-ruling) requires
+explicit authorized opens; listing and preview never resume work.
 
-**Retirement requires original evidence.** A caller timeout, port closure or
-late `noproc` observation does not establish successful transitive drain.
-Failed cleanup retains custody and occupancy. Protocol
-[014](../protocol-change/014-helper-shutdown-witness.md) keeps the native port
-open until helper exit; [sessions](architecture/sessions.md) records the
-session/domain ownership boundary.
+**Retirement requires original evidence.** Protocol
+[014](../protocol-change/014-helper-shutdown-witness.md) retains the native
+port until exit. Caller timeout, port closure and late `noproc` do not prove
+transitive cleanup. Failed cleanup retains custody and capacity.
 
-**Authority is server assigned and checked at use.** Protocols
+**Authority is server-owned and checked at use.** Protocols
 [015](../protocol-change/015-daemon-control-and-session-attachments.md) and
-[016](../protocol-change/016-record-human-origin.md) define owner control,
-membership, human origin, revocation and session activation. Workspace memory
-is owner-private. Sharing requires session-only scope and explicit acceptance
-of any existing transcript; isolation does not sanitize earlier recalled text.
+[016](../protocol-change/016-record-human-origin.md) define membership,
+revocation, activation and human origin. Workspace memory is owner-private;
+sharing requires session-only scope and explicit transcript acceptance.
 
-**Uncertain submissions are never automatically resent.**
-[ADR-009](adr/009-record-terminal-attempt-custody.md) retains attempt identity
-through replacement. [ADR-010](adr/010-retain-one-unsent-terminal-command.md)
-permits one unsent command to wait during reconciliation on an already-adopted
-attachment. Initial synchronization refuses mutation admission. A replay
-renders recorded traffic and performs no outbound effects.
+**Uncertain mutations are not resent.**
+[ADR-009](adr/009-record-terminal-attempt-custody.md) retains attempt identity;
+[ADR-010](adr/010-retain-one-unsent-terminal-command.md) permits one unsent
+command during reconciliation on an adopted attachment. Replay has no effects.
 
-**SQL stays generated and connection policy stays centralized.**
-Production schema/query changes go through `make gen-sql`.
-`storage/sqlite_policy` owns common pragmas plus typed per-database policy.
-Raw SQL in tests is acceptable. Keep process machinery in Weft and native
-FFI limited to the host operations Gleam cannot express.
-
-**Older subsystem decisions retain their own homes.**
-Use [compaction](architecture/compaction.md) for checkpoint/recall invariants,
-[memory](architecture/memory.md) for atomic head/cursor rewind and domain
-maintenance, [extension architecture](design-notes/extension-architecture.md)
-for jailed extensions and deferred in-VM loading, [MCP](architecture/mcp.md)
-for its unjailed transport boundary, and
-[scheduled heartbeats](design-notes/scheduled-heartbeats.md) for scheduling
-authority. This handoff does not duplicate their specifications.
-
-## Corrections to the previous handoff
-
-The previous file accumulated overlapping checkpoints and old project-wide
-claims. These corrections replace them:
-
-- Weft 0.4.4 is published and pinned. The old local-path/0.4.2 release blocker
-  is obsolete. The nine direct consumers are not waiting on another Weft tag.
-- Compaction PR #223 is merged and #132 is closed. That closure does not mean
-  `ProjectState` was implemented; notes and structured task-state projection
-  remain different capabilities.
-- Web search #144 is closed through the separately installed extension.
-  Memory #124 and #149 are closed; daemon maintenance is domain-owned, not a
-  separate boot worker for each session.
-- The TUI has injected presentation time. #220 was a documentation PR, not
-  proof that the full seeded simulator shipped. Keep existing native tests.
-- Multiplayer is active implemented work, not an optional final roadmap item.
-  Single-bearer and unguarded-denial descriptions are historical, superseded
-  by protocols 015/016 and the current approval path.
+**Production SQL is generated; connection policy is centralized.**
+`make gen-sql` owns schema/query outputs. `storage/sqlite_policy` owns shared
+pragmas and typed database overrides. Raw SQL is acceptable in tests. Use Weft
+for process machinery and keep Erlang limited to necessary host operations.
 
 ## Deliberately open
 
-None of these is unfinished work somebody forgot. The daemon acceptance gaps
-above are required work; the items here are separate project scope.
-
-**Repository administration:** #1 remains open and the live API reports
-`main.protected=false`. #99 and #62 are closed with their measured evidence;
-they are not proof of this branch's checks. #155 remains the long nightly
-soak issue.
-
-**Extension follow-ups:** #30/#31 cover the agent-authored on-ramp; #32 is
-deferred until an in-VM consumer requires it. `agent_settled` still has no
-production caller, and the host registry still serializes invocations across
-the session. Keep those gaps in the extension design, not in daemon startup.
-
-**MCP follow-ups:** #108 through #112 remain open for HTTP/OAuth, server
-confinement, third-party end-to-end coverage, elicitation and list changes.
-The current port transport remains unjailed.
-
-**Other prior roadmap items:** full seeded TUI simulation and the scheduling
-brief's residual limits were not established as complete by this audit.
-Consult their design notes and issue records before changing scope. Historical
-timings, old local jail skips, and speculative flake diagnoses from earlier
-editions are not current evidence.
+None of these is unfinished work somebody forgot. The acceptance gaps above
+are required work, not optional roadmap entries. Broader extension, MCP,
+compaction, scheduling and seeded-TUI follow-ups retain their existing design
+notes and issue records; their current issue states were not re-audited here.
+The source enumeration optimization and minor diagnostic-tail refinement are
+separate from the functional failures named above.
 
 ## How to verify
 
-Run `make check`, `make doc-check`, and the relevant E2E targets on the final
-committed tree. `make codemode-seed` prepares release prerequisites;
-`make release` must precede `make release-smoke`. `make dist` also builds
-and smoke-tests the client. Keep the live Herdr drive complementary to the
-internal TUI and authorization tests.
-
-**Capture the gate's own exit code.** A later `tail` succeeding says nothing
-about the test command. Named progress and an independent deadline are part
-of the gate, not optional monitoring:
-
 ```sh
 LOOM_TEST_TIMEOUT_SECONDS=600 python3 scripts/with_timeout.py 900 -- make check
-LOOM_TEST_TIMEOUT_SECONDS=120 bash scripts/test.sh client --match provider_relay_
+make doc-check
+python3 scripts/with_timeout.py 600 -- make e2e-multiplayer soak-daemon
+python3 scripts/with_timeout.py 600 -- make dist e2e-client-bootstrap
 ```
 
-**Keep timeouts and sleep prevention separate.** Test wrappers use
-`caffeinate -i` on macOS and enforce wall/monotonic deadlines. A timeout is
-failure, never drain proof. Earlier multi-hour pauses included host sleep;
-do not diagnose a deadlock from a quiet log alone.
+**Capture each gate's own exit code.** A successful log tail is not a test
+result. Keep the candidate unchanged while its gate runs, and use isolated
+worktrees for independent slices. Never build the excluded native edits in the
+primary tree as if they were part of the published candidate.
 
-**Use a clean verification worktree outside /tmp.** The jail replaces /tmp,
-so cap sockets there cannot establish a valid code-mode test. Preserve
-uncommitted work and distinguish clean-candidate evidence from a working-tree
-run.
-
-**Check omissions as well as failures.** Package checks do not run the full
-lint gate, doc-check is separate, and seed setup may explicitly report that
-offline confinement was not verified. A failed or skipped platform setup
-does not test the product.
-
-[execution.md](execution.md) carries the rest of the verification and
-coordination procedure.
+**Bound waits and keep notifications live.** Use the bounded test runner,
+scoped sleep prevention and an armed Substrate watcher. Record observed results
+separately from suspected causes. Local CI attempts previously failed during
+OTP installation or skipped unavailable macOS virtualization; neither was a
+platform pass. [execution.md](execution.md) records the remaining hazards.
