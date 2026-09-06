@@ -53,6 +53,17 @@ artifacts together; there is no compatibility fallback to `port_close`.
 The frame version stays at 1, following the other accepted additions to
 this wire. No conversation-store format or generated SQL artifact changes.
 
+**Superseded on 2026-09-06 by the addendum to `protocol-change/006`
+(issue #64).** "Following the other accepted additions" was following a
+precedent that had already cost an hour of wrong diagnosis in issue #61.
+Adding a kind to the exec channel is a version bump like any other: a
+helper that predates this document answers `shutdown` as an unknown kind
+rather than by retiring, which is exactly the disagreement a version
+number exists to name. This change is the exec protocol's **3**. The
+envelope version — the `v` key — does stay at 1, and that half of the
+sentence still holds; the two numbers are separate, and
+`broker/framing`'s module comment says why.
+
 ## Decision
 
 **Accepted.** The owner approved the frame on September 5. Closing stdin

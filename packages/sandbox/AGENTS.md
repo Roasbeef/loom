@@ -431,6 +431,16 @@ only Go module.
 - **The helper speaks first.** The spec does not say who does; the helper
   sends its hello so the broker learns features before committing work, and
   requires the broker's hello before any other frame.
+- **A wire change moves `framing.ExecProtocolVersion`.** It is 3, and the
+  `hello.proto` value on both sides; a `protocol-change` that adds,
+  removes, or makes-required a key on a frame this helper sends or
+  receives — or adds a kind to this channel — bumps it and
+  `broker/framing.exec_protocol_version` in the same commit (the addendum
+  to `protocol-change/006` is the ruling). `framing.EnvelopeVersion`, the
+  `v` key, is a separate number describing the container and stays at 1
+  while that shape does. A mismatch is refused at the handshake with both
+  numbers named, because "unsupported proto 2" alone is what issue #61
+  cost an hour to.
 - **Degraded means degraded, out loud.** When bwrap, Landlock, or cgroups
   are unavailable the helper enforces what it can and reports the truth in
   `hello.features` and per-exec `enforcement`/`degraded`. The self-test

@@ -92,3 +92,41 @@ dismissed. It is knowable only inside the helper actor, it is a race
 the actor and reaches every caller, the tools, and the transcript —
 still unable to say what happened. The frame is where the fact belongs
 because the helper is where the fact is.
+
+## Addendum, 2026-09-06 — a wire change bumps a version (issue #64)
+
+This change added a required key and moved no version number, and the
+Impact section above spent a paragraph describing what that would cost.
+It cost it: issue #61 records an hour and a wrong diagnosis spent on a
+`bin/loom-exec` built before this commit, whose only symptom was a
+`ChannelFault` on a later frame. The paragraph was right about the
+mechanism and wrong to think a warning was the remedy.
+
+**The rule, from here on: a protocol change that adds, removes, or
+makes-required a key on a frame the exec helper sends or receives — or
+adds a kind to that channel — bumps the exec protocol version on both
+sides, in the same commit.** The number is
+`broker/framing.exec_protocol_version` and
+`sandbox/internal/framing.ExecProtocolVersion`; the constants' own doc
+comments carry the mapping from each value back to the change that
+earned it, and `broker`'s `protocol_version_test` reads the Go source to
+prove the two literals have not drifted apart.
+
+Two things this rule does *not* touch. The envelope version — the `v`
+key, `broker/framing.envelope_version` — describes the container (a
+length prefix around a map of `v`, `id`, `kind`, `body`) and moves only
+when that shape does, which no change has yet required; keeping it fixed
+is what lets a stale helper's `hello` still decode, so the broker can
+read the peer's version and name both numbers instead of merely refusing
+the bytes. And the capability socket, which carries no `hello` and so no
+`proto`: `protocol-change/012`'s `hook_call` pair changed Part 1.4
+without changing anything the exec helper speaks, and is deliberately
+not counted.
+
+Back-filling this rule over the accepted changes puts the exec protocol
+at **3**: 1 as first frozen, 2 for this document's `cancelled` key, 3 for
+`protocol-change/014`'s `shutdown` frame. A helper at any earlier value
+now fails at the handshake with
+`exec.ProtocolVersionMismatch(helper:, broker:)`, which renders as both
+numbers and the side that is behind, rather than as an anonymous decode
+failure several frames later.
