@@ -11,6 +11,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import gleam/list
 import gleam/option.{None}
 
 /// A `full` snapshot naming a session, with no strands and no history.
@@ -21,6 +22,30 @@ pub fn full_snapshot(session: String) -> String {
     #("strands", json.Array([])),
     #("entries", json.Array([])),
     #("usage", codec.encode_usage(zero_usage())),
+  ])
+}
+
+/// An authoritative replacement for the visible strand set.
+///
+/// Each strand is an id, its display name and the phase its live operation
+/// is in. All three are model-influenced: a sub-agent is named by whatever
+/// spawned it, and the phase text comes back from the server as a string.
+pub fn strands_snapshot(strands: List(#(String, String, String))) -> String {
+  event("snapshot", [
+    #("mode", json.String("strands")),
+    #(
+      "strands",
+      json.Array(
+        list.map(strands, fn(strand) {
+          let #(id, name, phase) = strand
+          json.Object([
+            #("id", json.String(id)),
+            #("name", json.String(name)),
+            #("live_op", json.Object([#("phase", json.String(phase))])),
+          ])
+        }),
+      ),
+    ),
   ])
 }
 
@@ -37,6 +62,19 @@ pub fn user_entry(strand: String, text: String, seq: Int) -> String {
   )
 }
 
+/// One durable assistant turn of prose, the reply a reader actually reads.
+///
+/// This is the markdown path rather than the plain one: an assistant body is
+/// the only transcript text the CommonMark adapter parses, so a check on what
+/// a provider can put on screen has to arrive here and not as a system line.
+pub fn assistant_entry(strand: String, text: String, seq: Int) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([message.AssistantText(text:, text_signature: None)]),
+  )
+}
+
 /// One durable assistant turn carrying a tool call.
 pub fn tool_call_entry(
   strand: String,
@@ -47,30 +85,40 @@ pub fn tool_call_entry(
   message_entry(
     strand,
     seq,
-    message.AssistantMessage(
-      content: [
-        message.AssistantToolCall(call: message.ToolCall(
-          id: "call-1",
-          name: tool,
-          arguments: json.Object([#("command", json.String(command))]),
-          thought_signature: None,
-          namespace: None,
-        )),
-      ],
-      api: "messages",
-      provider: "baseten",
-      model: "baseten-kimi-k3",
-      response_model: None,
-      response_id: None,
-      diagnostics: None,
-      usage: zero_usage(),
-      stop_reason: message.Stop,
-      deferred: None,
-      error_message: None,
-      raw_stop_reason: None,
-      end_turn: None,
-      timestamp: 0,
-    ),
+    assistant_message([
+      message.AssistantToolCall(call: message.ToolCall(
+        id: "call-1",
+        name: tool,
+        arguments: json.Object([#("command", json.String(command))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ]),
+  )
+}
+
+// Every assistant turn these fixtures build differs only in its blocks, so
+// the envelope — which provider answered, how it stopped, what it cost — is
+// written once. None of those fields reach a frame; a snapshot that moved
+// when one of them changed would be pinning the fixture, not the client.
+fn assistant_message(
+  content: List(message.AssistantBlock),
+) -> message.AgentMessage {
+  message.AssistantMessage(
+    content:,
+    api: "messages",
+    provider: "baseten",
+    model: "baseten-kimi-k3",
+    response_model: None,
+    response_id: None,
+    diagnostics: None,
+    usage: zero_usage(),
+    stop_reason: message.Stop,
+    deferred: None,
+    error_message: None,
+    raw_stop_reason: None,
+    end_turn: None,
+    timestamp: 0,
   )
 }
 
