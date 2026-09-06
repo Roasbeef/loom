@@ -511,12 +511,20 @@ fn live_tool_switches(
         }
       },
     )
-  case started {
-    poll.Answer(Nil) -> Nil
-    poll.RanOut(last) -> marker_diagnostic(last)
-    poll.Failure(#(_, last)) -> marker_diagnostic(last)
+  // Assertion failures print their matched value. Discard the retained model
+  // before asserting, so its credentials cannot enter EUnit's crash report.
+  let outcome = case started {
+    poll.Answer(Nil) -> Ok(Nil)
+    poll.RanOut(last) -> {
+      marker_diagnostic(last)
+      Error("tool-start marker deadline")
+    }
+    poll.Failure(#(reason, last)) -> {
+      marker_diagnostic(last)
+      Error("tool-start marker read: " <> string.inspect(reason))
+    }
   }
-  let assert poll.Answer(Nil) = started
+  let assert Ok(Nil) = outcome
     as "the ordinary shipped bash command actually starts"
   let observed_start = native.monotonic_time_ms()
   list.each([alice, peer, reader], fn(driver) {
