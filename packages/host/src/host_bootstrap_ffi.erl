@@ -402,6 +402,11 @@ linux_target_process_identity(Pid, BootId) ->
     case file:read_file(StatPath) of
         {error, enoent} ->
             {ok, process_absent};
+
+        % The target can exit after procfs opens its stat entry. ESRCH on
+        % this target read confirms absence, just as a missing entry does.
+        {error, esrch} ->
+            {ok, process_absent};
         {error, Reason} ->
             {error, describe(Reason)};
         {ok, Stat} ->

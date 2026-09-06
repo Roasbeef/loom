@@ -20,6 +20,8 @@ callers own launch timing, authentication policy, and application messages.
   from confirmed `ProcessAbsent`. Observation errors remain errors. The Erlang
   side returns exactly this shape, so nothing translates between the
   observation and the caller.
+  On Linux, only `ENOENT` and `ESRCH` from the target `/proc/<pid>/stat`
+  read establish absence; boot-id, self-stat and other read errors stay errors.
 - `host/endpoint.{Paths, Fence, Endpoint}` defines fixed state-root paths and
   `Starting`/`Ready` discovery. `availability` permits replacement only for
   fresh state or an observed departed native identity. `claim` adopts only
