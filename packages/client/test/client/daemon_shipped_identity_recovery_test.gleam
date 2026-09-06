@@ -154,6 +154,10 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   // Only the test server's response policy changes. The durable configuration
   // path, request key and domain remain byte-for-byte identical on both retries.
   assert simplifile.write(release, "answer") == Ok(Nil)
+
+  // The crash kills only the VM, not its process group. MCP exit was observed
+  // separately; the lock holder relies on port EOF. A still-held lifetime
+  // lock must refuse replacement, not turn VM departure into a drain claim.
   assert endpoint.load(paths) == Ok(Some(original))
   assert endpoint.availability(paths) == Ok(endpoint.Vacant)
   let assert Ok(second) = launch(server, paths, configuration)
@@ -174,6 +178,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
     as "the same-key immediate retry keeps its original reservation"
   assert immediate.session_id == reserved.id
   await_saved(second.control, reserved.id)
+  assert_storage_refusal(paths, reserved.id)
   assert durable(paths) == #(reserved, selected)
   assert lease(reserved.path) == original_lease
   assert_identity(reserved.path, reserved.id)
@@ -203,6 +208,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   assert new_owner != old_owner
   assert new_fence > old_fence
 
+  // Recovered custody retires before orderly shutdown ends the fixture.
   let assert Ok(_) =
     daemon.request(second.control, protocol.StopSession(reserved.id), 5000)
     as "the recovered original identity begins orderly retirement"
@@ -238,15 +244,41 @@ fn await_initialize(marker) -> endpoint.Fence {
         Ok(text) ->
           case int.parse(string.trim(text)) {
             Ok(pid) if pid > 1 -> poll.Done(pid)
-            _ -> poll.Fail("the initialize marker must contain the server PID")
+            Ok(_) | Error(Nil) ->
+              poll.Fail("the initialize marker must contain the server PID")
           }
         Error(_) -> poll.Retry
       }
     })
     as "actual MCP initialize arrives; missing code-mode/MCP prerequisites fail"
-  let assert Ok(native.ProcessPresent(birth)) = native.process_identity(pid)
+  let assert Ok(fence) = endpoint.observe(pid)
     as "the reporting test server's native birth identity is observable"
-  endpoint.Fence(pid, birth, native.system_time_ms())
+  fence
+}
+
+// The unchanged lease is the safety assertion. Also require failure at storage
+// acquisition, so an earlier helper or configuration failure cannot satisfy it.
+// Logging may flush asynchronously after the registry exposes Saved.
+fn assert_storage_refusal(paths: endpoint.Paths, id: String) {
+  let session_field = "\"session\":\"" <> id <> "\""
+  let assert poll.Answered(Nil) =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case simplifile.read(paths.log) {
+        Ok(contents) ->
+          case
+            list.any(string.split(contents, "\n"), fn(line) {
+              string.contains(line, "\"event\":\"daemon.session_start_failed\"")
+              && string.contains(line, session_field)
+              && string.contains(line, "\"class\":\"storage_open_failed\"")
+            })
+          {
+            True -> poll.Done(Nil)
+            False -> poll.Retry
+          }
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+    as "the immediate retry reached and failed storage acquisition"
 }
 
 fn assert_identity(path, expected) -> Nil {
