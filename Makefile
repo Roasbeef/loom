@@ -244,6 +244,26 @@ selftest: sandbox ## Probe this kernel's enforcement layers (ENFORCED/SKIPPED pe
 e2e: sandbox ## Run the jailed end-to-end acceptance against the real helper
 	@bash scripts/test.sh conformance
 
+# These are focused daemon fixtures, not a substitute for shipped-artifact
+# acceptance. Each module retains its own watchdog and stops the target on
+# failure; LOOM_TEST_TIMEOUT_SECONDS overrides the 180-second per-module budget.
+.PHONY: e2e-multiplayer
+e2e-multiplayer: sandbox ## Run the multiplayer fixture suite against the real helper
+	@set -e; for filter in \
+		client@tui_e2e_test: \
+		client@tui_multiplayer_test: \
+		client@tui_v2_persisted_test: \
+		client@tui_approval_effect_test: \
+		client@daemon_fault_containment_test:; do \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+			bash scripts/test.sh client --match "$$filter"; \
+	done
+
+.PHONY: soak-daemon
+soak-daemon: sandbox ## Run the bounded real-daemon lifecycle soak fixture
+	@LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
+		bash scripts/test.sh client --match client@daemon_soak_test:
+
 .PHONY: e2e-client-bootstrap
 e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the real local server through the native TUI bootstrap
 	@cd packages/tui && \
