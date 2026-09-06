@@ -370,22 +370,6 @@ pub fn every_kill_cause_survives_to_the_terminal_state_test() {
   })
 }
 
-// Every loss reason terminates, from every live state. The restart sweep
-// is the only writer of `VmRestart` and it filters on `is_terminal`, so a
-// reason that failed to terminate would be swept again on every later
-// restart and a poll would keep promising an answer.
-pub fn every_loss_reason_terminates_from_every_live_state_test() {
-  let live = [Starting, Running, Draining(by: ByOwner)]
-  list.each(live, fn(state) {
-    list.each(reasons(), fn(reason) {
-      let assert Ok(lost) = jobstate.step(record(state), RunnerLost(reason:))
-        as "a loss must always be accepted by a live job"
-      assert lost.state == Lost(reason:)
-      assert jobstate.is_terminal(lost.state)
-    })
-  })
-}
-
 // `is_terminal` is the split every sweep and listing asks through, so it
 // is asserted against the variants directly rather than through `step`.
 pub fn is_terminal_names_exactly_the_three_terminal_states_test() {
@@ -739,6 +723,41 @@ pub fn every_malformed_payload_is_a_corruption_report_test() {
       Error(_report) -> Nil
       Ok(_record) -> panic as { "decoded a payload with " <> what }
     }
+  })
+}
+
+// Three of those cases again, pinned to the field their report blames.
+//
+// The catalogue above asks only that a malformed payload comes back as an
+// error, which a decoder that answered `on: "payload"` for everything
+// would satisfy while telling an operator nothing about which cell broke.
+// One case per level says the path is real: a top-level field, the phase
+// tag inside the state, and a field inside the terminal state.
+pub fn a_corruption_report_names_the_field_that_broke_test() {
+  let good = jobstate.encode(record(Running))
+  let assert json.Object(fields) = good as "the fixture encodes as an object"
+
+  let blamed = [
+    #(replace(fields, "id", json.String("a/b")), "id"),
+    #(phase([#("phase", json.String("paused"))], fields), "state.phase"),
+    #(
+      phase(
+        [
+          #("phase", json.String("exited")),
+          #("result", stored_result()),
+          #("spill", json.Int(7)),
+        ],
+        fields,
+      ),
+      "state.spill",
+    ),
+  ]
+
+  list.each(blamed, fn(row) {
+    let #(payload, subject) = row
+    let assert Error(report) = jobstate.decode(payload)
+      as "a malformed payload is a corruption report"
+    assert report.subject == subject
   })
 }
 

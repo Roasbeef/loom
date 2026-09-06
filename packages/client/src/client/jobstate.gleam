@@ -340,7 +340,9 @@ pub fn job_key(id: JobId) -> String {
 
 /// The job a key names, or `Error(Nil)` for a key outside the namespace.
 /// Total inverse of `job_key`, which is what lets a prefix scan recover an
-/// id without a second source of truth about the key's shape.
+/// id without a second source of truth about the key's shape — the prefix
+/// is read from `key_prefix` here as it is there, so the namespace has one
+/// spelling and cannot drift from the one `reserved_fact_key` tests.
 ///
 /// ## Examples
 ///
@@ -354,13 +356,9 @@ pub fn job_key(id: JobId) -> String {
 /// ```
 ///
 pub fn job_id_of_key(key: String) -> Result(JobId, Nil) {
-  // A string-prefix pattern must be a literal, so this is the one place
-  // the prefix is spelled a second time rather than read from
-  // `key_prefix`. What holds the two together is the round trip through
-  // `job_key` in this module's tests, not the eye.
-  case key {
-    "job/" <> text -> parse_job_id(text)
-    _ -> Error(Nil)
+  case string.starts_with(key, key_prefix) {
+    True -> parse_job_id(string.drop_start(key, string.length(key_prefix)))
+    False -> Error(Nil)
   }
 }
 
