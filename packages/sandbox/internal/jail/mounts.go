@@ -53,7 +53,10 @@ package jail
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -204,6 +207,74 @@ func UnmountableProtected(kinds map[string]PathKind, plan []MountOp) []string {
 	}
 	sort.Strings(bad)
 	return bad
+}
+
+// MissingMountSources names every path the plan binds read-write whose
+// source is not there to bind from: a `writable_roots` entry, or the
+// host-path form of `scratch`. Both render as `--bind`, which requires
+// the source to exist, so one absent path makes bubblewrap refuse the
+// whole jail with a bare `Can't bind mount SRC: No such file or
+// directory` and exit 1 — indistinguishable from the payload's own
+// command failing (#63). run.go calls this before ever building the
+// argv, so the caller gets a refusal naming the path and the list it
+// came from instead.
+//
+// Refusing is the decision, not the defect. Neither list tolerates
+// absence on purpose: a tool that believes it has write access it does
+// not have is a correctness hazard, and narrowing the jail in silence is
+// the quiet failure the design forbids. Only the diagnosis was missing.
+// See "Which path lists tolerate a missing path" in bwrap.go for why the
+// other two lists answer differently — `readable_roots` binds with
+// `--ro-bind-try` and shrugs, and `protected` is *allowed* to name a
+// path that does not exist, which is why its own pre-dispatch check
+// (UnmountableProtected, above) asks whether the mask can be created
+// rather than whether the path is there.
+//
+// Any stat failure counts, not just ENOENT. A source the helper cannot
+// stat is one bwrap cannot bind either — it resolves the source before
+// it unshares, under this same uid — so a mode-700 parent gets the same
+// named refusal rather than the anonymous exit 1, and the entry carries
+// the kernel's own reason to tell the two apart.
+func MissingMountSources(p policy.Policy) []string {
+	var bad []string
+
+	// MountPlan binds the canonical region rather than the policy's
+	// spelling of it, so stat exactly the path bwrap will be handed.
+	// An empty path is dropped by MountPlan's `grant` and names nothing
+	// a reader could act on, so it is not this check's failure to
+	// report.
+	check := func(list, path string) {
+		src := region(path)
+		if src == "" {
+			return
+		}
+		if _, err := os.Stat(src); err != nil {
+			bad = append(bad, fmt.Sprintf("%s: %s (%s)", list, src,
+				statReason(err)))
+		}
+	}
+
+	for _, w := range p.WritableRoots {
+		check("writable_roots", w)
+	}
+
+	// The tmpfs form of scratch mounts a fresh filesystem and has no
+	// host source at all; only the host-path form can be missing.
+	if !p.ScratchIsTmpfs() {
+		check("scratch", p.Scratch)
+	}
+
+	return bad
+}
+
+// statReason renders why a stat failed with the path stripped off, so a
+// rendered entry names the path once instead of twice.
+func statReason(err error) string {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err.Error()
+	}
+	return err.Error()
 }
 
 // widened renders one skip reason, naming both the path and the

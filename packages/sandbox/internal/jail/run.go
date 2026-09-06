@@ -276,6 +276,25 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 				"entry from protected", strings.Join(bad, ", "))
 		}
 
+		// The same anonymity from the other direction: a
+		// `writable_roots` entry or a host-path `scratch` that is not
+		// on this host has nothing for `--bind` to bind from, and bwrap
+		// refuses with a bare `Can't bind mount SRC: No such file or
+		// directory` and exit 1. Refusing is the decision, not the
+		// defect — a tool that believes it has write access it does not
+		// have is a correctness hazard — so what this adds is the
+		// diagnosis (#63). See MissingMountSources.
+		if bad := MissingMountSources(jailed); len(bad) > 0 {
+			policyR.Close()
+			reportR.Close()
+			reportW.Close()
+			return nil, fmt.Errorf("jail: the policy asks to bind %s "+
+				"read-write, and bwrap requires the source of a "+
+				"read-write bind to exist; create the path on this "+
+				"host or remove the entry from the policy",
+				strings.Join(bad, ", "))
+		}
+
 		// Audited here, reported only if stage 2 later proves the plan
 		// was actually executed. See mounts.go for both halves.
 		mounts = AuditMounts(jailed, plan)
