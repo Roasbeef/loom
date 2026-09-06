@@ -480,14 +480,19 @@ pub fn a_withdrawn_fences_late_account_does_not_settle_the_next_fence_test() {
   saved(registry, second.registration.id)
 
   // The withdrawn fence's account arrives now, after the second fence was
-  // issued. A negative needs a window: an account the registry took would
-  // cancel the host and retire the slot within microseconds, so a slot still
-  // retained after this pause was not retired by it.
+  // issued. The census that follows is the barrier: it is sent by this
+  // process to the same registry process as the account, so it is handled
+  // after the account was, and its answer says what the account did. A
+  // retained, unblocked domain means the registry neither took it as the
+  // settle nor read its refusal as a recovery block.
   process.send(withdrawn, distillpass.Refused("decided before the revival"))
-  process.sleep(300)
-  let assert Ok(manager.Summary(occupied: 0, domain_occupied: 1, ..)) =
-    manager.summary(registry)
-    as "a withdrawn fence's account does not retire the domain"
+  let assert Ok(manager.Summary(
+    occupied: 0,
+    domain_occupied: 1,
+    domain_blocked: 0,
+    ..,
+  )) = manager.summary(registry)
+    as "a withdrawn fence's account neither retires nor blocks the domain"
 
   // The worker finishes the parked pass and the follow-up the two closes
   // coalesced, then answers the standing fence, which retires the domain.
