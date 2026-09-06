@@ -243,6 +243,42 @@ pub fn put_fact_refuses_the_extension_memory_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// A background job's durable record is closed to the model's own door.
+//
+// The `job/<id>` cell is the only evidence a background job exists: its
+// state field is what a poll renders and what the restart sweep filters
+// on. A model that could write here could mark its own job terminal, so
+// the sweep skips a process that is still running and nothing ever reaps
+// it — or hide a running job from the listing that is the only way anyone
+// learns of one. Both halves of the reservation are asserted: the
+// predicate names the prefix, and both write doors refuse it.
+pub fn put_fact_refuses_the_job_prefix_test() {
+  let rt = fact_runtime()
+  assert api.reserved_fact_key("job/abc")
+  assert api.reserved_fact_key(api.job_fact_prefix)
+  assert !api.reserved_fact_key("agent/main/job")
+
+  let assert Error(api.ReservedFactKey(key: "job/abc")) =
+    api.put_fact(rt, "job/abc", json.String("forged"))
+    as "a job record is not the model's to write"
+
+  // Nor by the compare-and-set door, which is the same reservation read
+  // from the other side.
+  let assert Error(api.ReservedFactKey(key: "job/abc")) =
+    api.put_fact_expecting(rt, "job/abc", json.String("forged"), expected: None)
+    as "the compare-and-set door is not a way into the namespace either"
+
+  // And what the harness wrote there is not listed to a reader of the
+  // ordinary blackboard, so a job cannot be found — or renamed — through
+  // the model's own view of the cells.
+  let assert Ok(Nil) = api.put_reserved_fact(rt, "job/abc", json.String("kept"))
+    as "the harness door writes the same key"
+  let assert Ok(listed) = api.facts(rt, prefix: None)
+    as "the blackboard must list"
+  assert !list.any(listed, fn(cell) { cell.0 == "job/abc" })
+  process.kill(rt.tree.supervisor)
+}
+
 // And the door that makes the concurrent case expressible: the same
 // write with the seq it was read at asserted, so the loser is told it
 // lost instead of never finding out.

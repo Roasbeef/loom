@@ -1641,12 +1641,29 @@ pub const client_fact_prefix = "client/"
 /// compare-and-set and admit runs against settings nobody checked.
 pub const run_settings_key = "client/run_settings"
 
+/// The reserved `fact.custom` key prefix a background job's durable
+/// record lives under: one `job/<id>` cell per job the harness started on
+/// a model's behalf, holding the job's owner, its spec, its deadline and
+/// its lifecycle state (`client/jobstate` builds the key and the
+/// payload). The cell is the *only* durable evidence a job exists —
+/// nothing in this design survives the VM, so a restart reads this prefix
+/// to decide what to reap.
+///
+/// Reserved for the reason `lineage/` and `rule/` are, arriving through
+/// the state machine rather than through an edge: the cell's state field
+/// is what a poll renders and what a restart sweep filters on. A model
+/// that could `put_fact` here could write its own job terminal — so the
+/// sweep skips a process that is still running and the operator's kill
+/// path never addresses it — or, in the other direction, hide a running
+/// job by rewriting a cell that a poll would otherwise have shown.
+pub const job_fact_prefix = "job/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The nine corners, and what each would let a forged write do:
+/// The ten corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -1659,7 +1676,11 @@ pub const run_settings_key = "client/run_settings"
 /// extension's durable memory, which is the one durable thing an
 /// out-of-tree extension owns; `client/` — rewrite the run settings
 /// every admission compares against, and so choose the queue mode and
-/// tool-execution mode of every later run of the session.
+/// tool-execution mode of every later run of the session; `job/` — mark
+/// a background job terminal while its process still runs, so the
+/// restart sweep skips it and nothing ever reaps it, or hide a running
+/// job from the poll that is the only way a model or an operator learns
+/// one exists.
 ///
 /// ## Examples
 ///
@@ -1681,6 +1702,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, rule_fact_prefix)
   || string.starts_with(key, schedule_fact_prefix)
   || string.starts_with(key, ext_fact_prefix)
+  || string.starts_with(key, job_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion
