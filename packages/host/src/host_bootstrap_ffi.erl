@@ -105,15 +105,25 @@ canonical_directory(Path0) ->
                         {ok, Realpath} ->
                             case run_capture(Realpath, [Absolute], 5000) of
                                 {ok, Output} ->
-                                    Resolved = string:trim(Output),
-                                    case Resolved of
-                                        <<>> -> {error, <<"realpath returned an empty path">>};
-                                        _ -> {ok, Resolved}
-                                    end;
+                                    resolved_path(Output);
                                 {error, _} = Error -> Error
                             end
                     end
             end
+    end.
+
+%% realpath answers in bytes. A path that is not UTF-8 must not become a
+%% Gleam String, which every later string operation would trip over; the
+%% decode is checked here rather than in the caller, once for both callers.
+resolved_path(Output) ->
+    case unicode:characters_to_binary(Output) of
+        Decoded when is_binary(Decoded) ->
+            case string:trim(Decoded) of
+                <<>> -> {error, <<"realpath returned an empty path">>};
+                Resolved -> {ok, Resolved}
+            end;
+        _ ->
+            {error, <<"realpath returned a path that is not UTF-8">>}
     end.
 
 canonical_path(PathBinary) ->
@@ -123,11 +133,7 @@ canonical_path(PathBinary) ->
         {ok, Realpath} ->
             case run_capture(Realpath, [Path], 5000) of
                 {ok, Output} ->
-                    Resolved = string:trim(Output),
-                    case Resolved of
-                        <<>> -> {error, <<"realpath returned an empty path">>};
-                        _ -> {ok, Resolved}
-                    end;
+                    resolved_path(Output);
                 {error, _} = Error -> Error
             end
     end.

@@ -63,6 +63,12 @@ pub type Attachment(instance) {
     digest: access.Digest,
     /// Transfer to the actual WebSocket PID before activating its parser.
     permit: root.Permit,
+    /// The registry that answers every later question about this attachment.
+    /// It is captured here so per-frame authorization and reader failure
+    /// reach the registry directly: asking the root for its readiness first
+    /// cost a round trip per frame, and a timeout on that round trip once
+    /// dropped the incarnation stop a poisoned reader depends on.
+    registry: manager.Manager(instance),
   )
 }
 
@@ -195,6 +201,7 @@ fn session_upgrade(
                 authority:,
                 digest:,
                 permit:,
+                registry: state.registry,
               ),
             )
           root.release(config.daemon, permit)

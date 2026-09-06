@@ -70,10 +70,10 @@ pub fn upgrade(
             authority: attachment.authority,
             digest: attachment.digest,
           ),
-          fn() { authorize(daemon, attachment) },
+          fn() { authorize(attachment) },
           fn(_) { Nil },
           fn() { process.send(outbound, Refused) },
-          fn() { failed_reader(daemon, attachment) },
+          fn() { failed_reader(attachment) },
           process.self(),
         )
       }
@@ -140,29 +140,31 @@ fn respond(connection, frame, socket) {
 
 // This returns after stop admission, not after retiring this requesting socket
 // or gateway. The registry compares the original incarnation atomically.
-fn failed_reader(daemon, attachment: server.Attachment(instance)) -> Nil {
-  let _ = {
-    use ready <- result.try(root.ready(daemon, within: 1000))
+fn failed_reader(attachment: server.Attachment(instance)) -> Nil {
+  // The attachment carries its registry so this request cannot be lost to a
+  // readiness round trip that times out: a poisoned hub whose stop never
+  // reached the registry left the session resident and every later
+  // attachment refused until the daemon restarted.
+  let _ =
     manager.stop_if_incarnation(
-      ready.registry,
+      attachment.registry,
       attachment.session_id,
       attachment.incarnation,
     )
-    |> result.replace_error("session stop refused")
-  }
   Nil
 }
 
 // One registry turn answers the three facts a frame's authority rests on: this
 // daemon's lifetime, the session's retained incarnation, and the credential's
 // current membership. Asking them separately cost three cross-actor calls per
-// check, and the gateway performs two checks for every command. It is asked
-// afresh each time rather than cached, so a credential revoked between a
-// command's admission and its delivery still closes the attachment.
-fn authorize(daemon, attachment: server.Attachment(instance)) {
-  use ready <- result.try(root.ready(daemon, within: 1000))
+// check, and the gateway performs two checks for every command. The registry
+// compares the epoch itself, so the root is not consulted at all on this
+// path. It is asked afresh each time rather than cached, so a credential
+// revoked between a command's admission and its delivery still closes the
+// attachment.
+fn authorize(attachment: server.Attachment(instance)) {
   manager.frame_authority(
-    ready.registry,
+    attachment.registry,
     epoch: attachment.epoch,
     id: attachment.session_id,
     incarnation: attachment.incarnation,
