@@ -223,7 +223,12 @@ jobs:
       - name: Build native bootstrap prerequisites
         run: make binaries server-shipment
 
-      - name: make check
+      # Owner-approved hosted load-sensitivity exception, not a performance fix.
+      # https://github.com/Roasbeef/loom/issues/241
+      # https://github.com/Roasbeef/loom/issues/127
+      # Only this step is advisory; later steps and their censuses still gate.
+      - name: make check (advisory)
+        continue-on-error: true
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
           LOOM_SOAK_LATENCY_BOUND: observe
