@@ -1,7 +1,8 @@
 //// Failure-path flows: retry waits, failure-drain recovery through new
-//// user-context input, truncated tool batches, orphaned requests,
-//// aborts during structural work, and the reason-gated survival of an
-//// in-run compaction whose summarizer failed.
+//// user-context input, truncated tool batches, calls whose arguments
+//// never parsed, orphaned requests, aborts during structural work, and
+//// the reason-gated survival of an in-run compaction whose summarizer
+//// failed.
 
 import core/clock
 import core/entry
@@ -11,6 +12,7 @@ import core/message
 import core/register
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import machine/acceptance.{AcceptCompaction, AcceptRun}
 import machine/operation.{
   Assistant, Checkpoint, Compacting, CompactionIntent, CompactionLastResult,
@@ -335,6 +337,97 @@ pub fn next_action_faults_on_every_mismatched_state_and_intent_test() {
       is_mismatch_fault(planner.next_action(op, state, inputs))
     })
   assert list.length(faulted) == 6
+}
+
+// Rewrites the `bash` call's arguments to the sentinel a provider adapter
+// settles when the model's argument text never parsed. Everything else in
+// the response — the text block, the second call — is left alone, because
+// the point of the test is that only the one call is affected.
+fn with_unparsed_bash_arguments(
+  block: message.AssistantBlock,
+) -> message.AssistantBlock {
+  case block {
+    message.AssistantToolCall(call: message.ToolCall(name: "bash", ..) as call) ->
+      message.AssistantToolCall(
+        call: message.ToolCall(
+          ..call,
+          arguments: message.malformed_arguments(
+            raw: "{\"cmd\": \"ls",
+            reason: "corruption at core/json.parse (offset 11): expected a "
+              <> "closing quote, got: end of input",
+          ),
+        ),
+      )
+
+    message.AssistantToolCall(..)
+    | message.AssistantText(..)
+    | message.AssistantThinking(..) -> block
+  }
+}
+
+pub fn malformed_call_arguments_stage_a_synthetic_error_test() {
+  let world = start_run("one bad brace")
+
+  // A settled tool-use turn whose first call carries argument text the
+  // adapter could not parse. Before issue #189 that parse failure failed
+  // the whole stream as `MalformedStream`, which `provider/retry.classify`
+  // marks terminal, so the turn died and the model was told nothing. The
+  // turn now settles; the batch plan commits both calls.
+  let calls = fixture.assistant_calls(["bash", "read"])
+  let response = case calls {
+    message.AssistantMessage(content:, ..) ->
+      message.AssistantMessage(
+        ..calls,
+        content: list.map(content, with_unparsed_bash_arguments),
+      )
+    other -> other
+  }
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(
+        settled: fixture.settled(response),
+        overflow_preparation: None,
+      ),
+      opts(),
+    )
+  let assert Ok(RunState(phase: Tools(batch:), ..)) =
+    scenario.read_op_state(world.store, world.op.id)
+  let assert [
+    operation.CallPlanned(source_index: 1, result_entry: bad_result),
+    operation.CallPlanned(source_index: 2, result_entry: _),
+  ] = batch.calls
+
+  // No clearance is asked for the bad call: a call whose arguments never
+  // parsed must not reach a tool at all, so the machine stages its
+  // synthetic result directly, exactly as it does for a truncated batch.
+  let assert Ok(#(world, writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  assert writes == ["set:pending.entry", "set:op.state"]
+
+  // It materializes as an `is_error` result the model reads next turn,
+  // carrying both halves of the diagnosis: what the parser objected to,
+  // and the text the model actually emitted.
+  let assert Ok(#(world, _writes)) =
+    scenario.step_writes(world, NoObservation, opts())
+  let assert Ok(entry.MessageEntry(
+    message: message.ToolResultMessage(
+      tool_name: "bash",
+      is_error: True,
+      content: [message.ToolResultText(text:, ..)],
+      ..,
+    ),
+    ..,
+  )) = store.get_entry(world.store, ids.entry_id_to_string(bad_result))
+  assert string.contains(text, "were not valid JSON")
+  assert string.contains(text, "closing quote")
+  assert string.contains(text, "{\"cmd\": \"ls")
+
+  // The rest of the batch is untouched: the well-formed call goes on to
+  // ask for its clearance.
+  let assert Ok(#(_world, action)) = scenario.step(world, NoObservation, opts())
+  let assert AwaitEffect(key: planner.ToolClearanceKey(source_index: 2, ..)) =
+    action
 }
 
 pub fn abort_during_structural_deciding_finishes_aborted_test() {
