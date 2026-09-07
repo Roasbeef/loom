@@ -16,6 +16,7 @@ import provider/fixture.{sse_event}
 import provider/gateway
 import provider/http
 import provider/model
+import provider/pricing
 import provider/secret
 import provider/stream
 
@@ -164,6 +165,68 @@ pub fn happy_dispatch_settles_test() {
   assert provider == "primary"
   assert timestamp == 1_700_000_000_000
   assert usage.output == 4
+}
+
+// --- pricing ----------------------------------------------------------------
+
+pub fn a_priced_provider_settles_with_a_real_cost_test() {
+  // The transcript above reports ten input and four output tokens. At
+  // $3.00 and $15.00 per million that is $0.00003 and $0.00006, and the
+  // point of the assertion is that the number the ledger will store is the
+  // one `pricing.price` computes — not a zero, and not a second opinion.
+  let card =
+    pricing.Pricing(input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.0)
+  let gw =
+    two_provider_gateway(
+      fixture.transport(fixture.ok_response(happy_transcript("Hello"))),
+    )
+    |> gateway.price("primary", card)
+  let handle = gateway.request(gw, main_request())
+  let assert Ok(#(_deltas, stream.Settled(message: settled, usage:))) =
+    stream.await_terminal(handle, within: 2000)
+
+  assert usage.cost.total >. 0.0
+  assert usage.cost == pricing.price(usage, card).cost
+
+  // The frozen contract says the event's usage equals the usage inside the
+  // settled message, so the message's copy has to be repriced too or a
+  // consumer reading either one would see a different bill.
+  let assert message.AssistantMessage(usage: inner, ..) =
+    stream.message(settled)
+  assert inner == usage
+}
+
+pub fn an_unpriced_provider_settles_at_zero_test() {
+  let gw =
+    two_provider_gateway(
+      fixture.transport(fixture.ok_response(happy_transcript("Hello"))),
+    )
+  let handle = gateway.request(gw, main_request())
+  let assert Ok(#(_deltas, stream.Settled(message: _, usage:))) =
+    stream.await_terminal(handle, within: 2000)
+  assert usage.cost.total == 0.0
+}
+
+pub fn a_card_prices_only_the_provider_it_names_test() {
+  // Cards hang off the provider name, so a card written for the fallback
+  // must not price a settlement the primary produced.
+  let gw =
+    two_provider_gateway(
+      fixture.transport(fixture.ok_response(happy_transcript("Hello"))),
+    )
+    |> gateway.price(
+      "backup",
+      pricing.Pricing(
+        input: 1000.0,
+        output: 1000.0,
+        cache_read: 1000.0,
+        cache_write: 1000.0,
+      ),
+    )
+  let handle = gateway.request(gw, main_request())
+  let assert Ok(#(_deltas, stream.Settled(message: _, usage:))) =
+    stream.await_terminal(handle, within: 2000)
+  assert usage.cost.total == 0.0
 }
 
 pub fn gemini_provider_dispatches_through_its_adapter_test() {

@@ -5,12 +5,15 @@
 import client/catalog
 import client/mcp
 import core/clock
+import core/message
+import gleam/float
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import mcp/name
 import provider/gateway as provider_gateway
 import provider/model
+import provider/pricing
 import provider/secret
 import simplifile
 import support/provider as provider_test
@@ -31,7 +34,7 @@ pub fn example_parses_sorted_and_routed_test() {
   let parsed = example()
   // Entries come back sorted by name regardless of file order.
   assert list.map(parsed.models, fn(entry) { entry.name })
-    == ["anthropic-opus", "baseten-oss", "gemini-flash"]
+    == ["anthropic-opus", "baseten-kimi", "baseten-oss", "gemini-flash"]
   // Roles come back in canonical order with their chains intact.
   assert parsed.roles
     == [
@@ -114,6 +117,125 @@ pub fn gateway_resolves_routed_roles_test() {
   // Unrouted roles fail in the frozen-contract shape, not a crash.
   let assert Error(model.MissingIdentity(role: model.Vision)) =
     provider_gateway.resolve(gateway, model.Vision)
+}
+
+// --- pricing ---------------------------------------------------------------
+
+pub fn example_pricing_tables_decode_test() {
+  let assert Ok(entry) = catalog.find(example(), "baseten-kimi")
+  let assert Some(card) = entry.pricing
+  assert card.input == 3.0
+  assert card.output == 15.0
+
+  // `0.30` is not exactly representable and the TOML parser's nearest
+  // double for it differs by an ulp between Erlang builds, so the rate is
+  // compared within a tolerance far tighter than a fraction of a cent
+  // could ever matter. The fallback below is an equality because it is a
+  // copy of `input` rather than a second parse: no `cache_write` key in
+  // the table, so the input rate stands in for it.
+  assert float.loosely_equals(card.cache_read, with: 0.3, tolerating: 0.000001)
+  assert card.cache_write == card.input
+}
+
+pub fn a_model_with_no_pricing_table_is_unpriced_test() {
+  let assert Ok(entry) = catalog.find(example(), "anthropic-opus")
+  assert entry.pricing == None
+}
+
+pub fn the_gateway_prices_only_the_annotated_entries_test() {
+  // The catalogue is the only place a rate card enters the gateway, so
+  // "priced" has to mean the settlement carries a cost and "unpriced" has
+  // to mean it does not — proven here against the costing function itself
+  // rather than against a copy of its arithmetic.
+  let gateway =
+    catalog.gateway(
+      example(),
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(at: 0),
+    )
+  let usage =
+    message.Usage(
+      input: 1_000_000,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
+      cache_write_1h: None,
+      reasoning: None,
+      total_tokens: 1_000_000,
+      cost: message.UsageCost(
+        input: 0.0,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+        total: 0.0,
+      ),
+    )
+  let assert Ok(entry) = catalog.find(example(), "baseten-kimi")
+  let assert Some(card) = entry.pricing
+  assert pricing.price(usage, card).cost.total == 3.0
+  assert provider_gateway.card_for(gateway, "baseten-kimi") == Ok(card)
+  assert provider_gateway.card_for(gateway, "anthropic-opus") == Error(Nil)
+}
+
+pub fn a_pricing_table_needs_both_required_rates_test() {
+  let text = minimal <> "
+[models.one.pricing]
+output = 15.0
+"
+  assert catalog.parse(text) == Error("models.one.pricing.input is required")
+}
+
+pub fn a_negative_rate_names_the_model_and_the_key_test() {
+  let text = minimal <> "
+[models.one.pricing]
+input = 3.0
+output = -15.0
+"
+  let assert Error(message) = catalog.parse(text)
+  assert string.contains(message, "models.one.pricing.output")
+  assert string.contains(message, "must not be negative")
+}
+
+pub fn a_non_numeric_rate_names_the_model_and_the_key_test() {
+  let text = minimal <> "
+[models.one.pricing]
+input = \"three dollars\"
+output = 15.0
+"
+  let assert Error(message) = catalog.parse(text)
+  assert string.contains(message, "models.one.pricing.input")
+  assert string.contains(message, "US dollars per million tokens")
+}
+
+pub fn a_whole_dollar_rate_may_be_written_as_an_integer_test() {
+  // TOML tells `3` and `3.0` apart and an operator writes the former.
+  let text = minimal <> "
+[models.one.pricing]
+input = 3
+output = 15
+"
+  let assert Ok(parsed) = catalog.parse(text)
+  let assert Ok(entry) = catalog.find(parsed, "one")
+  assert entry.pricing
+    == Some(pricing.Pricing(
+      input: 3.0,
+      output: 15.0,
+      cache_read: 3.0,
+      cache_write: 3.0,
+    ))
+}
+
+pub fn an_unknown_pricing_key_is_refused_test() {
+  let text = minimal <> "
+[models.one.pricing]
+input = 3.0
+output = 15.0
+cache_hit = 0.3
+"
+  let assert Error(message) = catalog.parse(text)
+  assert string.contains(message, "unknown key `cache_hit`")
+  assert string.contains(message, "models.one.pricing")
 }
 
 // --- strictness ------------------------------------------------------------

@@ -1198,6 +1198,10 @@ fn build_usage(acc: Accumulator) -> Usage {
     cache_write_1h: None,
     reasoning: acc.thoughts_tokens,
     total_tokens: option.unwrap(acc.total_tokens, acc.prompt_tokens + output),
+    // Adapters do not price: an adapter knows the wire dialect, not the
+    // commercial arrangement behind the endpoint. `provider/pricing` holds
+    // the rate card and the costing function, and the gateway applies it
+    // to this settlement on the way out.
     cost: UsageCost(
       input: 0.0,
       output: 0.0,

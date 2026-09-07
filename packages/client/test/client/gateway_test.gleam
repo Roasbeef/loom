@@ -102,6 +102,7 @@ fn test_catalog() -> catalog.Catalog {
         context_window: 100_000,
         max_output_tokens: 4096,
         thinking: model.ThinkingOff,
+        pricing: None,
       ),
       catalog.CatalogModel(
         name: "fallback",
@@ -112,6 +113,7 @@ fn test_catalog() -> catalog.Catalog {
         context_window: 64_000,
         max_output_tokens: 2048,
         thinking: model.ThinkingOff,
+        pricing: None,
       ),
     ],
     roles: [#(model.Main, ["acme", "fallback"])],

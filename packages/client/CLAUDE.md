@@ -277,7 +277,12 @@ catalogue without opening runtimes. Explicit admission invokes
   worked example) and the builder that turns a catalogue into the
   provider gateway's registry — one provider per entry, named by the
   entry (so durable identities store `{catalogue-name, model_id}`),
-  one route per `[roles]` row. The hub serves it as the `models`
+  one route per `[roles]` row, and one rate card per entry that carries
+  an optional `[models.<name>.pricing]` table (US dollars per million
+  tokens; `input` and `output` required, the two cache rates defaulting
+  to `input` so the default over-reports rather than hiding spend). An
+  entry with no table is unpriced and its usage records keep the zero
+  cost the adapters write. The hub serves it as the `models`
   listing and resolves `set_config`'s `model_name` against it; `serve`
   loads it from `--config` or shapes a one-entry catalogue from the
   `LOOM_*` environment.

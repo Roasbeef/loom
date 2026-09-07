@@ -1249,6 +1249,7 @@ fn env_catalog() -> catalog.Catalog {
         context_window: env_int_or("LOOM_CONTEXT_WINDOW", 1_000_000),
         max_output_tokens: env_int_or("LOOM_MAX_OUTPUT_TOKENS", 32_000),
         thinking: model.ThinkingOff,
+        pricing: None,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],

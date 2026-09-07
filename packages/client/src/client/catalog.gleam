@@ -29,6 +29,12 @@
 //// max_output_tokens = 32000
 //// thinking = "off"                   # off|low|medium|high|unsupported
 ////
+//// [models.<name>.pricing]            # optional; US dollars per million
+//// input = 3.00                       # tokens, the unit providers publish
+//// output = 15.00
+//// cache_read = 0.30                  # optional; defaults to `input`
+//// cache_write = 3.75                 # optional; defaults to `input`
+////
 //// [roles]
 //// main = ["<name>", "<fallback-name>", ...]
 //// # likewise: subagent, plan, summarize, vision
@@ -80,6 +86,7 @@
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -88,6 +95,7 @@ import gleam/string
 import provider/gateway as provider_gateway
 import provider/http.{type Transport}
 import provider/model
+import provider/pricing
 import provider/secret.{type SecretStore}
 import tom
 
@@ -133,6 +141,9 @@ pub type CatalogModel {
     max_output_tokens: Int,
     /// The static thinking level requests to this entry ask for.
     thinking: model.ThinkingLevel,
+    /// What the endpoint charges, if the operator wrote it down. `None`
+    /// is an unpriced model, whose usage records keep a zero cost.
+    pricing: Option(pricing.Pricing),
   )
 }
 
@@ -361,7 +372,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking",
+      "max_output_tokens", "thinking", "pricing",
     ],
     place,
   ))
@@ -396,6 +407,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     Ok(Error(Nil)) -> Ok(model.ThinkingOff)
     Error(message) -> Error(message)
   })
+  use pricing <- result.try(parse_pricing(fields, place))
   Ok(CatalogModel(
     name:,
     dialect:,
@@ -405,7 +417,114 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     context_window:,
     max_output_tokens:,
     thinking:,
+    pricing:,
   ))
+}
+
+// The optional `[models.<name>.pricing]` table. Absent means unpriced, and
+// an unpriced model records the zero cost it always has — annotating no
+// model is a supported configuration, not a degraded one.
+//
+// `input` and `output` are required once the table exists, because a rate
+// card that prices neither of the two buckets every response fills is a
+// typo rather than a choice. The two cache rates default to `input`: the
+// cached buckets are prompt tokens either way, so charging them at the
+// prompt rate can only over-report, and an operator who notices a total
+// that is too high goes and writes the real discount down. Defaulting them
+// to zero would do the opposite and quietly under-report spend, which is
+// the failure an operator cannot see.
+fn parse_pricing(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(pricing.Pricing), String) {
+  use table <- result.try(case dict.get(fields, "pricing") {
+    Ok(tom.Table(rates)) | Ok(tom.InlineTable(rates)) -> Ok(Some(rates))
+    Ok(_other) -> Error(place <> ".pricing must be a table")
+    Error(Nil) -> Ok(None)
+  })
+  case table {
+    None -> Ok(None)
+    Some(rates) -> {
+      let place = place <> ".pricing"
+      use Nil <- result.try(known_keys(
+        dict.keys(rates),
+        ["input", "output", "cache_read", "cache_write"],
+        place,
+      ))
+      use input <- result.try(required_rate(rates, place, "input"))
+      use output <- result.try(required_rate(rates, place, "output"))
+      use cache_read <- result.try(optional_rate(
+        rates,
+        place,
+        "cache_read",
+        input,
+      ))
+      use cache_write <- result.try(optional_rate(
+        rates,
+        place,
+        "cache_write",
+        input,
+      ))
+      Ok(Some(pricing.Pricing(input:, output:, cache_read:, cache_write:)))
+    }
+  }
+}
+
+// A rate is a dollar amount per million tokens. TOML distinguishes `3` from
+// `3.0` and an operator writing a whole-dollar rate will write the former,
+// so both are accepted; anything else, and any negative amount, names the
+// model and the key it came from.
+fn rate_of(
+  value: tom.Toml,
+  place: String,
+  key: String,
+) -> Result(Float, String) {
+  let amount = case value {
+    tom.Float(rate) -> Ok(rate)
+    tom.Int(rate) -> Ok(int.to_float(rate))
+    _other ->
+      Error(
+        place
+        <> "."
+        <> key
+        <> " must be a number of US dollars per million tokens",
+      )
+  }
+  use amount <- result.try(amount)
+  case amount <. 0.0 {
+    True ->
+      Error(
+        place
+        <> "."
+        <> key
+        <> " must not be negative, got "
+        <> float.to_string(amount),
+      )
+    False -> Ok(amount)
+  }
+}
+
+fn required_rate(
+  rates: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+) -> Result(Float, String) {
+  case dict.get(rates, key) {
+    Ok(value) -> rate_of(value, place, key)
+    Error(Nil) -> Error(place <> "." <> key <> " is required")
+  }
+}
+
+fn optional_rate(
+  rates: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+  fallback: Float,
+) -> Result(Float, String) {
+  case dict.get(rates, key) {
+    Ok(value) -> rate_of(value, place, key)
+    Error(Nil) -> Ok(fallback)
+  }
 }
 
 /// The dialect's conventional endpoint root, used when an entry names
@@ -1100,6 +1219,7 @@ pub fn gateway(
       provider_gateway.new(transport:, secrets:, clock:),
       fn(gateway, entry) {
         provider_gateway.add_provider(gateway, provider_config(entry))
+        |> priced(entry)
       },
     )
   list.fold(catalog.roles, registered, fn(gateway, route) {
@@ -1111,6 +1231,20 @@ pub fn gateway(
       })
     provider_gateway.route(gateway, role, chain)
   })
+}
+
+// A rate card is attached under the entry's own name, which is also the
+// provider name the gateway registers and the durable identity a strand
+// stores — so the card that prices a settlement is always the card written
+// beside the model that produced it, fallback walks included.
+fn priced(
+  gateway: provider_gateway.Gateway,
+  entry: CatalogModel,
+) -> provider_gateway.Gateway {
+  case entry.pricing {
+    Some(card) -> provider_gateway.price(gateway, entry.name, card)
+    None -> gateway
+  }
 }
 
 fn provider_config(entry: CatalogModel) -> provider_gateway.ProviderConfig {

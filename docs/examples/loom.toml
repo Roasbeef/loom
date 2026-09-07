@@ -40,6 +40,37 @@ max_output_tokens = 16000
 # all. Omitting the key means "off".
 thinking = "unsupported"
 
+# A second Baseten entry, this one priced. The optional
+# [models.<name>.pricing] table is what turns the usage ledger's cost
+# columns — and the "$" the TUI's status bar shows — from zeros into real
+# money. Every rate is US DOLLARS PER MILLION TOKENS, because that is the
+# unit every provider publishes, so you copy the number off the pricing
+# page rather than converting it.
+#
+# `input` and `output` are required once the table exists. `cache_read`
+# and `cache_write` are optional and default to `input`: the cached
+# buckets are prompt tokens either way, so the default can only
+# OVER-report, which is the direction you can notice. Defaulting them to
+# zero would quietly under-report what you are spending.
+#
+# A model with no pricing table is unpriced and its usage records keep the
+# zero cost they have always had. Pricing is applied once, in the provider
+# gateway, at the moment a settlement leaves the adapter — see
+# `docs/architecture/models.md`.
+[models.baseten-kimi]
+dialect = "openai"
+base_url = "https://inference.baseten.example/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "moonshotai/Kimi-K3-Instruct"
+context_window = 256000
+max_output_tokens = 32000
+thinking = "unsupported"
+
+[models.baseten-kimi.pricing]
+input = 3.00
+output = 15.00
+cache_read = 0.30
+
 # An Anthropic Messages API endpoint. base_url is omitted, so the
 # dialect default (https://api.anthropic.com) applies.
 [models.anthropic-opus]
@@ -64,6 +95,14 @@ model_id = "gemini-3.8-flash"
 context_window = 1048576
 max_output_tokens = 65536
 thinking = "low"
+
+# Gemini publishes no separate cache-write rate for this model, so only
+# the read discount is written down and `cache_write` falls back to
+# `input`.
+[models.gemini-flash.pricing]
+input = 0.75
+output = 3.75
+cache_read = 0.075
 
 # Role routing: which model serves which purpose, best entry first.
 # The five routable roles are main, subagent, plan, summarize, and

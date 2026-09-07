@@ -801,7 +801,7 @@ was.
 | **A model-readable token budget, and verification primitives** | `orchestration-comparison.md` gaps 3 and 4; WP-N "must not" | WP-N forbids building either inside M4.5, and for a stated reason: a verification pattern built before the loop that runs it is a pattern the model must remember to follow. Both are the natural first work after this release. |
 | **Raising `depth_cap`, `fan_out`, `session_strands`** | `orchestration-comparison.md` gap 5 | Nothing architectural blocks `depth_cap: 2`; `default_config` asks for evidence that grandchildren pay, and that is a reasonable thing to ask. |
 | **#17 — `api.compact` / `api.navigate` and optional-brief `create_strand`** | spec-gaps WP-L 2, WP-L 3 | A duplication cleanup with no acceptance criterion behind it. WP-N reuses the `client/agency` closures as they stand. Take it when someone is already in `runtime/api`. |
-| **#19 — the provider stubs** | spec-gaps WP-F 6, WP-F 7 | Neither half is named by an acceptance criterion in any row now in the release, and the pricing half feeds the token-budget work WP-N explicitly forbids building inside M4.5. The keychain backends are a deployment convenience the environment backend already covers. |
+| **#19 — the provider stubs** | spec-gaps WP-F 7 | Half of it is done: the pricing tables landed as `[models.<name>.pricing]` costed in the gateway, because an operator wanting real dollar totals did not need the token-budget work to arrive first. What stays out is the keychain half — a deployment convenience the environment backend already covers, named by no acceptance criterion in any row now in the release. |
 | **#12 — promoting the citation checker** | this plan, D2 | Answered, and nothing depends on the answer either way. |
 
 ---
@@ -820,7 +820,7 @@ the owner can check nothing was dropped. GitHub numbers.
 | WP-E 3 (application supervisor) | #8 | 1 |
 | WP-G 9 (MCP adapter) | Not in the first release | — |
 | WP-F 7 (keychain backends) | #19 — out | — |
-| WP-F 6 (pricing tables) | #19 — out | — |
+| WP-F 6 (pricing tables) | #19 — landed, `[models.<name>.pricing]` | — |
 | WP-K 4 + WP-C-full 3 (canonical session id) | #15 | 3 |
 | M2 integration 2 (`stream_options`) | #9 | 1 |
 | WP-L 8 (per-identity model facts) | #14 | 3 |

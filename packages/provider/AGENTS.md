@@ -13,12 +13,20 @@ processful shell around that sans-io core. WP-F.
 ## Key Types
 
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
-  (`new`, `add_provider`, `route`, `with_attempt_timeout`); exposes the
+  (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`); exposes the
   frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`
   additionally exposes the internal prepare-publish-begin seam: it returns a
   parked owner before route resolution, secret lookup, or network work starts.
   That owner is the request guard, a `weft/state_machine` over `Phase` and
   `Guard`; see **Traffic** for its states and its three state timeouts.
+- `provider/pricing.{Pricing, price, free}` — the costing layer. `Pricing`
+  is one model's rate card in US dollars per million tokens, the unit
+  providers publish; `price` is the pure function turning a `Usage` into a
+  costed one. The four rates match `core/message.Usage`'s four disjoint
+  token buckets, so cost is a weighted sum with nothing double-charged.
+  Cards reach the gateway from `client/catalog`'s
+  `[models.<name>.pricing]` tables, keyed by provider name; `card_for`
+  reads one back out of the opaque registry.
 - `provider/model.{Role, ResolvedModel, ProviderRequest, RequestTarget,
   ToolSpec}` — the durable identity (`{provider, model_id}`) plus the
   static model facts an adapter needs: context window, output ceiling,
@@ -169,6 +177,17 @@ processful shell around that sans-io core. WP-F.
   only says a function "starts a process" is incomplete here: callers need to
   know whether that process does work or survives work as its drain witness.
   Only normal exit proves drain; abnormal exit means the witness was lost.
+- **Adapters never price a response, and the gateway always does.** Every
+  adapter writes `UsageCost(0.0, ...)`, because an adapter knows the wire
+  dialect and not the commercial arrangement behind the endpoint — the same
+  dialect is spoken by a first-party host, a reseller and a local proxy at
+  three different prices. `gateway.attempt_one` rewrites a settled attempt's
+  usage through `pricing.price` before the fallback walk sees it: the one
+  point every settlement passes through exactly once, and the last point at
+  which the target that produced it is still known. A provider with no card
+  is unpriced and keeps the adapter's zeros. Both halves of `Settled` are
+  repriced together, because `Settled.usage` is contractually equal to the
+  usage inside the settled message.
 - **Secrets exist only in request memory.** A key is read from the
   `SecretStore` at dispatch, copied into one outbound header, and appears
   nowhere else locally — not in the gateway value, not in an accumulator, and
