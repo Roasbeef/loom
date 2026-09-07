@@ -228,6 +228,7 @@ jobs:
       # https://github.com/Roasbeef/loom/issues/127
       # Only this step is advisory; later steps and their censuses still gate.
       - name: make check (advisory)
+        id: check_macos
         continue-on-error: true
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
@@ -246,7 +247,15 @@ jobs:
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check-macos.log
 
+      # The census reads the advisory check's log, and a check that stopped
+      # early on a load-sensitive failure never reached the suites whose
+      # declared skips it would have recorded; it then fails as a "stale
+      # declaration" for a skip that was merely unobserved, blaming the
+      # declaration for the abort. So the census gates only on a check
+      # that ran to the end. The abort itself is already visible as the
+      # advisory step's own outcome.
       - name: Skip census
+        if: steps.check_macos.outcome == 'success'
         run: |
           .github/scripts/skip_census.sh "gate (macos)" \
             check-macos.log e2e-macos.log e2e-codemode-macos.log
