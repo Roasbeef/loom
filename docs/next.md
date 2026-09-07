@@ -634,19 +634,6 @@ Exit: the workload proves no distillation-start event or persistent output.
 This does not prove that the explicit `remember` capability is unavailable,
 and configuring distillation off alone is not the observation.
 
-### 4. Design and implement live delivery, #240
-
-[Issue #240](https://github.com/Roasbeef/loom/issues/240) is the next product
-boundary, not a reason to call current reconciliation broken. Decide authority
-revalidation for pushed records/deltas and visible ordering for concurrent
-submits before changing those paths. `job_output` on the bus is a follow-on
-of this and only this.
-
-Exit: a shipped fixture admits two operators' concurrent prompts in the
-chosen order, delivers records without client catch-up, streams to Reader,
-and stops revoked delivery at the required authority boundary. It does not
-silently relax membership or add a global command queue without a decision.
-
 ### 6. Adopt the SQLite retirement repair
 
 Shipping resolves sqlight 1.2.0 and Hex esqlite 0.9.0, not the evaluated fork.
