@@ -6,11 +6,17 @@
 //// leaves the page exactly as it was, and that the answer names the identity
 //// the question was asked about rather than the highlighted row.
 
+import etui/backend
 import etui/keys
+import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
+import tui
+import tui/connection
 import tui/daemon/protocol
 import tui/session_selector
+import tui/workspace
+import weft
 
 fn row(id: String) -> protocol.Session {
   protocol.Session(id, "/work", "Session " <> id, 0, protocol.Saved)
@@ -84,4 +90,69 @@ pub fn a_refused_delete_leaves_the_page_the_terminal_already_has_test() {
     as "the confirmation is answered"
   assert id == "first"
   assert session_selector.without(page(), "absent") == page()
+}
+
+// The tests above stop at the selector's own answer. These two carry that
+// answer through `tui.update`, which is where the key actually decides
+// whether a control job starts.
+
+fn picker(model: tui.Model) -> tui.Model {
+  tui.Model(..model, overlay: tui.DaemonSelector(page()))
+}
+
+fn blank() -> tui.Model {
+  tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+}
+
+pub fn a_confirmed_delete_reaches_the_control_job_test() {
+  // `d` only opens the question, so nothing about the model's control slot
+  // may move on that key alone.
+  let asking = tui.update(backend.KeyPress("d"), picker(blank()))
+  assert asking.control_request == None
+  let assert tui.DaemonSelector(open) = asking.overlay
+    as "the picker stays on screen while the question is open"
+  assert open.prompt == session_selector.ConfirmingDelete("first")
+
+  // `y` is what reaches `begin_delete`. This model has no daemon host, so
+  // the job cannot be started and the refusal is the proof the key arrived:
+  // the selector alone has no way to write that notice.
+  let answered = tui.update(backend.KeyPress("y"), asking)
+  assert answered.notice == "daemon control is disconnected"
+  assert answered.control_request == None
+}
+
+pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
+  // The picker owns one control job slot, and paging holds it first. A
+  // forged request stands in for the page load: what matters to
+  // `begin_delete` is that the slot is taken, not what took it.
+  let replies = process.new_subject()
+  let loading =
+    tui.Model(
+      ..picker(blank()),
+      control_request: Some(tui.ControlRequest(
+        weft.cancel_signal(),
+        replies,
+        None,
+      )),
+    )
+  let asking = tui.update(backend.KeyPress("d"), loading)
+  let refused = tui.update(backend.KeyPress("y"), asking)
+
+  // The in-flight job keeps the slot it already had, so its reply subject is
+  // still the one the frame loop selects on.
+  let assert Some(tui.ControlRequest(replies: kept, ..)) =
+    refused.control_request
+    as "the page load still owns the control slot"
+  assert kept == replies
+  assert refused.notice == "a catalogue request is already running"
+
+  // A refusal removes no row: only the daemon's confirmation drops one, and
+  // none was ever asked for. The question stays open rather than being
+  // withdrawn, so answering again once the page load lands costs one key
+  // instead of reopening it against a row that may have moved.
+  let assert tui.DaemonSelector(shown) = refused.overlay
+    as "the picker survives the refusal"
+  assert shown.page == page().page
+  assert shown.selected == page().selected
+  assert shown.prompt == session_selector.ConfirmingDelete("first")
 }
