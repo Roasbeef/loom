@@ -418,10 +418,15 @@ pub fn acquire(
   }
 }
 
-/// Transfers a reservation inside the real WebSocket initializer.
-/// Mist's HTTP actor waits for that initializer; the new PID is monitored
-/// before the HTTP monitor is removed and before this acknowledgement returns.
-/// An error must abort the initializer, never expose an unadmitted parser.
+/// Transfers a reservation to the real WebSocket process, from that process's
+/// first handler turn. The new PID is monitored before the HTTP monitor is
+/// removed and before this acknowledgement returns. An error must stop the
+/// socket, never expose an unadmitted parser.
+///
+/// The upgrading HTTP process must still be alive and must not have released
+/// the reservation yet, so a caller that runs this outside the initializer
+/// owes that process a barrier: it holds until the transfer has been
+/// attempted, and only then releases and exits.
 ///
 /// ## Examples
 ///

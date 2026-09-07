@@ -304,92 +304,105 @@ fn plain(status: Int, text: String) -> Response(ResponseData) {
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
 }
 
-// The per-socket state: this connection's gateway id plus the subject
-// outbound frames arrive on (the gateway's sink sends into it; the
-// websocket process owns the socket write).
+// The per-socket state. Attachment is a handler turn rather than an
+// initializer step, for the reason given at the self-send below, so a socket
+// exists for one turn before it has a gateway id.
 type SocketState {
-  SocketState(connection: Result(Int, Nil), outbound: Subject(SocketEvent))
+  // Nothing is attached yet. The subject is the one the initializer selected
+  // on; the sink built at attach time sends into it.
+  Pending(outbound: Subject(SocketEvent))
+
+  // Attached, carrying the connection id the gateway issued. The websocket
+  // process owns the socket write.
+  Attached(connection: Int)
 }
 
-// A failed attachment closes the socket even if its peer sends nothing.
 type SocketEvent {
+  // The self-addressed message that runs attachment. `on_init` queues it and
+  // nothing else ever sends it.
+  Admit
+
   Outbound(frame: String)
-  GatewayUnavailable
 }
 
 fn upgrade(
   request: Request(Connection),
   gateway: Gateway,
 ) -> Response(ResponseData) {
-  let refused = process.new_subject()
-  let response =
-    mist.websocket(
-      request:,
-      on_init: fn(_websocket) {
-        let outbound = process.new_subject()
-        let connection =
-          gateway.attach(gateway, fn(frame) {
-            process.send(outbound, Outbound(frame))
-          })
-        case connection {
-          Ok(_) -> Nil
-          Error(Nil) -> process.send(refused, outbound)
-        }
-        let selector =
-          process.new_selector()
-          |> process.select(outbound)
-        #(SocketState(connection:, outbound:), Some(selector))
-      },
-      handler: fn(state: SocketState, message, websocket) {
-        case state.connection, message {
-          Error(Nil), _ -> mist.stop()
-          Ok(connection), mist.Text(frame) -> {
-            gateway.handle_text(gateway, connection, frame)
-            mist.continue(state)
+  mist.websocket(
+    request:,
+    on_init: fn(_websocket) {
+      let outbound = process.new_subject()
+
+      // Attachment is a `process.call` into the hub with a five second budget,
+      // and mist gives this initializer 500 ms it does not expose
+      // (`actor.new_with_initialiser(500, ...)` in its internal websocket
+      // module). An initializer that overruns is killed along with its socket,
+      // so a hub that is merely busy would reach the peer as a dropped
+      // connection rather than a refusal. Hence this self-send: the call is
+      // paid for in the first handler turn instead.
+      //
+      // The ordering is what makes that safe. mist transfers TCP ownership and
+      // calls `set_active` only after the initializer returns
+      // (`mist.websocket_upgrade`), so `Admit` is queued before the socket can
+      // deliver a byte and is the first message the handler sees. A refusal is
+      // therefore an ordinary `mist.stop()` from that turn, which is why the
+      // out-of-band refusal this function used to carry is gone.
+      process.send(outbound, Admit)
+      let selector =
+        process.new_selector()
+        |> process.select(outbound)
+      #(Pending(outbound), Some(selector))
+    },
+    handler: fn(state: SocketState, message, websocket) {
+      case state, message {
+        Pending(outbound), mist.Custom(Admit) ->
+          case
+            gateway.attach(gateway, fn(frame) {
+              process.send(outbound, Outbound(frame))
+            })
+          {
+            Ok(connection) -> mist.continue(Attached(connection))
+            Error(Nil) -> mist.stop()
           }
 
-          // The protocol is text-frame JSON; a binary frame is answered
-          // with nothing and ignored.
-          Ok(_), mist.Binary(_) -> mist.continue(state)
-          Ok(_), mist.Custom(Outbound(frame)) ->
-            case mist.send_text_frame(websocket, frame) {
-              Ok(Nil) -> mist.continue(state)
-              Error(_) -> mist.stop()
-            }
-          Ok(_), mist.Custom(GatewayUnavailable)
-          | Ok(_), mist.Closed
-          | Ok(_), mist.Shutdown
-          -> mist.stop()
-        }
-      },
-      on_close: fn(state: SocketState) {
-        case state.connection {
-          Ok(connection) -> gateway.detach(gateway, connection)
-          Error(Nil) -> Nil
-        }
-      },
-    )
+        // Unreachable, for the ordering reason above: nothing reaches a
+        // pending socket before its own `Admit`. Spelled out rather than
+        // folded into a catch-all so a change in mist's start sequence fails
+        // closed instead of silently serving an unattached socket.
+        Pending(_), mist.Text(_)
+        | Pending(_), mist.Binary(_)
+        | Pending(_), mist.Closed
+        | Pending(_), mist.Shutdown
+        | Pending(_), mist.Custom(Outbound(_))
+        -> mist.stop()
 
-  // Why the refusal travels out to this process and back rather than being a
-  // self-message from `on_init`: mist transfers TCP ownership only after
-  // `mist.websocket` returns (`mist.websocket_with_options` calls
-  // `transport.controlling_process` on the started child, and asserts on its
-  // result), so a socket that stopped itself inside its own initializer would
-  // crash this handler.
-  //
-  // What mist does guarantee is that `on_init` has already run: the websocket
-  // child is started synchronously through the factory supervisor, and
-  // `on_init` runs inside that child's initializer, so the send above happened
-  // before `mist.websocket` returned. What nothing guarantees is arrival
-  // order: the refusal travels child → here while the startup acknowledgement
-  // travels child → supervisor → here, and the BEAM orders signals only
-  // between one pair of processes. So this receive is best effort, and it is
-  // written with a zero timeout because waiting would be worse than losing:
-  // the handler's `Error(Nil)` arm already stops such a socket on its first
-  // message, so the whole mechanism only buys an *idle* peer a prompt close.
-  case process.receive(refused, within: 0) {
-    Ok(outbound) -> process.send(outbound, GatewayUnavailable)
-    Error(Nil) -> Nil
-  }
-  response
+        Attached(connection), mist.Text(frame) -> {
+          gateway.handle_text(gateway, connection, frame)
+          mist.continue(state)
+        }
+
+        // The protocol is text-frame JSON; a binary frame is answered
+        // with nothing and ignored.
+        Attached(_), mist.Binary(_) -> mist.continue(state)
+
+        Attached(_), mist.Custom(Outbound(frame)) ->
+          case mist.send_text_frame(websocket, frame) {
+            Ok(Nil) -> mist.continue(state)
+            Error(_) -> mist.stop()
+          }
+
+        Attached(_), mist.Custom(Admit)
+        | Attached(_), mist.Closed
+        | Attached(_), mist.Shutdown
+        -> mist.stop()
+      }
+    },
+    on_close: fn(state: SocketState) {
+      case state {
+        Attached(connection) -> gateway.detach(gateway, connection)
+        Pending(_) -> Nil
+      }
+    },
+  )
 }

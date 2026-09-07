@@ -212,6 +212,37 @@ pub fn begin(socket, id) {
   #(body, snapshot_id)
 }
 
+pub fn admission_slower_than_the_initializer_budget_still_serves_test() {
+  fixture(fn(port, credential, id, _, harness) {
+    let assert Ok(subject) = registry.lookup(harness.hub.name)
+      as "the original gateway subject is available"
+    let assert Ok(pid) = process.subject_owner(subject)
+      as "the subject names the original actor"
+
+    // The injected delay is the point of this test. mist starts every
+    // websocket process with a 500 ms initializer budget and kills the process
+    // and its socket when that budget is missed, so an authenticated attach
+    // answered in 800 ms — well inside its own five second budget, and the
+    // kind of pause a loaded runner produces — used to reach the client as an
+    // abrupt close rather than a session. Suspending the hub makes that pause
+    // exact instead of load-dependent.
+    let assert True = suspend_gateway(pid) as "block gateway admission"
+    let #(socket, response) =
+      wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
+    assert string.contains(response, "101 Switching Protocols")
+    process.sleep(800)
+    let assert True = resume_gateway(pid)
+      as "release the original gateway before assertions"
+
+    // A served frame is the assertion: the socket outlived a slow admission
+    // and is attached to the gateway that answered late, so its subscribe was
+    // answered with a real transfer rather than a closed socket.
+    let #(_, snapshot_id) = begin(socket, id)
+    assert snapshot_id != ""
+    ffi_ws.tcp_close(socket)
+  })
+}
+
 pub fn coalesced_socket_frames_cannot_queue_multiple_gateway_requests_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
