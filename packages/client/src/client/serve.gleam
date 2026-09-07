@@ -1959,7 +1959,7 @@ fn started_mcp(
   // The session's own store, not the process environment: an MCP
   // server's `api_key_env` names a credential the same way a model's
   // does, so a `[secrets]` entry has to reach it or the table would
-  // cover two of its three readers.
+  // cover some of its readers and not others.
   let options =
     mcp_wiring.Options(..mcp_wiring.default_options(), secrets: store)
 
