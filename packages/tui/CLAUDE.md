@@ -276,6 +276,14 @@ that tree separately from the self-contained server.
   live tail with a queued marker until the entry it stands for commits. Tab
   changes one draft to a `steer`, folded into the run already going, then
   resets. `/steer` and `/queue` expose `steer` and `follow_up` explicitly.
+  A steer and a follow-up commit an ordinary user entry too, so they are
+  recorded alongside the held prompts as interjections that draw nothing;
+  the list is kept in commit order — interjections join the open run and
+  commit during it, held prompts wait for it to settle — and a committed
+  user turn retires its head. A submission waits for the daemon's outcome
+  before it joins that list, so a refusal takes its echo with it, and a
+  snapshot, an adoption, an attach or `/clear` empties the list with the
+  transcript it was drawn over.
 - **Paste**: small pastes retain the ordinary editor path. A paste estimated
   at 400 tokens or spanning eight lines becomes a compact attachment in the
   input row; the full bytes are appended to the editable instruction only
