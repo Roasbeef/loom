@@ -374,10 +374,12 @@ fn apply_updates(candidate: Candidate, updates) {
     [channel.Failed(reason), ..] -> Error(reason)
 
     // A candidate has no view to stream into yet, and a fragment pushed
-    // during its initial capture is superseded by the capture itself. It is
-    // dropped rather than treated as a command result the candidate never
-    // asked for.
-    [channel.Streamed(..), ..rest] -> apply_updates(candidate, rest)
+    // during its initial capture is superseded by the capture itself. A
+    // notice says the same thing about durable state and is dropped for the
+    // same reason: the candidate's own capture is already fetching it. The
+    // adopted lane, not this one, is where notices are worth counting.
+    [channel.Streamed(..), ..rest] | [channel.Noticed(_), ..rest] ->
+      apply_updates(candidate, rest)
     [channel.Auxiliary(_), ..]
     | [channel.Submission(_), ..]
     | [channel.LookedUp(..), ..]

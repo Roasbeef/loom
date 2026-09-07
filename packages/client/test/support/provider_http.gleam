@@ -13,6 +13,13 @@
 //// the unpredictable part. Only the *answer* is computed, and only from
 //// request evidence this module already retained, which the caller still
 //// asserts against afterwards.
+////
+//// One step kind answers slowly on purpose: `PacedExchange`. A peer that
+//// writes its whole response in one burst leaves no interval in which a
+//// live fragment exists and its durable entry does not, so a fixture
+//// watching an answer while it is produced has nothing to watch. The
+//// delay goes where a real provider's would be — between chunks on the
+//// wire — rather than into the harness around it.
 
 import core/json
 import core/message
@@ -47,6 +54,17 @@ pub type Exchange {
     answer: String,
   )
 
+  /// Answers one exact user prompt with text whose chunks reach the wire
+  /// under the given pacing, so a peer can watch the answer accumulate.
+  PacedExchange(
+    /// Exact latest user text, independent of previous transcript messages.
+    prompt: String,
+    /// Text emitted as several Anthropic content deltas.
+    answer: String,
+    /// How this step's chunks are spaced on the wire.
+    pacing: Pacing,
+  )
+
   /// Answers one exact prompt with a single fixed tool invocation.
   ToolUseExchange(
     /// Exact latest user text.
@@ -78,6 +96,27 @@ pub type Exchange {
     /// The reply, given every request observed so far, oldest first,
     /// including the one being answered.
     reply: fn(List(ObservedRequest)) -> Reply,
+  )
+}
+
+/// How a scripted answer's chunks are written to the socket.
+///
+/// The distinction is invisible to the daemon: the same bytes arrive in
+/// the same order either way. What it decides is whether an interval
+/// exists in which the peer has streamed part of an answer and has not
+/// finished it, and that interval is the only place a live fragment can
+/// be told apart from the entry it becomes.
+pub type Pacing {
+  /// Every chunk written back to back, which is what every other step
+  /// does and what every existing caller keeps.
+  Immediate
+
+  /// Each chunk written this many milliseconds after the one before it,
+  /// with the answer's text split across several content deltas so the
+  /// fragments accumulate rather than arrive whole.
+  Paced(
+    /// Delay before every chunk except the first.
+    gap_ms: Int,
   )
 }
 
@@ -150,10 +189,16 @@ type Book {
   Book(List(Exchange), List(ObservedRequest), Option(String))
 }
 
+// What the script hands the HTTP handler: the reply, and how its chunks
+// are to be written. The two travel together because the writer has no
+// other way back to the step that chose them.
+type Scripted =
+  #(Reply, Pacing)
+
 type Message {
   Submit(
     Result(ObservedRequest, String),
-    process.Subject(Result(Reply, String)),
+    process.Subject(Result(Scripted, String)),
   )
   Report(process.Subject(Result(List(ObservedRequest), String)))
 }
@@ -182,6 +227,11 @@ pub fn with_server(
   assert list.all(script, fn(step) {
     case step {
       Exchange(prompt, answer) -> bounded(prompt) && bounded(answer)
+
+      // An unbounded gap would turn a finite script into a fixture whose
+      // only possible verdict is its own outer deadline.
+      PacedExchange(prompt, answer, pacing) ->
+        bounded(prompt) && bounded(answer) && paced_bounded(pacing)
       ToolUseExchange(prompt, id, name, arguments) ->
         bounded(prompt)
         && id != ""
@@ -267,7 +317,7 @@ fn handle(book: Book, message: Message) -> actor.Next(Book, Message) {
 fn take(
   book: Book,
   incoming: Result(ObservedRequest, String),
-) -> #(Book, Result(Reply, String)) {
+) -> #(Book, Result(Scripted, String)) {
   let Book(remaining, seen, refusal) = book
   case refusal, incoming, remaining {
     Some(reason), _, _ -> #(book, Error(reason))
@@ -290,7 +340,7 @@ fn take(
 // The script is exhausted or the wrong step arrived. Both are the same
 // permanent refusal: once a fixture's peer has answered out of order,
 // every later answer is evidence about the wrong conversation.
-fn refuse(book: Book) -> #(Book, Result(Reply, String)) {
+fn refuse(book: Book) -> #(Book, Result(Scripted, String)) {
   let Book(remaining, seen, _refusal) = book
   let reason = "unexpected latest user text or extra request"
   #(Book(remaining, seen, Some(reason)), Error(reason))
@@ -304,30 +354,37 @@ fn accept(
   observed: ObservedRequest,
   rest: List(Exchange),
   seen: List(ObservedRequest),
-) -> #(Book, Result(Reply, String)) {
+) -> #(Book, Result(Scripted, String)) {
   let seen = [observed, ..seen]
   case checked(reply_of(step, list.reverse(seen))) {
-    Ok(reply) -> #(Book(rest, seen, None), Ok(reply))
+    Ok(scripted) -> #(Book(rest, seen, None), Ok(scripted))
     Error(reason) -> #(Book(rest, seen, Some(reason)), Error(reason))
   }
 }
 
-fn reply_of(step: Exchange, observed: List(ObservedRequest)) -> Reply {
+fn reply_of(step: Exchange, observed: List(ObservedRequest)) -> Scripted {
   case step {
-    Exchange(answer:, ..) | ToolResultExchange(answer:, ..) ->
-      ReplyText(text: answer)
+    Exchange(answer:, ..) | ToolResultExchange(answer:, ..) -> #(
+      ReplyText(text: answer),
+      Immediate,
+    )
 
-    ToolUseExchange(call_id:, name:, arguments:, ..) ->
-      ReplyToolUse(call_id:, name:, arguments:)
+    PacedExchange(answer:, pacing:, ..) -> #(ReplyText(text: answer), pacing)
 
-    ComputedExchange(reply:, ..) -> reply(observed)
+    ToolUseExchange(call_id:, name:, arguments:, ..) -> #(
+      ReplyToolUse(call_id:, name:, arguments:),
+      Immediate,
+    )
+
+    ComputedExchange(reply:, ..) -> #(reply(observed), Immediate)
   }
 }
 
 // A computed reply is held to the byte bounds a written one was checked
 // against before the listener started, because an unbounded fixture
 // answer is a fixture that has stopped being finite.
-fn checked(reply: Reply) -> Result(Reply, String) {
+fn checked(scripted: Scripted) -> Result(Scripted, String) {
+  let #(reply, _pacing) = scripted
   let ok = case reply {
     ReplyText(text:) -> bounded(text)
 
@@ -340,15 +397,16 @@ fn checked(reply: Reply) -> Result(Reply, String) {
       && is_object(arguments)
   }
   case ok {
-    True -> Ok(reply)
+    True -> Ok(scripted)
     False -> Error("computed fixture reply exceeds its bounds")
   }
 }
 
 fn matches(step: Exchange, latest: Latest) -> Bool {
   case step {
-    Exchange(prompt:, ..) | ToolUseExchange(prompt:, ..) ->
-      latest == UserPrompt(prompt)
+    Exchange(prompt:, ..)
+    | PacedExchange(prompt:, ..)
+    | ToolUseExchange(prompt:, ..) -> latest == UserPrompt(prompt)
 
     ToolResultExchange(call_id:, text:, ..) ->
       latest == SuccessfulToolResult(call_id, text)
@@ -389,7 +447,7 @@ fn serve(
 
     // Keep real chunked HTTP here: the shipped daemon must traverse its native
     // streaming transport, rather than receiving one buffered fixture body.
-    Ok(reply) -> {
+    Ok(scripted) -> {
       // This subject belongs to the HTTP handler, not the new chunk worker.
       // The worker stays parked until Mist has transferred the original socket.
       let ready = process.new_subject()
@@ -400,13 +458,11 @@ fn serve(
             |> response.set_header("content-type", "text/event-stream"),
           init: fn(subject) {
             process.send(ready, subject)
-            reply
+            scripted
           },
           loop: fn(answer, _message, socket) {
-            list.each(transcript(answer), fn(chunk) {
-              assert mist.send_chunk(socket, bit_array.from_string(chunk))
-                == Ok(Nil)
-            })
+            let #(reply, pacing) = answer
+            write_chunks(socket, transcript(reply, pacing), pacing)
             mist.chunk_stop()
           },
         )
@@ -415,18 +471,43 @@ fn serve(
       // explicitly; it cannot masquerade as a successfully streamed response.
       let assert Ok(subject) = process.receive(ready, within: 1000)
         as "the initialized chunk worker publishes before socket transfer returns"
-      io.println_error("provider fixture response: " <> response_kind(reply))
+      io.println_error("provider fixture response: " <> response_kind(scripted))
       process.send(subject, Send)
       response
     }
   }
 }
 
+// Writes one scripted response, chunk by chunk. The gap goes *before*
+// every chunk but the first, so the response head still leaves promptly
+// and only the interior of the answer is stretched; a peer watching the
+// strand therefore sees fragments during the gaps rather than a burst.
+fn write_chunks(socket, chunks: List(String), pacing: Pacing) -> Nil {
+  list.index_fold(chunks, Nil, fn(_, chunk, index) {
+    case index, pacing {
+      0, _ | _, Immediate -> Nil
+      _, Paced(gap_ms:) -> process.sleep(gap_ms)
+    }
+    assert mist.send_chunk(socket, bit_array.from_string(chunk)) == Ok(Nil)
+    Nil
+  })
+}
+
+// A gap has to be finite and positive, or a paced step's only possible
+// verdict is the callback's outer deadline.
+fn paced_bounded(pacing: Pacing) -> Bool {
+  case pacing {
+    Immediate -> True
+    Paced(gap_ms:) -> gap_ms > 0 && gap_ms <= 1000
+  }
+}
+
 // Labels expose only the reply variant, never prompts, arguments or headers.
-fn response_kind(reply: Reply) -> String {
-  case reply {
-    ReplyText(..) -> "text"
-    ReplyToolUse(..) -> "tool_use"
+fn response_kind(scripted: Scripted) -> String {
+  case scripted {
+    #(ReplyText(..), Immediate) -> "text"
+    #(ReplyText(..), Paced(..)) -> "paced text"
+    #(ReplyToolUse(..), _) -> "tool_use"
   }
 }
 
@@ -580,14 +661,22 @@ fn event(name: String, fields: List(#(String, json.JsonValue))) -> String {
   <> "\n\n"
 }
 
-fn transcript(reply: Reply) -> List(String) {
-  let #(block, delta, reason) = case reply {
+// How many content deltas a paced text answer is written as. More than
+// one is the whole point: a snapshot's sampled preview can only ever
+// present a live answer as a single fragment, so a fixture that counts
+// fragments can tell a pushed delta from that sample.
+const paced_pieces = 4
+
+fn transcript(reply: Reply, pacing: Pacing) -> List(String) {
+  let #(block, deltas, reason) = case reply {
     ReplyText(text: answer) -> #(
       json.Object([#("type", json.String("text")), #("text", json.String(""))]),
-      json.Object([
-        #("type", json.String("text_delta")),
-        #("text", json.String(answer)),
-      ]),
+      list.map(pieces(answer, pacing), fn(piece) {
+        json.Object([
+          #("type", json.String("text_delta")),
+          #("text", json.String(piece)),
+        ])
+      }),
       "end_turn",
     )
 
@@ -598,14 +687,29 @@ fn transcript(reply: Reply) -> List(String) {
         #("name", json.String(name)),
         #("input", json.Object([])),
       ]),
-      json.Object([
-        #("type", json.String("input_json_delta")),
-        #("partial_json", json.String(json.to_string(arguments))),
-      ]),
+      [
+        json.Object([
+          #("type", json.String("input_json_delta")),
+          #("partial_json", json.String(json.to_string(arguments))),
+        ]),
+      ],
       "tool_use",
     )
   }
-  [
+
+  // The deltas sit between the block's start and its stop, so a paced
+  // answer is one content block delivered in several writes rather than
+  // several blocks. That is the shape a real provider streams, and the
+  // shape the client's fragment accumulation is written against.
+  let body =
+    list.map(deltas, fn(delta) {
+      event("content_block_delta", [
+        #("type", json.String("content_block_delta")),
+        #("index", json.Int(0)),
+        #("delta", delta),
+      ])
+    })
+  let head = [
     event("message_start", [
       #("type", json.String("message_start")),
       #(
@@ -628,11 +732,8 @@ fn transcript(reply: Reply) -> List(String) {
       #("index", json.Int(0)),
       #("content_block", block),
     ]),
-    event("content_block_delta", [
-      #("type", json.String("content_block_delta")),
-      #("index", json.Int(0)),
-      #("delta", delta),
-    ]),
+  ]
+  let tail = [
     event("content_block_stop", [
       #("type", json.String("content_block_stop")),
       #("index", json.Int(0)),
@@ -644,4 +745,29 @@ fn transcript(reply: Reply) -> List(String) {
     ]),
     event("message_stop", [#("type", json.String("message_stop"))]),
   ]
+  list.flatten([head, body, tail])
+}
+
+// Splits a paced answer into deltas of equal size, and leaves every
+// other answer whole. An answer too short to divide stays one piece:
+// an empty delta is not something a real provider emits, and a fixture
+// should not be the first thing a decoder sees it from.
+fn pieces(answer: String, pacing: Pacing) -> List(String) {
+  case pacing {
+    Immediate -> [answer]
+    Paced(..) ->
+      case string.length(answer) / paced_pieces {
+        0 -> [answer]
+        size -> divided(answer, size, [])
+      }
+  }
+}
+
+fn divided(rest: String, size: Int, taken: List(String)) -> List(String) {
+  case string.slice(rest, 0, size), string.drop_start(rest, size) {
+    // Nothing follows this slice, so the remainder is the last piece
+    // whole — which also absorbs the division's remainder.
+    _, "" -> list.reverse([rest, ..taken])
+    head, tail -> divided(tail, size, [head, ..taken])
+  }
 }

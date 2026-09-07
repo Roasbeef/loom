@@ -73,6 +73,12 @@ same 24 KiB bound the snapshot preview uses. The presence roster is pushed
 when a peer departs; a peer's arrival is learned from the next capture's
 `peers`, because the join path issues no push of its own.
 
+The delta half runs in the shipped binary and not only in the gateway's tests.
+`client/serve` nests the two taps — `tap_provider(tap_preview_provider(...))` —
+so every token reaches the hub as a `ProviderDelta` and `broadcast_delta`
+pushes it onward, while the bounded preview stays as the catch-up fallback for
+a terminal that attaches mid-answer.
+
 A pushed frame carries no `reply_to`, so it is never confused with the answer
 to a command, and it leaves through the same per-frame authority check a reply
 does: a membership that changed retires the attachment rather than being
@@ -171,6 +177,9 @@ in [sessions](sessions.md#verification-required-before-release).
 | One client disconnects and returns | Catch-up converges without duplicate entries, old streams, or stale presence. |
 | A session invitation targets another session | No listing, subscription, lifecycle status, or mutation authority crosses the membership boundary. |
 | One session stalls | Clients on another session remain usable. |
+| Two operators prompt inside one catch-up window | One prompt opens the run; the other is answered `queued`, renders as a booked turn rather than a conflict, and commits with its own submitter's origin when the run settles. |
+| A peer's answer is delivered | Every terminal shows the answer's text before any entry for it exists in that terminal's cut, and the capture that paints the entry records a pushed notice as what asked for it. |
+| A member is revoked mid-answer | The socket closes at the per-frame authority check while pushed frames are in flight, and no further frame reaches it while the remaining terminals complete the answer. |
 
 ### Coordinating real clients
 
@@ -290,6 +299,76 @@ its original listener witness outside the bounded callback. The composed
 fixture covers live-tool switching, but not the entire acceptance matrix.
 The [handoff](../next.md#verified-results-and-their-limits) records which
 revision passed each local and hosted gate.
+
+### Watching an answer arrive
+
+`tui_shipped_live_delivery_test` is the shipped proof of the three last
+matrix rows, and the one fixture whose subject is *when* a frame arrives
+rather than what it says. It builds the same session shape — owner creates,
+isolates and reopens; Alice and Bob operate, Reader observes — but Bob is a
+raw v2 wire client rather than a terminal, on the same authenticated
+websocket route the two terminals use. Two terminals and one wire client,
+and four things the multiplayer drive cannot do.
+
+Bob submits on a strand that is already running, and the hub holds his
+prompt. He is a wire client precisely because that is the only client which
+can. A terminal sends `prompt` while its own model shows the strand idle and
+`steer` once it has captured a running operation, and against a pushing
+daemon the stale window is a few milliseconds wide; `steer` has no `queued`
+acknowledgement, so a terminal in Bob's role tests the queue only when it
+loses a race. A raw client tracks no liveness, so the fixture waits until
+Alice's terminal reports the strand live — which means the run exists at the
+hub — and only then writes Bob's prompt. The `queued` reply is then a fact
+about the hub rather than about scheduling.
+
+The scripted peer is paced: `provider_http.Paced` splits an answer across
+four content deltas and waits between chunks, so an answer occupies an
+interval rather than an instant. Inside that interval both terminals must
+show live text for the running operation that is a genuine prefix of the
+answer, while their own records still contain no assistant entry. They are
+sampled in one loop rather than one after another, because the interval is
+shorter than a sequence of awaits would take.
+
+The property is stated as a count, which is what makes it a statement about
+pushed deltas rather than about live text of any origin. A credited cut
+carries the snapshot's sampled preview, and that preview projects as exactly
+one fragment however many tokens it summarises, so `live_text_before_the_entry`
+requires two: a stream that has accumulated two fragments before the entry
+exists was fed by `stream_delta` frames the daemon pushed and by nothing else.
+
+That notices reached each terminal is a *count*, not a provenance.
+`session_channel.Capture` still names what asked for a given cut, but which
+capture paints an answer is a race the design keeps: the 250 ms idle refresh
+may already have a catch-up in flight when the commit lands, in which case it
+paints first and the notice that follows names a sequence already held and is
+correctly dropped. So the lane reports every `committed` frame it reads as
+`Update.Noticed` before deciding what to do with it, `tui.Model.notices`
+accumulates them, and the fixture requires each terminal's count to have risen
+by at least the four durable records the two shared turns commit — two user
+entries and two assistant entries. `last_capture` survives in the fixture's
+diagnostic dump, where knowing which path a cut took is useful and asserting
+on it is not. Nothing here asserts on elapsed time.
+
+A third turn exists only so that Bob's membership can be revoked while
+pushed frames are genuinely in flight to him: the fixture reads his socket
+forward until it carries a prefix of the third answer, and only then does the
+owner revoke. The hub's next write to him fails its per-delivery authority
+check and the socket is closed. The witness is a frame count on the raw
+socket, which is the stronger form of the old one: a terminal can only show
+that nothing arrived during some quiet interval, while a socket read past the
+server's close frame returns the transport's own refusal to produce anything
+further.
+
+Bob's history is read back through his own credited `catch_up` and must
+reassemble, through the shared core decoder, to exactly the records the
+terminals hold — two independent reads of one history rather than a
+comparison against something the fixture kept. The two terminals then hold
+identical durable records, in one order, with the two human turns attributed
+to the two different operators. This fixture does not cover the durable-queue
+behaviour a hub restart would need, the four-deep queue bound, or a drain
+failure; those are the gateway's own tests. `make e2e-client-bootstrap` supplies its executable and dummy
+provider credential, and it skips itself when `LOOM_BOOTSTRAP_E2E_SERVER`
+is unset.
 
 A separate shipped stop/reopen fixture holds A's actual HTTP response while
 B completes a turn. Owner control requests A's stop, the original provider

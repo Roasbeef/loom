@@ -126,8 +126,11 @@ that tree separately from the self-contained server.
 - `tui/session_channel.Channel` is terminal-owned state, not another actor.
   It admits one request at a time, grants one snapshot fragment per reply, and
   reconciles at 250ms while idle. `Update.Captured` carries a `Capture` saying
-  what asked for the cut — `Notified`, `Refreshed` or `Requested` — which is
-  how a fixture tells live delivery from the polling fallback. Its existing outgoing slot can retain one
+  what asked for the cut — `Notified`, `Refreshed` or `Requested` — which
+  names the path a particular cut took. Which of them wins is a race with the
+  250ms refresh, so a fixture that must know whether pushes arrived counts
+  `Update.Noticed` instead: the lane emits one per `committed` frame before
+  deciding whether to capture, and `Model.notices` accumulates them. Its existing outgoing slot can retain one
   immutable unsent mutation behind a capture of an already adopted session.
   `Disposition` distinguishes `Waiting`, `Sent`, and `DefinitelyNotSent`;
   waiting allocates no mutation ID or response deadline. A valid completed cut

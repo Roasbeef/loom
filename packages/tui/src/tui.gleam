@@ -355,6 +355,14 @@ pub type Model {
     /// this is where a fixture reads it. A capture that painted nothing
     /// leaves it alone.
     last_capture: session_channel.Capture,
+    /// How many commit notices this terminal's lane has received, including
+    /// the ones that asked for no capture. A notice can name a sequence the
+    /// terminal already holds, or arrive while the idle refresh's catch-up is
+    /// already in flight, and in neither case does it paint anything — which
+    /// is why `last_capture` cannot say whether the daemon pushed. This can:
+    /// it counts arrivals, so it is the fixture's witness that live delivery
+    /// reaches this terminal.
+    notices: Int,
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(daemon_selection.Host),
     /// One bounded metadata page request; no catalogue accumulation.
@@ -663,6 +671,7 @@ pub fn new_model_with_clock(
     channel: None,
     captured: None,
     last_capture: session_channel.Requested,
+    notices: 0,
     daemon_host: None,
     catalogue_request: None,
     creation_key: None,
@@ -3115,6 +3124,12 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
       }
     }
     session_channel.Auxiliary(event) -> apply_event(model, event)
+
+    // Nothing here is visible, and that is the point: the count moves for
+    // every notice the daemon pushed, including the ones a held sequence or
+    // an in-flight refresh made redundant. The rendered frame is untouched,
+    // so this cannot invalidate it.
+    session_channel.Noticed(_) -> Model(..model, notices: model.notices + 1)
 
     // A pushed fragment is the same thing the directly attached client
     // receives as a stream delta, so it lands in the same live-stream region
