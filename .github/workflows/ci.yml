@@ -215,6 +215,12 @@ env:
   # `e2e (macos)` restore. Kept distinct from the Linux namespace because
   # the two platforms cache different compiled artifacts.
   MACOS_CACHE_NAMESPACE: "macos-gate"
+  # The advisory check compiles every package tree; it saves that under its
+  # own namespace so a later run restores a warm tree. Sharing deps's key
+  # meant deps saved first with only the shipment's trees and the check
+  # could never save, so every run compiled cold (19 core compiles versus
+  # 5 in the old single job).
+  MACOS_CHECK_CACHE_NAMESPACE: "macos-check"
 
 jobs:
   # -------------------------------------------------------- the linux gate
@@ -760,7 +766,7 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
-          cache-namespace: ${{ env.MACOS_CACHE_NAMESPACE }}
+          cache-namespace: ${{ env.MACOS_CHECK_CACHE_NAMESPACE }}
           cache-epoch: ${{ env.CACHE_EPOCH }}
           cache: ${{ github.event.inputs.cache || 'true' }}
 
@@ -901,17 +907,21 @@ jobs:
       # toolchain, artifact restore) still does. Requiring `success` here
       # is therefore the right test for all three jobs, not a special
       # case for the advisory one.
+      # Written without an associative array: this job runs on macOS,
+      # whose /bin/bash is 3.2 and refuses `declare -A` with exit 2
+      # before a single result is read, which is how the first fan-in
+      # run on this runner failed the gate on green upstream jobs.
       - name: Require every upstream job to have succeeded
         run: |
-          declare -A results=(
-            [deps-macos]='${{ needs.deps-macos.result }}'
-            [check-macos]='${{ needs.check-macos.result }}'
-            [e2e-macos]='${{ needs.e2e-macos.result }}'
-          )
           fail=0
-          for job in "${!results[@]}"; do
-            echo "  ${job}: ${results[$job]}"
-            if [ "${results[$job]}" != "success" ]; then
+          for pair in \
+            'deps-macos=${{ needs.deps-macos.result }}' \
+            'check-macos=${{ needs.check-macos.result }}' \
+            'e2e-macos=${{ needs.e2e-macos.result }}'; do
+            job=${pair%%=*}
+            result=${pair#*=}
+            echo "  ${job}: ${result}"
+            if [ "${result}" != "success" ]; then
               fail=1
             fi
           done
