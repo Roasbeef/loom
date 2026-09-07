@@ -199,6 +199,37 @@ func TestStartRefusesAnUnmaskableProtectedPath(t *testing.T) {
 	}
 }
 
+// #63, the other half of the same anonymity: a `writable_roots` entry
+// that does not exist on this host has nothing for `--bind` to bind
+// from, and bwrap dies with `Can't bind mount SRC: No such file or
+// directory` and exit 1 — a failure the caller cannot tell from the
+// payload's own command failing. The refusal must arrive from Loom,
+// before an argv exists, naming both the path and the list.
+func TestStartRefusesAMissingWritableRoot(t *testing.T) {
+	feat := jail.DetectFeatures()
+	if feat.BwrapPath == "" {
+		t.Skip("this refusal only applies when bwrap builds the mount plan")
+	}
+	pol := testPolicy(t)
+	// A path under the (real) writable root, guaranteed absent because
+	// t.TempDir hands out a fresh empty directory.
+	absent := pol.WritableRoots[0] + "/not-created"
+	pol.WritableRoots = append(pol.WritableRoots, absent)
+	_, err := jail.Start(jail.Request{
+		Argv: []string{"/bin/sh", "-c", "echo unreachable"},
+		Env:  testEnv, Cwd: "/", Policy: pol,
+	}, feat, testbin.Helper(t), func(string, []byte, uint64, bool) {})
+	if err == nil {
+		t.Fatal("Start succeeded for a writable root bwrap cannot bind")
+	}
+	if !strings.Contains(err.Error(), absent) {
+		t.Fatalf("refusal does not name the path: %v", err)
+	}
+	if !strings.Contains(err.Error(), "writable_roots") {
+		t.Fatalf("refusal does not name the list the path came from: %v", err)
+	}
+}
+
 func TestOutputTruncation(t *testing.T) {
 	pol := testPolicy(t)
 	pol.Limits.OutputBytes = 4096

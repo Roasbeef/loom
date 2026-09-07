@@ -148,6 +148,85 @@ func TestUnmountableProtectedIgnoresExistingPaths(t *testing.T) {
 	}
 }
 
+// #63: a `writable_roots` entry that is not on this host has nothing
+// for `--bind` to bind from, and bwrap refuses the whole jail with a
+// bare `Can't bind mount SRC: No such file or directory` and exit 1.
+// The refusal is correct — a tool that believes it has write access it
+// does not have is a correctness hazard — so what the check adds is the
+// diagnosis: the path, and the list it was written in.
+func TestMissingMountSourcesFlagsAWritableRoot(t *testing.T) {
+	dir := t.TempDir()
+	absent := filepath.Join(dir, "not-there")
+	pol := policy.Policy{
+		WritableRoots: []string{dir, absent},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+	}
+	bad := MissingMountSources(pol)
+	if len(bad) != 1 {
+		t.Fatalf("MissingMountSources = %v, want exactly the absent root", bad)
+	}
+	if !strings.Contains(bad[0], absent) {
+		t.Fatalf("the entry must name the path: %q", bad[0])
+	}
+	if !strings.Contains(bad[0], "writable_roots") {
+		t.Fatalf("the entry must name the list it came from: %q", bad[0])
+	}
+}
+
+// The host-path form of `scratch` binds read-write exactly like a
+// writable root and is refused on the same terms. The entry must say
+// `scratch`, not `writable_roots`: the operator wrote one of the two
+// and the fix differs by which.
+func TestMissingMountSourcesFlagsAHostPathScratch(t *testing.T) {
+	dir := t.TempDir()
+	absent := filepath.Join(dir, "no-scratch-here")
+	pol := policy.Policy{
+		WritableRoots: []string{dir},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       absent,
+	}
+	bad := MissingMountSources(pol)
+	if len(bad) != 1 {
+		t.Fatalf("MissingMountSources = %v, want exactly the absent scratch", bad)
+	}
+	if !strings.Contains(bad[0], absent) || !strings.Contains(bad[0], "scratch") {
+		t.Fatalf("the entry must name the path and the scratch list: %q", bad[0])
+	}
+	if strings.Contains(bad[0], "writable_roots") {
+		t.Fatalf("a scratch path must not be blamed on writable_roots: %q", bad[0])
+	}
+}
+
+// The negative half, which is what stops this check from refusing every
+// ordinary policy: paths that are there pass, and the tmpfs form of
+// scratch has no host source to be missing in the first place.
+func TestMissingMountSourcesAllowsPathsThatExist(t *testing.T) {
+	dir := t.TempDir()
+	tmpfs := policy.Policy{
+		WritableRoots: []string{dir},
+		ReadableRoots: []string{filepath.Join(dir, "optional-and-absent")},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+	}
+	if bad := MissingMountSources(tmpfs); len(bad) != 0 {
+		t.Fatalf("MissingMountSources = %v, want none: the writable root "+
+			"exists and a tmpfs scratch has no host source", bad)
+	}
+
+	// A readable root is deliberately absent from the check even when it
+	// is absent from the host: it binds with `--ro-bind-try` and losing
+	// it narrows the jail rather than widening it.
+	if bad := MissingMountSources(policy.Policy{
+		ReadableRoots: []string{filepath.Join(dir, "gone")},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       dir,
+	}); len(bad) != 0 {
+		t.Fatalf("MissingMountSources = %v, want none: readable_roots "+
+			"tolerates absence", bad)
+	}
+}
+
 // statKinds classifies the *target*, not the link. The mask forms differ
 // by inode type, and masking a directory with the file form is a bind of
 // a character device over a directory: ENOTDIR, and no jail at all. That

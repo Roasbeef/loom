@@ -333,14 +333,15 @@ func readableRootOp(path string) MountOp {
 //   - **writable_roots does not** (`writableOp`, `--bind`, below). A
 //     missing writable root silently narrowed would mean a tool believes
 //     it has write access it does not — a correctness hazard worth a
-//     loud failure, not a quiet one. It still fails as a bare bwrap
-//     exit 1 today; giving it the same up-front, path-naming refusal as
-//     `protected` below is a follow-up, not done here.
+//     loud failure, not a quiet one. The failure is loud in Loom's own
+//     words rather than bwrap's: `MissingMountSources` (mounts.go) stats
+//     the sources of the read-write binds up front and `run.go` refuses
+//     before the argv exists, naming the path and the list (#63).
 //   - **the host-path form of scratch does not**, for the same reason:
 //     an operator who names a real directory as the jail's dedicated
 //     scratch is asking for that directory specifically, and a silent
-//     substitute (or none at all) is not what was asked for. Also an
-//     open follow-up rather than fixed here.
+//     substitute (or none at all) is not what was asked for. It goes
+//     through the same up-front refusal.
 //   - **protected never tolerates absence, and never silently skips
 //     either** — a mask that got skipped because its target does not
 //     exist yet is the one outcome the feature exists to prevent. So a
