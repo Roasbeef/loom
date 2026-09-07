@@ -12,6 +12,7 @@ import client/daemon/session_socket
 import client/daemon_server_test as wire
 import client/gateway
 import client/internal/ffi_os
+import client/jobs
 import client/owned_assembly_test
 import client/schedule
 import client/schedulescan
@@ -75,6 +76,7 @@ fn settings() {
     gateway: provider,
     helper_path: here <> "/../../bin/loom-exec",
     schedule_policy: schedule.ModelSchedulesWake,
+    jobs_policy: jobs.default_policy,
   )
 }
 

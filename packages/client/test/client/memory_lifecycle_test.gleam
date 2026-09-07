@@ -25,6 +25,7 @@ import broker/policy
 import client/catalog
 import client/codemode
 import client/distillpass
+import client/jobs
 import client/memory
 import client/schedule
 import client/serve
@@ -462,6 +463,7 @@ fn settings(
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
+    jobs_policy: jobs.default_policy,
     deactivated_tools: [],
     memory: distillpass.default_options(),
     // Offline, three names: the jail every session had before the

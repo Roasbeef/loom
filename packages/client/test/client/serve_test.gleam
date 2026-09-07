@@ -17,6 +17,7 @@ import client/daemon_server_test as wire
 import client/distillpass
 import client/host
 import client/internal/ffi_os
+import client/jobs
 import client/rules
 import client/schedule
 import client/serve
@@ -150,6 +151,7 @@ fn settings_under(root: String) -> serve.Settings {
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
+    jobs_policy: jobs.default_policy,
     deactivated_tools: [],
     // No lifecycle distillation in this rig: the pass would open the
     // memory store this test asserts about and spend the scripted

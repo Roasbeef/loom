@@ -51,6 +51,7 @@ import client/host
 import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
+import client/jobs
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -224,6 +225,13 @@ pub type Settings {
     /// schedule tool at all, the way an absent memory plane registers no
     /// `remember`.
     schedule_policy: schedule.Policy,
+    /// The `[jobs]` table: the ceiling a background job's wall is clamped
+    /// to. Defaults to `client/jobs.default_policy`, an hour, which is
+    /// what every session that never mentions jobs gets. Unlike the
+    /// scheduling policy this opens no door of its own — the jobs actor
+    /// starts either way, because a session that ran jobs before a
+    /// restart still has records to sweep.
+    jobs_policy: jobs.JobsPolicy,
     /// Built-in tools the operator deactivated, from
     /// `LOOM_DISABLE_TOOLS`. Empty is the ordinary case and the whole
     /// registry stands.
@@ -643,7 +651,7 @@ pub fn build_domain(
     "" -> None
     path -> Some(path)
   }
-  use #(catalogue, _rules, _schedules, _policy, options, _tools) <- result.try(
+  use #(catalogue, _rules, _schedules, _policy, _jobs, options, _tools) <- result.try(
     load_config(configuration),
   )
   use Nil <- result.try(
@@ -825,9 +833,17 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
-  use #(catalogue, rule_list, schedule_list, schedule_policy, memory, tools) <- result.try(
-    load_config(flags.config),
-  )
+  use
+    #(
+      catalogue,
+      rule_list,
+      schedule_list,
+      schedule_policy,
+      jobs_policy,
+      memory,
+      tools,
+    )
+  <- result.try(load_config(flags.config))
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -872,6 +888,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     rules: rule_list,
     schedules: schedule_list,
     schedule_policy:,
+    jobs_policy:,
     deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
     memory:,
     tools:,
@@ -1011,6 +1028,7 @@ fn load_config(
     List(rules.Rule),
     List(schedule.Schedule),
     schedule.Policy,
+    jobs.JobsPolicy,
     distillpass.Options,
     catalog.ToolsConfig,
   ),
@@ -1023,6 +1041,7 @@ fn load_config(
         [],
         [],
         schedule.default_policy,
+        jobs.default_policy,
         distillpass.default_options(),
         catalog.default_tools(),
       ))
@@ -1047,13 +1066,24 @@ fn load_config(
       use schedule_policy <- result.try(
         schedule.parse_policy(text) |> result.map_error(named),
       )
+      use jobs_policy <- result.try(
+        jobs.parse_policy(text) |> result.map_error(named),
+      )
       use memory <- result.try(
         distillpass.parse(text) |> result.map_error(named),
       )
       use tools <- result.try(
         catalog.parse_tools(text) |> result.map_error(named),
       )
-      Ok(#(catalogue, rule_list, schedule_list, schedule_policy, memory, tools))
+      Ok(#(
+        catalogue,
+        rule_list,
+        schedule_list,
+        schedule_policy,
+        jobs_policy,
+        memory,
+        tools,
+      ))
     }
   }
 }
@@ -2268,6 +2298,10 @@ fn assemble_in(
   // each installed extension contributes, which hook events it
   // subscribed to, and how its node is launched. The hook half is used
   // further down, after the effects record exists to compose it into.
+  // The background jobs actor, on the same two-name pattern: the address
+  // is minted now so the door can close over it, and the actor that
+  // answers it starts under the service supervisor below.
+  let jobs_name = address.new_address(namespace)
   let hosts_name = address.new_address(namespace)
   let hosts_seam =
     extension_hosts.seam(
@@ -2537,6 +2571,27 @@ fn assemble_in(
       hosts_name,
       clock,
       list.map(extensions, fn(registration) { registration.hosting }),
+    ))
+    // The background jobs actor is in this tier for exactly the reason
+    // the satellite registry above it is, and the price is the same
+    // shape: a restart kills every runner it owned, the broker's relays
+    // see their callers die and climb the cancel ladder, and the
+    // replacement's first act — before it serves one request — is to
+    // sweep `job/*` and record every live job as `Lost`. The model
+    // learns on its next poll. Losing a session because a job's
+    // bookkeeping crashed would be the worse trade.
+    |> sup.add(jobs.supervised(
+      jobs_name,
+      jobs_wiring(
+        settings,
+        agency_config,
+        broker_actor,
+        base_policy,
+        blob_root,
+        environment,
+        clock,
+        entropy,
+      ),
     ))
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
@@ -3971,6 +4026,53 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
       <> "filesystem at that layer whatever the mount layer does"
   }
 }
+
+// How this session runs background jobs.
+//
+// The broker seam is `tools/tool.broker_runner` — the very closure the
+// `bash` tool clears through — so a background job admits under exactly
+// the rules a foreground one does: the same requirements, the same
+// `RefuseNarrowed`, the same enforcement demand, the same escalation
+// path. What differs is where it is called from. A job's runner owns the
+// events subject, which is what binds the broker relay's caller-watch to
+// the job rather than to the session, and what the actor deliberately
+// does not do itself.
+//
+// The clearance budget is the one the tool plane already uses for the
+// same wait, so a job queued behind a full helper pool gives up when a
+// foreground call would have.
+fn jobs_wiring(
+  settings: Settings,
+  agency_config: agency.Config,
+  broker_actor: Broker,
+  base_policy: policy.SandboxPolicy,
+  blob_root: String,
+  environment: List(#(String, String)),
+  clock: Clock,
+  entropy: fn() -> Int,
+) -> jobs.Wiring {
+  jobs.Wiring(
+    runtime: fn() { agency.borrow_runtime(agency_config) },
+    policy: settings.jobs_policy,
+    clock:,
+    seed: entropy(),
+    workspace: settings.workspace,
+    base_policy:,
+    demand: settings.demand,
+    env: environment,
+    clear_call: tool.broker_runner(
+      broker: broker_actor,
+      waiting: jobs_clearance_ms,
+    ),
+    clearance_ms: jobs_clearance_ms,
+    spill: jobs.blob_spill(root: blob_root),
+    blob_root:,
+  )
+}
+
+/// How long a background job's clearance may wait out a congested helper
+/// pool, matching the tool plane's own `broker_timeout_ms`.
+pub const jobs_clearance_ms = 30_000
 
 // How this session reaches its schedule store, or `None` when the
 // operator shut the door — which registers none of the three tools and
