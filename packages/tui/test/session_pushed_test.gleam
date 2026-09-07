@@ -223,7 +223,8 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
     as "the initial capture spends its credits and leaves the lane ready"
 
   let #(notified, updates) = session_channel.receive(ready, notice("main", 10))
-  assert updates == [] as "a notice is not itself a visible change"
+  assert updates == [session_channel.Noticed(10)]
+    as "a notice is reported as received and changes nothing visible"
   assert session_channel.in_flight(notified)
     as "the catch-up goes out on the notice, not at the next idle refresh"
   assert requests(issued)
@@ -242,7 +243,8 @@ pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
   let _ = requests(issued)
 
   let #(same, updates) = session_channel.receive(ready, notice("main", 9))
-  assert updates == []
+  assert updates == [session_channel.Noticed(9)]
+    as "the arrival is reported even though the sequence is already held"
   assert !session_channel.in_flight(same)
     as "a sequence the lane already holds asks for nothing"
   assert requests(issued) == []
@@ -255,7 +257,7 @@ pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
       fn() { 0 },
     )
   let #(_, updates) = session_channel.receive(fresh, notice("main", 3))
-  assert updates == []
+  assert updates == [session_channel.Noticed(3)]
 }
 
 pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
@@ -268,7 +270,8 @@ pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
   assert updates == []
   let #(deferred, updates) =
     session_channel.receive(capturing, notice("main", 12))
-  assert updates == [] as "a notice mid-transfer defers rather than failing"
+  assert updates == [session_channel.Noticed(12)]
+    as "a notice mid-transfer defers rather than failing"
   let _ = requests(issued)
 
   // The lane's own clock has not reached its refresh instant, so the capture
@@ -444,6 +447,20 @@ pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
   // instead of appending to the one that has finished.
   let next = tui.accept_connection_message(model, delta("main", "op-2", "New"))
   assert next.streams == [tui.Stream("main", "op-2", "text", ["New"])]
+}
+
+pub fn a_notice_the_lane_drops_still_counts_at_the_terminal_test() {
+  let model = tui.accept_connection_message(attached(), notice("main", 9))
+  assert model.notices == 1
+    as "the terminal counts the notice the lane had nothing to do with"
+  let assert Some(channel) = model.channel as "the lane survives a stale notice"
+  assert !session_channel.in_flight(channel)
+    as "counting an arrival issues no request of its own"
+
+  // Which is the whole distinction the count exists for: nothing was
+  // captured, so nothing painted, so no `Capture` names this frame at all.
+  assert model.last_capture == session_channel.Requested
+    as "a dropped notice leaves the last capture's provenance untouched"
 }
 
 pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {

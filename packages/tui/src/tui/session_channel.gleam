@@ -16,6 +16,11 @@
 //// already held says nothing new, a lost notice is repaired by the refresh,
 //// and a daemon that pushes nothing leaves the refresh as the only path,
 //// which is the terminal's behaviour before live delivery existed.
+////
+//// Because a notice may legitimately do nothing, the lane reports every one
+//// it receives as `Noticed` before deciding what to do with it. That is the
+//// only account of live delivery which does not depend on winning a race
+//// against the refresh, and it is what the shipped fixture counts.
 
 import core/json
 import gleam/bool
@@ -67,6 +72,14 @@ pub type Update {
     /// The bounded, sanitized-later fragment bytes.
     text: String,
   )
+
+  /// One commit notice this lane received, whatever it went on to do with
+  /// it. A notice for a sequence already held issues nothing, and a notice
+  /// whose catch-up the idle refresh had already started paints under
+  /// `Refreshed`; in both cases the frame still arrived. Which capture
+  /// painted an answer is therefore not an observable a fixture can pin,
+  /// but whether pushes reach this terminal at all is, and this is it.
+  Noticed(seq: Int)
 
   /// The server acknowledged one mutation without implying a later snapshot.
   Acknowledged(command: String, status: String)
@@ -514,11 +527,17 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
 // A notice for a sequence the lane already holds, or one that arrives before
 // any cut exists to compare it against, tells the lane nothing it has not
 // already fetched or is not already fetching.
+//
+// The arrival is reported ahead of that decision, and independently of it.
+// Dropping a notice is a statement about what this lane already knows, never
+// about whether the daemon pushed, so the count a reader can trust has to be
+// taken before the drop.
 fn notified(channel: Channel, seq: Int) {
-  case channel.cut {
+  let #(channel, updates) = case channel.cut {
     Some(cut) if seq < cut.next_seq -> #(channel, [])
     Some(_) | None -> capture_or_defer(channel)
   }
+  #(channel, [Noticed(seq), ..updates])
 }
 
 // A push that arrives before any cut exists says nothing the initial
