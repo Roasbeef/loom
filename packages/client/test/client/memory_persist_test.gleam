@@ -217,6 +217,8 @@ fn settings(
   gateway: provider_gateway.Gateway,
 ) -> serve.Settings {
   serve.Settings(
+    secrets: secret.env(),
+    secret_failures: [],
     session_path: root <> "/" <> file,
     domain_paths: option.None,
     bind_host: "127.0.0.1",

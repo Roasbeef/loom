@@ -119,6 +119,8 @@ fn settings_under(root: String) -> serve.Settings {
   // no tool call could ever run under.
   let root = absolute(root)
   serve.Settings(
+    secrets: secret.env(),
+    secret_failures: [],
     session_path: root <> "/session.db",
     domain_paths: option.None,
     bind_host: "127.0.0.1",

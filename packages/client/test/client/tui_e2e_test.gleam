@@ -951,6 +951,8 @@ fn absolute(path: String) -> String {
 
 fn settings_at(test_root: String) -> serve.Settings {
   serve.Settings(
+    secrets: secret.env(),
+    secret_failures: [],
     session_path: test_root <> "/session.db",
     domain_paths: option.None,
     bind_host: "127.0.0.1",

@@ -284,12 +284,15 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // this host runs the distillation pass on boot, and how long one pass
   // may take. `jobs` is `client/jobs`'s: the ceiling a background job's
   // wall is clamped to, which an operator raises for a workspace whose
-  // dev server has to outlive the default hour.
+  // dev server has to outlive the default hour. `secrets` is
+  // `client/secrets`'s: how the daemon obtains a named credential from
+  // the host at boot, for the names `api_key_env` and `[tools] env`
+  // already mention.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
-      "tools", "jobs",
+      "tools", "jobs", "secrets",
     ],
     "the top level",
   ))
