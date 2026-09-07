@@ -95,9 +95,21 @@ pub type Line {
 // the settled entry after its fragments. Keeping both in one list would render
 // the same assistant answer twice at the exact moment it becomes durable.
 /// The undurable fragments of one strand-and-kind generation.
+///
+/// The operation is what makes a fragment list a generation rather than a
+/// running total. Fragments accumulate while it holds, and the first fragment
+/// of a new one starts the list over, so the answer on screen is always the
+/// answer being produced now. A snapshot's sampled preview names the same
+/// operation the cut does, which is how the two representations of one live
+/// answer are compared.
 @internal
 pub type Stream {
-  Stream(strand: String, kind: String, fragments: List(String))
+  Stream(
+    strand: String,
+    operation: String,
+    kind: String,
+    fragments: List(String),
+  )
 }
 
 /// The modal surface that owns focus, if any.
@@ -3111,6 +3123,17 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
         model,
         protocol.StreamDelta(strand:, operation:, kind:, text:),
       )
+    // A prompt aimed at a busy strand used to come back as a conflict, with
+    // the draft still the operator's problem. The daemon now holds it and
+    // runs it on the strand's next turn, so the composer is done with it: the
+    // line says the turn is booked, and nothing is running here yet, which is
+    // why the submitting indicator clears rather than spinning until the held
+    // prompt starts.
+    session_channel.Acknowledged("prompt", "queued") ->
+      append_system(
+        Model(..model, submitting: None),
+        "prompt queued · it runs when the strand finishes its turn",
+      )
     session_channel.Acknowledged(command, status) ->
       Model(..model, notice: command <> " " <> status) |> invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->
@@ -3230,14 +3253,20 @@ fn render_cut(
     None -> "Recent window; older history may be unloaded."
     Some(id) -> "History not loaded beyond " <> id <> "."
   }
-  let streams = case view.preview {
-    None -> []
-    Some(preview) ->
-      case dict.get(view.operations, active) {
-        Ok(operation) if operation == preview.operation -> [
-          Stream(active, "text", [preview.text]),
+  // Pushed deltas accumulate a continuous transcript of the live answer, so
+  // where both describe the strand's current operation they outrank the
+  // snapshot's discontinuous sample. The preview remains the fallback for a
+  // terminal that attached mid-answer and has been pushed nothing yet, and a
+  // strand with no live operation — its entry has committed — keeps neither.
+  let streams = case dict.get(view.operations, active) {
+    Error(Nil) -> []
+    Ok(operation) ->
+      case live_streams(model.streams, active, operation), view.preview {
+        [], Some(preview) if preview.operation == operation -> [
+          Stream(active, operation, "text", [preview.text]),
         ]
-        Ok(_) | Error(Nil) -> []
+        [], Some(_) | [], None -> []
+        live, _ -> live
       }
   }
   Model(
@@ -3679,7 +3708,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.StreamDelta(strand:, operation: _, kind:, text:) -> {
+    protocol.StreamDelta(strand:, operation:, kind:, text:) -> {
       // The generation clock normally started when the strand entered
       // its `assistant` phase (see `OperationChanged`); a fragment that
       // finds it unset is the fallback, for a phase sequence that never
@@ -3688,7 +3717,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       let updated =
         Model(
           ..model,
-          streams: append_stream(model.streams, strand, kind, text),
+          streams: append_stream(model.streams, strand, operation, kind, text),
           generation_started_ms:,
           notice: "streaming " <> kind,
         )
@@ -3839,26 +3868,61 @@ fn set_strand_phase(
   })
 }
 
+// The strand's live fragments, if they belong to the operation the cut says
+// is running. Fragments from a finished operation are not a live answer.
+fn live_streams(
+  streams: List(Stream),
+  strand: String,
+  operation: String,
+) -> List(Stream) {
+  list.filter(streams, fn(stream) {
+    let Stream(strand: owner, operation: op, ..) = stream
+    owner == strand && op == operation
+  })
+}
+
 fn append_stream(
   streams: List(Stream),
   strand: String,
+  operation: String,
   kind: String,
   fragment: String,
 ) -> List(Stream) {
   case streams {
-    [] -> [Stream(strand:, kind:, fragments: [fragment])]
-    [Stream(strand: owner, kind: stream_kind, fragments: current), ..rest] ->
+    [] -> [Stream(strand:, operation:, kind:, fragments: [fragment])]
+    [
+      Stream(
+        strand: owner,
+        operation: current_op,
+        kind: stream_kind,
+        fragments: current,
+      ),
+      ..rest
+    ] ->
       case owner == strand && stream_kind == kind {
+        // A fragment from a later operation replaces the previous answer
+        // rather than continuing it. Tool-call fragments never accumulate at
+        // all: only the latest name is renderable until the entry commits.
         True -> [
-          Stream(strand:, kind:, fragments: case kind {
-            "tool_call" -> [fragment]
-            _ -> [fragment, ..current]
-          }),
+          Stream(
+            strand:,
+            operation:,
+            kind:,
+            fragments: case kind == "tool_call" || current_op != operation {
+              True -> [fragment]
+              False -> [fragment, ..current]
+            },
+          ),
           ..rest
         ]
         False -> [
-          Stream(strand: owner, kind: stream_kind, fragments: current),
-          ..append_stream(rest, strand, kind, fragment)
+          Stream(
+            strand: owner,
+            operation: current_op,
+            kind: stream_kind,
+            fragments: current,
+          ),
+          ..append_stream(rest, strand, operation, kind, fragment)
         ]
       }
   }
@@ -3878,7 +3942,7 @@ fn stream_lines(
 ) -> List(Line) {
   streams
   |> list.filter_map(fn(stream) {
-    let Stream(strand:, kind:, fragments:) = stream
+    let Stream(strand:, kind:, fragments:, ..) = stream
     case strand == active_strand {
       False -> Error(Nil)
       True -> {

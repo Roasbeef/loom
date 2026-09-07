@@ -12,13 +12,15 @@ import core/json
 import core/message
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
+import tui
 import tui/attempt
 import tui/connection
 import tui/protocol
 import tui/session_channel
 import tui/snapshot
+import tui/workspace
 
 import gleam/bit_array
 
@@ -415,4 +417,54 @@ pub fn a_queued_prompt_is_an_acknowledged_submission_not_a_conflict_test() {
       ),
     )
   assert updates == [session_channel.Acknowledged("prompt", "queued")]
+}
+
+// The terminal's own model, holding a synchronized lane, so that a pushed
+// frame can be followed all the way to what a reader would see.
+fn attached() {
+  let #(ready, _) = synchronized()
+  tui.Model(
+    ..tui.new_model(connection.new_inbox(), workspace.Context("test", None)),
+    peer: tui.Replaying,
+    channel: Some(ready),
+  )
+}
+
+pub fn pushed_deltas_render_as_one_continuous_answer_per_operation_test() {
+  let model =
+    list.fold(
+      [delta("main", "op-1", "Hel"), delta("main", "op-1", "lo")],
+      attached(),
+      tui.accept_connection_message,
+    )
+  assert model.streams == [tui.Stream("main", "op-1", "text", ["lo", "Hel"])]
+    as "fragments of one operation accumulate rather than replacing each other"
+
+  // The next operation is a different answer, so it starts the region over
+  // instead of appending to the one that has finished.
+  let next = tui.accept_connection_message(model, delta("main", "op-2", "New"))
+  assert next.streams == [tui.Stream("main", "op-2", "text", ["New"])]
+}
+
+pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
+  let model = attached()
+  let assert Some(channel) = model.channel as "the fixture lane is attached"
+  let #(sent, disposition) =
+    session_channel.submit(channel, protocol.prompt(1, "main", "next turn"))
+  let assert session_channel.Sent("prompt", id) = disposition
+    as "an operator lane admits a prompt once its cut exists"
+
+  let queued =
+    tui.accept_connection_message(
+      tui.Model(..model, channel: Some(sent), submitting: Some("main")),
+      reply(
+        id,
+        "mutation_outcome",
+        json.Object([#("status", json.String("queued"))]),
+      ),
+    )
+  assert queued.submitting == None
+    as "nothing is running here yet; the daemon holds the prompt"
+  assert string.contains(queued.notice, "queued")
+    as "the operator is told the turn is booked, not that it was refused"
 }
