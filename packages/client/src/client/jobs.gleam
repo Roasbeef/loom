@@ -90,9 +90,12 @@
 //// the relay cancelled settles like any other, and only the party that
 //// asked can say the job was killed by its deadline rather than having
 //// exited. The runner therefore bounds its own fold at the deadline, asks
-//// the actor to record `Draining(ByDeadline)` when it passes, and carries
+//// the actor to note `Draining(ByDeadline)` when it passes, and carries
 //// the same cause in its final report — so the attribution holds whether
-//// or not the notice reached the mailbox before the outcome did. Two
+//// or not the notice reached the mailbox before the outcome did. The
+//// notice is noted **in memory only**: one durable write per settlement
+//// is the rule, the report is about to make that write, and a poll during
+//// the ladder reads the actor's own state rather than the store. Two
 //// different senders reach this actor and nothing orders them against
 //// each other.
 ////
@@ -120,7 +123,6 @@ import client/jobstate.{
 import client/jobtail.{type Tail}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
-import gleam/bit_array
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Selector, type Subject}
@@ -244,20 +246,6 @@ pub type Started {
   )
 }
 
-/// One stream's answer to a poll.
-pub type Streamed {
-  Streamed(
-    /// What arrived after the cursor and is still retained.
-    bytes: BitArray,
-    /// The cursor to ask with next time.
-    cursor: Int,
-    /// How many bytes fell out of the window between the cursor and what
-    /// is returned. Non-zero means the reader fell behind and output it
-    /// never saw is gone.
-    dropped: Int,
-  )
-}
-
 /// Where a poll left off in each stream.
 pub type Cursors {
   Cursors(stdout: Int, stderr: Int)
@@ -271,8 +259,12 @@ pub type Polled {
     /// How long the job has been alive, in milliseconds.
     age_ms: Int,
     deadline_ms: Int,
-    stdout: Streamed,
-    stderr: Streamed,
+    /// What each stream carried after the cursor the poll asked with, and
+    /// where to carry on from. `client/jobtail`'s own answer, passed
+    /// straight through: a record of the same three fields here would be
+    /// a second name for one type and a place for the two to drift.
+    stdout: jobtail.Since,
+    stderr: jobtail.Since,
     /// The content addresses of the whole streams, once the job has
     /// finished. Empty while it runs.
     spill: JobSpill,
@@ -612,9 +604,6 @@ pub opaque type Message {
 
   /// The restart sweep, injected before the mailbox is ever read.
   Reap
-
-  /// Stop every live job and wait, bounded, for the ladder.
-  StopAll(reply_with: Subject(Nil))
 }
 
 /// Whether a write to a job's stdin closes it.
@@ -790,35 +779,6 @@ pub fn supervised(
   wiring: Wiring,
 ) -> supervision.ChildSpecification(Subject(Message)) {
   supervision.worker(fn() { start(name, wiring) })
-}
-
-/// Cancels every live job and waits, bounded, for the ladder.
-///
-/// The deliberate teardown, and the one `client/serve` reaches on its way
-/// down. The actor's place in the ordered `Part` shutdown puts it inside
-/// `Services`, which retires before `Broker` and `Helpers` — so the
-/// cancels this sends still have a broker to travel through and helpers
-/// to reach.
-///
-/// An actor that is not running, or does not answer, leaves its jobs to
-/// die with the VM and be swept on the next boot.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // jobs.stop(name, within_ms: 5000)
-/// ```
-///
-pub fn stop(name: address.Address(Message), within_ms within_ms: Int) -> Nil {
-  case address.lookup(name) {
-    Error(Nil) -> Nil
-    Ok(subject) -> {
-      let reply = process.new_subject()
-      process.send(subject, StopAll(reply_with: reply))
-      let _stopped = process.receive(reply, within_ms)
-      Nil
-    }
-  }
 }
 
 // --- the door's four operations, keyed on the caller's strand -------------
@@ -1041,12 +1001,6 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     DeadlinePassed(id:) -> actor.continue(deadline_passed(state, id))
 
     Reported(id:, pulled:) -> reported(state, id, pulled)
-
-    StopAll(reply_with:) -> {
-      let state = stop_every_job(state)
-      process.send(reply_with, Nil)
-      resume(state)
-    }
   }
 }
 
@@ -2080,21 +2034,15 @@ fn polled(
   use held <- result.try(owned(state, strand, id))
   let streams = streams_of(held.custody)
   let #(now, _clock) = clock.read(state.wiring.clock)
-  let stdout = jobtail.since(streams.stdout, cursors.stdout)
-  let stderr = jobtail.since(streams.stderr, cursors.stderr)
   Ok(Polled(
     id:,
     state: held.record.state,
     age_ms: now - held.record.started_at_ms,
     deadline_ms: held.record.deadline_ms,
-    stdout: streamed(stdout),
-    stderr: streamed(stderr),
+    stdout: jobtail.since(streams.stdout, cursors.stdout),
+    stderr: jobtail.since(streams.stderr, cursors.stderr),
     spill: held.record.spill,
   ))
-}
-
-fn streamed(since: jobtail.Since) -> Streamed {
-  Streamed(bytes: since.bytes, cursor: since.cursor, dropped: since.dropped)
 }
 
 // A live job's output lives in its runner, so reading it is a question
@@ -2331,6 +2279,15 @@ fn unlink_orphans(state: State) -> Result(Nil, String) {
 
 // Every live job cancelled, then a bounded wait for the ladder.
 //
+// There is one way in and it is `on_shutdown`: the supervisor's `shutdown`
+// exit reaches an actor that traps exits, weft runs this before the
+// process goes, and the ordered `Part` teardown puts `Services` ahead of
+// `Broker` and `Helpers` — so the cancels sent here still have a broker to
+// travel through and helpers to reach. There is deliberately no message
+// asking for the same thing: a second door onto teardown would be a second
+// thing to keep true, and nothing outside the supervisor has cause to
+// stop this actor's jobs without stopping the actor.
+//
 // The wait happens inside this handler, receiving on the very subjects the
 // actor's own selector carries, because there is no way to process the
 // mailbox from inside a handler and no reason to want one: nothing else
@@ -2368,7 +2325,7 @@ fn drain(state: State, until: Int) -> State {
 
     // Only a settlement moves the drain along; everything else in the
     // mailbox belongs to a session that is closing and is dropped with
-    // it, which is what the caller was told by asking to stop.
+    // it, which is what the supervisor's shutdown means.
     Ok(Reported(id:, pulled:)) -> drain(drained(state, id, pulled), until)
 
     Ok(Clearance(id:, outcome:)) ->
@@ -2489,25 +2446,5 @@ fn refusal_text(refusal: broker.Refusal) -> String {
     broker.OperationAborted ->
       "the operation that asked for this job was aborted"
     broker.BrokerUnavailable -> "the broker did not answer"
-  }
-}
-
-/// The bytes of a settled poll, as text where the stream is UTF-8. Public
-/// because both doors render it the same way and neither should grow its
-/// own decoder.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert jobs.text(<<"hi":utf8>>) == "hi"
-/// ```
-///
-pub fn text(bytes: BitArray) -> String {
-  case bit_array.to_string(bytes) {
-    Ok(rendered) -> rendered
-    Error(Nil) ->
-      "["
-      <> int.to_string(bit_array.byte_size(bytes))
-      <> " bytes of non-UTF-8 output]"
   }
 }

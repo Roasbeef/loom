@@ -1054,12 +1054,12 @@ catalogue without opening runtimes. Explicit admission invokes
   character is binary output and goes out as it is, because a tail that
   could not tell the two apart would answer every poll of a
   binary-output job with nothing, forever.
-- `client/jobs.{JobsPolicy, Request, Started, Streamed, Cursors, Polled,
+- `client/jobs.{JobsPolicy, Request, Started, Cursors, Polled,
   Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
   stop_grace_ms, runner_ask_ms, default_policy, parse_policy, blob_spill,
-  staging_path, start, supervised, stop, start_job, poll_job, list_jobs,
-  kill_job, write_stdin, await_job, text}` — the session's background
+  staging_path, start, supervised, start_job, poll_job, list_jobs,
+  kill_job, write_stdin, await_job}` — the session's background
   jobs: one `weft/actor` in the **restartable** services tier beside
   `client/extension/hosts`, and one weft runner per job. The actor owns
   the durable `job/<id>` record, the per-strand ceiling of four, and the

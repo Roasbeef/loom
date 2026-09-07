@@ -25,7 +25,7 @@
 ////
 //// ## The mutation checks
 ////
-//// Four removals, each run against the whole suite, recorded here so the
+//// Five removals, each run against the whole suite, recorded here so the
 //// next reader can repeat them rather than trust this paragraph.
 ////
 //// | Removed | Fails |
@@ -34,15 +34,23 @@
 //// | `commit`'s call to `persist` | `an_exit_is_recorded_with_its_result_test`, `the_spill_lands_content_addressed_past_the_cap_test`, `a_terminal_record_survives_a_restart_unchanged_test`, `a_session_stop_kills_every_live_job_test` |
 //// | `cancel`'s `control.cancel()` | `a_kill_climbs_the_ladder_test`, `a_session_stop_kills_every_live_job_test` |
 //// | `sweep`'s `reap_one` | `a_restart_declares_a_running_job_lost_test` |
+//// | `expired`'s `DeadlinePassed` send and its `stopped_by` | `a_deadline_kills_with_its_own_cause_test` |
 ////
-//// Two of them catch more than one test, and that is worth saying rather
-//// than trimming the tests until the table is diagonal. `persist` is the
-//// *only* durable write on the commit path, so every assertion about
-//// what the store holds after a job ends rests on it; and the cancel is
-//// reached by two callers, the owner's `job_kill` and the session stop,
-//// which are two different reasons for the same ladder. What the checks
-//// establish is that none of the four is dead weight, and the narrowest
-//// test in each row is the one that names the mechanism.
+//// The fifth is the deadline's whole mechanism: without the notice and
+//// the cause the runner carries in its report, a job the relay cancelled
+//// at its wall settles as an ordinary exit and nothing names the
+//// deadline. It is also the row that says what is *not* covered —
+//// removing the run's backstop `weft.deadline` fails nothing, because no
+//// test makes a clearance hang long enough to reach it.
+////
+//// Two of the five catch more than one test, and that is worth saying
+//// rather than trimming the tests until the table is diagonal. `persist`
+//// is the *only* durable write on the commit path, so every assertion
+//// about what the store holds after a job ends rests on it; and the
+//// cancel is reached by two callers, the owner's `job_kill` and the
+//// session stop, which are two different reasons for the same ladder.
+//// What the checks establish is that none of the five is dead weight, and
+//// the narrowest test in each row is the one that names the mechanism.
 ////
 //// Removing `persist` also, on the first run, failed
 //// `a_refused_clearance_reaches_the_starting_caller_test` — which turned
@@ -1429,22 +1437,41 @@ pub fn a_terminal_record_survives_a_restart_unchanged_test() {
 // --- session stop ---------------------------------------------------------
 
 pub fn a_session_stop_kills_every_live_job_test() {
+  // The teardown this exercises is the only one there is: a supervisor's
+  // `shutdown` exit reaching an actor that traps exits, which weft turns
+  // into `on_shutdown`. There is no message asking for the same thing, so
+  // a test that sent one would be proving a path production never takes.
   let harness = start_harness()
   let first = start_job(harness, "main", "sleep 999")
   let second = start_job(harness, "sub:main/worker", "sleep 999")
 
-  // The stop cancels and then waits, so the settlements have somewhere to
-  // land; a job that settles inside the grace is `Killed(BySessionStop)`.
-  let stopper =
-    process.spawn_unlinked(fn() { jobs.stop(harness.name, within_ms: 5000) })
-  let _ = stopper
-  process.sleep(50)
-  assert cancels(harness, first) == 1
-  assert cancels(harness, second) == 1
+  // Trapping is what keeps this process alive: the actor exits with the
+  // reason it was shut down with, and the link would otherwise carry that
+  // straight into the test. The monitor is the barrier at the end.
+  process.trap_exits(True)
+  let gone = process.monitor(harness.pid)
+  process.send_abnormal_exit(harness.pid, "shutdown")
 
+  // The shutdown cancels and then waits, so the settlements have
+  // somewhere to land. Waiting for the cancel to be *observed* is the
+  // barrier here: the cancel travels actor -> fake broker while this test
+  // travels test -> fake broker, and nothing orders the two.
+  assert await_cancel(harness, first, 200) == 1
+  assert await_cancel(harness, second, 200) == 1
+
+  // A job that settles inside the grace is `Killed(BySessionStop)`, and
+  // the actor's own death is the proof that its drain has finished and
+  // every commit it was going to make has been made.
   settle_with(harness, first, cancelled_result())
   settle_with(harness, second, cancelled_result())
-  process.sleep(200)
+  let assert Ok(_down) =
+    process.selector_receive(
+      process.new_selector()
+        |> process.select_specific_monitor(gone, fn(down) { down }),
+      5000,
+    )
+    as "the actor must finish its drain and go"
+  process.trap_exits(False)
 
   let assert jobstate.Killed(by: first_cause, ..) =
     record_in_store(harness, first.id).state
@@ -1455,6 +1482,17 @@ pub fn a_session_stop_kills_every_live_job_test() {
     record_in_store(harness, second.id).state
     as "and so is every other strand's"
   assert second_cause == jobstate.BySessionStop
+}
+
+fn await_cancel(harness: Harness, started: jobs.Started, attempts: Int) -> Int {
+  let seen = cancels(harness, started)
+  case seen > 0 || attempts <= 0 {
+    True -> seen
+    False -> {
+      process.sleep(5)
+      await_cancel(harness, started, attempts - 1)
+    }
+  }
 }
 
 // --- the operator's table -------------------------------------------------

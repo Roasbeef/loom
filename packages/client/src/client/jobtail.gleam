@@ -142,9 +142,34 @@ pub fn received(tail: Tail) -> Int {
 /// ```
 ///
 pub fn push(tail: Tail, chunk: BitArray) -> Tail {
-  let window = bit_array.append(tail.window, chunk)
-  let received = tail.received + bit_array.byte_size(chunk)
-  trim(Tail(..tail, window:, received:))
+  let size = bit_array.byte_size(chunk)
+  let received = tail.received + size
+  case size >= tail.capacity {
+    // The chunk alone fills the window, so nothing already retained can
+    // survive it and the answer is a slice of the chunk. Appending first
+    // and trimming afterwards would give the same window while holding
+    // `capacity + chunk` bytes live to do it — a fivefold overshoot for a
+    // helper's 32 KiB frame against an 8 KiB window, and the one place
+    // this type's bound was not actually a bound.
+    True -> {
+      let cut = boundary_at(chunk, size - tail.capacity, utf8_backoff)
+      case bit_array.slice(chunk, cut, size - cut) {
+        Ok(window) ->
+          Tail(..tail, window:, dropped: tail.received + cut, received:)
+
+        // Unreachable: `cut` is between zero and `size` by construction.
+        // Accounting every byte of the chunk as dropped is what keeps
+        // `received - dropped` the window's size rather than breaking the
+        // one invariant `since` does its arithmetic on.
+        Error(Nil) -> Tail(..tail, window: <<>>, dropped: received, received:)
+      }
+    }
+
+    False -> {
+      let window = bit_array.append(tail.window, chunk)
+      trim(Tail(..tail, window:, received:))
+    }
+  }
 }
 
 // Bring the window back inside its capacity, cutting on a character
