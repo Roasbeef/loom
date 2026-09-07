@@ -18,10 +18,8 @@
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting failure.
 
-import broker/exec
 import client/daemon/admin
 import client/daemon_server_test as wire
-import client/serve
 import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
@@ -31,7 +29,6 @@ import core/message
 import etui/backend
 import filepath
 import gleam/bit_array
-import gleam/bool
 import gleam/dict
 import gleam/erlang/atom
 import gleam/erlang/process
@@ -39,12 +36,12 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/result
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
 import machine/strand
 import simplifile
+import support/enforcement
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import support/provider_http
@@ -121,137 +118,15 @@ fn live_tool_expected(mode: LiveTool) -> List(provider_http.Latest) {
   }
 }
 
-// Authorized shipment fixtures place loom-exec beside their server launcher.
-// Probe that exact executable with the production workspace policy and demand;
-// an OS name or the presence of bwrap alone cannot establish enforcement.
+// One measured verdict from the shared probe, mapped onto this fixture's
+// own two-value question. The probe owns the skip line and the reason a
+// declaration matches on; the label is what tells a census which fixture
+// declined.
 fn live_tool_prerequisite(server: String) -> LiveTool {
-  let helper_path = filepath.join(filepath.directory_name(server), "loom-exec")
-  let assert Ok(helper_path) = native.find_executable(helper_path)
-    as "a configured shipped server must have its sibling loom-exec executable"
-  let directory =
-    "build/shipped-enforcement-"
-    <> int.to_string(native.current_process_id())
-    <> "-"
-    <> int.to_string(native.system_time_ms())
-  let assert Ok(Nil) = native.ensure_private_directory(directory)
-    as "the enforcement prerequisite owns a private workspace"
-  let assert Ok(directory) = native.canonical_directory(directory)
-    as "the prerequisite policy uses an absolute workspace"
-  let base = serve.base_policy(directory)
-  let assert Ok(helper) =
-    exec.spawn_helper(exec.SpawnConfig(
-      helper_path: helper_path,
-      shell_path: serve.shell_path,
-      base_policy: base,
-      helper_args: exec.unenforced_helper_args(exec.host_platform()),
-      tmp_dir: directory <> "/tmp",
-      handshake_timeout_ms: 5000,
-      cancel_grace_ms: 3000,
-      heartbeat_interval_ms: 0,
-    ))
-    as "the exact shipped enforcement helper must start"
-  let events = process.new_subject()
-  let dispatched =
-    exec.run(
-      helper,
-      exec.ExecRequest(
-        argv: [serve.shell_path, "-c", ":"],
-        env: [],
-        cwd: directory,
-        policy: Some(base),
-        token: <<0:size(32)-unit(8)>>,
-        demand: exec.PlatformEnforcement,
-      ),
-      events: events,
-      waiting: 1000,
-    )
-  let outcome = case dispatched {
-    Error(reason) -> Ok(exec.Failed(reason))
-    Ok(Nil) -> probe_terminal(events)
+  case enforcement.probe(server, "shipped multiplayer live tool") {
+    enforcement.EnforcementLive -> RunLiveTool
+    enforcement.EnforcementAbsent -> SkipLiveTool
   }
-
-  // No verdict, including a timeout or refusal, bypasses original retirement.
-  // close joins native exit status and the original helper actor monitor.
-  let retired = exec.close(helper, waiting: 5000)
-  assert retired == Ok(Nil)
-    as "the prerequisite helper proves original retirement"
-  let assert Ok(outcome) = outcome
-    as "the bounded enforcement probe must answer"
-  case outcome {
-    exec.Failed(exec.DegradedHelper(_))
-    | exec.Failed(exec.DegradedExecution(_)) -> {
-      io.println_error(
-        "SKIP shipped multiplayer live tool: platform enforcement unavailable",
-      )
-      SkipLiveTool
-    }
-    exec.Exited(result) -> {
-      assert result.code == 0 && result.signal == 0
-        as "the enforced harmless prerequisite must succeed"
-      RunLiveTool
-    }
-    exec.Failed(reason) -> {
-      let reason = "enforcement prerequisite failed: " <> string.inspect(reason)
-      panic as reason
-    }
-    exec.Output(..) ->
-      panic as "the silent enforcement prerequisite produced unexpected output"
-  }
-}
-
-// Output is not completion, even for a silent requested command: the launch
-// path can report diagnostics before its enforcement verdict. Each receive is
-// nonblocking; the enclosing poll owns one deadline for the entire stream.
-fn probe_terminal(
-  events: process.Subject(exec.ExecEvent),
-) -> Result(exec.ExecEvent, String) {
-  let outcome =
-    poll.fold_until(
-      clock: poll.monotonic(),
-      within: 5000,
-      every: poll.Fixed(1),
-      from: Ok(Nil),
-      attempt: fn(output) {
-        case process.receive(events, 0) {
-          Error(Nil) -> poll.Pending(output)
-          Ok(exec.Output(data: data, ..)) ->
-            poll.Pending(probe_output(output, data))
-          Ok(exec.Exited(result)) ->
-            poll.Settled(#(exec.Exited(result), output))
-          Ok(exec.Failed(reason)) ->
-            poll.Settled(#(exec.Failed(reason), output))
-        }
-      },
-    )
-  case outcome {
-    poll.Answer(#(event, Ok(Nil))) -> Ok(event)
-    poll.Answer(#(_, Error(reason))) -> Error(reason)
-    poll.RanOut(_) -> Error("enforcement prerequisite terminal deadline")
-    poll.Failure(reason) -> Error(reason)
-  }
-}
-
-// Retain only a small error, never accumulated output. Invalid UTF-8, any
-// non-whitespace output, or a chunk over the diagnostic budget fails after the
-// terminal event and original helper retirement have both been collected.
-fn probe_output(
-  previous: Result(Nil, String),
-  data: BitArray,
-) -> Result(Nil, String) {
-  use Nil <- result.try(previous)
-  use <- bool.guard(
-    when: bit_array.byte_size(data) > 256,
-    return: Error("enforcement prerequisite produced oversized output"),
-  )
-  use text <- result.try(
-    bit_array.to_string(data)
-    |> result.replace_error("enforcement prerequisite output is not UTF-8"),
-  )
-  use <- bool.guard(
-    when: string.trim(text) != "",
-    return: Error("enforcement prerequisite produced non-whitespace output"),
-  )
-  Ok(Nil)
 }
 
 // Shipped cold attachment can exceed the component helper's eight seconds on

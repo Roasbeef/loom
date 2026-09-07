@@ -294,6 +294,10 @@ e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the r
 		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
 		bash scripts/test.sh client --match client@daemon_shipped_schedule_test:
 	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
+		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-900}" \
+		bash scripts/test.sh client --match client@daemon_shipped_jobs_test:
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
 		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-150}" \
 		bash scripts/test.sh client --match client@daemon_shipped_recovery_test:
 	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \

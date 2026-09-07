@@ -3,6 +3,16 @@
 //// earlier transcript markers cannot accidentally satisfy the next script step.
 //// The wrapper owns the listener and script actor through a bounded callback,
 //// retains original monitors, and retires both before returning request evidence.
+////
+//// One step kind answers with a value the fixture could not have written
+//// down: `ComputedExchange`. It exists for handles the harness mints at
+//// runtime — a background job's id lives in the text of the tool result
+//// that announces it, and the next tool call has to carry that id back.
+//// Its matcher stays exact all the same: either the complete user text,
+//// or the provider's own invocation identity for a result whose text is
+//// the unpredictable part. Only the *answer* is computed, and only from
+//// request evidence this module already retained, which the caller still
+//// asserts against afterwards.
 
 import core/json
 import core/message
@@ -58,6 +68,53 @@ pub type Exchange {
     /// Final assistant text after the result matches.
     answer: String,
   )
+
+  /// Answers one exactly matched step with a response built at request
+  /// time. The only step whose reply is not fixed before the fixture
+  /// starts; see the module documentation for why one exists.
+  ComputedExchange(
+    /// What the latest message must be for this step to apply.
+    expect: Expectation,
+    /// The reply, given every request observed so far, oldest first,
+    /// including the one being answered.
+    reply: fn(List(ObservedRequest)) -> Reply,
+  )
+}
+
+/// What a computed step's latest message must be for the step to apply.
+pub type Expectation {
+  /// The complete user text, matched exactly as a fixed step matches it.
+  AwaitPrompt(
+    /// Exact latest user text.
+    text: String,
+  )
+
+  /// A successful tool result, matched on the provider-minted identity
+  /// alone because its text carries a runtime-minted handle.
+  AwaitToolResult(
+    /// Exact identity from the earlier tool invocation.
+    call_id: String,
+  )
+}
+
+/// One streamed response, after the script step and the observed request
+/// have both been read.
+pub type Reply {
+  /// Text emitted as an Anthropic content delta.
+  ReplyText(
+    /// Complete assistant text.
+    text: String,
+  )
+
+  /// One tool invocation with its complete bounded arguments.
+  ReplyToolUse(
+    /// Provider-minted identity required again by the result step.
+    call_id: String,
+    /// Ordinary advertised tool name.
+    name: String,
+    /// Bounded JSON object sent through input_json_delta.
+    arguments: json.JsonValue,
+  )
 }
 
 /// The validated latest message, independent of all earlier history.
@@ -96,7 +153,7 @@ type Book {
 type Message {
   Submit(
     Result(ObservedRequest, String),
-    process.Subject(Result(Exchange, String)),
+    process.Subject(Result(Reply, String)),
   )
   Report(process.Subject(Result(List(ObservedRequest), String)))
 }
@@ -135,6 +192,10 @@ pub fn with_server(
         && is_object(arguments)
       ToolResultExchange(id, text, answer) ->
         id != "" && bounded(id) && bounded(text) && bounded(answer)
+
+      // A computed step's reply is bounded when it is produced; only its
+      // matcher can be judged this early.
+      ComputedExchange(expect, _reply) -> awaited_bounded(expect)
     }
   })
     as "fixture prompts and answers have fixed byte bounds"
@@ -206,34 +267,109 @@ fn handle(book: Book, message: Message) -> actor.Next(Book, Message) {
 fn take(
   book: Book,
   incoming: Result(ObservedRequest, String),
-) -> #(Book, Result(Exchange, String)) {
+) -> #(Book, Result(Reply, String)) {
   let Book(remaining, seen, refusal) = book
   case refusal, incoming, remaining {
     Some(reason), _, _ -> #(book, Error(reason))
+
     None, Error(reason), _ -> #(
       Book(remaining, seen, Some(reason)),
       Error(reason),
     )
+
     None, Ok(observed), [step, ..rest] ->
-      case observed.latest == expected(step) {
-        True -> #(Book(rest, [observed, ..seen], None), Ok(step))
-        False -> #(
-          Book(
-            remaining,
-            seen,
-            Some("unexpected latest user text or extra request"),
-          ),
-          Error("unexpected latest user text or extra request"),
-        )
+      case matches(step, observed.latest) {
+        True -> accept(step, observed, rest, seen)
+        False -> refuse(book)
       }
-    None, Ok(_), _ -> #(
-      Book(
-        remaining,
-        seen,
-        Some("unexpected latest user text or extra request"),
-      ),
-      Error("unexpected latest user text or extra request"),
-    )
+
+    None, Ok(_), [] -> refuse(book)
+  }
+}
+
+// The script is exhausted or the wrong step arrived. Both are the same
+// permanent refusal: once a fixture's peer has answered out of order,
+// every later answer is evidence about the wrong conversation.
+fn refuse(book: Book) -> #(Book, Result(Reply, String)) {
+  let Book(remaining, seen, _refusal) = book
+  let reason = "unexpected latest user text or extra request"
+  #(Book(remaining, seen, Some(reason)), Error(reason))
+}
+
+// The observed request joins the evidence before the reply is built, so a
+// computed step reads the request it is answering as well as the ones
+// before it.
+fn accept(
+  step: Exchange,
+  observed: ObservedRequest,
+  rest: List(Exchange),
+  seen: List(ObservedRequest),
+) -> #(Book, Result(Reply, String)) {
+  let seen = [observed, ..seen]
+  case checked(reply_of(step, list.reverse(seen))) {
+    Ok(reply) -> #(Book(rest, seen, None), Ok(reply))
+    Error(reason) -> #(Book(rest, seen, Some(reason)), Error(reason))
+  }
+}
+
+fn reply_of(step: Exchange, observed: List(ObservedRequest)) -> Reply {
+  case step {
+    Exchange(answer:, ..) | ToolResultExchange(answer:, ..) ->
+      ReplyText(text: answer)
+
+    ToolUseExchange(call_id:, name:, arguments:, ..) ->
+      ReplyToolUse(call_id:, name:, arguments:)
+
+    ComputedExchange(reply:, ..) -> reply(observed)
+  }
+}
+
+// A computed reply is held to the byte bounds a written one was checked
+// against before the listener started, because an unbounded fixture
+// answer is a fixture that has stopped being finite.
+fn checked(reply: Reply) -> Result(Reply, String) {
+  let ok = case reply {
+    ReplyText(text:) -> bounded(text)
+
+    ReplyToolUse(call_id:, name:, arguments:) ->
+      call_id != ""
+      && bounded(call_id)
+      && name != ""
+      && bounded(name)
+      && bounded(json.to_string(arguments))
+      && is_object(arguments)
+  }
+  case ok {
+    True -> Ok(reply)
+    False -> Error("computed fixture reply exceeds its bounds")
+  }
+}
+
+fn matches(step: Exchange, latest: Latest) -> Bool {
+  case step {
+    Exchange(prompt:, ..) | ToolUseExchange(prompt:, ..) ->
+      latest == UserPrompt(prompt)
+
+    ToolResultExchange(call_id:, text:, ..) ->
+      latest == SuccessfulToolResult(call_id, text)
+
+    ComputedExchange(expect:, ..) -> awaited(expect, latest)
+  }
+}
+
+fn awaited(expect: Expectation, latest: Latest) -> Bool {
+  case expect, latest {
+    AwaitPrompt(text:), UserPrompt(prompt) -> prompt == text
+    AwaitPrompt(..), SuccessfulToolResult(..) -> False
+    AwaitToolResult(call_id:), SuccessfulToolResult(id, _text) -> id == call_id
+    AwaitToolResult(..), UserPrompt(..) -> False
+  }
+}
+
+fn awaited_bounded(expect: Expectation) -> Bool {
+  case expect {
+    AwaitPrompt(text:) -> bounded(text)
+    AwaitToolResult(call_id:) -> call_id != "" && bounded(call_id)
   }
 }
 
@@ -250,9 +386,10 @@ fn serve(
       })
       |> response.set_header("content-type", "text/plain")
       |> response.set_body(mist.Bytes(bytes_tree.from_string(reason)))
+
     // Keep real chunked HTTP here: the shipped daemon must traverse its native
     // streaming transport, rather than receiving one buffered fixture body.
-    Ok(answer) -> {
+    Ok(reply) -> {
       // This subject belongs to the HTTP handler, not the new chunk worker.
       // The worker stays parked until Mist has transferred the original socket.
       let ready = process.new_subject()
@@ -263,7 +400,7 @@ fn serve(
             |> response.set_header("content-type", "text/event-stream"),
           init: fn(subject) {
             process.send(ready, subject)
-            answer
+            reply
           },
           loop: fn(answer, _message, socket) {
             list.each(transcript(answer), fn(chunk) {
@@ -273,23 +410,23 @@ fn serve(
             mist.chunk_stop()
           },
         )
+
       // A failed worker start has no ready message and fails this fixture
       // explicitly; it cannot masquerade as a successfully streamed response.
       let assert Ok(subject) = process.receive(ready, within: 1000)
         as "the initialized chunk worker publishes before socket transfer returns"
-      io.println_error("provider fixture response: " <> response_kind(answer))
+      io.println_error("provider fixture response: " <> response_kind(reply))
       process.send(subject, Send)
       response
     }
   }
 }
 
-// Labels expose only the script variant, never prompts, arguments or headers.
-fn response_kind(exchange: Exchange) -> String {
-  case exchange {
-    Exchange(..) -> "text"
-    ToolUseExchange(..) -> "tool_use"
-    ToolResultExchange(..) -> "tool_result"
+// Labels expose only the reply variant, never prompts, arguments or headers.
+fn response_kind(reply: Reply) -> String {
+  case reply {
+    ReplyText(..) -> "text"
+    ReplyToolUse(..) -> "tool_use"
   }
 }
 
@@ -347,13 +484,6 @@ fn is_object(value: json.JsonValue) -> Bool {
   case value {
     json.Object(_) -> True
     _ -> False
-  }
-}
-
-fn expected(step: Exchange) -> Latest {
-  case step {
-    Exchange(prompt, _) | ToolUseExchange(prompt, ..) -> UserPrompt(prompt)
-    ToolResultExchange(id, text, _) -> SuccessfulToolResult(id, text)
   }
 }
 
@@ -450,9 +580,9 @@ fn event(name: String, fields: List(#(String, json.JsonValue))) -> String {
   <> "\n\n"
 }
 
-fn transcript(step: Exchange) -> List(String) {
-  let #(block, delta, reason) = case step {
-    Exchange(_, answer) | ToolResultExchange(_, _, answer) -> #(
+fn transcript(reply: Reply) -> List(String) {
+  let #(block, delta, reason) = case reply {
+    ReplyText(text: answer) -> #(
       json.Object([#("type", json.String("text")), #("text", json.String(""))]),
       json.Object([
         #("type", json.String("text_delta")),
@@ -460,7 +590,8 @@ fn transcript(step: Exchange) -> List(String) {
       ]),
       "end_turn",
     )
-    ToolUseExchange(_, id, name, arguments) -> #(
+
+    ReplyToolUse(id, name, arguments) -> #(
       json.Object([
         #("type", json.String("tool_use")),
         #("id", json.String(id)),

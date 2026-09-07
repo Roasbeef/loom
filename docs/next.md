@@ -27,6 +27,7 @@ runtime. The broader release acceptance is not complete.
 | Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
 | TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery remains client-driven reconciliation, not pushed token streaming. |
 | Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
+| Background jobs | The pure state, the actor and the model-facing surface are built across three pull requests, and a shipped fixture proves the motivating case and the restart rule on a host with real enforcement. One contradiction of the design note is open; see "Background jobs" below. |
 
 [PR #239](https://github.com/Roasbeef/loom/pull/239) targets
 `client/daemon-review-fixes` ([#238](https://github.com/Roasbeef/loom/pull/238)),
@@ -201,6 +202,97 @@ load-sensitive provider wait; [#241](https://github.com/Roasbeef/loom/issues/241
 tracks latency. A successful workflow under this policy does not establish
 that the advisory package check passed. Inspect and report that step's actual
 result separately. The next exact-head cycle is recorded on PR #239.
+
+## Background jobs
+
+A separate body of work from the daemon acceptance above, and the newest
+thing in the tree. A job is a jailed process the harness starts on the
+model's behalf that outlives the tool call which started it: `bash` with
+`mode: "background"` returns a handle, `job_poll`, `job_kill` and
+`job_send` are the rest of the surface, `cap/job` is the same four
+operations for a code-mode program, and both reach one
+`client/jobseam.Door`. The design and every ruling behind it are in the
+[design note](design-notes/background-jobs.md); the mechanism is in
+[the effect plane](architecture/effects.md#background-jobs).
+
+| Work package | Where it is |
+|---|---|
+| WP1, pure state and the `job/` fact | [#260](https://github.com/Roasbeef/loom/pull/260), on `main`. |
+| WP2, the actor, runner, tail and spill | [#263](https://github.com/Roasbeef/loom/pull/263), on `main`. |
+| WP3, the tool surface, `cap/job`, the prelude | [#264](https://github.com/Roasbeef/loom/pull/264) merged into `jobs/actor`; relanded against `main` as [#267](https://github.com/Roasbeef/loom/pull/267), open. |
+| WP4, the tail module and the staging spill | Folded into WP2 rather than shipped separately. |
+| WP5, the shipped fixture and the docs | [#266](https://github.com/Roasbeef/loom/pull/266), open, on WP3 (`jobs/fixture`). The abort-step branch below stacks on it. |
+
+`daemon_shipped_jobs_test` is the acceptance evidence, and it runs for
+real — not skipping — in two places: the macOS gate, and the Linux jail
+job's *Shipped background jobs with delegated enforcement* step, which is
+the only run that exercises the pid namespace. A scripted turn
+backgrounds `tail -f build.log`, the fixture appends three
+lines from outside the jail, the next turn's poll is shown those three
+lines and nothing else with the job still pending, a kill produces a
+terminal state naming the owner and carrying the helper's `cancelled`
+witness, and the payload is proved gone — by a birth-qualified fence
+where the host shares the payload's pid, and by the terminal record and
+the jail's containment where a pid namespace hides it. A second scenario
+runs the same door from code mode through a real hermetic build
+and a real satellite. A third SIGKILLs the VM and proves the sweep
+commits `Lost`, the model's own poll reads it, and nothing is respawned.
+On a host without demanded enforcement — the ordinary Linux gate — the
+whole file declines with one declared reason
+(`.github/declared-skips-linux-gate`).
+
+### 0. Settle the code-mode abort collision
+
+**This one blocks the design note's own claim and comes first.** A
+code-mode execution ends by calling `broker.abort` on its operation to
+reap its satellite (`codemode/satellite.cleanup`,
+`codemode/launch.destroy`). A job started by that program cleared under
+the same operation, by decision 4 of the design note — so the teardown
+cancels the job's helper and the record reads `Lost(HelperLoss)` the
+moment the program returns. `cap/job`'s own module doc and the design
+note both promise the opposite. The same collision reaches a `bash`
+background job started in a batch that also runs a program.
+
+The choice is between narrowing what a satellite's teardown aborts —
+which today has only operation granularity, so it is a broker change with
+an abort epoch to think about — and re-keying a program-started job away
+from the execution's operation, which costs the abort semantics decision
+4 bought deliberately. Neither is obviously right, which is why WP5 did
+not take it.
+
+Exit: a program starts a job, returns, and a later program finds it
+`running` with its own output; `daemon_shipped_jobs_test`'s second
+scenario asserts that state instead of asserting none, and the comment on
+`watching_program` that explains the omission goes with it.
+
+### Queued behind it
+
+None of these is blocking, and each is small enough to do alone.
+
+- **Collapse `client/jobtools` into a tools-vocabulary door.** It exists
+  only to translate between `client/jobs`' vocabulary and `tools/job`'s.
+  If the door spoke the tools vocabulary directly, one of the two
+  translations disappears.
+- **Cap the terminal jobs a strand retains.** The actor holds every
+  record it has decoded so a poll can answer `Lost` rather than
+  `NotFound`, and nothing evicts a terminal one. A long session
+  accumulates them without bound.
+- **Give `LossReason` a variant for a helper's own failure cause.**
+  `HelperLoss` says the helper went away and nothing about why, which is
+  the one loss a model might act on differently.
+- **Measure `cap/job`'s prelude cost.** Tool-surface cost is arithmetic
+  paid on every request of every strand; the capability prelude's is paid
+  on every code-mode build. Nobody has measured what these four
+  operations added.
+- **Size a dedicated job pool if the shared one starves.** A running job
+  holds one helper for its whole life out of a pool of four to sixteen.
+  The design note records the arithmetic and deliberately waits for real
+  use rather than pre-building a second pool.
+- **Put `job_output` on the bus once
+  [#240](https://github.com/Roasbeef/loom/issues/240) lands.** The runner
+  already folds the `CallOutput` stream in one place, so a live event is
+  one more subscriber rather than a new mechanism. Under today's pull-only
+  delivery it would be inert.
 
 ## What to do next
 

@@ -1169,6 +1169,28 @@ jobs:
       - name: Skip census (shipped multiplayer)
         run: .github/scripts/skip_census.sh "jail (linux, shipped multiplayer)" shipped-multiplayer.log
 
+      # The background-jobs fixture belongs here more than anywhere else:
+      # its scenarios turn on how an unattended payload is contained, and
+      # the pid namespace that containment rests on exists only under this
+      # job's jail. The ordinary gate declines the file for want of
+      # enforcement and declares that skip; this is the run that is real.
+      # The shipment and the code-mode seed are already built above, and
+      # the three scenario bodies deadline at 120, 240 and 180 seconds, so
+      # the outer budget has to sit well clear of their sum.
+      - name: Shipped background jobs with delegated enforcement
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_TEST_PROVIDER_KEY: loom-provider-fixture-key
+          LOOM_TEST_TIMEOUT_SECONDS: 900
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          bash scripts/test.sh client --match client@daemon_shipped_jobs_test: \
+            2>&1 | tee shipped-jobs.log
+
+      - name: Skip census (shipped background jobs)
+        run: .github/scripts/skip_census.sh "jail (linux, shipped jobs)" shipped-jobs.log
+
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -1180,6 +1202,7 @@ jobs:
             e2e.log
             e2e-codemode.log
             shipped-multiplayer.log
+            shipped-jobs.log
           retention-days: 14
 
   # ------------------------------------------------------------- the oracle
