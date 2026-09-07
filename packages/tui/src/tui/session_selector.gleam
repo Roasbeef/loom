@@ -19,6 +19,25 @@ import tui/daemon/protocol
 import tui/text_hygiene
 import tui/theme
 
+/// Whether the picker is navigating or holding a destructive question open.
+///
+/// Deletion is the one selector action with no undo, so the question it asks
+/// is part of the picker's state rather than a flag beside it: while a
+/// confirmation is open the arrow keys, Enter and `n` all mean nothing, and
+/// a variant is what makes that unrepresentable rather than remembered.
+pub type Prompt {
+  /// Ordinary navigation; every key means what the help line says.
+  Browsing
+
+  /// A delete confirmation is open for exactly this identity. The row may
+  /// have moved under the cursor since, so the answer names the session it
+  /// was asked about rather than whatever is highlighted when `y` arrives.
+  ConfirmingDelete(
+    /// The session the question was asked about.
+    session_id: String,
+  )
+}
+
 /// One page is the complete retained selector inventory.
 pub type State {
   State(
@@ -28,6 +47,8 @@ pub type State {
     selected: Int,
     /// Currently attached session or the saved default before attachment.
     current: String,
+    /// Navigation, or an open question about one identity.
+    prompt: Prompt,
   )
 }
 
@@ -50,6 +71,12 @@ pub type Action {
 
   /// Return to the old conversation without opening any row.
   Close
+
+  /// The operator confirmed removal of this registration and its database.
+  Delete(
+    /// The identity the confirmation was asked about.
+    session_id: String,
+  )
 }
 
 /// Highlights the selected/default row if present in this page.
@@ -67,7 +94,31 @@ pub fn new(page: protocol.Page, current: String) -> State {
         False -> found
       }
     })
-  State(page, selected, current)
+  State(page, selected, current, Browsing)
+}
+
+/// Drops the named row from a page after the daemon confirmed its removal.
+///
+/// The picker does not re-list: the reply proves this identity is gone, and
+/// a fresh page would move every other row under the operator's cursor. The
+/// highlight is clamped so a deleted last row leaves the cursor on a row
+/// that exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_selector.without(state, deleted_id)
+/// ```
+pub fn without(state: State, session_id: String) -> State {
+  let sessions =
+    list.filter(state.page.sessions, fn(row) { row.session_id != session_id })
+  let selected = int.min(state.selected, int.max(0, list.length(sessions) - 1))
+  State(
+    ..state,
+    page: protocol.Page(..state.page, sessions:),
+    selected:,
+    prompt: Browsing,
+  )
 }
 
 /// Handles a key without any I/O or implicit selection.
@@ -78,6 +129,23 @@ pub fn new(page: protocol.Page, current: String) -> State {
 /// // session_selector.update(keys.Enter, selector)
 /// ```
 pub fn update(key: keys.Key, state: State) -> Action {
+  case state.prompt {
+    Browsing -> browsing(key, state)
+    ConfirmingDelete(session_id) -> confirming(key, state, session_id)
+  }
+}
+
+// While the question is open only its two answers exist. Anything else
+// withdraws it, because a stray key must never be read as consent to remove
+// a conversation.
+fn confirming(key: keys.Key, state: State, session_id: String) -> Action {
+  case key {
+    keys.Char("y") -> Delete(session_id)
+    _other -> Continue(State(..state, prompt: Browsing))
+  }
+}
+
+fn browsing(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape -> Close
     keys.Enter ->
@@ -98,6 +166,12 @@ pub fn update(key: keys.Key, state: State) -> Action {
         ),
       )
     keys.Char("n") -> NewSession
+    keys.Char("d") ->
+      case list.first(list.drop(state.page.sessions, state.selected)) {
+        Ok(row) ->
+          Continue(State(..state, prompt: ConfirmingDelete(row.session_id)))
+        Error(Nil) -> Continue(state)
+      }
     keys.Right ->
       case state.page.after {
         Some(after) -> NextPage(after, state.page.revision)
@@ -203,17 +277,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     ]
     rows -> rows
   }
-  let help =
-    span.line_new([
-      span.span_styled(
-        text.truncate(
-          "↑↓ select · Enter open · n new · → next page · ← first · Esc close",
-          inside.size.width,
-          "…",
-        ),
-        theme.overlay_quiet(),
-      ),
-    ])
+  let help = help_line(state, inside.size.width)
   buf
   |> buffer.clear(area)
   |> block.render(area, frame)
@@ -237,6 +301,38 @@ fn fit_workspace(workspace: String, width: Int) -> String {
   |> string.reverse
   |> text.truncate(width, "…")
   |> string.reverse
+}
+
+// The last line is either the key legend or the open question. Replacing it
+// rather than adding a line keeps the question where the reader's eye already
+// is, and leaves no doubt about which keys are live.
+fn help_line(state: State, width: Int) {
+  case state.prompt {
+    Browsing ->
+      span.line_new([
+        span.span_styled(
+          text.truncate(
+            "↑↓ select · Enter open · n new · d delete · → next page · ← first · Esc close",
+            width,
+            "…",
+          ),
+          theme.overlay_quiet(),
+        ),
+      ])
+
+    // A canonical identity is bounded by the wire at 64 bytes, so this line
+    // needs no truncation of its own; hygiene still applies because the text
+    // reaches a terminal.
+    ConfirmingDelete(session_id) ->
+      span.line_new([
+        span.span_styled(
+          text_hygiene.single_line(
+            "delete " <> session_id <> "? y/n · any other key cancels",
+          ),
+          theme.overlay_signal(),
+        ),
+      ])
+  }
 }
 
 fn lifecycle(status) {

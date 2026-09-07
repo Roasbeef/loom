@@ -155,6 +155,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     protocol.StatusReply(_)
     | protocol.SessionsReply(_)
     | protocol.SessionReply(_)
+    | protocol.DeletedReply(_)
     | protocol.ShutdownReply ->
       Error("open returned an unexpected control reply")
   })
@@ -192,8 +193,63 @@ pub fn create_named(
     protocol.StatusReply(_)
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
     | protocol.ShutdownReply ->
       Error("create returned an unexpected control reply")
+  }
+}
+
+/// Removes one saved registration and reports the identity the daemon freed.
+///
+/// The daemon refuses a session it still holds a slot for, so a caller that
+/// wants a running session gone stops it first and waits for the stop to
+/// settle. Nothing is retried here: a lost reply leaves an outcome the caller
+/// resolves by listing again, not by sending a second delete.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.delete(host, selected_id)
+/// ```
+pub fn delete(host: Host, session: String) -> Result(String, String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.DeleteSession(session), 10_000)
+    |> result.map_error(failure),
+  )
+  case reply {
+    protocol.DeletedReply(id) -> Ok(id)
+    protocol.StatusReply(_)
+    | protocol.SessionsReply(_)
+    | protocol.SessionReply(_)
+    | protocol.LifecycleReply(_)
+    | protocol.ShutdownReply ->
+      Error("delete returned an unexpected control reply")
+  }
+}
+
+/// Reads one bounded authorized page for a caller with no terminal open.
+///
+/// The command-line listing needs exactly this and nothing the picker keeps,
+/// so it shares the control host rather than the presentation state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.list(host, "")
+/// ```
+pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.ListSessions(after, None), 5000)
+    |> result.map_error(failure),
+  )
+  case reply {
+    protocol.SessionsReply(page) -> Ok(page)
+    protocol.StatusReply(_)
+    | protocol.SessionReply(_)
+    | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
+    | protocol.ShutdownReply ->
+      Error("listing returned an unexpected control reply")
   }
 }
 
@@ -230,6 +286,7 @@ fn selected_row(reply) {
     protocol.StatusReply(_)
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
     | protocol.ShutdownReply ->
       Error("selection returned an unexpected control reply")
   }
@@ -262,6 +319,7 @@ fn await(host: Host, session, operation) {
         Ok(protocol.StatusReply(_))
         | Ok(protocol.SessionsReply(_))
         | Ok(protocol.LifecycleReply(_))
+        | Ok(protocol.DeletedReply(_))
         | Ok(protocol.ShutdownReply) ->
           poll.Fail("operation returned an unexpected control reply")
       }

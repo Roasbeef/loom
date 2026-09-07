@@ -36,6 +36,7 @@ fn selector(selected: Int) -> session_selector.State {
     protocol.Page(1, rows, None),
     selected,
     first.session_id,
+    session_selector.Browsing,
   )
 }
 
@@ -99,7 +100,12 @@ pub fn session_selector_scroll_keeps_the_selected_record_visible_test() {
       )
     })
   let state =
-    session_selector.State(protocol.Page(1, rows, None), 11, "session-11")
+    session_selector.State(
+      protocol.Page(1, rows, None),
+      11,
+      "session-11",
+      session_selector.Browsing,
+    )
   let screen = geometry.rect_new(0, 0, 80, 16)
   let painted =
     session_selector.render(buffer.buffer_new(screen), screen, state)

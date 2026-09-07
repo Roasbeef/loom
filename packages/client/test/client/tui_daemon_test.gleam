@@ -58,7 +58,7 @@ pub fn tui_daemon_catalogue_recovery_keeps_frames_live_and_cancels_hello_test() 
     peer_listener(None, fn(port, peers, incoming, closed) {
       let model = retired_control_model(control, port)
       let loading = tui.update(backend.KeyPress("left"), model)
-      let assert Some(run) = loading.catalogue_request
+      let assert Some(run) = loading.control_request
         as "the frame loop starts the worker without waiting for hello"
       let assert Ok(peer) = process.receive(peers, 1000)
         as "replacement reached the peer but hello is still withheld"

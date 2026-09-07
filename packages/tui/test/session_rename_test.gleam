@@ -18,7 +18,7 @@ pub fn rename_without_attachment_reports_no_session_test() {
       input: textarea.state_from_string("/rename review auth"),
     )
   let after = tui.update(backend.KeyPress("enter"), model)
-  assert after.catalogue_request == None
+  assert after.control_request == None
   assert after.notice == "no session is attached"
 }
 
@@ -33,24 +33,27 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
     tui.Model(
       ..model,
       session: row.session_id,
-      catalogue_request: Some(tui.CatalogueRequest(
+      control_request: Some(tui.ControlRequest(
         weft.cancel_signal(),
         replies,
         None,
       )),
     )
   let received =
-    tui.accept_catalogue_event(
+    tui.accept_control_event(
       pending,
-      tui.CatalogueEvent(
+      tui.ControlEvent(
         replies,
-        weft.PulledOutcome(weft.Completed(0, #(page, row.session_id))),
+        weft.PulledOutcome(weft.Completed(
+          0,
+          tui.PageLoaded(page, row.session_id),
+        )),
       ),
     )
   let after =
-    tui.accept_catalogue_event(
+    tui.accept_control_event(
       received,
-      tui.CatalogueEvent(replies, weft.AllDelivered),
+      tui.ControlEvent(replies, weft.AllDelivered),
     )
   let assert tui.DaemonSelector(selector) = after.overlay
     as "the refreshed page is rendered only after the worker drains"
@@ -58,5 +61,5 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
   assert selector.current == row.session_id
   assert selector.selected == 0
   assert after.session == row.session_id
-  assert after.catalogue_request == None
+  assert after.control_request == None
 }

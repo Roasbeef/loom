@@ -1,10 +1,10 @@
 -module(tui_ffi).
 
-%% The terminal's own three actions. Bounded file reads, locks, process
+%% The terminal's own four actions. Bounded file reads, locks, process
 %% identity and launch are shared with the daemon and live in
 %% `host_bootstrap_ffi`, which `host/bootstrap` declares directly; nothing
 %% here forwards to it.
--export([silence_logger/0, run_forwarding/2, halt/1]).
+-export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1]).
 
 silence_logger() ->
     ok = logger:set_primary_config(level, none),
@@ -44,6 +44,22 @@ forward_loop(Port) ->
 %% the whole point of the passthrough.
 halt(Code) ->
     erlang:halt(Code).
+
+%% Asks the person at the terminal one question and answers with the line
+%% they typed. A caller with no terminal on stdin is refused rather than
+%% blocked: `loom sessions rm` in a pipeline must fail asking for --yes
+%% instead of waiting forever on input that is not coming.
+read_console_reply(PromptBinary) ->
+    case prim_tty:isatty(stdin) of
+        true ->
+            case io:get_line(unicode:characters_to_list(PromptBinary)) of
+                eof -> {error, <<"no reply on standard input">>};
+                {error, Reason} -> {error, describe(Reason)};
+                Line -> {ok, unicode:characters_to_binary(Line)}
+            end;
+        _ ->
+            {error, <<"standard input is not a terminal">>}
+    end.
 
 describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
