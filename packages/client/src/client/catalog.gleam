@@ -21,7 +21,8 @@
 ////
 //// ```toml
 //// [models.<name>]
-//// dialect = "anthropic" | "openai" | "gemini"   # which wire adapter speaks it
+//// dialect = "anthropic" | "openai" | "gemini" | "openai-responses"
+//// auth = "api-key"                  # required only for openai-responses
 //// base_url = "https://..."           # optional; dialect default used
 //// api_key_env = "SOME_API_KEY"       # env var *name*, never a value
 //// model_id = "provider-model-id"
@@ -91,8 +92,8 @@ import provider/model
 import provider/secret.{type SecretStore}
 import tom
 
-/// Which wire adapter an entry speaks. The two variants mirror the
-/// provider gateway's two `ProviderConfig` shapes.
+/// Which wire adapter an entry speaks. Each variant mirrors one of the
+/// provider gateway's API-key `ProviderConfig` shapes.
 pub type Dialect {
   /// The Anthropic Messages API.
   Anthropic
@@ -100,6 +101,9 @@ pub type Dialect {
   /// An OpenAI-compatible chat-completions API (OpenAI itself, Baseten,
   /// and every other endpoint speaking that dialect).
   OpenAiCompatible
+
+  /// The public OpenAI Responses API with API-key authentication.
+  OpenAiResponses
 
   /// The Gemini `generateContent` API (Google AI Studio keys against the
   /// Gemini Developer API).
@@ -361,7 +365,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking",
+      "max_output_tokens", "thinking", "auth", "profile",
     ],
     place,
   ))
@@ -369,15 +373,19 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   use dialect <- result.try(case dialect_text {
     "anthropic" -> Ok(Anthropic)
     "openai" -> Ok(OpenAiCompatible)
+    "openai-responses" -> Ok(OpenAiResponses)
     "gemini" -> Ok(Gemini)
+    "codex-subscription" ->
+      Error(place <> ": Codex subscription authentication is not supported")
     other ->
       Error(
         place
-        <> ".dialect must be \"anthropic\", \"openai\" or \"gemini\", got \""
+        <> ".dialect must be \"anthropic\", \"openai\", \"gemini\" or \"openai-responses\", got \""
         <> other
         <> "\"",
       )
   })
+  use Nil <- result.try(validate_auth(fields, place, dialect))
   use base_url <- result.try(case optional_string(fields, place, "base_url") {
     Ok(Ok(url)) -> Ok(strip_trailing_slash(url))
     Ok(Error(Nil)) -> Ok(default_base_url(dialect))
@@ -408,6 +416,33 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   ))
 }
 
+// Authentication is closed at loading: the runtime carries only a secret
+// name, never an ignored profile or an unsupported subscription mode.
+fn validate_auth(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  dialect: Dialect,
+) -> Result(Nil, String) {
+  use Nil <- result.try(case dict.has_key(fields, "profile") {
+    True -> Error(place <> ".profile is not supported for API-key providers")
+    False -> Ok(Nil)
+  })
+  case dialect {
+    OpenAiResponses -> {
+      use auth <- result.try(required_string(fields, place, "auth"))
+      case auth {
+        "api-key" -> Ok(Nil)
+        _ -> Error(place <> ".auth must be \"api-key\" for openai-responses")
+      }
+    }
+    Anthropic | OpenAiCompatible | Gemini ->
+      case dict.has_key(fields, "auth") {
+        True -> Error(place <> ".auth is only supported for openai-responses")
+        False -> Ok(Nil)
+      }
+  }
+}
+
 /// The dialect's conventional endpoint root, used when an entry names
 /// none. Baseten-style entries always set their own `base_url`.
 ///
@@ -422,6 +457,7 @@ pub fn default_base_url(dialect: Dialect) -> String {
   case dialect {
     Anthropic -> "https://api.anthropic.com"
     OpenAiCompatible -> "https://api.openai.com/v1"
+    OpenAiResponses -> "https://api.openai.com/v1"
     Gemini -> "https://generativelanguage.googleapis.com/v1beta"
   }
 }
@@ -1047,6 +1083,7 @@ pub fn dialect_to_string(dialect: Dialect) -> String {
   case dialect {
     Anthropic -> "anthropic"
     OpenAiCompatible -> "openai"
+    OpenAiResponses -> "openai-responses"
     Gemini -> "gemini"
   }
 }
@@ -1123,6 +1160,12 @@ fn provider_config(entry: CatalogModel) -> provider_gateway.ProviderConfig {
       )
     OpenAiCompatible ->
       provider_gateway.OpenAiCompatibleProvider(
+        name: entry.name,
+        base_url: entry.base_url,
+        api_key_secret: entry.api_key_env,
+      )
+    OpenAiResponses ->
+      provider_gateway.OpenAiResponsesProvider(
         name: entry.name,
         base_url: entry.base_url,
         api_key_secret: entry.api_key_env,

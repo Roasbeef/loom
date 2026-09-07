@@ -5,13 +5,16 @@
 import client/catalog
 import client/mcp
 import core/clock
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import mcp/name
 import provider/gateway as provider_gateway
+import provider/http
 import provider/model
 import provider/secret
+import provider/stream
 import simplifile
 import support/provider as provider_test
 
@@ -31,7 +34,7 @@ pub fn example_parses_sorted_and_routed_test() {
   let parsed = example()
   // Entries come back sorted by name regardless of file order.
   assert list.map(parsed.models, fn(entry) { entry.name })
-    == ["anthropic-opus", "baseten-oss", "gemini-flash"]
+    == ["anthropic-opus", "baseten-oss", "gemini-flash", "openai-responses"]
   // Roles come back in canonical order with their chains intact.
   assert parsed.roles
     == [
@@ -133,6 +136,185 @@ main = [\"one\"]
 pub fn minimal_catalogue_parses_test() {
   let assert Ok(parsed) = catalog.parse(minimal)
   assert list.length(parsed.models) == 1
+}
+
+// Vary only the authentication fields around one otherwise valid entry, so
+// each refusal proves the intended configuration boundary.
+fn responses_catalogue(fields: String) -> String {
+  minimal
+  |> string.replace("dialect = \"anthropic\"", "dialect = \"openai-responses\"")
+  |> string.replace("api_key_env = \"KEY\"", fields)
+}
+
+pub fn responses_defaults_and_trailing_slashes_test() {
+  let text = responses_catalogue("auth = \"api-key\"\napi_key_env = \"KEY\"")
+  let assert Ok(parsed) = catalog.parse(text)
+    as "explicit API-key Responses configuration must parse"
+  let assert Ok(entry) = catalog.find(parsed, "one")
+    as "the Responses entry must retain its catalogue identity"
+  assert entry.dialect == catalog.OpenAiResponses
+  assert entry.base_url == "https://api.openai.com/v1"
+  assert catalog.dialect_to_string(entry.dialect) == "openai-responses"
+  assert catalog.resolved(entry).provider == "one"
+  assert entry.api_key_env == "KEY"
+  assert entry.thinking == model.ThinkingOff
+
+  let assert Ok(custom) =
+    catalog.parse(responses_catalogue(
+      "auth = \"api-key\"\napi_key_env = \"KEY\"\nbase_url = \"https://responses.test/v1///\"",
+    ))
+    as "Responses roots use the existing normalization"
+  let assert Ok(custom_entry) = catalog.find(custom, "one")
+    as "the custom Responses entry must exist"
+  assert custom_entry.base_url == "https://responses.test/v1"
+}
+
+pub fn responses_auth_configuration_is_closed_test() {
+  list.each(
+    [
+      #("api_key_env = \"KEY\"", "models.one.auth is required"),
+      #(
+        "auth = \"\"\napi_key_env = \"KEY\"",
+        "models.one.auth must be non-empty",
+      ),
+      #("auth = 1\napi_key_env = \"KEY\"", "models.one.auth must be a string"),
+      #(
+        "auth = \"codex\"\napi_key_env = \"KEY\"",
+        "models.one.auth must be \"api-key\" for openai-responses",
+      ),
+      #(
+        "auth = \"unknown\"\napi_key_env = \"KEY\"",
+        "models.one.auth must be \"api-key\" for openai-responses",
+      ),
+      #("auth = \"api-key\"", "models.one.api_key_env is required"),
+      #(
+        "auth = \"api-key\"\napi_key_env = \"\"",
+        "models.one.api_key_env must be non-empty",
+      ),
+      #(
+        "auth = \"api-key\"\napi_key_env = 1",
+        "models.one.api_key_env must be a string",
+      ),
+      #(
+        "auth = \"api-key\"\napi_key_env = \"KEY\"\nprofile = \"default\"",
+        "models.one.profile is not supported for API-key providers",
+      ),
+      #(
+        "auth = \"api-key\"\napi_key_env = \"KEY\"\nprofile = 1",
+        "models.one.profile is not supported for API-key providers",
+      ),
+    ],
+    fn(example) {
+      assert catalog.parse(responses_catalogue(example.0)) == Error(example.1)
+    },
+  )
+}
+
+pub fn responses_headers_and_subscription_are_explicitly_refused_test() {
+  let assert Error("models.one: per-model headers are not supported" <> _) =
+    catalog.parse(responses_catalogue(
+      "auth = \"api-key\"\napi_key_env = \"KEY\"\nheaders = { Authorization = \"not-a-credential\" }",
+    ))
+    as "Responses must not acquire an arbitrary credential header path"
+  assert catalog.parse(
+      minimal
+      |> string.replace(
+        "dialect = \"anthropic\"",
+        "dialect = \"codex-subscription\"",
+      ),
+    )
+    == Error("models.one: Codex subscription authentication is not supported")
+}
+
+pub fn existing_dialects_keep_their_auth_contract_test() {
+  list.each(["anthropic", "openai", "gemini"], fn(dialect) {
+    let text =
+      string.replace(
+        minimal,
+        "dialect = \"anthropic\"",
+        "dialect = \"" <> dialect <> "\"",
+      )
+    let assert Ok(_) = catalog.parse(text)
+      as "existing dialects must continue to accept their original configuration"
+    list.each(["\"api-key\"", "\"codex\"", "1"], fn(auth) {
+      assert catalog.parse(string.replace(
+          text,
+          "model_id =",
+          "auth = " <> auth <> "\nmodel_id =",
+        ))
+        == Error("models.one.auth is only supported for openai-responses")
+    })
+    assert catalog.parse(string.replace(
+        text,
+        "model_id =",
+        "profile = \"default\"\nmodel_id =",
+      ))
+      == Error("models.one.profile is not supported for API-key providers")
+  })
+}
+
+pub fn responses_and_chat_completions_keep_distinct_identities_test() {
+  let text =
+    "[models.chat]\ndialect = \"openai\"\napi_key_env = \"CHAT_KEY\"\nmodel_id = \"shared-model\"\ncontext_window = 1000\nmax_output_tokens = 100\n"
+    <> "[models.responses]\ndialect = \"openai-responses\"\nauth = \"api-key\"\napi_key_env = \"RESPONSES_KEY\"\nmodel_id = \"shared-model\"\ncontext_window = 1000\nmax_output_tokens = 100\n"
+    <> "[roles]\nmain = [\"chat\", \"responses\"]\nplan = [\"responses\"]\n"
+  let assert Ok(parsed) = catalog.parse(text)
+    as "one catalogue must carry both OpenAI dialects"
+  let gateway =
+    catalog.gateway(
+      parsed,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(0),
+    )
+  let assert Ok(chat) = provider_gateway.resolve(gateway, model.Main)
+    as "the Chat Completions route must resolve"
+  let assert Ok(responses) = provider_gateway.resolve(gateway, model.Plan)
+    as "the Responses route must resolve"
+  assert chat.model_id == responses.model_id
+  assert chat.provider == "chat"
+  assert responses.provider == "responses"
+}
+
+pub fn parsed_responses_catalogue_dispatches_through_its_adapter_test() {
+  let assert Ok(parsed) =
+    catalog.parse(responses_catalogue(
+      "auth = \"api-key\"\napi_key_env = \"KEY\"",
+    ))
+    as "the Responses configuration must load before dispatch"
+  let requests = process.new_subject()
+  let transport =
+    provider_test.transport(fn(request, events) {
+      process.send(requests, request)
+      process.send(events, http.ResponseStatus(400, []))
+      process.send(events, http.ResponseEnd)
+    })
+  let gateway =
+    catalog.gateway(
+      parsed,
+      transport:,
+      secrets: secret.from_list([#("KEY", "catalogue-test-key")]),
+      clock: clock.fixed(0),
+    )
+  let handle =
+    provider_gateway.request(
+      gateway,
+      model.ProviderRequest(
+        target: model.ForRole(model.Main, None),
+        system: None,
+        messages: [],
+        tools: [],
+        max_output_tokens: None,
+      ),
+    )
+  let assert Ok(#(_, stream.Failed(_))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the deliberate HTTP refusal must settle the configured request"
+  let assert Ok(sent) = process.receive(requests, within: 1000)
+    as "the catalogue must register a usable Responses provider"
+  assert sent.url == "https://api.openai.com/v1/responses"
+  assert list.key_find(sent.headers, "authorization")
+    == Ok("Bearer catalogue-test-key")
 }
 
 pub fn empty_document_refused_test() {

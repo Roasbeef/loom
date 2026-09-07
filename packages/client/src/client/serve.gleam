@@ -89,6 +89,7 @@ import machine/strand as machine_strand
 import provider/adapter/anthropic
 import provider/adapter/gemini
 import provider/adapter/openai
+import provider/adapter/responses
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
@@ -1005,6 +1006,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
   case dialect {
     catalog.Anthropic -> anthropic.api_name
     catalog.OpenAiCompatible -> openai.api_name
+    catalog.OpenAiResponses -> responses.api_name
     catalog.Gemini -> gemini.api_name
   }
 }
