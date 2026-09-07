@@ -326,6 +326,23 @@ phase. `presence` and `attachment` trigger a capture, like a notice. A
 pushed `error` reports a failure the daemon had on this terminal's behalf,
 so it is rendered as an ordinary refusal and the socket stays open.
 
+A `stream_delta` arrives per provider token, and what the terminal keeps of
+one is bounded in two ways it did not used to be. The delta's `text` is a
+slice of the whole received frame, so the model rebuilds it before storing
+it; keeping the slice kept the frame, and a long answer kept one frame per
+token. And the accumulated live region collapses to its newest 24 KiB —
+`tui.live_stream_limit`, the same clip `stream_preview` takes — whenever it
+would pass twice that. Without the second bound every paint reflowed the
+whole answer, so a terminal on a long turn drained its socket more slowly
+the longer the turn ran, until the socket was not being drained at all and
+the growth moved into the mailbox, a whole frame per queued message. That is
+what put two terminals at 32 GB and 26 GB against daemons at 3.5 GB and
+1.6 GB. `packages/tui/test/stream_bounds_test.gleam` holds the bound: across
+40,000 deltas the model stays flat at a few hundred kilobytes and sustains
+above 3,500 deltas a second. What a reader loses is the head of an answer
+that has not committed, and the durable record replaces the whole region the
+moment it does.
+
 ### One turn on the wire
 
 The transcript below shows one turn as a raw v2 client receives it. `→`
