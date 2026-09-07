@@ -3663,7 +3663,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.StreamDelta(strand:, kind:, text:) -> {
+    protocol.StreamDelta(strand:, operation: _, kind:, text:) -> {
       // The generation clock normally started when the strand entered
       // its `assistant` phase (see `OperationChanged`); a fragment that
       // finds it unset is the fallback, for a phase sequence that never
@@ -3748,9 +3748,14 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
     protocol.ServerError(code:, message:) ->
       append_error(Model(..model, submitting: None), code <> ": " <> message)
+    // A commit notice and a metadata change say only that the next capture
+    // will differ. `tui/session_channel` acts on them by capturing; there is
+    // nothing for a renderer to draw from the frame itself.
+    protocol.Committed(..) | protocol.MetadataChanged(_) -> model
     protocol.Ignored(_) -> model
   }
   case event {
+    protocol.Committed(..) | protocol.MetadataChanged(_) -> updated
     protocol.Ignored(_) -> updated
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
