@@ -29,9 +29,11 @@
 //// (spec §3.3 invariant 4).
 
 import core/clock.{type Clock}
+import core/message.{type Usage, AssistantMessage}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import provider/adapter/anthropic
 import provider/adapter/gemini
 import provider/adapter/openai
@@ -42,6 +44,7 @@ import provider/model.{
   type MissingIdentity, type ProviderRequest, type ResolvedModel, type Role,
   type ThinkingLevel, ForResolved, ForRole, MissingIdentity, ResolvedModel,
 }
+import provider/pricing.{type Pricing}
 import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
@@ -131,11 +134,14 @@ pub opaque type Gateway {
   /// Invariants: `providers` hold unique names (later registrations of a
   /// name shadow earlier ones via first-match lookup order); `routes`
   /// map each role to its ordered fallback chain, best target first;
+  /// `prices` carries at most one rate card per provider name and a
+  /// provider absent from it is unpriced, which costs zero;
   /// `attempt_timeout_ms` is positive and bounds one attempt from transport
   /// start through settlement. Response activity does not renew the deadline.
   Gateway(
     providers: List(ProviderConfig),
     routes: List(#(Role, List(ResolvedModel))),
+    prices: List(#(String, Pricing)),
     transport: Transport,
     secrets: SecretStore,
     clock: Clock,
@@ -164,6 +170,7 @@ pub fn new(
   Gateway(
     providers: [],
     routes: [],
+    prices: [],
     transport:,
     secrets:,
     clock:,
@@ -208,6 +215,46 @@ pub fn route(
     ..list.filter(gateway.routes, fn(entry) { entry.0 != role })
   ]
   Gateway(..gateway, routes:)
+}
+
+/// Attaches a rate card to a registered provider, replacing any card it
+/// already had.
+///
+/// Pricing hangs off the provider name rather than off `ProviderConfig`
+/// because it is not a wire fact: the adapter's request is byte-identical
+/// whether or not the operator wrote down what the endpoint charges. A
+/// provider with no card is unpriced and its settlements keep the zero
+/// cost the adapters write.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway |> gateway.price("kimi-k3", pricing.Pricing(3.0, 15.0, 0.3, 3.0))
+/// ```
+///
+pub fn price(gateway: Gateway, provider: String, card: Pricing) -> Gateway {
+  let prices = [
+    #(provider, card),
+    ..list.filter(gateway.prices, fn(entry) { entry.0 != provider })
+  ]
+  Gateway(..gateway, prices:)
+}
+
+/// The rate card registered for a provider, or `Error(Nil)` when it is
+/// unpriced.
+///
+/// The gateway is opaque, so this is how a caller assembling one from a
+/// catalogue can check that the cards it wrote down are the cards that
+/// arrived. Dispatch does not go through it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.card_for(gw, "anthropic") -> Error(Nil)
+/// ```
+///
+pub fn card_for(gateway: Gateway, provider: String) -> Result(Pricing, Nil) {
+  list.key_find(gateway.prices, provider)
 }
 
 /// Overrides the absolute per-attempt deadline in milliseconds. Response
@@ -1637,7 +1684,61 @@ fn attempt_one(
         within: gateway.attempt_timeout_ms,
       )
   }
-  scrub_attempt(outcome, api_key)
+
+  // Costing sits between the adapter and the walk's terminal, which is the
+  // one place every settlement passes through exactly once and the last
+  // place the target that produced it is still known. Doing it here rather
+  // than in the adapters keeps them ignorant of commercial arrangements,
+  // and doing it before `continue_or_deliver` means the ledger writes a
+  // priced record without a second costing pass anywhere above the seam.
+  priced(gateway, outcome, target)
+  |> scrub_attempt(api_key)
+}
+
+// Rewrites a settled attempt's usage with the target provider's rate card.
+// A failure, a cancellation, or an unpriced provider passes through
+// untouched — the last because a zero card would produce the same zeros
+// the adapter already wrote, at the cost of rebuilding the message.
+fn priced(
+  gateway: Gateway,
+  outcome: AttemptOutcome,
+  target: ResolvedModel,
+) -> AttemptOutcome {
+  case outcome, list.key_find(gateway.prices, target.provider) {
+    AttemptTerminal(Settled(message: settled, usage:)), Ok(card) ->
+      AttemptTerminal(Settled(
+        message: repriced(settled, usage, card),
+        usage: pricing.price(usage, card),
+      ))
+
+    AttemptTerminal(terminal:), _ -> AttemptTerminal(terminal:)
+    AttemptCancelled, _ -> AttemptCancelled
+    AttemptCancellationUnconfirmed, _ -> AttemptCancellationUnconfirmed
+    AttemptDrainProofLost, _ -> AttemptDrainProofLost
+    ConsumerGone, _ -> ConsumerGone
+  }
+}
+
+// `Settled.usage` is documented to equal the usage inside the settled
+// message, so pricing has to rewrite both halves or break that invariant.
+// The unwrap cannot fire: the message came out of a `Settled` event, so it
+// is an assistant message with a settled stop reason, and a record update
+// changes neither fact. Leaving the original in place is still the right
+// answer if it somehow did, because an unpriced record is a smaller lie
+// than a dropped settlement.
+fn repriced(
+  settled: stream.SettledAssistantMessage,
+  usage: Usage,
+  card: pricing.Pricing,
+) -> stream.SettledAssistantMessage {
+  case stream.message(settled) {
+    AssistantMessage(..) as assistant ->
+      AssistantMessage(..assistant, usage: pricing.price(usage, card))
+      |> stream.settle
+      |> result.unwrap(settled)
+
+    _other -> settled
+  }
 }
 
 // The remote endpoint necessarily sees the request key and can reflect it in
