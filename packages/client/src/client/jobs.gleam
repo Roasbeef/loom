@@ -1459,9 +1459,26 @@ fn absorb(
   let path = staging_path(root: runner.wiring.blob_root, id: runner.id, stream:)
   let staged = case runner.wiring.spill.append(path, data) {
     Error(_unwritable) -> runner.staged
-    Ok(Nil) -> [stream, ..runner.staged]
+    Ok(Nil) -> remembering(runner.staged, stream)
   }
   Runner(..runner, streams:, staged:)
+}
+
+// The staged set, with this stream in it.
+//
+// A set of at most two, so the guard is what keeps it one: prepending on
+// every successful append made the list one entry per *chunk*, which a
+// `tail -f` emitting a line at a time turns into tens of thousands of
+// entries over an hour — each one paid for again by the `list.contains`
+// that promotion does.
+fn remembering(
+  staged: List(framing.OutputStream),
+  stream: framing.OutputStream,
+) -> List(framing.OutputStream) {
+  case list.contains(staged, stream) {
+    True -> staged
+    False -> [stream, ..staged]
+  }
 }
 
 // The wall deadline, and then the end of the grace it allows.
