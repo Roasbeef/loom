@@ -626,10 +626,11 @@ pub fn resolve_managed(
       ..settings,
       session_id: registration.id,
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
-      base_policy: policy.SandboxPolicy(..settings.base_policy, protected: [
-        state_root,
-        ..settings.base_policy.protected
-      ]),
+      // The daemon's secrets, not the daemon's directory. Masking the
+      // whole state root also masked a workspace an operator had every
+      // right to open on it; see `state_root_masks` for the grain and
+      // the reason for each entry.
+      base_policy: protecting_state_root(settings.base_policy, state_root),
     ),
   )
 }
@@ -3732,6 +3733,144 @@ pub fn protecting_memory(
   ])
 }
 
+/// Every path under the daemon's state root that must stay masked from
+/// every jail, as a function of that root.
+///
+/// The list exists because the state root as a whole must not be the
+/// mask. Masking `~/.loom` wholesale reads as prudence and is a bug: an
+/// operator who opens a session *on* the state root — to edit
+/// `loom.toml`, which is a reasonable thing to want Loom's help with —
+/// gets a Seatbelt profile denying reads over the jail's own working
+/// directory, and every jailed call comes back
+/// `getcwd: cannot access parent directories`. The workspace was
+/// legitimate; the grain was wrong.
+///
+/// So each entry is decided on one question: could a jailed process
+/// reading or writing it obtain a credential, another session's data, or
+/// the daemon's control? What the state root holds that answers no —
+/// the `loom*.toml` catalogues (they name environment variables, they do
+/// not carry secrets), `extensions/`, `logs/` and `daemon.log` — is left
+/// alone, because masking it buys nothing and costs the operator a
+/// directory they may want to work in.
+///
+/// The blob store is masked too, one layer up rather than here:
+/// `base_policy` protects `<workspace>/.blobs` for every workspace, so a
+/// session whose workspace *is* the state root already has it, and a
+/// second entry naming the same path would be a duplicate mask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.state_root_masks("/home/o/.loom") |> list.contains("/home/o/.loom/owner.token")
+/// ```
+///
+pub fn state_root_masks(state_root: String) -> List(String) {
+  list.append(established_masks(state_root), lazy_masks(state_root))
+}
+
+/// The base policy with the daemon's state-root secrets masked, in place
+/// of the state root itself.
+///
+/// The split between the two halves of the list is `protecting`'s
+/// `always`/`where_writable` distinction and it is load-bearing here for
+/// the reason that comment gives: the jail refuses to mask a *missing*
+/// protected path whose parent is read-only, and a refusal at that layer
+/// is a refusal of every jailed call in the session. So only the entries
+/// the daemon root has necessarily created before it admits any session
+/// are unconditional; the lazily created ones are masked exactly where a
+/// jail could write to their directory in the first place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.protecting_state_root(base, "/home/o/.loom")
+/// ```
+///
+pub fn protecting_state_root(
+  base: policy.SandboxPolicy,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  protecting(
+    base,
+    always: established_masks(state_root),
+    where_writable: lazy_masks(state_root),
+  )
+}
+
+// The masked entries `client/daemon/root.directories` and the startup
+// that follows it have certainly created by the time any session policy
+// is built, so masking them costs no existence question.
+fn established_masks(state_root: String) -> List(String) {
+  [
+    // The daemon's owner credential in plaintext. A jailed process that
+    // read it would hold `/v2/control` — every session on the host, and
+    // the authority to create more.
+    state_root <> "/owner.token",
+
+    // The catalogue: registrations, workspaces and the digests the
+    // daemon authenticates principals against. Reading it enumerates
+    // every other session; writing it forges an admission record.
+    state_root <> "/catalogue.db",
+
+    // Every session's conversation database, this one's included. One
+    // session's jail reading another's transcript is the confinement gap
+    // issue #242 exists for, and a directory mask is the whole answer
+    // for the sessions that live here.
+    state_root <> "/sessions",
+
+    // The root's lifetime lock. It carries no secret; it is the daemon's
+    // singleton fence, and a jailed process that could unlink or rewrite
+    // it could induce a second daemon over the same catalogue.
+    state_root <> "/daemon.lock",
+  ]
+}
+
+// The masked entries created lazily — by a launcher, by the first
+// session on a workspace, or by the daemon after it is already serving.
+// Masked only where a writable root reaches the state root, which is
+// exactly the case a jail could create or rewrite them in, and exactly
+// the case the missing-path refusal would otherwise bite in.
+fn lazy_masks(state_root: String) -> List(String) {
+  list.flatten([
+    // The catalogue runs in WAL mode, so a write to `-wal` is the same
+    // forgery one filename to the right. Conditional for the reason
+    // `protecting_index`'s side files are: `-journal` exists only after
+    // a failed WAL pragma.
+    sqlite_side_files(state_root <> "/catalogue.db"),
+    [
+      // The launcher's per-endpoint bearer tokens. Credentials, plainly:
+      // one of these attaches to the session it names.
+      state_root <> "/tokens",
+
+      // The launcher's per-endpoint locks, on `daemon.lock`'s argument:
+      // the daemon's exclusion, not the model's to take or break.
+      state_root <> "/locks",
+
+      // Per-workspace domain state — the memory store and search index
+      // every session on that workspace injects from. `protecting_memory`
+      // states why a model-writable digest is the cleanest injection
+      // channel in the tree; this is the same door for *other*
+      // workspaces.
+      state_root <> "/workspaces",
+
+      // The session-scoped half of the same domain state.
+      state_root <> "/domains",
+
+      // The endpoint records, and the one the daemon publishes. They
+      // carry no secret — `host/endpoint`'s schema deliberately holds no
+      // credential, workspace or session path — but a launcher adopts a
+      // running daemon by the PID and birth marker it reads here, so a
+      // jailed rewrite points the operator's next launch at a process of
+      // the model's choosing. Masked as control, not as confidentiality.
+      state_root <> "/endpoints",
+      state_root <> "/daemon.endpoint",
+
+      // The launcher's startup lock, on `daemon.lock`'s argument.
+      state_root <> "/launch.lock",
+    ],
+  ])
+}
+
 // The whole SQLite file family beside a database: it runs in WAL mode,
 // so `-wal` and `-shm` live beside it and a write to either is the same
 // poisoning door one filename to the right — WAL frame checksums are not
@@ -3742,12 +3881,14 @@ fn sqlite_side_files(path: String) -> List(String) {
   [path <> "-wal", path <> "-shm", path <> "-journal"]
 }
 
-// The one conditional-protection mechanism, shared by the index and by
-// memory rather than copied for each.
+// The one conditional-protection mechanism, shared by the index, by
+// memory and by the daemon's state-root masks rather than copied for
+// each.
 //
 // `always` is for paths that certainly exist by the time a jail is
-// built — the index database, which the boot's probe creates — because
-// masking an existing file needs nothing from its parent.
+// built — the index database, which the boot's probe creates, and the
+// four entries the daemon root writes before it admits a session —
+// because masking an existing file needs nothing from its parent.
 // `where_writable` is for everything else, and the condition is the
 // threat model rather than a convenience: a protected path that does not
 // exist under a read-only parent is one the jail refuses to mask, which
@@ -3764,9 +3905,7 @@ fn protecting(
   where_writable conditional: List(String),
 ) -> policy.SandboxPolicy {
   let reachable =
-    list.filter(conditional, fn(path) {
-      writable_reaches(base, parent_of(path))
-    })
+    list.filter(conditional, fn(path) { writable_touches(base, path) })
   policy.SandboxPolicy(
     ..base,
     protected: list.flatten([
@@ -3777,11 +3916,20 @@ fn protecting(
   )
 }
 
-// Whether any writable root covers `directory` — the question of
-// whether a jailed or harness-side write could create a file there.
-fn writable_reaches(base: policy.SandboxPolicy, directory: String) -> Bool {
+// Whether a jailed or harness-side write could reach `path` at all —
+// the question the conditional half of `protecting` turns on.
+//
+// Two ways it can, and only the first was once asked. A writable root
+// may cover the path's *parent*, which is how a file gets created beside
+// its siblings. Or a writable root may lie *inside* the path, which is
+// how a directory entry like the state root's `tokens/` becomes
+// writable without anything covering `~/.loom` itself. Asking only the
+// first left such an entry unmasked *and* unrefused, so a workspace
+// nested inside a secret directory would have quietly worked.
+fn writable_touches(base: policy.SandboxPolicy, path: String) -> Bool {
   list.any(base.writable_roots, fn(root) {
-    policy.covers(root: root, path: directory)
+    policy.covers(root: root, path: parent_of(path))
+    || policy.covers(root: path, path: root)
   })
 }
 
@@ -4058,6 +4206,12 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 /// value is checked once, before anything is spawned, and the server
 /// does not come up.
 ///
+/// A **workspace inside a mask** is the second refusal, and it is not
+/// one `policy.validate` could make: the policy is perfectly
+/// enforceable, and enforcing it shadows the session's own working
+/// directory. `masked_workspace_fault` says what that cost, and
+/// `state_root_masks` says why the daemon no longer causes it.
+///
 /// Pure, and separate from `boot` for that reason: this is a decision
 /// about a value, and it should be testable as one.
 ///
@@ -4068,11 +4222,57 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 /// ```
 ///
 pub fn base_policy_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
-  policy.validate(base)
-  |> result.map_error(fn(error) {
-    "the session base policy is not one the sandbox can enforce: "
-    <> policy_fault_text(error)
-  })
+  use Nil <- result.try(
+    policy.validate(base)
+    |> result.map_error(fn(error) {
+      "the session base policy is not one the sandbox can enforce: "
+      <> policy_fault_text(error)
+    }),
+  )
+
+  // The second refusal is about the *shape* of an enforceable policy
+  // rather than its values, which is why `policy.validate` does not make
+  // it: a workspace inside a mask is a policy the sandbox enforces
+  // perfectly and the operator cannot use.
+  masked_workspace_fault(base)
+}
+
+// Why a workspace this policy makes unusable is a refusal rather than a
+// live session.
+//
+// `protected` is the policy's only subtractive verb and no grant carves
+// a hole in one, so a writable root that is a masked entry or sits under
+// one is shadowed by the mask whatever the grant says. That session
+// comes up, and then every jailed call fails on its own working
+// directory — the measured failure was `getcwd: cannot access parent
+// directories` out of every `bash`, with `ls` printing nothing and the
+// code-mode satellite unable to open `.`. The operator learns about it
+// from the first tool call, having been told nothing at boot, so the
+// value is judged once instead.
+fn masked_workspace_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
+  let shadowed =
+    list.flat_map(base.protected, fn(entry) {
+      list.filter_map(base.writable_roots, fn(root) {
+        case policy.covers(root: entry, path: root) {
+          True -> Ok(#(entry, root))
+          False -> Error(Nil)
+        }
+      })
+    })
+  case shadowed {
+    [] -> Ok(Nil)
+    [#(entry, root), ..] ->
+      Error(
+        "the workspace `"
+        <> root
+        <> "` is the protected entry `"
+        <> entry
+        <> "`, or lies under it. Every jail masks that entry, so the "
+        <> "session's own working directory would be unreadable and "
+        <> "every tool call would fail on it. Choose another directory "
+        <> "for the workspace",
+      )
+  }
 }
 
 fn policy_fault_text(error: policy.PolicyError) -> String {

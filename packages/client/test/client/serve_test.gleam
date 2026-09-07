@@ -1190,6 +1190,109 @@ pub fn a_base_policy_the_sandbox_can_enforce_boots_test() {
   assert serve.base_policy_fault(serve.base_policy("/work")) == Ok(Nil)
 }
 
+// --- what the daemon masks under its state root ----------------------------
+
+pub fn the_state_root_masks_name_the_secrets_and_not_the_root_test() {
+  // The grain the shipped daemon got wrong. Masking `~/.loom` whole
+  // denied reads over the working directory of a session opened on it,
+  // and every jailed call came back `getcwd: cannot access parent
+  // directories`. The list must therefore name what a jail must not
+  // reach and stop there.
+  let masks = serve.state_root_masks("/home/o/.loom")
+
+  let secrets = [
+    "/home/o/.loom/owner.token",
+    "/home/o/.loom/tokens",
+    "/home/o/.loom/sessions",
+    "/home/o/.loom/catalogue.db",
+    "/home/o/.loom/workspaces",
+    "/home/o/.loom/domains",
+    "/home/o/.loom/locks",
+    "/home/o/.loom/daemon.lock",
+    "/home/o/.loom/launch.lock",
+    "/home/o/.loom/endpoints",
+    "/home/o/.loom/daemon.endpoint",
+  ]
+  list.each(secrets, fn(entry) {
+    assert list.contains(masks, entry) as { "masked: " <> entry }
+  })
+
+  // The root itself is not a mask, which is the whole of the fix, and
+  // neither is anything an operator has a legitimate reason to edit.
+  // The catalogues name environment variables; they hold no secret.
+  let allowed = [
+    "/home/o/.loom",
+    "/home/o/.loom/loom.toml",
+    "/home/o/.loom/loom-glm.toml",
+    "/home/o/.loom/extensions",
+    "/home/o/.loom/logs",
+    "/home/o/.loom/daemon.log",
+  ]
+  list.each(allowed, fn(entry) {
+    assert !list.contains(masks, entry) as { "not masked: " <> entry }
+  })
+}
+
+pub fn the_state_root_masks_carry_the_sqlite_side_files_test() {
+  // A write to `catalogue.db-wal` is the same forgery one filename to
+  // the right: WAL frame checksums are not cryptographic, so a crafted
+  // frame is served as content on the next read.
+  let masks = serve.state_root_masks("/home/o/.loom")
+  list.each(["-wal", "-shm", "-journal"], fn(suffix) {
+    assert list.contains(masks, "/home/o/.loom/catalogue.db" <> suffix)
+      as { "catalogue side file " <> suffix }
+  })
+
+  // The session databases have the same family, and their directory
+  // mask covers all of it at once — a per-file enumeration there would
+  // be a mask per session and could not be written as a function of the
+  // root anyway.
+  assert list.contains(masks, "/home/o/.loom/sessions")
+}
+
+pub fn a_workspace_on_the_state_root_is_a_policy_the_server_boots_on_test() {
+  // The operator's case: a session opened on `~/.loom` to edit
+  // `loom.toml`. The masks are composed exactly as `resolve_managed`
+  // composes them, and the workspace survives.
+  let base =
+    serve.protecting_state_root(
+      serve.base_policy("/home/o/.loom"),
+      "/home/o/.loom",
+    )
+  assert serve.base_policy_fault(base) == Ok(Nil)
+
+  // And the secrets are still masked from that session's jail, which is
+  // the half the fix must not have traded away.
+  assert list.contains(base.protected, "/home/o/.loom/owner.token")
+  assert list.contains(base.protected, "/home/o/.loom/sessions")
+}
+
+pub fn a_workspace_equal_to_a_masked_entry_refuses_the_boot_test() {
+  let base =
+    serve.protecting_state_root(
+      serve.base_policy("/home/o/.loom/sessions"),
+      "/home/o/.loom",
+    )
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "a workspace on the sessions directory refuses the boot"
+  assert string.contains(reason, "/home/o/.loom/sessions")
+  assert string.contains(reason, "Choose another directory")
+}
+
+pub fn a_workspace_under_a_masked_entry_refuses_the_boot_test() {
+  // Under rather than equal, and the refusal must name the *entry* so
+  // the operator knows which directory is the one they cannot have.
+  let base =
+    serve.protecting_state_root(
+      serve.base_policy("/home/o/.loom/tokens/scratch"),
+      "/home/o/.loom",
+    )
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "a workspace under the tokens directory refuses the boot"
+  assert string.contains(reason, "`/home/o/.loom/tokens`")
+  assert string.contains(reason, "/home/o/.loom/tokens/scratch")
+}
+
 pub fn a_relative_protected_entry_refuses_the_boot_test() {
   // The finding this check exists for. A relative `protected` entry
   // normalizes to `/.git` in the harness's own path work, where it is
