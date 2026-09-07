@@ -3,8 +3,10 @@
 Status: **built.** Written against `main` at `3ef6ea09` (the merged
 daemon stack), and implemented in three pull requests: **#260** the pure
 state and the `job/` fact (WP1), **#263** the actor, the runner, the tail
-and the spill (WP2), **#264** the tool surface, `cap/job` and the prelude
-(WP3). The shipped acceptance fixture and this documentation are WP5.
+and the spill (WP2), and **#264** the tool surface, `cap/job` and the
+prelude (WP3) — the last merged into `jobs/actor` rather than `main` and
+relanded against `main` as **#267**. The shipped acceptance fixture and
+this documentation are WP5, in **#266**.
 Resolves issue #183 and settles the first cut of #186 and #71 on the way.
 "What changed on contact with the code", near the end, records where the
 implementation departed from what is written here; read it before
@@ -412,8 +414,13 @@ never a re-spawn and never a silent drop. The shipped fixture is the
 motivating case in the acceptance style: `tail -f` on a workspace log,
 lines appended by the test, a poll that shows exactly those lines since
 the cursor, a kill, a terminal state carrying `cancelled`, and a
-birth-qualified departure check on the process group as the recovery
-fixtures do. Mutation checks: remove the ceiling, remove the terminal
+birth-qualified departure check as the recovery fixtures do. The fixture
+fences the payload itself rather than its group, and here those are one
+process: the command `exec`s into `tail`, so the shell that started the
+group is gone and its leader *is* the payload. The fence is taken only
+where the payload's pid is the host's — that is, where the jail has no
+pid namespace — and the fixture's own `PayloadIdentity` says what stands
+in for it under bwrap. Mutation checks: remove the ceiling, remove the terminal
 commit, remove the cancel ladder, remove the `Lost` reap; each must fail
 exactly one test.
 

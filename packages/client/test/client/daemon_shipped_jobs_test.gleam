@@ -534,9 +534,6 @@ fn program_announcement(identity: PayloadIdentity) -> String {
 }
 
 // The second program never learns the id from the first: it asks the
-// strand what it owns. That is the proof the record outlived the
-// satellite, not merely that a string was carried between two turns.
-// The second program never learns the id from the first: it asks the
 // strand what it owns. That is the proof the durable record outlived the
 // satellite, rather than that a string was carried between two turns.
 //
@@ -620,9 +617,9 @@ fn exercise_code_mode(
   let workspace = prepare_workspace(directory, "http://127.0.0.1:1/unused")
   let connected = connect_with_seed(shipped.server, directory, paths)
   let probe = attach(connected, "jobs-probe", workspace, config_of(directory))
-  let ready = await_code_mode(paths)
+  let registered = await_code_mode(paths)
   stop_driver(probe.driver)
-  report_code_mode(connected, shipped.payload, ready, directory, workspace)
+  report_code_mode(connected, shipped.payload, registered, directory, workspace)
   daemon.close(connected.control)
 }
 
@@ -632,18 +629,18 @@ fn exercise_code_mode(
 fn report_code_mode(
   connected: Connected,
   identity: PayloadIdentity,
-  ready: Bool,
+  registered: CodeMode,
   directory: String,
   workspace: String,
 ) -> Nil {
-  case ready {
-    False ->
+  case registered {
+    CodeModeUnavailable ->
       io.println_error(
         "SKIP shipped jobs code mode: the shipped server logged no "
         <> "codemode.ready",
       )
 
-    True -> {
+    CodeModeReady -> {
       let #(Nil, report) =
         provider.with_server(code_mode_script(identity), fn(url) {
           drive_programs(connected, directory, workspace, url)
@@ -698,8 +695,8 @@ fn program_value(sample: tui_driver.Sample) -> String {
 // only here. Both outcomes are logged at session assembly, so one of the
 // two lines is always reached; a timeout is a server that never
 // assembled and fails loudly rather than reading as unavailable.
-fn await_code_mode(paths: endpoint.Paths) -> Bool {
-  let assert poll.Answered(ready) =
+fn await_code_mode(paths: endpoint.Paths) -> CodeMode {
+  let assert poll.Answered(registered) =
     poll.until(within: 20_000, every: 50, attempt: fn() {
       case simplifile.read(paths.log) {
         Error(_reason) -> poll.Retry
@@ -707,16 +704,28 @@ fn await_code_mode(paths: endpoint.Paths) -> Bool {
       }
     })
     as "the shipped server records whether it registered code mode"
-  ready
+  registered
 }
 
-fn code_mode_verdict(text: String) -> poll.Attempt(Bool, String) {
+/// Whether the shipped server under test assembled a session with a
+/// `code_mode` tool in it. A server with no build seed registers none,
+/// which is a prerequisite of this scenario rather than a result of it.
+type CodeMode {
+  /// The log carried `codemode.ready`, so the two-program drive is real.
+  CodeModeReady
+
+  /// The log carried `codemode.unavailable`, so the scenario declines and
+  /// says which prerequisite the host did not have.
+  CodeModeUnavailable
+}
+
+fn code_mode_verdict(text: String) -> poll.Attempt(CodeMode, String) {
   case
     string.contains(text, "codemode.ready"),
     string.contains(text, "codemode.unavailable")
   {
-    True, _ -> poll.Done(True)
-    False, True -> poll.Done(False)
+    True, _ -> poll.Done(CodeModeReady)
+    False, True -> poll.Done(CodeModeUnavailable)
     False, False -> poll.Retry
   }
 }

@@ -386,6 +386,7 @@ fn serve(
       })
       |> response.set_header("content-type", "text/plain")
       |> response.set_body(mist.Bytes(bytes_tree.from_string(reason)))
+
     // Keep real chunked HTTP here: the shipped daemon must traverse its native
     // streaming transport, rather than receiving one buffered fixture body.
     Ok(reply) -> {
@@ -409,6 +410,7 @@ fn serve(
             mist.chunk_stop()
           },
         )
+
       // A failed worker start has no ready message and fails this fixture
       // explicitly; it cannot masquerade as a successfully streamed response.
       let assert Ok(subject) = process.receive(ready, within: 1000)

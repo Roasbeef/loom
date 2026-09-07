@@ -218,10 +218,10 @@ operations for a code-mode program, and both reach one
 | Work package | Where it is |
 |---|---|
 | WP1, pure state and the `job/` fact | [#260](https://github.com/Roasbeef/loom/pull/260), on `main`. |
-| WP2, the actor, runner, tail and spill | [#263](https://github.com/Roasbeef/loom/pull/263), open. |
-| WP3, the tool surface, `cap/job`, the prelude | [#264](https://github.com/Roasbeef/loom/pull/264), open, on WP2. |
+| WP2, the actor, runner, tail and spill | [#263](https://github.com/Roasbeef/loom/pull/263), on `main`. |
+| WP3, the tool surface, `cap/job`, the prelude | [#264](https://github.com/Roasbeef/loom/pull/264) merged into `jobs/actor`; relanded against `main` as [#267](https://github.com/Roasbeef/loom/pull/267), open. |
 | WP4, the tail module and the staging spill | Folded into WP2 rather than shipped separately. |
-| WP5, the shipped fixture and the docs | `jobs/fixture`, on WP3. |
+| WP5, the shipped fixture and the docs | [#266](https://github.com/Roasbeef/loom/pull/266), open, on WP3 (`jobs/fixture`). The abort-step branch below stacks on it. |
 
 `daemon_shipped_jobs_test` is the acceptance evidence, and it runs for
 real — not skipping — in two places: the macOS gate, and the Linux jail
