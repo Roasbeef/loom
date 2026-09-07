@@ -1984,6 +1984,27 @@ an install is under the extensions root.
 - **Stream deltas are ephemeral.** They are broadcast without a seq,
   never persisted, and the tap lives entirely in the composition seam —
   the runtime is untouched by it.
+- **Socket admission is the websocket process's first handler turn, never
+  its initializer.** mist starts every websocket process with a hard 500 ms
+  initializer budget it does not expose, and a missed budget kills the
+  process together with its TCP socket, which the peer reads as an abrupt
+  close rather than a refusal. So `client/server`, `client/daemon/server`
+  and `client/daemon/session_socket` all have `on_init` mint their
+  subjects, send themselves `Admit`, and return; the root's permit
+  transfer and the gateway attach — six seconds of budget between them —
+  run on that message. The self-send is ordered ahead of every frame
+  because mist hands over the socket and calls `set_active` only after the
+  initializer has returned, so `Admit` is already queued when the parser
+  is armed.
+- **A deferred transfer owes its HTTP process a barrier.** Both daemon
+  sites release the reservation and then exit the moment the upgrade
+  returns, and `root.transfer` refuses a reservation whose HTTP owner has
+  released it or died. The websocket process therefore signals a subject
+  owned by the HTTP process as soon as the transfer has been attempted,
+  and the HTTP process waits for that signal before releasing. It is a
+  consumed reply from the one process that sends it, not an assumption
+  about two senders, and it adds no waiting the initializer did not
+  already impose — only the deadline moved.
 - **Every upgrade without the exact bearer token is answered `401`**
   before any websocket state exists. `LocalAuth` binds loopback and puts
   the token in a `0600` file next to the session, moving the
