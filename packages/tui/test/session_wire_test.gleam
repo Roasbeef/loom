@@ -90,7 +90,7 @@ pub fn session_wire_decodes_every_pushed_shape_and_drops_unknown_names_test() {
         ]),
         4,
       )
-      == Ok(session_wire.Pushed(protocol.MetadataChanged(name)))
+      == Ok(session_wire.Pushed(protocol.MetadataChanged))
   })
 
   assert session_wire.decode(

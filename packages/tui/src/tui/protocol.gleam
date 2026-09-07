@@ -155,10 +155,7 @@ pub type Event {
   /// Session metadata the terminal renders from a capture rather than from
   /// the frame: presence and attachment changes say only that the next
   /// capture will differ.
-  MetadataChanged(
-    /// The pushed event name, `presence` or `attachment`.
-    name: String,
-  )
+  MetadataChanged
 
   /// A liveness transition for one strand operation.
   OperationChanged(
@@ -434,7 +431,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | EntryAdded(_)
     | StreamDelta(..)
     | Committed(..)
-    | MetadataChanged(_)
+    | MetadataChanged
     | OperationChanged(..)
     | UsageChanged(_)
     | EscalationPending(..)
@@ -462,7 +459,7 @@ pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
   use name <- result.try(required_string(fields, "event"))
   case name {
     "committed" -> decode_committed(fields)
-    "presence" | "attachment" -> Ok(MetadataChanged(name))
+    "presence" | "attachment" -> Ok(MetadataChanged)
     other -> decode_body(other, body_of(fields))
   }
 }

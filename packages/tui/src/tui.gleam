@@ -349,10 +349,11 @@ pub type Model {
     channel: Option(session_channel.Channel),
     /// Last complete raw cut and its coherent metadata projection.
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
-    /// What made the lane ask for that cut: a pushed frame, the idle
-    /// refresh, or the terminal's own command. Live delivery is the
-    /// difference between the first two, and this is where a fixture
-    /// reads it.
+    /// What made the lane ask for the last cut that changed something
+    /// visible: a pushed frame, the idle refresh, or the terminal's own
+    /// command. Live delivery is the difference between the first two, and
+    /// this is where a fixture reads it. A capture that painted nothing
+    /// leaves it alone.
     last_capture: session_channel.Capture,
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(daemon_selection.Host),
@@ -3092,7 +3093,7 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
     session_channel.Submission(disposition) ->
       apply_submission(model, disposition)
     session_channel.Captured(cut, view, trigger) ->
-      reconcile_cut(Model(..model, last_capture: trigger), cut, view)
+      reconcile_cut(model, cut, view, trigger)
     session_channel.LookedUp(records, missing) -> {
       let inspected = inspect_looked_up(model, records, missing)
       let updated =
@@ -3161,15 +3162,19 @@ fn reconcile_cut(
   model: Model,
   cut: snapshot.Captured,
   view: snapshot_view.View,
+  trigger: session_channel.Capture,
 ) -> Model {
   // Equal metadata still advances transport credit, but must not continually
-  // restart animation or invalidate a transcript which has not changed.
+  // restart animation or invalidate a transcript which has not changed. The
+  // provenance is recorded only on the arm that paints: a notice-driven
+  // catch-up that finds nothing new must not claim the answer a refresh
+  // already painted, or a fixture reading it would call polling "push".
   case model.captured {
     Some(#(previous, _))
       if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
     -> Model(..model, captured: Some(#(cut, view)))
     Some(_) | None -> {
-      let updated = apply_cut(model, cut, view)
+      let updated = apply_cut(Model(..model, last_capture: trigger), cut, view)
       let disappeared =
         model.approvals
         |> list.filter(fn(old) {
@@ -3799,11 +3804,11 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     // A commit notice and a metadata change say only that the next capture
     // will differ. `tui/session_channel` acts on them by capturing; there is
     // nothing for a renderer to draw from the frame itself.
-    protocol.Committed(..) | protocol.MetadataChanged(_) -> model
+    protocol.Committed(..) | protocol.MetadataChanged -> model
     protocol.Ignored(_) -> model
   }
   case event {
-    protocol.Committed(..) | protocol.MetadataChanged(_) -> updated
+    protocol.Committed(..) | protocol.MetadataChanged -> updated
     protocol.Ignored(_) -> updated
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)

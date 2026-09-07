@@ -6,8 +6,10 @@
 //// preserve uncertainty instead of resending a mutation on another connection.
 ////
 //// A single request still owns the wire, because a pushed frame is not a
-//// request. Frames the daemon volunteers arrive in every open phase, consume
-//// no credit, allocate no identity and cannot fail the lane. What a commit
+//// request. Well-formed frames the daemon volunteers arrive in every open
+//// phase, consume no credit, allocate no identity and cannot fail the lane;
+//// a frame that does not decode closes the socket as any bad frame does.
+//// What a commit
 //// notice does is move a catch-up earlier: the lane issues it now, or at the
 //// moment the outstanding request finishes, rather than at the 250 ms idle
 //// refresh. That makes a notice idempotent and order-free — a sequence
@@ -482,7 +484,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
 
     // Presence and attachment carry nothing renderable; what they say is
     // that the next capture differs, which is what a notice says too.
-    protocol.MetadataChanged(_) -> capture_or_defer(channel)
+    protocol.MetadataChanged -> capture_or_defer(channel)
     protocol.StreamDelta(strand:, operation:, kind:, text:) -> #(channel, [
       Streamed(strand:, operation:, kind:, text:),
     ])
@@ -514,12 +516,14 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
 // already fetched or is not already fetching.
 fn notified(channel: Channel, seq: Int) {
   case channel.cut {
-    None -> #(channel, [])
     Some(cut) if seq < cut.next_seq -> #(channel, [])
-    Some(_) -> capture_or_defer(channel)
+    Some(_) | None -> capture_or_defer(channel)
   }
 }
 
+// A push that arrives before any cut exists says nothing the initial
+// transfer will not deliver, so it is dropped here for every kind of trigger
+// rather than deferred into a redundant second catch-up.
 fn capture_or_defer(channel: Channel) {
   case channel.phase, channel.cut {
     Ready, Some(cut) -> #(
@@ -530,11 +534,16 @@ fn capture_or_defer(channel: Channel) {
     // The lane holds one request at a time, so a notice arriving mid-transfer
     // is remembered rather than acted on. `send_queued` spends it at the next
     // ready transition, which is sooner than the idle refresh would.
-    AwaitingBegin, _ | Receiving(..), _ | AwaitingReply(..), _ -> #(
-      Channel(..channel, refresh: Due),
-      [],
-    )
-    Ready, None | Closed, _ -> #(channel, [])
+    AwaitingBegin, Some(_)
+    | Receiving(..), Some(_)
+    | AwaitingReply(..), Some(_)
+    -> #(Channel(..channel, refresh: Due), [])
+    Ready, None
+    | AwaitingBegin, None
+    | Receiving(..), None
+    | AwaitingReply(..), None
+    | Closed, _
+    -> #(channel, [])
   }
 }
 
