@@ -236,26 +236,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Client alone is the slowest single package (6.8 min measured)
-          # and the only bucket that boots a real server, so it is the one
-          # that needs LOOM_BOOTSTRAP_E2E_SERVER — same as the old single
-          # job set it for the whole `make check` step, just scoped to the
-          # bucket that actually reads it.
+          # Client alone is the slowest single package (6.8 min measured).
           - bucket: client
             packages: client
-            needs_server: true
           # The next tier down: four packages that were ~1.0-1.4 min each,
           # ~4.4 min combined — still under the client bucket's pace.
           - bucket: runtime-storage-session-events
             packages: runtime storage session events
-            needs_server: false
           # 1.75 min alone; kept isolated because it is the shared-suite
           # package (storage conformance + wiring + e2e) and a change
           # there is worth a log of its own rather than folded into a
           # mixed bucket.
           - bucket: conformance
             packages: conformance
-            needs_server: false
           # Everything else: seconds per package in the measured run, so
           # bucketing them together costs nothing. This also carries the
           # two packages the "fast" name in the work order didn't spell
@@ -269,7 +262,6 @@ jobs:
             packages: >-
               host core machine prompt telemetry provider broker mcp tools
               cap ext codemode tui lint sandbox
-            needs_server: false
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -307,9 +299,13 @@ jobs:
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       - name: make check (${{ matrix.bucket }})
+        # Set for every bucket, as the old single job set it for the whole
+        # of `make check`: more than one package reads it (the client's
+        # shipped fixtures and the TUI's real-server lifecycle test among
+        # them), and a bucket that set it to the empty string would hand
+        # those tests "" as a server path rather than leaving it unset.
         env:
-          LOOM_BOOTSTRAP_E2E_SERVER: >-
-            ${{ matrix.needs_server && format('{0}/bin/loomd', github.workspace) || '' }}
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
         run: |
           set -o pipefail
           .github/scripts/hex_retry.sh bash scripts/check.sh ${{ matrix.packages }} \
