@@ -24,7 +24,7 @@ plane is a separate body of work and it is finished.
 |---|---|
 | Contracts and ownership, phases 0 and 1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
-| TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery remains client-driven reconciliation, not pushed token streaming. |
+| TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery now pushes: commit notices, presence and attachment leave the hub unsolicited, and concurrent prompts on one strand are queued rather than refused. Pushed token deltas are implemented in the gateway but not wired into `client/serve`. See "Live delivery" below. |
 | Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
 | Background jobs | Landed. The pure state, the actor, the model-facing surface, the shipped fixture and the step-scoped abort are all in the tree; issue #183 is closed by them. See "Background jobs" below for what each piece is and what proves it. |
 
@@ -60,13 +60,18 @@ Saved inactivity and once-only overdue resumption across explicit opens. It
 does not prove recurring cursors, a detached future timer, or whole-VM
 schedule recovery.
 
-A shared answer appearing without another keypress is not evidence of server
-push. The terminal's ordinary refresh can produce that result.
-[Issue #240](https://github.com/Roasbeef/loom/issues/240) records the remaining
-live-delivery design: push committed records to subscribed connections, stream
-deltas to peers, and serialize concurrent submits instead of returning a busy
-conflict. The [multiplayer architecture](architecture/multiplayer.md) states
-the current pull-only boundary.
+The previous edition described [#240](https://github.com/Roasbeef/loom/issues/240)
+as undesigned and unbuilt, and described network delivery as pull-only. Both
+are stale: the ruling is `docs/design-notes/live-delivery.md`, the wire change
+is `protocol-change/018`, and both halves are on `main`. See "Live delivery"
+below for what landed and what it deliberately leaves open.
+
+The caution that edition raised still stands and is worth keeping, because it
+is what shaped the fixture. A shared answer appearing without another keypress
+is *not* evidence of server push: the terminal's ordinary 250 ms refresh can
+produce exactly that result, and it remains in the client as the recovery path.
+Distinguishing the two is why `session_channel.Capture` records what asked for
+each cut and why the shipped fixture reads that provenance rather than timing.
 
 The HTTP fixture's socket handoff race is repaired at `ee7b5617`.
 A worker could previously finish before Mist transferred its socket.
@@ -103,6 +108,7 @@ fix; they are the daemon acceptance evidence, not a count of the current tree.
 | Shipped fixture | What it proves |
 |---|---|
 | `tui_shipped_multiplayer_test` | Alice, Bob and Reader share exact durable records and authorship; configuration, presence, invitations, observer refusal, live revocation and refused/successful switches use real sockets. A jailed tool stays in A1 while A2 in the same workspace and B in another make progress. |
+| `tui_shipped_live_delivery_test` | Two operators submit on one strand inside a single catch-up window and the loser is answered `queued`; every terminal sees the answer's live text before its entry exists in that terminal's cut; both answers are painted by a capture whose recorded provenance is a pushed notice; a member revoked mid-answer loses his socket at the per-frame authority check and receives nothing after it. Added with #240; not part of the counts above. It does not prove pushed deltas, because the daemon does not send any. |
 | `daemon_shipped_recovery_test` | Whole-VM loss after durable reservation preserves the original creation identity; metadata restoration does not initialize the reserved target. |
 | `daemon_shipped_identity_recovery_test` | Whole-VM loss after SQLite identity publication preserves that identity and the original writer lease. Pending selection fails visibly; explicit recovery waits for the natural lease expiry. |
 | `daemon_shipped_stop_test` | A's original provider socket closes, owner control observes Saved, B progresses on its original attachment, and explicit reopen resumes one durable user admission under a new incarnation. |
@@ -432,8 +438,129 @@ None of these is blocking, and each is small enough to do alone.
 - **Put `job_output` on the event bus once
   [#240](https://github.com/Roasbeef/loom/issues/240) lands.** The runner
   already folds the `CallOutput` stream in one place, so a live event is one
-  more subscriber rather than a new mechanism. Deferred because under today's
-  pull-only delivery it would be inert.
+  more subscriber rather than a new mechanism. It was deferred because under
+  pull-only delivery it would have been inert; #240 has landed, so the reason
+  for the deferral is gone and this is now ordinary queued work.
+
+## Live delivery
+
+[Issue #240](https://github.com/Roasbeef/loom/issues/240) is done. The shipped
+daemon no longer serves every terminal by pull, and the previous edition's
+"undesigned/unbuilt" entry for it is wrong as of this one.
+
+### What landed and where
+
+The ruling is [`docs/design-notes/live-delivery.md`](design-notes/live-delivery.md)
+and the wire change is
+[`protocol-change/018`](../protocol-change/018-pushed-delivery.md), ACCEPTED.
+Four pieces, all additive:
+
+- **The daemon announces.** With one gap: the delta tee is unwired, recorded
+  under "The delta half is not wired" below. `client/serve` starts a `commit_forwarder` per
+  session hub and subscribes the writer to it, so a commit reaches the hub at
+  all. `client/gateway` lifts the network guard on `pull_and_broadcast` and
+  `broadcast_delta`, primes its high-water under network delivery, and splits
+  `send_to` on the *envelope*: an envelope with a `reply_to` keeps the bounded
+  reply path, one without goes through `deliver`, which is the per-frame
+  `check_binding` that path has always run. There is no second authority path
+  and no second size bound — a pushed `committed` frame carries a seq and a
+  strand, not the record.
+- **The socket writes.** `client/daemon/session_socket` registers a real sink
+  and gains one `Push` signal; a failed pushed write stops the socket exactly
+  as a failed reply does.
+- **Concurrent prompts are ordered.** A `prompt` on a busy strand is held in
+  the hub's per-strand FIFO and answered `mutation_outcome {status:
+  "queued"}`, then submitted with its own submitter's recorded origin when the
+  run settles. Four deep per strand; a fifth gets the `conflict` the command
+  used to answer with.
+- **The terminal accepts what it did not ask for.** `tui/session_wire.decode`
+  gained a `Pushed` outcome, `tui/session_channel` turns a notice into an
+  immediate catch-up (deferred to the next `Ready` while a request is in
+  flight) and records *why* it asked, and `tui.Model.last_capture` keeps that
+  reason on the capture that painted something. A queued prompt renders as a
+  booked turn rather than a refusal.
+
+### How it is verified
+
+`packages/client/test/client/tui_shipped_live_delivery_test.gleam` is the
+shipped fixture, in `make e2e-client-bootstrap` after the multiplayer one and
+therefore in both `e2e-client-bootstrap (linux)` and `e2e (macos)`. Three
+native terminals against the built `bin/loomd` and a paced loopback provider
+prove five things: two operators submit inside one catch-up window and the
+loser is told `queued`; every terminal shows live text that is a prefix of the
+answer while no entry for that answer exists in its cut; both answers are
+painted by a capture whose recorded provenance is `Notified`, not
+`Refreshed`; the three terminals hold identical durable records with the two
+human turns attributed to the two different operators; and a member revoked
+mid-answer loses his socket at the per-frame check with neither his records
+nor his half-written stream moving afterwards.
+
+The second of those is weaker than the design note asks for, and writing the
+fixture is what found out why — see "The delta half is not wired" below.
+
+Two fixture-shape notes a later reader will want. The two operators submit
+the *same* prompt text on purpose, because which one the hub admitted first
+is decided by arrival order at one actor and is not a property under test.
+And `provider_http.Paced` exists only so that an answer occupies an interval
+— without it there is no moment in which a fragment exists and its entry does
+not. `docs/architecture/multiplayer.md` has the fixture's full account.
+
+The gateway's own tests cover the queue bound, drain failure and the decoder;
+the fixture deliberately does not repeat them.
+
+### The delta half is not wired
+
+This is a defect, not a deliberate omission, and it was found by writing the
+acceptance fixture rather than by reading the code. `client/gateway` has both
+halves of pushed stream deltas: `tap_provider` wraps a provider surface so
+every delta is teed to the hub as a `ProviderDelta`, and `broadcast_delta`
+pushes it to every subscribed connection with its network guard now lifted.
+`client/serve` installs `tap_preview_provider` instead, which feeds the
+bounded snapshot preview and sends no `ProviderDelta` at all, so
+`broadcast_delta` is unreachable from `bin/loomd`. `client/demo` and
+`gateway_test` are `tap_provider`'s only callers.
+
+The consequence is exactly one clause of `protocol-change/018` and the design
+note: a peer's view of an answer being produced is still the discontinuous
+24 KiB sample carried inside a cut, not a continuous pushed stream. Notices,
+presence, attachment, the per-frame authority check and the queue are all live
+in the shipped binary.
+
+The fix is not obviously one line, which is why it was left rather than taken
+alongside the fixture. `serve` needs *both* taps — the note keeps the preview
+as the catch-up fallback for a terminal that attaches mid-answer — so
+somebody has to decide whether the two relays compose by nesting
+(`tap_provider(tap_preview_provider(...))`) or whether one surface should
+observe once and fan out twice, and whether two observation callbacks per
+generation is a cost worth paying while the preview is still needed. The
+fixture is written so that restoring one assertion turns it into the
+regression guard: `live_text_before_the_entry` carries the strong
+fragment-counting form in a comment.
+
+### Deliberately open
+
+Three, and each is recorded in the design note rather than only here:
+
+- **A durable queue.** A held prompt does not survive a hub restart. Making it
+  durable needs a pending-run operation in `machine` — a new operation kind, a
+  new state space, and a durable object whose only reader is a convenience.
+  The reply says `queued` and not `admitted` precisely so a client is written
+  against a queue a restart drops.
+- **Registry-pushed revalidation.** Pushed delivery re-checks authority per
+  frame, as replies do. The registry-pushed revision from the review wave
+  stays deferred; the measurement that would reopen it is the soak showing the
+  per-frame cost.
+- **Retiring the snapshot preview.** Once every shipping terminal consumes
+  pushed deltas the `tap_preview_provider` lease machinery is redundant. It
+  stays until a release has been cut with both, because it is the catch-up
+  fallback for a terminal that attaches mid-answer.
+
+Two cosmetic terminal windows are named in
+[PR #276](https://github.com/Roasbeef/loom/pull/276)'s description and were
+left alone on purpose, because both close at the next capture: fragments of
+an operation that started after the cut in flight was taken are repainted
+from the commit, and a finished operation's thinking stream can outlive its
+successor's first text by one refresh.
 
 ## What to do next
 
@@ -441,7 +568,54 @@ Preserve the distinction these items draw between a missing implementation,
 an unresolved design and missing evidence. The order below is a
 recommendation, not a dependency chain, except where it says so.
 
-### 1. Close the daemon domain-teardown admission window
+Wiring the delta tee into `client/serve` is not in this list because it is
+small, contained and independent of everything in it; "The delta half is not
+wired" above says what has to be decided. Take it whenever somebody is in
+`client/serve` anyway.
+
+### 1. Take per-session filesystem confinement, #242, starting with `protocol-change/004`
+
+[Issue #242](https://github.com/Roasbeef/loom/issues/242) is now the largest
+thing between the tree and the release acceptance, and with #240 landed it is
+also the largest remaining hole in what multiplayer actually promises:
+membership decides who may attach, and nothing yet stops a model in one
+session reading the daemon's credentials or another workspace's database.
+
+Start with
+[`protocol-change/004`](../protocol-change/004-sandbox-policy-explicit-mounts.md),
+which is PROPOSED and unimplemented. `SandboxPolicyV1` has no verb for "make
+this path visible in the jail", so code mode's capability socket and token
+reach the satellite *incidentally*, through the helper's `--ro-bind / /` base
+view. Until a policy can say what must be reachable, nothing can tighten that
+base view without breaking code mode silently instead of refusing, and a
+per-session view is exactly a tightening of it. 004's own Problem section
+argues this from the other direction.
+
+Exit: `SandboxPolicyV1` can name a mount explicitly, `codemode/launch` says
+what it needs rather than checking that an accident covers it, the base view
+can be narrowed, and `make selftest` reports the narrowing as an enforced
+layer rather than as prose. Do not retry restricted native implementation
+through another worker or tool.
+
+### 2. Then #85's remaining prerequisites
+
+[Issue #85](https://github.com/Roasbeef/loom/issues/85) shares that first
+prerequisite and lists what else has to be true before a VM driver is honest,
+in its own order: make the enforcement vocabulary driver-scoped or negotiate
+it in `hello` (with #64), then settle the shared-versus-copied workspace
+question, and only then a vsock `Transport` variant. Item 1 above is #85's
+step 1, so taking these next is continuing one line of work rather than
+opening a second.
+
+The item to resist is writing the transport first. It produces a driver that
+works in a demo and misreports its own enforcement, which is the one failure
+mode this codebase has consistently refused to ship.
+
+Exit: each prerequisite is settled where it lives — a protocol change, a
+design-note ruling, or an ADR — before any VM transport code exists. `#85` is
+`phase:debt`; nothing in the release acceptance waits on it.
+
+### 3. Close the daemon domain-teardown admission window
 
 The registry fences a workspace domain when its last dependent retires and
 keeps the fenced slot in its book until the witness exits. Every admission
@@ -456,7 +630,7 @@ Exit: an explicit open naming a domain in `DomainClosing` is admitted once
 the witness exits, without the caller polling a census; the schedule fixture
 drops its second barrier and still passes.
 
-### 2. Take the two jobs-plane cleanups
+### 4. Take the two jobs-plane cleanups
 
 The `jobtools` collapse and the terminal `Held` eviction above. Both are
 contained, both are in one package, and doing them while the plane is fresh
@@ -468,7 +642,7 @@ Exit: `client/jobtools` is gone or is only what `scheduleseam`'s translation
 is; the actor's table has a stated retention rule with a test; `make
 check-client` and `make lint-client` pass.
 
-### 3. Add an explicit memory-off observation
+### 5. Add an explicit memory-off observation
 
 [Issue #245](https://github.com/Roasbeef/loom/issues/245) records the smallest
 daemon follow-up, extending the existing shipped workload after native
@@ -495,7 +669,7 @@ chosen order, delivers records without client catch-up, streams to Reader,
 and stops revoked delivery at the required authority boundary. It does not
 silently relax membership or add a global command queue without a decision.
 
-### 5. Adopt the SQLite retirement repair
+### 6. Adopt the SQLite retirement repair
 
 Shipping resolves sqlight 1.2.0 and Hex esqlite 0.9.0, not the evaluated fork.
 [Issue #247](https://github.com/Roasbeef/loom/issues/247) owns the release or
@@ -514,7 +688,7 @@ resource/release/platform checks pass on that graph. No cache patch, forced
 collection, parallel package publication or source-built compiler workaround
 is authorized by this handoff.
 
-### 6. Resolve the remaining release evidence
+### 7. Resolve the remaining release evidence
 
 The [acceptance drive](design-notes/single-daemon.md#the-acceptance-drive)
 still requires the joined load/crash observations and application confinement.
@@ -600,7 +774,9 @@ None of these is unfinished work somebody forgot.
 - **Native filesystem confinement, [#242](https://github.com/Roasbeef/loom/issues/242):** excluded PrivateScratch and application
   filesystem-dispatch work is unresolved. Membership does not prove a model
   cannot read daemon credentials or another workspace's database. Do not retry
-  restricted native implementation through another worker or tool.
+  restricted native implementation through another worker or tool. This is
+  open in the sense of unbuilt, not undecided: it is item 1 under "What to do
+  next", and `protocol-change/004` is where it starts.
 - **Shipped approval route, [#243](https://github.com/Roasbeef/loom/issues/243):** existing effect tests inject a narrower policy.
   Ordinary Bash allows and clamps to 600 seconds; no shipped configuration
   exposes the needed narrower wall budget. This is a product-policy gap, not
@@ -615,8 +791,12 @@ None of these is unfinished work somebody forgot.
   dependency resource-load observations remain open. Recurring cursors,
   detached future timers, whole-VM schedule recovery and ambiguous-prompt
   acknowledgements are not covered by the new one-shot fixture.
-- **Live delivery and memory off:** [#240](https://github.com/Roasbeef/loom/issues/240)
-  is undesigned/unbuilt work; the explicit no-maintenance oracle in
+- **Live delivery's three remainders:** a durable queue for held prompts,
+  registry-pushed revalidation in place of the per-frame check, and retiring
+  the snapshot preview. [#240](https://github.com/Roasbeef/loom/issues/240)
+  itself is done; see "Live delivery" above and the design note for why each
+  of the three was left.
+- **Memory off:** the explicit no-maintenance oracle in
   [#245](https://github.com/Roasbeef/loom/issues/245) is designed but unbuilt.
 - **The release-versus-transfer barrier has no unit test.** The regression
   that exists covers a slow *gateway attach*, by suspending the hub. Covering
