@@ -125,6 +125,26 @@ pub fn interior_whitespace_survives_test() {
   assert resolved == [#("K", "a b ")]
 }
 
+pub fn a_multi_chunk_value_arrives_whole_test() {
+  // 200 kB is many pipe buffers, so this value reaches the port as a
+  // run of `data` messages rather than one. The host runner may only
+  // answer once the pipe has been read to its end: returning on
+  // `exit_status` alone would truncate a long credential — a several
+  // kilobyte JWT is the realistic case — into a shorter string that
+  // still looks like a valid secret.
+  let #(resolved, failures) =
+    secrets.resolve(
+      [entry("K", ["/bin/sh", "-c", "head -c 200000 /dev/zero | tr '\\0' a"])],
+      running: secrets.host_runner(),
+      within: secrets.default_timeout_ms,
+    )
+
+  assert failures == []
+  let assert [#("K", value)] = resolved
+  assert string.length(value) == 200_000
+  assert string.replace(value, each: "a", with: "") == ""
+}
+
 pub fn a_failing_command_yields_a_warning_and_no_value_test() {
   let #(resolved, failures) =
     secrets.resolve(
