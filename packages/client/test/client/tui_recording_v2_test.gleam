@@ -91,7 +91,11 @@ pub fn tui_recording_v2_fast_initial_attachment_and_settled_turn_replay_test() {
       as "replay paints the adopted conversation"
     let visible = frame.buffer_to_text(last)
     assert string.contains(visible, "recorded v2 turn")
-    assert string.contains(visible, "Owner")
+
+    // The replayed cut is a lone owner, whose banner carries the participant
+    // count without the redundant name and role. This still proves the cut
+    // reached the frame; only the identity it prints has changed.
+    assert string.contains(visible, "Attached · 1 present")
     assert string.contains(visible, session)
     let assert Ok(Nil) = simplifile.delete(path)
       as "the generated test recording is removed"
