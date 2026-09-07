@@ -360,10 +360,7 @@ fn poll_tool(jobs: Jobs) -> Tool {
       <> int.to_string(jobs.max_wait_ms)
       <> "). Pass the `cursor` from the previous poll back as `since` to "
       <> "get only what is new; the cursor is an opaque token, so hand it "
-      <> "back unread rather than computing one. Only the tail of each "
-      <> "stream is kept, so a poll can report bytes it had to drop — the "
-      <> "whole output is in the spill refs once the job has finished, "
-      <> "and `fs_read` reads those.",
+      <> "back unread rather than computing one.",
     prompt_snippet: Some(
       "`job_poll` reads a background job's state and new output, or lists "
       <> "them all.",
@@ -392,7 +389,10 @@ fn poll_tool(jobs: Jobs) -> Tool {
           tool.string_property(
             "the `cursor` a previous poll returned, to read only what has "
             <> "arrived since. Opaque: hand back what you were given. "
-            <> "Omit it to read the whole retained tail",
+            <> "Omit it to read the whole retained tail — only the tail of "
+            <> "each stream is kept, so a poll can report bytes it had to "
+            <> "drop, and the whole output is in the spill refs once the "
+            <> "job has finished, where `fs_read` reads it",
           ),
         ),
       ],
@@ -666,8 +666,7 @@ fn send_tool(jobs: Jobs) -> Tool {
       <> "newline yourself if the program reads lines. `eof: \"close\"` "
       <> "closes stdin after this write, which is what makes a program "
       <> "reading to end-of-input finish; nothing can be written "
-      <> "afterwards. A foreground `bash` call has stdin closed from the "
-      <> "start, so this exists for background jobs alone.",
+      <> "afterwards.",
     prompt_snippet: Some("`job_send` writes to a background job's stdin."),
     schema: tool.object_schema(
       [

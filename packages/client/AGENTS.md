@@ -394,15 +394,24 @@ catalogue without opening runtimes. Explicit admission invokes
   escalation record *mintable* from inside code mode (#97). Public
   because it is the wrapper's entire decision and the only part of it a
   hermetic test can hold still.
-- `client/codemode.{workspace_seam, over_scratch, into_blobs,
-  blob_directory}` — the harness-side capability bridge (issue #16), and
+- `client/codemode.{workspace_seam, workspace_seam_for, over_scratch,
+  over_jobs, into_blobs, blob_directory}` — the harness-side capability
+  bridge (issue #16), and
   the half of it that lives on this side of the seam. `workspace_seam`
   builds the eight closures `codemode/workspace`'s router calls: `fs_read`
   and `fs_list` over `tools/fs.resolve_real` and `fs.read_text_file`,
   `fs_write` and `fs_edit` over `fs.resolve_writable` —
   the harness's *own* path boundary and *own* large-file guard, never a
   second resolution — `kv_*` over the session's `client/scratch` store,
-  and `emit` over the session's blob root. `blob_directory` is the one
+  and `emit` over the session's blob root. `over_jobs` is how a
+  `Config.jobs` is set: `Some(door)` becomes the `JobDoor` a program's
+  `job.*` calls reach, and `None` becomes `workspace.no_jobs()` — every
+  arm refusing in band rather than going unrouted, which is the opposite
+  of the `schedules` posture and deliberate, because `bash`'s `mode`
+  argument offers a job from a tool call whether or not a program can
+  start one. `workspace_seam_for` is the same bridge bound to coordinates
+  a caller supplies rather than a request's, which is how
+  `client/extension/dispatch` builds an extension invocation's. `blob_directory` is the one
   place `.blobs` is written down, read by both this module and
   `client/serve`, so an artifact a program emits and an oversized `bash`
   output that overflowed land in one store under one address. Listing is
@@ -1094,8 +1103,9 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/jobseam.{Wiring, Door, max_wait_ms, ask_timeout_ms,
   start_margin_ms, first_slice_ms, max_slice_ms, door, none, real_rest}`
   — the host side of the model-facing jobs door, mirroring
-  `client/scheduleseam`: four closures keyed on the caller's strand, for
-  WP3's `tools/job` and `cap/job` to be values over. Ids are text here
+  `client/scheduleseam`: five closures keyed on the caller's strand,
+  which `client/jobtools` turns into `tools/job` and `cap/job` surfaces.
+  Ids are text here
   and typed behind it, and this is the one place a string becomes a
   `jobstate.JobId` — with `Invalid` rather than `NotFound` for a
   malformed one, because "that is not a name a job could have" is a typo
@@ -1103,6 +1113,19 @@ catalogue without opening runtimes. Explicit admission invokes
   `weft/poll` loop in the **caller's** process, the reason
   `client/agency`'s join does: a model blocking thirty seconds on one job
   must not stop the actor answering about any other.
+- `client/jobtools.{seam, capability_door, refusal, started, polled,
+  listed}` — the translation between `client/jobseam.Door`'s vocabulary
+  and the model's. `tools` may reach only `core` and `broker`, so neither
+  package may name the other's types and something has to sit between
+  them; `client/scheduleseam` needs no such module only because that door
+  was written in `tools/schedule`'s words to begin with. Two entry points
+  and one translation: `seam` fills the `job_*` tools and is keyed on a
+  `tools/tool.Ctx`, `capability_door` fills `codemode/workspace.JobDoor`
+  and is keyed on the strand and the operation an execution belongs to,
+  because a capability call has no `Ctx`. Both bind the owning strand
+  from the caller and both carry the caller's **real** operation, since
+  that is what `broker.abort` addresses and therefore what decides
+  whether an operator's abort reaches a running job.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server
