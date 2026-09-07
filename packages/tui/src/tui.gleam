@@ -366,6 +366,13 @@ pub type Model {
     /// interjections draw nothing and are here to consume the entries they
     /// produce, so that a steer cannot retire a prompt's echo.
     queued: List(Submission),
+    /// The submission whose reply has not arrived, if any. A prompt the
+    /// daemon refuses — a fifth held prompt meets `code_conflict` — commits
+    /// no entry and so has nothing to retire it later; keeping it here until
+    /// the daemon says it took it is what stops a refusal leaving an echo on
+    /// screen for the rest of the session. There is at most one because the
+    /// conversation channel carries one mutation at a time.
+    awaiting_outcome: Option(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
     notice: String,
@@ -680,6 +687,7 @@ pub fn new_model_with_clock(
     interrupt: None,
     submitting: None,
     queued: [],
+    awaiting_outcome: None,
     transcript: [
       Line(System, "etui input and gateway paths ready"),
       Line(
@@ -2974,7 +2982,7 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
       |> list.reverse
     False, False ->
       stream_lines(model.streams, model.active_strand, model.details_expanded)
-      |> list.append(queued_lines(model.queued))
+      |> list.append(queued_lines(model.queued, model.awaiting_outcome))
       |> transcript_content
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
@@ -3213,13 +3221,19 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
     // than writing a second copy of the same news.
     session_channel.Acknowledged("prompt", "queued") ->
       Model(
-        ..model,
+        ..settle_own_turn(model),
         submitting: None,
         notice: "prompt queued for the next turn",
       )
       |> invalidate_frame
+
+    // Every other acknowledgement settles its submission the same way: a
+    // steer answered `admitted` will commit the entry its interjection is
+    // waiting for. Commands that record nothing leave `awaiting_outcome`
+    // empty and pass through untouched.
     session_channel.Acknowledged(command, status) ->
-      Model(..model, notice: command <> " " <> status) |> invalidate_frame
+      Model(..settle_own_turn(model), notice: command <> " " <> status)
+      |> invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->
       append_error(
         Model(
@@ -3234,7 +3248,7 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
       )
     session_channel.Failed(reason) ->
       append_error(
-        Model(..model, peer: after_close(model.peer)),
+        Model(..discard_own_turn(model), peer: after_close(model.peer)),
         "conversation: " <> reason,
       )
   }
@@ -3886,8 +3900,16 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     }
     protocol.EscalationPending(id:, tool:, preview: _) ->
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
+
+    // The refusal answers whatever this terminal last submitted, because the
+    // conversation channel carries one mutation at a time. A prompt refused
+    // for a full hold queue commits no entry, so its echo is retired here or
+    // never.
     protocol.ServerError(code:, message:) ->
-      append_error(Model(..model, submitting: None), code <> ": " <> message)
+      append_error(
+        Model(..discard_own_turn(model), submitting: None),
+        code <> ": " <> message,
+      )
 
     // A commit notice and a metadata change say only that the next capture
     // will differ. `tui/session_channel` acts on them by capturing; there is
@@ -4031,21 +4053,32 @@ fn clear_streams(streams: List(Stream), strand: String) -> List(Stream) {
   })
 }
 
+// The submission still awaiting its outcome is drawn with the ones the daemon
+// has already acknowledged, and last, because it is the newest. Waiting for
+// the reply before drawing it would cost the echo a round trip, which is most
+// of what it is for.
+//
 // The echoes are the newest thing on screen: they were typed after the run
 // that is streaming above them started, and they run after it finishes. One
 // trailer under the group says what they are waiting for, rather than a
 // marker repeated beside every line of it.
-fn queued_lines(queued: List(Submission)) -> List(Line) {
+fn queued_lines(
+  queued: List(Submission),
+  awaiting: Option(Submission),
+) -> List(Line) {
   let held =
-    list.filter_map(queued, fn(submission) {
-      case submission {
-        HeldPrompt(text:) -> Ok(Line(User, text))
+    list.filter_map(
+      list.append(queued, option.values([awaiting])),
+      fn(submission) {
+        case submission {
+          HeldPrompt(text:) -> Ok(Line(User, text))
 
-        // An interjection is on this list to consume an entry, not to be
-        // read: the run it steered is already drawing its answer above.
-        Interjection -> Error(Nil)
-      }
-    })
+          // An interjection is on this list to consume an entry, not to be
+          // read: the run it steered is already drawing its answer above.
+          Interjection -> Error(Nil)
+        }
+      },
+    )
   case held {
     [] -> []
     [_, ..] ->
@@ -5879,13 +5912,43 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
 // records anything here. An idle strand does not either: nothing is held, its
 // entry is already on its way back, and two copies would be worse than a slow
 // one.
+// An attached submission waits in `awaiting_outcome` for the daemon's answer,
+// because a refusal is a real outcome here and the echo has to go back with
+// it. A replay has no daemon to answer, so its submission joins the list at
+// once and the recording's own entry retires it.
 fn expect_own_turn(model: Model, submission: Submission) -> Model {
   case model.peer, active_strand_live(model) {
-    Attached(..), True | Replaying, True ->
+    Attached(..), True ->
+      Model(..model, awaiting_outcome: Some(submission))
+      |> invalidate_transcript
+    Replaying, True ->
       Model(..model, queued: in_commit_order(model.queued, submission))
       |> invalidate_transcript
     Attached(..), False | Replaying, False | Preview, _ | Disconnected, _ ->
       model
+  }
+}
+
+// The daemon took the submission: it will commit an entry, so the submission
+// joins the list that waits for one.
+fn settle_own_turn(model: Model) -> Model {
+  case model.awaiting_outcome {
+    Some(submission) ->
+      Model(
+        ..model,
+        queued: in_commit_order(model.queued, submission),
+        awaiting_outcome: None,
+      )
+    None -> model
+  }
+}
+
+// The daemon refused it, or it never reached the wire. No entry is coming,
+// so the echo goes away with the submission rather than outliving it.
+fn discard_own_turn(model: Model) -> Model {
+  case model.awaiting_outcome {
+    Some(_) -> Model(..model, awaiting_outcome: None) |> invalidate_transcript
+    None -> model
   }
 }
 
@@ -6159,7 +6222,12 @@ fn apply_submission(
         True -> model
         False -> Model(..model, pending_submission: None, submitting: None)
       }
-      append_error(model, "Not sent: " <> reason <> "; draft retained")
+
+      // The frame never reached the wire, so no entry answers it.
+      append_error(
+        discard_own_turn(model),
+        "Not sent: " <> reason <> "; draft retained",
+      )
     }
   }
 }

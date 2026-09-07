@@ -977,6 +977,34 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
     as "the drained prompt's entry then retires the echo standing for it"
 }
 
+/// A refused prompt takes its echo with it instead of leaving it on screen.
+///
+/// The daemon holds four prompts per strand and answers the fifth with
+/// `code_conflict`. That prompt commits no entry, so nothing later would ever
+/// retire an echo drawn for it, and before this it sat under the transcript
+/// for the rest of the session claiming to be queued. The refusal is the
+/// reply to the submission still awaiting an outcome, because the
+/// conversation channel carries one mutation at a time.
+pub fn a_refused_prompt_retires_its_own_echo_test() {
+  let submitted =
+    tui.Model(
+      ..live_model(""),
+      awaiting_outcome: Some(tui.HeldPrompt("a fifth one")),
+    )
+  let refused =
+    tui.accept_connection_message(
+      submitted,
+      connection.Incoming(gateway.server_error(
+        "conflict",
+        "the strand is busy and its queue is full",
+      )),
+    )
+  assert refused.awaiting_outcome == None
+    as "a refusal retires the submission it refused"
+  assert refused.queued == []
+    as "and the refused prompt never joins the queue it was refused from"
+}
+
 /// The echo is drawn under the live tail, where the operator is looking.
 ///
 /// Position is the whole point of it: local notices are written above the
