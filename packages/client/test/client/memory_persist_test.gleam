@@ -24,6 +24,7 @@ import client/catalog
 import client/codemode
 import client/distill
 import client/distillpass
+import client/jobs
 import client/memory
 import client/schedule
 import client/serve
@@ -245,6 +246,7 @@ fn settings(
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
+    jobs_policy: jobs.default_policy,
     deactivated_tools: [],
     // No lifecycle distillation in this rig: the pass would open the
     // memory store this test asserts about and spend the scripted

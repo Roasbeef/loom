@@ -10,6 +10,7 @@ import client/distillpass
 import client/internal/ffi_os
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
+import client/jobs
 import client/schedule
 import client/serve
 import core/clock
@@ -91,6 +92,7 @@ pub fn settings() -> serve.Settings {
     rules: [],
     schedules: [],
     schedule_policy: schedule.ModelSchedulesOff,
+    jobs_policy: jobs.default_policy,
     deactivated_tools: [],
     memory: distillpass.no_pass(),
     tools: catalog.default_tools(),

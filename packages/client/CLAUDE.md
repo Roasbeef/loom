@@ -1039,6 +1039,70 @@ catalogue without opening runtimes. Explicit admission invokes
   *immediately preceding* slot's fired-mark is missing, never by
   comparing the current time against a boundary computed from that same
   current time, which is always trivially on-time by construction.
+- `client/jobtail.{Tail, Since, new, push, since, received}` — a pure,
+  bounded rolling window over one stream with a monotone byte cursor. No
+  process, no I/O. `push` drops from the front past the capacity;
+  `since(cursor)` answers with what arrived after the cursor, the cursor
+  to ask with next, and how many bytes fell out of the window in
+  between — so a reader that fell behind is *told* rather than handed a
+  plausible-looking window. Both edges respect UTF-8, and the subtle
+  half is the trailing one: a slice ending mid-character holds those
+  bytes back for the next poll, but "ends mid-character" and "is not
+  UTF-8 at all" look identical to a decoder asked about a whole slice,
+  so the question is asked of the last character's *lead byte* instead.
+  A lead whose character does not fit waits; a byte that leads no
+  character is binary output and goes out as it is, because a tail that
+  could not tell the two apart would answer every poll of a
+  binary-output job with nothing, forever.
+- `client/jobs.{JobsPolicy, Request, Started, Cursors, Polled,
+  Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
+  max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
+  stop_grace_ms, runner_ask_ms, default_policy, parse_policy, blob_spill,
+  staging_path, start, supervised, start_job, poll_job, list_jobs,
+  kill_job, write_stdin, await_job}` — the session's background
+  jobs: one `weft/actor` in the **restartable** services tier beside
+  `client/extension/hosts`, and one weft runner per job. The actor owns
+  the durable `job/<id>` record, the per-strand ceiling of four, and the
+  closures that cancel and write stdin; the runner owns the jailed
+  execution, the two `client/jobtail` windows and the staging files.
+  **The runner and not the actor calls the broker**, and two clauses of
+  the broker's contract force it: `clear_call` waits out a full helper
+  pool in the *caller's* process, so an actor that cleared would stop
+  answering polls the moment the pool filled; and the relay monitors
+  whoever owns the events subject and cancels the execution when that
+  process dies, so the owner has to be a process whose life is exactly
+  the job's. A live job's output is therefore read by a **monitored
+  call** from the actor into its runner, and a finished one's from the
+  tails the runner handed back with its final report. The terminal fact
+  is written when the runner's **weft outcome** arrives, never when its
+  settlement message does: an outcome is reported only after the worker
+  exits, so the scope's exit is the drain proof. The task is a plain one
+  rather than a managed one, deliberately — a managed task witnesses
+  owners a worker *discovers*, and this worker discovers none. Admission
+  claims the cell with `api.put_reserved_fact_expecting(expected: None)`
+  *before* the clearance (the effect sandwich applied to a spawn) and
+  **deletes it** if the clearance refuses, because a refusal is not a
+  crash and a job that never existed must not hold a ceiling slot.
+  Attribution never rests on message order: the runner bounds its own
+  fold at the deadline and both tells the actor *and* carries the cause
+  in its final report, since those two reach the mailbox from different
+  senders. On start, an injected `actor.continuing(Reap)` sweeps `job/*`
+  and commits `Lost(VmRestart)` for everything still live — for **both**
+  restart cases, because telling this session's first start from a
+  supervisor restart needs state that outlives the actor and dies with
+  the VM, which is machinery bought for a word nobody branches on.
+- `client/jobseam.{Wiring, Door, max_wait_ms, ask_timeout_ms,
+  start_margin_ms, first_slice_ms, max_slice_ms, door, none, real_rest}`
+  — the host side of the model-facing jobs door, mirroring
+  `client/scheduleseam`: four closures keyed on the caller's strand, for
+  WP3's `tools/job` and `cap/job` to be values over. Ids are text here
+  and typed behind it, and this is the one place a string becomes a
+  `jobstate.JobId` — with `Invalid` rather than `NotFound` for a
+  malformed one, because "that is not a name a job could have" is a typo
+  to fix and not a job to stop looking for. A poll with a wait runs its
+  `weft/poll` loop in the **caller's** process, the reason
+  `client/agency`'s join does: a model blocking thirty seconds on one job
+  must not stop the actor answering about any other.
 - `client/codemode.{over_mcp, seam_allowlist, seam_caps_on}` — what a
   configured MCP server does to the seam a model is offered. One
   `Config.mcp` field, for the reason `surface` is one field: a server

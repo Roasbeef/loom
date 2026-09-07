@@ -3,7 +3,8 @@
 **Status**: accepted · **Date**: 2026-08-26 · **Supersedes**: nothing ·
 **Relates to**: issue #50, #22 (identity threading through this keying),
 #23 (per-execution spawn ceiling), #87 (two programs in one batch — see
-the addendum)
+the addendum), #183 (a background job's own ledger — see the second
+addendum)
 
 ## The question
 
@@ -188,3 +189,65 @@ value carries, and a refactor that "completes" the key with an
 obviously-available third field would mint one ledger per call without
 anyone intending it. A per-call coordinate that names paths lives where
 the paths are named.
+
+## Addendum — a background job carries its own step (issue #183)
+
+*Added 2026-09-06. The decision above is unchanged; this records a new
+**kind** of caller under it, and what that costs.*
+
+A background job (`client/jobs`) clears under
+`{op_id, "job/" <> id}` — the real operation that started it, and a
+synthetic step naming the job — rather than under the model batch's own
+`step_id`. Each job therefore opens a ledger of its own with
+`max_outstanding: 1` and a deadline equal to the job's wall.
+
+**Why the batch's step is the wrong key here.** Everything the decision
+above says about pooling assumes the callers sharing a key are the
+*same batch's* effects, and a detached job is not one of them. Two
+mechanical consequences follow if it were keyed there, and both are
+wrong in the direction the pooling was never meant to point:
+
+- `bash` opens the batch ledger with `max_outstanding: 1`
+  (`tools/bash.gleam`). A foreground `bash` earlier in the same batch
+  would therefore cap every job started later in it, and the job would be
+  refused `OutstandingCapReached` for a resource the batch is not using.
+- A job outlives its batch by construction. The batch's aggregate wall
+  deadline is minutes; a job's is up to an hour. Sharing the key would
+  either shorten the job to the batch's deadline or, if the job cleared
+  first, hand the batch the job's hour — and the deadline in that ledger
+  *is* the token deadline, so the second is a widening of a capability's
+  lifetime by an accident of ordering.
+
+Nothing about the amplification argument is weakened. A job is not a
+free iteration: each one costs an admitted tool call, a durable record, a
+ceiling slot and a whole jailed helper held for its lifetime, and the
+count is bounded by the per-strand ceiling of four rather than by the
+ledger. That is `#23`'s reasoning arriving at a second caller — the
+ceiling is the spawn-shaped bound, the ledger is the amplification-shaped
+one, and neither substitutes for the other.
+
+**Why the operation half stays.** `broker.abort(op_id)` revokes every
+token of an operation and cancels every execution under it. Keeping the
+operation in the key is what makes an operator's abort of the operation
+that *started* a job reach that job, which is what they meant, while an
+abort of a later operation does not — because detachment is what the
+model asked for. The job's record carries the same `op_id` as
+`started_by`, so the durable trail and the cancel authority agree.
+
+**What it costs, stated plainly.** The key space grows by one entry per
+live job, which the per-strand ceiling bounds and which `release_slot`
+deletes on settlement like any other. And the synthetic step is a
+*string* the harness mints rather than a turn id the machine already
+had, so `{op_id, step_id}` is no longer read-only "the batch": a reader
+of `broker.gleam`'s ledger table now meets two kinds of key. The
+mitigation is the shape of the second kind — it is `client/jobstate`'s
+own `job_key`, the same text as the durable cell, so a step id beginning
+`job/` is a job and there is exactly one place that mints one. The
+alternative considered and rejected was a separate ledger table for
+jobs, which would be a second accounting path for the same resource and
+would have to re-derive every rule this ADR settles.
+
+**The constraint on future work is unchanged and now has a second
+example.** A new kind of caller may take a step of its own when its
+lifetime and its parallelism are genuinely not the batch's. A finer
+coordinate *within* a batch still may not.
