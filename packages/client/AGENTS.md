@@ -352,18 +352,21 @@ catalogue without opening runtimes. Explicit admission invokes
   or injected clock. It does not cover recurring cursors or memory-file absence.
   `daemon_shipped_jobs_test` is the background-jobs acceptance. A scripted turn
   backgrounds `tail -f build.log`; the fixture appends three lines from outside
-  the jail; the next turn's poll must carry exactly those lines, the cursor
-  they advance to and a pending state; a kill produces a terminal state naming
-  the owner and carrying the helper's `cancelled` witness; and the payload's
-  own birth-qualified identity must depart, which it publishes by writing its
-  pid before it becomes `tail`. A second scenario runs the same door from code
-  mode through a real hermetic build and a real satellite, and proves the
-  durable half of independent lifetimes: a later program finds the record under
-  its own id. It asserts no state, because a code-mode teardown aborts its whole
-  operation and takes the job with it — `docs/next.md` owns that. A third
-  SIGKILLs the VM and proves the sweep commits `Lost`, the model's own poll
-  reads it, and the recorded pid is untouched, which a respawn would have
-  overwritten; its reopen waits out the crashed incarnation's writer lease.
+  the jail; the next turn's poll must find the job pending; a kill produces a
+  terminal state naming the owner and carrying the helper's `cancelled`
+  witness, and that same poll — ordered after every byte the helper sent — must
+  carry exactly those lines, the staged spill and the cursor they advance to;
+  and the payload must be gone. How that last one is proved is decided once
+  from the platform (`PayloadIdentity`): a birth-qualified fence over the pid
+  the payload publishes where the host shares it, and the terminal record plus
+  the jail's containment where `bwrap --unshare-pid` hides it. A second
+  scenario runs the same door from code mode through a real hermetic build and
+  a real satellite, and proves the durable half of independent lifetimes: a
+  later program finds the record under its own id. It asserts no state, because
+  a code-mode teardown aborts its whole operation and takes the job with it —
+  `docs/next.md` owns that. A third SIGKILLs the VM and proves the sweep
+  commits `Lost`, the model's own poll reads it, and the start marker the
+  fixture removed stays gone, which only a respawn would undo.
 - `test/support/enforcement.{Enforcement, probe, unavailable_reason}` measures
   whether the `loom-exec` beside a shipped server can enforce a policy on this
   host, by running one harmless jailed command under `PlatformEnforcement`. An

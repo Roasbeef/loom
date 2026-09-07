@@ -729,8 +729,8 @@ a job the harness lost is neither. The same sweep covers a restart of the
 actor itself, which kills every runner it owned. `daemon_shipped_jobs_test`
 proves the whole of that against the shipped daemon: a SIGKILLed VM takes
 the payload with it, the next boot's sweep commits `Lost`, the model's own
-poll reads it, and the pid the payload recorded is untouched, which a
-respawn would have overwritten.
+poll reads it, and the marker the payload's first act wrote stays gone
+after the fixture takes it away, which only a second process could undo.
 
 **A hook may not start one.** Extensions reach the same capabilities
 through the same envelope whether a tool call or a hook event set them
