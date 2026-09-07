@@ -86,6 +86,7 @@
 //// and can repair, never a crash and never a call made with a guessed
 //// value.
 
+import broker/exec.{type ExecResult}
 import broker/framing.{type CapOutcome}
 import codemode/artifact.{type Emit}
 import codemode/internal/args
@@ -101,6 +102,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import tools/fs
+import tools/job
 import tools/tool
 
 // --- the capability names --------------------------------------------------
@@ -136,6 +138,21 @@ pub const schedule_list_cap = "schedule.list"
 /// The capability a program cancels one of its strand's heartbeats with.
 pub const schedule_cancel_cap = "schedule.cancel"
 
+/// The capability a program starts a background job with.
+pub const job_start_cap = "job.start"
+
+/// The capability a program reads a background job with.
+pub const job_poll_cap = "job.poll"
+
+/// The capability a program lists its strand's background jobs with.
+pub const job_list_cap = "job.list"
+
+/// The capability a program stops a background job with.
+pub const job_kill_cap = "job.kill"
+
+/// The capability a program writes to a background job's stdin with.
+pub const job_send_cap = "job.send"
+
 /// The capability a program mints a durable artifact with. Serviced on
 /// **both** seams, by one mechanism (`codemode/artifact`).
 pub const emit_cap = artifact.emit_cap
@@ -145,7 +162,8 @@ pub const emit_cap = artifact.emit_cap
 /// set rather than a copy that can drift.
 pub const serviced_caps = [
   read_cap, list_cap, write_cap, edit_cap, kv_get_cap, kv_set_cap, kv_delete_cap,
-  schedule_create_cap, schedule_list_cap, schedule_cancel_cap, emit_cap,
+  schedule_create_cap, schedule_list_cap, schedule_cancel_cap, job_start_cap,
+  job_poll_cap, job_list_cap, job_kill_cap, job_send_cap, emit_cap,
 ]
 
 /// The most entries one `fs.list` may answer with.
@@ -477,6 +495,72 @@ pub type ScheduleRefusal {
   ScheduleUnavailable(reason: String)
 }
 
+/// The five background-job operations, bound to one execution's strand.
+///
+/// A record of its own rather than five more fields on `Workspace`,
+/// because they are one plane a host either has or has not, and a reader
+/// asking "what can a program do to a job" should find the answer in one
+/// place. A host with no jobs actor fills it with closures that refuse —
+/// `tools/job.unavailable` is the same posture on the tool side — rather
+/// than leaving the capabilities unrouted, because unlike a schedule a
+/// job is *always* offered by `bash`'s `mode` argument, and a program
+/// that can start one from a tool call and not from a program would be
+/// the surprising half of that pair.
+///
+/// The vocabulary is `tools/job`'s rather than a third restatement of
+/// it. `codemode` already depends on `tools` — `fs.Replacement` crosses
+/// this same seam — and a job's lifecycle is a six-variant type carrying
+/// a `broker/exec.ExecResult`, so a private copy would be a third place
+/// to keep an exit report in step for no isolation gained. The schedule
+/// arms above restate their vocabulary because the two sides invented it
+/// at once; this one arrived with the surface already named.
+///
+/// Constructor invariants: every closure is total — it returns a
+/// `tools/job.Refusal`, it does not crash — and the strand every one is
+/// judged against is bound by the host, never carried in an argument.
+pub type JobDoor {
+  JobDoor(
+    /// The command and the wall it asked for in milliseconds, `None` for
+    /// the host's default. Answers once the clearance has, so a policy
+    /// refusal reaches the program rather than its next poll.
+    start: fn(String, Option(Int)) -> Result(job.Started, job.Refusal),
+    /// The job's id, how long to wait for it to finish, and where the
+    /// last poll left off in each stream.
+    poll: fn(String, Int, job.Cursors) -> Result(job.Polled, job.Refusal),
+    /// Every job this execution's strand owns.
+    list: fn() -> Result(List(job.Listed), job.Refusal),
+    /// Climbs the cancel ladder.
+    kill: fn(String) -> Result(Nil, job.Refusal),
+    /// Writes to the job's stdin, optionally closing it.
+    send: fn(String, BitArray, job.StdinEnd) -> Result(Nil, job.Refusal),
+    /// The ceiling a poll's wait is clamped to, in milliseconds. Applied
+    /// by the host; published here so the router can state it in a
+    /// refusal rather than restating the number.
+    max_wait_ms: Int,
+  )
+}
+
+/// The job door a host with no jobs plane serves: every operation
+/// refuses in band, naming the reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.Workspace(..seam, jobs: workspace.no_jobs())
+/// ```
+///
+pub fn no_jobs() -> JobDoor {
+  let absent = job.Unavailable(reason: "this session runs no background jobs")
+  JobDoor(
+    start: fn(_command, _wall) { Error(absent) },
+    poll: fn(_id, _wait, _cursors) { Error(absent) },
+    list: fn() { Error(absent) },
+    kill: fn(_id) { Error(absent) },
+    send: fn(_id, _data, _end) { Error(absent) },
+    max_wait_ms: 0,
+  )
+}
+
 /// What the router needs beyond the request: one closure per serviced
 /// capability, and the ceiling on artifact emissions.
 ///
@@ -522,6 +606,11 @@ pub type Workspace {
     /// Cancels one heartbeat that strand owns, by name and by the strand
     /// it fires onto (`None` for the execution's own).
     schedule_cancel: fn(String, Option(String)) -> Result(Nil, ScheduleRefusal),
+    /// The background-job plane, bound to this execution's strand — the
+    /// same door the `bash` `mode` argument and the three `job_*` tools
+    /// call, so a job started from a program and one started from a tool
+    /// call are the same record with the same owner.
+    jobs: JobDoor,
     /// Writes one artifact and answers its content address.
     emit: Emit,
     /// How many artifacts one execution may mint.
@@ -632,6 +721,11 @@ pub fn routing(seam: Workspace, over inner: CapRouter) -> CapRouter {
       "schedule.create" -> schedule_create_plan(seam, request)
       "schedule.list" -> schedule_list_plan(seam, request)
       "schedule.cancel" -> schedule_cancel_plan(seam, request)
+      "job.start" -> job_start_plan(seam, request)
+      "job.poll" -> job_poll_plan(seam, request)
+      "job.list" -> job_list_plan(seam, request)
+      "job.kill" -> job_kill_plan(seam, request)
+      "job.send" -> job_send_plan(seam, request)
       "report.emit" -> artifact.plan(seam.emit, request)
       _other -> inner(request)
     }
@@ -1212,6 +1306,281 @@ pub fn schedule_denial(refusal: ScheduleRefusal) -> CapDenial {
     ScheduleUnavailable(reason:) ->
       CapDenial(code: "schedules_unavailable", message: reason)
   }
+}
+
+// --- job -------------------------------------------------------------------
+//
+// Five arms over one door, and the door is the same value the `job_*`
+// tools call. So a program and a tool call cannot disagree about what
+// this strand's jobs are, and either may poll or kill what the other
+// started — ownership is the strand, never the caller.
+//
+// A program's own `within_ms` is unrelated to a job's deadline. The
+// satellite ends when the program returns; the job it started keeps
+// running under its own token until its own wall expires.
+
+fn job_start_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use command <- result.try(args.string(request.args, "command"))
+  use wall_ms <- result.try(optional_int(request.args, "wall_ms"))
+  Ok(
+    ServedHere(fn() {
+      case seam.jobs.start(command, wall_ms) {
+        Error(refusal) -> job_refused(refusal)
+
+        Ok(started) ->
+          answered([
+            #("job_id", msgpack.StringValue(started.id)),
+            #("deadline_ms", msgpack.IntValue(started.deadline_ms)),
+            #("wall_ms", msgpack.IntValue(started.wall_ms)),
+          ])
+      }
+    }),
+  )
+}
+
+fn job_poll_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use id <- result.try(args.string(request.args, "job_id"))
+  use wait_ms <- result.try(optional_int(request.args, "wait_ms"))
+  use stdout <- result.try(optional_int(request.args, "since_stdout"))
+  use stderr <- result.try(optional_int(request.args, "since_stderr"))
+  use cursors <- result.try(job_cursors(stdout, stderr))
+
+  // The wait is clamped here rather than refused, for the reason the
+  // host clamps a wall: a program told "30_001 is too long" learns to
+  // retry against a wall that will not move, and the clamp is a
+  // published number it can read.
+  let wait_ms =
+    int.clamp(option.unwrap(wait_ms, 0), min: 0, max: seam.jobs.max_wait_ms)
+  Ok(
+    ServedHere(fn() {
+      case seam.jobs.poll(id, wait_ms, cursors) {
+        Error(refusal) -> job_refused(refusal)
+        Ok(polled) -> answered(job_fields(polled))
+      }
+    }),
+  )
+}
+
+// Negative cursors are refused rather than clamped: a cursor is a token
+// the harness minted, so one that could not have been minted means the
+// program computed its own, and quietly rewinding it to the start of the
+// stream would hide that behind a flood of output it had already read.
+fn job_cursors(
+  stdout: Option(Int),
+  stderr: Option(Int),
+) -> Result(job.Cursors, CapDenial) {
+  let stdout = option.unwrap(stdout, 0)
+  let stderr = option.unwrap(stderr, 0)
+  case stdout < 0 || stderr < 0 {
+    True ->
+      Error(args.invalid(
+        "`since_stdout` and `since_stderr` must be cursors a previous "
+        <> "job.poll returned, and never negative",
+      ))
+
+    False -> Ok(job.Cursors(stdout:, stderr:))
+  }
+}
+
+// The poll answer, flat rather than nested under a state variant,
+// because msgpack has no sum type and `cap/job` reads `state` first and
+// then the fields that state licenses.
+fn job_fields(polled: job.Polled) -> List(#(String, MsgPackValue)) {
+  [
+    #("job_id", msgpack.StringValue(polled.id)),
+    #("state", msgpack.StringValue(job.state_name(polled.state))),
+    #("age_ms", msgpack.IntValue(polled.age_ms)),
+    #("deadline_ms", msgpack.IntValue(polled.deadline_ms)),
+    #("stdout", job_stream(polled.stdout)),
+    #("stderr", job_stream(polled.stderr)),
+    #("stdout_ref", optional_text(polled.spill.stdout_ref)),
+    #("stderr_ref", optional_text(polled.spill.stderr_ref)),
+    ..job_state_fields(polled.state)
+  ]
+}
+
+fn job_stream(streamed: job.Streamed) -> MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("bytes"), msgpack.BinaryValue(streamed.bytes)),
+    #(msgpack.StringValue("cursor"), msgpack.IntValue(streamed.cursor)),
+    #(msgpack.StringValue("dropped"), msgpack.IntValue(streamed.dropped)),
+  ])
+}
+
+// What each state licenses beyond its name: who stopped the job, why it
+// can no longer be spoken for, and the helper's own exit report. A live
+// job carries none of the three, and `cap/job` reads none of them.
+fn job_state_fields(state: job.JobState) -> List(#(String, MsgPackValue)) {
+  case state {
+    job.Starting | job.Running -> []
+
+    job.Draining(by:) -> [#("stopped_by", job_cause(by))]
+
+    job.Exited(result:) -> [#("exit", job_exit(result))]
+
+    job.Killed(by:, result:) -> [
+      #("stopped_by", job_cause(by)),
+      #("exit", job_exit(result)),
+    ]
+
+    job.Lost(reason:) -> [#("lost_reason", job_loss(reason))]
+  }
+}
+
+fn job_cause(cause: job.StopCause) -> MsgPackValue {
+  case cause {
+    job.ByOwner -> msgpack.StringValue("owner")
+    job.ByDeadline -> msgpack.StringValue("deadline")
+    job.BySessionStop -> msgpack.StringValue("session_stop")
+    job.ByOperationAbort -> msgpack.StringValue("operation_abort")
+  }
+}
+
+fn job_loss(reason: job.LostReason) -> MsgPackValue {
+  case reason {
+    job.VmRestart -> msgpack.StringValue("vm_restart")
+    job.OwnerRestart -> msgpack.StringValue("owner_restart")
+    job.HelperLoss -> msgpack.StringValue("helper_loss")
+  }
+}
+
+fn job_exit(result: ExecResult) -> MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("code"), msgpack.IntValue(result.code)),
+    #(msgpack.StringValue("signal"), msgpack.IntValue(result.signal)),
+    #(msgpack.StringValue("wall_ms"), msgpack.IntValue(result.wall_ms)),
+    #(msgpack.StringValue("timed_out"), msgpack.BoolValue(result.timed_out)),
+    // The helper's own witness that it climbed the cancel ladder, which
+    // nothing else in the report can say (`protocol-change/006`).
+    #(msgpack.StringValue("cancelled"), msgpack.BoolValue(result.cancelled)),
+    #(
+      msgpack.StringValue("stdout_bytes"),
+      msgpack.IntValue(result.stdout_bytes),
+    ),
+    #(
+      msgpack.StringValue("stderr_bytes"),
+      msgpack.IntValue(result.stderr_bytes),
+    ),
+    #(
+      msgpack.StringValue("stdout_truncated"),
+      msgpack.BoolValue(result.stdout_truncated),
+    ),
+    #(
+      msgpack.StringValue("stderr_truncated"),
+      msgpack.BoolValue(result.stderr_truncated),
+    ),
+  ])
+}
+
+fn job_list_plan(
+  seam: Workspace,
+  _request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  Ok(
+    ServedHere(fn() {
+      case seam.jobs.list() {
+        Error(refusal) -> job_refused(refusal)
+
+        Ok(rows) ->
+          answered([#("jobs", msgpack.ArrayValue(list.map(rows, job_row)))])
+      }
+    }),
+  )
+}
+
+fn job_row(row: job.Listed) -> MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("job_id"), msgpack.StringValue(row.id)),
+    #(
+      msgpack.StringValue("state"),
+      msgpack.StringValue(job.state_name(row.state)),
+    ),
+    #(msgpack.StringValue("age_ms"), msgpack.IntValue(row.age_ms)),
+    #(msgpack.StringValue("deadline_ms"), msgpack.IntValue(row.deadline_ms)),
+  ])
+}
+
+fn job_kill_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use id <- result.try(args.string(request.args, "job_id"))
+  Ok(
+    ServedHere(fn() {
+      case seam.jobs.kill(id) {
+        Error(refusal) -> job_refused(refusal)
+        Ok(Nil) -> answered([#("stopped", msgpack.BoolValue(True))])
+      }
+    }),
+  )
+}
+
+fn job_send_plan(
+  seam: Workspace,
+  request: CapRequest,
+) -> Result(CapPlan, CapDenial) {
+  use id <- result.try(args.string(request.args, "job_id"))
+  use data <- result.try(args.binary(request.args, "data"))
+  use end <- result.try(requested_end(request.args))
+  Ok(
+    ServedHere(fn() {
+      case seam.jobs.send(id, data, end) {
+        Error(refusal) -> job_refused(refusal)
+        Ok(Nil) -> answered([])
+      }
+    }),
+  )
+}
+
+// The capability wire carries `eof` as a msgpack boolean, which is what
+// `cap/job` encodes on the far side; absent leaves stdin open, which is
+// what a write that never considered the question means.
+fn requested_end(value: MsgPackValue) -> Result(job.StdinEnd, CapDenial) {
+  case optional_bool(value, "eof") {
+    Error(denial) -> Error(denial)
+    Ok(Some(True)) -> Ok(job.CloseStdin)
+    Ok(Some(False)) | Ok(None) -> Ok(job.KeepStdinOpen)
+  }
+}
+
+fn optional_text(value: Option(String)) -> MsgPackValue {
+  case value {
+    None -> msgpack.NilValue
+    Some(text) -> msgpack.StringValue(text)
+  }
+}
+
+fn job_refused(refusal: job.Refusal) -> CapOutcome {
+  let CapDenial(code:, message:) = job_denial(refusal)
+  framing.CapErr(code:, message:)
+}
+
+/// The in-band code and message one background-job refusal travels
+/// under.
+///
+/// The codes are `tools/job.refusal_code`'s rather than a second set:
+/// the same five strings reach a model in a `job_poll` result and a
+/// program in a `JobDenied`, so a reader of one transcript and a reader
+/// of the other are reading the same contract. `cap/job` documents them
+/// as the thing a program branches on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.job_denial(job.CeilingReached(limit: 4)).code == "job_ceiling"
+/// ```
+///
+pub fn job_denial(refusal: job.Refusal) -> CapDenial {
+  CapDenial(
+    code: job.refusal_code(refusal),
+    message: job.refusal_reason(refusal),
+  )
 }
 
 // --- optional arguments -----------------------------------------------------

@@ -27,6 +27,7 @@
 ////   de5a54182163d7e4cae0147ee33d2e656bce67cb88a351bd2569342769b3c644  packages/cap/src/cap/actor.gleam
 ////   b273673129ed12f3ec7055493b1dddfe9480a842319084725bb3d69c7a8508a7  packages/cap/src/cap/fs.gleam
 ////   13169b82fc24ff5aa14320f25b35c1ff500faf769fa0283cc78adc78d4b634fd  packages/cap/src/cap/git.gleam
+////   6ec7b03a7b85d73c56e3520fc66e5a699e5859deca01bcefd5aa1463a0bcbfaf  packages/cap/src/cap/job.gleam
 ////   37332eb8a0ad5118fdf4391729121e71ea153714d53fed8592813308e240b010  packages/cap/src/cap/kv.gleam
 ////   967a79fcb93b977deaa5f159f7b2263aa7f1a0b96626ecb0d4bbc74aa66149b5  packages/cap/src/cap/lsp.gleam
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
@@ -39,7 +40,7 @@
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): dedd03589bf1905ab90fae2913c6c68228cc1aba8a1b65d59640b39c35f4fede
+//// Body digest (every line after the marker): 38c76574eada838ca64aedf9132e321bd01df412ca50b6dfa9eff53b75b726fd
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -217,6 +218,194 @@ pub fn diff(staged: Bool) -> Result(String, GitError)
 pub fn log(limit: Int) -> Result(List(Commit), GitError)
 /// The working-tree status as porcelain entries.
 pub fn status() -> Result(List(StatusEntry), GitError)
+",
+  ),
+  #(
+    "cap/job",
+    "### cap/job
+`cap/job` — background jobs a program can start, watch, feed and stop: a
+jailed command that keeps running after the call that started it, and
+after the program itself has returned.
+
+/// Where a poll left off in each stream.
+pub type Cursors {
+  Cursors(stdout: Int, stderr: Int)
+}
+/// The helper's own report of how a job's command ended.
+///
+/// `timed_out` and `cancelled` answer different questions and a job
+/// killed by its deadline is both: the first says the wall expired, the
+/// second is the helper's witness that it climbed the TERM-then-KILL
+/// ladder. Under a jail the payload's own signal is relayed as an exit
+/// code rather than as `signal`, so read `code` for the cross-environment
+/// answer.
+pub type Exit {
+  Exit(code: Int, signal: Int, wall_ms: Int, timed_out: Bool, cancelled: Bool, stdout_bytes: Int, stderr_bytes: Int, stdout_truncated: Bool, stderr_truncated: Bool)
+}
+/// One job, as `poll` reads it.
+pub type Job {
+  Job(id: String, state: State, age_ms: Int, deadline_ms: Int, stdout: Stream, stderr: Stream, spill: Spill)
+}
+/// Why a background-job call failed.
+///
+/// Split the way `cap/proc`'s is: the reasons a program can branch on get
+/// their own variants, and everything else keeps the host's code verbatim
+/// rather than being flattened into one.
+pub type JobError {
+  /// This strand already holds every job it may hold at once. Stop one
+  /// with `kill` before starting another.
+  JobCeilingReached(message: String)
+  /// This strand owns no job of that id — which is also the answer for a
+  /// job another strand owns, so a program learns what is its own and
+  /// nothing about anyone else's.
+  JobNotFound(message: String)
+  /// The clearance refused the command before anything ran, in the
+  /// broker's own words: the same refusal a foreground command would have
+  /// met under the same policy.
+  JobRefused(message: String)
+  /// The host denied the call for a reason this module has no variant
+  /// for. `code` is the host's own, carried verbatim.
+  JobDenied(code: String, message: String)
+  /// The capability channel could not carry the call, or the host runs no
+  /// background-jobs plane at all.
+  JobUnavailable(reason: String)
+}
+/// Why a job can no longer be spoken for: nobody ended it on purpose and
+/// no exit was ever observed, so what became of the process is unknown
+/// rather than reported.
+pub type LostReason {
+  /// The harness VM restarted. Nothing in this design survives that.
+  VmRestart
+  /// The jobs plane restarted, taking every runner it owned with it.
+  OwnerRestart
+  /// The sandbox helper went away without reporting an exit.
+  HelperLoss
+}
+/// One row of this strand's job listing.
+pub type Row {
+  Row(id: String, state: State, age_ms: Int, deadline_ms: Int)
+}
+/// Where a finished job's whole output was stored.
+///
+/// Empty while the job runs. Each field is `Some` only for a stream that
+/// carried bytes and was promoted to its content address; the text is
+/// then a ref `cap/fs.read` reads. `None` means \"nothing to read\", and
+/// the exit report's byte counts are what tell a program whether a stream
+/// had output that did not reach a blob.
+pub type Spill {
+  Spill(stdout_ref: option.Option(String), stderr_ref: option.Option(String))
+}
+/// A job that has been admitted and is running.
+pub type Started {
+  Started(id: String, deadline_ms: Int, wall_ms: Int)
+}
+/// Where a job is in its life.
+///
+/// Three live states and three terminal ones. `is_pending` is the split,
+/// and a loop that waits for a job should ask through it rather than
+/// listing the variants, so a state added later does not read as
+/// finished.
+pub type State {
+  /// Cleared and dispatched; the helper has not accepted the run yet.
+  Starting
+  /// The helper accepted the run and the process is live.
+  Running
+  /// A stop was asked for and the cancel ladder is climbing; no exit has
+  /// been reported yet. Poll again for the terminal state.
+  Draining(by: StopCause)
+  /// The command ended of its own accord.
+  Exited(exit: Exit)
+  /// The job was stopped and the helper reported the stopped execution.
+  Killed(by: StopCause, exit: Exit)
+  /// The job can no longer be spoken for, and no exit was observed.
+  Lost(reason: LostReason)
+}
+/// Why a job is being stopped, or was stopped.
+///
+/// Carried separately from the exit report because the report cannot say
+/// it: a cancelled run says only *that* the ladder was climbed, never at
+/// whose asking.
+pub type StopCause {
+  /// This strand asked, through `kill`.
+  ByOwner
+  /// The wall deadline fixed at `start` expired.
+  ByDeadline
+  /// The session is closing.
+  BySessionStop
+  /// An operator aborted the operation that started the job.
+  ByOperationAbort
+}
+/// One stream's answer to a poll.
+pub type Stream {
+  Stream(bytes: BitArray, cursor: Int, dropped: Int)
+}
+/// The cursors one poll's answer leaves behind, to hand to the next.
+pub fn after(Job) -> Cursors
+/// The cursors that read a job's whole retained tail: the first poll's.
+pub fn from_start() -> Cursors
+/// Whether a job in this state is one to come back to.
+pub fn is_pending(State) -> Bool
+/// Stops one job: TERM to the payload and its descendants, then KILL of
+/// the group — the same ladder a cancelled foreground command climbs.
+///
+/// It returns once the stop has been asked for, which is not the same as
+/// the job being over: the helper reports the stopped execution when it
+/// reports it. `poll` afterwards for the terminal state, whose
+/// `Exit.cancelled` is the helper's own witness that it climbed.
+///
+/// Capability: `job.kill`.
+pub fn kill(String) -> Result(Nil, JobError)
+/// Lists every job this strand owns, live and terminal alike, with its
+/// state and how long it has been alive.
+///
+/// The listing is the answer to \"what did I start\" across turns: a job
+/// outlives the program that made it, so a later execution finds one it
+/// never started here.
+///
+/// Capability: `job.list`.
+pub fn list() -> Result(List(Row), JobError)
+/// Reads one job: its state, and what each stream has printed since
+/// `cursors`.
+///
+/// `wait_ms` blocks for the job to *finish* before answering, and is
+/// clamped host-side. A job still running when the wait expires is a
+/// successful answer carrying its live state, never an error — so a
+/// supervision loop is `poll` with a wait until `is_pending` is false,
+/// and it costs at least one slice per turn whatever it passes.
+///
+/// Capability: `job.poll`.
+pub fn poll(String, Int, Cursors) -> Result(Job, JobError)
+/// Writes bytes to a job's standard input, leaving it open.
+///
+/// Nothing is appended, so write the newline yourself if the program
+/// reads lines. This is what makes a job a REPL rather than a log to
+/// watch; a foreground command has stdin closed from the start.
+///
+/// Capability: `job.send`.
+pub fn send(String, BitArray) -> Result(Nil, JobError)
+/// `send`, closing the job's stdin after this write.
+///
+/// Closing is what makes a program reading to end-of-input finish.
+/// Nothing can be written afterwards.
+///
+/// Capability: `job.send`.
+pub fn send_last(String, BitArray) -> Result(Nil, JobError)
+/// Starts `command` as a background job with the host's default wall.
+///
+/// It runs as `bash -lc` in the workspace, under exactly the sandbox
+/// policy a foreground command runs under, and it keeps running after
+/// this call and after this program returns.
+///
+/// Capability: `job.start`.
+pub fn start(String) -> Result(Started, JobError)
+/// `start`, asking for a particular wall in milliseconds.
+///
+/// The host clamps it to its own ceiling and the session's policy narrows
+/// it further, so read `Started.wall_ms` for what was granted. It is
+/// never renewed once the job is running.
+///
+/// Capability: `job.start`.
+pub fn start_within(String, Int) -> Result(Started, JobError)
 ",
   ),
   #(

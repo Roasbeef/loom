@@ -1322,7 +1322,7 @@ fn compaction_wiring(
   // asserted away, because `wiring.Config` is built inside a `Result`
   // already and a refusal costs one line.
   use tool_registry <- result.try(
-    contributions.built_in(None, None, None, None, None, None)
+    contributions.built_in(None, None, None, None, None, None, None)
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
   )

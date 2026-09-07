@@ -107,15 +107,46 @@ pub type HookFailure {
   Gone(reason: String)
 }
 
+/// What set an invocation going: a tool call the model made, or a hook
+/// the harness fired.
+///
+/// The two are not interchangeable even though they reach the same
+/// satellite through the same envelope, because the operation behind
+/// them is not the same kind of thing. A tool call's operation is the
+/// model's own run — visible in the transcript, abortable by an
+/// operator, attributed to the strand that made the call. A hook's is
+/// the one session-long operation `client/serve` mints for the whole of
+/// a session's hooks and attributes to the root strand, which no
+/// operator ever sees as a running step and so can never abort. A
+/// capability whose effects outlive the invocation therefore reads
+/// differently on the two paths, and `dispatch.bridge` narrows the hook
+/// one accordingly.
+///
+/// A two-variant type rather than a flag for the reason the style guide
+/// gives: `HookEvent` names the caller at the construction site, where
+/// `True` would name nothing.
+pub type Origin {
+  /// A tool the model called, running inside that call's operation and
+  /// step.
+  ToolCall
+
+  /// A hook the harness fired on its own timeline, running under the
+  /// session's attribution-only hook operation.
+  HookEvent
+}
+
 /// Where an invocation sits: the coordinates its effects clear under and
 /// the workspace its node lives in.
 ///
-/// One record rather than seven parameters because the two callers fill it
-/// from different places — a tool dispatch from `tool.Ctx`, a hook from
+/// One record rather than eight parameters because the two callers fill
+/// it from different places — a tool dispatch from `tool.Ctx`, a hook from
 /// the strand the event fired on — and a positional signature they both
 /// have to get right is one either can get wrong silently.
 pub type Coordinates {
   Coordinates(
+    /// What set this invocation going, which decides whether the
+    /// workspace bridge it is judged against carries a jobs plane.
+    origin: Origin,
     /// The operation this invocation's clearances run under.
     op_id: OpId,
     /// The step within it.

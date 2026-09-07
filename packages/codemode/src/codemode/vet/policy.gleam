@@ -539,7 +539,7 @@ pub fn extension_authority_modules() -> List(String) {
 pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv", "cap/schedule",
+    "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job",
   ]
 }
 
@@ -667,6 +667,25 @@ pub fn extension_stdlib_modules() -> List(String) {
 // reaches an installed extension's tool exactly as `cap/fs` does — as a
 // workspace capability, never as a second shared entry between the two
 // seams whose intersection the test pins.
+//
+// `cap/job` rides the same superset and is ruled the same way, with one
+// division the allowlist cannot express. An extension's tool call may
+// start a background job: it runs under the model's own operation, the
+// strand's model reads it in its own transcript and can kill it, and an
+// abort of that operation reaches it — the posture above, exactly. An
+// extension's *hook* may not. A hook fires on the harness's timeline
+// under the one session-long operation `client/serve.hook_coordinates`
+// mints and attributes to the root strand for reads; no operator ever
+// sees that operation as a running step, so no operator can abort it,
+// and a `context` or pre-tool hook that started a job on every event
+// would spend the model's own ceiling of live jobs on work it never
+// asked for and cannot find. Vetting cannot make that call, because the
+// two paths import the same module in the same package: the division is
+// made where the difference exists, in the workspace bridge
+// `client/extension/dispatch.bridge` builds, which serves a hook-origin
+// invocation `workspace.no_jobs()` and a tool-origin one the real door.
+// `docs/architecture/extensions.md` states it beside the other
+// invariants, and `dispatch_test` pins both polarities.
 
 /// The capability-prelude modules on **no** seam, deliberately.
 ///

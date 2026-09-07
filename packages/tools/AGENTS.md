@@ -17,6 +17,14 @@ declared here and filled by whoever can see a live runtime
 rule, the caps, the deadline, the lineage ledger — lives on the far side
 of that seam.
 
+And the `job_*` family — `job_poll`, `job_kill`, `job_send` — the
+model's door onto background jobs, on the same seam-of-closures shape:
+a job is *started* by `bash` with `mode: "background"` rather than by a
+fourth definition, because tool-surface cost is arithmetic, and the
+three here watch, feed and stop it. Everything durable and everything
+enforced — the per-strand ceiling, the wall clamp, the clearance, the
+`job/<id>` fact writes — is on the far side of `Jobs`.
+
 And `history_search`, through which a model asks the repository's
 full-text index what it once knew. Same shape, same reason: `events`
 owns the index and depends on nothing here, so the tool is a shell over
@@ -194,6 +202,39 @@ can repair from.
   code-mode capability vocabulary. Both writers are `Never`/`Exclusive`:
   a replayed create would silently replace a schedule the model believes
   it already has, and two in one batch would race for the same ceiling.
+- `tools/job.{Jobs, Started, Cursors, Streamed, Polled, Listed, JobState,
+  StopCause, LostReason, JobSpill, StdinEnd, Refusal, tools, unavailable,
+  poll_tool_name, kill_tool_name, send_tool_name, is_pending, state_name,
+  cursor_to_string, parse_cursor, refusal_outcome, refusal_code,
+  refusal_reason}` — the model's door onto background jobs, a value over
+  a seam the host fills (`client/jobtools` over `client/jobseam.Door`),
+  exactly as `schedule` is. Three tools exported as one list, plus
+  `bash`'s own `mode` argument, which is what starts a job — a host
+  cannot register the stopper without the poller, and starting is not a
+  fourth definition because the wire tool array is the provider's cached
+  byte prefix.
+  `Jobs.max_wait_ms` is passed **in** rather than defined here, the same
+  direction `schedule.Limits` takes and for the same reason: the clamp
+  is applied on the far side, so the number a description promises and
+  the number a call meets are one fact.
+  `JobState` is a six-variant lifecycle restated from
+  `client/jobstate.JobState` — `tools` may not import `client` — but the
+  exit report inside `Exited` and `Killed` is `broker/exec.ExecResult`
+  carried across unchanged. `is_pending` is the live/terminal split and
+  is the only thing that decides `details.pending`, so the rendered text
+  and the structured half cannot disagree; a pending poll is a
+  **success**, the rule `agent_wait` follows.
+  `Cursors` travel to the model as one opaque token
+  (`cursor_to_string` / `parse_cursor`) rather than two integers,
+  because a model must not do arithmetic on either half; a token that
+  could not have been minted is refused rather than rewound to the start
+  of the stream. `StdinEnd` (`CloseStdin | KeepStdinOpen`) is the
+  no-naked-`Bool` shape of the `eof` enum.
+  `refusal_code` is half of a contract `codemode/workspace.job_denial`
+  and `cap/job.map_error` complete: the same five strings reach a model
+  in a tool result and a program in a denial. `unavailable()` is the
+  `tools`-side twin of `jobseam.none()`, for a host with no jobs actor.
+  All three are `Never`/`Concurrent`.
 - `tools/remember.{Memory, Refusal, tool, tool_name, note_type,
   entry_types, max_note_chars, max_notes, refusal_outcome,
   says_something}` — the memory door and the `remember` tool over it.
@@ -237,7 +278,7 @@ can repair from.
   `client` (`client/wiring` builds the per-call `Ctx`
   and dispatches through the registry; `client/agency` fills the
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
-  and `client/contributions` registers all four families; `client/history` fills
+  and `client/jobtools` fills the `job.Jobs` record, and `client/contributions` registers all five families; `client/history` fills
   the `history.History` record and `client/memory` fills the
   `remember.Memory` record),
   `conformance` (the wiring/e2e suites drive the same adapter).
@@ -268,8 +309,10 @@ can repair from.
   workspace readable, nothing writable, network off; `history_search`
   asks for **nothing at all** — no readable root, no writable root, no
   network — because it starts no jailed process and touches no path: the
-  index is read harness-side through the seam, and `remember` asks for
-  nothing for the same reason; `code_mode` asks
+  index is read harness-side through the seam, and `remember` and the
+  three `job_*` tools ask for nothing for the same reason — a job's own
+  command is cleared by the host under the *job's* identity, never under
+  the polling call's; `code_mode` asks
   workspace write and the whole filesystem readable (the Gleam and Erlang
   toolchains live outside it), and declaratively only — it clears nothing
   through `Ctx.clear_call`, because the build and the node are cleared

@@ -633,10 +633,17 @@ const signature_legend = "Each module's public surface, as the compiler reports 
 // The blocks are generated (`tools/prelude`, `make gen-prelude`) and
 // rendered here, so these are the whole description as it goes on the
 // wire, measured rather than estimated. Against the real allowlists a
-// workspace-only host renders 17,678 bytes — about 4,400 tokens at the
+// workspace-only host renders 37,167 bytes — about 9,300 tokens at the
 // usual four-bytes-per-token estimate — an orchestration-only host
-// 15,205 (~3,800), and a host serving both 28,818 (~7,200), in which
+// 16,628 (~4,200), and a host serving both 49,402 (~12,400), in which
 // the `cap/report` block the two seams share is stated once.
+//
+// `cap/job` is the largest single block in the prelude and 7,823 bytes
+// (~1,950 tokens) of the two figures that carry it: a job's `Exit`
+// record and the six `State` variants are most of it, and they are
+// there for the reason the `pub type` argument below gives — a program
+// that cannot name `Exited` cannot tell a finished job from a killed
+// one. The orchestration seam does not admit it and is unchanged by it.
 //
 // That is above the ~2,100/~1,900 the work was scoped against, and the
 // whole of the difference is the `pub type` declarations: issue #36

@@ -19,6 +19,29 @@
 //// a crash mid-execution must yield a synthetic interrupted result
 //// (the pi §0.5 scenario), never a re-execution. `execution_mode` is
 //// `Exclusive`: the command may mutate the workspace.
+////
+//// ## The two modes
+////
+//// `mode` chooses between the foreground call above and a **background
+//// job**: the same command, admitted under the same rules, but allowed
+//// to outlive the tool call that started it. A background call clears
+//// through `tools/job.Jobs` — the host's door — and returns a handle at
+//// once rather than the command's output, and the model reads it
+//// afterwards with `job_poll`, feeds it with `job_send` and stops it
+//// with `job_kill`.
+////
+//// One flag on a tool the model already has, rather than a fourth tool
+//// definition, because tool-surface cost is arithmetic: every permanent
+//// definition renders into the provider's cached byte prefix and is paid
+//// for on every request of every strand for the life of the session.
+////
+//// The two modes are otherwise deliberately not symmetric in one place.
+//// The foreground clamp is this module's `max_timeout_ms`, ten minutes;
+//// a job's default and clamp are the host's, an hour, raised by an
+//// operator's `[jobs].max_wall`. So `timeout_ms` is passed to the door
+//// **unclamped** and the door answers with the wall it granted — clamping
+//// here as well would silently cap a job at the foreground ceiling and
+//// no reader of either number could tell which had applied.
 
 import broker/broker
 import broker/budget
@@ -31,9 +54,10 @@ import gleam/bool
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import tools/blob
+import tools/job.{type Jobs}
 import tools/tool.{type Ctx, type ToolOutcome}
 
 /// Wall-clock timeout applied when the arguments give none.
@@ -48,15 +72,60 @@ pub const max_timeout_ms = 600_000
 /// tool always outwaits a broker that is still settling honestly.
 const settle_grace_ms = 10_000
 
-/// The `bash` tool.
-pub fn tool() -> tool.Tool {
+/// Whether a call blocks for its command or backgrounds it.
+///
+/// A two-variant type rather than the `detach: Bool` the shape would
+/// otherwise take, for the no-naked-`Bool` reason: the polarity of a
+/// flag named for one of two peers is exactly what a reader of a call
+/// site should not have to carry.
+pub type Mode {
+  /// The call blocks until the command settles and answers with its
+  /// output. What every `bash` call meant before this argument existed,
+  /// and what an argument-less call still means.
+  Foreground
+
+  /// The call admits a background job and answers with its handle. The
+  /// command keeps running after the tool call ends.
+  Background
+}
+
+/// The `bash` tool over one jobs door.
+///
+/// The door is taken unconditionally rather than as an `Option` because
+/// `bash` exists on every host and only one of its two modes needs one:
+/// a host with no jobs plane passes `job.unavailable()`, and a model
+/// asking for `mode: "background"` there is refused in band saying so.
+/// An `Option` would put that same refusal one layer further from the
+/// place that has to word it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.registry([bash.tool(job.unavailable())])
+/// ```
+///
+pub fn tool(jobs: Jobs) -> tool.Tool {
   tool.Tool(
     name: "bash",
     description: "Run a shell command in the sandboxed workspace. The "
       <> "command runs as `bash -lc` with the workspace as the working "
-      <> "directory and no network access.",
+      <> "directory and no network access. With `mode: \"background\"` the "
+      <> "command is started as a background job instead: the call returns "
+      <> "a job id straight away and the command keeps running after it, so "
+      <> "use it for a long build or something you want to watch. Read a "
+      <> "job with `"
+      <> job.poll_tool_name
+      <> "`, write to its stdin with `"
+      <> job.send_tool_name
+      <> "`, and stop it with `"
+      <> job.kill_tool_name
+      <> "`.",
+    // No double quotes in a snippet: the system prompt's index is
+    // asserted line-by-line against the JSON request body it renders
+    // into (`client/serve_test`), and a quote is escaped there.
     prompt_snippet: option.Some(
-      "`bash` runs a shell command in the workspace, jailed and offline.",
+      "`bash` runs a shell command in the workspace, jailed and offline; "
+      <> "`mode: background` starts it as a job instead.",
     ),
     schema: tool.object_schema(
       [
@@ -68,7 +137,19 @@ pub fn tool() -> tool.Tool {
             <> int.to_string(default_timeout_ms)
             <> ", ceiling "
             <> int.to_string(max_timeout_ms)
-            <> ")",
+            <> "). A background job has its own, much longer default and "
+            <> "ceiling; the result of starting one says which wall it "
+            <> "was granted",
+          ),
+        ),
+        #(
+          "mode",
+          tool.enum_property(
+            ["foreground", "background"],
+            "\"foreground\" (the default) waits for the command and "
+              <> "returns its output. \"background\" starts it as a job and "
+              <> "returns a job id at once, leaving it running after this "
+              <> "call ends",
           ),
         ),
       ],
@@ -77,7 +158,7 @@ pub fn tool() -> tool.Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements:,
-    run:,
+    run: fn(ctx, args) { run(jobs, ctx, args) },
   )
 }
 
@@ -94,14 +175,84 @@ pub fn requirements(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: ["/"], env_allow: [])
 }
 
-fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use command <- tool.with_arg(tool.required_string(args, "command"))
-  use timeout <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
-  let timeout = option.unwrap(timeout, default_timeout_ms)
+  use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
+  use mode <- tool.with_arg(requested_mode(args))
+
+  // The floor is shared and the ceiling is not: a timeout under a
+  // millisecond is nonsense in either mode, while the ceiling belongs to
+  // whichever plane will run the command. See the module doc.
   use <- bool.guard(
-    when: timeout < 1,
+    when: option.unwrap(requested, default_timeout_ms) < 1,
     return: tool.failure("invalid arguments: `timeout_ms` must be >= 1"),
   )
+
+  case mode {
+    Background -> background(jobs, ctx, command, requested)
+    Foreground -> foreground(ctx, command, requested)
+  }
+}
+
+// The model writes a closed vocabulary rather than a boolean, and an
+// absent argument is the foreground call every `bash` was before this
+// argument existed — so nothing a model wrote yesterday backgrounds
+// itself today.
+fn requested_mode(args: JsonValue) -> Result(Mode, String) {
+  case tool.optional_string(args, "mode") {
+    Error(reason) -> Error(reason)
+    Ok(None) | Ok(Some("foreground")) -> Ok(Foreground)
+    Ok(Some("background")) -> Ok(Background)
+
+    Ok(Some(other)) ->
+      Error(
+        "`mode` must be \"foreground\" or \"background\", not \""
+        <> other
+        <> "\"",
+      )
+  }
+}
+
+// A background call is synchronous over the *admission* and nothing
+// else: the door clears the command through the broker under the job's
+// own identity, so a policy refusal, an escalation and the strand's job
+// ceiling all reach this call in the door's own words rather than
+// arriving at some later poll. What it does not wait for is the command.
+fn background(
+  jobs: Jobs,
+  ctx: Ctx,
+  command: String,
+  requested: Option(Int),
+) -> ToolOutcome {
+  use started <- tool.or_outcome(
+    jobs.start(ctx, command, requested),
+    job.refusal_outcome,
+  )
+  tool.success(
+    "started background job "
+    <> started.id
+    <> ", with a wall of "
+    <> int.to_string({ started.wall_ms + 999 } / 1000)
+    <> "s. It is running now; read it with `"
+    <> job.poll_tool_name
+    <> "`.",
+  )
+  |> tool.with_details(
+    json.Object([
+      #("job_id", json.String(started.id)),
+      #("mode", json.String("background")),
+      #("deadline_ms", json.Int(started.deadline_ms)),
+      #("wall_ms", json.Int(started.wall_ms)),
+    ]),
+  )
+}
+
+fn foreground(
+  ctx: Ctx,
+  command: String,
+  requested: Option(Int),
+) -> ToolOutcome {
+  let timeout = option.unwrap(requested, default_timeout_ms)
   let timeout = int.min(timeout, max_timeout_ms)
   let #(now, _clock) = clock.read(ctx.clock)
   let spec = call_spec(ctx, command, now, timeout)

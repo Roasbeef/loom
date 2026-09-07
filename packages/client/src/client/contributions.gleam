@@ -90,6 +90,7 @@ import tools/context as context_tool
 import tools/fs
 import tools/grep
 import tools/history as history_tool
+import tools/job as job_tool
 import tools/remember
 import tools/schedule as schedule_tool
 import tools/tool.{type Registry, type Tool}
@@ -140,7 +141,7 @@ pub type Collision {
 /// The one contribution a host's own planes make, in the order the
 /// registry has always been built in: the five core tools, the six
 /// `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
-/// `schedule_*` tools, and `context_remaining`.
+/// `schedule_*` tools, `context_remaining`, and the three `job_*` tools.
 ///
 /// Each `Option` is a plane that decided its own presence from the host
 /// it found, and the gating is arithmetic rather than tidiness: the wire
@@ -164,6 +165,7 @@ pub type Collision {
 ///     option.None,
 ///     option.None,
 ///     option.None,
+///     option.None,
 ///   )
 /// ```
 ///
@@ -174,13 +176,22 @@ pub fn built_in(
   memory: Option(remember.Memory),
   schedules: Option(schedule_tool.Schedules),
   context: Option(context_tool.Context),
+  jobs: Option(job_tool.Jobs),
 ) -> List(Contribution) {
+  // The jobs plane is the one that reaches a *core* tool: `bash` takes
+  // the door whether or not there is one behind it, because `mode:
+  // "background"` has to be answered on a host with no jobs actor rather
+  // than absent from a schema that is otherwise identical everywhere.
+  // The three `job_*` definitions are gated the way every other plane's
+  // are — a host without the actor pays no cached bytes for tools that
+  // could only refuse.
+  let door = option.unwrap(jobs, job_tool.unavailable())
   [
     Contribution(
       origin: BuiltIn,
       tools: list.flatten([
         [
-          bash.tool(),
+          bash.tool(door),
           grep.tool(),
           fs.read_tool(),
           fs.write_tool(),
@@ -210,6 +221,10 @@ pub fn built_in(
         case context {
           None -> []
           Some(context) -> [context_tool.tool(context)]
+        },
+        case jobs {
+          None -> []
+          Some(jobs) -> job_tool.tools(jobs)
         },
       ]),
     ),

@@ -503,6 +503,7 @@ jobs:
           path: |
             e2e-client-bootstrap.log
             packages/client/build/owned-assembly-*/daemon-soak.jsonl
+            packages/client/build/shipped-*/state/daemon.log
 
   # ------------------------------------------------------- the deliverables
   deliverables-linux:
@@ -879,6 +880,7 @@ jobs:
             e2e-codemode-macos.log
             e2e-client-bootstrap-macos.log
             packages/client/build/owned-assembly-*/daemon-soak.jsonl
+            packages/client/build/shipped-*/state/daemon.log
           retention-days: 14
 
   # The macOS fan-in — the same shape as `gate (linux)`: fail if anything
