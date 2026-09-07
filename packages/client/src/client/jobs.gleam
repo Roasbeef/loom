@@ -719,6 +719,17 @@ type State {
     self: Subject(Message),
     generator: ids.Generator,
     jobs: Dict(JobId, Held),
+    /// The report channels of runners whose outcome has been taken but
+    /// whose relay has not yet said its last word.
+    ///
+    /// A relay sends the outcome and then `AllDelivered`, and taking the
+    /// outcome is exactly what ends a job's custody — so a selector built
+    /// from the live set alone would stop carrying that channel one
+    /// message too early and leave the second message unmatched in the
+    /// mailbox for the rest of the session. This is the one ledger that
+    /// outlives the custody, and it outlives the *record* too, which is
+    /// what covers a refused start whose cell is deleted outright.
+    last_words: Dict(JobId, Subject(weft.Pulled(Settlement, RunnerFault))),
   )
 }
 
@@ -748,6 +759,7 @@ pub fn start(
         self: subject,
         generator: ids.generator(wiring.clock, seed: wiring.seed),
         jobs: dict.new(),
+        last_words: dict.new(),
       )
     actor.initialised(state)
     |> actor.selecting(process.new_selector() |> process.select(subject))
@@ -1045,28 +1057,42 @@ fn resume(state: State) -> actor.Next(State, Message) {
   actor.continue(state) |> actor.with_selector(selector(state))
 }
 
-// The actor's own subject plus one mapped entry per live runner's report
-// channel.
+// The actor's own subject, one mapped entry per live runner's report
+// channel, and one per relay that still owes its last word.
 //
 // One channel per job rather than one shared one, because `weft.Pulled`
 // names the task's index within its own run and nothing else: with one
 // task per run every outcome would arrive as index zero, and a settlement
 // could not be matched back to the job that produced it. Closing the id
 // into the mapping function is what carries it.
+//
+// The two folds are the same mapping over two ledgers because a job's
+// report channel outlives its custody by exactly one message. Dropping it
+// with the custody would leave that message unselectable, and an
+// unselectable message is never removed: it is scanned past by every
+// receive the actor makes for the rest of the session.
 fn selector(state: State) -> Selector(Message) {
-  dict.fold(
-    state.jobs,
-    process.new_selector() |> process.select(state.self),
-    fn(built, id, held) {
-      case held.custody {
-        Detached(..) -> built
-        Dispatching(reports:, ..) | Attached(reports:, ..) ->
-          process.select_map(built, reports, fn(pulled) {
-            Reported(id:, pulled:)
-          })
-      }
-    },
-  )
+  let live =
+    dict.fold(
+      state.jobs,
+      process.new_selector() |> process.select(state.self),
+      fn(built, id, held) {
+        case held.custody {
+          Detached(..) -> built
+          Dispatching(reports:, ..) | Attached(reports:, ..) ->
+            reporting(built, id, reports)
+        }
+      },
+    )
+  dict.fold(state.last_words, live, reporting)
+}
+
+fn reporting(
+  built: Selector(Message),
+  id: JobId,
+  reports: Subject(weft.Pulled(Settlement, RunnerFault)),
+) -> Selector(Message) {
+  process.select_map(built, reports, fn(pulled) { Reported(id:, pulled:) })
 }
 
 // --- admission ------------------------------------------------------------
@@ -1605,6 +1631,12 @@ fn cleared(
         held,
         Error(ClearanceRefused(reason: refusal_text(refusal))),
       )
+
+      // The runner is about to report the refusal and then finish, and
+      // deleting the cell takes its custody with it — so the channel is
+      // parked before the record goes, or those two messages would have
+      // nothing left to select them.
+      let state = awaiting_last_word(state, id)
       resume(State(..state, jobs: dict.delete(state.jobs, id)))
     }
 
@@ -1699,17 +1731,51 @@ fn reported(
   pulled: weft.Pulled(Settlement, RunnerFault),
 ) -> actor.Next(State, Message) {
   case pulled {
-    weft.PulledOutcome(outcome:) -> settle(state, id, outcome)
+    // Taking the outcome ends the custody, so the channel it arrived on
+    // moves to `last_words` in the same step — otherwise the
+    // `AllDelivered` behind it would have nothing left to select it.
+    weft.PulledOutcome(outcome:) ->
+      settle(awaiting_last_word(state, id), id, outcome)
 
-    // The relay's own end of the conversation, and the answer to a
-    // demand it has not yet been able to fill. Neither says anything
-    // about the job: the outcome, if there was one, already arrived.
-    weft.AllDelivered | weft.NotYet -> actor.continue(state)
+    // The relay's own end of the conversation. It says nothing about the
+    // job — the outcome, if there was one, already arrived — and this is
+    // the one place a report channel is dropped.
+    weft.AllDelivered -> resume(said_last_word(state, id))
+
+    // The answer to a demand the relay has not yet been able to fill.
+    // Nothing has ended, so nothing is dropped.
+    weft.NotYet -> actor.continue(state)
 
     // The scope died without delivering. Whatever the runner was doing,
-    // nobody can now say what became of the job.
-    weft.RunLost(reason: _) -> lost(state, id, jobstate.HelperLoss)
+    // nobody can now say what became of the job, and the relay that would
+    // have said `AllDelivered` is gone with it.
+    weft.RunLost(reason: _) ->
+      lost(said_last_word(state, id), id, jobstate.HelperLoss)
   }
+}
+
+// A finished runner's report channel, moved out of its custody and into
+// the last words still owed.
+//
+// Called before the outcome is acted on, because acting on it is what
+// detaches the custody — and in the refusal path, where the record is
+// deleted outright, this ledger is the only thing left holding the
+// channel. A job with no custody to take one from is left alone: it is
+// either already here or was never a runner's.
+fn awaiting_last_word(state: State, id: JobId) -> State {
+  case dict.get(state.jobs, id) {
+    Error(Nil) -> state
+    Ok(held) ->
+      case held.custody {
+        Detached(..) -> state
+        Dispatching(reports:, ..) | Attached(reports:, ..) ->
+          State(..state, last_words: dict.insert(state.last_words, id, reports))
+      }
+  }
+}
+
+fn said_last_word(state: State, id: JobId) -> State {
+  State(..state, last_words: dict.delete(state.last_words, id))
 }
 
 fn settle(
@@ -2299,10 +2365,18 @@ fn drained(
 ) -> State {
   case pulled {
     weft.PulledOutcome(outcome: weft.Completed(value: settlement, ..)) ->
-      record_settlement(state, id, settlement)
+      record_settlement(awaiting_last_word(state, id), id, settlement)
 
-    weft.PulledOutcome(..) | weft.AllDelivered | weft.RunLost(..) ->
-      record_loss(state, id, jobstate.HelperLoss)
+    weft.PulledOutcome(..) ->
+      record_loss(awaiting_last_word(state, id), id, jobstate.HelperLoss)
+
+    // The relay's last word, which arrives behind the outcome the drain
+    // has already recorded. Nothing about the job, so nothing is written:
+    // it only stops the drain selecting on a channel that is finished.
+    weft.AllDelivered -> said_last_word(state, id)
+
+    weft.RunLost(..) ->
+      record_loss(said_last_word(state, id), id, jobstate.HelperLoss)
 
     // The relay never pushes this — it pulls with no timeout — but the
     // arm is written so a change to that pulling fails exhaustiveness

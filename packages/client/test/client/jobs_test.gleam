@@ -65,6 +65,9 @@ import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
 import gleam/dict.{type Dict}
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -430,6 +433,10 @@ type Harness {
     spill: FakeSpill,
     runtime: Runtime,
     operation: ids.OpId,
+    /// The actor's own process. Two tests address it rather than its
+    /// subject: one reads its mailbox, the other shuts it down the way a
+    /// supervisor does.
+    pid: process.Pid,
   )
 }
 
@@ -448,10 +455,10 @@ fn start_harness_on(clock: Clock) -> Harness {
   let fake = start_fake_broker()
   let spill = start_fake_spill()
   let name = addresses.new()
-  let assert Ok(_started) =
+  let assert Ok(started) =
     jobs.start(name, fake_wiring(runtime, fake, spill, clock))
     as "the jobs actor must start"
-  Harness(name:, fake:, spill:, runtime:, operation: an_op())
+  Harness(name:, fake:, spill:, runtime:, operation: an_op(), pid: started.pid)
 }
 
 // The wiring every test but the policy pair uses: the scripted broker,
@@ -748,6 +755,28 @@ fn await_output(
     }
   }
 }
+
+// How many messages are sitting in one process's mailbox.
+//
+// The only assertion that can see an *unselectable* message, which is
+// what a report channel dropped one message too early leaves behind: the
+// actor keeps answering, so no timing or ordering observation would ever
+// show it. `packages/storage/test/storage/snapshot_test` reaches for
+// `erlang:process_info` the same way and for the same reason — a test-only
+// external, in a test file, measuring the runtime rather than asking the
+// code under test to describe itself.
+fn mailbox_length(pid: process.Pid) -> Int {
+  let assert Ok(size) =
+    decode.run(
+      process_info(pid, atom.create("message_queue_len")),
+      decode.at([1], decode.int),
+    )
+    as "the live actor reports its queue length"
+  size
+}
+
+@external(erlang, "erlang", "process_info")
+fn process_info(pid: process.Pid, item: atom.Atom) -> Dynamic
 
 fn record_in_store(harness: Harness, id: JobId) -> jobstate.JobRecord {
   let assert Ok(cells) =
@@ -1118,6 +1147,33 @@ fn await_draining(
       await_draining(harness, strand, started, attempts - 1)
     }
   }
+}
+
+// --- the relay's last word ------------------------------------------------
+
+pub fn a_finished_runners_last_word_is_selected_test() {
+  // Every relay sends its outcome and then `AllDelivered`. Taking the
+  // outcome is what detaches the job's custody, so a selector rebuilt from
+  // the live set alone stops carrying that channel one message too early
+  // and the second message is never matched by any receive — and an
+  // unmatched message is never removed, only scanned past, for the rest of
+  // the session.
+  //
+  // Nothing about the actor's answers can see this: it keeps answering
+  // either way. So the assertion is the mailbox itself, after enough
+  // finished jobs that a leak and an in-flight message cannot be confused.
+  let harness = start_harness()
+  list.repeat(Nil, 50)
+  |> list.each(fn(_nth) {
+    let started = start_job(harness, "main", "echo tick")
+    settle_with(harness, started, exited(0))
+    let assert jobstate.Exited(..) = settled_state(harness, "main", started)
+      as "each job must finish before the next one starts"
+  })
+
+  // At most the last job's own `AllDelivered` may still be in flight; the
+  // forty-nine before it were selected and consumed.
+  assert mailbox_length(harness.pid) <= 2
 }
 
 // --- waiting --------------------------------------------------------------
