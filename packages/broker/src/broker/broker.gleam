@@ -9,7 +9,9 @@
 //// settle: check in the helper, revoke the single-use token, release
 //// the budget. `abort` revokes every token of an operation and cancels
 //// its running executions — revocation kills the OS process group via
-//// the helper's cancel ladder.
+//// the helper's cancel ladder. `abort_step` is the same sweep narrowed
+//// to one `{op_id, step_id}`, for a caller that owns a step rather than
+//// the operation it belongs to.
 ////
 //// ## The pooled budget is keyed per execution: `{op_id, step_id}`
 ////
@@ -228,16 +230,18 @@ pub opaque type Msg {
   ClearCall(
     spec: CallSpec,
     events: Subject(CallEvent),
-    /// The abort epoch this caller last observed for the operation, on
-    /// a retry; `None` on a first attempt, which has no earlier
-    /// observation to invalidate. The reply carries the current epoch
-    /// back so the next retry can say what it is resuming from.
+    /// The sweep count this caller last observed for the spec's own
+    /// `{op_id, step_id}`, on a retry; `None` on a first attempt, which
+    /// has no earlier observation to invalidate. The reply carries the
+    /// current count back so the next retry can say what it is resuming
+    /// from. See `sweeps_over`.
     since: Option(Int),
     reply: Subject(#(Result(CallHandle, Refusal), Int)),
   )
   SendStdin(handle: CallHandle, data: BitArray, eof: Bool)
   CancelCall(handle: CallHandle)
   AbortOp(op_id: OpId)
+  AbortStep(op_id: OpId, step_id: String)
   Settle(call_id: Int)
   RelayDown(down: process.Down)
   QueryRelay(handle: CallHandle, reply: Subject(Result(Pid, Nil)))
@@ -284,10 +288,8 @@ type State {
     // How many times `abort` has swept each operation. Not a record of
     // which operations are finished: `abort` is a scoped cancel, not a
     // terminal one, and a strand goes on clearing calls under the same
-    // key afterwards — code mode aborts the strand's own operation on
-    // every teardown, the successful ones included. What the count is
-    // for is telling a *resumed* clearance from a fresh one; see
-    // `clear_awaiting_helper`.
+    // key afterwards. What the count is for is telling a *resumed*
+    // clearance from a fresh one; see `clear_awaiting_helper`.
     //
     // Entries are never removed, and that is a decision (#104). An
     // entry cannot be dropped without dropping the refusal it encodes:
@@ -305,10 +307,12 @@ type State {
     //
     // What is left is the size, and it is small and bounded. This grows
     // by one entry per *operation ever aborted*, not per abort: repeat
-    // aborts of one operation `upsert` its counter, so code mode's
-    // abort-on-every-teardown — the only production caller of `abort` —
-    // costs one entry per operation that ran code mode at all, however
-    // many times it ran it. An entry measures ~110 bytes, and the
+    // aborts of one operation `upsert` its counter. The same law bounds
+    // the step table below, whose one routine caller — code mode's
+    // teardown, which reaps its own step on every execution, the
+    // successful ones included — costs one entry per `{op_id, step_id}`
+    // that ran a program at all, however many times it ran one. An entry
+    // measures ~110 bytes, and the
     // broker's lifetime is exactly one `loomd` process serving
     // one session (its death is fatal to the server; nothing restarts
     // it), so ten thousand such operations in a session hold about a
@@ -318,6 +322,26 @@ type State {
     // whose wrong value in the short direction is not a crash but a
     // silent hole in exactly the confinement above.
     abort_epochs: Dict(OpId, Int),
+    // The same counter one key finer: how many times `abort_step` has
+    // swept each `{op_id, step_id}`. A clearance is judged against the
+    // sum of this and its operation's count (`sweeps_over`), and the sum
+    // is a faithful composite because both counters only ever increase —
+    // it changes exactly when at least one of them does.
+    //
+    // The operation's own count cannot serve for both, and the reason is
+    // the whole point of the step scope. A step abort that bumped
+    // `abort_epochs` would refuse every resumed clearance of the
+    // operation, its *sibling* steps included — and the sibling is the
+    // detached job the step abort exists to spare. Refusing the job's
+    // own congestion retry because the satellite beside it was reaped is
+    // the collision restated, not a smaller version of it.
+    //
+    // The growth law and the argument against pruning are the field
+    // above's, unchanged: entries are never removed because absence
+    // reads as "never swept", and code mode's abort-on-every-teardown
+    // costs one entry per `{op_id, step_id}` that ran a program at all,
+    // however many times it ran one.
+    step_abort_epochs: Dict(#(OpId, String), Int),
     // The broker's own subject, handed to relays for Settle reports.
     self: Subject(Msg),
   )
@@ -340,6 +364,7 @@ pub fn start(config: BrokerConfig) -> Result(Broker, actor.StartError) {
         ledgers: dict.new(),
         next_generation: 1,
         abort_epochs: dict.new(),
+        step_abort_epochs: dict.new(),
         self: subject,
       )
 
@@ -562,6 +587,31 @@ pub fn abort(broker: Broker, op_id: OpId) -> Nil {
   process.send(broker.subject, AbortOp(op_id:))
 }
 
+/// Aborts one step of an operation: the tokens bound to exactly this
+/// `{op_id, step_id}` are revoked, the executions running under it are
+/// cancelled, and its pooled ledger is dropped. Every other step of the
+/// same operation is untouched. Each affected call still settles in-band
+/// with a `CallSettled` to its caller.
+///
+/// This is the reaper a caller wants when it owns one step rather than
+/// the operation. A code-mode satellite's teardown is the case that
+/// forced it: the satellite must die when the program returns, while a
+/// background job the program started clears under a sibling step
+/// (`{op_id, "job/" <> id}`) and is meant to outlive it. An operator's
+/// `abort` of the whole operation still reaches that job, which is what
+/// an operator means.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // broker.abort_step(broker, op_id, step_id: "turn-4")
+/// // -> the program's own step is reaped; "job/j1" keeps running
+/// ```
+///
+pub fn abort_step(broker: Broker, op_id: OpId, step_id step_id: String) -> Nil {
+  process.send(broker.subject, AbortStep(op_id:, step_id:))
+}
+
 /// Stops the broker actor. Callers should abort operations first.
 pub fn stop(broker: Broker) -> Nil {
   process.send(broker.subject, StopBroker)
@@ -688,18 +738,35 @@ pub fn denial_for_failure(failure: ExecFailure) -> Option(Denial) {
 
 // --- actor internals ----------------------------------------------------
 
+// How many sweeps a clearance under `{op_id, step_id}` has had to
+// survive: the operation's abort count plus this step's own.
+//
+// One number rather than two travels to the waiter and back, because a
+// waiter has nothing to do with the difference — either kind of sweep
+// invalidates the observation it is resuming from, and neither is
+// something it can retry past. The sum is faithful for that purpose
+// because both counters are monotone: it changes if and only if at
+// least one of them changed, so equal sums mean no sweep of either kind
+// landed underneath the wait.
+fn sweeps_over(state: State, op_id: OpId, step_id: String) -> Int {
+  let op_sweeps = dict.get(state.abort_epochs, op_id) |> result.unwrap(0)
+  let step_sweeps =
+    dict.get(state.step_abort_epochs, #(op_id, step_id)) |> result.unwrap(0)
+  op_sweeps + step_sweeps
+}
+
 fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
     ClearCall(spec:, events:, since:, reply:) -> {
-      let epoch = dict.get(state.abort_epochs, spec.op_id) |> result.unwrap(0)
+      let epoch = sweeps_over(state, spec.op_id, spec.step_id)
 
-      // A clearance that began before an abort of this operation must
-      // not dispatch after it: the abort revoked that operation's
-      // tokens and cancelled its running calls, so admitting this one
-      // would leave exactly the execution the abort could not reach. A
-      // first attempt carries no epoch and is judged on its own merits,
-      // which is what lets a strand go on working after code mode's
-      // teardown aborts its operation.
+      // A clearance that began before a sweep of this operation — or of
+      // this step of it — must not dispatch after it: the sweep revoked
+      // the tokens and cancelled the running calls it could see, so
+      // admitting this one would leave exactly the execution the sweep
+      // could not reach. A first attempt carries no count and is judged
+      // on its own merits, which is what lets a strand go on working
+      // after code mode's teardown reaps its step.
       let resumed_across_abort = case since {
         Some(seen) -> seen != epoch
         None -> False
@@ -754,6 +821,31 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
           option.unwrap(seen, 0) + 1
         })
       actor.continue(State(..state, vault:, ledgers:, abort_epochs:))
+    }
+    AbortStep(op_id:, step_id:) -> {
+      let vault = token.revoke_step(state.vault, op_id, step_id:)
+      dict.each(state.active, fn(_id, active) {
+        case active.op_id == op_id && active.step_id == step_id {
+          True -> exec.cancel(active.helper)
+          False -> Nil
+        }
+      })
+
+      // One ledger, not the operation's: a sibling step's pooled
+      // reservations are exactly what this sweep is careful not to
+      // release, since the calls holding them are still running.
+      let ledgers =
+        dict.filter(state.ledgers, fn(key, _slot) { key != #(op_id, step_id) })
+
+      // The step's own counter closes the same congestion window
+      // `AbortOp` closes for the operation, and closes it only for this
+      // step; the field's comment argues why the operation's counter
+      // cannot stand in for it.
+      let step_abort_epochs =
+        dict.upsert(state.step_abort_epochs, #(op_id, step_id), fn(seen) {
+          option.unwrap(seen, 0) + 1
+        })
+      actor.continue(State(..state, vault:, ledgers:, step_abort_epochs:))
     }
     Settle(call_id:) ->
       case dict.get(state.active, call_id) {
