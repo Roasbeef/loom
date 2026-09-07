@@ -95,6 +95,64 @@ identities, and they keep resolving. With `--config` those variables
 are not consulted at all — the file is the whole model surface —
 though `LOOM_SYSTEM_PROMPT` is read either way.
 
+## Pricing: what a model costs and where the cost is applied
+
+Every entry may carry an optional `[models.<name>.pricing]` table, and it
+is the only place in the tree that knows what a request costs money.
+
+```toml
+[models.baseten-kimi.pricing]
+input = 3.00
+output = 15.00
+cache_read = 0.30
+```
+
+**Every rate is US dollars per million tokens.** That is the unit every
+provider publishes its prices in, so an operator copies the figure off a
+pricing page instead of converting it and getting the exponent wrong.
+`input` and `output` are required once the table exists — a card that
+prices neither of the two buckets every response fills is a typo rather
+than a choice. `cache_read` and `cache_write` are optional and default to
+`input`: the cached buckets are prompt tokens either way, so the default
+can only *over*-report, which is the direction an operator notices and
+goes to correct. Defaulting them to zero would under-report spend
+silently, which is the failure nobody sees.
+
+The four rates line up with `core/message.Usage`'s four token buckets, and
+those buckets are disjoint by adapter contract — `input` counts prompt
+tokens that were neither read from nor written to the cache — so cost is a
+plain weighted sum with nothing double-charged. `reasoning` and
+`cache_write_1h` are subsets of buckets already priced and are not charged
+again. Rates are refused, in the same worded style as every other
+catalogue error, when they are negative or are not numbers; the message
+names the model and the key.
+
+**A model with no pricing table is unpriced, and unpriced costs zero.**
+That is not a degraded mode: it is exactly the record the harness wrote
+before this layer existed, so an operator who annotates nothing sees no
+change and no wrong number.
+
+**Cost is applied once, in the gateway, and never in an adapter.** An
+adapter knows the wire dialect, not the commercial arrangement behind the
+endpoint it is speaking to — the same Anthropic dialect is spoken by
+first-party Anthropic, by a reseller, and by a local proxy, at three
+different prices. So the adapters keep writing `UsageCost(0.0, ...)`, and
+`client/catalog.gateway` attaches each entry's card to the gateway under
+the entry's own name, which is also the provider name a durable identity
+stores. `provider/gateway`'s `attempt_one` then rewrites a settled
+attempt's usage through `provider/pricing.price` before the fallback walk
+sees it, which is the one point every settlement passes through exactly
+once and the last point at which the target that produced it is still
+known. A fallback walk therefore prices each attempt with the card of the
+model that actually served it, not with the chain head's.
+
+Because `Settled.usage` is contractually equal to the usage inside the
+settled message, both halves are repriced together; a consumer reading
+either one sees the same bill. Downstream, the usage ledger stores what it
+is handed and the TUI's status bar sums `cost.total` across a session, so
+the dollar figure in the footer becomes real the moment a card is written
+down — with no new command, event, or protocol field.
+
 ## The name is the durable handle
 
 One decision propagates through everything else here: **an entry's
@@ -375,8 +433,9 @@ decide when a model has recovered.
 
 **Selection is by role and position, never by cost or latency.** The
 chain's order is the operator's stated preference and the only input.
-Nothing measures how long an entry took or what it charged, and nothing
-reorders a chain on that basis.
+Nothing measures how long an entry took, and while the ledger now knows
+what each attempt charged, nothing reorders a chain on that basis. Pricing
+is reporting, not routing.
 
 **`plan` and `vision` route nothing.** Both are parsed, validated, routed
 into the registry and listed — reserved vocabulary with no dispatch site,
@@ -402,7 +461,9 @@ points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 
 | Path | What it holds |
 |---|---|
-| `client/catalog.gleam` | The `loom.toml` parser (total, strict, worded errors), `Catalog`/`CatalogModel`/`Dialect`, the `find`/`main_model`/`routed_roles`/`active_roles` lookups, and `gateway` — catalogue to registry plus routes. |
+| `client/catalog.gleam` | The `loom.toml` parser (total, strict, worded errors), `Catalog`/`CatalogModel`/`Dialect`, the `find`/`main_model`/`routed_roles`/`active_roles` lookups, and `gateway` — catalogue to registry plus routes and rate cards. |
+| `provider/pricing.gleam` | `Pricing`, the per-million-token rate card, and `price` — the pure function turning a `Usage` into a costed one. |
+| `provider/gateway.gleam` | `price`/`card_for`, the registry's rate cards, and the costing applied to a settled attempt on its way out of `attempt_one`. |
 | `client/serve.gleam` | The `--config` ladder, the environment-shaped one-entry catalogue, the `Settings` the wiring config is built from, `catalogue_facts` (the per-identity fact seam), `seed_thinking`, and the Agency's `subagent_model` resolver. |
 | `client/wiring.gleam` | `request_target` (role derivation from the captured identity), `resolved_target` (off route and every deferred poll), the per-query admission and per-strand threshold window, and `strand_thinking_level` — the lift that seeds a strand from an entry. |
 | `client/agency.gleam` | `Config.subagent_model` and `child_configuration`: a spawned child's identity and seed thinking level, chosen once at creation. |
