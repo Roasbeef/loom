@@ -9,9 +9,17 @@
 //// those three lines and nothing else, with the job still pending; a
 //// third turn calls `job_kill`; and a fourth reads the terminal state,
 //// which has to say the owner asked and carry the helper's own
-//// `cancelled` witness. Then the payload's birth-qualified identity has
-//// to depart, because a job whose record says stopped and whose process
-//// is still running is the failure this whole surface exists to prevent.
+//// `cancelled` witness. Then the payload has to be gone, because a job
+//// whose record says stopped and whose process is still running is the
+//// failure this whole surface exists to prevent.
+////
+//// How that last one is proved is a property of the host, and the
+//// fixture decides it once: see `PayloadIdentity`. Where the jail has no
+//// pid namespace the payload publishes its own host pid and the fixture
+//// qualifies it by birth, exactly as the recovery fixtures qualify a VM.
+//// Where the jail has one, no number a payload writes names a host
+//// process, so it writes none and the proof is the daemon's own terminal
+//// record plus the jail's containment.
 ////
 //// The second scenario is the same door from code mode, through a real
 //// hermetic build and a real jailed satellite. One program starts a job
@@ -26,8 +34,9 @@
 //// and the helper is a child of the VM, so nothing here survives the VM:
 //// after a SIGKILL and a fresh boot the sweep must commit `Lost`, the
 //// model's next poll must read it, and no replacement process may have
-//// been started — the fixture proves the negative by the payload's own
-//// recorded pid, which a respawn would have overwritten.
+//// been started — the fixture proves the negative by taking the marker
+//// the payload's first act writes away and reading for its absence,
+//// which a respawn would have restored.
 ////
 //// ## Why the whole file is gated on measured enforcement
 ////
@@ -43,6 +52,7 @@
 //// that would otherwise fail as something else.
 
 import broker/token
+import client/internal/ffi_os
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
 import core/entry
@@ -77,9 +87,14 @@ import weft/poll
 /// declaration in `.github/declared-skips*` covers the file.
 const live_label = "shipped jobs live tools"
 
-/// What the payload writes its own identity into, relative to the
-/// workspace it runs in.
-const pid_marker = "job.pid"
+/// What a payload announces itself in, relative to the workspace it runs
+/// in. Written by the command's first act and never again, so a second
+/// appearance of this file means a second process.
+const start_marker = "job.pid"
+
+/// What a payload with no host-meaningful pid writes instead. It proves
+/// the command ran and carries nothing a host would act on.
+const contained_marker = "contained"
 
 /// The file the watched job tails, and the fixture appends to.
 const watched_log = "build.log"
@@ -91,18 +106,64 @@ const appended = "alpha\nbravo\ncharlie\n"
 /// The exact stdout cursor those three lines advance a reader to.
 const appended_cursor = "20:0"
 
-// The payload publishes its own pid and then *becomes* `tail`, so the
-// recorded identity is the process the cancel ladder has to reach rather
-// than a shell that has already exited. Nothing here is a marker file the
-// fixture races on for ordering: the write is what makes the process
-// observable at all.
-fn watch_command() -> String {
-  "printf '%s\\n' \"$$\" > " <> pid_marker <> "; exec tail -f " <> watched_log
+/// Whether a payload's view of its own pid is a number this host shares.
+///
+/// Decided once, from the platform, before any command text is written,
+/// because it is the only thing that licenses the fixture to fence — or
+/// to signal — a number a jailed process wrote down.
+type PayloadIdentity {
+  /// macOS. Seatbelt confines a command in place, with no pid namespace,
+  /// so the `$$` a payload prints is the host's own number for it: a
+  /// birth-qualified fence over it names one process for as long as that
+  /// process lives, and the fixture may retire it.
+  HostPid
+
+  /// Linux. The helper runs every command under `bwrap --unshare-pid`
+  /// (`packages/sandbox/internal/jail/bwrap.go`), so `$$` is a small
+  /// number *inside* the namespace — on the host, 2 is `kthreadd`.
+  /// Nothing a payload can write names a host process here, so it writes
+  /// no pid at all: a fence over a namespaced number would observe a
+  /// stranger, and a signal to it would reach one.
+  NamespacedPid
 }
 
-fn watch_arguments() -> json.JsonValue {
+// `os:type/0`'s name, which is the same fact the helper's own jail
+// selection turns on, so the answer here and the jail the payload
+// actually runs in cannot disagree.
+fn payload_identity() -> PayloadIdentity {
+  case ffi_os.platform() {
+    #("darwin", _architecture) -> HostPid
+    #(_other, _architecture) -> NamespacedPid
+  }
+}
+
+// The payload announces itself and then *becomes* `tail`, so what a fence
+// holds is the process the cancel ladder has to reach rather than a shell
+// that has already exited. Nothing here is a marker file the fixture
+// races on for ordering: the write is what makes the process observable
+// at all.
+fn watch_command(identity: PayloadIdentity) -> String {
+  "printf '%s\\n' "
+  <> announcement(identity)
+  <> " > "
+  <> start_marker
+  <> "; exec tail -f "
+  <> watched_log
+}
+
+// The word the payload prints about itself, quoted for the shell. Under a
+// pid namespace it is a constant: the fixture learns that the command ran
+// and learns nothing it could act on.
+fn announcement(identity: PayloadIdentity) -> String {
+  case identity {
+    HostPid -> "\"$$\""
+    NamespacedPid -> contained_marker
+  }
+}
+
+fn watch_arguments(identity: PayloadIdentity) -> json.JsonValue {
   json.Object([
-    #("command", json.String(watch_command())),
+    #("command", json.String(watch_command(identity))),
     #("mode", json.String("background")),
   ])
 }
@@ -119,10 +180,10 @@ pub fn daemon_shipped_job_tails_polls_and_stops_test_() -> EunitTest {
   Timeout(15, fn() {
     case shipped_prerequisites() {
       None -> Nil
-      Some(server) -> {
+      Some(shipped) -> {
         let #(Nil, report) =
-          provider.with_server(tail_script(), fn(url) {
-            tail_fixture(server, url)
+          provider.with_server(tail_script(shipped.payload), fn(url) {
+            tail_fixture(shipped, url)
           })
         let assert Ok(requests) = report
           as "only the eight scripted provider requests occur"
@@ -144,7 +205,7 @@ pub fn daemon_shipped_job_record_outlives_its_program_test_() -> EunitTest {
   Timeout(30, fn() {
     case shipped_prerequisites() {
       None -> Nil
-      Some(server) -> code_mode_fixture(server)
+      Some(shipped) -> code_mode_fixture(shipped)
     }
   })
 }
@@ -161,10 +222,10 @@ pub fn daemon_shipped_job_is_lost_after_a_vm_crash_test_() -> EunitTest {
   Timeout(30, fn() {
     case shipped_prerequisites() {
       None -> Nil
-      Some(server) -> {
+      Some(shipped) -> {
         let #(Nil, report) =
-          provider.with_server(restart_script(), fn(url) {
-            restart_fixture(server, url)
+          provider.with_server(restart_script(shipped.payload), fn(url) {
+            restart_fixture(shipped, url)
           })
         let assert Ok(requests) = report
           as "only the four scripted provider requests occur"
@@ -174,11 +235,17 @@ pub fn daemon_shipped_job_is_lost_after_a_vm_crash_test_() -> EunitTest {
   })
 }
 
+// What a scenario needs before it may run: the shipment under test, and
+// the one platform fact that decides how a payload can be observed.
+type Shipped {
+  Shipped(server: String, payload: PayloadIdentity)
+}
+
 // Both prerequisites are environmental and neither is a coverage gap: an
 // absent shipment means the suite was asked to test something that was
 // never built, and an absent enforcement layer means the host cannot run
 // an unattended jailed process under a policy at all.
-fn shipped_prerequisites() -> Option(String) {
+fn shipped_prerequisites() -> Option(Shipped) {
   case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
     Error(Nil) -> {
       io.println_error("SKIP shipped jobs: LOOM_BOOTSTRAP_E2E_SERVER is unset")
@@ -189,7 +256,7 @@ fn shipped_prerequisites() -> Option(String) {
       assert native.getenv("LOOM_TEST_PROVIDER_KEY") == Ok(provider.dummy_key)
       case enforcement.probe(server, live_label) {
         enforcement.EnforcementAbsent -> None
-        enforcement.EnforcementLive -> Some(server)
+        enforcement.EnforcementLive -> Some(Shipped(server, payload_identity()))
       }
     }
   }
@@ -201,13 +268,13 @@ fn shipped_prerequisites() -> Option(String) {
 // computed: a job id is minted by the harness while the fixture is
 // already running, so neither the tool result that announces it nor the
 // arguments of the calls that name it can be written down in advance.
-fn tail_script() -> List(provider.Exchange) {
+fn tail_script(identity: PayloadIdentity) -> List(provider.Exchange) {
   [
     provider.ToolUseExchange(
       "watch the build",
       "start-call",
       "bash",
-      watch_arguments(),
+      watch_arguments(identity),
     ),
     answered("start-call", "watching"),
     provider.ComputedExchange(provider.AwaitPrompt("read the tail"), fn(seen) {
@@ -280,7 +347,7 @@ fn started_id(seen: List(provider.ObservedRequest)) -> String {
   id
 }
 
-fn tail_fixture(server: String, url: String) -> Nil {
+fn tail_fixture(shipped: Shipped, url: String) -> Nil {
   let directory = private_root("shipped-jobs-")
   let assert Ok(paths) = endpoint.paths(directory <> "/state")
     as "cleanup retains its endpoint before launch"
@@ -288,7 +355,7 @@ fn tail_fixture(server: String, url: String) -> Nil {
   let outcomes =
     weft.new([
       fn() {
-        exercise_tail(server, directory, paths, url)
+        exercise_tail(shipped, directory, paths, url)
         Ok(Nil)
       },
     ])
@@ -298,7 +365,7 @@ fn tail_fixture(server: String, url: String) -> Nil {
   // Cleanup runs outside the body's deadline and before the assertions,
   // and it retires the payload as well as the VM: a body that failed
   // between the start and the kill has left a real `tail` running.
-  retire_payload(directory <> "/workspace")
+  retire_payload(shipped.payload, directory <> "/workspace")
   retire_native(paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the shipped jobs body completes without crashing or timing out"
@@ -306,26 +373,26 @@ fn tail_fixture(server: String, url: String) -> Nil {
 }
 
 fn exercise_tail(
-  server: String,
+  shipped: Shipped,
   directory: String,
   paths: endpoint.Paths,
   url: String,
 ) -> Nil {
   let workspace = prepare_workspace(directory, url)
-  let session = open_session(server, directory, workspace, paths)
+  let session = open_session(shipped.server, directory, workspace, paths)
   prompt(session.driver, "watch the build")
 
-  // The payload's own identity is the barrier the appended lines wait
+  // The payload's own announcement is the barrier the appended lines wait
   // on: once it exists the process is live, and `tail` shows the last
   // lines of the file whether they arrived before or after it opened.
-  let fence = await_payload(workspace)
+  let witness = await_payload(shipped.payload, workspace)
   assert simplifile.append(workspace <> "/" <> watched_log, appended) == Ok(Nil)
   let _ = settled(session.driver, ["watching"])
-  read_and_stop(session, fence)
+  read_and_stop(session, witness)
   daemon.close(session.connected.control)
 }
 
-fn read_and_stop(session: Session, fence: endpoint.Fence) -> Nil {
+fn read_and_stop(session: Session, witness: PayloadWitness) -> Nil {
   prompt(session.driver, "read the tail")
   let read = settled(session.driver, ["read", "watching"])
   let live = latest_details(read, "job_poll")
@@ -334,14 +401,14 @@ fn read_and_stop(session: Session, fence: endpoint.Fence) -> Nil {
   assert field(live, "cursor") == json.String(appended_cursor)
   prompt(session.driver, "stop it")
   let _ = settled(session.driver, ["stopped", "read", "watching"])
-  assert_terminal(session, fence)
+  assert_terminal(session, witness)
 }
 
 // The terminal read is a separate turn from the kill because the ladder
 // is asynchronous: `job_kill` answers that the stop was asked for, and
 // only the helper's own report of the stopped execution can say what
 // became of the process.
-fn assert_terminal(session: Session, fence: endpoint.Fence) -> Nil {
+fn assert_terminal(session: Session, witness: PayloadWitness) -> Nil {
   prompt(session.driver, "read it again")
   let gone = settled(session.driver, ["gone", "stopped", "read", "watching"])
   let terminal = latest_details(gone, "job_poll")
@@ -352,7 +419,7 @@ fn assert_terminal(session: Session, fence: endpoint.Fence) -> Nil {
   // The helper's own witness that it climbed the ladder, which nothing
   // else in the record can say (protocol-change 006).
   assert field(terminal, "cancelled") == json.Bool(True)
-  departed(fence)
+  payload_departed(witness)
   stop_driver(session.driver)
 }
 
@@ -408,22 +475,35 @@ fn assert_polled_lines(polled: String) -> Nil {
 
 // One capability call and a structured report, which is the shape a model
 // would submit. The started job outlives this program by construction:
-// nothing here waits for it. It prints once, records its own identity for
-// the fixture's cleanup, and then sleeps well past the second hermetic
+// nothing here waits for it. It prints once, announces itself the same
+// way the tailing payload does — a host pid only where that word means
+// something to the host — and then sleeps well past the second hermetic
 // build, so "still running" is a property of the job rather than a race
 // against how long a compile took.
-fn starting_program() -> String {
+fn starting_program(identity: PayloadIdentity) -> String {
   "import cap/job\n"
   <> "import cap/report\n"
   <> "\n"
   <> "pub fn main() -> report.Outcome {\n"
-  <> "  case job.start(\"printf 'one\\\\n'; printf '%s\\\\n' \\\"$$\\\" > "
-  <> pid_marker
+  <> "  case job.start(\"printf 'one\\\\n'; printf '%s\\\\n' "
+  <> program_announcement(identity)
+  <> " > "
+  <> start_marker
   <> "; sleep 600\") {\n"
   <> "    Ok(started) -> report.text(\"started \" <> started.id)\n"
   <> "    Error(_error) -> report.failure(\"job.start did not admit\")\n"
   <> "  }\n"
   <> "}\n"
+}
+
+// The same word `announcement` produces, escaped once more: it is written
+// into a Gleam string literal inside the program's own source before the
+// shell ever sees it.
+fn program_announcement(identity: PayloadIdentity) -> String {
+  case identity {
+    HostPid -> "\\\"$$\\\""
+    NamespacedPid -> contained_marker
+  }
 }
 
 // The second program never learns the id from the first: it asks the
@@ -462,13 +542,13 @@ fn program_arguments(source: String) -> json.JsonValue {
   ])
 }
 
-fn code_mode_script() -> List(provider.Exchange) {
+fn code_mode_script(identity: PayloadIdentity) -> List(provider.Exchange) {
   [
     provider.ToolUseExchange(
       "start the watcher",
       "start-program",
       "code_mode",
-      program_arguments(starting_program()),
+      program_arguments(starting_program(identity)),
     ),
     answered("start-program", "started"),
     provider.ToolUseExchange(
@@ -484,7 +564,7 @@ fn code_mode_script() -> List(provider.Exchange) {
 // The daemon boots before the provider does here, because whether this
 // server registers `code_mode` at all is a question only its own log
 // answers, and a script cannot be chosen after it has been handed over.
-fn code_mode_fixture(server: String) -> Nil {
+fn code_mode_fixture(shipped: Shipped) -> Nil {
   let directory = shallow_root()
   let assert Ok(paths) = endpoint.paths(directory <> "/state")
     as "cleanup retains its endpoint before launch"
@@ -492,13 +572,13 @@ fn code_mode_fixture(server: String) -> Nil {
   let outcomes =
     weft.new([
       fn() {
-        exercise_code_mode(server, directory, paths)
+        exercise_code_mode(shipped, directory, paths)
         Ok(Nil)
       },
     ])
     |> weft.deadline(240_000)
     |> weft.start
-  retire_payload(directory <> "/workspace")
+  retire_payload(shipped.payload, directory <> "/workspace")
   retire_native(paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the shipped jobs code-mode body completes without crashing"
@@ -506,16 +586,16 @@ fn code_mode_fixture(server: String) -> Nil {
 }
 
 fn exercise_code_mode(
-  server: String,
+  shipped: Shipped,
   directory: String,
   paths: endpoint.Paths,
 ) -> Nil {
   let workspace = prepare_workspace(directory, "http://127.0.0.1:1/unused")
-  let connected = connect_with_seed(server, directory, paths)
+  let connected = connect_with_seed(shipped.server, directory, paths)
   let probe = attach(connected, "jobs-probe", workspace, config_of(directory))
   let ready = await_code_mode(paths)
   stop_driver(probe.driver)
-  report_code_mode(connected, ready, directory, workspace)
+  report_code_mode(connected, shipped.payload, ready, directory, workspace)
   daemon.close(connected.control)
 }
 
@@ -524,6 +604,7 @@ fn exercise_code_mode(
 // declared skip and the real two-program drive.
 fn report_code_mode(
   connected: Connected,
+  identity: PayloadIdentity,
   ready: Bool,
   directory: String,
   workspace: String,
@@ -537,7 +618,7 @@ fn report_code_mode(
 
     True -> {
       let #(Nil, report) =
-        provider.with_server(code_mode_script(), fn(url) {
+        provider.with_server(code_mode_script(identity), fn(url) {
           drive_programs(connected, directory, workspace, url)
         })
       let assert Ok(requests) = report
@@ -615,13 +696,13 @@ fn code_mode_verdict(text: String) -> poll.Attempt(Bool, String) {
 
 // --- nothing survives the VM ------------------------------------------------
 
-fn restart_script() -> List(provider.Exchange) {
+fn restart_script(identity: PayloadIdentity) -> List(provider.Exchange) {
   [
     provider.ToolUseExchange(
       "watch the build",
       "start-call",
       "bash",
-      watch_arguments(),
+      watch_arguments(identity),
     ),
     answered("start-call", "watching"),
     provider.ToolUseExchange(
@@ -634,7 +715,7 @@ fn restart_script() -> List(provider.Exchange) {
   ]
 }
 
-fn restart_fixture(server: String, url: String) -> Nil {
+fn restart_fixture(shipped: Shipped, url: String) -> Nil {
   let directory = private_root("shipped-jobs-restart-")
   let assert Ok(paths) = endpoint.paths(directory <> "/state")
     as "cleanup retains its endpoint before launch"
@@ -642,13 +723,13 @@ fn restart_fixture(server: String, url: String) -> Nil {
   let outcomes =
     weft.new([
       fn() {
-        exercise_restart(server, directory, paths, url)
+        exercise_restart(shipped, directory, paths, url)
         Ok(Nil)
       },
     ])
     |> weft.deadline(180_000)
     |> weft.start
-  retire_payload(directory <> "/workspace")
+  retire_payload(shipped.payload, directory <> "/workspace")
   retire_native(paths)
   let assert [weft.Completed(0, Nil)] = outcomes
     as "the shipped jobs restart body completes without crashing"
@@ -656,52 +737,59 @@ fn restart_fixture(server: String, url: String) -> Nil {
 }
 
 fn exercise_restart(
-  server: String,
+  shipped: Shipped,
   directory: String,
   paths: endpoint.Paths,
   url: String,
 ) -> Nil {
   let workspace = prepare_workspace(directory, url)
-  let first = open_session(server, directory, workspace, paths)
+  let first = open_session(shipped.server, directory, workspace, paths)
   prompt(first.driver, "watch the build")
-  let fence = await_payload(workspace)
+  let witness = await_payload(shipped.payload, workspace)
   let _ = settled(first.driver, ["watching"])
-  let recorded = payload_marker(workspace)
   stop_driver(first.driver)
   crash(paths)
   daemon.close(first.connected.control)
   reopen_and_read(
-    server,
+    shipped,
     directory,
     workspace,
     paths,
-    Crashed(first.id, fence, recorded),
+    Crashed(first.id, witness),
   )
 }
 
 // What survives a crash and has to be carried across it: the durable
-// session, the payload's own identity, and the pid a respawn would have
-// overwritten.
+// session, and whatever the fixture is entitled to hold about the
+// payload's own process.
 type Crashed {
-  Crashed(session: String, fence: endpoint.Fence, recorded: String)
+  Crashed(session: String, witness: PayloadWitness)
 }
 
 fn reopen_and_read(
-  server: String,
+  shipped: Shipped,
   directory: String,
   workspace: String,
   paths: endpoint.Paths,
   crashed: Crashed,
 ) -> Nil {
   // The payload is a child of a helper which is a child of the VM, so
-  // the crash takes it too. Waiting for that here is what makes the
-  // later "no respawn" reading unambiguous.
-  departed(crashed.fence)
+  // the crash takes it too. Where the fixture holds a host fence, waiting
+  // for that here is what makes the later "no respawn" reading
+  // unambiguous; where it does not, the reading below is what carries it.
+  payload_departed(crashed.witness)
+
+  // The marker is written by the payload's first act and never again, so
+  // taking it away turns "nothing was respawned" into a question about a
+  // file that only a second process could answer. It is taken before the
+  // replacement VM exists, because the sweep runs inside that VM's own
+  // assembly and a respawn would be its doing.
+  assert simplifile.delete(workspace <> "/" <> start_marker) == Ok(Nil)
 
   // A fresh VM adopts the same state directory, and explicit open is what
   // puts the sweep's verdict in front of the model.
   let second =
-    connect(server, directory, workspace, paths)
+    connect(shipped.server, directory, workspace, paths)
     |> reopen(crashed.session)
   prompt(second.driver, "what happened to it")
 
@@ -712,8 +800,8 @@ fn reopen_and_read(
   assert_lost(listing)
 
   // A sweep that re-adopted or restarted anything would have run the
-  // command again, and the command's first act is to overwrite this.
-  assert payload_marker(workspace) == crashed.recorded
+  // command again, and the command's first act is to write this back.
+  assert simplifile.is_file(workspace <> "/" <> start_marker) == Ok(False)
   stop_driver(second.driver)
   daemon.close(second.connected.control)
 }
@@ -936,34 +1024,79 @@ fn bind(connected: Connected, id: String) -> Session {
 
 // --- observing the payload --------------------------------------------------
 
-fn await_payload(workspace: String) -> endpoint.Fence {
-  let assert poll.Answered(fence) =
+/// What the fixture is entitled to hold about a payload it started.
+type PayloadWitness {
+  /// The payload published a host pid and the fixture qualified it by
+  /// birth, so a later absence means *this* process left rather than that
+  /// its number was reused. Same check the recovery fixtures make of a VM.
+  FencedPayload(fence: endpoint.Fence)
+
+  /// The payload announced itself from inside a pid namespace. The
+  /// fixture holds the fact that the command ran and nothing more; no
+  /// number crossed the boundary, so none is signalled or observed.
+  ContainedPayload
+}
+
+fn await_payload(
+  identity: PayloadIdentity,
+  workspace: String,
+) -> PayloadWitness {
+  let assert poll.Answered(witness) =
     poll.until(within: 30_000, every: 25, attempt: fn() {
-      case payload_fence(workspace) {
-        Ok(fence) -> poll.Done(fence)
+      case payload_witness(identity, workspace) {
+        Ok(witness) -> poll.Done(witness)
         Error(Nil) -> poll.Retry
       }
     })
-    as "the background payload publishes a live identity of its own"
-  fence
+    as "the background payload announces itself before the fixture appends"
+  witness
+}
+
+// A partially written marker reads as not yet announced under either
+// identity: an unparseable number retries, and so does a word that is not
+// the whole constant.
+fn payload_witness(
+  identity: PayloadIdentity,
+  workspace: String,
+) -> Result(PayloadWitness, Nil) {
+  case identity {
+    HostPid -> payload_fence(workspace) |> result.map(FencedPayload)
+
+    NamespacedPid ->
+      case announced(workspace) == Ok(contained_marker) {
+        True -> Ok(ContainedPayload)
+        False -> Error(Nil)
+      }
+  }
 }
 
 // A pid alone is not an identity. The birth qualification is what makes a
 // later absence mean *this* process left rather than that its number was
-// reused, and it is the same check the recovery fixtures make of a VM.
+// reused, and it is only ever asked of a pid the host shares.
 fn payload_fence(workspace: String) -> Result(endpoint.Fence, Nil) {
-  use text <- result.try(
-    simplifile.read(workspace <> "/" <> pid_marker)
-    |> result.replace_error(Nil),
-  )
-  use pid <- result.try(int.parse(string.trim(text)))
+  use text <- result.try(announced(workspace))
+  use pid <- result.try(int.parse(text))
   endpoint.observe(pid) |> result.replace_error(Nil)
 }
 
-fn payload_marker(workspace: String) -> String {
-  let assert Ok(text) = simplifile.read(workspace <> "/" <> pid_marker)
-    as "the payload's recorded identity survives the crash as a file"
-  string.trim(text)
+fn announced(workspace: String) -> Result(String, Nil) {
+  simplifile.read(workspace <> "/" <> start_marker)
+  |> result.map(string.trim)
+  |> result.replace_error(Nil)
+}
+
+// Departure, proved the strongest way this host allows. A fence settles
+// it outright. Under a pid namespace the proof is the daemon's own
+// terminal record — `killed`, `owner`, and the helper's `cancelled`
+// witness, which is its report of a *completed* cancel ladder — resting
+// on the jail's containment: the payload is a child of the bwrap that is
+// pid 1 of its namespace, and a pid namespace whose pid 1 has gone takes
+// every process in it (docs/architecture/effects.md).
+fn payload_departed(witness: PayloadWitness) -> Nil {
+  case witness {
+    FencedPayload(fence) -> departed(fence)
+    ContainedPayload -> Nil
+  }
 }
 
 fn departed(fence: endpoint.Fence) -> Nil {
@@ -982,14 +1115,24 @@ fn departed(fence: endpoint.Fence) -> Nil {
 // A body that failed between starting a job and stopping it has left a
 // real process behind, and no assertion is worth a stray `tail` on a
 // developer's machine.
-fn retire_payload(workspace: String) -> Nil {
-  case payload_fence(workspace) {
-    Error(Nil) -> Nil
-    Ok(fence) -> {
-      assert fence.pid != native.current_process_id()
-      native.terminate_process_group(fence.pid)
-      Nil
-    }
+fn retire_payload(identity: PayloadIdentity, workspace: String) -> Nil {
+  case identity {
+    // Under a namespace there is no host number to signal and none is
+    // needed: `retire_native` takes the VM's group, that takes the helper,
+    // and a bwrap that has gone takes its whole namespace with it. A group
+    // signal aimed at a namespaced number would reach a stranger instead,
+    // which is the one outcome worth more than a stray `tail`.
+    NamespacedPid -> Nil
+
+    HostPid ->
+      case payload_fence(workspace) {
+        Error(Nil) -> Nil
+        Ok(fence) -> {
+          assert fence.pid != native.current_process_id()
+          native.terminate_process_group(fence.pid)
+          Nil
+        }
+      }
   }
 }
 
