@@ -18,7 +18,7 @@
 ////    `gen_tcp:connect` cannot lose a race with it.
 //// 3. **Then the node**, dispatched through `broker.clear_call` under the
 ////    *same* `{op_id, step_id}` the host uses. That is what makes
-////    `broker.abort` on the host's deadline actually kill it.
+////    `broker.abort_step` on the host's deadline actually kill it.
 ////
 //// # Two processes, one ordering guarantee
 ////
@@ -282,11 +282,11 @@ fn start_reader(
   }
 }
 
-// Destroying the satellite: abort the operation (which revokes its tokens
-// and kills the node and every executor it fanned out), collect what the
-// kernel enforced on the node, close both ends of the socket, and unlink
-// the socket file. Idempotent — the host calls it once on every exit path,
-// and `satellite.hand_over` may call it instead.
+// Destroying the satellite: abort the run phase's own step (which revokes
+// its tokens and kills the node and every executor it fanned out), collect
+// what the kernel enforced on the node, close both ends of the socket, and
+// unlink the socket file. Idempotent — the host calls it once on every exit
+// path, and `satellite.hand_over` may call it instead.
 //
 // The abort is what makes the report *reachable* rather than what loses
 // it: a node that has already exited has already settled, and a node still
@@ -294,13 +294,27 @@ fn start_reader(
 // with an `exec_exit` carrying the same report. So destroy aborts, then
 // waits (bounded) for the settlement, and hands the report to the caller —
 // which is the host, about to report the execution's outcome (issue #5).
+//
+// The sweep is `abort_step` rather than `abort` because a satellite reaps
+// itself and must not reap what the program asked to outlive it. A
+// background job the program started clears under `{op_id, "job/" <> id}`,
+// a sibling step of the same operation, and an operation-wide abort
+// cancelled its helper the moment the program returned — the record read
+// `Lost(HelperLoss)` against a design note that promises a job keeps
+// running under its own token. An operator's `abort` of the operation
+// still reaches that job, which is the semantics the shared operation was
+// chosen for.
 fn destroy(
   config: LaunchConfig,
   spec: LaunchSpec,
   outbox: Subject(Out),
   settlement: Subject(Settlement),
 ) -> Report {
-  broker.abort(config.broker, identity.op_id(spec.identity))
+  broker.abort_step(
+    config.broker,
+    identity.op_id(spec.identity),
+    step_id: identity.step_id(spec.identity),
+  )
   let report = await_report(settlement)
   process.send(outbox, Shutdown)
   unlink(spec.cap_socket_path)
@@ -833,7 +847,7 @@ fn collect_node_result(
 }
 
 /// The clearance that launches the node: the same `{op_id, step_id}` the
-/// host services cap calls under, so `broker.abort` reaches it, and the
+/// host services cap calls under, so `broker.abort_step` reaches it, and the
 /// same approved grants `launch` already composed the effective policy
 /// with.
 ///

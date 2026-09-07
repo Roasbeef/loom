@@ -511,24 +511,28 @@ pub const host_step_id = "extension-host"
 /// A fresh operation for one satellite node, minted here rather than
 /// borrowed from whichever call happened to launch it.
 ///
-/// This is the difference between an abort that means "tear down this
+/// This is the difference between a teardown that means "tear down this
 /// node" and one that means "tear down everything this run is doing", and
-/// it is load-bearing rather than tidy. `broker.abort(op_id)` cancels
-/// every active execution under that operation, and it is issued
-/// *routinely*: `codemode/satellite.cleanup` runs it at the end of every
+/// it is load-bearing rather than tidy. A satellite teardown is issued
+/// *routinely* — `codemode/satellite.cleanup` runs one at the end of every
 /// code-mode execution, successful ones included, and
-/// `codemode/launch.destroy` runs it for every node it tears down. Under
-/// the launching call's operation that makes two ordinary sequences
-/// fatal.
+/// `codemode/launch.destroy` runs one for every node it tears down — so
+/// whatever a teardown sweeps, it sweeps constantly.
 ///
-/// A tool call launches an extension's satellite, and a `code_mode` call
-/// in the same run then finishes and aborts the operation they share:
-/// the satellite dies, its host reads the closed socket as
-/// `SatelliteGone`, and the extension is `Departed` for the rest of the
-/// session. Worse, every hook-launched host shares the single operation
-/// `client/serve.hook_coordinates` mints for the session's hooks, so one
-/// oversleeping extension's teardown would abort that operation and take
-/// every other extension's satellite down with it.
+/// Those two now sweep one step rather than the operation
+/// (`broker.abort_step`), which removes the sharpest edge of sharing an
+/// operation but not the reason for a separate one. `broker.abort(op_id)`
+/// still cancels every active execution under an operation, and it is the
+/// abort an operator issues. Under the launching call's operation that
+/// leaves two ordinary sequences fatal.
+///
+/// A tool call launches an extension's satellite, and an operator aborts
+/// the operation they share: the satellite dies, its host reads the closed
+/// socket as `SatelliteGone`, and the extension is `Departed` for the rest
+/// of the session. Worse, every hook-launched host shares the single
+/// operation `client/serve.hook_coordinates` mints for the session's
+/// hooks, so one abort there would take every extension's satellite down
+/// at once.
 ///
 /// Its own operation scopes `destroy`'s abort to the node being
 /// destroyed, which is the only thing it ever meant.
