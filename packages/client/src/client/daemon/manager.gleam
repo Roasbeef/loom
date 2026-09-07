@@ -47,8 +47,13 @@ import storage/catalogue
 import storage/domain
 import weft/state_machine as sm
 
-/// Live lifecycle state, separate from persisted file initialization.
+/// Live lifecycle state, joined with the durable initialization the registry
+/// would refuse an open against.
 pub type Status {
+  /// A creation reserved this identity and never reconciled it, so no
+  /// database stands behind it and only a create retry can complete it.
+  Reserved
+
   /// No runtime or cleanup reservation is owned by this registry.
   Saved
 
@@ -1137,7 +1142,7 @@ fn handle(
         reply,
         catalogue.workspace_default(book.catalogue, workspace)
           |> result.map_error(Catalogue)
-          |> result.map(fn(record) { View(record, status(book, record.id)) }),
+          |> result.map(fn(record) { View(record, status(book, record)) }),
       )
       sm.keep(book)
     }
@@ -1147,7 +1152,7 @@ fn handle(
         Ready ->
           catalogue.set_workspace_default(book.catalogue, workspace, id)
           |> result.map_error(Catalogue)
-          |> result.map(fn(record) { View(record, status(book, record.id)) })
+          |> result.map(fn(record) { View(record, status(book, record)) })
       }
       process.send(reply, outcome)
       sm.keep(book)
@@ -1156,7 +1161,7 @@ fn handle(
       let view =
         catalogue.get(book.catalogue, id)
         |> result.map_error(Catalogue)
-        |> result.map(fn(record) { View(record, status(book, id)) })
+        |> result.map(fn(record) { View(record, status(book, record)) })
       process.send(reply, view)
       sm.keep(book)
     }
@@ -1191,7 +1196,8 @@ fn handle(
         Ok(Slot(operation: current, ..)) if current == operation ->
           catalogue.get(book.catalogue, id)
           |> result.map_error(Catalogue)
-          |> result.map(fn(record) { View(record, status(book, id)) })
+          |> result.map(fn(record) { View(record, status(book, record)) })
+
         Ok(Slot(..)) | Error(Nil) -> Error(StaleOperation)
       }
       process.send(reply, view)
@@ -1208,7 +1214,7 @@ fn handle(
         reply,
         catalogue.get(book.catalogue, id)
           |> result.map_error(Catalogue)
-          |> result.replace(status(book, id)),
+          |> result.map(status(book, _)),
       )
       step(phase, book)
     }
@@ -1216,7 +1222,16 @@ fn handle(
       case dict.get(book.slots, id) {
         Ok(slot) if slot.operation == incarnation -> {
           let book = stop_slot(book, id)
-          process.send(reply, Ok(status(book, id)))
+
+          // A stopped incarnation was resident, so its record was reconciled
+          // long ago; the read is still what says which durable state it
+          // settles into rather than assuming the reconciled one.
+          process.send(
+            reply,
+            catalogue.get(book.catalogue, id)
+              |> result.map_error(Catalogue)
+              |> result.map(status(book, _)),
+          )
           step(phase, book)
         }
         Ok(_) | Error(Nil) -> {
@@ -1358,9 +1373,7 @@ fn viewed_page(
   |> result.map(fn(page) {
     #(
       page.revision,
-      list.map(page.records, fn(record) {
-        View(record, status(book, record.id))
-      }),
+      list.map(page.records, fn(record) { View(record, status(book, record)) }),
     )
   })
 }
@@ -2202,9 +2215,20 @@ fn retired(
   }
 }
 
-fn status(book: Book(instance), id: String) -> Status {
-  case dict.get(book.slots, id) {
-    Error(Nil) -> Saved
+// A slot is the live half of the answer and the registration is the durable
+// half; only the pair says whether an open can succeed. Reading liveness alone
+// reported a record that is still `Reserved` as `Saved`, because a reservation
+// owns no slot either — so an incomplete creation rendered in the selector as
+// an ordinary saved session and every selection of it was refused with
+// `NotInitialized`. Where there is no slot, the durable state is the answer.
+fn status(book: Book(instance), record: catalogue.Registration) -> Status {
+  case dict.get(book.slots, record.id) {
+    Error(Nil) ->
+      case record.state {
+        catalogue.Reserved -> Reserved
+        catalogue.Saved -> Saved
+      }
+
     Ok(Slot(phase: WaitingForDomain, operation:, ..))
     | Ok(Slot(phase: Building, operation:, ..)) -> Opening(operation)
     Ok(Slot(phase: Running(_), operation:, ..)) -> Resident(operation)

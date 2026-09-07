@@ -152,8 +152,11 @@ fn retry_after_restart(
     })
   assert catalogue.by_request_key(store, record.request_key) == Ok(record)
   assert domain.for_session(store, record.id) == Ok(selected)
+  // The record is still `catalogue.Reserved`, and the status says so. It owns
+  // no slot either, so reading liveness alone once answered `Saved` here —
+  // the same answer an openable session gets, for a row `open` refuses.
   assert manager.get(registry, record.id)
-    == Ok(manager.View(record, manager.Saved))
+    == Ok(manager.View(record, manager.Reserved))
   let assert Ok(#(_, views)) = manager.page(registry, after: "")
     as "listing remains available for an uninitialized reservation"
   assert list.any(views, fn(view) { view.registration == record })

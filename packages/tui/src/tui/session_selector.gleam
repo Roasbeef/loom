@@ -200,6 +200,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
 
 fn lifecycle(status) {
   case status {
+    protocol.Reserved -> "reserved"
     protocol.Saved -> "saved"
     protocol.Opening(_) -> "opening"
     protocol.Resident(_) -> "resident"

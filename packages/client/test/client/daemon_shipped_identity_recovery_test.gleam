@@ -242,7 +242,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
     daemon.request(second.control, request, 5000)
     as "the same-key immediate retry keeps its original reservation"
   assert immediate.session_id == reserved.id
-  await_saved(second.control, reserved.id)
+  await_retired(second.control, reserved.id)
   assert_storage_refusal(paths, reserved.id)
   assert durable(paths) == #(reserved, selected)
   assert lease(reserved.path) == original_lease
@@ -305,7 +305,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   let assert Ok(_) =
     daemon.request(second.control, protocol.StopSession(reserved.id), 5000)
     as "the recovered original identity begins orderly retirement"
-  await_saved(second.control, reserved.id)
+  await_retired(second.control, reserved.id)
   let assert Ok(_) = daemon.request(second.control, protocol.Shutdown, 5000)
     as "the recovered daemon accepts orderly shutdown"
   daemon.close(second.control)
@@ -458,9 +458,11 @@ fn assert_metadata_only(control, reserved: catalogue.Registration) {
     daemon.request(control, protocol.GetSession(reserved.id), 5000)
     as "the reserved identity remains individually discoverable"
 
-  // Slot-less rows project as Saved; the refusal distinguishes an unfinished
-  // reservation from an initialized conversation that ordinary open may resume.
-  assert row.status == protocol.Saved
+  // The status is what distinguishes an unfinished reservation from an
+  // initialized conversation that ordinary open may resume. It used to be the
+  // refusal alone: a slot-less row projected as Saved whatever the catalogue
+  // said, so this row was offered for selection and then refused.
+  assert row.status == protocol.Reserved
   let assert Error(daemon.Refused("not_initialized", _)) =
     daemon.request(control, protocol.OpenSession(reserved.id), 5000)
     as "ordinary open cannot initialize a reserved conversation"
@@ -486,12 +488,19 @@ fn await_resident(control, id) {
     as "explicit assembly reaches its resident incarnation"
 }
 
-fn await_saved(control, id) {
+// Retirement is the claim: no resident writer was accepted. Which durable
+// state the row settles into is a second question this fixture does not fix —
+// an incarnation that never got as far as confirming its creation leaves the
+// record `Reserved`, and one that did leaves it `Saved`. Both are retired.
+fn await_retired(control, id) {
   let assert poll.Answered(Nil) =
     poll.until(within: 15_000, every: 25, attempt: fn() {
       case daemon.request(control, protocol.GetSession(id), 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
+        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..)))
+        | Ok(protocol.SessionReply(protocol.Session(
+            status: protocol.Reserved,
+            ..,
+          ))) -> poll.Done(Nil)
         Ok(protocol.SessionReply(protocol.Session(
           status: protocol.Opening(_),
           ..,

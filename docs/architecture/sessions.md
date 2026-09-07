@@ -288,6 +288,37 @@ runtime. Once opened, the session uses its existing durable recovery
 semantics, which can resume unfinished work. Sessions that were active
 before the restart remain closed until requested.
 
+### Reopening after an unclean exit
+
+A SIGKILL runs no cleanup, so the next daemon meets state that no orderly
+shutdown would have left. Three shapes of it matter, and each has a
+distinct answer.
+
+A resident session's **writer lease survives in its own database** with the
+expiry its dead writer last renewed — up to the full sixty-second TTL past
+the kill. The replacement's open is therefore refused by its own
+predecessor. It is refused deliberately: an unexpired lease is the only
+evidence the single-writer rule has, a dead OS process is not something the
+lease row records, and stealing on a guess risks two writers on one
+conversation. The refusal clears itself when the instant passes, so the
+instant is the whole of the operator's answer, and it is what the daemon
+records: `daemon.session_start_failed` carries `class` `lease_held` with
+`lease_expires_at_ms`. Only the class and that instant enter the record;
+the reason string can name the session's own path and stays out of the log.
+
+An **incomplete creation** — an identity reserved in the catalogue whose
+database was never established — survives the restart as
+`protocol-change/015` requires, and only a `sessions.create` retry under
+its original request key can finish it. It has no runtime slot either, so
+reading liveness alone would report it as `saved` and invite a selection
+the registry then refuses with `not_initialized`. Listing joins the durable
+state with the live one and renders it `reserved`; the terminal declines
+to offer it for opening and says a create retry is what it needs.
+
+Nothing here deletes operator data. The `<session>.db.tmp` directory beside
+each database is the session's own scratch directory, made by assembly on
+every open; a stranded one is harmless and is not swept.
+
 ## Client startup and routing
 
 A terminal first discovers and authenticates the existing daemon. A failed

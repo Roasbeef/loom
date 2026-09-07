@@ -124,6 +124,16 @@ pub fn open(host: Host, session: String) -> Result(attachment.Target, String) {
     // for execution authority. Saved sessions still require explicit open.
     protocol.Resident(_) ->
       target(host, session, selected.workspace, None, selected.status)
+
+    // No database was ever established under this identity, so asking the
+    // daemon to open it can only earn a `not_initialized` refusal. Say what
+    // the row is instead of relaying that code back to the operator.
+    protocol.Reserved ->
+      Error(
+        "this session was reserved but never initialized; "
+        <> "retry its creation instead of opening it",
+      )
+
     protocol.Saved
     | protocol.Opening(_)
     | protocol.Stopping(_)
@@ -187,7 +197,10 @@ fn target(host: Host, session, workspace, creation_key, status) {
   use incarnation <- result.try(case status {
     protocol.Resident(incarnation) -> Ok(incarnation)
     protocol.Opening(operation) -> await(host, session, operation)
-    protocol.Saved | protocol.Stopping(_) | protocol.RecoveryBlocked ->
+    protocol.Reserved
+    | protocol.Saved
+    | protocol.Stopping(_)
+    | protocol.RecoveryBlocked ->
       Error("selected session is not available for attachment")
   })
   let epoch = daemon.hello(host.control).epoch.value
@@ -234,7 +247,10 @@ fn await(host: Host, session, operation) {
           case row.status {
             protocol.Resident(incarnation) -> poll.Done(incarnation)
             protocol.Opening(_) -> poll.Retry
-            protocol.Saved | protocol.Stopping(_) | protocol.RecoveryBlocked ->
+            protocol.Reserved
+            | protocol.Saved
+            | protocol.Stopping(_)
+            | protocol.RecoveryBlocked ->
               poll.Fail(
                 "session startup did not produce an attachable incarnation",
               )

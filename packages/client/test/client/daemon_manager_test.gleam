@@ -1207,3 +1207,29 @@ fn await_domains_retired(registry) {
     })
     == poll.Answered(Nil)
 }
+
+// A daemon killed with SIGKILL leaves two shapes of durable wreckage behind:
+// registrations whose creation never reconciled, and databases whose writer
+// lease was never released. The first shape is what these two tests are about;
+// the second reaches the registry as a builder error.
+pub fn incomplete_reservation_lists_as_reserved_rather_than_saved_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let pending = registration(931)
+  assert catalogue.reserve(store, pending) == Ok(pending)
+  let ready = saved(store, 932)
+  let registry = start(store, 2, fn(record, _) { Ok(record.id) })
+
+  // The rows a terminal renders. The reservation must not wear the same label
+  // as the session beside it, because only one of the two can be opened, and
+  // reading liveness alone reported both of them as saved.
+  let assert Ok(#(_revision, rows)) = manager.page(registry, after: "")
+    as "listing reads metadata without opening either path"
+  let labelled = list.map(rows, fn(row) { #(row.registration.id, row.status) })
+  assert list.key_find(labelled, pending.id) == Ok(manager.Reserved)
+  assert list.key_find(labelled, ready.id) == Ok(manager.Saved)
+
+  // And the label tells the truth: the reservation is still not openable.
+  assert manager.open(registry, pending.id) == Error(manager.NotInitialized)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}

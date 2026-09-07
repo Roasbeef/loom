@@ -112,6 +112,21 @@ catalogue without opening runtimes. Explicit admission invokes
   reports `RecoveryBlocked`, so `Summary.blocked` counts custody that will
   never release. Failed cleanup retains admission capacity and prevents
   normal daemon shutdown.
+- `manager.Status` joins the live slot with the durable registration, and both
+  halves are load-bearing. Where there is no slot the catalogue state is the
+  answer: a record still `catalogue.Reserved` reports `Reserved`, not `Saved`.
+  Reading liveness alone made an unreconciled creation — an identity with no
+  database behind it — indistinguishable from an openable session in a listing,
+  and every selection of one was refused `NotInitialized`. `tui/daemon/selection`
+  now declines such a row locally and names the create retry it needs.
+- `client/daemon/main.start_class` classifies a start failure into a stage, a
+  class, and the structured detail that class permits. Only values proven free
+  of a path or a credential may be logged, which is why the reason string is
+  matched rather than recorded. `serve.storage_open_refusal` renders a held
+  writer lease with its expiry so the classifier can emit class `lease_held`
+  with `lease_expires_at_ms` — after an unclean exit that expiry is the entire
+  answer to when the session reopens. See
+  `docs/architecture/sessions.md`, "Reopening after an unclean exit".
 - `client/daemon/manager.{frame_authority, FrameRefusal}` — per-frame
   authorization is one registry dispatch that answers the daemon epoch, the
   session incarnation and the session authority together, widest fence
