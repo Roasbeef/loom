@@ -648,6 +648,108 @@ default, 600 as the ceiling — and the wall limit mirrors it. `grep` runs
 `rg --json` read-only and, when the jail has no ripgrep, settles as a
 structured error suggesting `bash` instead.
 
+## Background jobs
+
+Every tool call above is foreground: `run` holds its effect process for
+the whole execution and a command that outruns its budget comes back as
+`[command timed out]` with the process reaped. A **job** is the one thing
+in this plane allowed to outlive the call that started it — a jailed
+process with output, an exit status and a kill handle, bounded by a wall
+fixed at start, owned by a strand, and killable through the same ladder a
+cancelled foreground call climbs. `bash` starts one with `mode:
+"background"` and answers with a handle; `job_poll`, `job_kill` and
+`job_send` are the rest of the surface, and `cap/job` is the same four
+operations for a code-mode program. Both land on one seam,
+`client/jobseam.Door`, so a job started from a tool call and one started
+from a program are the same record with the same owner, and either
+surface reads or stops what the other started.
+
+**The actor owns the records; a runner per job owns the clearance.**
+`client/jobs` is a `weft/actor` in `client/serve`'s *restartable* services
+tier beside `extension_hosts`, bound to a reclaimable registry address so
+a replacement answers where the original did. Each job gets a task of its
+own, and that task — not the actor — calls `broker.clear_call`, for two
+reasons that both come out of the broker's contract above: `clear_call`
+waits out a full helper pool in the caller's own process, and an actor
+blocked on congestion could not answer a poll; and the relay monitors the
+caller and cancels the execution when that process dies, so the caller
+has to be a process that lives exactly as long as the job. The runner
+folds the `CallOutput` stream and reports the outcome, and the actor
+writes the terminal fact only when that outcome arrives — a weft outcome
+is reported once the worker has exited, so the scope's exit is the drain
+proof and "finished" is never written ahead of the process being gone.
+The runner is a *plain* task rather than a managed one: a managed task
+exists to witness owners a worker discovers while it runs, and this one
+discovers none.
+
+**A job clears under its own identity.** Not the batch's: budget is
+pooled per `{op_id, step_id}` where the step is the model batch
+(ADR-005), and `bash` opens that ledger at `max_outstanding: 1`, so a job
+sharing it would be capped by a foreground command earlier in the same
+batch and a second job would be refused outright. A detached job is not
+part of a batch's parallel width. It clears under `{op_id, "job/" <> id}`
+instead — its own ledger, its own token, its own deadline — and ADR-005's
+second addendum records why. The operation half is kept deliberately,
+because it is what `broker.abort` addresses: aborting the operation that
+*started* a job kills it, which is what an operator asking for that
+means, and aborting a later one does not, because detachment is what the
+model asked for.
+
+**The deadline is fixed at start and has four enforcers that cannot
+disagree**, because all four read one number: the capability token, the
+relay's receive deadline, the helper's own wall timer, and the budget
+ledger. Renewal is not offered — the helper's timer is armed once from
+`exec_start`, so moving it would be a new frame and a protocol change.
+Long-lived work is served the other way round, by an operator knob:
+`[jobs].max_wall`, in **seconds**, raises the one-hour clamp and cannot
+lower it, because a lower ceiling is what the session's own sandbox
+policy already says and saying it twice lets the two disagree. The relay
+cancels at the instant on its own, so enforcement needs no timer here;
+what the runner's clock buys is *attribution*, since only the party that
+asked can say a settled execution was killed by its deadline rather than
+having exited.
+
+**Output is a bounded tail plus an unbounded spill.** `job_poll` answers
+with what each stream printed *since a cursor* out of an 8 KiB rolling
+window per stream, and a reader that fell behind is told how many bytes
+it missed rather than silently skipping them. The whole of each stream
+goes to a per-stream staging file under the blob root while the job runs
+and is promoted to a content-addressed ref at termination, recorded in
+the terminal fact and read with `fs_read`; a boot that finds a staging
+file with no live job unlinks it. Cursors are opaque tokens the model
+hands back unread.
+
+**A restart reaps; it never re-adopts.** A job's process is a child of a
+helper and the helper is a child of the VM, so nothing here survives the
+VM. The replacement actor's first act, before it serves one request, is
+to sweep `job/*` and commit `Lost` for everything still live, and it
+holds those records in memory so a poll answers `Lost` rather than
+`NotFound` — which is reserved for "no such job, or somebody else's", and
+a job the harness lost is neither. The same sweep covers a restart of the
+actor itself, which kills every runner it owned. `daemon_shipped_jobs_test`
+proves the whole of that against the shipped daemon: a SIGKILLed VM takes
+the payload with it, the next boot's sweep commits `Lost`, the model's own
+poll reads it, and the pid the payload recorded is untouched, which a
+respawn would have overwritten.
+
+**A hook may not start one.** Extensions reach the same capabilities
+through the same envelope whether a tool call or a hook event set them
+going, and the jobs plane is served only to the first. A tool call's
+operation is the model's own run — it reads the job in its own
+transcript, can kill it, and an abort of that run reaches it — whereas a
+hook's is the single session-long operation minted for every hook in the
+session and attributed to the root strand. Nobody sees that operation as
+a running step, so nobody can abort it, and a `context` hook calling
+`job.start` on each event would leave hour-long processes owned by `main`
+that the model never asked for and cannot find. The capabilities stay
+routed for a hook, so one that asks reads that reason rather than meeting
+an unknown-capability denial.
+
+Nothing new travels on the client wire for any of this: a job's start and
+terminal state are `fact.custom` registers under a `job/` prefix, and a
+poll's answer is an ordinary tool result. `docs/design-notes/background-
+jobs.md` carries the design and what changed on contact with the code.
+
 ## Providers
 
 The gateway is a typed registry plus injected effects: an HTTP transport,
@@ -850,6 +952,9 @@ Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 | `tools/tool.gleam`, `tools/hashline.gleam` | The tool record, seams, registry, and in-band outcomes; anchors, windows, anchor-checked plans, stale rejections. |
 | `tools/fs.gleam`, `tools/bash.gleam`, `tools/grep.gleam` | The filesystem tools with their path discipline, and the two jailed ones. |
 | `tools/blob.gleam` | Content-addressed overflow past 64 KiB. |
+| `client/jobs.gleam`, `client/jobstate.gleam`, `client/jobtail.gleam` | The background-jobs actor and its per-job runners; the pure lifecycle and the `job/` fact codec; the bounded UTF-8 tail with its cursor. |
+| `client/jobseam.gleam`, `client/jobtools.gleam` | The host side of the jobs door, and the translation that fills `tools/job`'s seam and the code-mode router's. |
+| `tools/job.gleam`, `cap/job.gleam` | The `job_*` tools a model calls, and the same four operations as typed Gleam for a vetted program. |
 | `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |

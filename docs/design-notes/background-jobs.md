@@ -1,8 +1,14 @@
 # Design note: background jobs
 
-Status: **draft for discussion.** Written against `main` at `3ef6ea09`
-(the merged daemon stack). Resolves issue #183 and settles the first cut
-of #186 and #71 on the way. Nothing here is implemented.
+Status: **built.** Written against `main` at `3ef6ea09` (the merged
+daemon stack), and implemented in three pull requests: **#260** the pure
+state and the `job/` fact (WP1), **#263** the actor, the runner, the tail
+and the spill (WP2), **#264** the tool surface, `cap/job` and the prelude
+(WP3). The shipped acceptance fixture and this documentation are WP5.
+Resolves issue #183 and settles the first cut of #186 and #71 on the way.
+"What changed on contact with the code", near the end, records where the
+implementation departed from what is written here; read it before
+treating any paragraph above as current.
 
 ## The problem
 
@@ -56,7 +62,7 @@ owns.
 The consequence we accept is that the machine cannot wait on a job. A
 model that wants to block on one calls `job_poll` with a wait, and a
 pending job is a successful result, not a failure (the "pending is an
-answer" rule `agent_wait` already follows, `client/agency.gleam:1088-1093`).
+answer" rule `agent_wait` already follows, `client/agency.gleam:222`).
 
 ### 2. The durable record is a reserved prefix, and restart reaps
 
@@ -99,7 +105,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:2511-2565`), bound to a
+beside `extension_hosts` (`client/serve.gleam:2599`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -144,7 +150,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:120-127`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:175`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:326`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong
@@ -174,7 +180,7 @@ The deadline is fixed at start and never renewed. Four enforcers agree on
 it by construction because they all read the same number: the token, the
 relay's receive deadline, the helper's own wall timer, and the budget
 ledger. Renewal at runtime would need the helper's timer to move, and
-that timer is armed once from `exec_start` (`sandbox/internal/jail/run.go:500`),
+that timer is armed once from the request's own `WallSeconds` (`sandbox/internal/jail/run.go:519`),
 so extending it is a new frame and a protocol change. Long-lived servers
 are covered the other way round: the clamp is an operator knob, a
 `[jobs]` table in `loom.toml` with `max_wall` (parsed beside the known
@@ -353,7 +359,7 @@ registers, and `Cut.cells` is namespace and key addressed
 (`storage/snapshot.gleam:149`), so the TUI's cut decoder can count
 `job/*` cells without a type change; poll results are tool results and
 already visible. `live_phase` cannot express *n* jobs because it is
-derived from a strand's one open operation (`gateway.gleam:3177-3195`),
+derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:3185`),
 and we do not bend it: an idle strand with two jobs shows idle, with a
 job count beside it once the renderer grows one. A live `job_output`
 event and a jobs panel are follow-ups that #186 and #240 already own,
@@ -424,6 +430,75 @@ staging spill and the cursor protocol, with the seam #186 will subscribe
 to. WP5 is the shipped fixture and the docs: an `effects.md` section, the
 package `CLAUDE.md`s, and `docs/next.md`. #74 lands before WP2 as its
 own small change.
+
+## What changed on contact with the code
+
+Six departures, each argued where it landed rather than only here.
+
+**The runner is a plain weft task, not a managed one.** Decision 3 asked
+for a managed task because the design imagined a ledger of owners. The
+worker discovers none: everything that outlives it is the helper's
+execution, reached through the broker, whose relay is already monitoring
+this very worker and whose pid the clearance seam deliberately does not
+hand out. A ledger with nothing to adopt is machinery with no job.
+
+**Starting is synchronous over the clearance.** The note left the shape
+open; the door waits for the broker's answer, so a policy refusal, an
+escalation and the strand's ceiling reach the starting call in the
+broker's own words rather than arriving at some later poll. It is the one
+door operation whose bound is the broker's rather than the actor's.
+
+**The spill is per stream and lives in the record.** The note described
+one staging file; there are two, one per stream, each promoted to its own
+content address at termination and recorded in the terminal fact, because
+`JobSpill` already has a field per stream and one file for both would
+have had to interleave them.
+
+**`[jobs].max_wall` is in seconds and only raises.** The note did not say
+which unit or which direction. Seconds match every other duration in
+`loom.toml`, and the table cannot lower the one-hour clamp: a lower
+ceiling is what the session's own sandbox policy already expresses, and
+expressing it twice lets the two disagree.
+
+**`OwnerRestart` is in the vocabulary but never reported.** The sweep
+says `VmRestart` for both cases it covers. Telling "the actor's first
+start this session" from "a supervisor restarted it" needs state that
+outlives the actor and dies with the VM — a durable cell or a second
+process — bought for a word in a message nobody branches on.
+
+**A hook may not start a job.** Not considered here at all. An extension
+invocation set going by a hook event is served no jobs plane, because a
+hook's operation is the one session-long operation minted for every hook
+in the session: nobody sees it as a running step, so nobody can abort it,
+and a `context` hook calling `job.start` on each event would leave
+hour-long processes owned by `main` that the model never asked for and
+cannot find. `docs/architecture/extensions.md` carries the ruling.
+
+## What the shipped fixture found
+
+`daemon_shipped_jobs_test` proves the motivating case and the restart
+rule against the shipped daemon on a host with real enforcement. It also
+found two things the unit suites could not.
+
+The first is fixed: `job.list`'s row over the code-mode wire carried a
+state name without the fields that state licenses, so `cap/job` refused
+the whole listing the moment a strand held any job that had ended — which
+is every strand, eventually.
+
+The second is open and is a real contradiction of this note. "The
+satellite ends when the program returns; a job it started keeps running
+under its own token" is not true today. A code-mode execution ends by
+calling `broker.abort` on its operation to reap its satellite
+(`codemode/satellite.cleanup`, `codemode/launch.destroy`), and by
+decision 4 a job started by that program cleared under the same
+operation — so the abort cancels the job's helper and the record reads
+`Lost(HelperLoss)`. The same collision reaches a `bash` background job
+started in a batch that also runs a program. The fix is a choice between
+narrowing what a satellite's teardown aborts and re-keying a
+program-started job, and it is not made here; `docs/next.md` carries it
+as the next thing to settle. The fixture asserts the durable half — a
+later program finds the record under its own id — and asserts no state,
+with the reason written where the assertion is missing.
 
 ## Settled on review
 

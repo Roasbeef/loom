@@ -296,7 +296,13 @@ catalogue without opening runtimes. Explicit admission invokes
   checks the latest user text or exact successful tool result before consuming
   one script step, and returns bounded request evidence. `ToolUseExchange`
   emits a fixed call; `ToolResultExchange` requires its nonempty ID and complete
-  single text result with `is_error: false`. Text steps retain the normal
+  single text result with `is_error: false`. `ComputedExchange` is the one step
+  whose reply is built when the request arrives, for handles the harness mints
+  while a fixture already runs — a background job's id lives in the text of the
+  tool result that announces it. Its matcher stays exact: either the complete
+  user text, or the provider's own invocation identity when the result's text
+  is the unpredictable half. Only the answer is computed, and only from
+  retained request evidence the caller still asserts on. Text steps retain the normal
   human-attribution projection. Tests pass the actual HTTP tool-use stream
   through the production decoder and encode results through the production
   adapter. Exact refusal reasons distinguish limit checks from script mismatch.
@@ -344,6 +350,29 @@ catalogue without opening runtimes. Explicit admission invokes
   another stop/open preserves its exact durable fired cell and all message
   records. This uses ordinary configuration and the real scanner, not a poke
   or injected clock. It does not cover recurring cursors or memory-file absence.
+  `daemon_shipped_jobs_test` is the background-jobs acceptance. A scripted turn
+  backgrounds `tail -f build.log`; the fixture appends three lines from outside
+  the jail; the next turn's poll must carry exactly those lines, the cursor
+  they advance to and a pending state; a kill produces a terminal state naming
+  the owner and carrying the helper's `cancelled` witness; and the payload's
+  own birth-qualified identity must depart, which it publishes by writing its
+  pid before it becomes `tail`. A second scenario runs the same door from code
+  mode through a real hermetic build and a real satellite, and proves the
+  durable half of independent lifetimes: a later program finds the record under
+  its own id. It asserts no state, because a code-mode teardown aborts its whole
+  operation and takes the job with it — `docs/next.md` owns that. A third
+  SIGKILLs the VM and proves the sweep commits `Lost`, the model's own poll
+  reads it, and the recorded pid is untouched, which a respawn would have
+  overwritten; its reopen waits out the crashed incarnation's writer lease.
+- `test/support/enforcement.{Enforcement, probe, unavailable_reason}` measures
+  whether the `loom-exec` beside a shipped server can enforce a policy on this
+  host, by running one harmless jailed command under `PlatformEnforcement`. An
+  OS name and the presence of `bwrap` establish nothing. Both shipped fixtures
+  that need real confinement gate on it, each passing its own label so a census
+  learns which declined, while the reason after the colon stays one string with
+  one declaration in `.github/declared-skips-linux-gate`. It panics rather than
+  skipping on a missing, unstartable or failing helper: that is a broken
+  shipment, not an environment without a jail.
 - `client/agency.Config.subagent_model` — the host's `subagent` route,
   resolved, as a closure: `Ok(#(identity, thinking))` seeds a spawned
   child with that model and that level, `Error(Nil)` inherits the parent

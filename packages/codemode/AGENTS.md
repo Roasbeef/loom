@@ -222,7 +222,11 @@ session and sends it many invocations.
   what decides whether an operator's abort reaches a running job. The
   poll answer is a flat map because msgpack has no sum type: `state`
   names the variant and licenses the fields beside it, so a live job
-  carries no `exit` at all and `cap/job` looks for none. `job_denial`
+  carries no `exit` at all and `cap/job` looks for none. **A listing row
+  obeys the same rule**, and must: `cap/job` decodes both answers through
+  one state reader, so a row naming a terminal state without that state's
+  fields is not a thinner answer but one no program can read — and every
+  strand acquires a terminal job the first time anything it started ends. `job_denial`
   keeps `tools/job.refusal_code`'s five strings rather than minting a
   second set, so a model reading a tool result and a program reading a
   denial read one contract. It builds **no
