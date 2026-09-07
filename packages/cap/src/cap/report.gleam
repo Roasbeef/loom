@@ -286,6 +286,10 @@ pub fn as_int(value: Value) -> Result(Int, Nil) {
 /// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
 /// the two tags are distinct on the wire, and a reader that widened one
 /// into the other would leave a program no way to ask which arrived.
+/// A field a schema declared as `number` may nonetheless arrive
+/// int-tagged — `number` admits `42`, and the value crosses the wire
+/// carrying the tag it was written with — so try `as_int` when
+/// `as_float` refuses one.
 ///
 /// ## Examples
 ///
