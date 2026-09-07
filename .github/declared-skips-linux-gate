@@ -3,3 +3,9 @@
 # and the default strict census, where this marker remains undeclared.
 # The census also rejects this declaration if the skip stops occurring.
 declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated jail job must execute the live-tool subsection without this waiver.
+
+# The shipped background-jobs fixture runs unattended jailed processes and
+# asks the same measured question through the same probe. On a runner whose
+# helper cannot enforce a policy, the scenarios are not weaker — they are
+# different — so the file declines rather than pretending.
+declared|linux|SKIP shipped jobs live tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; a host that supplies it (macOS, or the delegated jail setup) runs every jobs scenario for real.
