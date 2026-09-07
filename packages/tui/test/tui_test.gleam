@@ -33,6 +33,7 @@ import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/selection
+import tui/session_channel
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
@@ -975,6 +976,48 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
     )
   assert after_prompt_entry.queued == []
     as "the drained prompt's entry then retires the echo standing for it"
+}
+
+/// An abort cancels this terminal's queued steer, so its echo record goes too.
+///
+/// Abort's contract is asymmetric, and the asymmetry is the whole test: the
+/// run's still-queued steer and follow-up items are drained without ever
+/// committing, while a held prompt lives in the gateway rather than the run
+/// and drains once the strand goes idle. An interjection left in the queue
+/// therefore waits for an entry that will never arrive, and absorbs the
+/// drained prompt's entry instead — leaving the prompt's echo on screen for
+/// the rest of the session.
+pub fn an_abort_retires_the_steer_it_cancelled_test() {
+  let submitted =
+    tui.update(backend.KeyPress("enter"), live_model("look at this too"))
+  let steered =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(
+        ..submitted,
+        submission_mode: tui.SteerNow,
+        input: text_area.state_from_string("actually try the other file"),
+      ),
+    )
+  assert steered.queued
+    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    as "premise: the steer is recorded ahead of the prompt still being held"
+
+  let aborted =
+    tui.apply_channel_update(
+      steered,
+      session_channel.Acknowledged("abort", "accepted"),
+    )
+  assert aborted.queued == [tui.HeldPrompt("look at this too")]
+    as "the aborted steer commits no entry, so its record goes with the run"
+
+  let drained =
+    tui.accept_connection_message(
+      aborted,
+      connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
+    )
+  assert drained.queued == []
+    as "the drained prompt's own entry then retires the echo standing for it"
 }
 
 /// A snapshot rebuilds the transcript, so the echoes drawn over it go too.

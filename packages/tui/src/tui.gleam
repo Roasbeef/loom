@@ -3172,7 +3172,15 @@ fn tick_channel(model: Model) -> Model {
   }
 }
 
-fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
+/// Folds one conversation-channel update into the model.
+///
+/// Public because it is the boundary a test drives to deliver a daemon reply
+/// without standing up a socket; nothing outside this module calls it in a
+/// running client.
+pub fn apply_channel_update(
+  model: Model,
+  update: session_channel.Update,
+) -> Model {
   case update {
     session_channel.Submission(disposition) ->
       apply_submission(model, disposition)
@@ -3229,6 +3237,16 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
         submitting: None,
         notice: "prompt queued for the next turn",
       )
+      |> invalidate_frame
+
+    // An abort ends the run, and with it every steer and follow-up the run
+    // had not started yet: the queue drains those without committing them,
+    // so no entry will ever arrive to retire their interjections. A held
+    // prompt is not the run's to cancel — it waits in the gateway and drains
+    // once the strand is idle — so the abort drops the interjections and
+    // leaves the prompt echoes standing.
+    session_channel.Acknowledged("abort", status) ->
+      Model(..abandon_interjections(model), notice: "abort " <> status)
       |> invalidate_frame
 
     // Every other acknowledgement settles its submission the same way: a
@@ -5967,6 +5985,36 @@ fn discard_own_turn(model: Model) -> Model {
     Some(_) -> Model(..model, awaiting_outcome: None) |> invalidate_transcript
     None -> model
   }
+}
+
+// Forgets the submissions an abort cancelled, keeping the ones it does not
+// reach.
+//
+// The invariant this restores is the queue's: every submission in the list is
+// owed an entry. An abort breaks that for interjections alone, because the
+// steer and follow-up items still queued on the run are discarded with the
+// run instead of being committed. Left in place they would absorb the entries
+// the held prompts produce, and each prompt's echo would outlive the line it
+// stood for.
+fn abandon_interjections(model: Model) -> Model {
+  let held =
+    list.filter(model.queued, fn(submission) {
+      case submission {
+        Interjection -> False
+        HeldPrompt(..) -> True
+      }
+    })
+
+  // A submission still awaiting its outcome was sent to the same run, so an
+  // interjection there is cancelled on the same grounds. A prompt keeps
+  // waiting for the reply that is still coming for it.
+  let awaiting = case model.awaiting_outcome {
+    Some(Interjection) -> None
+    Some(HeldPrompt(..)) | None -> model.awaiting_outcome
+  }
+
+  Model(..model, queued: held, awaiting_outcome: awaiting)
+  |> invalidate_transcript
 }
 
 // Places one submission where the daemon will commit it.
