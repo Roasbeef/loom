@@ -467,6 +467,9 @@ type State {
     high_water: Int,
     // strand → open operation id (as text), for terminal detection.
     live: Dict(String, String),
+    // strand → prompts held for a busy strand, in arrival order at this
+    // one actor, which is what makes the order total.
+    held: Dict(String, List(Held)),
     // entry id (text) → strand attribution cache.
     entry_strand: Dict(String, String),
     // The effect plane's sweep of an aborted operation, when the host
@@ -497,6 +500,37 @@ type Delivery {
 type Emit {
   Emit(seq: Int, event: WireEvent)
 }
+
+/// One `prompt` the hub is holding for a strand that was busy when it
+/// arrived (`protocol-change/018`, ruling 3 of the live-delivery note).
+///
+/// **The queue is hub memory and is deliberately not durable.** A prompt
+/// that survived a hub restart would need a pending-run operation in
+/// `machine` — a new durable operation kind, with its own state space and
+/// its own replay — bought for a convenience nothing else needs. The wire
+/// says so rather than hiding it: the reply is `queued`, never
+/// `admitted`, so a client is written against a queue that a restart
+/// drops and clears its own local queued state when the socket closes.
+type Held {
+  Held(
+    /// The message exactly as it was built at submission, carrying the
+    /// origin the submitting connection had *then*. Re-minting it at
+    /// drain time would credit whoever happens to be attached when the
+    /// strand goes idle, which is the wrong human.
+    prompt: AgentMessage,
+    /// Where a drain *failure* is reported. Not where the entry goes: a
+    /// successful drain reaches every terminal, submitter included, as
+    /// an ordinary notice. A submitter that has detached by then is an
+    /// unknown connection and the report is dropped, which is why this
+    /// needs no cleanup when a connection goes away.
+    submitter: Int,
+  )
+}
+
+// How many prompts one strand may hold. A stalled strand accumulates at
+// most this much hub memory per peer before the fifth submission is
+// refused with the conflict the whole command used to answer with.
+const held_per_strand = 4
 
 /// Starts the hub registered under `name`. The initial high-water is the
 /// store's current tail, so a fresh gateway (or a restarted one) never
@@ -580,6 +614,7 @@ fn start_with_delivery(
         next_connection: 1,
         high_water: 0,
         live: dict.new(),
+        held: dict.new(),
         entry_strand: dict.new(),
         effect_abort: options.effect_abort,
         catalog: options.catalog,
@@ -1961,6 +1996,12 @@ fn read_only(command: Command) {
 
 fn pull_and_broadcast(state: State) -> State {
   let #(state, emits) = pull(state)
+
+  // The pull is the one place a strand's live operation is observed to
+  // have gone, so a queue whose strand just went idle drains here — after
+  // `state.live` has been replaced and before anything leaves, so a drain
+  // that fails reports against the state the failure was decided under.
+  let state = drain_idle_strands(state)
   case state.delivery {
     // The host fixture stream is the whole record; it has no size bound
     // to respect and its fixtures read the entries themselves.
@@ -3420,19 +3461,141 @@ fn prompt_message(
 ) -> State {
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
-  use _op <- or_reply(
-    result.map_error(api.prompt(target, [prompt]), describe_api_error(_, strand)),
-    state,
-    connection,
-    id,
-  )
-  reply_with_matched(state, connection, id, fn(emit) {
-    case emit.event {
-      protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
-        on == strand && is_user_entry(entry)
-      _ -> False
+  let admitted = api.prompt(target, [prompt])
+  case admitted {
+    // A busy strand is a scheduling question, not a conflict. `steer` and
+    // `follow_up` fold a message into the run that is already going;
+    // `prompt` means "next turn", and holding it here is what lets two
+    // peers submit inside one catch-up window without either being told
+    // to try again. The built message is what is held, so the entry
+    // commits under the origin recorded now rather than one resolved at
+    // drain time.
+    Error(api.AcceptRejected(reason: acceptance.StrandBusy)) ->
+      hold_prompt(state, connection, id, strand, prompt)
+
+    Ok(_) | Error(_) -> {
+      use _op <- or_reply(
+        result.map_error(admitted, describe_api_error(_, strand)),
+        state,
+        connection,
+        id,
+      )
+      reply_with_matched(state, connection, id, fn(emit) {
+        case emit.event {
+          protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
+            on == strand && is_user_entry(entry)
+          _ -> False
+        }
+      })
+    }
+  }
+}
+
+// Puts one prompt at the tail of its strand's queue, or refuses the
+// submission when the queue is full. The bound is what keeps a strand
+// whose run never settles from accumulating unbounded hub memory, and the
+// refusal is the `conflict` the whole command answered with before this
+// existed — so a client that has not learned about `queued` still sees a
+// vocabulary it knows once the queue is deep.
+fn hold_prompt(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  prompt: AgentMessage,
+) -> State {
+  let queued = dict.get(state.held, strand) |> result.unwrap([])
+
+  // "Is it already full?" is a question about the bound, not about the
+  // length, so it is answered by dropping one short of the bound and
+  // asking whether anything is left: that walks four elements however
+  // many there are. A queue of exactly four leaves one behind and is
+  // full; a queue of three leaves none and has room.
+  case list.drop(queued, held_per_strand - 1) != [] {
+    True -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_conflict,
+        "the strand is busy and its queue is full",
+      )
+      state
+    }
+    False -> {
+      reply(state, connection, id, mutation_outcome("queued"))
+      put_held(
+        state,
+        strand,
+        list.append(queued, [Held(prompt:, submitter: connection)]),
+      )
+    }
+  }
+}
+
+fn put_held(state: State, strand: String, queue: List(Held)) -> State {
+  case queue {
+    // An emptied strand leaves the dictionary rather than sitting in it
+    // as an empty list, so `drain_idle_strands` iterates over strands
+    // that actually hold something.
+    [] -> State(..state, held: dict.delete(state.held, strand))
+    [_, ..] -> State(..state, held: dict.insert(state.held, strand, queue))
+  }
+}
+
+// Every strand holding prompts whose live operation has gone. The caller
+// has just replaced `state.live` from the registers, so "idle" is a
+// lookup rather than a diff of two pulls: a strand whose successor
+// operation is already open reads as busy and stays held.
+fn drain_idle_strands(state: State) -> State {
+  list.fold(dict.keys(state.held), state, fn(state, strand) {
+    case dict.has_key(state.live, strand) {
+      True -> state
+      False -> drain_strand(state, strand)
     }
   })
+}
+
+// Submits one strand's head prompt. Only the head: a second submission
+// would be refused by the very acceptance this queue exists to work
+// around, and the next terminal transition is where the next one belongs.
+fn drain_strand(state: State, strand: String) -> State {
+  case dict.get(state.held, strand) {
+    Ok([Held(prompt:, submitter:), ..rest]) -> {
+      let target = api.on_strand(state.runtime, strand)
+      case api.prompt(target, [prompt]) {
+        // Admitted, and nothing more is said. The command that queued
+        // this was answered when it arrived; its entry now reaches every
+        // terminal — the submitter's included — as an ordinary notice.
+        Ok(_op) -> put_held(state, strand, rest)
+
+        // A run opened between the register read and this call: through a
+        // host path, a scheduled fire, or another peer's own drain. The
+        // prompt keeps the head and the next transition drains it.
+        Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> state
+
+        // Any other refusal is this prompt's own and it is dropped:
+        // holding a message the strand will never accept is a leak whose
+        // submitter is never told. The report goes out unsolicited,
+        // through the same per-frame authority check every frame passes,
+        // so a submitter that lost membership gets nothing.
+        Error(refused) -> {
+          let #(code, message) = describe_api_error(refused, strand)
+          send_to(
+            state,
+            submitter,
+            EventEnvelope(
+              reply_to: None,
+              seq: None,
+              event: protocol.ErrorEvent(code:, message:, details: None),
+            ),
+          )
+          put_held(state, strand, rest)
+        }
+      }
+    }
+    Ok([]) | Error(Nil) -> state
+  }
 }
 
 fn is_user_entry(row: Entry) -> Bool {
