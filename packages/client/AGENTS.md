@@ -2039,6 +2039,36 @@ an install is under the extensions root.
 - **Stream deltas are ephemeral.** They are broadcast without a seq,
   never persisted, and the tap lives entirely in the composition seam —
   the runtime is untouched by it.
+- **A network envelope with no `reply_to` leaves through `deliver`, and
+  through nothing else** (`protocol-change/018`). `send_to` splits on the
+  envelope, not on the connection: `Some(_)` keeps the bounded
+  `send_response` path with its one reply capability, `None` goes to
+  `deliver`, which re-resolves the binding with `check_binding` for that
+  one frame and retires the attachment when the answer changed. Push
+  therefore opens no second way out and needs no new authority path; it
+  reaches the existing one from the network side.
+- **A pushed durable frame is a notice, never the record.** The hub emits
+  one `committed` per new emit — the seq and the strand — and the record
+  still travels the credited snapshot path, which is the one place the
+  64 KiB bound and the retention window are enforced. Delta text is
+  clipped with `preview_text` before it is encoded, so a pushed frame is
+  under the reply ceiling by construction rather than by a second
+  mechanism. A notice is idempotent and order-free: a client that already
+  holds the seq drops it, and any later catch-up repairs one that was
+  lost.
+- **The hub primes its high-water under network delivery too.**
+  `start_with_delivery` runs `pull` before serving under either delivery.
+  Without it a restarted hub's first hint would push a notice for every
+  sequence the store already held.
+- **Held prompts are hub memory, four per strand.** A `prompt` refused
+  with `StrandBusy` is held with the origin recorded at submission and
+  answered `queued`; the hub drains the head when a pull observes the
+  strand's live operation gone. The fifth submission for one strand gets
+  the `conflict` the whole command used to answer with, so a strand whose
+  run never settles cannot grow unbounded state. The queue is
+  deliberately not durable — that would need a pending-run operation in
+  `machine` — and the wire says so by replying `queued` rather than
+  `admitted`.
 - **Socket admission is the websocket process's first handler turn, never
   its initializer.** mist starts every websocket process with a hard 500 ms
   initializer budget it does not expose, and a missed budget kills the
