@@ -155,14 +155,15 @@ session and sends it many invocations.
   `satellite.ServedHere`, so it cannot state coordinates at all.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
   ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleWake,
-  ScheduleRefusal, routing,
+  ScheduleRefusal, JobDoor, no_jobs, routing,
   ceilings, serviced_caps, max_list_entries, fs_denial,
-  kv_denial, schedule_denial}` — the workspace seam's *harness-side*
-  capability router
+  kv_denial, schedule_denial, job_denial}` — the workspace seam's
+  *harness-side* capability router
   (issue #16). A record of eleven injected closures — `fs_read`,
   `fs_list`, `fs_write`, `fs_edit`, `kv_get`, `kv_set`, `kv_delete`,
   `schedule_create`, `schedule_list`, `schedule_cancel`,
-  `emit` — wrapped in front of an inner router, the same shape
+  `emit` — plus one `JobDoor` of five more, wrapped in front of an inner
+  router, the same shape
   `client/mcp.routing` has. Every plan is
   `satellite.ServedHere`: a workspace read, a process-local store write
   and a blob mint leave no VM, so there is nothing a jail could contain
@@ -204,7 +205,27 @@ session and sends it many invocations.
   should carry a `CapCeiling` and deliberately does not — it is bounded
   store-side by a live count the host enforces on every create, the same
   instrument `kv.*` uses, and an admission ceiling would buy nothing once
-  the store refuses the one past its limit. It builds **no
+  the store refuses the one past its limit. The **`job.*` arms** are the newest, and they differ
+  from the schedule arms beside them in two ways worth stating. They are
+  routed on **every** host: a host with no jobs actor fills `JobDoor`
+  with `no_jobs()` and each call refuses in band, where a shut scheduling
+  door leaves its three capabilities unrouted — because a schedule is a
+  plane an operator can close, while a job is offered to the model
+  unconditionally through `bash`'s `mode` argument, and a program that
+  could not even ask would be the surprising half of that pair. And the
+  vocabulary is `tools/job`'s rather than restated: `codemode` already
+  depends on `tools`, and a job's lifecycle is a six-variant type
+  carrying a `broker/exec.ExecResult`, so a private copy would be a third
+  place to keep an exit report in step for no isolation gained. The
+  strand is bound by the host exactly as a schedule's is, and so is the
+  **operation**, which is what `broker.abort` addresses and therefore
+  what decides whether an operator's abort reaches a running job. The
+  poll answer is a flat map because msgpack has no sum type: `state`
+  names the variant and licenses the fields beside it, so a live job
+  carries no `exit` at all and `cap/job` looks for none. `job_denial`
+  keeps `tools/job.refusal_code`'s five strings rather than minting a
+  second set, so a model reading a tool result and a program reading a
+  denial read one contract. It builds **no
   `broker.CallSpec`** and holds **no path logic** — containment is
   `tools/fs.resolve_real`'s and the large-file guard is
   `fs.read_text_file`'s, called by the injected closures

@@ -46,7 +46,15 @@ pub fn built_in(
   schedules: Option(schedule_tool.Schedules),
 ) -> Registry {
   let assert Ok(registry) =
-    contributions.built_in(agency, code_mode, history, memory, schedules, None)
+    contributions.built_in(
+      agency,
+      code_mode,
+      history,
+      memory,
+      schedules,
+      None,
+      None,
+    )
     |> contributions.registry
     as "the built-in contributions never claim the same tool name twice"
   registry

@@ -182,6 +182,8 @@ import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import client/install
 import client/internal/ffi_os
+import client/jobseam
+import client/jobtools
 import client/mcp as mcp_wiring
 import client/scheduleseam
 import client/scratch
@@ -284,6 +286,18 @@ pub type Config {
     /// refuses — the same posture the tool registry takes, one layer
     /// down.
     schedules: Option(scheduleseam.Door),
+    /// The background-jobs door `job.*` reaches, or `None` when this
+    /// host stood no jobs actor up.
+    ///
+    /// A door for the reason `schedules` is one, and gated differently:
+    /// the five capabilities are routed either way, and a `None` here
+    /// becomes `workspace.no_jobs()` — every call refusing in band. That
+    /// is the opposite of the scheduling posture and it is deliberate. A
+    /// schedule is a plane an operator can shut, so an unrouted
+    /// capability is the honest answer; a job is offered to the model
+    /// unconditionally through `bash`'s `mode` argument, so a program
+    /// that could not even ask would be the surprising half of the pair.
+    jobs: Option(jobseam.Door),
     /// The MCP servers this host reached at boot, if any.
     ///
     /// One field for the same reason `surface` is one: a configured
@@ -358,6 +372,25 @@ pub fn over_schedules(
   door: Option(scheduleseam.Door),
 ) -> Config {
   Config(..config, schedules: door)
+}
+
+/// The same host configuration, serving `job.*` over one background-jobs
+/// door.
+///
+/// The same door the `job_*` tools and `bash`'s `mode` argument call, so
+/// a job started from a program and one started from a tool call are the
+/// same record with the same owner and either surface can read or stop
+/// what the other started. A host that never calls this routes the five
+/// capabilities to closures that refuse in band — see `Config.jobs`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.over_jobs(config, option.Some(jobseam.door(wiring)))
+/// ```
+///
+pub fn over_jobs(config: Config, door: Option(jobseam.Door)) -> Config {
+  Config(..config, jobs: door)
 }
 
 /// The same host configuration, writing `report.emit` artifacts into a
@@ -729,6 +762,10 @@ pub fn default_config(
     // `client/serve` does when the operator's policy leaves the door
     // open.
     schedules: None,
+    // No jobs plane by default either, and the calls refuse rather than
+    // going unrouted — see the field's own doc for why the two planes
+    // differ here.
+    jobs: None,
     mcp: mcp_wiring.none(),
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
@@ -1737,6 +1774,11 @@ pub fn workspace_seam(
     config,
     workspace: request.workspace,
     strand: request.strand,
+    // The operation a job started from this program clears under, which
+    // is what `broker.abort` addresses: aborting the operation that
+    // started a job kills it, and aborting a later one does not, because
+    // detachment is what the caller asked for.
+    operation: request.op_id,
     // The protected list rides the request's own base policy — the same
     // value the launch composes against — so the bridge's write boundary
     // and the jail's mask are fed from one source.
@@ -1765,6 +1807,7 @@ pub fn workspace_seam_for(
   config: Config,
   workspace workspace_root: String,
   strand strand: String,
+  operation operation: OpId,
   protected protected: List(String),
 ) -> workspace.Workspace {
   let filesystem = fs.real_filesystem()
@@ -1795,9 +1838,27 @@ pub fn workspace_seam_for(
     schedule_cancel: fn(name, target) {
       schedule_cancel_in(config.schedules, name, target, on: request_strand)
     },
+    // Bound to the same strand and to the caller's real operation, and
+    // to nothing a program can write: ownership of a job is the strand,
+    // and the operation is what an operator's abort addresses.
+    jobs: jobs_in(config.jobs, strand: request_strand, operation:),
     emit: emitting(filesystem, config.blob_root, config.entropy),
     emit_ceiling: artifact.default_emit_ceiling,
   )
+}
+
+// A host with no jobs actor answers every `job.*` call in band rather
+// than leaving the capabilities unrouted. See `Config.jobs` for why this
+// differs from the scheduling posture next to it.
+fn jobs_in(
+  door: Option(jobseam.Door),
+  strand strand: String,
+  operation operation: OpId,
+) -> workspace.JobDoor {
+  case door {
+    None -> workspace.no_jobs()
+    Some(door) -> jobtools.capability_door(door, strand:, operation:)
+  }
 }
 
 // --- schedule.* ------------------------------------------------------------

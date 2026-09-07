@@ -29,12 +29,16 @@ import broker/egress
 import broker/exec
 import broker/framing
 import broker/policy
+import client/codemode
 import client/extension/dispatch
 import client/extension/hosts
 import client/extension/manifest
+import client/extension/memory as extension_memory
 import client/extension/policy as ext_policy
 import client/extension/record
 import client/extension/seam
+import client/jobs
+import client/jobseam
 import codemode/identity
 import codemode/satellite
 import core/clock
@@ -494,6 +498,39 @@ pub fn every_serviced_cap_routes_and_nothing_else_does_test() {
   assert denial.code == "beneath"
 }
 
+// --- the jobs plane, by origin ---------------------------------------------
+
+pub fn a_tool_fired_invocation_reaches_the_jobs_door_test() {
+  let broker_actor = idle_broker()
+  let router = extension_router(broker_actor, origin: hosts.ToolCall)
+
+  // The fake door refuses with a ceiling, which is a refusal only a
+  // door can produce: reading it back proves the call arrived rather
+  // than being answered by the absent-plane stub.
+  let assert Ok(satellite.ServedHere(serve:)) = router(a_start_request())
+    as "a tool-fired invocation claims `job.start`"
+  let assert framing.CapErr(code:, ..) = serve()
+    as "the fake door's refusal comes back in band"
+  assert code == "job_ceiling"
+  broker.stop(broker_actor)
+}
+
+pub fn a_hook_fired_invocation_has_no_jobs_plane_test() {
+  // A hook runs under the session-long attribution-only operation
+  // `client/serve` mints, which no operator sees as a running step and
+  // so can never abort. `dispatch.bridge` therefore hands a hook a
+  // workspace whose jobs door refuses, and this is the pin on it: the
+  // fake door below would answer `job_ceiling` if it were reached.
+  let broker_actor = idle_broker()
+  let router = extension_router(broker_actor, origin: hosts.HookEvent)
+  let assert Ok(satellite.ServedHere(serve:)) = router(a_start_request())
+    as "`job.start` is routed on both paths, and refused on one"
+  let assert framing.CapErr(code:, ..) = serve()
+    as "the absent-plane stub answers rather than crashing"
+  assert code == "jobs_unavailable"
+  broker.stop(broker_actor)
+}
+
 // --- the settle ------------------------------------------------------------
 
 pub fn a_completed_outcome_is_the_extensions_content_blocks_test() {
@@ -723,6 +760,122 @@ fn memory_recording(
   #(router, fn() { process.receive(wrote, within: 0) }, fn() {
     process.receive(read, within: 0)
   })
+}
+
+// A broker that checks out no helper. Nothing in the job-origin tests
+// dispatches a jailed stage; the actor exists because a `codemode.Config`
+// names one.
+fn idle_broker() -> broker.Broker {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: fn(bytes) { <<0:size(bytes)-unit(8)>> },
+        clock: clock.fixed(at: 0),
+        checkout: fn() { Error(exec.AllBusy(size: 0)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+    as "the broker must start"
+  started
+}
+
+// A jobs door that answers every `start` with a ceiling refusal — a
+// worded answer no other layer produces, so a test can tell "the door
+// was asked" from "the absent-plane stub answered". The other four arms
+// are unreachable here and say so rather than pretending.
+fn ceilinged_jobs() -> jobseam.Door {
+  let unreached = jobs.Invalid(reason: "this test asks only for a start")
+  jobseam.Door(
+    start: fn(_strand, _operation, _command, _wall) {
+      Error(jobs.CeilingReached(limit: 4))
+    },
+    poll: fn(_strand, _id, _wait, _cursors) { Error(unreached) },
+    list: fn(_strand) { Error(unreached) },
+    kill: fn(_strand, _id) { Error(unreached) },
+    send: fn(_strand, _id, _bytes, _end) { Error(unreached) },
+  )
+}
+
+// The router one extension invocation is judged under, built the way
+// `client/serve` builds it: through `dispatch.hosting`, so the bridge
+// under test is the one production assembles rather than a copy.
+fn extension_router(
+  broker_actor: broker.Broker,
+  origin origin: hosts.Origin,
+) -> satellite.CapRouter {
+  let host =
+    codemode.over_jobs(
+      codemode.default_config(
+        broker: broker_actor,
+        clock: clock.fixed(at: 1000),
+        workspace: "/work",
+        toolchain: codemode.Toolchain(
+          gleam_path: "/opt/gleam/bin/gleam",
+          erl_path: "/opt/erlang/bin/erl",
+          seed_root: "/opt/loom/seed",
+        ),
+      ),
+      Some(ceilinged_jobs()),
+    )
+  let config =
+    dispatch.Config(
+      host:,
+      hosts: hosts.Hosts(invoke: fn(_name, _invocation, _args, _at, _deadline) {
+        Error(hosts.Gone(reason: "no registry in this test"))
+      }),
+      memory: extension_memory.shut("no store in this test"),
+      secrets: fn(_name) { Error(Nil) },
+      trust: egress.SystemRoots,
+      launch: dispatch.jailed_node,
+    )
+  let extension =
+    dispatch.hosting(config, a_record(), a_manifest(), artifact: "/nowhere")
+  extension.invoking(job_coordinates(origin)).router
+}
+
+fn job_coordinates(origin: hosts.Origin) -> hosts.Coordinates {
+  let #(op_id, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 13))
+  hosts.Coordinates(
+    origin:,
+    op_id:,
+    step_id: "step-1",
+    strand: "main",
+    workspace: "/work",
+    base_policy: policy.workspace_default("/work"),
+    demand: exec.BestEffort,
+    env: [],
+  )
+}
+
+// The manifest `hosting` reads, which it reads only for the net table
+// and the tier.
+fn a_manifest() -> manifest.Manifest {
+  manifest.Manifest(
+    name: "hello",
+    version: "0.1.0",
+    description: "d",
+    license: "MIT",
+    tier: manifest.Jailed,
+    tools: [a_tool()],
+    hooks: [],
+    net: manifest.Net(
+      hosts: [],
+      methods: [],
+      max_response_bytes: 0,
+      requests_per_call: 0,
+      secrets: [],
+    ),
+  )
+}
+
+fn a_start_request() -> satellite.CapRequest {
+  a_request(
+    "job.start",
+    msgpack.MapValue([
+      #(msgpack.StringValue("command"), msgpack.StringValue("sleep 1")),
+    ]),
+  )
 }
 
 fn key_args(key: String) -> msgpack.MsgPackValue {

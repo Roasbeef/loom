@@ -52,6 +52,8 @@ import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/jobs
+import client/jobseam
+import client/jobtools
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -1405,6 +1407,7 @@ fn code_mode_seam(
   agency_seam: Agency,
   scratch_seam: codemode_wiring.Scratch,
   schedule_door: Option(scheduleseam.Door),
+  jobs_door: jobseam.Door,
   owner: Option(custody.Owner),
 ) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
   case codemode_wiring.discover(settings.codemode_seed) {
@@ -1457,6 +1460,13 @@ fn code_mode_seam(
           // about what this session's schedules are. A shut door leaves
           // the capabilities unrouted rather than always-refusing.
           |> codemode_wiring.over_schedules(schedule_door)
+          // `job.*` is answered by the same door the `job_*` tools and
+          // `bash`'s `mode` argument call, so a job a program started and
+          // one a tool call started are the same record with the same
+          // owner. Unlike the scheduling door this one is always routed:
+          // the model is offered jobs unconditionally, so a program that
+          // could not even ask would be the surprise.
+          |> codemode_wiring.over_jobs(Some(jobs_door))
           // The MCP layer widens the workspace seam's allowlist, its
           // description and its router together; an empty layer widens
           // nothing, so this is unconditional.
@@ -2218,6 +2228,27 @@ fn assemble_in(
   // the hub then answers an empty listing and an unsupported cancel.
   let schedule_admin = option.map(schedule_wiring, scheduleadmin.admin)
 
+  // The background jobs actor, on the same two-name pattern: the address
+  // is minted now so the door can close over it, and the actor that
+  // answers it starts under the service supervisor below.
+  let jobs_name = address.new_address(namespace)
+
+  // Both model-facing job surfaces are values over this one door: the
+  // `bash` `mode` argument and the three `job_*` tools on one side, the
+  // five `job.*` capabilities on the other. One door is what stops a
+  // program and a tool call disagreeing about what this strand's jobs
+  // are, and it is why either surface can poll or kill what the other
+  // started.
+  let jobs_door =
+    jobseam.door(jobseam.Wiring(
+      name: jobs_name,
+      clock:,
+      rest: jobseam.real_rest(),
+      // The same clearance budget the actor's own wiring reads, so the
+      // two bounds on one start cannot disagree.
+      clearance_ms: jobs_clearance_ms,
+    ))
+
   // The host configuration, not the tool seam: an extension dispatch
   // stands up a satellite under exactly this configuration, so the boot
   // holds the value both readers derive from rather than one reader's
@@ -2230,6 +2261,7 @@ fn assemble_in(
     agency_seam,
     scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
     schedule_door,
+    jobs_door,
     owner,
   ))
   let code_mode = option.map(code_mode_host, codemode_wiring.seam)
@@ -2298,10 +2330,6 @@ fn assemble_in(
   // each installed extension contributes, which hook events it
   // subscribed to, and how its node is launched. The hook half is used
   // further down, after the effects record exists to compose it into.
-  // The background jobs actor, on the same two-name pattern: the address
-  // is minted now so the door can close over it, and the actor that
-  // answers it starts under the service supervisor below.
-  let jobs_name = address.new_address(namespace)
   let hosts_name = address.new_address(namespace)
   let hosts_seam =
     extension_hosts.seam(
@@ -2345,6 +2373,7 @@ fn assemble_in(
         memory_seam,
         schedule_seam,
         Some(context_seam),
+        Some(jobtools.seam(jobs_door)),
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
@@ -3090,6 +3119,11 @@ fn hook_coordinates(
 ) -> extension_hosts.Coordinates {
   let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
   extension_hosts.Coordinates(
+    // What makes this operation attribution-only also makes it the
+    // wrong owner for a background job: nobody sees it as a running
+    // step, so nobody can abort it. `dispatch.bridge` reads this and
+    // serves a hook a workspace with no jobs plane.
+    origin: extension_hosts.HookEvent,
     op_id:,
     step_id: hook_step_id,
     // Attribution only: `hosts.Coordinates.strand` names the workspace

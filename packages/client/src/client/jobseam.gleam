@@ -45,15 +45,19 @@
 //// anything that is not an id at all. Nothing below this line ever sees
 //// an unparsed id, and nothing above it ever holds a typed one.
 ////
-//// ## What WP3 still has to add
+//// ## Where the model's vocabulary is
 ////
-//// The vocabulary here is `client/jobs`' own. When `tools/job` lands it
-//// will bring the model-facing types the tool array is described in —
-//// the request shape, the refusal names, the rendered result — and this
-//// module will translate between the two, exactly as `scheduleseam`
-//// translates `schedule.Wake` to and from `tools/schedule.Wake` rather
-//// than making one package depend on the other. The door's *shape* is
-//// what is frozen here: four closures, keyed on the caller's strand.
+//// Not here. The vocabulary of this door is `client/jobs`' own — the
+//// actor's state space, its refusals, its cursors — and `tools/job`
+//// states the same lifecycle in the words the tool array is described
+//// in. `client/jobtools` is the translation between the two, exactly as
+//// `client/scheduleseam` translates `schedule.Wake` to and from
+//// `tools/schedule.Wake` rather than making one package depend on the
+//// other. Its two entry points are the whole of what reads this door:
+//// `jobtools.seam` fills the `job_*` tools, and
+//// `jobtools.capability_door` fills the code-mode router's. The door's
+//// *shape* is what is frozen here: five closures, keyed on the caller's
+//// strand.
 
 import client/jobs.{type Cursors, type Listed, type Polled, type Started}
 import client/jobstate.{type JobId}

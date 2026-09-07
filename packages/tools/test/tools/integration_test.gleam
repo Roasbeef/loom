@@ -23,6 +23,7 @@ import simplifile
 import support/shell
 import tools/bash
 import tools/fs
+import tools/job
 import tools/tool
 
 // Builds the helper (cached by Go, so cheap per run) and returns a
@@ -133,7 +134,7 @@ fn run_echo(
       clear_call: tool.broker_runner(broker: broker_actor, waiting: 10_000),
       raise_refusal: tool.no_raise(),
     )
-  bash.tool().run(
+  bash.tool(job.unavailable()).run(
     ctx,
     json.Object([
       #("command", json.String("echo hello")),

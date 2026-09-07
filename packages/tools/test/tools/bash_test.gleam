@@ -12,6 +12,7 @@ import support/fake_broker
 import support/memory_fs
 import tools/bash
 import tools/blob
+import tools/job
 import tools/tool
 
 const workspace = "/work"
@@ -25,7 +26,7 @@ fn run_with_script(
   let filesystem = memory_fs.filesystem(memory_fs.start())
   let recorded = process.new_subject()
   let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
-  let outcome = bash.tool().run(ctx, args)
+  let outcome = bash.tool(job.unavailable()).run(ctx, args)
   #(outcome, recorded)
 }
 
@@ -114,7 +115,7 @@ pub fn bash_asks_for_every_root_the_base_grants_test() {
       "/repo/.git",
     ])
   let _outcome =
-    bash.tool().run(
+    bash.tool(job.unavailable()).run(
       tool.Ctx(..ctx, base_policy: widened),
       command_args("git commit"),
     )
@@ -291,7 +292,8 @@ pub fn bash_policy_refusal_carries_wanted_grants_test() {
       now:,
       refusal: broker.PolicyRefused(denial:),
     )
-  let outcome = bash.tool().run(ctx, command_args("curl example.com"))
+  let outcome =
+    bash.tool(job.unavailable()).run(ctx, command_args("curl example.com"))
   assert outcome.is_error
   assert string.contains(first_text(outcome), "policy refused")
   let assert Some(json.Object(fields)) = outcome.details
@@ -331,14 +333,14 @@ pub fn bash_bad_timeout_test() {
 // --- contract flags ------------------------------------------------------
 
 pub fn bash_flags_test() {
-  let bash_tool = bash.tool()
+  let bash_tool = bash.tool(job.unavailable())
   assert bash_tool.name == "bash"
   assert bash_tool.replay == tool.Never
   assert bash_tool.execution_mode == tool.Exclusive
 }
 
 pub fn bash_schema_requires_command_test() {
-  let assert json.Object(fields) = bash.tool().schema
+  let assert json.Object(fields) = bash.tool(job.unavailable()).schema
   assert list.key_find(fields, "required")
     == Ok(json.Array([json.String("command")]))
 }
@@ -356,7 +358,8 @@ fn run_under_base(
   let filesystem = memory_fs.filesystem(memory_fs.start())
   let recorded = process.new_subject()
   let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
-  let _outcome = bash.tool().run(tool.Ctx(..ctx, base_policy: base), args)
+  let _outcome =
+    bash.tool(job.unavailable()).run(tool.Ctx(..ctx, base_policy: base), args)
   recorded
 }
 

@@ -526,7 +526,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1506`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:1516`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -662,7 +662,7 @@ channel slot while a previous channel actor is alive, so a breach fails
 the next boot outright instead of silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:2564`)
+per session (`extension_hosts.supervised` at `client/serve.gleam:2593`)
 holding at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first — sound
 because every extension call in a session runs under one workspace and
@@ -708,7 +708,7 @@ step of it is a value the step before produced.
 
 **At boot**, `serve.assemble` reads `installed.discover` for the
 extensions root before it builds the registry
-(`extension_registrations` at `client/serve.gleam:1506`). A `Refused`
+(`extension_registrations` at `client/serve.gleam:1516`). A `Refused`
 is logged and registers nothing; a `Ready` on a host with no code-mode
 toolchain is logged and registers nothing too, because no `erl` means no
 satellite to boot and a tool definition that can only fail still costs a
@@ -973,6 +973,27 @@ alive is refused `unauthorized` before any router sees it. Without the
 per-invocation binding, holding a node open would quietly convert a
 per-call grant into a session-long one, which is exactly the widening
 phase 2's disposable node avoided by accident rather than by design.
+
+**A hook starts no background jobs.** `cap/job` reaches an extension the
+way `cap/schedule` does — `extension_cap_modules` is the workspace seam
+widened by the `ext` vocabulary, so both arrive as workspace
+capabilities rather than as a second shared entry
+(`codemode/vet/policy.gleam`, beside the `cap/schedule` ruling). For a
+*tool* call that is the whole story: the job runs under the model's own
+operation, appears in the strand's transcript, and an abort of that
+operation reaches it. A *hook* is different, and the difference is the
+operation. `client/serve.hook_coordinates` mints one session-long
+operation for every hook in a session and attributes it to the root
+strand for reads — deliberately, because a hook fires on the harness's
+timeline and has no run whose `{op_id, step_id}` it could borrow. Nobody
+sees that operation as a running step, so nobody can abort it. A
+`context` or pre-tool hook that called `job.start` on every event would
+therefore leave hour-long processes owned by `main`, spending the
+model's ceiling of live jobs on work it never asked for and cannot find.
+So `dispatch.bridge` reads `Coordinates.origin` and serves a hook
+`workspace.no_jobs()`: the five capabilities are still routed, and each
+refuses in band naming the reason. Without the split, installing an
+extension would be a way to run background work no operator can stop.
 
 **The record is written last and the tree is renamed into place after
 it.** Everything happens under `<root>/.staging/<random>/`. Without the
@@ -1325,7 +1346,7 @@ exists today as an allowlisted stub, and this route retires it.
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` — the one composition of `ext/<name>/<key>` — `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:185`), `hosting` (`extension/dispatch.gleam:394`), the timeout clamp `within` (`extension/dispatch.gleam:670`), the jail's `requirements` (`extension/dispatch.gleam:313`), and `settle` (`extension/dispatch.gleam:832`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1506`), the two refusals it logs, and the contribution it appends. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:1516`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:267`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |

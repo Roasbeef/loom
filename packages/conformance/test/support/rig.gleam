@@ -22,6 +22,7 @@ import support/script.{type Turn}
 import tools/bash
 import tools/fs
 import tools/grep
+import tools/job
 import tools/tool.{type Registry}
 
 /// The strand configuration the e2e sessions run under. The identity
@@ -38,7 +39,7 @@ pub fn configuration() -> StrandConfiguration {
 /// The full core tool registry.
 pub fn registry() -> Registry {
   tool.registry([
-    bash.tool(),
+    bash.tool(job.unavailable()),
     grep.tool(),
     fs.read_tool(),
     fs.write_tool(),
