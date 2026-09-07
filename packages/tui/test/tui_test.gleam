@@ -977,6 +977,31 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
     as "the drained prompt's entry then retires the echo standing for it"
 }
 
+/// A snapshot rebuilds the transcript, so the echoes drawn over it go too.
+///
+/// The gateway's hold queue outlives a client disconnect and drains on its
+/// own, so a terminal that reconnects gets the committed entry in the
+/// snapshot. An echo carried across the rebuild would sit under the entry it
+/// stood for as a second copy of the same line, which is the duplicate the
+/// retirement rule exists to avoid.
+pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
+  let stale =
+    tui.Model(
+      ..live_model(""),
+      queued: [tui.HeldPrompt("look at this too")],
+      awaiting_outcome: Some(tui.HeldPrompt("and one more thing")),
+    )
+  let synchronized =
+    tui.accept_connection_message(
+      stale,
+      connection.Incoming(gateway.full_snapshot("demo")),
+    )
+  assert synchronized.queued == []
+    as "the server's own account of the strand replaces the local one"
+  assert synchronized.awaiting_outcome == None
+    as "including the submission that was still waiting on the old socket"
+}
+
 /// A refused prompt takes its echo with it instead of leaving it on screen.
 ///
 /// The daemon holds four prompts per strand and answers the fifth with

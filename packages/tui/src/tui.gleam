@@ -3110,6 +3110,10 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           streams: [],
           interrupt: None,
           submitting: None,
+          // The new attachment's cut replaces the transcript wholesale, and
+          // the submissions waiting here were made against the old one.
+          queued: [],
+          awaiting_outcome: None,
           models: [],
           next_id: 1,
           record_cache_valid: False,
@@ -3632,6 +3636,8 @@ fn adopt_session(
     transcript: [Line(System, "connecting to session " <> target.session)],
     records: [],
     models: [],
+    queued: [],
+    awaiting_outcome: None,
     current_model: "loading…",
     workspace: workspace.discover_from(choice.workspace),
     strands: [],
@@ -3754,6 +3760,13 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         records: list.reverse(entries),
         streams: [],
         record_rows: [],
+        // The snapshot is the server's own account of the strand, so it
+        // already carries every submission the daemon committed while this
+        // client was away — the gateway holds its queue across a disconnect
+        // and drains it regardless. An echo kept across the rebuild would sit
+        // under the committed copy of itself.
+        queued: [],
+        awaiting_outcome: None,
         pending_records: [],
         record_cache_valid: False,
         submitting: None,
@@ -5486,6 +5499,10 @@ fn submit_text(model: Model) -> Model {
         record_rows: [],
         pending_records: [],
         record_cache_valid: False,
+        // `/clear` empties the local view, and an echo is part of that view
+        // rather than something it is drawn over.
+        queued: [],
+        awaiting_outcome: None,
         notice: "local view cleared",
       )
       |> invalidate_transcript
@@ -6306,6 +6323,7 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
       overlay: NoOverlay,
       active_strand: strand,
       queued: [],
+      awaiting_outcome: None,
       current_model: "loading…",
       scroll_offset: 0,
       record_cache_valid: False,
