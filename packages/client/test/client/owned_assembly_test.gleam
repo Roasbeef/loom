@@ -17,7 +17,7 @@ import core/clock
 import core/ids
 import gleam/erlang/process
 import gleam/int
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import machine/operation
 import machine/strand
 import provider/adapter/anthropic
@@ -52,6 +52,7 @@ pub fn settings() -> serve.Settings {
           context_window: 100_000,
           max_output_tokens: 4096,
           thinking: model.ThinkingOff,
+          pricing: None,
         ),
       ],
       roles: [#(model.Main, ["test"])],
