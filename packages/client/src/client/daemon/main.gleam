@@ -67,10 +67,16 @@ type Event {
   RootGone(process.ExitReason)
 }
 
-// These stages bound the diagnostic vocabulary without exposing configuration
-// paths or provider data carried by the original error.
-type StartStage {
+/// Which half of session startup produced a failure.
+///
+/// These stages bound the diagnostic vocabulary without exposing configuration
+/// paths or provider data carried by the original error.
+@internal
+pub type StartStage {
+  /// The resolver refused the daemon's defaults or the session's registration.
   SettingsResolution
+
+  /// The builder reached the session's own resources and one of them refused.
   RuntimeAssembly
 }
 
@@ -329,19 +335,49 @@ fn diagnose_start(
 ) -> Result(value, String) {
   outcome
   |> result.map_error(fn(reason) {
-    let #(stage_name, class) = start_class(stage, reason)
-    log.error(logger, "daemon.session_start_failed", [
-      field.ident("session", ids.session_id_to_string(identity)),
-      field.text("stage", stage_name),
-      field.text("class", class),
-    ])
+    let #(stage_name, class, detail) = start_class(stage, reason)
+    log.error(
+      logger,
+      "daemon.session_start_failed",
+      list.append(
+        [
+          field.ident("session", ids.session_id_to_string(identity)),
+          field.text("stage", stage_name),
+          field.text("class", class),
+        ],
+        detail,
+      ),
+    )
     reason
   })
 }
 
-// Prefixes recognize errors from the existing resolver and assembly boundary.
-// An unknown error stays useful as a stage-specific class, never as raw text.
-fn start_class(stage: StartStage, reason: String) -> #(String, String) {
+/// Classifies a start failure into the stage, class and detail a log record
+/// may carry.
+///
+/// Prefixes recognize errors from the existing resolver and assembly boundary.
+/// An unknown error stays useful as a stage-specific class, never as raw text.
+///
+/// A class alone is not something an operator can act on, so a class that has
+/// an actionable fact behind it also returns that fact as its own field. Only
+/// values proven free of a path or a credential may be returned this way; the
+/// reason string itself never is, which is why it is matched rather than
+/// logged. The lease expiry qualifies: it is a millisecond instant minted by
+/// the writer that died, and it is the entire answer to "when can I retry?".
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.start_class(RuntimeAssembly,
+/// //   "another writer holds this session's lease until epoch ms 42")
+/// // == #("runtime_assembly", "lease_held",
+/// //      [field.count("lease_expires_at_ms", 42)])
+/// ```
+@internal
+pub fn start_class(
+  stage: StartStage,
+  reason: String,
+) -> #(String, String, List(field.Field)) {
   case stage {
     SettingsResolution -> {
       let class = case
@@ -351,17 +387,35 @@ fn start_class(stage: StartStage, reason: String) -> #(String, String) {
         True -> "helper_unavailable"
         False -> "settings_rejected"
       }
-      #("settings_resolution", class)
+      #("settings_resolution", class, [])
     }
     RuntimeAssembly -> {
-      let class = case reason {
-        "the session base policy is not one the sandbox can enforce: " <> _ ->
-          "policy_rejected"
-        "the session did not open (held lease? bad path?): " <> _ ->
-          "storage_open_failed"
-        _ -> "assembly_failed"
+      let #(class, detail) = case reason {
+        "the session base policy is not one the sandbox can enforce: " <> _ -> #(
+          "policy_rejected",
+          [],
+        )
+
+        // A lease the previous incarnation could not release. The expiry is
+        // the only thing that clears it, so it is what the record carries.
+        "another writer holds this session's lease until epoch ms " <> expiry -> #(
+          "lease_held",
+          case int.parse(expiry) {
+            Ok(expires_at_ms) -> [
+              field.count("lease_expires_at_ms", expires_at_ms),
+            ]
+            Error(Nil) -> []
+          },
+        )
+
+        "the session did not open (held lease? bad path?): " <> _ -> #(
+          "storage_open_failed",
+          [],
+        )
+
+        _ -> #("assembly_failed", [])
       }
-      #("runtime_assembly", class)
+      #("runtime_assembly", class, detail)
     }
   }
 }

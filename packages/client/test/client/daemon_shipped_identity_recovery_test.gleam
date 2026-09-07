@@ -364,6 +364,9 @@ fn await_initialize(marker) -> endpoint.Fence {
 
 // The unchanged lease is the safety assertion. Also require failure at storage
 // acquisition, so an earlier helper or configuration failure cannot satisfy it.
+// A held lease is now its own class carrying the expiry that clears it, which
+// is a stricter statement of the same thing: not merely that storage refused,
+// but that it refused for the one reason this fixture arranges.
 // Logging may flush asynchronously after the registry exposes Saved.
 fn assert_storage_refusal(paths: endpoint.Paths, id: String) {
   let session_field = "\"session\":\"" <> id <> "\""
@@ -375,7 +378,8 @@ fn assert_storage_refusal(paths: endpoint.Paths, id: String) {
             list.any(string.split(contents, "\n"), fn(line) {
               string.contains(line, "\"event\":\"daemon.session_start_failed\"")
               && string.contains(line, session_field)
-              && string.contains(line, "\"class\":\"storage_open_failed\"")
+              && string.contains(line, "\"class\":\"lease_held\"")
+              && string.contains(line, "\"lease_expires_at_ms\":")
             })
           {
             True -> poll.Done(Nil)
