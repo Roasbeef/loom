@@ -628,7 +628,7 @@ pub fn resolve_managed(
       domain_paths: Some(DomainPaths(selected.memory_path, selected.index_path)),
       // The daemon's secrets, not the daemon's directory. Masking the
       // whole state root also masked a workspace an operator had every
-      // right to open on it; see `state_root_masks` for the grain and
+      // right to open on it; see `state_root_mask_candidates` for the grain and
       // the reason for each entry.
       base_policy: protecting_state_root(settings.base_policy, state_root),
     ),
@@ -3686,7 +3686,7 @@ pub fn protecting_index(
   protecting(
     base,
     always: [index_path],
-    where_writable: sqlite_side_files(index_path),
+    where_maskable: sqlite_side_files(index_path),
   )
 }
 
@@ -3705,10 +3705,10 @@ pub fn protecting_index(
 /// refinement but a requirement: neither exists until a distillation run
 /// has happened, and the jail refuses to mask a *missing* protected path
 /// under a read-only parent — the failure that once turned the index's
-/// side-file list into a refusal of every jailed call. Where no writable
-/// root reaches the directory there is nothing to protect against
-/// anyway, because the harness fs tools are workspace-contained and the
-/// jail makes a file under a read-only parent uncreatable.
+/// side-file list into a refusal of every jailed call. So the mask
+/// arrives with the file. Until then there is nothing to protect: a
+/// digest that does not exist injects nothing, and under a read-only
+/// parent the jail makes it uncreatable.
 ///
 /// The wrapper is the other half of this bargain and does not depend on
 /// it: `client/memory.wrapped` builds the fence and the attribution at
@@ -3726,7 +3726,7 @@ pub fn protecting_memory(
   store_path: String,
   digest_path: String,
 ) -> policy.SandboxPolicy {
-  protecting(base, always: [], where_writable: [
+  protecting(base, always: [], where_maskable: [
     store_path,
     digest_path,
     ..sqlite_side_files(store_path)
@@ -3735,6 +3735,12 @@ pub fn protecting_memory(
 
 /// Every path under the daemon's state root that must stay masked from
 /// every jail, as a function of that root.
+///
+/// This is the candidate list rather than the effective one. What a
+/// given session gets is `protecting_state_root`'s output, where the
+/// lazily created half is filtered by whether the jail can be handed the
+/// mask at all; read that function before concluding an entry here is
+/// live for a particular policy.
 ///
 /// The list exists because the state root as a whole must not be the
 /// mask. Masking `~/.loom` wholesale reads as prudence and is a bug: an
@@ -3761,10 +3767,10 @@ pub fn protecting_memory(
 /// ## Examples
 ///
 /// ```gleam
-/// // serve.state_root_masks("/home/o/.loom") |> list.contains("/home/o/.loom/owner.token")
+/// // serve.state_root_mask_candidates("/home/o/.loom") |> list.contains("/home/o/.loom/owner.token")
 /// ```
 ///
-pub fn state_root_masks(state_root: String) -> List(String) {
+pub fn state_root_mask_candidates(state_root: String) -> List(String) {
   list.append(established_masks(state_root), lazy_masks(state_root))
 }
 
@@ -3772,13 +3778,16 @@ pub fn state_root_masks(state_root: String) -> List(String) {
 /// of the state root itself.
 ///
 /// The split between the two halves of the list is `protecting`'s
-/// `always`/`where_writable` distinction and it is load-bearing here for
+/// `always`/`where_maskable` distinction and it is load-bearing here for
 /// the reason that comment gives: the jail refuses to mask a *missing*
 /// protected path whose parent is read-only, and a refusal at that layer
 /// is a refusal of every jailed call in the session. So only the entries
 /// the daemon root has necessarily created before it admits any session
-/// are unconditional; the lazily created ones are masked exactly where a
-/// jail could write to their directory in the first place.
+/// are unconditional; the lazily created ones are masked once they
+/// exist, or before that where a writable root reaches them and the jail
+/// can build the mask anyway. Neither half turns on whether the model
+/// could write the entry — every one of these is a secret to read as
+/// much as a file to forge.
 ///
 /// ## Examples
 ///
@@ -3793,7 +3802,7 @@ pub fn protecting_state_root(
   protecting(
     base,
     always: established_masks(state_root),
-    where_writable: lazy_masks(state_root),
+    where_maskable: lazy_masks(state_root),
   )
 }
 
@@ -3827,9 +3836,11 @@ fn established_masks(state_root: String) -> List(String) {
 
 // The masked entries created lazily — by a launcher, by the first
 // session on a workspace, or by the daemon after it is already serving.
-// Masked only where a writable root reaches the state root, which is
-// exactly the case a jail could create or rewrite them in, and exactly
-// the case the missing-path refusal would otherwise bite in.
+// Every one of them is masked once it is on disk, which on a host that
+// has run a launcher or a second session is all of them. The condition
+// exists for the window before that: `protecting` cannot hand the jail a
+// path which neither exists nor has a writable parent, because the jail
+// refuses such a mask and the refusal takes the whole session with it.
 fn lazy_masks(state_root: String) -> List(String) {
   list.flatten([
     // The catalogue runs in WAL mode, so a write to `-wal` is the same
@@ -3889,35 +3900,59 @@ fn sqlite_side_files(path: String) -> List(String) {
 // built — the index database, which the boot's probe creates, and the
 // four entries the daemon root writes before it admits a session —
 // because masking an existing file needs nothing from its parent.
-// `where_writable` is for everything else, and the condition is the
-// threat model rather than a convenience: a protected path that does not
-// exist under a read-only parent is one the jail refuses to mask, which
-// is a refusal of every jailed call, while a path no writable root
-// reaches has no write path to bar in the first place.
 //
-// The residual is stated rather than hidden: an approval granting a
-// writable root over the session's own directory reopens the conditional
-// door — and already exposes the unprotected session file itself, which
-// is the larger half of that decision.
+// `where_maskable` is for everything else, and the condition is the
+// jail's own refusal rather than a threat model: a protected path that
+// neither exists nor sits under a writable parent is one the jail
+// declines to mask, and that decline is a refusal of every jailed call
+// in the session. So an entry survives the filter when it is there to be
+// masked, or when a writable root reaches it and the jail can therefore
+// create the mask under a parent it may write. An entry that fails both
+// is one no jail could be handed at all, not one whose exposure was
+// judged acceptable — masking has nothing to do with whether the model
+// could write it, only with whether the mask can be built.
+//
+// The residual is stated rather than hidden: an entry that has not been
+// created yet, under a read-only parent, is unmasked until it appears,
+// and a session that began before it appeared keeps the policy it
+// booted with.
 fn protecting(
   base: policy.SandboxPolicy,
   always always: List(String),
-  where_writable conditional: List(String),
+  where_maskable conditional: List(String),
 ) -> policy.SandboxPolicy {
-  let reachable =
-    list.filter(conditional, fn(path) { writable_touches(base, path) })
+  let maskable =
+    list.filter(conditional, fn(path) {
+      exists(path) || writable_touches(base, path)
+    })
   policy.SandboxPolicy(
     ..base,
     protected: list.flatten([
       always,
-      reachable,
+      maskable,
       base.protected,
     ]),
   )
 }
 
+// Whether a path is on disk, as a file or as a directory — the first
+// half of `protecting`'s condition, and the half that decides the
+// ordinary case, since a workspace outside the state root grants no
+// writable root over it while every one of the daemon's lazily created
+// entries is already there by the time a second session boots.
+//
+// An unreadable answer counts as absent. That is the conservative side
+// of the missing-path refusal: a mask nothing needed costs one entry,
+// while a mask the jail declines costs the whole session.
+fn exists(path: String) -> Bool {
+  result.unwrap(simplifile.is_file(path), False)
+  || result.unwrap(simplifile.is_directory(path), False)
+}
+
 // Whether a jailed or harness-side write could reach `path` at all —
-// the question the conditional half of `protecting` turns on.
+// the second half of `protecting`'s condition, and the one that lets a
+// path which does not exist yet still be masked, because the jail can
+// build a mask over a writable parent.
 //
 // Two ways it can, and only the first was once asked. A writable root
 // may cover the path's *parent*, which is how a file gets created beside
@@ -4210,7 +4245,7 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 /// one `policy.validate` could make: the policy is perfectly
 /// enforceable, and enforcing it shadows the session's own working
 /// directory. `masked_workspace_fault` says what that cost, and
-/// `state_root_masks` says why the daemon no longer causes it.
+/// `state_root_mask_candidates` says why the daemon no longer causes it.
 ///
 /// Pure, and separate from `boot` for that reason: this is a decision
 /// about a value, and it should be testable as one.

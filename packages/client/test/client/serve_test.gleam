@@ -1198,7 +1198,7 @@ pub fn the_state_root_masks_name_the_secrets_and_not_the_root_test() {
   // and every jailed call came back `getcwd: cannot access parent
   // directories`. The list must therefore name what a jail must not
   // reach and stop there.
-  let masks = serve.state_root_masks("/home/o/.loom")
+  let masks = serve.state_root_mask_candidates("/home/o/.loom")
 
   let secrets = [
     "/home/o/.loom/owner.token",
@@ -1237,7 +1237,7 @@ pub fn the_state_root_masks_carry_the_sqlite_side_files_test() {
   // A write to `catalogue.db-wal` is the same forgery one filename to
   // the right: WAL frame checksums are not cryptographic, so a crafted
   // frame is served as content on the next read.
-  let masks = serve.state_root_masks("/home/o/.loom")
+  let masks = serve.state_root_mask_candidates("/home/o/.loom")
   list.each(["-wal", "-shm", "-journal"], fn(suffix) {
     assert list.contains(masks, "/home/o/.loom/catalogue.db" <> suffix)
       as { "catalogue side file " <> suffix }

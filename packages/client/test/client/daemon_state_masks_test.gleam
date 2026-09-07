@@ -81,6 +81,52 @@ pub fn a_session_on_a_masked_entry_is_refused_at_creation_test() {
   assert string.contains(reason, "Choose another directory")
 }
 
+pub fn an_ordinary_workspace_still_masks_the_lazy_entries_test() {
+  // The regression this test pins. The lazily created entries were once
+  // masked only where a writable root reached them, and an ordinary
+  // workspace outside the state root grants no such root — so a jail
+  // that could read `/` at all read the launcher's bearer tokens, the
+  // catalogue WAL and every other workspace's memory store. Existence is
+  // the real condition, because a mask over a path that is there needs
+  // nothing from its parent.
+  let root = fake_state_root("outside")
+  let workspace = fixture_workspace("outside")
+  let settings = resolved(root, workspace: workspace)
+  let protected = settings.base_policy.protected
+
+  list.each(
+    ["/tokens", "/locks", "/workspaces", "/domains", "/catalogue.db-wal"],
+    fn(leaf) {
+      assert list.contains(protected, root <> leaf)
+        as { "an ordinary workspace still masks " <> leaf }
+    },
+  )
+
+  // And the fix bought that back without reinstating the whole-root mask
+  // the branch exists to remove.
+  assert !list.contains(protected, root)
+    as "the state root is still not masked wholesale"
+  assert serve.base_policy_fault(settings.base_policy) == Ok(Nil)
+}
+
+// A workspace outside the state root: the ordinary arrangement, where no
+// writable root reaches `~/.loom` and existence is the only thing that
+// can make the lazy masks apply.
+fn fixture_workspace(label: String) -> String {
+  let path =
+    "build/state-masks-workspace-"
+    <> label
+    <> "-"
+    <> int.to_string(native.current_process_id())
+    <> "-"
+    <> int.to_string(native.system_time_ms())
+  let assert Ok(Nil) = native.ensure_private_directory(path)
+    as "the fixture owns its ordinary workspace"
+  let assert Ok(path) = native.canonical_directory(path)
+    as "every policy path is absolute"
+  path
+}
+
 // --- the real jail ----------------------------------------------------------
 
 pub fn a_jail_on_the_state_root_sees_the_workspace_and_not_the_secrets_test() {
@@ -234,14 +280,21 @@ fn fake_state_root(label: String) -> String {
   let assert Ok(root) = native.canonical_directory(root)
     as "every policy path is absolute"
 
-  list.each(["sessions", "tokens", "locks", "workspaces", ".tmp"], fn(name) {
-    let assert Ok(Nil) = native.ensure_private_directory(root <> "/" <> name)
-      as "the fixture's state root has the daemon's directories"
-  })
+  list.each(
+    ["sessions", "tokens", "locks", "workspaces", "domains", ".tmp"],
+    fn(name) {
+      let assert Ok(Nil) = native.ensure_private_directory(root <> "/" <> name)
+        as "the fixture's state root has the daemon's directories"
+    },
+  )
   list.each(
     [
       #("owner.token", credential),
       #("catalogue.db", "fixture"),
+
+      // The catalogue runs in WAL mode, so the recent rows a jail could
+      // read live here as much as in the database itself.
+      #("catalogue.db-wal", "fixture-wal"),
       #("daemon.lock", ""),
       #("loom.toml", catalogue_document),
     ],

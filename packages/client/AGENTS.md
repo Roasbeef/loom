@@ -1350,13 +1350,13 @@ catalogue without opening runtimes. Explicit admission invokes
   family) and `loom-memory.digest`. More direct than the index's: a
   search snippet reaches a later session only if a model searches for it,
   while the digest is injected into **every** run of every session on the
-  repository, unasked. Both paths are conditional on a writable root
-  reaching their directory — not a refinement but a requirement, since
-  neither file exists until a distillation run has happened and the jail
-  refuses to mask a *missing* protected path under a read-only parent.
-  The two functions share one `protecting(always:, where_writable:)`
+  repository, unasked. Both paths are conditional — masked once they
+  exist, or before that where a writable root reaches them — because the
+  jail refuses to mask a *missing* protected path under a read-only
+  parent and neither file exists until a distillation run has happened.
+  The two functions share one `protecting(always:, where_maskable:)`
   mechanism rather than each carrying a copy.
-- `client/serve.state_root_masks(String)` and
+- `client/serve.state_root_mask_candidates(String)` and
   `client/serve.protecting_state_root(SandboxPolicy, String)` — what the
   daemon masks under its state root, and the composition `resolve_managed`
   applies in place of the root. **The state root is not itself a mask**,
@@ -1380,7 +1380,13 @@ catalogue without opening runtimes. Explicit admission invokes
   entry would be a duplicate mask. Adding an entry that the daemon creates
   lazily means adding it to `lazy_masks`, not `established_masks`: the
   jail refuses to mask a *missing* protected path under a read-only
-  parent, and that refusal is a refusal of every jailed call.
+  parent, and that refusal is a refusal of every jailed call. `lazy_masks`
+  is filtered on **existence or a writable root**, never on writability
+  alone — an ordinary workspace grants no writable root over `~/.loom`,
+  so a writability-only filter left `tokens/`, `workspaces/` and the
+  catalogue WAL readable from every jail. The public
+  `state_root_mask_candidates` is the unfiltered list; `protecting_state_root`
+  is what a session actually gets.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a
