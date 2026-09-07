@@ -206,6 +206,123 @@ pub fn gemini_provider_dispatches_through_its_adapter_test() {
   assert list.key_find(sent.headers, "x-goog-api-key") == Ok(secret_value)
 }
 
+// Empty output isolates dispatch from content decoding. Both lifecycle
+// witnesses still name the same response and resolved model.
+fn responses_transcript() -> String {
+  sse_event(
+    "response.created",
+    "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"model-b\",\"status\":\"in_progress\",\"output\":[]}}",
+  )
+  <> sse_event(
+    "response.completed",
+    "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"model-b\",\"status\":\"completed\",\"output\":[],\"error\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":4,\"total_tokens\":14}}}",
+  )
+}
+
+fn responses_gateway(transport: http.Transport) -> gateway.Gateway {
+  gateway.new(transport:, secrets: secrets(), clock: clock.fixed(123))
+  |> gateway.add_provider(gateway.OpenAiCompatibleProvider(
+    name: "chat",
+    base_url: "https://api.openai.com/v1",
+    api_key_secret: "PRIMARY_KEY",
+  ))
+  |> gateway.add_provider(gateway.OpenAiResponsesProvider(
+    name: "responses",
+    base_url: "https://api.openai.com/v1",
+    api_key_secret: "BACKUP_KEY",
+  ))
+  |> gateway.route(model.Main, [
+    model.ResolvedModel(
+      ..target("chat", "model-b"),
+      thinking: model.ThinkingHigh,
+    ),
+    model.ResolvedModel(
+      ..target("responses", "model-b"),
+      thinking: model.ThinkingOff,
+    ),
+  ])
+  |> gateway.with_attempt_timeout(2000)
+}
+
+pub fn responses_provider_dispatches_with_exact_endpoint_and_credentials_test() {
+  let requests = process.new_subject()
+  let transport =
+    fixture.routing_transport(fn(request) {
+      process.send(requests, request)
+      fixture.ok_response(responses_transcript())
+    })
+  let request =
+    model.ProviderRequest(
+      ..main_request(),
+      target: model.ForResolved(target("responses", "model-b")),
+    )
+  let handle = gateway.request(responses_gateway(transport), request)
+  let assert Ok(#([], stream.Settled(message: settled, usage:))) =
+    stream.await_terminal(handle, within: 2000)
+    as "the Responses adapter must settle its own lifecycle stream"
+  let assert message.AssistantMessage(api:, provider:, model: model_id, ..) =
+    stream.message(settled)
+    as "a Responses settlement retains its durable identity"
+  assert #(api, provider, model_id)
+    == #("openai-responses", "responses", "model-b")
+  assert usage.output == 4
+  let assert Ok(sent) = process.receive(requests, within: 1000)
+    as "one API-key request must reach the transport"
+  assert sent.method == "POST"
+  assert sent.url == "https://api.openai.com/v1/responses"
+  assert list.key_find(sent.headers, "authorization")
+    == Ok("Bearer sk-backup-key")
+  assert list.key_find(sent.headers, "content-type") == Ok("application/json")
+  assert list.key_find(sent.headers, "accept") == Ok("text/event-stream")
+  assert list.key_find(sent.headers, "chatgpt-account-id") == Error(Nil)
+  assert !string.contains(sent.body, "sk-backup-key")
+  assert process.receive(requests, within: 0) == Error(Nil)
+}
+
+fn mixed_openai_walk(
+  thinking: option.Option(model.ThinkingLevel),
+) -> List(String) {
+  let bodies = process.new_subject()
+  let transport =
+    fixture.routing_transport(fn(request) {
+      process.send(bodies, request.body)
+      case request.url {
+        "https://api.openai.com/v1/chat/completions" -> overloaded_response()
+        "https://api.openai.com/v1/responses" ->
+          fixture.ok_response(responses_transcript())
+        _ -> invalid_request_response()
+      }
+    })
+  let request =
+    model.ProviderRequest(
+      ..main_request(),
+      target: model.ForRole(model.Main, thinking),
+    )
+  let handle = gateway.request(responses_gateway(transport), request)
+  let assert Ok(#(_, stream.Settled(message: settled, ..))) =
+    stream.await_terminal(handle, within: 2000)
+    as "a retryable Chat Completions failure must reach Responses"
+  let assert message.AssistantMessage(api:, provider:, ..) =
+    stream.message(settled)
+    as "the fallback settlement must retain the dialect that answered"
+  assert #(api, provider) == #("openai-responses", "responses")
+  drain(bodies, [])
+}
+
+pub fn mixed_chat_responses_walk_preserves_thinking_overlay_test() {
+  let assert [chat, responses] = mixed_openai_walk(Some(model.ThinkingMedium))
+    as "the mixed walk must attempt both dialects"
+  assert string.contains(chat, "\"reasoning_effort\":\"medium\"")
+  assert string.contains(responses, "\"effort\":\"medium\"")
+}
+
+pub fn mixed_chat_responses_walk_retains_static_levels_without_overlay_test() {
+  let assert [chat, responses] = mixed_openai_walk(None)
+    as "the mixed walk must attempt both dialects"
+  assert string.contains(chat, "\"reasoning_effort\":\"high\"")
+  assert !string.contains(responses, "\"reasoning\":")
+}
+
 pub fn retryable_failure_walks_the_chain_test() {
   // Primary answers 529 overloaded; the pump falls to backup, which
   // settles. The resolved identity in the settled message is backup's.

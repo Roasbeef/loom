@@ -1,532 +1,136 @@
 # Next
 
-Read this first. This is the handoff for the single-daemon, multiplayer and
-background-jobs work: the implemented boundaries, evidence from the shipped
-binary, and the release gates deliberately left open. Rewrite it after the
-next completed body of work. Commit and review history belongs in Git and the
-review records, not in another chronological addition to this file.
+Read this first. This is the handoff between bodies of work: what is
+implemented, what proves it, which decisions are settled, and what remains
+open. Rewrite it after the next completed body of work. Git and the review
+records hold the history; this file should not accumulate old status reports.
 
-Re-baselined on 2026-09-07 against `jobs/abort-step`, which carries `main`
-plus the last of the background-jobs stack. Claims below were checked against
-that tree, exact local command results, or the named hosted run. The daemon
-acceptance material is carried forward from the 2026-09-06 edition and was
-not re-measured; where it names a run, that run is the evidence.
+Re-baselined on 2026-09-07 against `main` at `40fc5dcb` and the
+`provider/responses-api` worktree. Current merge and hosted-CI claims were
+checked live. Earlier daemon and jobs measurements remain in their review
+records; they were not rerun merely to refresh this handoff.
 
 ## Where the tree is
 
-The [single-daemon plan](design-notes/single-daemon.md) numbers seven phases,
-0 through 6. One daemon now manages sessions across workspaces. Restart
-restores catalogue metadata; only authorized explicit selection opens a
-runtime. The broader release acceptance is not complete. The background-jobs
-plane is a separate body of work and it is finished.
-
 | Body of work | Current state |
 |---|---|
-| Contracts and ownership, phases 0 and 1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
-| Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
-| TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery remains client-driven reconciliation, not pushed token streaming. |
-| Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
-| Background jobs | Landed. The pure state, the actor, the model-facing surface, the shipped fixture and the step-scoped abort are all in the tree; issue #183 is closed by them. See "Background jobs" below for what each piece is and what proves it. |
+| Single daemon and multiplayer | The stack through PR #239 is merged. One daemon restores catalogue metadata, then opens session runtimes only on explicit authorized selection. Shared state, authority, attribution, invitations, revocation, and switching have shipped fixtures. Live delivery is still client-driven reconciliation. |
+| Background jobs | PRs #260, #263, #267, #266, and #269 are merged; #183 is closed. Jobs can outlive their starting tool call, while ordinary satellite teardown aborts only its own step. |
+| Socket admission | PR #268 is merged. Slow admission runs after the websocket initializer, with a barrier retaining the HTTP reservation until transfer is attempted. |
+| Public Responses inference | Implemented on this branch under the distinct `openai-responses` dialect, with API-key authentication and caller-owned history. Existing dialects retain their configuration and wire behavior. Verification is recorded below. |
+| Codex subscription inference | Deferred under #117's explicit support gate. No subscription dialect, credential reader, helper, or refresh path ships in this change. |
 
-[PR #239](https://github.com/Roasbeef/loom/pull/239) targets
-`client/daemon-review-fixes` ([#238](https://github.com/Roasbeef/loom/pull/238)),
-above [#237](https://github.com/Roasbeef/loom/pull/237) in native stack 231.
-All three are out of draft but remain unmerged. Review readiness does not
-mean green CI or completed release acceptance. The integration worktree is
-`.claude/worktrees/daemon-candidate`. Preserve the separate
-`.claude/worktrees/single-daemon` tree and its excluded native-policy,
-planner and protocol 017 edits; do not build them into this candidate.
+### Corrections to the previous edition
 
-### Corrections to the previous handoff
+The previous edition said PRs #237, #238, and #239 were unmerged and the
+latest published gate was red. All three merged on September 6 into
+`3ef6ea09`. Current main's [run 34099262143](https://github.com/Roasbeef/loom/actions/runs/34099262143)
+completed successfully across all 15 jobs. The workflow has since split its
+platform work; the earlier four-job layout is historical.
 
-The previous edition described background jobs as three pull requests in
-flight with one open design contradiction. That is stale in both halves. Five
-pull requests landed ([#260](https://github.com/Roasbeef/loom/pull/260),
-[#263](https://github.com/Roasbeef/loom/pull/263),
-[#267](https://github.com/Roasbeef/loom/pull/267),
-[#266](https://github.com/Roasbeef/loom/pull/266) and
-[#269](https://github.com/Roasbeef/loom/pull/269)), the contradiction is
-settled by `broker.abort_step`, and the shipped fixture asserts the settled
-behaviour rather than working around it. Do not plan jobs work from the
-design note's work-package table; plan it from "Queued behind it" below.
+The macOS package check in that run actually passed, rather than merely
+being tolerated by its advisory policy. Its client suite reported 1,402
+tests in 496.50 seconds, its TUI suite reported 211 in 11.16 seconds, and
+the package wrappers exited zero. The final census ran clean. These are
+main's results, not verification of the Responses branch.
 
-The previous edition also did not know about the websocket admission bug that
-[#268](https://github.com/Roasbeef/loom/pull/268) fixed. It is on `main` and
-it is a ruling, not a patch; see "Rulings already made".
+The current workflow conditionally runs the macOS package-artifact download
+and census when the advisory check succeeds. The previous blanket statement
+that every final census remained hard was therefore too broad. A green
+workflow still does not, by itself, prove that an advisory step passed.
 
-The earlier edition accumulated individual test passes and described joined
-shipped schedule coverage as missing. The native schedule fixture proves
-Saved inactivity and once-only overdue resumption across explicit opens. It
-does not prove recurring cursors, a detached future timer, or whole-VM
-schedule recovery.
+Green CI and a merged daemon stack do not close the separately filed
+confinement, pressure, scheduling, approval, and joined-fault requirements.
+The [closing daemon review](review/single-daemon-acceptance-closing.md) and
+[mutation record](review/single-daemon-mutation-gates.md) retain the earlier
+evidence and its limits. Do not repeat already-proven startup or invitation
+scenarios as if they were absent.
 
-A shared answer appearing without another keypress is not evidence of server
-push. The terminal's ordinary refresh can produce that result.
-[Issue #240](https://github.com/Roasbeef/loom/issues/240) records the remaining
-live-delivery design: push committed records to subscribed connections, stream
-deltas to peers, and serialize concurrent submits instead of returning a busy
-conflict. The [multiplayer architecture](architecture/multiplayer.md) states
-the current pull-only boundary.
+### Responses verification
 
-The HTTP fixture's socket handoff race is repaired at `ee7b5617`.
-A worker could previously finish before Mist transferred its socket.
-The repair parks it until transfer completes; no timer or dependency patch
-was needed. macOS logged that race and still passed the shipped fixture,
-so the race is not an established cause of Linux's missing tool marker.
+[The Responses review record](review/responses-api.md) records the independent
+findings, their fixes, five mutation checks, and native gate results. All
+native package suites passed across split runs: the full loop stopped on a
+formatter error in the new conformance test after client and TUI passed;
+the formatter-only fix and remaining package checks then passed. Final
+format, prelude, documentation, lint, skip census, release build, and release
+smoke passed. This is not a claim that an uninterrupted `make check` passed.
 
-Failure diagnostics also needed verification. An intentional exit-7 command
-showed that one terminal sample after marker expiry was stale. Commit
-`d8a128d2` refreshes and retains samples inside the unchanged 15-second
-budget. Commit `c9e043de` then reduces the poll outcome before asserting:
-EUnit prints a failed assertion's value, so retaining the full model there
-could disclose fixture credentials. The final negative reports the actual
-tool error and only a short assertion error. See the
-[closing review](review/single-daemon-acceptance-closing.md).
+Successful live inference remains unverified: the account returned
+`credit_balance_exhausted`, with transport drain confirmed. The local Actions
+emulator failed before tests installing OTP 29.0.5. Hosted CI status must
+be read from the PR's current commit checks, not inferred from these results.
 
-### Verified results and their limits
-
-The subsequent CI-correction gate exited 0 with **1,345 tests in 297.85
-seconds**, with all five shipped fixtures enabled and the complete live-tool
-suffix executed. Its strict census independently passed with only the
-existing Darwin `/proc` prerequisite. Client lint and documentation checks
-passed. The focused revised fixture passed in 8.24 seconds; a deliberately
-noisy probe failed its intended bounded error in 0.82 seconds after helper
-retirement, then the no-op was restored before the full gate.
-
-The full client gate passed all **1,344 tests in 296.01 seconds**, with all
-five shipped fixtures enabled. Its command exited 0; the strict skip census
-independently exited 0 with only the declared macOS `/proc` prerequisite.
-Client lint exited 0 with zero errors and 91 warnings. The documentation gate
-also exited 0. Those numbers predate the jobs stack and the socket admission
-fix; they are the daemon acceptance evidence, not a count of the current tree.
-
-| Shipped fixture | What it proves |
-|---|---|
-| `tui_shipped_multiplayer_test` | Alice, Bob and Reader share exact durable records and authorship; configuration, presence, invitations, observer refusal, live revocation and refused/successful switches use real sockets. A jailed tool stays in A1 while A2 in the same workspace and B in another make progress. |
-| `daemon_shipped_recovery_test` | Whole-VM loss after durable reservation preserves the original creation identity; metadata restoration does not initialize the reserved target. |
-| `daemon_shipped_identity_recovery_test` | Whole-VM loss after SQLite identity publication preserves that identity and the original writer lease. Pending selection fails visibly; explicit recovery waits for the natural lease expiry. |
-| `daemon_shipped_stop_test` | A's original provider socket closes, owner control observes Saved, B progresses on its original attachment, and explicit reopen resumes one durable user admission under a new incarnation. |
-| `daemon_shipped_schedule_test` | An overdue configuration added while A is Saved does not run during B's progress. Explicit open fires it once; another reopen preserves the exact fired cell and message records. |
-| `daemon_shipped_jobs_test` | The background-jobs plane end to end. Three scenarios, described under "Background jobs" below. |
-
-The final stop fixture at `5d1decf2` independently passed in **3.72 seconds**;
-its five held-provider negative controls passed in **0.97 seconds**.
-Request-count and closure observations reject evidence already recorded before
-stop or reopen. They are not cross-sender linearization guarantees.
-
-The schedule fixture independently passed in **3.48 seconds** through ordinary
-configuration and the real scanner, without a scanner poke or injected clock.
-Its read-only captures use existing generated SQL and retain the exact fired
-cell plus every message variant. Final reviewed `aaa52741` passed in
-**3.67 seconds** after type/prose corrections and an equivalent `result.map`
-cleanup. All assertions were retained. A Held/Failed first scanner tick retries
-after 60 seconds, beyond the fixture's eight-second terminal await, so a boot
-transient fails loudly rather than passing or silently extending the test.
-
-The reviewed observe-policy commit `39468f84` passed its policy regression and
-the complete focused soak in both modes: default enforcement in **12.02 seconds**,
-explicit observation in **11.92 seconds**. Observation emitted all 18 paired
-timing lines. Its policy test still rejects an over-budget result in enforce
-mode. Neither mode skips the soak or its correctness assertions.
-
-The final marker diagnostic negative exited 1 in **21.06 seconds**, with the
-intended exit-7 result and a short assertion value. An exact-value check found
-no fixture owner credential in its log. Restoring the ordinary command passed
-in **7.60 seconds**. The earlier large local failure log was restricted to its
-owner and not shared. These fixture-only credentials are not production keys.
-
-Concurrent native startup also has the existing bootstrap lifecycle fixture.
-The [six mutation controls](review/single-daemon-mutation-gates.md) remain
-separate evidence. Two owner-authenticated Herdr terminals used the Baseten
-example, painted shared replies and switched/rejoined sessions before verified
-daemon shutdown. That live drive used no tools and proves neither distinct
-principal authority nor filesystem confinement.
-
-### Hosted evidence
-
-The first closing cycle finished red at `854a3b7d`. The owner then authorized
-a test-only correction and another measured cycle; this is not a blind rerun
-of the failed head. PR #239's verification section records the exact next
-published head and terminal result. Do not call a queued or partial run green.
-
-The correction probes the actual shipped helper under `serve.base_policy`
-with a portable shell no-op. Only explicit enforcement degradation omits the
-final live-tool section, with a visible marker and an ordinary-Linux-only
-declaration. The delegated jail job now runs the same shipped fixture without
-that declaration. The three initial opens get a named 20-second bound;
-all turn, marker and cleanup bounds remain. macOS's existing latency
-observation policy is unchanged. Neither correction diagnoses the macOS
-opening delay or weakens the production sandbox.
-
-| Head and run | Observed result |
-|---|---|
-| `de2fc5fd`, [34058458721](https://github.com/Roasbeef/loom/actions/runs/34058458721) | Repaired multiplayer passed: ordinary Linux ran four non-tool exchanges with the exact prerequisite marker; the delegated jail and macOS ran all eight. Jail's three censuses passed. Linux's strict native-departure check exposed `ESRCH`; macOS's separate in-process provider wait expired. Both had 1,344 client passes and one failure; their final censuses were skipped. Seeds passed. |
-| `854a3b7d`, [34056261144](https://github.com/Roasbeef/loom/actions/runs/34056261144) | Linux's tool marker failed after explicit demanded-enforcement refusal. macOS's initial terminal opening exceeded eight seconds, cause unknown. Both reported 1,344 client passes and one failure; both final censuses were skipped. Jail and 200 seeds passed. Current 18 soak pairs per platform passed their numeric bounds, with all five-owner samplers completed. |
-| `b0b4013a`, [34051513588](https://github.com/Roasbeef/loom/actions/runs/34051513588) | Linux failed the 15-second tool marker assertion. macOS failed paired latency, 506 ms against 342 ms. Each had 1,336 client passes and one failure; both final censuses were skipped. Jail and 200 seeds passed. |
-| `37726c23`, [34050399218](https://github.com/Roasbeef/loom/actions/runs/34050399218) | Both platform check/bootstrap steps passed; later dependency resolution failed on Hex 502. Neither final census ran. Jail and 200 seeds passed. |
-| `5df064c8`, [34046753887](https://github.com/Roasbeef/loom/actions/runs/34046753887) | All four jobs and both independently checked censuses passed. This older green head is not acceptance for later commits. |
-
-The latest failing macOS pair measured baseline 46 ms (HTTP 7, subscribe 20,
-drain 19) and stressed 506 ms (HTTP 88, subscribe 397, drain 21). Its twelve
-credit waits were at most 6 ms. That `b0b4013a` run retained six macOS and
-18 Linux pairs, with all five process samplers completed. Older cached fixture
-reports were excluded.
-
-B's storage actor appeared inside SQLite step during the slow subscription.
-Those coarse counters do not time native calls, garbage collection or host
-scheduling. Source tracing rules out full-history materialization in this
-fixture: cycle five has four selected metadata cells and ten recent message
-descriptors, with identical query work in both paired conditions. Those counts
-are source-derived, not a hosted database census. Dirty-I/O scheduling is a
-possible boundary, not a diagnosed cause. The explicit policy exception below
-does not explain the delay.
-
-The owner's closing decision, recorded in
-[issue #241](https://github.com/Roasbeef/loom/issues/241), makes only the hosted
-macOS paired-latency assertion observational through
-`LOOM_SOAK_LATENCY_BOUND=observe`. The numeric budget, workload, JSONL and
-sampler remain; a measured miss is logged rather than failing that job.
-All other correctness assertions still gate, and the default/local/Linux
-path continues to enforce the bound. This is an explicit gate-policy change,
-not a performance fix or proof that the missed bound is met. Do not extend
-that exception or infer a cause from the coarse counters.
-
-Linux's native daemon log and tool result were not retained in that earlier run, so
-the missing marker's cause remains unestablished. The new diagnostic makes a
-future failed marker useful; it is not a claimed causal repair.
-
-### Final process-observation and macOS policy corrections
-
-The Linux target-stat reader now classifies `ESRCH`, like `ENOENT`, as
-confirmed absence. Procfs can open a target entry before its task disappears;
-the later read then reports no such process. Only that target read changes:
-boot-id and self-stat reads, other errors and birth matching stay strict.
-The shipped departure assertion is unchanged. The existing host package's
-eight tests pass locally; its Darwin run does not exercise this Linux race.
-The failed shipped run and the kernel's target-read semantics are the
-regression evidence, not a deterministic injected test.
-
-Under the owner's macOS relaxation, only hosted macOS's `make check` step is
-now advisory (`continue-on-error`). Every test still runs and its log remains
-an artifact. Bootstrap, Seatbelt checks, E2Es, documentation and the final
-census keep their own failure verdicts. No additional test deadline changes.
-[Issue #127](https://github.com/Roasbeef/loom/issues/127) tracks the separate
-load-sensitive provider wait; [#241](https://github.com/Roasbeef/loom/issues/241)
-tracks latency. A successful workflow under this policy does not establish
-that the advisory package check passed. Inspect and report that step's actual
-result separately. The next exact-head cycle is recorded on PR #239.
-
-## Background jobs
-
-A job is a jailed process the harness starts on the model's behalf that
-outlives the tool call which started it. It is bounded by a wall fixed at
-start, owned by a strand, observable through a bounded rolling tail plus a
-full spill, and killable through the same TERM-then-KILL ladder a cancelled
-foreground call climbs. The design and every ruling behind it are in the
-[design note](design-notes/background-jobs.md); the mechanism as the effect
-plane sees it is in [effects.md](architecture/effects.md#background-jobs).
-
-### What landed and where
-
-**The actor and one runner per job.** `client/jobs.gleam` is a `weft/actor`
-in `client/serve`'s *restartable* services tier beside `extension_hosts`,
-bound to a reclaimable `weft/registry` address so a replacement answers where
-the original did and no caller caches a subject. Each job gets a plain weft
-task of its own, and that task — not the actor — calls `broker.clear_call`.
-Both reasons come from the broker's own contract: `clear_call` waits out a
-full helper pool in the caller's process, and an actor blocked on congestion
-could not answer a poll; and the relay monitors the caller and cancels the
-execution when that process dies, so the caller has to be a process that
-lives exactly as long as the job. The runner folds the `CallOutput` stream
-and reports the outcome; the actor writes the terminal fact only when that
-outcome arrives, because a weft outcome is reported once the worker has
-exited, so the scope's exit is the drain proof. The task is plain rather
-than managed: a managed task exists to witness owners a worker discovers
-while it runs, and this one discovers none.
-
-**The durable record.** Each job is a `job/<id>` register in the session
-store, a key prefix inside the existing `fact.custom` namespace, so it cost
-no protocol change. It is the tenth reserved corner in `runtime/api.gleam`
-and is written only through `put_reserved_fact_expecting`; creation uses the
-expect-absent CAS, so two incarnations racing to start the same job cannot
-both land. The lifecycle and the codec are pure in `client/jobstate.gleam`,
-property-tested with no process. A restart never re-adopts: a job's process
-is a child of a helper and the helper is a child of the VM, so the
-replacement actor's first act, before it serves one request, is to sweep
-`job/*` and commit `Lost(VmRestart)` for everything still live. It holds
-those records in memory so a later poll answers `Lost` rather than
-`NotFound`, which is reserved for "no such job, or somebody else's".
-`OwnerRestart` exists in the vocabulary and is never reported; telling the
-actor's first start from a supervisor restart needs state that outlives the
-actor and dies with the VM, bought for a word nobody branches on.
-
-**The bounded tail and the per-stream spill.** `client/jobtail.gleam` is a
-pure, UTF-8-safe rolling window with a monotone byte cursor: `push` appends
-and drops from the front past the cap, `since(cursor)` returns what arrived
-after the cursor plus the new cursor, and a cursor that predates the retained
-window is answered with a `dropped` count rather than a silent skip. Eight
-KiB is retained per stream. The whole of each stream goes to its own staging
-file under the blob root while the job runs and is promoted to a
-content-addressed ref at termination, recorded in the terminal fact and read
-with `fs_read`. There are two staging files rather than the one the design
-note imagined, because `JobSpill` has a field per stream and one file for
-both would have had to interleave them. A boot that finds a staging file with
-no live job unlinks it.
-
-**One door, two model-facing surfaces.** `client/jobseam.Door` is the whole
-of what the model can reach, and it is the only enforcer of four things: the
-per-strand ceiling, the wall clamp, ownership, and the `job/<id>` fact
-writes. `client/jobtools.gleam` translates between the actor's vocabulary and
-the tools' one. Above it, `tools/job.gleam` carries `job_poll`, `job_kill`
-and `job_send`, and `tools/bash.gleam` gains `mode`, a two-variant type whose
-`background` arm admits a job and returns the handle at once. Beside it,
-`cap/job.gleam` is `job.start`, `job.poll`, `job.list`, `job.kill` and
-`job.send` as typed Gleam a vetted program calls. The capability routes
-`ServedHere` in `codemode/workspace.gleam` rather than as a jailed
-`ClearedCall`, because the harness actor answers it and only the job's own
-process is jailed, and it sits on `default_cap_modules` and nowhere else so
-the `{cap/report}` intersection with the orchestration modules still holds. A
-job started from a tool call and one started from a program are the same
-record with the same owner, and either surface polls or kills what the other
-started, because ownership is the strand.
-
-**A hook may not start one.** An extension invocation whose origin is
-`hosts.HookEvent` is handed `workspace.no_jobs()` in
-`client/extension/dispatch.gleam`. A hook's operation is the single
-session-long operation minted for every hook in the session: nobody sees it
-as a running step, so nobody can abort it, and a `context` hook calling
-`job.start` on each event would leave hour-long processes owned by `main`
-that the model never asked for and cannot find. The capabilities stay routed,
-so a hook that asks reads that reason rather than an unknown-capability
-denial. `docs/architecture/extensions.md` carries the ruling.
-
-**The ceilings.** Four non-terminal jobs per strand, refused in band the way
-the orchestration seam refuses `spawn_ceiling`. There is no session-wide
-limit in this cut; the design note records the pool arithmetic instead of
-pretending it away. The wall defaults to one hour and is clamped to one hour,
-and `[jobs].max_wall` in `loom.toml` — in seconds, parsed beside the other
-known tables in `client/catalog.gleam` and read in `client/serve.gleam` —
-raises that ceiling and cannot lower it, because a lower ceiling is what the
-session's own sandbox policy already expresses. A caller that asks for longer
-than the ceiling is given the ceiling and told what it got in
-`Started.wall_ms` rather than refused. The deadline is fixed at start and
-never renewed, and its four enforcers cannot disagree because all four read
-one number: the capability token, the relay's receive deadline, the helper's
-own wall timer, and the budget ledger.
-
-**A step-scoped abort, and what it spared.** A job clears under
-`{op_id, "job/" <> id}` — the operation that started it, and a synthetic step
-naming the job — so a foreground `bash` earlier in the same batch cannot cap
-it and a second job in the batch is not refused outright. Keeping the
-operation half put the job in reach of a sweep nobody meant it to be in reach
-of: a code-mode teardown used to reap its satellite with `broker.abort` on
-the whole operation, so a job started from a program read `Lost(HelperLoss)`
-the moment the program returned. `broker.abort_step(op_id, step_id:)` is the
-narrowing. It revokes exactly that pair's tokens, cancels its actives and
-drops its ledger, and the two teardown sites in `codemode/satellite.gleam`
-and `codemode/launch.gleam` now call it on the run phase's own step. It needs
-a sweep counter of its own beside the operation's, and a clearance is judged
-against the **sum** of the two, because a step abort that bumped the
-operation's counter would refuse a resumed clearance of every sibling step,
-including the detached job it exists to spare. The step in that sweep is
-still the batch's, so a teardown reaps the batch's other tool calls exactly
-as the operation-wide abort did. ADR-005's second addendum carries all of it.
-
-**The operator's abort still reaches a job.** `broker.abort` is unchanged, so
-aborting the operation that *started* a job kills it, which is what an
-operator asking for that means. The wiring has two halves and only one is the
-runtime's: the `abort` command commits the cancel marker and stops the
-strand's live effects through `api.abort`, and a detached job is nobody's
-live effect, so the hub also sweeps the effect plane through
-`gateway.Options.effect_abort`, which `client/serve` fills with
-`broker.abort`. The host has to join the two, because `runtime` may not
-depend on `broker` and only the broker holds the other half of the ledger.
-The reach is bounded by that door and the bound is worth stating: `abort`
-names the strand's *current* operation, so it kills the jobs of the turn
-still running. A job started two turns ago outlives its operation by design,
-and the operator stops it with `job_kill` or by ending the session.
-
-### How it is verified
-
-`packages/client/test/client/daemon_shipped_jobs_test.gleam` is the
-acceptance evidence, and it runs for real in two places: the macOS gate, and
-the Linux jail job's *Shipped background jobs with delegated enforcement*
-step, which is the only run that exercises the pid namespace. On a host
-without demanded enforcement — the ordinary Linux gate — the whole file
-declines with one declared reason (`.github/declared-skips-linux-gate`).
-
-Three scenarios. The first is the motivating case: a scripted turn backgrounds
-`tail -f build.log`, the fixture appends three lines from outside the jail,
-the next turn's poll is shown those three lines and nothing else with the job
-still pending, a kill produces a terminal state naming the owner and carrying
-the helper's `cancelled` witness, and the payload is proved gone. The second
-drives the same door from code mode through a real hermetic build and a real
-jailed satellite: one program starts a job and returns its id, a later program
-in its own execution finds that record under that id **and in `running`**, and
-kills it. That `running` reading is the whole of what the scenario found the
-first time it ran, and reverting either teardown site to the operation-wide
-abort and rebuilding the shipment kills it. Note the rebuild: the fixture
-drives `bin/loomd`, so a mutation left in the sources alone passes. The third
-SIGKILLs the VM and proves the sweep commits `Lost`, the model's own poll
-reads it, and nothing is respawned.
-
-How the payload's departure is proved is a property of the host, and the
-fixture decides it once in `PayloadIdentity`. Under `HostPid` — Darwin, where
-the jail has no pid namespace — the payload publishes its own host pid and
-the fixture qualifies it by birth, exactly as the recovery fixtures qualify a
-VM. Under `NamespacedPid` no number a payload writes names a host process, so
-it writes none and the proof is the daemon's terminal record plus the jail's
-containment. The fixture fences the payload itself rather than its group;
-here they are one process, because the command `exec`s into `tail`.
-
-What the fixture deliberately does not cover is the operator's abort. Every
-turn it drives runs to completion, so by the time the fixture can send a
-command the operation that started the job has closed. `client/jobs_test`
-pins that path instead, with the real hub over the session's real open
-operation and only the broker scripted.
-
-Below it: `client/jobstate_test` property-tests the pure lifecycle and the
-codec, `client/jobtail_test` the bounded window and its `dropped` reports,
-`client/jobs_test` the actor (ceiling, deadline, cancel ladder, restart reap,
-the operator's abort), `tools/job_test` the tool surface and its refusal
-codes, `codemode/workspace_test` the five capability routes and their row
-decoding, and `broker/broker_test` the step sweep itself —
-`abort_step_reaps_one_step_and_spares_the_rest_test` and
-`an_abort_step_during_a_congestion_wait_spares_the_sibling_test`.
-
-### Queued behind it
-
-None of these is blocking, and each is small enough to do alone.
-
-- **Collapse `client/jobtools` into a tools-vocabulary door.** It exists only
-  to translate between `client/jobs`' vocabulary and `tools/job`'s. The
-  actor's vocabulary came first because WP2 had to name the states before a
-  tool surface existed to name them for. If `jobseam` spoke the tools
-  vocabulary directly, as `client/scheduleseam` does, one of the two
-  translations disappears. Deferred because it is a rename across a working
-  surface with no behaviour behind it, and the fixture that would catch a
-  mistake is the expensive one.
-- **Evict terminal `Held` entries from the actor's table.** The actor keeps
-  every record it has decoded, deliberately, so a poll can answer `Lost`
-  rather than `NotFound`; nothing evicts a terminal one. A long session
-  accumulates them without bound. Deferred because the fix needs a retention
-  rule that says what a poll of an evicted job should read, and inventing one
-  before anybody has seen the growth is the wrong order.
-- **Give `LossReason` a variant for a helper's own failure cause.** A settled
-  `broker.CallFailed` carries an `ExecFailure` and `client/jobs` drops it,
-  committing `RunnerLost(HelperLoss)`, which says the helper went away and
-  nothing about why. That is the one loss a model might act on differently.
-  Deferred because it changes a durable codec, so it wants doing once with
-  the right variant set rather than twice.
-- **Measure `cap/job`'s prelude cost.** Tool-surface cost is arithmetic paid
-  on every request of every strand; the capability prelude's is paid on every
-  code-mode build, on every host, whether or not the program mentions jobs.
-  Nobody has measured what these five operations added. Deferred because it
-  is a measurement, and the answer might be that there is nothing to do.
-- **Size a dedicated job pool if the shared one starves.** A running job
-  holds one helper for its whole life out of a pool of four to sixteen, and
-  sixteen strands each holding four jobs would exhaust the largest pool. The
-  design note records the arithmetic and deliberately waits for real use
-  rather than pre-building a second pool; this is the one question its review
-  left open.
-- **Put `job_output` on the event bus once
-  [#240](https://github.com/Roasbeef/loom/issues/240) lands.** The runner
-  already folds the `CallOutput` stream in one place, so a live event is one
-  more subscriber rather than a new mechanism. Deferred because under today's
-  pull-only delivery it would be inert.
+The offline full-turn fixture uses the real provider gateway, client wiring,
+runtime, and memory store. Only HTTP delivery and a trusted pure fixture tool
+are substituted. It checks two requests, one tool dispatch, the exact
+four-message durable chain, both usage records, encrypted reasoning replay,
+and request-only credential handling. It does not prove arbitrary successful
+provider output is credential-free; that remains #148.
 
 ## What to do next
 
-Preserve the distinction these items draw between a missing implementation,
-an unresolved design and missing evidence. The order below is a
-recommendation, not a dependency chain, except where it says so.
+The first two items are the remaining issue #117 gates. The others can be
+taken independently; they are not prerequisites for public Responses.
 
-### 1. Close the daemon domain-teardown admission window
+### 1. Complete the funded public API smoke, #117
 
-The registry fences a workspace domain when its last dependent retires and
-keeps the fenced slot in its book until the witness exits. Every admission
-naming that domain in the window is refused `unavailable`, which is a real
-refusal of a legitimate open. The shipped schedule fixture now works around
-it by waiting on the daemon's own domain census as a second barrier after
-`Saved`, and `stop_saved` in `daemon_shipped_schedule_test` says so. That is
-a fixture paying for a product behaviour. The clean fix is queueing the open
-on the closing slot so the caller waits rather than being refused.
+The live runner observed a provider failure and confirmed transport drain.
+A bounded diagnostic established `credit_balance_exhausted`. No further paid
+requests were attempted. Run the explicit capped smoke below with a funded
+API account; do not treat the scripted runtime fixture as live inference.
 
-Exit: an explicit open naming a domain in `DomainClosing` is admitted once
-the witness exits, without the caller polling a census; the schedule fixture
-drops its second barrier and still passes.
+Exit: the runner reports the exact smoke answer, `Stop`, usage, confirmed
+drain, and exit zero. This acceptance criterion is still unverified.
 
-### 2. Take the two jobs-plane cleanups
+### 2. Establish the subscription support boundary, #117
 
-The `jobtools` collapse and the terminal `Held` eviction above. Both are
-contained, both are in one package, and doing them while the plane is fresh
-is cheaper than doing them after the next reader has learned the current
-shape. The `LossReason` variant can ride with them if the codec change is
-taken at the same time.
+Public Responses does not spend ChatGPT subscription credits. Reopen Track B
+only with documented support or explicit OpenAI confirmation for an
+integration that preserves Loom's ownership of history, tools, and the agent
+loop. A working private-backend request or reusable Codex authentication code
+is not that evidence. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
+records the decision and the reopening gate.
 
-Exit: `client/jobtools` is gone or is only what `scheduleseam`'s translation
-is; the actor's table has a stated retention rule with a test; `make
-check-client` and `make lint-client` pass.
+Exit: establish the supported boundary, then record credential lifecycle,
+release, cancellation, and history ownership before implementing it. Do not
+add a subscription configuration stub while that decision remains open.
 
-### 3. Add an explicit memory-off observation
+### 3. Close the domain-teardown admission window
 
-[Issue #245](https://github.com/Roasbeef/loom/issues/245) records the smallest
-daemon follow-up, extending the existing shipped workload after native
-retirement. Read the existing catalogue through a read-only URI and generated
-`storage/sql.domain_page`; require its two workspace-private mappings and use
-their persisted memory/digest paths, not guessed hashes. Require those outputs
-to be absent and parse exact log event keys: positive daemon listening,
-memory readiness and daemon stopped, but no `distillpass.started_event`.
+An explicit open naming a domain in `DomainClosing` is refused until its
+retirement witness exits. The shipped schedule fixture waits on the domain
+census after `Saved` to avoid that window. Queueing the open on the closing
+slot is a proposed product improvement, not an implemented guarantee.
 
-Exit: the workload proves no distillation-start event or persistent output.
-This does not prove that the explicit `remember` capability is unavailable,
-and configuring distillation off alone is not the observation.
+Exit: the open waits for retirement and is admitted without caller polling;
+the schedule fixture no longer needs that second barrier and still passes.
 
-### 4. Design and implement live delivery, #240
+### 4. Take the contained jobs follow-ups
 
-[Issue #240](https://github.com/Roasbeef/loom/issues/240) is the next product
-boundary, not a reason to call current reconciliation broken. Decide authority
-revalidation for pushed records/deltas and visible ordering for concurrent
-submits before changing those paths. `job_output` on the bus is a follow-on
-of this and only this.
+`client/jobtools` still translates between the jobs and tools vocabularies.
+Terminal `Held` entries remain retained, and `CallFailed` loses its detailed
+cause when recorded as `HelperLoss`. These are source-backed follow-up
+proposals, not separately filed issues or release blockers. Decide a terminal
+retention rule before changing what a later poll observes. A loss-reason
+change also needs its durable codec considered.
 
-Exit: a shipped fixture admits two operators' concurrent prompts in the
-chosen order, delivers records without client catch-up, streams to Reader,
-and stops revoked delivery at the required authority boundary. It does not
-silently relax membership or add a global command queue without a decision.
+Exit: the selected cleanup has a stated invariant, a regression, and passing
+client tests and lint. Prelude cost and shared-pool starvation remain
+measurement/design questions, not demonstrated failures. Live `job_output`
+belongs with existing #186 and the delivery work in #240.
 
-### 5. Adopt the SQLite retirement repair
+### 5. Complete the filed daemon follow-ups
 
-Shipping resolves sqlight 1.2.0 and Hex esqlite 0.9.0, not the evaluated fork.
-[Issue #247](https://github.com/Roasbeef/loom/issues/247) owns the release or
-fork-publication decision and the prepared-statement busy-error limitation.
-[Upstream esqlite PR #105](https://github.com/mmzeeman/esqlite/pull/105) remains
-the repair to adopt. [ADR-002](adr/002-sqlite-binding.md) explains the build
-constraint: an ordinary Gleam Git/path dependency does not build this Rebar
-package. The preferred route is a patched native Hex release.
+#240 owns pushed records/deltas and ordering of concurrent submits. #245
+owns the explicit memory-off observation. #247 owns adoption of the SQLite
+retirement repair in the reproducible shipping graph. The other remaining
+acceptance requirements are listed below.
 
-Historical evaluation observed 192 additional database/WAL descriptors over
-16 cycles with the original binding and a stable 68 with the repair. These are
-not the shipping artifact's guarantee.
-
-Exit: the reproducible shipping dependency graph contains the fix, and
-resource/release/platform checks pass on that graph. No cache patch, forced
-collection, parallel package publication or source-built compiler workaround
-is authorized by this handoff.
-
-### 6. Resolve the remaining release evidence
-
-The [acceptance drive](design-notes/single-daemon.md#the-acceptance-drive)
-still requires the joined load/crash observations and application confinement.
-Classify hosted latency using unchanged workloads and evidence attributed to
-the exact run. [Issue #241](https://github.com/Roasbeef/loom/issues/241) tracks
-the performance work needed to restore hosted macOS enforcement. Its design
-options remain proposals, not measured repairs. Preserve named component tests
-when composing a shipped drive.
-
-Exit: each remaining requirement has evidence for the final artifact,
-with explicit platform limitations. Do not repeat already-proven startup,
-invitation and live-tool scenarios as if they were wholly absent.
+Exit: each chosen issue has evidence for the actual shipped artifact and
+its platform limitations. Do not substitute a cache patch for a dependency
+release, a component test for a joined scenario, or a polling refresh for
+server-pushed delivery.
 
 ## Rulings already made
 
@@ -535,144 +139,115 @@ the reopening where the ruling lives.
 
 **One daemon, metadata-only restart.** The
 [execution ruling](design-notes/single-daemon.md#execution-ruling) requires
-explicit authorized opens. Listing and preview never resume work. Backwards
-compatibility and legacy import were excluded.
+explicit authorized opens. Listing and preview never resume work. Legacy
+import and backwards compatibility were excluded from the daemon migration.
 
-**Socket admission is a handler turn, and a deferred transfer owes a
-barrier.** mist starts every websocket process with a hard 500 ms initializer
-budget it does not expose, and a missed budget kills the process together
-with its TCP socket, which the peer reads as an abrupt close rather than a
-refusal. Admission is two cross-actor calls whose own budgets total six
-seconds, so it cannot live there: `on_init` mints its subjects, sends itself
-`Admit`, and returns, and the permit transfer and gateway attach run on that
-message. mist hands over the socket and calls `set_active` only after the
-initializer returns, so `Admit` is queued before the peer can deliver a byte.
-Deferring the transfer costs one thing the initializer gave for free: the
-upgrading HTTP process releases its reservation the instant the upgrade
-returns and then exits, and `root.transfer` refuses a reservation whose HTTP
-owner has released it. So the websocket process signals a subject owned by
-the HTTP process as soon as the transfer has been attempted, and the HTTP
-process waits on that signal before releasing. It is a consumed reply from
-the one process that sends it, not a cross-sender ordering assumption. The
-two invariants are written into `packages/client/CLAUDE.md`; the mechanism
-and the mist internals are in `client/daemon/session_socket.gleam`'s module
-doc. [PR #268](https://github.com/Roasbeef/loom/pull/268) is the change, and
-`admission_slower_than_the_initializer_budget_still_serves_test` is the
-regression, which suspends the hub with `erlang:suspend_process` so the delay
-is exact on a sixteen-core laptop and a three-core runner alike.
+**Provider dialects do not alias.** `openai` remains Chat Completions;
+`openai-responses` is public API-key inference. A catalogue entry name is
+durable provider identity, so changing an existing entry's dialect can
+reinterpret stored history. Use a new entry name. ADR-012 also preserves
+#189: malformed model arguments yield an in-band corrective tool result;
+conflicting provider stream witnesses are corruption.
 
-**A routine teardown does not borrow the operator's reach.** A code-mode
-satellite is reaped with `broker.abort_step` on its own step, never
-`broker.abort` on the operation, because a background job clears under a
-sibling step of that operation and is meant to outlive it. `broker.abort`
-keeps its meaning for the operator. The step sweep counts separately and a
-clearance is judged against the sum of the two counters. ADR-005's second
-addendum records it; reverting either teardown site fails the shipped
-fixture's second scenario, but only after a rebuild of `bin/loomd`.
+**A routine teardown does not borrow the operator's reach.** Code-mode
+satellites use `broker.abort_step`, not operation-wide `broker.abort`.
+Background jobs belong to sibling steps and can outlive the starting call.
+ADR-005's second addendum records the two abort counters and their combined
+clearance check. The shipped jobs fixture must run against a rebuilt daemon
+to test this boundary.
+
+**Socket admission owes a transfer barrier.** Admission runs after the
+initializer; the upgrading HTTP process retains its reservation until the
+websocket process attempts transfer. This is an acknowledged ordering, not a
+cross-sender mailbox assumption. PR #268 and the session-socket module docs
+record the mechanism.
 
 **Retirement requires original evidence.**
 [Protocol 014](../protocol-change/014-helper-shutdown-witness.md) retains the
-native port until observed exit. Caller timeout, port closure and late
+native port until observed exit. Caller timeout, port closure, and late
 `noproc` do not prove transitive cleanup. Failed cleanup retains custody.
 
-**Authority is server-owned and checked at use.** Protocols
+**Authority is checked at use.** Protocols
 [015](../protocol-change/015-daemon-control-and-session-attachments.md) and
 [016](../protocol-change/016-record-human-origin.md) define membership,
-activation and human origin. Workspace memory is owner-private; sharing
+activation, and human origin. Workspace memory is owner-private; sharing
 requires session-only scope and explicit transcript acceptance.
 
-**Uncertain mutation and durable recovery are different.**
-[ADR-009](adr/009-record-terminal-attempt-custody.md) retains attempt identity;
-[ADR-010](adr/010-retain-one-unsent-terminal-command.md) allows one unsent
-command during reconciliation. A terminal never resends an uncertain mutation.
-Runtime close does not abort its operation: a later explicit open can resume
-durable intent, including another provider request for the one admitted turn.
+**Uncertain mutation is not a replay permission.** ADR-009 retains attempt
+identity; ADR-010 permits one unsent command during reconciliation. A terminal
+does not resend an uncertain mutation. Runtime close does not abort durable
+intent; a later explicit open can resume the admitted turn.
 
 **Production SQL is generated; connection policy is centralized.**
-`make gen-sql` owns query outputs; `storage/sqlite_policy` owns shared
-pragmas and typed overrides. Raw SQL is acceptable in tests. Process machinery
-uses Weft; Erlang stays limited to necessary host operations.
+`make gen-sql` owns query outputs; `storage/sqlite_policy` owns shared pragmas
+and typed overrides. Raw SQL is acceptable in tests. Process machinery uses
+Weft; Erlang stays limited to necessary host operations.
 
 ## Deliberately open
 
 None of these is unfinished work somebody forgot.
 
-- **Native filesystem confinement, [#242](https://github.com/Roasbeef/loom/issues/242):** excluded PrivateScratch and application
-  filesystem-dispatch work is unresolved. Membership does not prove a model
-  cannot read daemon credentials or another workspace's database. Do not retry
-  restricted native implementation through another worker or tool.
-- **Shipped approval route, [#243](https://github.com/Roasbeef/loom/issues/243):** existing effect tests inject a narrower policy.
-  Ordinary Bash allows and clamps to 600 seconds; no shipped configuration
-  exposes the needed narrower wall budget. This is a product-policy gap, not
-  permission to fake an approval or substitute a native execution error. It
-  applies to a job's start unchanged, since a job admits under exactly the
-  rules a foreground `bash` does.
-- **Joined authority/fault matrix, [#246](https://github.com/Roasbeef/loom/issues/246):** exact revocation between admission and
-  delivery remains scripted-authority coverage. Cooperative stop is not an
-  uncooperative drain or a process-kill test. Other publication-step crashes
-  remain beyond the two shipped boundaries.
-- **Pressure and scheduling, [#246](https://github.com/Roasbeef/loom/issues/246) and [#244](https://github.com/Roasbeef/loom/issues/244):** shipped maximum-image, rapid-switch and final
-  dependency resource-load observations remain open. Recurring cursors,
-  detached future timers, whole-VM schedule recovery and ambiguous-prompt
-  acknowledgements are not covered by the new one-shot fixture.
-- **Live delivery and memory off:** [#240](https://github.com/Roasbeef/loom/issues/240)
-  is undesigned/unbuilt work; the explicit no-maintenance oracle in
-  [#245](https://github.com/Roasbeef/loom/issues/245) is designed but unbuilt.
-- **The release-versus-transfer barrier has no unit test.** The regression
-  that exists covers a slow *gateway attach*, by suspending the hub. Covering
-  the barrier itself needs a slow `root.transfer`, which means a fake root
-  the socket tests do not have today. The path is exercised in every shipped
-  daemon fixture and the five-second wait is only ever paid in full on a
-  doomed path, so this is a coverage gap rather than an untested behaviour.
-- **The jobs follow-ups** listed under "Queued behind it" above, each with
-  the reason it was deferred. None gates anything.
-- **Converting an overrunning foreground call into a job** is the second half
-  of #183 and was deliberately not taken. The approval that admitted a
-  bounded call did not admit an unbounded one, so conversion needs either an
-  explicit opt-in on the call or a policy rule, and neither was obvious
-  enough to settle alongside the first cut.
-- **Toolchain freshness, [#248](https://github.com/Roasbeef/loom/issues/248):**
-  Gleam 1.18.1's direct-path fingerprint handling causes repeated resolution;
-  the upstream fix and release/source-build choice are recorded there. Do not
-  disguise a Hex failure as a test failure or patch dependency caches.
+- **#117, subscription inference:** the supported integration boundary is
+  unresolved, rather than an unimplemented login command.
+- **#147 and #148, provider transport/redaction:** native non-success-body
+  buffering and successful-stream credential redaction remain separate
+  boundaries. The Responses adapter does not claim to repair them.
+- **#242, native filesystem confinement:** membership is not proof that a
+  model cannot read daemon credentials or another workspace's database. The
+  excluded native-policy worktree remains outside this change.
+- **#243, shipped approval route:** ordinary Bash policy does not expose the
+  narrower wall budget needed by that acceptance scenario. A fake approval or
+  native execution error is not a substitute.
+- **#244 and #246, scheduling/pressure/joined faults:** recurring cursors,
+  whole-VM schedule recovery, maximum-image and rapid-switch load, final
+  dependency resource observations, and the remaining authority/fault matrix
+  are not established by the one-shot schedule or cooperative-stop fixtures.
+- **#240 and #245, live delivery and memory off:** the former needs design
+  and implementation; the latter has a designed observation still to build.
+- **#247, SQLite retirement:** shipping still resolves sqlight 1.2.0 and Hex
+  esqlite 0.9.0. The evaluated repair is not a shipping-artifact guarantee;
+  ADR-002 records why a plain Gleam Git/path dependency cannot build the
+  required Rebar package.
+- **#248, toolchain freshness:** repeated Hex resolution is a Gleam
+  fingerprint issue, not a failing test. Do not patch dependency caches or
+  disguise a registry failure as a source failure.
+- **#241, hosted macOS performance, and #255, crash-rider marker waits:**
+  both remain open. Advisory policy is not a performance repair.
+- **Jobs conversion and follow-ups:** automatically converting a bounded
+  foreground call into a job needs an explicit opt-in or policy decision.
+  The other jobs proposals above do not gate this provider change.
 
 ## How to verify
 
-Build the ordinary shipped prerequisites in this integration tree first.
-Do not build the excluded native edits from the other worktree.
+Build current prerequisites before trusting shipped fixtures:
 
 ```sh
 make binaries server-shipment
 LOOM_BOOTSTRAP_E2E_SERVER="$PWD/bin/loomd" \
 LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
 LOOM_TEST_TIMEOUT_SECONDS=600 \
-bash scripts/check.sh client
-make lint-client
+python3 scripts/with_timeout.py 1800 -- make check
 make doc-check
+make release release-smoke
 ```
 
-The complete release gate remains separate:
-
-```sh
-LOOM_BOOTSTRAP_E2E_SERVER="$PWD/bin/loomd" \
-LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
-LOOM_TEST_TIMEOUT_SECONDS=600 \
-python3 scripts/with_timeout.py 900 -- \
-  make check dist e2e-client-bootstrap e2e-multiplayer soak-daemon
-```
+For a narrow Responses change, run `bash scripts/test.sh provider --match responses`,
+the client catalogue/domain-resolution fixtures, and
+`bash scripts/test.sh conformance --match responses_e2e`. The opt-in paid smoke is
+`gleam dev` in `packages/provider`, under a 90-second outer deadline, with
+`OPENAI_API_KEY` and `LOOM_RESPONSES_MODEL=gpt-4.1-mini-2025-04-14` explicitly
+set. It sends one capped text request and requires confirmed drain. No key
+means a safe nonzero result, not a skipped passing test.
 
 **Capture each gate's own exit code.** A successful log tail is not a test
-result. Freeze source during a gate and run the strict skip census on its
-actual logs. macOS's declared `/proc` prerequisite skips the whole real-MCP
-fixture before setup; it does not establish that exchange.
+result. Freeze source during a gate and inspect its actual skip census.
 
-**Rebuild the shipment before trusting a shipped fixture.** These fixtures
-drive `bin/loomd`, not the freshly compiled tree, so a mutation left in the
-sources alone passes. The jobs fixture's second scenario is the case that
-proved it.
+**Rebuild the shipment before testing it.** Shipped fixtures drive
+`bin/loomd`, not a newly compiled source file. A mutation confined to source
+can otherwise false-pass.
 
-**Bound waits and keep notifications live.** Test wrappers enforce deadlines
-and scoped idle-sleep prevention. The crash-recovery fixture intentionally
-waits for the original 60-second writer lease; a timeout is failure, not drain
-proof. Re-arm Substrate after notifications. See [execution.md](execution.md)
-for the remaining operating hazards.
+**Keep deadlines and notifications active.** Test wrappers enforce process
+deadlines and scoped idle-sleep prevention. Writer-lease recovery can
+intentionally wait 60 seconds; timeout is failure, never drain proof.
+Re-arm Substrate after notifications. [execution.md](execution.md) records
+the remaining operating hazards.

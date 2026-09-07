@@ -19,9 +19,10 @@ here.
 
 ## What an operator writes
 
-The server takes `--config <loom.toml>`. The file has exactly two
-top-level tables: `[models.<name>]` entries and one `[roles]` table
-routing over their names. `docs/examples/loom.toml` is the commented
+The server takes `--config <loom.toml>`. Its model configuration uses
+`[models.<name>]` entries and one `[roles]` table routing over their names;
+the file can also configure MCP servers, extensions, and project rules.
+`docs/examples/loom.toml` is the commented
 version, and it doubles as a parse fixture in the catalogue's test
 suite, so an example that drifts from the parser fails the build.
 
@@ -48,8 +49,9 @@ subagent = ["baseten-oss"]
 summarize = ["anthropic-opus"]
 ```
 
-`dialect` is `"anthropic"`, `"openai"` or `"gemini"` and selects the wire
-adapter. `base_url` is optional; omitting it takes the dialect's
+`dialect` is `"anthropic"`, `"openai"`, `"gemini"`, or `"openai-responses"`
+and selects the wire adapter. `openai` remains Chat Completions; it does
+not select Responses. `base_url` is optional; omitting it takes the dialect's
 conventional root (`https://api.anthropic.com`, `https://api.openai.com/v1`,
 `https://generativelanguage.googleapis.com/v1beta`), and a
 trailing slash is stripped so the config author need not know that the
@@ -63,6 +65,14 @@ accepts `off`, `low`, `medium`, `high`, or `unsupported`, where
 mode and maps to `off`, which sends no reasoning field at all. For a
 Gemini 3 model, which cannot stop reasoning, `off` therefore means the
 model reasons at its own default and shows none of it.
+
+Responses uses the same default API root as Chat Completions, but posts to
+`/responses`. It requires `auth = "api-key"` and a nonempty `api_key_env`;
+the older dialects keep their existing configuration and reject an `auth`
+field. No dialect accepts arbitrary headers or authentication profiles.
+`codex-subscription` is not implemented: API usage is separate from a
+ChatGPT subscription. [ADR-012](../adr/012-responses-and-subscription-boundaries.md)
+records that support boundary and the evidence needed to revisit it.
 
 **Keys never live in the file.** `api_key_env` names an environment
 variable, and that name travels all the way into the gateway's
@@ -263,6 +273,40 @@ shape; a Google AI Studio key is what `api_key_env` names, since Vertex
 AI wants OAuth rather than an API key and is not reachable through this
 dialect.
 
+Responses is the fourth adapter. It sends the system prompt as
+`instructions`, history as an `input` item array, and tool definitions in
+the flat Responses function schema. `store: false` keeps replay owned by
+Loom; no `conversation` or `previous_response_id` is sent. Thinking levels
+map to `reasoning.effort`, with summaries requested and encrypted reasoning
+included for replay. `off` omits the reasoning options.
+
+Its named SSE events identify output items and their content parts. Deltas,
+completion records, and final output must agree before an assistant message
+settles. Delta arrival can interleave those items, so bounded replay metadata
+records the mapping from durable block order back to provider item order.
+The metadata keeps IDs, part boundaries, statuses, message phases, and
+annotations, not a second copy of the answer text. The optional `commentary`
+or `final_answer` phase survives replay and must agree across completion
+witnesses. Essential metadata that exceeds 64 KiB fails
+the stream rather than producing history that cannot be replayed.
+
+The first thinking block of each reasoning item retains its opaque encrypted
+content; later parts do not duplicate that potentially large value. Replay requires the
+validated Responses item ID and matching durable blocks; missing or invalid
+metadata cannot introduce a guessed reasoning item, and signatures from
+another dialect are not Responses encrypted content. Ordinary text and calls
+can still be projected without a replay hint. The usage projection
+subtracts bounded cache-read and cache-write counts from the reported input
+total, so those counters do not count the same tokens twice. A complete
+runtime tool turn is covered by
+`packages/conformance/test/conformance/responses_e2e_test.gleam`.
+
+Tool results use an `output` array of `input_text` and `input_image` parts.
+An error uses one text part containing the JSON envelope
+`{"is_error":true,"content":[...]}`, whose content is the same projected
+parts. The durable `is_error` value remains unchanged. Internal tool usage,
+details, and dynamically added tool names are not sent as model input.
+
 Above that seam nothing knows the difference. A catalogue entry chooses
 an adapter and a base URL, and every layer above holds a
 provider-neutral `ProviderRequest`.
@@ -272,9 +316,10 @@ provider-neutral `StreamHandle` whose cancel capability reaches the active
 transport owner and whose optional owner pid acknowledges the complete drain.
 Today the lowest owner is a parked native process which receives the raw
 `httpc` messages itself and retains the request id plus dedicated handler;
-a future Responses or subscription-backed adapter may retain a different
-native handle without changing the gateway, fallback policy, runtime, or
-client wrappers. This is an ownership seam inside the process tree, not an
+the Responses adapter reuses that same owner without adding a helper or
+changing the gateway's cancellation and drain guarantees. Subscription
+support remains deferred rather than introducing a second native owner
+speculatively. This is an ownership seam inside the process tree, not an
 HTTP server or proxy between Loom and the provider.
 
 The payoff showed up the first time the seam was tested against an
@@ -410,7 +455,7 @@ points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 | `client/protocol.gleam` | `ListModels`, `ModelsSnapshot`, `ModelInfo`, `SetConfig` — the wire shapes, pinned by the Go golden fixtures. |
 | `provider/gateway.gleam` | `ProviderConfig`, the builder, `resolve`, and the chain walk. |
 | `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget` (whose `ForRole` carries the thinking overlay — `protocol-change/009`), `ThinkingLevel`, `ProviderRequest`. |
-| `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | The three dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
+| `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam`, `.../responses.gleam` | The four dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
 | `packages/tui/src/tui/model_selector.gleam` | The `/model` picker: the modal, search ranking, cursor, role tags, and selected catalogue name. |

@@ -855,21 +855,27 @@ compact, not retry unchanged. "Negligible" was left open by the spec and
 is quantified in the code as at most 64 output tokens, so a real answer
 that merely tripped a counter is never discarded as overflow.
 
-Decoding posture here is deliberately asymmetric to the rest of the
-system. Stream payloads must parse as JSON — malformed data fails the
-stream in-band as a corruption report — but *fields* are read leniently:
-absent counters read as zero and unknown enum values are ignored, which
-is what provider versioning policies prescribe. The total-decoder
-doctrine governs boundaries we own; strict decoding of a foreign
-vocabulary breaks against real proxies and gains nothing.
+Decoding distinguishes an additive field from unknown content. Stream
+payloads must parse as JSON, while absent usage counters read as zero and
+unknown fields are ignored. The older adapters also ignore unknown event
+types under their existing versioning conventions. Responses instead
+rejects unknown content-bearing events and item kinds: silently dropping
+one would let the final message omit part of the provider's answer. It
+explicitly recognizes harmless lifecycle markers and verifies agreement
+between deltas, completion records, and final output. Malformed model
+arguments remain an in-band corrective tool result under #189; conflicting
+wire records are `MalformedStream`.
 
 **Secrets live in exactly one place.** Provider configuration holds a
 secret *name*, never a value. The secret store is an injected lookup
 whose only call site is gateway dispatch, which copies the value straight
-into one outbound request header. Errors carry names and status codes and
-never headers, bodies, or values, so nothing the gateway returns or
-persists can embed a key; a grep-based leak test over a full session
-fixture is the check. The environment-variable backend ships now, and OS
+into one outbound request header. Remote error diagnostics are bounded and
+the gateway scrubs the exact request key before an error leaves the
+attempt. Successful streamed content is a different boundary: fragmented
+credential redaction there remains issue #148, so the gateway does not
+claim that arbitrary successful provider output can never contain a key.
+The full-turn Responses fixture checks that its request-only key does not
+enter replay or durable session data. The environment-variable backend ships now, and OS
 keychain backends slot into the same `fn(name) -> Result(String, Nil)`
 seam without touching a caller.
 
@@ -965,7 +971,7 @@ Seatbelt boundary while admitting only ADR-006's explicit platform gaps.
 | `tools/job.gleam`, `cap/job.gleam` | The `job_*` tools a model calls, and the same four operations as typed Gleam for a vetted program. |
 | `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
-| `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
+| `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam`, `.../responses.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
 | `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one. Its module doc is the list of mapping decisions. |
 | `client/escalate.gleam` | Parking: raise on every policy refusal, hold the call while a human decides, consume the approval and re-clear once. |
 | `conformance` test suites `wiring_test.gleam`, `e2e_test.gleam` | The adapter's mappings against fakes, and the M2 jailed acceptance that proves the record end to end. Both live under `packages/conformance/test/conformance/`. |

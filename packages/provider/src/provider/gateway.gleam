@@ -35,6 +35,7 @@ import gleam/option.{type Option, None, Some}
 import provider/adapter/anthropic
 import provider/adapter/gemini
 import provider/adapter/openai
+import provider/adapter/responses
 import provider/custodian
 import provider/http.{type RunningRequest, type Transport}
 import provider/internal/diagnostic
@@ -115,6 +116,13 @@ pub type ProviderConfig {
 
   /// An OpenAI-compatible chat-completions endpoint.
   OpenAiCompatibleProvider(
+    name: String,
+    base_url: String,
+    api_key_secret: String,
+  )
+
+  /// A public API-key Responses endpoint, distinct from Chat Completions.
+  OpenAiResponsesProvider(
     name: String,
     base_url: String,
     api_key_secret: String,
@@ -1619,6 +1627,17 @@ fn attempt_one(
         gateway.transport,
         openai.build_request(base_url:, api_key:, resolved: target, request:),
         openai.response_machine(target, now:),
+        deliver,
+        fn(running) { register_attempt(attempts, running, consumer) },
+        control:,
+        consumer:,
+        within: gateway.attempt_timeout_ms,
+      )
+    OpenAiResponsesProvider(name: _, base_url:, api_key_secret: _) ->
+      stream.run_tracked(
+        gateway.transport,
+        responses.build_request(base_url:, api_key:, resolved: target, request:),
+        responses.response_machine(target, now:),
         deliver,
         fn(running) { register_attempt(attempts, running, consumer) },
         control:,

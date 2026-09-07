@@ -65,6 +65,22 @@ context_window = 1048576
 max_output_tokens = 65536
 thinking = "low"
 
+# Public OpenAI Responses, not Chat Completions and not a Codex subscription.
+# Keep a distinct entry name: it becomes durable provider identity. The
+# context window follows the model page checked on 2026-09-07:
+# https://developers.openai.com/api/docs/models/gpt-5.2
+# max_output_tokens below is a chosen per-turn ceiling, not the model maximum.
+# base_url defaults to https://api.openai.com/v1. Unlike the older dialects,
+# Responses requires an explicit API-key authentication selection.
+[models.openai-responses]
+dialect = "openai-responses"
+auth = "api-key"
+api_key_env = "OPENAI_API_KEY"
+model_id = "gpt-5.2"
+context_window = 400000
+max_output_tokens = 32000
+thinking = "high"
+
 # Role routing: which model serves which purpose, best entry first.
 # The five routable roles are main, subagent, plan, summarize, and
 # vision; only main is required. A later entry is the fallback — used

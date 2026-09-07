@@ -55,6 +55,13 @@ download, and reproducing a build needs both git remotes rather than only
 hex. [ADR-011](adr/011-bounded-websocket-forks.md) has the reasoning, the
 upstream pull requests, and the maintenance cost.
 
+The public `openai-responses` adapter is Gleam code inside the existing
+provider application. It adds no release component or native helper and
+uses the same HTTP transport as the other API-key adapters. The release
+does not read Codex credential files, refresh subscription credentials, or
+bundle Codex App Server. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
+records why subscription inference remains deferred.
+
 The build places one compiled test probe in `build/release/smoke-support`,
 outside the distributed `loom` tree. The smoke runs that probe on the bundled
 emulator, using the server's existing WebSocket transport. It adds no test

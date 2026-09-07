@@ -272,6 +272,12 @@ catalogue without opening runtimes. Explicit admission invokes
   listing and resolves `set_config`'s `model_name` against it; `serve`
   loads it from `--config` or shapes a one-entry catalogue from the
   `LOOM_*` environment.
+  `OpenAiResponses` selects `openai-responses`, requires
+  `auth = "api-key"` and a nonempty `api_key_env`, and defaults to
+  `https://api.openai.com/v1`. The existing `openai` spelling remains
+  Chat Completions. Older dialects still refuse `auth`; all API-key entries
+  refuse `profile` and arbitrary `headers`. `codex-subscription` is
+  explicitly unsupported under issue #117's deferred support-boundary gate.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -2714,6 +2720,11 @@ an install is under the extensions root.
   main entry's dialect for a strand switched to the other one. Only an
   identity the catalogue does not know falls back to `Config.api` and the
   two `fallback_*` counts.
+  For `OpenAiResponses`, `serve.adapter_api` uses the adapter's
+  `"openai-responses"` constant for both the resolved settings and
+  `catalogue_facts`. The client listing carries the distinct dialect through
+  its existing open string; neither the wire version nor the durable
+  `{catalogue-name, model_id}` identity changes.
 - **A checkpoint never publishes a blank.** A strand with no notes is
   told, in the checkpoint, that it wrote none and where notes go; a
   checkpoint whose inputs would not read is declined rather than
