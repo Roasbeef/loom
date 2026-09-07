@@ -93,8 +93,13 @@ pub fn digest_hooks(
   session: Session,
   clock: Clock,
 ) -> effects.Hooks {
+  // Capture the slot, not the record: a closure over `hooks` doubles the
+  // record's flat size at every wrapping layer, and flat size is what a copy
+  // into a spawned process costs. See docs/design-notes/daemon-memory.md.
+  let inner = hooks.run_start
+
   effects.Hooks(..hooks, run_start: fn(operation) {
-    list.append(hooks.run_start(operation), injected(session, clock, operation))
+    list.append(inner(operation), injected(session, clock, operation))
   })
 }
 
