@@ -6,6 +6,23 @@
 //// before the parser accepts another. Snapshot continuation uses the
 //// gateway's bounded reader.
 ////
+//// ## Two kinds of write, one writer
+////
+//// Since `protocol-change/018` the hub also *pushes* frames this socket
+//// never asked for — a `committed` notice, a stream delta, the presence
+//// roster, a fault. They arrive as `Push` messages, because the hub's sink
+//// runs on the hub process and must not block on a socket write; this
+//// process writes them from its own handler turn.
+////
+//// So "one bounded reply per received frame" remains true of *the parser*
+//// and is no longer true of the socket: what a request buys is the right to
+//// send the next request, not silence in between. Both writes happen here,
+//// serialised by this process's mailbox, so a reply and a push never
+//// interleave mid-frame and a notice for a sequence is never written ahead
+//// of a reply computed after that sequence committed. The client is not
+//// asked to depend on that ordering — a notice is idempotent and order-free
+//// — but it holds.
+////
 //// ## Why admission is a message and not an initializer
 ////
 //// mist starts every websocket process with a 500 ms initializer budget it
@@ -40,6 +57,13 @@ type Signal {
   Refused
 
   GatewayDown(process.Down)
+
+  // One encoded frame the hub decided to send with no request outstanding:
+  // a `committed` notice, a stream delta, the roster, or a fault
+  // (`protocol-change/018`). The hub's sink runs on the hub process and
+  // does nothing but hand the text over here, because the sink must not
+  // block and a socket write can.
+  Push(frame: String)
 }
 
 // Where this socket's process sits in the two-step admission above. There is
@@ -108,20 +132,35 @@ pub fn upgrade(
             admit(daemon, attachment, hub, outbound, settled)
 
           // Unreachable, for the ordering reason given above: nothing can be
-          // delivered to a pending socket before its own `Admit`. The arms are
-          // spelled out rather than folded into a catch-all so that a change
-          // to mist's start sequence fails closed on an unadmitted frame
-          // instead of quietly serving one.
+          // delivered to a pending socket before its own `Admit`. A push is
+          // unreachable here for a second reason of its own — the hub learns
+          // the sink from the attach *inside* the admission turn, so the
+          // earliest push it can send is already read in the `Admitted`
+          // phase. The arms are spelled out rather than folded into a
+          // catch-all so that a change to mist's start sequence fails closed
+          // on an unadmitted frame instead of quietly serving one.
           Pending(_), mist.Text(_)
           | Pending(_), mist.Binary(_)
           | Pending(_), mist.Closed
           | Pending(_), mist.Shutdown
           | Pending(_), mist.Custom(Refused)
           | Pending(_), mist.Custom(GatewayDown(_))
+          | Pending(_), mist.Custom(Push(_))
           -> mist.stop()
 
           Admitted(connection), mist.Text(frame) ->
             respond(connection, frame, socket)
+
+          // A pushed frame is written the same way a reply is and on the
+          // same process, so the two cannot interleave mid-frame and a
+          // failed write means the same thing either way: the socket is
+          // gone, and continuing would leave an armed parser attached to
+          // a transport that cannot answer.
+          Admitted(connection), mist.Custom(Push(frame)) ->
+            case mist.send_text_frame(socket, frame) {
+              Ok(_) -> mist.continue(Admitted(connection))
+              Error(_) -> mist.stop()
+            }
 
           Admitted(_), mist.Binary(_)
           | Admitted(_), mist.Closed
@@ -205,7 +244,10 @@ fn admit(
         digest: attachment.digest,
       ),
       fn() { authorize(attachment) },
-      fn(_) { Nil },
+      // The outbound sink. It runs on the hub process, so it does the
+      // one thing that cannot block there and leaves the socket write
+      // to the process that owns the socket.
+      fn(frame) { process.send(outbound, Push(frame)) },
       fn() { process.send(outbound, Refused) },
       fn() { failed_reader(attachment) },
       process.self(),
@@ -234,11 +276,26 @@ fn admit(
 // The synchronous exchange admits one request at a time. A missing response is
 // an unknown outcome, so closing the socket must not retry the command.
 //
+// What this call bounds is *the parser*: no second request is admitted until
+// this one is answered. It is not a claim that nothing else is written in
+// between. Pushed frames (`protocol-change/018`) are written from the same
+// process, from their own handler turn, and this one blocks in
+// `connection_request` while it waits — so a push that arrives mid-request
+// waits in the mailbox and is written after the reply, and a push that
+// arrives between requests is written immediately. Either way the two writes
+// are strictly ordered by this process's own mailbox, which is the whole of
+// the ordering argument the design note makes: one writer, one queue, no
+// interleaving mid-frame. A client is not asked to rely on it — a notice is
+// idempotent and order-free by design — but the daemon does not depend on the
+// client being careful either.
+//
 // Authorization is not re-asked here. The gateway checks the binding twice for
 // this one command — once when it admits it and once immediately before it
 // hands back the reply — and closes the attachment itself when either answer
 // has changed, so a third check on this side would repeat the second with the
-// same evidence and add another round trip to every frame.
+// same evidence and add another round trip to every frame. A pushed frame is
+// checked on the same `check_binding`, once, immediately before the hub hands
+// it to this sink.
 fn respond(connection, frame, socket) {
   let sent = {
     use response <- result.try(gateway.connection_request(connection, frame))
