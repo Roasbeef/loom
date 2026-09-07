@@ -7,16 +7,157 @@
 # CI on Linux and macOS" was unenforced from the first work package
 # onwards. Everything here exists to make those two sentences true.
 #
-# Four jobs, and they are not interchangeable:
+# The Linux gate used to be one job running every stage of `make check`
+# back to back: toolchain setup, the code-mode seed, the native helpers,
+# all sixteen Gleam packages plus the Go sandbox, the client end-to-end
+# bootstrap, the doc graph, and the shippable deliverables — 29 minutes
+# wall, measured on run 34067757995. Almost none of that is sequential by
+# necessity; it was sequential because it lived in one job. Per-package
+# timings from that run (`make check`, 15.6 min total): client 6.8 min,
+# conformance 1.75 min, events/storage/session ~1.0 min each, runtime
+# 1.4 min, codemode 0.6 min, broker 0.4 min, provider 0.2 min, everything
+# else seconds. `make e2e-client-bootstrap` added 6.3 min, the deliverables
+# build/smoke/`make dist` another 5.0, doc-check 0.5. Splitting the
+# independent pieces into parallel jobs turns that sum into a max: the
+# critical path becomes one `deps` job (~3.5 min: toolchain, the code-mode
+# seed, the native helpers) plus whichever downstream job is slowest — the
+# `client` bucket at ~6.8 min — for a gate around 10-11 minutes instead of
+# 29, with every job's own log still there to read.
 #
-#   gate-linux    the merge gate. `make check` over all sixteen packages
-#                 plus `make doc-check`. Prepares the code-mode seed first
-#                 and then insists nothing skipped, because a suite that
-#                 quietly declines to run is how a partial milestone reads
-#                 as a complete one.
-#   gate-macos    the same gate on the second platform §0.3 demands, plus
-#                 the Seatbelt self-test and both jailed end-to-ends. The
-#                 enforcement report must account for every probe.
+# Six jobs make up the Linux gate, and they are not interchangeable:
+#
+#   deps (linux)      the only job that resolves dependencies and builds
+#                      the native helpers from a cold cache: the code-mode
+#                      seed, bin/loom-exec, the tui and server erlang
+#                      shipments. Every other Linux job restores exactly
+#                      these bytes — built from this run's own checkout of
+#                      this commit, never a prior run's — as an artifact,
+#                      so "restore" can never mean "stale". It also warms
+#                      the Hex package cache and the compiled-Gleam-artifact
+#                      cache under a shared namespace so every downstream
+#                      job's toolchain step is a cache hit rather than a
+#                      second cold build.
+#   check (linux, *)   `make check`'s package loop, split into four
+#                      parallel buckets sized so the slowest — client — sets
+#                      the pace: `client` alone (6.8 min), the mid-sized
+#                      `runtime`+`storage`+`session`+`events` group (~4.4
+#                      min combined), `conformance` alone (1.75 min), and
+#                      `fast` for every remaining package (seconds each).
+#                      Each bucket calls scripts/check.sh directly — not
+#                      `make check-<pkg>`, which would force a redundant
+#                      rebuild of the native helpers `deps` already built —
+#                      over its own restored copy of the deps artifact.
+#   static (linux)     the parts of `make check` that need the toolchain
+#                      but never the native helpers or a live server:
+#                      `make lint` (house rules), `make prelude-check`
+#                      (the capability-prelude digest), `make doc-check`
+#                      (the doc graph), `make fmt-check`, and the scripts/
+#                      package's own `unittest` suite. None of these touch
+#                      bin/ or a shipment, so this job never needs the
+#                      `deps` artifact — only its warm caches.
+#   e2e-client-bootstrap (linux)
+#                      the native-TUI bootstrap fixtures against a real
+#                      local server, unchanged from the old single job
+#                      except that it now restores the server shipment
+#                      from `deps` instead of rebuilding it.
+#   deliverables (linux)
+#                      the shipment smoke test, `make dist`, and the ERTS
+#                      assertion — likewise restoring rather than
+#                      rebuilding.
+#   gate (linux)       the fan-in. Its own steps are the skip census (run
+#                      once here, over every check bucket's log, because
+#                      the declared-skip file's "a declaration that never
+#                      matches is stale" rule would misfire if run
+#                      separately against buckets that never produce that
+#                      skip) and nothing else — its job is to fail when
+#                      any job it needs failed, was cancelled, or was
+#                      skipped. This is the job branch protection names
+#                      (issue #1): splitting the work across six jobs
+#                      must not change what merging requires, so the
+#                      fan-in keeps the exact display name the single job
+#                      used to have.
+#
+# One shared hazard, not created by this split but not fixed by it either:
+# issue #248 documents a Gleam 1.18.1 bug where a path dependency's
+# freshness fingerprint is rewritten one at a time, so successive `gleam`
+# invocations against the same tree keep re-resolving through the Hex API
+# regardless of how warm the build cache is. That was already true of the
+# old single job's later stages; running more jobs in parallel means more
+# concurrent Hex hits from the runner pool's shared egress addresses, which
+# is why every step below that invokes `gleam` — in `deps`, every check
+# bucket, and the two gleam-invoking `static` targets — stays wrapped in
+# `.github/scripts/hex_retry.sh`, exactly as the old job wrapped its own
+# gleam-invoking steps.
+#
+#   the macOS gate    the same package gate on the second platform §0.3
+#                     demands, plus the Seatbelt self-test and both
+#                     jailed end-to-ends. Measured on run 34075275019
+#                     (14.6 min wall, now the workflow's long pole):
+#                     toolchain 0.6 min, native prerequisites (the
+#                     code-mode seed plus `make binaries server-
+#                     shipment`) 0.6, `make check` (advisory) 9.1,
+#                     `make e2e-client-bootstrap` 2.3, `make e2e` 0.9,
+#                     `make e2e-codemode` 0.7, doc-check and the skip
+#                     census under half a minute. Three jobs behind one
+#                     `deps (macos)`, not a four-way package matrix like
+#                     Linux's: macOS minutes bill at ten times Linux's
+#                     under a five-runner concurrency cap, and the
+#                     9.1-minute advisory check already dominates that
+#                     bill on its own — a bucket matrix would multiply a
+#                     cost that already dominates the bill for a gate
+#                     whose hard part (everything but the advisory
+#                     check) is under four minutes combined. The three:
+#
+#     deps (macos)          builds once, from a cold cache, exactly what
+#                            `deps (linux)` builds — the code-mode seed
+#                            and `make binaries server-shipment` — and
+#                            uploads it as the `macos-build` artifact.
+#                            Does not share the Linux `deps` artifact:
+#                            different platform, different binaries.
+#     check (macos,          `make check`'s full package loop, restored
+#       advisory)            from `macos-build` rather than rebuilt.
+#                            Advisory (owner-approved, issues #241/#127):
+#                            `continue-on-error: true` on the `make
+#                            check` step only, so a hosted runner's load
+#                            sensitivity can redden this step without
+#                            reddening the job or the gate. Installs
+#                            tmux first — the only macOS job that runs
+#                            the `client` package's real-terminal TUI
+#                            test, and macOS runners ship without it.
+#     e2e (macos)            the Seatbelt self-test and enforcement
+#                            report (hard, not advisory — a jail that
+#                            silently enforces less than declared is a
+#                            gate failure, not a load hiccup), both
+#                            jailed end-to-ends, the client bootstrap,
+#                            and doc-check.
+#     gate (macos)           the fan-in, exactly like `gate (linux)`:
+#                            fails if `deps (macos)` or `e2e (macos)`
+#                            did not succeed, but never on the advisory
+#                            check's own outcome. The skip census reads
+#                            `check-macos.log`, `e2e-macos.log`, and
+#                            `e2e-codemode-macos.log` — now produced by
+#                            two different jobs — so this job downloads
+#                            both jobs' log artifacts and censuses them
+#                            together, running only when `check (macos,
+#                            advisory)` ran its `make check` step to a
+#                            real conclusion (`steps.check_macos.outcome
+#                            == 'success'`, carried across the job
+#                            boundary as a job output) rather than
+#                            aborting partway through — the same reason
+#                            the single job gated its own census on that
+#                            outcome before the split. Runs on `macos-
+#                            15`, not Linux, even though its own steps
+#                            are just downloading logs and running a
+#                            script: `skip_census.sh` reads its platform
+#                            from this job's own `uname -s` to pick
+#                            which `.github/declared-skips` lines apply,
+#                            and the declared skip these logs actually
+#                            contain (the /proc-less MCP-teardown skip)
+#                            is declared for `darwin`. A Linux fan-in
+#                            reads "linux" from its own kernel and the
+#                            declaration never matches, which failed the
+#                            census on run 34076756645 for a skip that
+#                            was completely expected.
 #   jail-linux    the suites whose value is kernel enforcement, run on a
 #                 machine given bubblewrap and unprivileged user
 #                 namespaces. The self-test's ENFORCED/SKIPPED report is
@@ -26,7 +167,7 @@
 #   soak-short    200 deterministic-simulation seeds. The full 2000-seed
 #                 oracle runs nightly; this is the tripwire.
 #
-# Only `gate-linux` is meant as the required status check for merging.
+# Only `gate (linux)` is meant as the required status check for merging.
 
 name: CI
 
@@ -62,21 +203,39 @@ env:
   CACHE_EPOCH: "1"
   # Public dummy credential used only by the local scripted provider fixture.
   LOOM_TEST_PROVIDER_KEY: "loom-provider-fixture-key"
+  # Every Linux job in the gate shares this cache-namespace, so the compiled-
+  # Gleam-artifact cache `deps (linux)` saves is exactly the cache every
+  # downstream Linux job restores — a hit, not a second cold build. macOS,
+  # the jail and the soak job keep their own namespaces: they run on a
+  # different platform or don't share `deps`'s artifact, so a shared
+  # namespace would buy them nothing and cost `deps` a noisier cache key.
+  LINUX_CACHE_NAMESPACE: "linux-gate"
+  # Shared by all three macOS jobs for the same reason: `deps (macos)`'s
+  # cache save must be exactly what `check (macos, advisory)` and
+  # `e2e (macos)` restore. Kept distinct from the Linux namespace because
+  # the two platforms cache different compiled artifacts.
+  MACOS_CACHE_NAMESPACE: "macos-gate"
+  # The advisory check compiles every package tree; it saves that under its
+  # own namespace so a later run restores a warm tree. Sharing deps's key
+  # meant deps saved first with only the shipment's trees and the check
+  # could never save, so every run compiled cold (19 core compiles versus
+  # 5 in the old single job).
+  MACOS_CHECK_CACHE_NAMESPACE: "macos-check"
 
 jobs:
-  # ---------------------------------------------------------------- the gate
-  gate-linux:
-    name: gate (linux)
-    # Pinned, not ubuntu-latest: a runner label that silently moves to the
-    # next Ubuntu is the same coin flip as a floating compiler.
+  # -------------------------------------------------------- the linux gate
+  #
+  # `deps (linux)` builds once, everything downstream restores. See the
+  # header above for why this exists and what each of the six jobs below
+  # runs.
+  deps-linux:
+    name: deps (linux)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          # The build runs project code; it has no business inheriting
-          # a token in .git/config.
           persist-credentials: false
 
       - uses: ./.github/actions/setup-toolchain
@@ -85,34 +244,306 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
-          cache-namespace: gate
+          cache-namespace: ${{ env.LINUX_CACHE_NAMESPACE }}
           cache-epoch: ${{ env.CACHE_EPOCH }}
           cache: ${{ github.event.inputs.cache || 'true' }}
 
       # `make check` runs the code-mode package's suite, whose end-to-end
       # tests check for a prepared build seed and print `SKIP` when there
       # is none — which, on a fresh checkout, is always. Seeding first is
-      # what makes the gate's green mean the code-mode path actually ran.
-      # This is also the only step allowed the network for package
-      # resolution (scripts/codemode_seed.sh explains why).
+      # what makes every downstream check bucket's green mean the
+      # code-mode path actually ran. This, and the step below, are the
+      # only steps in the whole gate allowed to resolve dependencies from
+      # nothing; every other job restores their output.
       - name: Prepare the code-mode build seed
         run: .github/scripts/hex_retry.sh make codemode-seed
 
-      # Shipped fixtures also belong to the ordinary package census. Supply
-      # their executable before that gate instead of excusing its skip marker.
+      # Shipped fixtures also belong to the ordinary package census, and
+      # the client bootstrap and deliverables jobs both need a real
+      # server. Building once here and handing the bytes downstream is
+      # what makes "restore" mean something: every job that uses bin/
+      # or a shipment uses the one this job produced for this commit,
+      # never a rebuild that could pick up a different toolchain state.
       - name: Build native bootstrap prerequisites
         run: .github/scripts/hex_retry.sh make binaries server-shipment
 
-      - name: make check
+      # actions/upload-artifact v7.0.1
+      #
+      # Everything a downstream Linux job needs that `make binaries
+      # server-shipment` and `make codemode-seed` produced outside the
+      # packages/*/build tree the toolchain-cache step already covers:
+      # the launchers under bin/, the raw sandbox helper, both erlang
+      # shipments, and the resolved code-mode seed. A bucket that
+      # restores this and nothing else is running against exactly what
+      # this job built from this checkout — there is no other commit it
+      # could be.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: linux-build
+          retention-days: 1
+          path: |
+            bin/
+            packages/sandbox/loom-exec
+            build/erlang-shipment/
+            build/tui-erlang-shipment/
+            build/codemode-seed/
+
+  # ---------------------------------------------------- the package matrix
+  #
+  # `make check`'s per-package loop (scripts/check.sh), split into buckets
+  # sized from the measured run so the slowest bucket sets the pace rather
+  # than the sum. Each bucket calls scripts/check.sh directly instead of
+  # `make check-<pkg>`: the Makefile target depends on `binaries`, which is
+  # `.PHONY` and would rebuild the native helpers on every invocation —
+  # exactly the rebuild `deps (linux)`'s artifact exists to avoid. Calling
+  # the script directly, over the restored artifact, runs the same checks
+  # scripts/check.sh always ran for these packages; it just skips redoing
+  # work `deps (linux)` already did for this same commit.
+  check-linux:
+    name: check (linux, ${{ matrix.bucket }})
+    needs: deps-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Client alone is the slowest single package (6.8 min measured).
+          - bucket: client
+            packages: client
+          # The next tier down: four packages that were ~1.0-1.4 min each,
+          # ~4.4 min combined — still under the client bucket's pace.
+          - bucket: runtime-storage-session-events
+            packages: runtime storage session events
+          # 1.75 min alone; kept isolated because it is the shared-suite
+          # package (storage conformance + wiring + e2e) and a change
+          # there is worth a log of its own rather than folded into a
+          # mixed bucket.
+          - bucket: conformance
+            packages: conformance
+          # Everything else: seconds per package in the measured run, so
+          # bucketing them together costs nothing. This also carries the
+          # two packages the "fast" name in the work order didn't spell
+          # out — `lint` (the house-lint tool's own Gleam test suite, not
+          # to be confused with the `static` job's `make lint`, which runs
+          # that tool over the whole tree) and `sandbox` (the Go helper:
+          # gofmt, vet, build, test) — because "the rest" means every
+          # package scripts/check.sh's default list still owes a run to,
+          # and both are cheap.
+          - bucket: fast
+            packages: >-
+              host core machine prompt telemetry provider broker mcp tools
+              cap ext codemode tui lint sandbox
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: ${{ env.LINUX_CACHE_NAMESPACE }}
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # actions/download-artifact v7.0.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: linux-build
+
+      # Artifact upload/download preserves file content faithfully but not
+      # always the executable bit, and a launcher or helper that silently
+      # lost it fails as "permission denied" rather than anything that
+      # names the real cause. Restoring it unconditionally costs nothing
+      # on the paths that already have it. `entrypoint.sh` needs the same
+      # treatment as `bin/loomd` and `bin/loom`: both launchers `exec` it,
+      # and a downloaded copy that lost its bit fails the exec with a bare
+      # "Permission denied" (exit 126) before the daemon ever logs a line
+      # — the failure this restore step exists to prevent, just for a file
+      # one directory further in.
+      - name: Restore executable bits
+        run: |
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
+
+      - name: make check (${{ matrix.bucket }})
+        # Set for every bucket, as the old single job set it for the whole
+        # of `make check`: more than one package reads it (the client's
+        # shipped fixtures and the TUI's real-server lifecycle test among
+        # them), and a bucket that set it to the empty string would hand
+        # those tests "" as a server path rather than leaving it unset.
         env:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
-        run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check.log
+        run: |
+          set -o pipefail
+          .github/scripts/hex_retry.sh bash scripts/check.sh ${{ matrix.packages }} \
+            2>&1 | tee check-${{ matrix.bucket }}.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: check-${{ matrix.bucket }}-log
+          path: check-${{ matrix.bucket }}.log
+          retention-days: 14
+
+  # ----------------------------------------------------------- the static
+  #
+  # Everything `make check` runs today that needs the Gleam toolchain but
+  # never the native helpers, a shipment, or a live server: house lint,
+  # the capability-prelude digest, the doc graph, format checking, and the
+  # scripts package's own unit tests (the `python3 -m unittest discover`
+  # scripts/check.sh runs before its per-package loop, testing scripts
+  # like `with_timeout.py` that every other job depends on). `hex_retry.sh`
+  # wraps `make lint` and `make prelude-check`: `make lint` builds and
+  # runs the `lint` package itself, and `make prelude-check`
+  # runs `gleam export package-interface` over `cap`, which has a path
+  # dependency on `core` and so can trip the issue-#248 Hex re-resolution
+  # bug like any other gleam invocation in this file. `make fmt-check` and
+  # `make doc-check` need no such wrapping: the former is pure syntax
+  # checking and the latter runs no gleam at all.
+  #
+  # This job needs `deps-linux` not for its artifact — it downloads
+  # nothing — but so its toolchain-cache restore lands after `deps`'s
+  # cache save and is guaranteed a hit rather than racing it cold.
+  static-linux:
+    name: static (linux)
+    needs: deps-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: ${{ env.LINUX_CACHE_NAMESPACE }}
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      - name: Deadline and skip-reporting self-tests
+        run: |
+          python3 scripts/with_timeout.py 20 -- \
+            python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: make fmt-check
+        run: make fmt-check
+
+      - name: make prelude-check
+        run: .github/scripts/hex_retry.sh make prelude-check
+
+      - name: make lint
+        run: .github/scripts/hex_retry.sh make lint
+
+      - name: make doc-check
+        run: set -o pipefail; make doc-check 2>&1 | tee doc-check.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: static-linux-log
+          path: doc-check.log
+          retention-days: 14
+
+  # ------------------------------------------------- the client bootstrap
+  e2e-client-bootstrap-linux:
+    name: e2e-client-bootstrap (linux)
+    needs: deps-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: ${{ env.LINUX_CACHE_NAMESPACE }}
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # actions/download-artifact v7.0.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: linux-build
+
+      # See the `check (linux, *)` bucket's own comment: `entrypoint.sh`
+      # loses its executable bit across artifact upload/download exactly
+      # like `bin/loomd` does, and this job execs it through that launcher.
+      - name: Restore executable bits
+        run: |
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       - name: make e2e-client-bootstrap
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap.log
 
-      - name: make doc-check
-        run: set -o pipefail; make doc-check 2>&1 | tee doc-check.log
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: e2e-client-bootstrap-linux-log
+          retention-days: 14
+          path: |
+            e2e-client-bootstrap.log
+            packages/client/build/owned-assembly-*/daemon-soak.jsonl
+
+  # ------------------------------------------------------- the deliverables
+  deliverables-linux:
+    name: deliverables (linux)
+    needs: deps-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: ${{ env.LINUX_CACHE_NAMESPACE }}
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # actions/download-artifact v7.0.0
+      #
+      # `make dist` re-derives its own release tree from source (`scripts/
+      # release.sh`) rather than reusing the erlang-shipment this restores,
+      # but codemode-seed and the tui/server shipments this job's own
+      # `scripts/dist.sh` step also touches are the same bytes `deps`
+      # already built, so restoring keeps this job from re-resolving them.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: linux-build
+
+      # See the `check (linux, *)` bucket's own comment: `entrypoint.sh`
+      # loses its executable bit across artifact upload/download exactly
+      # like `bin/loomd` does, and this job execs it through that launcher.
+      - name: Restore executable bits
+        run: |
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       # The downloadable server carries this runner's ERTS and SQLite NIF.
       # Building it on the Linux gate proves the OTP pin reaches the shipped
@@ -150,38 +581,103 @@ jobs:
               dist/loomd-0.1.0-linux-x86_64.tar.gz
           } | tee -a distribution-linux.log
 
-      # Only the live-tool subsection may lack the helper's demanded kernel
-      # enforcement here. The delegated jail job runs it without this waiver.
-      - name: Skip census
-        env:
-          LOOM_DECLARED_SKIPS: .github/declared-skips-linux-gate
-        run: .github/scripts/skip_census.sh "gate (linux)" check.log
-
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: gate-linux-logs
+          name: deliverables-linux-log
+          retention-days: 14
           path: |
-            check.log
-            doc-check.log
             server-shipment-smoke.log
             distribution-linux.log
-            e2e-client-bootstrap.log
-            packages/client/build/owned-assembly-*/daemon-soak.jsonl
-          retention-days: 14
 
+  # ------------------------------------------------------------- the gate
+  #
+  # The fan-in. Everything it needs to say pass/fail already ran in a
+  # separate job; this job's only real work is the skip census, and that
+  # has to run here rather than per bucket. `.github/declared-skips-
+  # linux-gate` declares exactly one skip (the shipped-multiplayer live
+  # tool subsection, which only the `client` package's tests can produce),
+  # and skip_census.sh fails a run when a declared marker matches nothing
+  # it was given — so a bucket that never touches `client` would report
+  # that declaration as stale if censused alone. Passing every bucket's
+  # log to one census call, exactly as the old single job passed its one
+  # check.log, keeps that rule's meaning intact.
+  gate-linux:
+    name: gate (linux)
+    needs:
+      - deps-linux
+      - check-linux
+      - static-linux
+      - e2e-client-bootstrap-linux
+      - deliverables-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # `always()` so this job still runs — and still reports failure — when
+    # a job it depends on failed or was cancelled rather than merely
+    # skipped by GitHub's default `success()` gate on `needs`.
+    if: always()
+    steps:
+      - name: Require every upstream job to have succeeded
+        run: |
+          declare -A results=(
+            [deps-linux]='${{ needs.deps-linux.result }}'
+            [check-linux]='${{ needs.check-linux.result }}'
+            [static-linux]='${{ needs.static-linux.result }}'
+            [e2e-client-bootstrap-linux]='${{ needs.e2e-client-bootstrap-linux.result }}'
+            [deliverables-linux]='${{ needs.deliverables-linux.result }}'
+          )
+          fail=0
+          for job in "${!results[@]}"; do
+            echo "  ${job}: ${results[$job]}"
+            if [ "${results[$job]}" != "success" ]; then
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "gate (linux) FAILED: at least one upstream job did not succeed" >&2
+            exit 1
+          fi
+
+      # actions/checkout v7.0.1 — needed for .github/scripts and
+      # .github/declared-skips-linux-gate, not for package source. Run
+      # unconditionally: the "Require every upstream job" step above has
+      # already failed the job if anything upstream did not succeed, and
+      # the census below only needs `check-linux` specifically, gated in
+      # its own step.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/download-artifact v7.0.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        if: needs.check-linux.result == 'success'
+        with:
+          pattern: check-*-log
+          merge-multiple: true
+
+      - name: Skip census
+        if: needs.check-linux.result == 'success'
+        env:
+          LOOM_DECLARED_SKIPS: .github/declared-skips-linux-gate
+        run: |
+          .github/scripts/skip_census.sh "gate (linux)" \
+            check-client.log \
+            check-runtime-storage-session-events.log \
+            check-conformance.log \
+            check-fast.log
   # --------------------------------------------------------- the second OS
   #
   # §0.3 requires exit criteria to pass "in CI on Linux and macOS". The
   # generated deny-default Seatbelt profile is tested against a real macOS
   # kernel here. The self-test and enforcement matrix are strict: a missing
   # profile, a typo that opens a forbidden operation, or an unaccounted skip
-  # fails the job before the ordinary package gate runs.
-  gate-macos:
-    name: gate (macos)
+  # fails the job before the ordinary package gate runs. See the header
+  # comment above for the full job graph and the why-not-a-matrix argument.
+  deps-macos:
+    name: deps (macos)
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       # actions/checkout v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -190,9 +686,75 @@ jobs:
           # a token in .git/config.
           persist-credentials: false
 
-      # The live TUI test drives the built client through a real terminal.
-      # macOS runners do not include tmux, so install the prerequisite rather
-      # than letting the skip census expose a hole in the gate.
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: ${{ env.MACOS_CACHE_NAMESPACE }}
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # Same reason as `deps (linux)`: the code-mode suites feature-detect
+      # a prepared build seed and print SKIP without one, so seeding first
+      # is what makes every downstream macOS job's green mean the
+      # code-mode path actually ran.
+      - name: Prepare the code-mode build seed
+        run: .github/scripts/hex_retry.sh make codemode-seed
+
+      # `binaries` pulls in `sandbox`, so this is also what produces
+      # `packages/sandbox/loom-exec` for `e2e (macos)`'s Seatbelt
+      # self-test — one build serving both the ordinary package gate and
+      # the enforcement probe, never two.
+      - name: Build native bootstrap prerequisites
+        run: .github/scripts/hex_retry.sh make binaries server-shipment
+
+      # actions/upload-artifact v7.0.1
+      #
+      # The same contents as `linux-build`, built for this platform: the
+      # launchers under bin/, the raw sandbox helper, both erlang
+      # shipments, and the resolved code-mode seed. Every other macOS job
+      # restores exactly these bytes rather than rebuilding them.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: macos-build
+          retention-days: 1
+          path: |
+            bin/
+            packages/sandbox/loom-exec
+            build/erlang-shipment/
+            build/tui-erlang-shipment/
+            build/codemode-seed/
+
+  # `make check`'s full package loop, restored rather than rebuilt.
+  # Advisory (owner-approved, issues #241/#127): only the `make check`
+  # step itself carries `continue-on-error`, so a hosted runner's load
+  # sensitivity can redden that one step without reddening this job or
+  # `gate (macos)`. Every other step here — the toolchain, the artifact
+  # restore, tmux — is ordinary and still fails the job outright, exactly
+  # as it did before the split.
+  check-macos:
+    name: check (macos, advisory)
+    needs: deps-macos
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      # `gate (macos)`'s skip census needs to know whether `make check`
+      # ran to a real conclusion or aborted partway through, and a job
+      # output is the only way that survives the boundary to another job.
+      check_outcome: ${{ steps.check_macos.outcome }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # The live TUI test drives the built client through a real terminal,
+      # and it lives in the `client` package's own suite — the only macOS
+      # job that runs `make check`'s full package loop, so the only one
+      # that needs tmux. macOS runners do not include it, so install the
+      # prerequisite rather than letting the skip census expose a hole.
       - name: Install terminal test prerequisite
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
@@ -204,29 +766,29 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
-          cache-namespace: gate-macos
+          cache-namespace: ${{ env.MACOS_CHECK_CACHE_NAMESPACE }}
           cache-epoch: ${{ env.CACHE_EPOCH }}
           cache: ${{ github.event.inputs.cache || 'true' }}
 
-      - name: Seatbelt enforcement self-test
+      # actions/download-artifact v7.0.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: macos-build
+
+      # See the Linux `check (linux, *)` bucket's own comment:
+      # upload/download preserves content but not always the executable
+      # bit, and `entrypoint.sh` needs the same restore as `bin/loomd` —
+      # both launchers `exec` it, and a downloaded copy that lost its bit
+      # fails that exec with a bare "Permission denied" before the daemon
+      # ever logs a line.
+      - name: Restore executable bits
         run: |
-          set -euo pipefail
-          make sandbox
-          ./packages/sandbox/loom-exec --self-test > selftest-macos.log 2>&1
-          cat selftest-macos.log
-          .github/scripts/enforcement_report.sh \
-            selftest-macos.log .github/enforcement-expectations "macos (self-test)"
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
-      - name: Prepare the code-mode build seed
-        run: .github/scripts/hex_retry.sh make codemode-seed
-
-      - name: Build native bootstrap prerequisites
-        run: .github/scripts/hex_retry.sh make binaries server-shipment
-
-      # Owner-approved hosted load-sensitivity exception, not a performance fix.
-      # https://github.com/Roasbeef/loom/issues/241
+      # Owner-approved hosted load-sensitivity exception, not a performance
+      # fix. https://github.com/Roasbeef/loom/issues/241
       # https://github.com/Roasbeef/loom/issues/127
-      # Only this step is advisory; later steps and their censuses still gate.
       - name: make check (advisory)
         id: check_macos
         continue-on-error: true
@@ -234,6 +796,64 @@ jobs:
           LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
           LOOM_SOAK_LATENCY_BOUND: observe
         run: set -o pipefail; .github/scripts/hex_retry.sh make check 2>&1 | tee check-macos.log
+
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: check-macos-log
+          path: check-macos.log
+          retention-days: 14
+
+  # The Seatbelt self-test and enforcement report (hard, not advisory — a
+  # jail that silently enforces less than declared is a gate failure, not
+  # a load hiccup), both jailed end-to-ends, the client bootstrap, and
+  # doc-check. Everything in this job is unchanged from the old single
+  # job's own steps, just restoring the deps-macos artifact instead of
+  # rebuilding it.
+  e2e-macos:
+    name: e2e (macos)
+    needs: deps-macos
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          gleam-version: ${{ env.GLEAM_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: ${{ env.REBAR3_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache-namespace: ${{ env.MACOS_CACHE_NAMESPACE }}
+          cache-epoch: ${{ env.CACHE_EPOCH }}
+          cache: ${{ github.event.inputs.cache || 'true' }}
+
+      # actions/download-artifact v7.0.0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: macos-build
+
+      # See `check (macos, advisory)`'s own comment on this same step.
+      - name: Restore executable bits
+        run: |
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
+
+      # `deps (macos)` already built `packages/sandbox/loom-exec` via its
+      # `binaries` step, and the artifact restore above put it back with
+      # its executable bit — no need to rebuild it here just to self-test
+      # it.
+      - name: Seatbelt enforcement self-test
+        run: |
+          set -euo pipefail
+          ./packages/sandbox/loom-exec --self-test > selftest-macos.log 2>&1
+          cat selftest-macos.log
+          .github/scripts/enforcement_report.sh \
+            selftest-macos.log .github/enforcement-expectations "macos (self-test)"
 
       - name: make e2e-client-bootstrap
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
@@ -247,26 +867,12 @@ jobs:
       - name: make doc-check
         run: set -o pipefail; make doc-check 2>&1 | tee doc-check-macos.log
 
-      # The census reads the advisory check's log, and a check that stopped
-      # early on a load-sensitive failure never reached the suites whose
-      # declared skips it would have recorded; it then fails as a "stale
-      # declaration" for a skip that was merely unobserved, blaming the
-      # declaration for the abort. So the census gates only on a check
-      # that ran to the end. The abort itself is already visible as the
-      # advisory step's own outcome.
-      - name: Skip census
-        if: steps.check_macos.outcome == 'success'
-        run: |
-          .github/scripts/skip_census.sh "gate (macos)" \
-            check-macos.log e2e-macos.log e2e-codemode-macos.log
-
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: gate-macos-logs
+          name: e2e-macos-logs
           path: |
-            check-macos.log
             doc-check-macos.log
             selftest-macos.log
             e2e-macos.log
@@ -274,6 +880,88 @@ jobs:
             e2e-client-bootstrap-macos.log
             packages/client/build/owned-assembly-*/daemon-soak.jsonl
           retention-days: 14
+
+  # The macOS fan-in — the same shape as `gate (linux)`: fail if anything
+  # it needs failed or was cancelled, and nothing else. Runs on
+  # `macos-15`, not `ubuntu-24.04`: skip_census.sh reads its platform
+  # from this job's own `uname -s` to decide which declared-skips lines
+  # apply, and the logs it censuses were produced on macOS runners. A
+  # Linux fan-in reads "linux" from its own kernel, the darwin-only
+  # declaration for the /proc-less MCP teardown skip never matches, and
+  # the census fails the run on a skip that is completely expected —
+  # measured on run 34076756645, where this mistake did exactly that.
+  gate-macos:
+    name: gate (macos)
+    needs:
+      - deps-macos
+      - check-macos
+      - e2e-macos
+    runs-on: macos-15
+    timeout-minutes: 10
+    if: always()
+    steps:
+      # `check-macos`'s job `result` already carries the advisory
+      # semantics correctly: `continue-on-error` on its `make check` step
+      # means that step's own failure never turns the job result to
+      # `failure`, but a genuine setup failure upstream of it (tmux,
+      # toolchain, artifact restore) still does. Requiring `success` here
+      # is therefore the right test for all three jobs, not a special
+      # case for the advisory one.
+      # Written without an associative array: this job runs on macOS,
+      # whose /bin/bash is 3.2 and refuses `declare -A` with exit 2
+      # before a single result is read, which is how the first fan-in
+      # run on this runner failed the gate on green upstream jobs.
+      - name: Require every upstream job to have succeeded
+        run: |
+          fail=0
+          for pair in \
+            'deps-macos=${{ needs.deps-macos.result }}' \
+            'check-macos=${{ needs.check-macos.result }}' \
+            'e2e-macos=${{ needs.e2e-macos.result }}'; do
+            job=${pair%%=*}
+            result=${pair#*=}
+            echo "  ${job}: ${result}"
+            if [ "${result}" != "success" ]; then
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "gate (macos) FAILED: at least one upstream job did not succeed" >&2
+            exit 1
+          fi
+
+      # actions/checkout v7.0.1 — needed for .github/scripts and
+      # .github/declared-skips, not for package source.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/download-artifact v7.0.0 — both jobs' logs, so the census
+      # below reads exactly the files the old single job censused
+      # together.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        if: needs.check-macos.outputs.check_outcome == 'success'
+        with:
+          name: check-macos-log
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        if: needs.check-macos.outputs.check_outcome == 'success'
+        with:
+          name: e2e-macos-logs
+
+      # The census reads the advisory check's log, and a check that
+      # stopped early on a load-sensitive failure never reached the
+      # suites whose declared skips it would have recorded; it then fails
+      # as a "stale declaration" for a skip that was merely unobserved,
+      # blaming the declaration for the abort. So the census gates only
+      # on a check that ran to the end. The abort itself is already
+      # visible as `check-macos`'s own step outcome, carried here as the
+      # `check_outcome` job output.
+      - name: Skip census
+        if: needs.check-macos.outputs.check_outcome == 'success'
+        run: |
+          .github/scripts/skip_census.sh "gate (macos)" \
+            check-macos.log e2e-macos.log e2e-codemode-macos.log
 
   # ------------------------------------------------------------- the jail
   #
