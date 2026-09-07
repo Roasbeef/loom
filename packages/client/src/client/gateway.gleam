@@ -252,7 +252,9 @@ type Authentication {
 /// check); `schedules`, when present, backs the `schedules` listing and
 /// `schedule_cancel` (without one the listing is empty and a
 /// cancellation is refused as unsupported, because a host with no
-/// scheduling plane has nothing to cancel).
+/// scheduling plane has nothing to cancel); `effect_abort`, when
+/// present, is how the `abort` command reaches the effect plane, and a
+/// host with no broker supplies none.
 pub type Options {
   Options(
     session_id: String,
@@ -270,11 +272,17 @@ pub type Options {
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
     schedules: Option(scheduleadmin.Admin),
+    /// The effect plane's own sweep of an aborted operation, called by
+    /// the `abort` command with the operation it just marked cancelled.
+    /// `client/serve` fills it with `broker.abort`; a host assembled
+    /// without an effect plane has nothing to sweep and passes `None`.
+    effect_abort: Option(fn(OpId) -> Nil),
   )
 }
 
 /// Sensible defaults: a 50-entry snapshot window, no bus, no catalogue,
-/// no tool registry, and no scheduling plane.
+/// no tool registry, no scheduling plane, and no effect plane to sweep
+/// on an abort.
 ///
 /// ## Examples
 ///
@@ -291,6 +299,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     catalog: None,
     registry: None,
     schedules: None,
+    effect_abort: None,
   )
 }
 
@@ -337,6 +346,32 @@ pub fn with_registry(options: Options, registry: Registry) -> Options {
 ///
 pub fn with_schedules(options: Options, admin: scheduleadmin.Admin) -> Options {
   Options(..options, schedules: Some(admin))
+}
+
+/// Supplies the effect plane's sweep of an aborted operation — in
+/// `client/serve`, `broker.abort` applied to the one broker every
+/// clearance goes through.
+///
+/// The runtime's own abort commits the cancel marker and stops the
+/// strand's live effects, and that is every effect the *operation* is
+/// waiting on. It is not every execution the operation started: a
+/// background job runs under a sibling step of the same operation
+/// (`{op_id, "job/" <> id}`) and is nobody's live effect, so nothing in
+/// the runtime reaches it. The broker holds the other half of the
+/// ledger, which is why an operator's abort has to pass through here as
+/// well — it is what makes a job stop when the operator stops the
+/// operation that started it (`docs/design-notes/background-jobs.md`,
+/// decision 4).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime)
+/// // |> gateway.with_effect_abort(broker.abort(the_broker, _))
+/// ```
+///
+pub fn with_effect_abort(options: Options, sweep: fn(OpId) -> Nil) -> Options {
+  Options(..options, effect_abort: Some(sweep))
 }
 
 /// Messages understood by the hub. Opaque in spirit: callers use the
@@ -425,6 +460,9 @@ type State {
     live: Dict(String, String),
     // entry id (text) → strand attribution cache.
     entry_strand: Dict(String, String),
+    // The effect plane's sweep of an aborted operation, when the host
+    // has an effect plane at all.
+    effect_abort: Option(fn(OpId) -> Nil),
     // The model catalogue, when the host configured one.
     catalog: Option(catalog.Catalog),
     // The tool registry, when the host configured one.
@@ -534,6 +572,7 @@ fn start_with_delivery(
         high_water: 0,
         live: dict.new(),
         entry_strand: dict.new(),
+        effect_abort: options.effect_abort,
         catalog: options.catalog,
         registry: options.registry,
         schedules: options.schedules,
@@ -3518,6 +3557,16 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
     ))) -> {
       api.abort(api.on_strand(state.runtime, strand))
 
+      // And the effect plane, which the runtime cannot address. Its
+      // abort stops the strand's live effects — every effect the
+      // operation is *waiting* on — while an execution the operation
+      // merely started and detached from, a background job, runs under
+      // a sibling step of the same operation and is nobody's live
+      // effect. The broker keys its ledger on the operation for exactly
+      // this, so the sweep here is what makes an operator's abort mean
+      // what an operator means by it.
+      sweep_effects(state, op)
+
       // The durable cancel_requested transition broadcasts when its
       // commit lands; the ack is connection-scoped.
       reply(
@@ -3542,6 +3591,17 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       )
       state
     }
+  }
+}
+
+// Tells the effect plane an operation was aborted, when this host has
+// one. A host assembled without a broker — the demo, and every gateway
+// fixture that scripts no effects — has nothing to sweep, and the abort
+// is complete once the runtime has taken it.
+fn sweep_effects(state: State, op: OpId) -> Nil {
+  case state.effect_abort {
+    None -> Nil
+    Some(sweep) -> sweep(op)
   }
 }
 

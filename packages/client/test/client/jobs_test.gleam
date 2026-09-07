@@ -52,6 +52,15 @@
 //// What the checks establish is that none of the five is dead weight, and
 //// the narrowest test in each row is the one that names the mechanism.
 ////
+//// A sixth removal lives outside `client/jobs` and is recorded here
+//// because the test that catches it is: dropping `sweep_effects` from
+//// `client/gateway.abort` — the call that carries an operator's abort
+//// into the effect plane — fails
+//// `an_operators_abort_of_the_operation_kills_the_job_test` and nothing
+//// else in the tree. That is the point of the test: the wiring it pins
+//// had no production caller at all until it was added, and no assertion
+//// about the jobs actor alone could notice.
+////
 //// Removing `persist` also, on the first run, failed
 //// `a_refused_clearance_reaches_the_starting_caller_test` — which turned
 //// out to have nothing to do with the mutation and everything to do with
@@ -65,12 +74,15 @@ import broker/exec.{type ExecResult, ExecResult}
 import broker/framing
 import broker/policy
 import broker/token
+import client/gateway
 import client/internal/ffi_os
 import client/jobs
 import client/jobstate.{type JobId}
+import client/protocol
 import client/serve
 import core/clock.{type Clock}
 import core/ids
+import core/message
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -107,6 +119,10 @@ type FakeBroker {
 
 type Execution {
   Execution(
+    /// The operation the clearance was bound to, so an operation-wide
+    /// sweep can find every execution the real broker's `AbortOp` would
+    /// match on.
+    op_id: ids.OpId,
     events: Subject(broker.CallEvent),
     cancels: Int,
     stdin: List(#(BitArray, Bool)),
@@ -139,6 +155,11 @@ type FakeMessage {
   Wrote(step: String, data: BitArray, eof: Bool)
   Emit(step: String, stream: framing.OutputStream, data: BitArray)
   Settle(step: String, outcome: broker.CallOutcome)
+
+  /// The real `broker.abort`: every execution bound to `op_id`,
+  /// whatever step it clears under, is cancelled and settles with the
+  /// helper's own report of the ladder it climbed.
+  SweepOperation(op_id: ids.OpId, result: ExecResult)
   RefuseNext(refusal: Option(broker.Refusal))
   Cancels(step: String, reply: Subject(Int))
   Stdins(step: String, reply: Subject(List(#(BitArray, Bool))))
@@ -188,7 +209,7 @@ fn handle_fake(
               executions: dict.insert(
                 state.executions,
                 step,
-                Execution(events:, cancels: 0, stdin: []),
+                Execution(op_id: spec.op_id, events:, cancels: 0, stdin: []),
               ),
               cleared: [step, ..state.cleared],
             ),
@@ -234,6 +255,25 @@ fn handle_fake(
         Ok(execution) ->
           process.send(execution.events, broker.CallSettled(outcome:))
       }
+      actor.continue(state)
+    }
+
+    // No cancel is recorded against the execution, and that is the
+    // point rather than an omission: the broker cancels its own relay,
+    // so nothing calls the `RunningCall.cancel` the job holds. A record
+    // that names an abort while the job asked for nothing is exactly
+    // the state `attribution` has to explain.
+    SweepOperation(op_id:, result:) -> {
+      dict.each(state.executions, fn(_step, execution) {
+        case execution.op_id == op_id {
+          False -> Nil
+          True ->
+            process.send(
+              execution.events,
+              broker.CallSettled(outcome: broker.CallExited(result:)),
+            )
+        }
+      })
       actor.continue(state)
     }
 
@@ -689,6 +729,88 @@ fn started_or_refused(
     operation: harness.operation,
     request: jobs.Request(command:, wall_ms:),
     waiting: 10_000,
+  )
+}
+
+// The same door under a caller-chosen operation. Every other test is
+// content with the harness's synthetic one; the operator-abort test
+// needs the job bound to the operation the session actually has open,
+// because that is the one the hub will name.
+fn start_job_under(
+  harness: Harness,
+  strand: String,
+  operation: ids.OpId,
+  command: String,
+) -> jobs.Started {
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand:,
+      operation:,
+      request: jobs.Request(command:, wall_ms: None),
+      waiting: 10_000,
+    )
+    as "this job must be admitted"
+  started
+}
+
+// --- driving the operator's door ------------------------------------------
+//
+// One hub over the harness's runtime, wired the way `client/serve` wires
+// the production one, with a subscribed connection ready to command. It
+// exists for a single test, and it is the only place in this file where
+// the operator rather than the model is the one asking.
+
+type Hub {
+  Hub(gateway: gateway.Gateway, connection: Int)
+}
+
+/// The session name the hub is started under and its client subscribes
+/// with. The runtime's own canonical id is a different key space
+/// (`protocol-change/008`) and neither side reads it here.
+const hub_session = "sess-01"
+
+fn start_hub(harness: Harness, sweep: fn(ids.OpId) -> Nil) -> Hub {
+  let name = addresses.new()
+  let assert Ok(_started) =
+    gateway.start_host_fixture(
+      gateway.default_options(hub_session, harness.runtime)
+        |> gateway.with_effect_abort(sweep),
+      name,
+    )
+    as "the hub must start"
+  let inbox = process.new_subject()
+  let hub = gateway.Gateway(name:)
+  let assert Ok(connection) =
+    gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
+    as "the test client attaches"
+  let subscribed = Hub(gateway: hub, connection:)
+
+  // Commands are gated on a subscription, and the snapshot that answers
+  // one is also the proof the hub is serving this connection.
+  command(
+    subscribed,
+    1,
+    protocol.Subscribe(session: hub_session, from_seq: None),
+  )
+  let assert Ok(_snapshot) = process.receive(inbox, 2000)
+    as "subscribe answers with a snapshot"
+  subscribed
+}
+
+fn command(hub: Hub, id: Int, request: protocol.Command) -> Nil {
+  gateway.handle_text(
+    hub.gateway,
+    hub.connection,
+    protocol.encode_command(protocol.CommandEnvelope(id:, command: request)),
+  )
+}
+
+fn user(text: String) -> message.AgentMessage {
+  message.UserMessage(
+    content: [message.UserText(text:, text_signature: None)],
+    timestamp: 0,
+    origin: None,
   )
 }
 
@@ -1156,6 +1278,54 @@ pub fn an_unasked_cancellation_is_the_operations_abort_test() {
   let assert jobstate.Killed(by:, ..) = settled_state(harness, "main", started)
     as "an unasked cancellation is still a kill"
   assert by == jobstate.ByOperationAbort
+}
+
+pub fn an_operators_abort_of_the_operation_kills_the_job_test() {
+  // The test above starts from the settlement and asks what the record
+  // makes of it. This one starts from the operator and asks whether the
+  // settlement happens at all — the design note's decision 4, which is a
+  // property of the *wiring* rather than of the jobs actor: the runtime's
+  // abort stops the strand's live effects, and a job is not one of them,
+  // so an abort that never reaches the broker leaves the job running.
+  let harness = start_harness()
+
+  // A real operation, because the abort command reads the strand's own
+  // current one and refuses when there is none. The harness provider
+  // never answers, so the run stays open until the abort ends it.
+  let assert Ok(operation) =
+    api.prompt(api.on_strand(harness.runtime, "main"), [user("watch the log")])
+    as "the prompt opens an operation on the strand"
+  let started = start_job_under(harness, "main", operation, "sleep 999")
+
+  // The hub wired the way `client/serve` wires it. The probe records
+  // what the abort handed the effect plane and then plays the broker's
+  // part: every execution under that operation settles cancelled.
+  let swept = process.new_subject()
+  let hub =
+    start_hub(harness, fn(op) {
+      process.send(swept, op)
+      process.send(
+        harness.fake.subject,
+        SweepOperation(op_id: op, result: cancelled_result()),
+      )
+    })
+  command(hub, 2, protocol.Abort(strand: "main"))
+
+  // Consuming the probe's own message is the barrier and the assertion
+  // at once: the hub reached the effect plane, and it named the
+  // operation the job cleared under rather than some other one.
+  assert process.receive(swept, 5000) == Ok(operation)
+  assert cancels(harness, started) == 0 as "nobody here asked the job to stop"
+
+  // A longer window than `settled_state`'s: this is the one test with a
+  // strand driver doing real work beside the jobs actor — it is aborting
+  // the operation the prompt opened — so the runner's report competes
+  // with a run for the scheduler.
+  let assert jobstate.Killed(by:, result:) =
+    await_state(harness, "main", started, 600)
+    as "an operator's abort stops what the operation started"
+  assert by == jobstate.ByOperationAbort
+  assert result.cancelled
 }
 
 pub fn a_deadline_kills_with_its_own_cause_test() {

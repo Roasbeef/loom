@@ -234,6 +234,15 @@ abort of a later operation does not — because detachment is what the
 model asked for. The job's record carries the same `op_id` as
 `started_by`, so the durable trail and the cancel authority agree.
 
+That reach is only real if something calls it, and the caller is the
+hub. The operator's `abort` command commits the cancel marker and stops
+the strand's live effects through `api.abort`, and a detached job is not
+one of them; `client/gateway.abort` therefore also calls the
+`effect_abort` seam that `client/serve` fills with `broker.abort`. The
+host has to be the one to join the two halves, because `runtime` may not
+depend on `broker` and only the broker holds the ledger this addendum is
+about.
+
 **What it costs, stated plainly.** The key space grows by one entry per
 live job, which the per-strand ceiling bounds and which `release_slot`
 deletes on settlement like any other. And the synthetic step is a

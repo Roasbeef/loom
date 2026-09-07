@@ -173,7 +173,22 @@ build. `broker.abort(op_id)` revokes every token of the operation and
 cancels every active helper under it (`broker.gleam:677-705`). So an
 operator aborting the operation that *started* a job kills that job,
 which is what they meant; an abort of a later operation does not touch
-it, because detachment is what the model asked for. Session stop reaches
+it, because detachment is what the model asked for.
+
+The wiring that makes that true is worth naming, because the operator's
+abort has two halves and only one of them is the runtime's. The `abort`
+command commits the cancel marker and stops the strand's live effects
+through `api.abort`, and a detached job is nobody's live effect — so the
+hub also sweeps the effect plane, through the `effect_abort` seam
+`client/serve` fills with `broker.abort` (`client/gateway.abort`,
+`client/serve`'s `hub.start`). It has to be the host that joins them:
+`runtime` may not depend on `broker`, and the broker is the only thing
+that holds the other half of the ledger. `client/jobs`' `ByOperationAbort`
+is what the record reads afterwards, and
+`an_operators_abort_of_the_operation_kills_the_job_test` in
+`client/jobs_test` is what pins the whole path.
+
+Session stop reaches
 every job through the actor's position in the ordered `Part` shutdown
 (`instance_owner.gleam:30-50`): jobs die before `Broker` and `Helpers`
 close and long before `Storage` does.
@@ -527,6 +542,7 @@ program kills it.
 
 The ceiling is per strand with no session-wide limit yet; the wall
 defaults to an hour with an operator knob for longer; an abort of the
-starting operation kills its jobs; and `job_send` ships in the first
+starting operation kills its jobs, wired at the hub's `abort` command
+(decision 4); and `job_send` ships in the first
 cut. The one question still open is whether a dedicated job pool should
 come before real use shows the shared pool starving.
