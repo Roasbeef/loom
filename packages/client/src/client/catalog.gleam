@@ -271,12 +271,14 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // singular `[schedules]` policy table saying whether the model may
   // write any of its own. `memory` is `client/distillpass`'s: whether
   // this host runs the distillation pass on boot, and how long one pass
-  // may take.
+  // may take. `jobs` is `client/jobs`'s: the ceiling a background job's
+  // wall is clamped to, which an operator raises for a workspace whose
+  // dev server has to outlive the default hour.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
-      "tools",
+      "tools", "jobs",
     ],
     "the top level",
   ))
