@@ -148,6 +148,17 @@ func TestSeatbeltJailedPathFindsHomebrewTools(t *testing.T) {
 	}
 	homebrewBin := filepath.Dir(rgPath)
 
+	// Without this guard the test proves nothing on a host that installs
+	// rg into /usr/local/bin: the hardcoded floor would supply the
+	// directory whether or not BuildPath forwarded anything, so a
+	// regression that dropped the inherited PATH entirely would still
+	// pass here.
+	for _, dir := range jailedPathDefaults {
+		if homebrewBin == dir {
+			t.Skipf("rg lives in %s, which jailedPathDefaults already supplies", dir)
+		}
+	}
+
 	root, err := os.MkdirTemp(SeatbeltScratchParent, "loom-seatbelt-path-test-")
 	if err != nil {
 		t.Fatal(err)
