@@ -260,8 +260,10 @@ fn socket(port, bearer, session) {
   let #(socket, response) =
     wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
   assert string.contains(response, "101 Switching Protocols")
-  let #(_, transfer) = session_socket_test.begin(socket, session)
-  let _ = session_socket_test.drain(socket, transfer, 0, [], 32)
+  let #(_, transfer) =
+    session_socket_test.begin(socket, session, within_ms: 1000)
+  let _ =
+    session_socket_test.drain(socket, transfer, 0, [], 32, within_ms: 1000)
   socket
 }
 
@@ -336,6 +338,7 @@ fn exercise(
         #("strand", json.String("main")),
         #("text", json.String("Run the fixed approval marker once.")),
       ]),
+      within_ms: 1000,
     )
   assert field(admitted, "event") == json.String("mutation_outcome")
   let pending_view =
@@ -365,7 +368,7 @@ fn exercise(
     as "the real captured action, wanted grants and seq are echoed exactly"
   let assert Ok(envelope) = json.parse(encoded) as "approval is total JSON"
   let body = field(envelope, "body")
-  let denied = wire.reply(reader, 101, "approve", body)
+  let denied = wire.reply(reader, 101, "approve", body, within_ms: 1000)
   assert field(denied, "event") == json.String("error")
   assert field(field(denied, "body"), "code") == json.String("forbidden")
   assert api.escalation_cell(instance.runtime, pending.id) == Ok(cell)
@@ -375,8 +378,12 @@ fn exercise(
   // seq even if one wins before the other reaches the serialized gateway.
   let answers =
     weft.new([
-      fn() { Ok(#("alice", wire.reply(a, 101, "approve", body))) },
-      fn() { Ok(#("bob", wire.reply(b, 101, "approve", body))) },
+      fn() {
+        Ok(#("alice", wire.reply(a, 101, "approve", body, within_ms: 1000)))
+      },
+      fn() {
+        Ok(#("bob", wire.reply(b, 101, "approve", body, within_ms: 1000)))
+      },
     ])
     |> weft.deadline(5000)
     |> weft.start

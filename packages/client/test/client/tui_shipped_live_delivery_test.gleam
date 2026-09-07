@@ -102,6 +102,24 @@ import weft/poll
 // initial session opening and nothing else.
 const shipped_open_timeout_ms = 20_000
 
+// CI run 34156839616 failed `attach_wire` inside `daemon_server_test.frame`'s
+// 1 s read: that default assumes an in-process fixture answering inside its
+// own event loop turn, but this one attaches Bob's raw socket to the shipped
+// daemon, where the reply waits behind `session_socket.admit` first — a
+// one-second root permit transfer plus a five-second gateway attach
+// (`packages/client/src/client/daemon/session_socket.gleam`, the module doc
+// and `admit`) — and a loaded hosted runner can spend both in full before
+// the socket answers at all. The command after that admission is itself
+// bounded by the gateway's six-second request budget
+// (`gateway.connection_request`, `waiting: 6000`). Twelve seconds is the
+// daemon's own worst case for a first reply that still succeeds; fifteen
+// leaves scheduling slack on top of it without hiding a wedged daemon
+// behind a timeout that never fires, and the fixture's own eunit timeout
+// leaves ample room around it. Every wire read this fixture makes against
+// the shipped daemon passes this constant rather than the helper's
+// in-process default.
+const wire_read_ms = 15_000
+
 // Milliseconds between the scripted peer's chunks. Nine chunks make an answer
 // occupy about eight tenths of a second, which has to hold a terminal's 250 ms
 // refresh, the capture it triggers, and the sampling that reads it.
@@ -340,8 +358,17 @@ fn attach_wire(port: Int, bearer: String, session: String) -> Socket {
     wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
   assert string.starts_with(response, "HTTP/1.1 101 ")
     as "the invited operator's credential upgrades on the shipped route"
-  let #(_, transfer) = session_socket_test.begin(socket, session)
-  let _ = session_socket_test.drain(socket, transfer, 0, [], 32)
+  let #(_, transfer) =
+    session_socket_test.begin(socket, session, within_ms: wire_read_ms)
+  let _ =
+    session_socket_test.drain(
+      socket,
+      transfer,
+      0,
+      [],
+      32,
+      within_ms: wire_read_ms,
+    )
   socket
 }
 
@@ -372,6 +399,7 @@ fn held_behind_a_running_turn(
         #("strand", json.String("main")),
         #("text", json.String(window_prompt)),
       ]),
+      within_ms: wire_read_ms,
     )
   assert field(outcome, "reply_to") == json.Int(bob_prompt_id)
     as "the acknowledgement answers Bob's own prompt and no pushed frame"
@@ -585,7 +613,7 @@ fn notices_for(socket: Socket, wanted: List(Int), remaining: Int) -> Nil {
     [_, ..] -> {
       assert remaining > 0
         as "every answer's commit notice reaches the wire client"
-      let frame = wire.frame(socket)
+      let frame = wire.frame(socket, within_ms: wire_read_ms)
       let seen = case field(frame, "event") {
         json.String("committed") -> [field(frame, "seq")]
         _other -> []
@@ -606,11 +634,20 @@ fn wire_entries(socket: Socket) -> List(entry.Entry) {
       bob_catch_up_id,
       "catch_up",
       json.Object([#("from_seq", json.Int(0))]),
+      within_ms: wire_read_ms,
     )
   let assert json.String(transfer) =
     field(field(response, "body"), "snapshot_id")
     as "the catch-up owns a new fixed cut"
-  let chunks = session_socket_test.drain(socket, transfer, 0, [], 128)
+  let chunks =
+    session_socket_test.drain(
+      socket,
+      transfer,
+      0,
+      [],
+      128,
+      within_ms: wire_read_ms,
+    )
   chunks
   |> list.filter_map(fn(chunk) {
     case field(chunk, "record_id") {
@@ -712,7 +749,7 @@ fn revoke_mid_answer(
 fn pushed_prefix(socket: Socket, answer: String, remaining: Int) -> Nil {
   assert remaining > 0
     as "the third answer is pushed to the wire client before its budget runs out"
-  let frame = wire.frame(socket)
+  let frame = wire.frame(socket, within_ms: wire_read_ms)
   let text = case field(frame, "event") {
     json.String("stream_delta") -> field(field(frame, "body"), "text")
     _other -> json.Null

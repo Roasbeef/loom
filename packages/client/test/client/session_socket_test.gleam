@@ -153,20 +153,33 @@ fn field(value, name) {
 
 // One request, answered past whatever the hub pushed around it. That
 // notices arrive at all is asserted on its own below; here they are noise,
-// and `wire.reply` is where the reason lives.
-fn request(socket, id, command, body) {
-  wire.reply(socket, id, command, body)
+// and `wire.reply` is where the reason lives. `within_ms` is forwarded
+// unchanged, for the reason `wire.frame`'s own doc gives.
+fn request(socket, id, command, body, within_ms within_ms: Int) {
+  wire.reply(socket, id, command, body, within_ms:)
 }
 
 /// Collects a fixture transfer under an explicit finite credit budget.
 ///
+/// `within_ms` is this call's own read budget and not a constant of this
+/// module: an in-process fixture stays at `1000`, and a fixture attached to
+/// the shipped daemon passes its own wider derivation. See `wire.frame`'s
+/// doc for why the budget travels with the caller.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_socket_test.drain(socket, id, 0, [], 32)
+/// // session_socket_test.drain(socket, id, 0, [], 32, within_ms: 1000)
 /// ```
 @internal
-pub fn drain(socket, snapshot_id, index, chunks, remaining) {
+pub fn drain(
+  socket,
+  snapshot_id,
+  index,
+  chunks,
+  remaining,
+  within_ms within_ms: Int,
+) {
   assert remaining > 0 as "the fixture supplies a finite credit budget"
   let frame =
     request(
@@ -177,6 +190,7 @@ pub fn drain(socket, snapshot_id, index, chunks, remaining) {
         #("snapshot_id", json.String(snapshot_id)),
         #("index", json.Int(index)),
       ]),
+      within_ms:,
     )
   assert string.byte_size(json.to_string(frame)) <= 65_536
   case field(frame, "event") {
@@ -187,6 +201,7 @@ pub fn drain(socket, snapshot_id, index, chunks, remaining) {
         index + 1,
         [field(frame, "body"), ..chunks],
         remaining - 1,
+        within_ms:,
       )
     json.String("snapshot_end") -> list.reverse(chunks)
     other ->
@@ -199,19 +214,23 @@ pub fn drain(socket, snapshot_id, index, chunks, remaining) {
 
 /// Starts an independent server-codec subscription without a TUI decoder.
 ///
+/// See `drain`'s doc for what `within_ms` means here: the caller's own read
+/// budget, wide only where the caller actually pays for a real admission.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_socket_test.begin(socket, selected_session)
+/// // session_socket_test.begin(socket, selected_session, within_ms: 1000)
 /// ```
 @internal
-pub fn begin(socket, id) {
+pub fn begin(socket, id, within_ms within_ms: Int) {
   let frame =
     request(
       socket,
       1,
       "subscribe",
       json.Object([#("session", json.String(id))]),
+      within_ms:,
     )
   let body = field(frame, "body")
   let assert json.String(snapshot_id) = field(body, "snapshot_id")
@@ -244,7 +263,7 @@ pub fn admission_slower_than_the_initializer_budget_still_serves_test() {
     // A served frame is the assertion: the socket outlived a slow admission
     // and is attached to the gateway that answered late, so its subscribe was
     // answered with a real transfer rather than a closed socket.
-    let #(_, snapshot_id) = begin(socket, id)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
     assert snapshot_id != ""
     ffi_ws.tcp_close(socket)
   })
@@ -254,7 +273,7 @@ pub fn coalesced_socket_frames_cannot_queue_multiple_gateway_requests_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_, snapshot_id) = begin(socket, id)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
     let assert Ok(subject) = registry.lookup(harness.hub.name)
       as "the original gateway subject is available"
     let assert Ok(pid) = process.subject_owner(subject)
@@ -299,7 +318,7 @@ pub fn coalesced_socket_frames_cannot_queue_multiple_gateway_requests_test() {
       as "release the original gateway before assertions"
     assert ready == poll.Answered(1)
     assert retained == 1
-    let response = wire.frame(socket)
+    let response = wire.frame(socket, within_ms: 1000)
     assert field(response, "event") == json.String("snapshot_chunk")
     ffi_ws.tcp_close(socket)
   })
@@ -379,9 +398,10 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
       as "the pending question commits"
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(initial, snapshot_id) = begin(socket, id)
+    let #(initial, snapshot_id) = begin(socket, id, within_ms: 1000)
     let initial_metadata =
-      drain(socket, snapshot_id, 0, [], 20) |> decoded_record("metadata")
+      drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+      |> decoded_record("metadata")
     let assert json.Array(initial_cells) = field(initial_metadata, "cells")
       as "the pending question is in the coherent cut"
     assert list.any(initial_cells, fn(cell) {
@@ -425,12 +445,14 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
         60,
         "catch_up",
         json.Object([#("from_seq", field(initial, "next_seq"))]),
+        within_ms: 1000,
       )
     let assert json.String(catch_id) =
       field(field(caught, "body"), "snapshot_id")
       as "metadata-only changes still start reconciliation"
     let metadata =
-      drain(socket, catch_id, 0, [], 20) |> decoded_record("metadata")
+      drain(socket, catch_id, 0, [], 20, within_ms: 1000)
+      |> decoded_record("metadata")
     let assert json.Array(pending_cells) = field(metadata, "cells")
       as "the next coherent cut contains current pending questions"
     assert !list.any(pending_cells, fn(cell) {
@@ -448,13 +470,15 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
         json.Object([
           #("ids", json.Array([json.String("esc-1"), json.String("missing")])),
         ]),
+        within_ms: 1000,
       )
     let body = field(resolved, "body")
     assert field(body, "window") == json.String("escalations")
     let assert json.String(resolution_id) = field(body, "snapshot_id")
       as "exact lookup uses the same credit protocol"
     let metadata =
-      drain(socket, resolution_id, 0, [], 20) |> decoded_record("metadata")
+      drain(socket, resolution_id, 0, [], 20, within_ms: 1000)
+      |> decoded_record("metadata")
     assert field(metadata, "missing") == json.Array([json.String("missing")])
     let assert json.Array([cell]) = field(metadata, "cells")
       as "the prefix neighbor is not part of the exact query"
@@ -489,8 +513,8 @@ pub fn real_metadata_and_large_entry_are_fragmented_without_legacy_reads_test() 
     let #(entry_id, _) = insert_entry(harness, 818, text)
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_, snapshot_id) = begin(socket, id)
-    let chunks = drain(socket, snapshot_id, 0, [], 100)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let chunks = drain(socket, snapshot_id, 0, [], 100, within_ms: 1000)
     let metadata = decoded_record(chunks, "metadata")
     let assert json.Array(cells) = field(metadata, "cells")
       as "metadata retains coherent cells"
@@ -514,7 +538,7 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(body, snapshot_id) = begin(socket, id)
+    let #(body, snapshot_id) = begin(socket, id, within_ms: 1000)
     let assert json.Int(next_seq) = field(body, "next_seq")
       as "the cut names its first unseen sequence"
     let #(entry_id, seq) = insert_entry(harness, 819, "after cut")
@@ -524,12 +548,12 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
     // but what is announced is a notice. The record behind it still waits
     // for credit, which is the property this test is about and the reason
     // the notice was chosen over an inline push.
-    let notice = wire.frame(socket)
+    let notice = wire.frame(socket, within_ms: 1000)
     assert field(notice, "event") == json.String("committed")
     assert field(notice, "seq") == json.Int(seq)
     let assert Error(_) = ffi_ws.tcp_receive(socket, 1, 50)
       as "without credit no live payload enters the socket"
-    let initial = drain(socket, snapshot_id, 0, [], 20)
+    let initial = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
     assert !list.any(initial, fn(chunk) {
       field(chunk, "record_id") == json.String(ids.entry_id_to_string(entry_id))
     })
@@ -539,11 +563,12 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
         100,
         "catch_up",
         json.Object([#("from_seq", json.Int(next_seq))]),
+        within_ms: 1000,
       )
     let assert json.String(snapshot_id) =
       field(field(response, "body"), "snapshot_id")
       as "catch-up owns a new fixed cut"
-    let caught_up = drain(socket, snapshot_id, 0, [], 20)
+    let caught_up = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
     let assert Ok(entry.CustomEntry(seq: observed, ..)) =
       codec.decode_entry(decoded_record(
         caught_up,
@@ -567,10 +592,10 @@ pub fn a_pushed_frame_is_written_and_leaves_the_next_reply_intact_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_body, snapshot_id) = begin(socket, id)
+    let #(_body, snapshot_id) = begin(socket, id, within_ms: 1000)
     let #(_entry_id, seq) = insert_entry(harness, 820, "pushed")
 
-    let notice = wire.frame(socket)
+    let notice = wire.frame(socket, within_ms: 1000)
     assert field(notice, "v") == json.Int(2)
     assert field(notice, "event") == json.String("committed")
     assert field(notice, "seq") == json.Int(seq)
@@ -581,7 +606,7 @@ pub fn a_pushed_frame_is_written_and_leaves_the_next_reply_intact_test() {
 
     // The transfer this socket had open before the push is still its own,
     // and its credits are still answered in order.
-    assert drain(socket, snapshot_id, 0, [], 20) != []
+    assert drain(socket, snapshot_id, 0, [], 20, within_ms: 1000) != []
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
@@ -598,6 +623,7 @@ pub fn real_session_upgrade_carries_authoritative_identity_test() {
         1,
         "subscribe",
         json.Object([#("session", json.String(id))]),
+        within_ms: 1000,
       )
     assert field(metadata, "v") == json.Int(2)
     assert field(metadata, "event") == json.String("snapshot_begin")
@@ -608,7 +634,7 @@ pub fn real_session_upgrade_carries_authoritative_identity_test() {
     assert field(field(body, "origin"), "name") == json.String("Owner")
     let assert json.String(snapshot_id) = field(body, "snapshot_id")
       as "transfer identity is present"
-    let chunks = drain(socket, snapshot_id, 0, [], 20)
+    let chunks = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
     assert chunks != []
     let _ = ffi_ws.tcp_close(socket)
     Nil
@@ -626,6 +652,7 @@ pub fn original_gateway_death_closes_real_socket_test() {
         1,
         "subscribe",
         json.Object([#("session", json.String(id))]),
+        within_ms: 1000,
       )
     // The test host attachment exposes no restartable network handle. Killing
     // this original actor must terminate the upgraded connection immediately.

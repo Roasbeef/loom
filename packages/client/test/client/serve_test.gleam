@@ -343,12 +343,12 @@ fn subscribed_cut(
   let #(socket, headers) =
     wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
   assert string.contains(headers, "101 Switching Protocols")
-  let #(begin, snapshot_id) = transfer.begin(socket, id)
+  let #(begin, snapshot_id) = transfer.begin(socket, id, within_ms: 1000)
   assert wire_field(begin, "session_id") == json.String(id)
   assert wire_field(begin, "epoch") == json.String(serving.ready.epoch)
   assert wire_field(begin, "incarnation") == json.String(incarnation)
   assert wire_field(begin, "role") == json.String("owner")
-  assert transfer.drain(socket, snapshot_id, 0, [], 32) != []
+  assert transfer.drain(socket, snapshot_id, 0, [], 32, within_ms: 1000) != []
   let _closed = ffi_ws.tcp_close(socket)
   Nil
 }

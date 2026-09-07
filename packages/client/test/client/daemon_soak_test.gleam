@@ -266,7 +266,7 @@ fn attach(serving: daemon_main.Serving(serve.Instance), token, id) {
   let #(socket, headers) =
     wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
   assert string.contains(headers, "101 Switching Protocols")
-  let #(begin, snapshot) = transfer.begin(socket, id)
+  let #(begin, snapshot) = transfer.begin(socket, id, within_ms: 1000)
   assert field(begin, "session_id") == json.String(id)
   assert field(begin, "epoch") == json.String(serving.ready.epoch)
   #(socket, snapshot)
@@ -378,7 +378,7 @@ fn snapshot_measurement(
     wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
   let connected = bootstrap.monotonic_time_ms()
   assert string.contains(headers, "101 Switching Protocols")
-  let #(begin, snapshot) = transfer.begin(socket, id)
+  let #(begin, snapshot) = transfer.begin(socket, id, within_ms: 1000)
   let subscribed = bootstrap.monotonic_time_ms()
   assert field(begin, "session_id") == json.String(id)
   assert field(begin, "epoch") == json.String(serving.ready.epoch)
@@ -426,6 +426,7 @@ fn timed_drain(socket, snapshot_id, index, accumulated, remaining) {
         #("snapshot_id", json.String(snapshot_id)),
         #("index", json.Int(index)),
       ]),
+      within_ms: 1000,
     )
   let completed = bootstrap.monotonic_time_ms()
   assert string.byte_size(json.to_string(frame)) <= 65_536
@@ -549,6 +550,7 @@ fn stall_entry(socket, snapshot, index, remaining) {
         #("snapshot_id", json.String(snapshot)),
         #("index", json.Int(index)),
       ]),
+      within_ms: 1000,
     )
   assert field(frame, "event") == json.String("snapshot_chunk")
   let body = field(frame, "body")
