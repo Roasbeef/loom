@@ -12,6 +12,20 @@ import storage/catalogue
 import storage/domain
 
 pub fn isolated_resolution_keeps_runtime_config_independent_of_domain_test() {
+  assert_runtime_configuration("anthropic", "", "anthropic-messages")
+}
+
+pub fn responses_resolution_captures_the_distinct_adapter_api_test() {
+  assert_runtime_configuration(
+    "openai-responses",
+    "auth = \"api-key\"\n",
+    "openai-responses",
+  )
+}
+
+// Both dialects pass through the actual saved-session resolver. Neither the
+// daemon default nor the shared domain may replace that session's model facts.
+fn assert_runtime_configuration(dialect: String, auth: String, api: String) {
   let fixture = owned_assembly_test.settings()
   let state = filepath.directory_name(fixture.session_path)
   let assert Ok(Nil) = simplifile.create_directory_all(state)
@@ -19,21 +33,17 @@ pub fn isolated_resolution_keeps_runtime_config_independent_of_domain_test() {
   let #(id, _) = ids.mint_session(ids.generator(clock.fixed(1), 712))
   let id = ids.session_id_to_string(id)
   let runtime_config = state <> "/runtime.toml"
-  let assert Ok(Nil) =
-    simplifile.write(
-      runtime_config,
-      "
+  let assert Ok(Nil) = simplifile.write(runtime_config, "
 [models.session_b]
-dialect = \"anthropic\"
+dialect = \"" <> dialect <> "\"
+" <> auth <> "
 api_key_env = \"UNUSED_TEST_KEY\"
 model_id = \"session-b-model\"
 context_window = 1000
 max_output_tokens = 100
 [roles]
 main = [\"session_b\"]
-",
-    )
-    as "session B owns its runtime provider configuration"
+") as "session B owns its runtime provider configuration"
   let record =
     catalogue.Registration(
       id,
@@ -64,6 +74,7 @@ main = [\"session_b\"]
     as "session B runtime ignores domain A maintenance configuration"
   assert settings.model.provider == "session_b"
   assert settings.model.model_id == "session-b-model"
+  assert settings.api == api
   assert domain.digest_beside(selected.memory_path)
     == memory.digest_beside(selected.memory_path)
   assert settings.domain_paths
