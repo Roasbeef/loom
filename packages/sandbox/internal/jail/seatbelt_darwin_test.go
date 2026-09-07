@@ -163,7 +163,7 @@ func TestSeatbeltJailedPathFindsHomebrewTools(t *testing.T) {
 	// Mirrors run.go: an inherited PATH naming only the Homebrew
 	// directory, folded with the fixed defaults by BuildPath, is what the
 	// jailed process actually receives as its PATH.
-	jailedPath := strings.Join(BuildPath(homebrewBin, nil), ":")
+	jailedPath := strings.Join(BuildPath("", homebrewBin, nil), ":")
 
 	argv := plan.Args([]string{"/bin/sh", "-c", "command -v rg"})
 	cmd := exec.Command(argv[0], argv[1:]...)
