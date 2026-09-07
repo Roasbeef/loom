@@ -30,6 +30,7 @@ import core/clock
 import core/json.{type JsonValue}
 import core/message
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
@@ -46,6 +47,7 @@ import support/rig
 import support/script
 import tools/hashline
 import weft/actor
+import weft/poll
 
 pub fn jailed_end_to_end_test() {
   case jail.build_helper() {
@@ -412,6 +414,32 @@ fn ticking(from: Int, by: Int) -> clock.Clock {
 
 // --- the crash rider (pi §0.5, live) --------------------------------------
 
+// How long the run may take to *admit* the bash call: the scripted
+// gateway's turn, the planner's commit, and the broker's clearance. This
+// is the part of the wait that scales with how loaded the whole harness
+// is, and it is deliberately not the same budget as the one below.
+const crash_admission_wait_ms = 60_000
+
+// How long the jail may take to spawn the payload, measured from the
+// moment the tool intent is durable. Bounding the marker wait from
+// admission rather than from the prompt is the whole of the #255 fix:
+// before it, a run whose gateway turn and planner commit ate most of the
+// window left the bwrap spawn a remainder nobody could name, so "slow to
+// start" and "never started" produced the same failure.
+const crash_marker_wait_ms = 30_000
+
+// The payload's own life, and the bash tool's wall budget with it.
+//
+// It must be *strictly wider* than `crash_marker_wait_ms`, and by a
+// wide-enough margin that wherever inside the marker window the payload
+// actually started, it is still running when the kill lands — the rider
+// proves an effect interrupted mid-flight, so a payload that had already
+// exited would prove nothing. Four times the marker wait is the margin;
+// the previous single 30 s number for the marker wait, the command's
+// sleep and the tool budget at once meant a marker observed at 25 s left
+// five seconds of payload, which is the shape issue #255 recorded.
+const crash_command_ms = 120_000
+
 fn run_crash(helper_path: String) -> Nil {
   let rig_jail =
     jail.start(
@@ -425,7 +453,10 @@ fn run_crash(helper_path: String) -> Nil {
     script.ToolUseTurn(
       call_id: "call_bash_c1",
       tool: "bash",
-      arguments: bash_args(": > started.marker && sleep 30"),
+      arguments: bash_args_within(
+        ": > started.marker && sleep " <> int.to_string(crash_command_ms / 1000),
+        crash_command_ms,
+      ),
       input_tokens: 50,
       output_tokens: 5,
     ),
@@ -442,10 +473,32 @@ fn run_crash(helper_path: String) -> Nil {
   let assert Ok(runtime) = api.open(sess, effects, options)
   let assert Ok(op) = api.prompt(runtime, [user("Run the long task.")])
 
-  // Wait until the jailed command is provably mid-execution (its marker
-  // exists), so the kill lands with the tool intent durable and the
-  // external effect genuinely in flight.
-  assert wait_for_file(rig_jail.workspace <> "/started.marker", 30_000)
+  // The two barriers before the kill, and they are two on purpose.
+  //
+  // The first is admission: the planner commits the assistant's tool
+  // intent before the broker dispatches it, so a `ToolUse` message in the
+  // transcript is the closest thing this fixture has to "the call has
+  // been handed to the jail". It is the observable the rider actually
+  // wants a clock on, because everything ahead of it — the scripted
+  // gateway's turn, the commit — is harness latency rather than jail
+  // latency.
+  assert wait_until(
+    fn() { tool_intent_committed(sess) },
+    crash_admission_wait_ms,
+  )
+    as "the bash tool call must reach the transcript"
+
+  // The second is the payload itself: with admission already observed,
+  // this budget covers only the helper's exec and the bwrap spawn, so an
+  // expiry here names a jail that never started rather than a run that
+  // was merely slow to get here. Once the marker exists the command is
+  // provably mid-execution, and it has `crash_command_ms` of life left,
+  // so the kill lands with the tool intent durable and the external
+  // effect genuinely in flight.
+  assert wait_for_file(
+    rig_jail.workspace <> "/started.marker",
+    crash_marker_wait_ms,
+  )
     as "the jailed bash command must start before the kill"
 
   // The whole-tree kill: close kills the supervision tree (durable
@@ -502,9 +555,17 @@ fn run_crash(helper_path: String) -> Nil {
 // --- fixtures and helpers -------------------------------------------------
 
 fn bash_args(command: String) -> JsonValue {
+  bash_args_within(command, 30_000)
+}
+
+// The same arguments with the tool's wall budget named by the caller.
+// Only the crash rider needs it: every other call in this suite writes a
+// file and exits, so the default is a ceiling nothing approaches, while
+// the rider's payload has to outlive the barrier that waits for it.
+fn bash_args_within(command: String, timeout_ms: Int) -> JsonValue {
   json.Object([
     #("command", json.String(command)),
-    #("timeout_ms", json.Int(30_000)),
+    #("timeout_ms", json.Int(timeout_ms)),
   ])
 }
 
@@ -548,18 +609,50 @@ fn ledger_total(sess: Session) -> Int {
   list.fold(rows, 0, fn(total, row) { total + row.usage.total_tokens })
 }
 
-fn wait_for_file(path: String, remaining_ms: Int) -> Bool {
-  case simplifile.is_file(path) {
-    Ok(True) -> True
-    _ ->
-      case remaining_ms <= 0 {
-        True -> False
-        False -> {
-          process.sleep(20)
-          wait_for_file(path, remaining_ms - 20)
-        }
+fn wait_for_file(path: String, within_ms: Int) -> Bool {
+  wait_until(fn() { simplifile.is_file(path) == Ok(True) }, within_ms)
+}
+
+// Polls a fixture observable until it holds, or the budget runs out.
+//
+// The loop is `weft/poll`'s rather than a hand-rolled recursion, which
+// buys the two properties a barrier needs: the budget is measured on the
+// monotonic clock, so it means what it says on a loaded runner, and the
+// first attempt is immediate with a last one made at the deadline, so an
+// event that lands the moment the barrier is reached costs nothing.
+fn wait_until(settled: fn() -> Bool, within_ms: Int) -> Bool {
+  let outcome: poll.Outcome(Nil, Nil) =
+    poll.until(within: within_ms, every: 20, attempt: fn() {
+      case settled() {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
       }
+    })
+
+  case outcome {
+    poll.Answered(Nil) -> True
+    poll.Expired -> False
+
+    // Unreachable: the probe never reports `Fail`. The arm is written
+    // out because that is what makes the claim checkable.
+    poll.Failed(Nil) -> False
   }
+}
+
+// Whether the assistant's tool intent has been committed to the
+// transcript — the planner's last write before the broker is asked to
+// dispatch, and so the fixture's admission signal.
+fn tool_intent_committed(sess: Session) -> Bool {
+  list.any(projected(sess), fn(msg) {
+    case msg {
+      message.AssistantMessage(stop_reason: message.ToolUse, ..) -> True
+
+      message.AssistantMessage(..)
+      | message.UserMessage(..)
+      | message.ToolResultMessage(..)
+      | message.CustomMessage(..) -> False
+    }
+  })
 }
 
 fn first_text(content: List(message.ToolResultBlock)) -> String {
