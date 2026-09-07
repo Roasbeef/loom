@@ -1494,16 +1494,28 @@ fn job_list_plan(
   )
 }
 
+// A row carries what its state licenses for the same reason a poll's
+// answer does: `cap/job` decodes both through one `state` reader, so a
+// row naming a terminal state without the fields that state licenses is
+// not a thinner answer — it is one the program cannot decode at all. A
+// strand acquires a terminal job the first time anything it started ends,
+// so a listing that omitted these would fail for every strand that had
+// ever run a job.
 fn job_row(row: job.Listed) -> MsgPackValue {
-  msgpack.MapValue([
-    #(msgpack.StringValue("job_id"), msgpack.StringValue(row.id)),
-    #(
-      msgpack.StringValue("state"),
-      msgpack.StringValue(job.state_name(row.state)),
-    ),
-    #(msgpack.StringValue("age_ms"), msgpack.IntValue(row.age_ms)),
-    #(msgpack.StringValue("deadline_ms"), msgpack.IntValue(row.deadline_ms)),
-  ])
+  msgpack.MapValue(list.append(
+    [
+      #(msgpack.StringValue("job_id"), msgpack.StringValue(row.id)),
+      #(
+        msgpack.StringValue("state"),
+        msgpack.StringValue(job.state_name(row.state)),
+      ),
+      #(msgpack.StringValue("age_ms"), msgpack.IntValue(row.age_ms)),
+      #(msgpack.StringValue("deadline_ms"), msgpack.IntValue(row.deadline_ms)),
+    ],
+    list.map(job_state_fields(row.state), fn(field) {
+      #(msgpack.StringValue(field.0), field.1)
+    }),
+  ))
 }
 
 fn job_kill_plan(
