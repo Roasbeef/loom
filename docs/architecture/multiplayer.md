@@ -1,11 +1,15 @@
 # Several operators on one session
 
-**Status: on `main`, with acceptance still incomplete.** The managed v2
-daemon, per-principal credentials, attributed commands, presence, pushed
-delivery and native TUI integration replace the baseline surveyed at
-`f019322`. The fixtures below each cover part of that contract; the
-scenario matrix is an acceptance target, not a claim that one test
-exercises every row.
+**Status: on `main`.** The managed v2 daemon, per-principal credentials,
+attributed commands, presence, pushed delivery and native TUI integration
+replace the baseline surveyed at `f019322`, and live delivery is proven by
+its own shipped fixture. What remains open is the release acceptance, not
+this design: the scenario matrix below is that acceptance target, two of
+its rows are proven only at host level rather than from the shipped
+binary, and the release evidence the handoff lists (the resource soak
+behind #247, hosted latency in #241, the joined load and crash
+observations in #246, and filesystem confinement in #242) is still owed.
+The last section says which fixture proves which row.
 
 This page is for implementers tracing a collaborator's command from
 authentication to its durable result and each client's rendered frame.
