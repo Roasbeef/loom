@@ -151,6 +151,13 @@ fn field(value, name) {
   value
 }
 
+// One request, answered past whatever the hub pushed around it. That
+// notices arrive at all is asserted on its own below; here they are noise,
+// and `wire.reply` is where the reason lives.
+fn request(socket, id, command, body) {
+  wire.reply(socket, id, command, body)
+}
+
 /// Collects a fixture transfer under an explicit finite credit budget.
 ///
 /// ## Examples
@@ -162,7 +169,7 @@ fn field(value, name) {
 pub fn drain(socket, snapshot_id, index, chunks, remaining) {
   assert remaining > 0 as "the fixture supplies a finite credit budget"
   let frame =
-    wire.send(
+    request(
       socket,
       index + 2,
       "snapshot_next",
@@ -200,7 +207,7 @@ pub fn drain(socket, snapshot_id, index, chunks, remaining) {
 @internal
 pub fn begin(socket, id) {
   let frame =
-    wire.send(
+    request(
       socket,
       1,
       "subscribe",
@@ -413,7 +420,7 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
       )
       as "resolution and a prefix neighbor commit without new entries"
     let caught =
-      wire.send(
+      request(
         socket,
         60,
         "catch_up",
@@ -434,7 +441,7 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
     })
 
     let resolved =
-      wire.send(
+      request(
         socket,
         70,
         "escalations_get",
@@ -512,6 +519,14 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
       as "the cut names its first unseen sequence"
     let #(entry_id, seq) = insert_entry(harness, 819, "after cut")
     assert seq == next_seq
+
+    // The commit is announced — that is what `protocol-change/018` added —
+    // but what is announced is a notice. The record behind it still waits
+    // for credit, which is the property this test is about and the reason
+    // the notice was chosen over an inline push.
+    let notice = wire.frame(socket)
+    assert field(notice, "event") == json.String("committed")
+    assert field(notice, "seq") == json.Int(seq)
     let assert Error(_) = ffi_ws.tcp_receive(socket, 1, 50)
       as "without credit no live payload enters the socket"
     let initial = drain(socket, snapshot_id, 0, [], 20)
@@ -519,7 +534,7 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
       field(chunk, "record_id") == json.String(ids.entry_id_to_string(entry_id))
     })
     let response =
-      wire.send(
+      request(
         socket,
         100,
         "catch_up",
@@ -541,13 +556,44 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
   })
 }
 
+/// The transport half of `protocol-change/018`: a frame the hub decided to
+/// send while this socket had nothing outstanding is actually written, and
+/// having written it does not disturb the request that follows.
+///
+/// Both writes happen on the websocket process, so what this proves is
+/// that the second one is still correlated: the notice carries no
+/// `reply_to`, the catch-up that follows carries its own.
+pub fn a_pushed_frame_is_written_and_leaves_the_next_reply_intact_test() {
+  fixture(fn(port, credential, id, _, harness) {
+    let #(socket, _) =
+      wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
+    let #(_body, snapshot_id) = begin(socket, id)
+    let #(_entry_id, seq) = insert_entry(harness, 820, "pushed")
+
+    let notice = wire.frame(socket)
+    assert field(notice, "v") == json.Int(2)
+    assert field(notice, "event") == json.String("committed")
+    assert field(notice, "seq") == json.Int(seq)
+    assert field(field(notice, "body"), "strand") == json.String("main")
+    let assert json.Object(fields) = notice as "the notice is an object"
+    assert list.key_find(fields, "reply_to") == Error(Nil)
+      as "a pushed frame answers no command"
+
+    // The transfer this socket had open before the push is still its own,
+    // and its credits are still answered in order.
+    assert drain(socket, snapshot_id, 0, [], 20) != []
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn real_session_upgrade_carries_authoritative_identity_test() {
   fixture(fn(port, credential, id, epoch, _) {
     let #(socket, headers) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
     assert string.contains(headers, "101 Switching Protocols")
     let metadata =
-      wire.send(
+      request(
         socket,
         1,
         "subscribe",
@@ -575,7 +621,7 @@ pub fn original_gateway_death_closes_real_socket_test() {
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
     assert string.contains(headers, "101 Switching Protocols")
     let _ =
-      wire.send(
+      request(
         socket,
         1,
         "subscribe",

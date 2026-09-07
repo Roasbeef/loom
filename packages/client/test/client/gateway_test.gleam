@@ -3,6 +3,7 @@
 //// and the semantic error codes of the command table.
 
 import broker/escalation as broker_escalation
+import broker/internal/call
 import broker/policy.{type Grant}
 import client/catalog
 import client/gateway
@@ -25,6 +26,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/operation
 import machine/strand as machine_strand
@@ -117,21 +119,59 @@ fn test_catalog() -> catalog.Catalog {
   )
 }
 
+// The one assistant turn every scripted provider in this module answers
+// with. Named here because two surfaces now send it: the settling default
+// and the parked one the queue tests release by hand.
+fn scripted_answer() -> message.AgentMessage {
+  message.AssistantMessage(
+    content: [message.AssistantText(text: "ok", text_signature: None)],
+    api: "test",
+    provider: "acme",
+    model: "loom-1",
+    response_model: None,
+    response_id: None,
+    diagnostics: None,
+    usage: effects.zero_usage(),
+    stop_reason: message.Stop,
+    deferred: None,
+    error_message: None,
+    raw_stop_reason: None,
+    end_turn: Some(True),
+    timestamp: 0,
+  )
+}
+
 fn start_harness_full(
   catalogue: Option(catalog.Catalog),
   registry: Option(tool.Registry),
   schedules: Option(scheduleadmin.Admin),
 ) -> Harness {
-  start_harness_reserved(catalogue, registry, schedules, None)
+  start_harness_reserved(catalogue, registry, schedules, None, SettlingProvider)
 }
 
 /// Builds the same scripted gateway against a daemon-reserved canonical ID.
 @internal
 pub fn reserved_fixture(id: ids.SessionId) -> Harness {
-  start_harness_reserved(None, None, None, Some(id))
+  start_harness_reserved(None, None, None, Some(id), SettlingProvider)
 }
 
-fn start_harness_reserved(catalogue, registry, schedules, reserved) -> Harness {
+// The provider a harness runs its runs against. The default settles the
+// first turn immediately, which is what every command test wants and what
+// makes a prompt's entry readable in the same breath. A supplied surface
+// is how a test gets a strand that is *actually* busy — nothing else in
+// this fixture can hold an operation open.
+type Provider {
+  SettlingProvider
+  ScriptedProvider(surface: effects.ProviderSurface)
+}
+
+fn start_harness_reserved(
+  catalogue,
+  registry,
+  schedules,
+  reserved,
+  provider: Provider,
+) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
   case reserved {
@@ -163,34 +203,19 @@ fn start_harness_reserved(catalogue, registry, schedules, reserved) -> Harness {
       clock: clock.stepping(from: 1_756_000_000_000, by: 3),
       entropy:,
       timers: effects.real_timers(),
-      provider: effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
-        let events = process.new_subject()
-        let response =
-          message.AssistantMessage(
-            content: [
-              message.AssistantText(text: "ok", text_signature: None),
-            ],
-            api: "test",
-            provider: "acme",
-            model: "loom-1",
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: effects.zero_usage(),
-            stop_reason: message.Stop,
-            deferred: None,
-            error_message: None,
-            raw_stop_reason: None,
-            end_turn: Some(True),
-            timestamp: 0,
-          )
-        let assert Ok(settled) = stream.settle(response)
-        process.send(
-          events,
-          stream.Settled(message: settled, usage: effects.zero_usage()),
-        )
-        stream.immediate(events:, cancel: fn() { Nil })
-      }),
+      provider: case provider {
+        ScriptedProvider(surface:) -> surface
+        SettlingProvider ->
+          effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
+            let events = process.new_subject()
+            let assert Ok(settled) = stream.settle(scripted_answer())
+            process.send(
+              events,
+              stream.Settled(message: settled, usage: effects.zero_usage()),
+            )
+            stream.immediate(events:, cancel: fn() { Nil })
+          })
+      },
       tools: effects.ToolSurface(
         clear: fn(_query) { effects.ClearanceRefused(reason: "no tools") },
         run: fn(_run) { effects.ToolFailed(reason: "no tools") },
@@ -214,8 +239,17 @@ fn start_harness_reserved(catalogue, registry, schedules, reserved) -> Harness {
         writer.Routed(forwarder_name),
       ]),
     )
-  // Network fixtures make every old whole-history path an executable failure.
+  // Network fixtures make every old whole-history path an executable
+  // failure. What "whole" means is the bound, not the call: since
+  // `protocol-change/018` the network hub pulls above its own high-water
+  // on every commit hint, so it scans — always from a lower bound it
+  // computed, never from the beginning. The guards below therefore refuse
+  // a scan with no lower bound and pass one that names a bound through to
+  // the real backend. That is a check on the query's shape, not its size:
+  // the prime at start names sequence one and reads the whole history
+  // once, which is the same read the host fixture always made.
   // The separate snapshot_reader still borrows the real backend capability.
+  let backend = runtime.session.store
   let runtime = case reserved {
     None -> runtime
     Some(_) ->
@@ -224,15 +258,24 @@ fn start_harness_reserved(catalogue, registry, schedules, reserved) -> Harness {
         session: session.Session(
           ..runtime.session,
           store: storage.Storage(
-            ..runtime.session.store,
-            scan_entries: fn(_, _) {
-              panic as "network path must not scan whole entries"
+            ..backend,
+            scan_entries: fn(handle, query: storage.EntryScan) {
+              case query.from_seq {
+                Some(_) -> backend.scan_entries(handle, query)
+                None -> panic as "network path must not scan whole entries"
+              }
             },
-            scan_branch: fn(_, _) {
-              panic as "network path must not scan whole branches"
+            scan_branch: fn(handle, query: storage.BranchScan) {
+              case query.cursor {
+                Some(_) -> backend.scan_branch(handle, query)
+                None -> panic as "network path must not scan whole branches"
+              }
             },
-            scan_usage: fn(_, _) {
-              panic as "network path must not scan whole usage history"
+            scan_usage: fn(handle, query: storage.UsageScan) {
+              case query.from_seq {
+                Some(_) -> backend.scan_usage(handle, query)
+                None -> panic as "network path must not scan whole usage history"
+              }
             },
             get_entries: fn(_, _) {
               panic as "network path must not decode whole entry records"
@@ -298,12 +341,66 @@ fn current_question_seq(harness: Harness, id: String) -> Int {
   }
 }
 
+// One authenticated attachment on a *host fixture* hub: it subscribes with
+// a cast and reads the snapshot back off the shared sink, because a host
+// hub answers every command through the sink.
 fn authenticated(
   harness: Harness,
   role: access.Authority,
   socket: process.Pid,
 ) {
-  let principal = access.Principal("alice", "Alice", access.MemberPrincipal)
+  let #(handle, auth, closed) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      harness.inbox,
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      role,
+      socket,
+    )
+  gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
+  let _snapshot = next_reply(harness, 700, 8)
+  #(handle, auth, closed)
+}
+
+// The same attachment on a *network* hub, which answers a command through
+// the request's own reply capability and reserves the sink for frames it
+// pushed. Two freedoms the push tests need: a peer whose frames are not
+// mixed with another's, and a second hub whose priming is the thing under
+// test.
+fn network_socket(
+  hub: gateway.Gateway,
+  runtime: api.Runtime,
+  inbox: Subject(String),
+  principal: access.Principal,
+  role: access.Authority,
+) {
+  let #(handle, auth, closed) =
+    attach_socket(hub, runtime, inbox, principal, role, process.self())
+  let assert Ok(_snapshot) =
+    gateway.connection_request(handle, subscribe_frame(runtime, 700))
+    as "the network attachment subscribes"
+  #(handle, auth, closed)
+}
+
+fn subscribe_frame(runtime: api.Runtime, id: Int) -> String {
+  protocol.encode_command(protocol.CommandEnvelope(
+    id:,
+    command: protocol.Subscribe(
+      ids.session_id_to_string(api.session_id(runtime)),
+      None,
+    ),
+  ))
+}
+
+fn attach_socket(
+  hub: gateway.Gateway,
+  runtime: api.Runtime,
+  inbox: Subject(String),
+  principal: access.Principal,
+  role: access.Authority,
+  socket: process.Pid,
+) {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture digest is valid"
   let closed = process.new_subject()
@@ -323,34 +420,29 @@ fn authenticated(
     })
     |> actor.start
     as "the authorization fixture starts"
-  let session_id = ids.session_id_to_string(api.session_id(harness.runtime))
+  let session_id = ids.session_id_to_string(api.session_id(runtime))
   let assert Ok(handle) =
     gateway.attach_authenticated(
-      harness.hub,
+      hub,
       gateway.Binding(
         session_id,
         "epoch",
         "incarnation",
-        "connection-alice",
+        "connection-" <> principal.id,
         principal,
         role,
         digest,
       ),
-      fn() { process.call(auth.data, waiting: 1000, sending: ReadAuth) },
-      fn(frame) { process.send(harness.inbox, frame) },
+      fn() {
+        call.try_call(auth.data, waiting: 1000, sending: ReadAuth)
+        |> result.unwrap(Error("authority fixture unavailable"))
+      },
+      fn(frame) { process.send(inbox, frame) },
       fn() { process.send(closed, Nil) },
       fn() { Nil },
       socket,
     )
     as "authenticated attachment succeeds"
-  gateway.connection_text(
-    handle,
-    protocol.encode_command(protocol.CommandEnvelope(
-      700,
-      protocol.Subscribe(session_id, None),
-    )),
-  )
-  let _snapshot = next_reply(harness, 700, 8)
   #(handle, auth.data, closed)
 }
 
@@ -629,7 +721,11 @@ pub fn new_admission_reads_defaults_without_changing_existing_run_test() {
 }
 
 fn next(harness: Harness) -> protocol.EventEnvelope {
-  let assert Ok(frame) = process.receive(harness.inbox, within: 5000)
+  next_on(harness.inbox)
+}
+
+fn next_on(inbox: Subject(String)) -> protocol.EventEnvelope {
+  let assert Ok(frame) = process.receive(inbox, within: 5000)
     as "an event frame must arrive"
   let assert Ok(envelope) = protocol.decode_event(frame)
     as "every emitted frame must decode"
@@ -2657,4 +2753,454 @@ pub fn cancelling_without_a_door_is_unsupported_test() {
   subscribe(harness)
   send(harness, 37, protocol.CancelSchedule(target: "main", name: "nightly"))
   expect_error(harness, 37, protocol.code_unsupported)
+}
+
+// --- pushed delivery (protocol-change/018) ---------------------------------
+
+fn network_fixture_id() -> ids.SessionId {
+  let #(id, _) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1_700_000_000_000), 4211))
+  id
+}
+
+// The hub the daemon actually serves: network delivery, the bounded
+// reader, and — since `protocol-change/018` — a push path.
+fn network_harness() -> Harness {
+  reserved_fixture(network_fixture_id())
+}
+
+fn operator(id: String, name: String) -> access.Principal {
+  access.Principal(id, name, access.MemberPrincipal)
+}
+
+// Commits one user entry straight through the writer, which publishes to
+// the fixture's commit forwarder and so gives the hub a real hint. Answers
+// the seq the notice must carry.
+fn commit_user_entry(harness: Harness, seed: Int, text: String) -> Int {
+  let #(id, _) =
+    ids.mint_entry(ids.generator(clock.fixed(1_700_000_000_001), seed))
+  let row =
+    core_entry.MessageEntry(
+      id:,
+      parent: None,
+      seq: 0,
+      ts: 0,
+      message: message.UserMessage(
+        content: [message.UserText(text:, text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+      terminate: False,
+    )
+  let assert Ok(commit) =
+    writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertEntry(row)], []))
+    as "the fixture entry commits"
+  commit.first_seq
+}
+
+/// The property issue #240 is about: a peer learns of a commit without
+/// asking. What it learns is a *notice* — the seq and the strand — and
+/// deliberately not the record, which still travels the credited snapshot
+/// path where the size bound and the retention window are enforced.
+pub fn a_network_commit_reaches_a_subscribed_socket_as_one_notice_test() {
+  let harness = network_harness()
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let seq = commit_user_entry(harness, 71, "hello")
+
+  let envelope = next_on(inbox)
+  assert envelope.reply_to == None as "a notice answers no command"
+  assert envelope.seq == Some(seq)
+  assert envelope.event == protocol.CommittedEvent(strand: "main")
+
+  // And nothing else. An `entry` frame here would be the record itself on
+  // a path with neither credit nor a size bound.
+  assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+/// A hub that starts over a store with history in it must treat that
+/// history as history. Without the prime, its first hint would push a
+/// notice for every sequence the session has ever written.
+pub fn a_network_hub_primes_past_history_before_its_first_hint_test() {
+  let harness = network_harness()
+  let _before = commit_user_entry(harness, 72, "already committed")
+
+  let name = addresses.new()
+  let assert Ok(_later) =
+    gateway.start(gateway.default_options("sess-01", harness.runtime), name)
+    as "a second hub starts over the same store"
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      gateway.Gateway(name:),
+      harness.runtime,
+      inbox,
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+
+  // A hint with nothing new behind it, which is what a hub sees for every
+  // sequence that landed before it started.
+  let assert Ok(forwarder) =
+    gateway.commit_forwarder(to: name, as_name: addresses.new())
+    as "the second hub's forwarder starts"
+  process.send(forwarder.data, writer.Committed(ordinal: 1, seqs: [], ts: 0))
+  assert process.receive(inbox, within: 200) == Error(Nil)
+}
+
+// A provider whose one turn is a text delta and then a settled answer.
+fn delta_provider(text: String) -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 1000, request: fn(_spec) {
+    let events = process.new_subject()
+    process.send(events, stream.Delta(delta: stream.TextDelta(index: 0, text:)))
+    let assert Ok(settled) = stream.settle(scripted_answer())
+    process.send(
+      events,
+      stream.Settled(message: settled, usage: effects.zero_usage()),
+    )
+    stream.immediate(events:, cancel: fn() { Nil })
+  })
+}
+
+/// Deltas are what make a peer see an answer being written rather than a
+/// discontinuous sample of it. They stay gated on the subscription: an
+/// attachment that has not said it is here is told nothing.
+pub fn a_provider_delta_reaches_only_a_subscribed_socket_test() {
+  let harness = network_harness()
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let quiet = process.new_subject()
+  let assert Ok(_unsubscribed) =
+    gateway.attach(harness.hub, fn(frame) { process.send(quiet, frame) })
+    as "a second sink attaches without subscribing"
+
+  let tapped = gateway.tap_provider(delta_provider("tok"), to: harness.hub.name)
+  let handle = tapped.request(cancellation_spec())
+  let assert Ok(stream.Delta(..)) = stream.next(handle, within: 1000)
+    as "the runtime's own consumer still sees the delta"
+  let assert Ok(stream.Settled(..)) = stream.next(handle, within: 1000)
+    as "and its terminal"
+
+  let envelope = next_on(inbox)
+  assert envelope.reply_to == None
+  let assert protocol.StreamDeltaEvent(kind: protocol.TextKind, text:, ..) =
+    envelope.event
+    as "a subscribed peer is pushed the delta"
+  assert text == Some("tok")
+  assert process.receive(quiet, within: 100) == Error(Nil)
+}
+
+/// Push opens no second way out. A membership that changed retires the
+/// attachment before the commit's notice is built — the hint's
+/// `revalidate_all` runs ahead of the pull — so the revoked socket is
+/// closed and written nothing. The per-frame check inside `deliver` is
+/// the second line, reached only by a change between those two reads in
+/// one turn, which this fixture does not stage.
+pub fn a_revoked_socket_is_retired_rather_than_pushed_to_test() {
+  let harness = network_harness()
+  let inbox = process.new_subject()
+  let #(_handle, auth, closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  process.call(auth, waiting: 1000, sending: ChangeAuth(Error("revoked"), _))
+
+  let _seq = commit_user_entry(harness, 73, "after the revocation")
+  let assert Ok(Nil) = process.receive(closed, within: 2000)
+    as "the attachment is closed at the authority check"
+  assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+// --- the per-strand queue (protocol-change/018, ruling 3) ------------------
+
+// Whether the scripted provider's turn may finish yet.
+type GateState {
+  Parked
+  Released
+}
+
+type GateMessage {
+  /// A provider turn asking to be held. The subject is replied to when the
+  /// gate opens, or at once if it is open already.
+  ParkGate(Subject(Nil))
+
+  ReleaseGate(Subject(Nil))
+}
+
+fn start_gate() -> Subject(GateMessage) {
+  let assert Ok(gate) =
+    actor.new(#(Parked, []))
+    |> actor.on_message(fn(state, message) {
+      let #(opened, waiting) = state
+      case message, opened {
+        ParkGate(waiter), Released -> {
+          process.send(waiter, Nil)
+          actor.continue(state)
+        }
+        ParkGate(waiter), Parked ->
+          actor.continue(#(Parked, [waiter, ..waiting]))
+        ReleaseGate(reply), _ -> {
+          list.each(waiting, fn(waiter) { process.send(waiter, Nil) })
+          process.send(reply, Nil)
+          actor.continue(#(Released, []))
+        }
+      }
+    })
+    |> actor.start
+    as "the provider gate starts"
+  gate.data
+}
+
+fn release_gate(gate: Subject(GateMessage)) -> Nil {
+  process.call(gate, waiting: 5000, sending: ReleaseGate)
+}
+
+// A provider whose turn does not end until the test releases it, which is
+// the only way this fixture can hold an operation open long enough for a
+// second prompt to meet a busy strand.
+//
+// It parks by *receiving on a subject it just made*, never by asking the
+// gate a question. `process.call` exits its caller when the answer is
+// late, and a loaded runner made that reachable: a killed effect process
+// ends the operation, the strand goes idle, and the queue this fixture
+// exists to fill drains itself out from under the test.
+fn parked_provider(gate: Subject(GateMessage)) -> effects.ProviderSurface {
+  effects.ProviderSurface(timeout_ms: 30_000, request: fn(_spec) {
+    let events = process.new_subject()
+    let waiting = process.new_subject()
+    process.send(gate, ParkGate(waiting))
+    let _open = process.receive(waiting, within: 20_000)
+    let assert Ok(settled) = stream.settle(scripted_answer())
+    process.send(
+      events,
+      stream.Settled(message: settled, usage: effects.zero_usage()),
+    )
+    stream.immediate(events:, cancel: fn() { Nil })
+  })
+}
+
+fn parked_network_harness(gate: Subject(GateMessage)) -> Harness {
+  start_harness_reserved(
+    None,
+    None,
+    None,
+    Some(network_fixture_id()),
+    ScriptedProvider(parked_provider(gate)),
+  )
+}
+
+fn prompt_frame(id: Int, strand: String, text: String) -> String {
+  protocol.encode_command(protocol.CommandEnvelope(
+    id:,
+    command: protocol.Prompt(strand:, text:),
+  ))
+}
+
+fn outcome_status(frame: String) -> String {
+  let assert Ok(envelope) = protocol.decode_event(frame) as "the reply decodes"
+  let assert protocol.MutationOutcome(json.Object(fields)) = envelope.event
+    as "a mutation outcome was expected"
+  let assert Ok(json.String(status)) = list.key_find(fields, "status")
+    as "the outcome carries a status"
+  status
+}
+
+/// Two peers submitting inside one catch-up window is the case issue #240
+/// is really about. The loser is queued rather than refused, and its
+/// message reaches the transcript under *its own* author once the run it
+/// lost to is done.
+pub fn a_prompt_on_a_busy_strand_is_queued_and_drained_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice_inbox = process.new_subject()
+  let bob_inbox = process.new_subject()
+  let #(alice, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      alice_inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let #(bob, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      bob_inbox,
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+
+  let assert Ok(first) =
+    gateway.connection_request(alice, prompt_frame(710, "main", "first"))
+    as "Alice's prompt is answered"
+  assert outcome_status(first) == "admitted"
+
+  let assert Ok(second) =
+    gateway.connection_request(bob, prompt_frame(711, "main", "second"))
+    as "Bob's prompt is answered"
+  assert outcome_status(second) == "queued"
+
+  // The run Bob lost to finishes, and the hub submits what it held.
+  release_gate(gate)
+  let assert poll.Answered(author) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case held_entry_origin(harness, "second") {
+        Some(origin) -> poll.Done(origin)
+        None -> poll.Retry
+      }
+    })
+    as "the held prompt is admitted once the strand goes idle"
+  assert author == message.Origin("bob", "Bob")
+}
+
+// The origin on the durable user entry carrying `text`, once one exists.
+// That origin is the whole assertion: a queue that re-minted it at drain
+// time would credit whoever happened to be attached by then.
+fn held_entry_origin(harness: Harness, text: String) -> Option(message.Origin) {
+  let assert Ok(rows) =
+    storage.scan_entries(
+      harness.runtime.session.store,
+      storage.entry_scan() |> storage.entry_seq_range(Some(1), None),
+    )
+    as "the fixture reads its own transcript"
+  list.fold(rows, None, fn(found, row) {
+    case row {
+      core_entry.MessageEntry(
+        message: message.UserMessage(content: [content], origin:, ..),
+        ..,
+      ) ->
+        case content == message.UserText(text:, text_signature: None) {
+          True -> origin
+          False -> found
+        }
+      _ -> found
+    }
+  })
+}
+
+/// The bound. A strand whose run never settles must not let a peer grow
+/// hub memory without limit, so the fifth submission gets the conflict the
+/// whole command used to answer with.
+pub fn a_fifth_held_prompt_is_refused_as_a_conflict_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let inbox = process.new_subject()
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+
+  let assert Ok(opened) =
+    gateway.connection_request(socket, prompt_frame(720, "main", "open"))
+    as "the first prompt opens the run"
+  assert outcome_status(opened) == "admitted"
+
+  let statuses =
+    list.map([721, 722, 723, 724], fn(id) {
+      let assert Ok(frame) =
+        gateway.connection_request(
+          socket,
+          prompt_frame(id, "main", "queued " <> int.to_string(id)),
+        )
+        as "each queued prompt is answered"
+      outcome_status(frame)
+    })
+  assert statuses == ["queued", "queued", "queued", "queued"]
+
+  let assert Ok(refused) =
+    gateway.connection_request(
+      socket,
+      prompt_frame(725, "main", "one too many"),
+    )
+    as "the fifth is answered"
+  let assert Ok(envelope) = protocol.decode_event(refused)
+    as "the refusal decodes"
+  let assert protocol.ErrorEvent(code:, ..) = envelope.event
+    as "the fifth is refused rather than queued"
+  assert code == protocol.code_conflict
+  release_gate(gate)
+}
+
+/// A drain that fails for any reason but a busy strand is dropped, and its
+/// submitter is told. The report answers no request — the command that
+/// queued the prompt was answered when it arrived — so it is pushed.
+///
+/// The injection is one corrupt `strand.state` cell, which is both halves
+/// of the case at once: the hub reads the strand as idle and drains it,
+/// and the drain's own read of that cell fails.
+pub fn a_drain_that_cannot_be_admitted_reports_to_its_submitter_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let inbox = process.new_subject()
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+
+  let assert Ok(opened) =
+    gateway.connection_request(socket, prompt_frame(730, "main", "open"))
+    as "the first prompt opens the run"
+  assert outcome_status(opened) == "admitted"
+  let assert Ok(held) =
+    gateway.connection_request(socket, prompt_frame(731, "main", "held"))
+    as "the second prompt is held"
+  assert outcome_status(held) == "queued"
+
+  let assert Ok(_corrupted) =
+    writer.commit(
+      harness.runtime.tree.writer,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandState,
+            "main",
+            register.value(json.String("not a strand state")),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "the corrupt cell commits, and its own hint drives the drain"
+
+  // The admitted first prompt's own notice is already on this sink, so the
+  // report is looked for past it rather than in the next frame.
+  let assert protocol.ErrorEvent(..) = pushed_error(inbox, 8)
+    as "the submitter is told its held prompt was dropped"
+  release_gate(gate)
+}
+
+fn pushed_error(inbox: Subject(String), remaining: Int) -> protocol.Event {
+  let envelope = next_on(inbox)
+  case envelope.event, remaining > 0 {
+    protocol.ErrorEvent(..), _ -> envelope.event
+    _, True -> pushed_error(inbox, remaining - 1)
+    _, False -> panic as "a pushed error must reach the submitter"
+  }
 }

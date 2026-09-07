@@ -4,9 +4,18 @@
 ////
 //// A socket supplies one request and waits for one bounded reply. Coherent
 //// metadata and descriptors come from the bounded storage reader; raw records
-//// and metadata are fragmented under explicit client credit. No writer or bus
-//// hint subscription feeds this path. Optional provider previews use sixteen
-//// original observer leases and one bounded, explicitly discontinuous sample.
+//// and metadata are fragmented under explicit client credit. Optional provider
+//// previews use sixteen original observer leases and one bounded, explicitly
+//// discontinuous sample.
+////
+//// Alongside those replies the hub *pushes* frames that answer no request
+//// (`protocol-change/018`): a `committed` notice per durable emit the
+//// writer's commit hint made it observe, a clipped `stream_delta` while an
+//// answer is being generated, the presence roster, and a connection-scoped
+//// `error`. A push carries a notice and never a durable record, so the
+//// credited transfer remains the one place the 64 KiB bound and the
+//// retention window are enforced; and it leaves through `deliver`, so it is
+//// re-authorized per frame exactly as a reply is.
 //// Authentication is rechecked before admission and delivery. A reader that
 //// is gone, or that spends its whole budget on the server's own capture,
 //// permanently poisons this actor and invokes its exact incarnation's stop
@@ -154,7 +163,6 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -458,6 +466,9 @@ type State {
     high_water: Int,
     // strand → open operation id (as text), for terminal detection.
     live: Dict(String, String),
+    // strand → prompts held for a busy strand, in arrival order at this
+    // one actor, which is what makes the order total.
+    held: Dict(String, List(Held)),
     // entry id (text) → strand attribution cache.
     entry_strand: Dict(String, String),
     // The effect plane's sweep of an aborted operation, when the host
@@ -488,6 +499,37 @@ type Delivery {
 type Emit {
   Emit(seq: Int, event: WireEvent)
 }
+
+/// One `prompt` the hub is holding for a strand that was busy when it
+/// arrived (`protocol-change/018`, ruling 3 of the live-delivery note).
+///
+/// **The queue is hub memory and is deliberately not durable.** A prompt
+/// that survived a hub restart would need a pending-run operation in
+/// `machine` — a new durable operation kind, with its own state space and
+/// its own replay — bought for a convenience nothing else needs. The wire
+/// says so rather than hiding it: the reply is `queued`, never
+/// `admitted`, so a client is written against a queue that a restart
+/// drops and clears its own local queued state when the socket closes.
+type Held {
+  Held(
+    /// The message exactly as it was built at submission, carrying the
+    /// origin the submitting connection had *then*. Re-minting it at
+    /// drain time would credit whoever happens to be attached when the
+    /// strand goes idle, which is the wrong human.
+    prompt: AgentMessage,
+    /// Where a drain *failure* is reported. Not where the entry goes: a
+    /// successful drain reaches every terminal, submitter included, as
+    /// an ordinary notice. A submitter that has detached by then is an
+    /// unknown connection and the report is dropped, which is why this
+    /// needs no cleanup when a connection goes away.
+    submitter: Int,
+  )
+}
+
+// How many prompts one strand may hold. A stalled strand accumulates at
+// most this much hub memory per peer before the fifth submission is
+// refused with the conflict the whole command used to answer with.
+const held_per_strand = 4
 
 /// Starts the hub registered under `name`. The initial high-water is the
 /// store's current tail, so a fresh gateway (or a restarted one) never
@@ -571,6 +613,7 @@ fn start_with_delivery(
         next_connection: 1,
         high_water: 0,
         live: dict.new(),
+        held: dict.new(),
         entry_strand: dict.new(),
         effect_abort: options.effect_abort,
         catalog: options.catalog,
@@ -580,10 +623,10 @@ fn start_with_delivery(
 
     // Prime: advance past everything already in the store, and learn
     // the live operations so the next pull sees changes, not history.
-    let state = case delivery {
-      Network -> state
-      HostOnly -> pull(state).0
-    }
+    // Both deliveries need it now that a network hub pushes on a hint —
+    // an unprimed one would answer its first commit with a notice for
+    // every sequence the store already held.
+    let state = pull(state).0
     actor.initialised(state)
     |> actor.selecting(process.select_monitors(selector, SocketDown))
     |> actor.returning(Gateway(name:))
@@ -798,22 +841,6 @@ pub fn commit_forwarder(
   })
   |> actor.addressed(as_name)
   |> actor.start
-}
-
-/// The commit forwarder as a supervision child, so a crash restarts it
-/// under the same name instead of ending the server.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // sup.add(builder, gateway.supervised_commit_forwarder(to: name, as_name: forwarder))
-/// ```
-///
-pub fn supervised_commit_forwarder(
-  to name: address.Address(Message),
-  as_name as_name: address.Address(writer.Event),
-) -> ChildSpecification(Subject(writer.Event)) {
-  supervision.worker(fn() { commit_forwarder(to: name, as_name:) })
 }
 
 /// Wraps a provider surface so every streamed delta is teed to the hub
@@ -1111,8 +1138,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     CommitHint -> actor.continue(pull_and_broadcast(revalidate_all(state)))
     BusHint(published: _) ->
       actor.continue(pull_and_broadcast(revalidate_all(state)))
+
+    // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
+    // as the frame leaves, and a second check on the same evidence in the
+    // same turn would only double the registry calls per token per peer.
     ProviderDelta(operation:, delta:) -> {
-      let state = revalidate_all(state)
       broadcast_delta(state, operation, delta)
       actor.continue(state)
     }
@@ -1121,8 +1151,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 // --- materializing the durable stream --------------------------------------
 
-// A network request owns exactly one reply destination. No unsolicited durable
-// payload is sent to its socket; the next request supplies the next credit.
+// A network request owns exactly one reply destination, and holds it only for
+// the turn that answers it. What the socket also receives, since
+// `protocol-change/018`, are frames that answer no request: a `committed`
+// notice, a stream delta, the roster, a fault. Those never find this
+// destination — `response` is `Some` only between the two assignments below —
+// so the credit a request buys is still exactly one bounded reply. What they
+// carry is a *notice*, never a durable payload: the record still travels the
+// credited snapshot path, which is where the size bound and the retention
+// window are enforced.
 fn request_frame(
   state: State,
   connection: Int,
@@ -1944,10 +1981,60 @@ fn read_only(command: Command) {
 }
 
 fn pull_and_broadcast(state: State) -> State {
-  use <- bool.guard(state.delivery == Network, state)
   let #(state, emits) = pull(state)
-  broadcast(state, emits)
+
+  // The pull is the one place a strand's live operation is observed to
+  // have gone, so a queue whose strand just went idle drains here — after
+  // `state.live` has been replaced and before anything leaves, so a drain
+  // that fails reports against the state the failure was decided under.
+  let state = drain_idle_strands(state)
+  case state.delivery {
+    // The host fixture stream is the whole record; it has no size bound
+    // to respect and its fixtures read the entries themselves.
+    HostOnly -> broadcast(state, emits)
+
+    // A network peer gets a notice per emit and fetches the record on the
+    // credited path (`protocol-change/018`). The seq is the emit's own, so
+    // a client that already holds it drops the frame without asking.
+    Network ->
+      broadcast(
+        state,
+        list.map(emits, fn(emit) {
+          Emit(
+            seq: emit.seq,
+            event: protocol.CommittedEvent(notice_strand(state, emit.event)),
+          )
+        }),
+      )
+  }
   state
+}
+
+// The strand a durable emit landed on, which is a notice's whole body.
+// Every event `pull` can produce names one; the rest are replies,
+// transfers and ephemera that never reach this function, and they are
+// listed rather than swept into a catch-all so that an emit kind added
+// later has to answer the question here instead of silently taking the
+// fallback.
+fn notice_strand(state: State, event: WireEvent) -> String {
+  case event {
+    protocol.EntryEvent(record:) -> record.strand
+    protocol.UsageEvent(strand:, ..) -> strand
+    protocol.OpTransitionEvent(strand:, ..) -> strand
+    protocol.EscalationEvent(record:) -> record.strand
+    protocol.StrandResultEvent(strand:, ..) -> strand
+    protocol.SnapshotBegin(..)
+    | protocol.SnapshotChunk(..)
+    | protocol.SnapshotEnd(..)
+    | protocol.SnapshotEvent(..)
+    | protocol.MutationOutcome(..)
+    | protocol.AttachmentEvent(..)
+    | protocol.PresenceEvent(..)
+    | protocol.StreamDeltaEvent(..)
+    | protocol.CommittedEvent(..)
+    | protocol.ErrorEvent(..)
+    | protocol.UnknownEvent(..) -> single_live_strand(state)
+  }
 }
 
 // Reads everything above the high-water from storage and returns it as
@@ -2503,13 +2590,24 @@ fn broadcast(state: State, emits: List(Emit)) -> Nil {
 }
 
 // Sends one event to one connection.
+//
+// A network attachment splits on the *envelope*, not on the connection.
+// An envelope carrying a `reply_to` is the answer to a command and owes
+// that command's one reply capability its bounded response. An envelope
+// with none answers nothing — a notice, a delta, a roster, a fault — and
+// leaves through `deliver`, which runs the same per-frame `check_binding`
+// the reply path runs and retires the attachment when the answer changed
+// (`protocol-change/018`). There is no third way out.
 fn send_to(state: State, connection: Int, envelope: EventEnvelope) -> Nil {
   case dict.get(state.connections, connection) {
     Ok(link) ->
-      case state.delivery, link.authentication {
-        Network, Authenticated(binding, check, close, _) ->
+      case state.delivery, link.authentication, envelope.reply_to {
+        Network, Authenticated(binding, check, close, _), Some(_) ->
           send_response(link.response, envelope, binding, check, close)
-        _, _ -> deliver(link, protocol.encode_event(envelope))
+        Network, Authenticated(..), None
+        | Network, HostFixture, _
+        | HostOnly, _, _
+        -> deliver(link, protocol.encode_event(envelope))
       }
     Error(Nil) -> Nil
   }
@@ -2586,8 +2684,13 @@ fn reply_error(
   )
 }
 
+// Deltas go to every subscribed connection under either delivery. Under
+// `Network` this is what makes a peer see an answer being generated
+// rather than the discontinuous snapshot sample; the text is clipped to
+// the same 24 KiB `preview_text` bound that sample uses, which is what
+// keeps a pushed frame under the reply ceiling without a second size
+// mechanism (`protocol-change/018`).
 fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
-  use <- bool.guard(state.delivery == Network, Nil)
   let op_text = ids.op_id_to_string(operation)
   let strand = case
     dict.to_list(state.live)
@@ -2606,7 +2709,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
         strand:,
         op: op_text,
         kind: protocol.TextKind,
-        text: Some(text),
+        text: Some(preview_text(text)),
         call_id: None,
         tool_name: None,
         arguments_fragment: None,
@@ -2616,7 +2719,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
         strand:,
         op: op_text,
         kind: protocol.ThinkingKind,
-        text: Some(thinking),
+        text: Some(preview_text(thinking)),
         call_id: None,
         tool_name: None,
         arguments_fragment: None,
@@ -2629,7 +2732,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
         text: None,
         call_id: Some(call_id),
         tool_name: Some(name),
-        arguments_fragment: Some(arguments_json),
+        arguments_fragment: Some(preview_text(arguments_json)),
       )
   }
   let frame =
@@ -3344,19 +3447,145 @@ fn prompt_message(
 ) -> State {
   use <- known_strand(state, connection, id, strand)
   let target = api.on_strand(state.runtime, strand)
-  use _op <- or_reply(
-    result.map_error(api.prompt(target, [prompt]), describe_api_error(_, strand)),
-    state,
-    connection,
-    id,
-  )
-  reply_with_matched(state, connection, id, fn(emit) {
-    case emit.event {
-      protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
-        on == strand && is_user_entry(entry)
-      _ -> False
+  let admitted = api.prompt(target, [prompt])
+  case admitted {
+    // A busy strand is a scheduling question, not a conflict. `steer` and
+    // `follow_up` fold a message into the run that is already going;
+    // `prompt` means "next turn", and holding it here is what lets two
+    // peers submit inside one catch-up window without either being told
+    // to try again. The built message is what is held, so the entry
+    // commits under the origin recorded now rather than one resolved at
+    // drain time.
+    Error(api.AcceptRejected(reason: acceptance.StrandBusy)) ->
+      hold_prompt(state, connection, id, strand, prompt)
+
+    Ok(_) | Error(_) -> {
+      use _op <- or_reply(
+        result.map_error(admitted, describe_api_error(_, strand)),
+        state,
+        connection,
+        id,
+      )
+      reply_with_matched(state, connection, id, fn(emit) {
+        case emit.event {
+          protocol.EntryEvent(record: EntryRecord(strand: on, entry:)) ->
+            on == strand && is_user_entry(entry)
+          _ -> False
+        }
+      })
+    }
+  }
+}
+
+// Puts one prompt at the tail of its strand's queue, or refuses the
+// submission when the queue is full. The bound is what keeps a strand
+// whose run never settles from accumulating unbounded hub memory, and the
+// refusal is the `conflict` the whole command answered with before this
+// existed — so a client that has not learned about `queued` still sees a
+// vocabulary it knows once the queue is deep.
+fn hold_prompt(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  prompt: AgentMessage,
+) -> State {
+  let queued = dict.get(state.held, strand) |> result.unwrap([])
+
+  // "Is it already full?" is a question about the bound, not about the
+  // length, so it is answered by dropping one short of the bound and
+  // asking whether anything is left: that walks four elements however
+  // many there are. A queue of exactly four leaves one behind and is
+  // full; a queue of three leaves none and has room.
+  case list.drop(queued, held_per_strand - 1) != [] {
+    True -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_conflict,
+        "the strand is busy and its queue is full",
+      )
+      state
+    }
+    False -> {
+      reply(state, connection, id, mutation_outcome("queued"))
+      put_held(
+        state,
+        strand,
+        list.append(queued, [Held(prompt:, submitter: connection)]),
+      )
+    }
+  }
+}
+
+fn put_held(state: State, strand: String, queue: List(Held)) -> State {
+  case queue {
+    // An emptied strand leaves the dictionary rather than sitting in it
+    // as an empty list, so `drain_idle_strands` iterates over strands
+    // that actually hold something.
+    [] -> State(..state, held: dict.delete(state.held, strand))
+    [_, ..] -> State(..state, held: dict.insert(state.held, strand, queue))
+  }
+}
+
+// Every strand holding prompts whose live operation has gone. The caller
+// has just replaced `state.live` from the registers, so "idle" is a
+// lookup rather than a diff of two pulls: a strand whose successor
+// operation is already open reads as busy and stays held.
+fn drain_idle_strands(state: State) -> State {
+  list.fold(dict.keys(state.held), state, fn(state, strand) {
+    case dict.has_key(state.live, strand) {
+      True -> state
+      False -> drain_strand(state, strand)
     }
   })
+}
+
+// Submits one strand's head prompt. Only the head: a second submission
+// would be refused by the very acceptance this queue exists to work
+// around, and the next terminal transition is where the next one belongs.
+fn drain_strand(state: State, strand: String) -> State {
+  case dict.get(state.held, strand) {
+    Ok([Held(prompt:, submitter:), ..rest]) -> {
+      let target = api.on_strand(state.runtime, strand)
+      case api.prompt(target, [prompt]) {
+        // Admitted, and nothing more is said. The command that queued
+        // this was answered when it arrived; its entry now reaches every
+        // terminal — the submitter's included — as an ordinary notice.
+        Ok(_op) -> put_held(state, strand, rest)
+
+        // A run opened between the register read and this call: through a
+        // host path, a scheduled fire, or another peer's own drain. The
+        // prompt keeps the head and the next transition drains it.
+        Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> state
+
+        // Any other refusal is this prompt's own and it is dropped:
+        // holding a message the strand will never accept is a leak whose
+        // submitter is never told. The report goes out unsolicited,
+        // through the same per-frame authority check every frame passes,
+        // so a submitter that lost membership gets nothing.
+        Error(refused) -> {
+          let #(code, message) = describe_api_error(refused, strand)
+          send_to(
+            state,
+            submitter,
+            EventEnvelope(
+              reply_to: None,
+              seq: None,
+              event: protocol.ErrorEvent(code:, message:, details: None),
+            ),
+          )
+
+          // The strand is still idle and nothing else will transition it,
+          // so the next held prompt tries now rather than waiting for a
+          // terminal transition that a dropped head can never produce.
+          drain_strand(put_held(state, strand, rest), strand)
+        }
+      }
+    }
+    Ok([]) | Error(Nil) -> state
+  }
 }
 
 fn is_user_entry(row: Entry) -> Bool {

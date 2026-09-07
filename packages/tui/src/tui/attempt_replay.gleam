@@ -12,6 +12,7 @@ import gleam/result
 import tui/attempt
 import tui/connection
 import tui/session_channel
+import tui/session_wire
 import tui/snapshot
 import tui/snapshot_view
 
@@ -186,14 +187,26 @@ fn advance_lane(lane: Lane, event) {
         [],
       )
     }
-    attempt.Received(_, connection.Incoming(_) as message) -> {
-      use <- bool.guard(
-        lane.credit != Issued,
-        Error("recorded response has no issued request credit"),
-      )
-      received(lane, message)
-    }
-    attempt.Received(_, message) -> received(lane, message)
+
+    // The credit rule is about *replies*. A recorded frame that names no
+    // request was pushed by the daemon, so no request bought it and there
+    // is nothing for this rule to check; the channel below still validates
+    // it and still refuses one in a phase that may not take it.
+    attempt.Received(_, connection.Incoming(text) as message) ->
+      case session_wire.correlation(text), lane.credit {
+        // A push spends nothing, so the lane keeps whatever credit it had:
+        // a notice arriving mid-transfer must leave the outstanding
+        // request's own reply admissible.
+        session_wire.NamesNoRequest, _ -> received(lane, message, lane.credit)
+        session_wire.NamesARequest, Issued -> received(lane, message, NotIssued)
+        session_wire.NamesARequest, NotIssued ->
+          Error("recorded response has no issued request credit")
+      }
+    attempt.Received(_, connection.Connected as message) ->
+      received(lane, message, lane.credit)
+    attempt.Received(_, connection.Closed(_) as message)
+    | attempt.Received(_, connection.NetworkFault(_) as message) ->
+      received(lane, message, NotIssued)
     attempt.Started(..)
     | attempt.Adopted(_)
     | attempt.Closed(_)
@@ -201,7 +214,9 @@ fn advance_lane(lane: Lane, event) {
   }
 }
 
-fn received(lane: Lane, message) {
+// The credit this leaves the lane with is the caller's decision, because
+// only the caller knows whether the frame named a request.
+fn received(lane: Lane, message, credit: Credit) {
   let #(channel, updates) = session_channel.receive(lane.channel, message)
   let captured =
     list.fold(updates, lane.captured, fn(previous, update) {
@@ -210,12 +225,6 @@ fn received(lane: Lane, message) {
         _ -> previous
       }
     })
-  let credit = case message {
-    connection.Connected -> lane.credit
-    connection.Incoming(_)
-    | connection.Closed(_)
-    | connection.NetworkFault(_) -> NotIssued
-  }
   Ok(#(
     Lane(..lane, channel: channel, credit: credit, captured: captured),
     updates,

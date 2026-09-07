@@ -73,9 +73,11 @@ subscribed connection through `deliver`. Delta text is clipped with the same
 `preview_text` bound the snapshot preview uses, so no pushed frame exceeds
 what the terminal's decoder accepts.
 
-**Presence and configuration events** go out the same way: `publish_presence`
-already calls `send_to` with no `reply_to`; under `Network` that now reaches
-`deliver` instead of being dropped.
+**Presence events** go out the same way: `publish_presence` already calls
+`send_to` with no `reply_to` when a peer departs; under `Network` that now
+reaches `deliver` instead of being dropped. A join is not pushed, since every
+pushed frame costs one authority check per peer and the joiner's capture
+already carries the roster.
 
 ## Ruling 2: the delivery path
 
