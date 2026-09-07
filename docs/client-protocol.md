@@ -436,7 +436,7 @@ Source: (`client/daemon/server.gleam:816-837`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:811-824`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:831-843`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -757,12 +757,67 @@ receives it. Source: (`client/daemon/server.gleam:300-310`) and
 
 Errors: `forbidden`, `stale_epoch`.
 
-### 3.16 Reads during a drain
+### 3.16 `sessions.delete`
+
+Owner-only. Removes a registration and unlinks its conversation database.
+This is the only command that destroys durable conversation data, and
+there is no undo.
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `session_id` | string | required | Canonical session id. |
+| `epoch` | string | required | Current daemon epoch. |
+
+```json
+{"v":2,"id":14,"cmd":"sessions.delete","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","epoch":"ep-7f3a"}}
+```
+
+Reply:
+
+```json
+{"v":2,"reply_to":14,"event":"sessions.delete","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","workspace":"/work","name":"Wire session"}}
+```
+
+The reply reports the registration as it was immediately before removal,
+so a client can name what it deleted without having read it first.
+
+The daemon refuses `busy` while it holds a runtime reservation for the
+session, in any lifecycle state other than `saved`. A client that wants a
+running session removed sends `sessions.stop`, waits for `status.state`
+to become `saved`, and then sends this command. The daemon does not stop
+the session on the caller's behalf, so a delete can never race a live
+writer.
+
+On success the daemon removes, in one catalogue transaction: the
+registration, every membership in it, a workspace default that named it,
+and its domain mapping. The catalogue revision is incremented, so an open
+`sessions.list` pagination is refused with `revision_changed` rather than
+continuing across the removal, and later pages of `sessions.list` no
+longer contain the session.
+
+The daemon then unlinks the conversation database and the files SQLite
+keeps beside it: `<path>-wal`, `<path>-shm`, `<path>-journal` and a
+`<path>.tmp` scratch directory if one is present. A missing sidecar is
+not an error. The durable rows are removed before the files, so an
+interrupted delete leaves files that nothing refers to rather than a
+registration whose database is gone.
+
+Distilled memory is not removed. The memory store, its index and any
+shared-history rows derived from the session belong to the domain, which
+is the workspace's and outlives any one conversation that fed it. A
+client MUST NOT describe this command as erasing what the session
+contributed to memory.
+
+Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
+
+### 3.17 Reads during a drain
 
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default` and `operations.get`. Every mutating control command
-is refused. Source: (`client/daemon/server.gleam:440-459`).
+is refused. Source: (`client/daemon/server.gleam:443-463`).
+
+That includes `sessions.delete`, which is a mutation like any other.
 
 ---
 

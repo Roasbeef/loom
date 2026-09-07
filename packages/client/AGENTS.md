@@ -44,6 +44,18 @@ catalogue without opening runtimes. Explicit admission invokes
   of every retained runtime slot before changing metadata; the wire requires
   explicit acknowledgement that the existing transcript will be shared.
   The domain record captures configuration at creation, not first admission.
+- `client/daemon/manager.delete_session` is the only path that destroys
+  durable conversation data. It checks owner, epoch and the absence of a
+  runtime slot in one serialized dispatch, answers `AdminBusy` — `busy` on
+  the wire — when the session is anything but saved, removes the
+  registration with its memberships, workspace default and domain mapping in
+  one catalogue transaction, and only then unlinks the database and its
+  `-wal`, `-shm`, `-journal` and `.tmp` siblings. The durable rows go first
+  on purpose: an interrupted delete must leave files nothing refers to, never
+  a registration whose database is gone. The domain and everything distilled
+  into it survive, because a workspace's memory outlives any one
+  conversation. `protocol-change/019` and `docs/client-protocol.md` §3.16
+  carry the ruling.
   These metadata checks do not substitute for mapped resource and recall
   admission in the assembly layer.
 - `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
