@@ -409,6 +409,31 @@ ON CONFLICT(workspace) DO UPDATE SET session_id = excluded.session_id"
   #(sql, [dev.ParamString(workspace), dev.ParamString(session_id)])
 }
 
+pub fn delete_session_default(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_defaults WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn delete_session_memberships(session_id session_id: String) {
+  let sql = "DELETE FROM access_memberships WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn delete_session_domain(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_domain_sessions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn delete_session_display_name(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_names WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn delete_registration(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_sessions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
