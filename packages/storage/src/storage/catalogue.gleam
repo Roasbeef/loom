@@ -448,6 +448,56 @@ pub fn set_workspace_default(
   })
 }
 
+/// Removes one registration and every catalogue row that refers to it.
+///
+/// The registration, its memberships, its display name, a workspace default
+/// naming it and its domain mapping are removed in one immediate transaction, so no reader can
+/// observe a catalogue whose foreign keys point at a session that is half
+/// gone. The domain record itself survives: a domain owns distilled memory
+/// for a workspace and outlives any one conversation that fed it.
+///
+/// This never touches the conversation database on disk. The caller unlinks
+/// the file after this returns, which is the safe order: a crash between the
+/// two leaves an unreferenced file rather than a registration pointing at a
+/// file that no longer exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.delete(catalogue, session_id)
+/// ```
+pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
+  transaction(catalogue.connection, fn() {
+    use record <- result.try(get(catalogue, id))
+
+    // Dependants first: foreign keys are enabled on this connection, so the
+    // registration row cannot leave while anything still references it.
+    use Nil <- result.try(statement(catalogue, sql.delete_session_default(id)))
+    use Nil <- result.try(statement(
+      catalogue,
+      sql.delete_session_memberships(id),
+    ))
+    use Nil <- result.try(statement(catalogue, sql.delete_session_domain(id)))
+
+    // The display name is keyed by session id and nothing else, so it would
+    // otherwise outlive the registration and be inherited by a later session
+    // that happened to reuse the identity.
+    use Nil <- result.try(statement(
+      catalogue,
+      sql.delete_session_display_name(id),
+    ))
+    use Nil <- result.try(statement(catalogue, sql.delete_registration(id)))
+
+    // The revision moves so an open listing page is refused rather than
+    // silently continuing after a row it already returned has gone.
+    use Nil <- result.try(statement(
+      catalogue,
+      sql.increment_catalogue_revision(),
+    ))
+    Ok(record)
+  })
+}
+
 fn default_identity(
   catalogue: Catalogue,
   workspace: String,
