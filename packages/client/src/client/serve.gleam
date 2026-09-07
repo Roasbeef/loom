@@ -2130,9 +2130,20 @@ fn assemble_in(
     owner,
   ))
 
-  // Network delivery is credit-driven. Only bounded optional provider previews
-  // enter the gateway; durable state is read when a client requests a cut.
+  // Durable *records* stay credit-driven: a client asks for a cut and the
+  // bounded reader answers it. What the hub now also does is push a notice
+  // when it learns of a commit (`protocol-change/018`), which is what makes
+  // a second terminal render an answer without waiting for its idle refresh.
   let name = address.new_address(namespace)
+
+  // The hint source that makes the hub learn of a commit at all. Minted
+  // here, beside the hub's own name and before `api.open` below, for the
+  // reason `client/agency`'s module doc gives: the forwarder closes over
+  // the hub's *name*, so it can be subscribed to a writer that does not
+  // exist yet and started under a hub that does not exist yet. A hint sent
+  // while either is absent is lost by design — it cannot interrupt a
+  // commit, and the next catch-up recovers.
+  let forwarder_name = address.new_address(namespace)
 
   // The triggered-rule scanner is a named writer subscriber. A name is minted
   // whether or not any rule is configured — an unregistered name is a
@@ -2514,15 +2525,14 @@ fn assemble_in(
           ..options.settings,
           compaction: settings.compaction,
         ),
-        // The rule scanner and optional search index remain commit-driven.
-        // Network gateways reconcile only on client credit, so no writer hint
-        // is sent to a gateway mailbox. These subscribers make rules and recall
-        // commit-driven
-        // rather than scheduled; a hint lost while a subscriber
-        // restarts costs latency, never a row or a fire, because each
-        // pulls from its own durable cursor.
+        // The rule scanner, the optional search index and — since
+        // `protocol-change/018` — the gateway are all commit-driven. Each
+        // subscriber is a hint and never a payload: it pulls from its own
+        // durable cursor, so a hint lost while it restarts costs latency,
+        // never a row, a fire, or an event.
         subscribers: [
           writer.Routed(rulescan_name),
+          writer.Routed(forwarder_name),
           ..history_subscribers(history_seam, history_pulls)
         ],
         // Every strand of this session logs under the session's own
@@ -2637,6 +2647,15 @@ fn assemble_in(
       entropy,
       logger,
     )
+    // The commit forwarder is in this tier for the reason everything else
+    // here is: it is reached by name and holds nothing. It carries no
+    // state at all, in fact — one writer publication in, one hub hint out
+    // — so a restart costs whichever hints landed in the gap, and the
+    // hub's next pull covers them.
+    |> sup.add(hub.supervised_commit_forwarder(
+      to: name,
+      as_name: forwarder_name,
+    ))
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
