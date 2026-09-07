@@ -79,6 +79,13 @@ release. The fork removes only the redundant declaration; parser source and the
 normal dependency remain unchanged. Return to Hex when a release carries the
 fix. Both release scripts retain relx output so assembly errors appear in CI.
 
+The public `openai-responses` adapter is Gleam code inside the existing
+provider application. It adds no release component or native helper and
+uses the same HTTP transport as the other API-key adapters. The release
+does not read Codex credential files, refresh subscription credentials, or
+bundle Codex App Server. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
+records why subscription inference remains deferred.
+
 The build places one compiled test probe in `build/release/smoke-support`,
 outside the distributed `loom` tree. The smoke runs that probe on the bundled
 emulator, using the server's existing WebSocket transport. It adds no test
