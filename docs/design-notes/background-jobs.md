@@ -1,16 +1,23 @@
 # Design note: background jobs
 
-Status: **built.** Written against `main` at `3ef6ea09` (the merged
-daemon stack), and implemented in three pull requests: **#260** the pure
-state and the `job/` fact (WP1), **#263** the actor, the runner, the tail
-and the spill (WP2), and **#264** the tool surface, `cap/job` and the
-prelude (WP3) — the last merged into `jobs/actor` rather than `main` and
-relanded against `main` as **#267**. The shipped acceptance fixture and
-this documentation are WP5, in **#266**.
+Status: **landed.** Written against `main` at `3ef6ea09` (the merged
+daemon stack) and shipped in five pull requests: **#260** the pure state
+and the `job/` fact (WP1), **#263** the actor, the runner, the tail and
+the spill (WP2 and WP4), **#264** the tool surface, `cap/job` and the
+prelude (WP3) — merged into `jobs/actor` rather than `main` and relanded
+against `main` as **#267** — **#266** the shipped acceptance fixture and
+this documentation (WP5), and **#269** the step-scoped abort that settles
+the contradiction the fixture found.
 Resolves issue #183 and settles the first cut of #186 and #71 on the way.
-"What changed on contact with the code", near the end, records where the
-implementation departed from what is written here; read it before
-treating any paragraph above as current.
+Converting an overrunning foreground call into a job, the second half of
+#183, was deliberately deferred; see "The tool surface".
+
+Two sections near the end are the ones to read before treating any
+paragraph above as current. "What changed on contact with the code"
+records where the implementation departed from this note. "What the
+shipped fixture found" records the one place this note was wrong and how
+it was fixed. `docs/next.md` carries the follow-ups that were left open
+and the reason each was deferred.
 
 ## The problem
 
@@ -453,7 +460,10 @@ exactly one test.
 
 ## Work packages
 
-Five, each closed by one Fable pass before merge, the same standard the
+All five are merged; this is the plan they were dispatched from, kept
+because it says what each was for. WP4 shipped inside WP2 rather than
+separately, and the step-scoped abort was found by WP5 and landed after
+it. Each was closed by one Fable pass before merge, the same standard the
 daemon stack met. WP1 is the pure job state and the `job/` fact codec
 with its property tests. WP2 is the actor and runner: weft, broker
 integration under the per-job identity, ceilings, deadline, cancel
@@ -540,7 +550,7 @@ reaches the jobs it started — and what is given up is only a *routine*
 teardown borrowing the operator's reach. The step needs its own sweep
 counter beside the operation's, because a step sweep that bumped the
 operation's counter would refuse a resumed clearance of every sibling
-step, the spared job included. ADR-005's third addendum records it.
+step, the spared job included. ADR-005's second addendum records it.
 
 The fixture now asserts both halves: the later program finds the record
 under its own id **and running**, and the payload's own identity — taken
