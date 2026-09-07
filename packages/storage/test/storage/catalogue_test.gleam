@@ -41,6 +41,11 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.increment_catalogue_revision().0,
     sql.workspace_default("").0,
     sql.set_workspace_default("", "").0,
+    sql.delete_session_default("").0,
+    sql.delete_session_memberships("").0,
+    sql.delete_session_domain("").0,
+    sql.delete_session_display_name("").0,
+    sql.delete_registration("").0,
   ]
   assert normalize_queries(source)
     == normalize_queries(string.join(generated, "\n"))

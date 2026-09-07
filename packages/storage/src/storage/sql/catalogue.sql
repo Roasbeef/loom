@@ -55,3 +55,18 @@ SELECT session_id FROM catalogue_defaults WHERE workspace = ?;
 -- name: SetWorkspaceDefault :exec
 INSERT INTO catalogue_defaults (workspace, session_id) VALUES (?, ?)
 ON CONFLICT(workspace) DO UPDATE SET session_id = excluded.session_id;
+
+-- name: DeleteSessionDefault :exec
+DELETE FROM catalogue_defaults WHERE session_id = ?;
+
+-- name: DeleteSessionMemberships :exec
+DELETE FROM access_memberships WHERE session_id = ?;
+
+-- name: DeleteSessionDomain :exec
+DELETE FROM catalogue_domain_sessions WHERE session_id = ?;
+
+-- name: DeleteSessionDisplayName :exec
+DELETE FROM catalogue_session_names WHERE session_id = ?;
+
+-- name: DeleteRegistration :exec
+DELETE FROM catalogue_sessions WHERE session_id = ?;
