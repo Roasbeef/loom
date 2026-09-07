@@ -26,6 +26,11 @@ type Selection {
   Get(process.Subject(List(distill.Source)))
   Set(List(distill.Source), process.Subject(Nil))
   Arm(Int, fn() -> Nil, process.Subject(Nil))
+
+  /// Parks the resolver on its `after`-th remaining answer and publishes the
+  /// subject that resumes it. The owner blocks inside `authorized`, so a test
+  /// can decide exactly which phase later calls arrive in.
+  Gate(Int, process.Subject(process.Subject(Nil)), process.Subject(Nil))
   Stop
 }
 
@@ -200,15 +205,125 @@ pub fn shared_history_empty_cut_rechecks_generation_test() {
   process.send(selected, Stop)
 }
 
+/// A search arriving while the owner is indexing a commit hint of its own is
+/// held until that refresh finishes, and then answered with hits. The owner
+/// used to refuse it as a bad request, and two such refusals in the first
+/// seconds of a session are what taught the model to stop calling the tool.
+pub fn shared_history_holds_a_search_during_a_refresh_test() {
+  let root = directory("holding")
+  let #(a, _, retire) = conversation(root <> "/a.db", 6, "holding marker")
+  let selected = selection([a])
+  let assert Ok(prepared) =
+    history.prepare_shared(history.SharedConfig(
+      root <> "/search.db",
+      resolver(selected),
+      1000,
+      10,
+    ))
+    as "shared owner must prepare"
+  let assert Ok(shared) = prepared.begin() as "shared owner must initialize"
+  let seam = history.seam_for(shared, a.session)
+
+  // The refresh resolves the catalogue once to choose its source and once
+  // more to validate it before publishing, so the second answer parks the
+  // owner inside a job whose request is its own.
+  let announced = process.new_subject()
+  assert process.call(selected, waiting: 1000, sending: Gate(2, announced, _))
+    == Nil
+  history.notify(shared, a.session)
+  let assert Ok(release) = process.receive(announced, 5000)
+    as "the refresh must park inside its own job"
+
+  let answers = process.new_subject()
+  process.spawn(fn() {
+    process.send(answers, seam.search("holding", 10, tool.Repository))
+  })
+
+  // Any answer arriving here is the immediate refusal this change removes.
+  let assert poll.Expired =
+    poll.until(within: 300, every: 25, attempt: fn() {
+      case process.receive(answers, 0) {
+        Ok(early) -> poll.Fail(early)
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "a held search must not be answered while the refresh runs"
+
+  process.send(release, Nil)
+  let assert Ok(Ok([hit])) = process.receive(answers, 5000)
+    as "the held search must be answered once the refresh finishes"
+  assert hit.session == ids.session_id_to_string(a.session)
+  assert prepared.retire() == Ok(Nil)
+  assert retire() == Ok(Nil)
+  process.send(selected, Stop)
+}
+
+/// A second caller arriving while the owner is serving somebody else's search
+/// is refused at once, and told the request was fine and to send it again.
+pub fn shared_history_refuses_a_second_caller_as_busy_test() {
+  let root = directory("busy")
+  let #(a, _, retire) = conversation(root <> "/a.db", 7, "busy marker")
+  let selected = selection([a])
+  let assert Ok(prepared) =
+    history.prepare_shared(history.SharedConfig(
+      root <> "/search.db",
+      resolver(selected),
+      1000,
+      10,
+    ))
+    as "shared owner must prepare"
+  let assert Ok(shared) = prepared.begin() as "shared owner must initialize"
+  let seam = history.seam_for(shared, a.session)
+
+  // Admission resolves the catalogue once and publication validates it a
+  // second time, so the gate parks the owner with a foreground job running.
+  let announced = process.new_subject()
+  assert process.call(selected, waiting: 1000, sending: Gate(2, announced, _))
+    == Nil
+  let first = process.new_subject()
+  process.spawn(fn() {
+    process.send(first, seam.search("busy", 10, tool.Repository))
+  })
+  let assert Ok(release) = process.receive(announced, 5000)
+    as "the first search must park inside its own job"
+
+  let second = process.new_subject()
+  process.spawn(fn() {
+    process.send(second, seam.search("busy", 10, tool.Repository))
+  })
+  let assert poll.Expired =
+    poll.until(within: 300, every: 25, attempt: fn() {
+      case process.receive(second, 0) {
+        Ok(early) -> poll.Fail(early)
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "the parked owner answers nobody"
+
+  // The second call is at the head of the mailbox when the owner resumes,
+  // and the first caller's job still owns the owner at that moment.
+  process.send(release, Nil)
+  let assert Ok(Error(tool.IndexBusy(reason))) = process.receive(second, 5000)
+    as "a second caller must be refused as busy, not as a bad request"
+  assert reason == "another recall request is in flight"
+  let assert Ok(Ok([_])) = process.receive(first, 5000)
+    as "the first caller's own search must still be answered"
+  assert prepared.retire() == Ok(Nil)
+  assert retire() == Ok(Nil)
+  process.send(selected, Stop)
+}
+
+// A gated answer parks the owner for as long as the test needs, so the wait
+// here outlasts the owner's own five-second ceiling rather than crashing it.
 fn resolver(selected) {
-  fn() { Ok(process.call(selected, waiting: 1000, sending: Get)) }
+  fn() { Ok(process.call(selected, waiting: 20_000, sending: Get)) }
 }
 
 fn selection(sources) {
   let assert Ok(started) =
-    actor.new(#(sources, None))
+    actor.new(#(sources, None, None))
     |> actor.on_message(fn(state, request) {
-      let #(sources, hook) = state
+      let #(sources, hook, gate) = state
       case request {
         Get(reply) -> {
           let next = case hook {
@@ -219,16 +334,33 @@ fn selection(sources) {
             Some(#(remaining, action)) -> Some(#(remaining - 1, action))
             None -> None
           }
+
+          // The gate is one-shot: it publishes a release subject, waits on
+          // it, and every later answer is immediate again.
+          let opened = case gate {
+            Some(#(1, announce)) -> {
+              let release = process.new_subject()
+              process.send(announce, release)
+              let _ = process.receive(release, 20_000)
+              None
+            }
+            Some(#(remaining, announce)) -> Some(#(remaining - 1, announce))
+            None -> None
+          }
           process.send(reply, sources)
-          actor.continue(#(sources, next))
+          actor.continue(#(sources, next, opened))
         }
         Set(next, reply) -> {
           process.send(reply, Nil)
-          actor.continue(#(next, hook))
+          actor.continue(#(next, hook, gate))
         }
         Arm(after, action, reply) -> {
           process.send(reply, Nil)
-          actor.continue(#(sources, Some(#(after, action))))
+          actor.continue(#(sources, Some(#(after, action)), gate))
+        }
+        Gate(after, announce, reply) -> {
+          process.send(reply, Nil)
+          actor.continue(#(sources, hook, Some(#(after, announce))))
         }
         Stop -> actor.stop()
       }
