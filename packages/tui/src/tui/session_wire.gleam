@@ -1,4 +1,11 @@
-//// The live conversation transport accepts exactly one correlated v2 response.
+//// The live conversation transport accepts one correlated v2 response, plus
+//// whatever the daemon volunteers.
+////
+//// Correlation is what splits the two. A frame carrying `reply_to` is the
+//// answer to the terminal's one outstanding request and is held to the exact
+//// identity it names. A frame carrying none was pushed: the daemon decided to
+//// send it, so there is no identity to check and the frame is decoded through
+//// the same total event vocabulary a recorded frame uses.
 ////
 //// Recorded legacy frames still have their separate presentation decoder in
 //// tui/protocol. Live sockets do not use that decoder as a version fallback:
@@ -11,7 +18,8 @@ import gleam/result
 import gleam/string
 import tui/protocol
 
-/// One credited transfer response or bounded auxiliary command result.
+/// One credited transfer response, bounded auxiliary command result, or
+/// uncorrelated frame the daemon pushed on its own initiative.
 pub type Reply {
   /// Validated further against the selected attachment by tui/snapshot.
   Begin(body: json.JsonValue)
@@ -27,6 +35,10 @@ pub type Reply {
 
   /// A bounded models/schedules reply or explicit refusal.
   Presentation(event: protocol.Event)
+
+  /// A frame with no `reply_to`: the daemon volunteered it, so it belongs to
+  /// no request and consumes no credit.
+  Pushed(event: protocol.Event)
 }
 
 /// The exact opening bytes `command` produces, up to the request identity.
@@ -92,7 +104,8 @@ pub fn catch_up(id: Int, from_seq: Int) -> String {
   command(id, "catch_up", [#("from_seq", json.Int(from_seq))])
 }
 
-/// Totally decodes one bounded live response for the exact outstanding request.
+/// Totally decodes one bounded live frame: a response for the exact
+/// outstanding request, or an uncorrelated push.
 ///
 /// ## Examples
 ///
@@ -117,11 +130,23 @@ pub fn decode(text: String, expected: Int) -> Result(Reply, String) {
     | json.Null -> Error("conversation response is not an object")
   })
   use version <- result.try(field(fields, "v"))
-  use reply_to <- result.try(field(fields, "reply_to"))
   use <- bool.guard(
-    version != json.Int(2) || reply_to != json.Int(expected),
+    version != json.Int(2),
     Error("conversation version or reply identity does not match"),
   )
+
+  // The absent field, not a matching one, is what marks a push. A frame that
+  // names a request identity is held to the outstanding one exactly as it was
+  // before pushes existed, so a stale or forged correlation still fails
+  // closed.
+  case list.key_find(fields, "reply_to") {
+    Error(Nil) -> protocol.decode_v2_pushed(text) |> result.map(Pushed)
+    Ok(json.Int(id)) if id == expected -> correlated(fields, text)
+    Ok(_) -> Error("conversation version or reply identity does not match")
+  }
+}
+
+fn correlated(fields, text) {
   use name <- result.try(field(fields, "event"))
   use body <- result.try(field(fields, "body"))
   case name {
@@ -148,6 +173,11 @@ fn mutation(body) {
       case status {
         json.String("admitted") -> Ok(Mutation("admitted"))
         json.String("committed") -> Ok(Mutation("committed"))
+
+        // The daemon holds a prompt aimed at a busy strand and runs it on the
+        // strand's next turn. That is an accepted submission, not the refusal
+        // a conflict used to be.
+        json.String("queued") -> Ok(Mutation("queued"))
         _ -> Error("invalid mutation outcome")
       }
     }

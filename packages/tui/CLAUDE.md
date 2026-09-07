@@ -125,7 +125,9 @@ that tree separately from the self-contained server.
   native driver select the same outcomes as the interactive loop.
 - `tui/session_channel.Channel` is terminal-owned state, not another actor.
   It admits one request at a time, grants one snapshot fragment per reply, and
-  reconciles at 250ms while idle. Its existing outgoing slot can retain one
+  reconciles at 250ms while idle. `Update.Captured` carries a `Capture` saying
+  what asked for the cut — `Notified`, `Refreshed` or `Requested` — which is
+  how a fixture tells live delivery from the polling fallback. Its existing outgoing slot can retain one
   immutable unsent mutation behind a capture of an already adopted session.
   `Disposition` distinguishes `Waiting`, `Sent`, and `DefinitelyNotSent`;
   waiting allocates no mutation ID or response deadline. A valid completed cut
@@ -218,10 +220,17 @@ that tree separately from the self-contained server.
   standalone `compact`, `schedules`, `schedule_cancel`, `snapshot_next`,
   `catch_up`, `escalations_get`, `approve`, and `deny`.
 - **Live events in**: correlated `snapshot_begin`, `snapshot_chunk`,
-  `snapshot_end`, `mutation_outcome`, bounded auxiliary snapshots, and errors.
-  Unknown tags, wrong versions and wrong reply IDs fail closed. Raw entries,
-  usage, presence, configuration, pending approvals and standalone stream
-  previews arrive through a completed cut, not unsolicited legacy events.
+  `snapshot_end`, `mutation_outcome` (`admitted`, `committed` or `queued`),
+  bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
+  wrong reply IDs fail closed. Raw entries, usage, configuration and pending
+  approvals arrive through a completed cut, not unsolicited legacy events.
+- **Pushed frames in**: an envelope with no `reply_to` is a push. `committed`
+  (with its sequence in the envelope) is a notice that moves a catch-up
+  earlier; `presence` and `attachment` are the same trigger; `stream_delta`
+  is the live answer in order; a pushed `error` is a daemon-side failure
+  reported without closing the socket. An event name this client does not
+  know is dropped. A daemon that predates live delivery pushes none of
+  these, and the terminal behaves exactly as it did.
 - **Launch flags**: `--record <path>` qualifies any interactive launch and
   writes the session as a recording. `loom replay <path> [--at <frame>]
   [--all] [--width <w>] [--height <h>]` replays one and prints frames as
@@ -529,6 +538,24 @@ that tree separately from the self-contained server.
   reproducing the session; its outbound half, the decision lookup, is inert
   while the peer is `Replaying`. Disconnect closes the channel without
   automatic reconnect or mutation resend.
+- **A pushed frame never owns the wire.** Frames the daemon volunteers are
+  read in every phase but `Closed`, and they allocate no request identity,
+  spend no snapshot credit and cannot fail the lane. Correlation is unchanged
+  for anything carrying `reply_to`: a stale or mismatched identity still
+  closes the socket, in `Ready` as everywhere else.
+- **A commit notice is idempotent and order-free.** It carries the sequence,
+  never the record, so what it does is move the catch-up earlier — issued at
+  once in `Ready`, remembered as due and spent at the next ready transition
+  otherwise. A sequence the lane already holds, or one arriving before any cut
+  exists, is dropped, and any number of deferred notices collapse into one
+  capture. The 250ms idle refresh is the recovery path for a lost notice and
+  the only path on a daemon that pushes nothing.
+- **Pushed deltas outrank the sampled preview.** A stream is tagged with its
+  operation; fragments accumulate while it holds and start over on the next
+  one. A completed cut prefers the accumulated live text when it names the
+  operation the cut says is running, falls back to the snapshot's
+  discontinuous `stream_preview` when nothing has been pushed, and keeps
+  neither once the strand has no live operation.
 - **Attachment identity is not a transient notice.** The committed cut supplies
   the visible author name, role and presence count alongside configuration.
   Model-list replies and other notices cannot replace that identity. A pending

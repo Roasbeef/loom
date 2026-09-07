@@ -95,9 +95,21 @@ pub type Line {
 // the settled entry after its fragments. Keeping both in one list would render
 // the same assistant answer twice at the exact moment it becomes durable.
 /// The undurable fragments of one strand-and-kind generation.
+///
+/// The operation is what makes a fragment list a generation rather than a
+/// running total. Fragments accumulate while it holds, and the first fragment
+/// of a new one starts the list over, so the answer on screen is always the
+/// answer being produced now. A snapshot's sampled preview names the same
+/// operation the cut does, which is how the two representations of one live
+/// answer are compared.
 @internal
 pub type Stream {
-  Stream(strand: String, kind: String, fragments: List(String))
+  Stream(
+    strand: String,
+    operation: String,
+    kind: String,
+    fragments: List(String),
+  )
 }
 
 /// The modal surface that owns focus, if any.
@@ -337,6 +349,12 @@ pub type Model {
     channel: Option(session_channel.Channel),
     /// Last complete raw cut and its coherent metadata projection.
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
+    /// What made the lane ask for the last cut that changed something
+    /// visible: a pushed frame, the idle refresh, or the terminal's own
+    /// command. Live delivery is the difference between the first two, and
+    /// this is where a fixture reads it. A capture that painted nothing
+    /// leaves it alone.
+    last_capture: session_channel.Capture,
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(daemon_selection.Host),
     /// One bounded metadata page request; no catalogue accumulation.
@@ -644,6 +662,7 @@ pub fn new_model_with_clock(
     candidate: attachment.idle(),
     channel: None,
     captured: None,
+    last_capture: session_channel.Requested,
     daemon_host: None,
     catalogue_request: None,
     creation_key: None,
@@ -3073,7 +3092,8 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
   case update {
     session_channel.Submission(disposition) ->
       apply_submission(model, disposition)
-    session_channel.Captured(cut, view) -> reconcile_cut(model, cut, view)
+    session_channel.Captured(cut, view, trigger) ->
+      reconcile_cut(model, cut, view, trigger)
     session_channel.LookedUp(records, missing) -> {
       let inspected = inspect_looked_up(model, records, missing)
       let updated =
@@ -3095,6 +3115,27 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
       }
     }
     session_channel.Auxiliary(event) -> apply_event(model, event)
+
+    // A pushed fragment is the same thing the directly attached client
+    // receives as a stream delta, so it lands in the same live-stream region
+    // by the same route rather than through a second renderer.
+    session_channel.Streamed(strand:, operation:, kind:, text:) ->
+      apply_event(
+        model,
+        protocol.StreamDelta(strand:, operation:, kind:, text:),
+      )
+
+    // A prompt aimed at a busy strand used to come back as a conflict, with
+    // the draft still the operator's problem. The daemon now holds it and
+    // runs it on the strand's next turn, so the composer is done with it: the
+    // line says the turn is booked, and nothing is running here yet, which is
+    // why the submitting indicator clears rather than spinning until the held
+    // prompt starts.
+    session_channel.Acknowledged("prompt", "queued") ->
+      append_system(
+        Model(..model, submitting: None),
+        "prompt queued · it runs when the strand finishes its turn",
+      )
     session_channel.Acknowledged(command, status) ->
       Model(..model, notice: command <> " " <> status) |> invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->
@@ -3121,15 +3162,19 @@ fn reconcile_cut(
   model: Model,
   cut: snapshot.Captured,
   view: snapshot_view.View,
+  trigger: session_channel.Capture,
 ) -> Model {
   // Equal metadata still advances transport credit, but must not continually
-  // restart animation or invalidate a transcript which has not changed.
+  // restart animation or invalidate a transcript which has not changed. The
+  // provenance is recorded only on the arm that paints: a notice-driven
+  // catch-up that finds nothing new must not claim the answer a refresh
+  // already painted, or a fixture reading it would call polling "push".
   case model.captured {
     Some(#(previous, _))
       if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
     -> Model(..model, captured: Some(#(cut, view)))
     Some(_) | None -> {
-      let updated = apply_cut(model, cut, view)
+      let updated = apply_cut(Model(..model, last_capture: trigger), cut, view)
       let disappeared =
         model.approvals
         |> list.filter(fn(old) {
@@ -3214,14 +3259,21 @@ fn render_cut(
     None -> "Recent window; older history may be unloaded."
     Some(id) -> "History not loaded beyond " <> id <> "."
   }
-  let streams = case view.preview {
-    None -> []
-    Some(preview) ->
-      case dict.get(view.operations, active) {
-        Ok(operation) if operation == preview.operation -> [
-          Stream(active, "text", [preview.text]),
+
+  // Pushed deltas accumulate a continuous transcript of the live answer, so
+  // where both describe the strand's current operation they outrank the
+  // snapshot's discontinuous sample. The preview remains the fallback for a
+  // terminal that attached mid-answer and has been pushed nothing yet, and a
+  // strand with no live operation — its entry has committed — keeps neither.
+  let streams = case dict.get(view.operations, active) {
+    Error(Nil) -> []
+    Ok(operation) ->
+      case live_streams(model.streams, active, operation), view.preview {
+        [], Some(preview) if preview.operation == operation -> [
+          Stream(active, operation, "text", [preview.text]),
         ]
-        Ok(_) | Error(Nil) -> []
+        [], Some(_) | [], None -> []
+        live, _ -> live
       }
   }
   Model(
@@ -3663,7 +3715,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.StreamDelta(strand:, kind:, text:) -> {
+    protocol.StreamDelta(strand:, operation:, kind:, text:) -> {
       // The generation clock normally started when the strand entered
       // its `assistant` phase (see `OperationChanged`); a fragment that
       // finds it unset is the fallback, for a phase sequence that never
@@ -3672,7 +3724,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       let updated =
         Model(
           ..model,
-          streams: append_stream(model.streams, strand, kind, text),
+          streams: append_stream(model.streams, strand, operation, kind, text),
           generation_started_ms:,
           notice: "streaming " <> kind,
         )
@@ -3748,9 +3800,15 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
     protocol.ServerError(code:, message:) ->
       append_error(Model(..model, submitting: None), code <> ": " <> message)
+
+    // A commit notice and a metadata change say only that the next capture
+    // will differ. `tui/session_channel` acts on them by capturing; there is
+    // nothing for a renderer to draw from the frame itself.
+    protocol.Committed(..) | protocol.MetadataChanged -> model
     protocol.Ignored(_) -> model
   }
   case event {
+    protocol.Committed(..) | protocol.MetadataChanged -> updated
     protocol.Ignored(_) -> updated
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
@@ -3818,26 +3876,61 @@ fn set_strand_phase(
   })
 }
 
+// The strand's live fragments, if they belong to the operation the cut says
+// is running. Fragments from a finished operation are not a live answer.
+fn live_streams(
+  streams: List(Stream),
+  strand: String,
+  operation: String,
+) -> List(Stream) {
+  list.filter(streams, fn(stream) {
+    let Stream(strand: owner, operation: op, ..) = stream
+    owner == strand && op == operation
+  })
+}
+
 fn append_stream(
   streams: List(Stream),
   strand: String,
+  operation: String,
   kind: String,
   fragment: String,
 ) -> List(Stream) {
   case streams {
-    [] -> [Stream(strand:, kind:, fragments: [fragment])]
-    [Stream(strand: owner, kind: stream_kind, fragments: current), ..rest] ->
+    [] -> [Stream(strand:, operation:, kind:, fragments: [fragment])]
+    [
+      Stream(
+        strand: owner,
+        operation: current_op,
+        kind: stream_kind,
+        fragments: current,
+      ),
+      ..rest
+    ] ->
       case owner == strand && stream_kind == kind {
+        // A fragment from a later operation replaces the previous answer
+        // rather than continuing it. Tool-call fragments never accumulate at
+        // all: only the latest name is renderable until the entry commits.
         True -> [
-          Stream(strand:, kind:, fragments: case kind {
-            "tool_call" -> [fragment]
-            _ -> [fragment, ..current]
-          }),
+          Stream(
+            strand:,
+            operation:,
+            kind:,
+            fragments: case kind == "tool_call" || current_op != operation {
+              True -> [fragment]
+              False -> [fragment, ..current]
+            },
+          ),
           ..rest
         ]
         False -> [
-          Stream(strand: owner, kind: stream_kind, fragments: current),
-          ..append_stream(rest, strand, kind, fragment)
+          Stream(
+            strand: owner,
+            operation: current_op,
+            kind: stream_kind,
+            fragments: current,
+          ),
+          ..append_stream(rest, strand, operation, kind, fragment)
         ]
       }
   }
@@ -3857,7 +3950,7 @@ fn stream_lines(
 ) -> List(Line) {
   streams
   |> list.filter_map(fn(stream) {
-    let Stream(strand:, kind:, fragments:) = stream
+    let Stream(strand:, kind:, fragments:, ..) = stream
     case strand == active_strand {
       False -> Error(Nil)
       True -> {

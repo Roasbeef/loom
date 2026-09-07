@@ -132,11 +132,30 @@ pub type Event {
   StreamDelta(
     /// The strand receiving the fragment.
     strand: String,
+    /// The operation the fragment belongs to, which tells a continuing
+    /// answer from the first fragment of the next one. Older recordings
+    /// carry no operation and decode to the empty identity.
+    operation: String,
     /// The open-set stream kind, such as `thinking` or `text`.
     kind: String,
     /// The sanitized-later fragment bytes.
     text: String,
   )
+
+  /// A durable entry the daemon has committed and this terminal has not
+  /// fetched. The notice carries no record: the sequence is what makes the
+  /// terminal issue its catch-up now instead of at the idle refresh.
+  Committed(
+    /// The strand whose durable history grew.
+    strand: String,
+    /// The committed sequence, read from the envelope rather than the body.
+    seq: Int,
+  )
+
+  /// Session metadata the terminal renders from a capture rather than from
+  /// the frame: presence and attachment changes say only that the next
+  /// capture will differ.
+  MetadataChanged
 
   /// A liveness transition for one strand operation.
   OperationChanged(
@@ -411,6 +430,8 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ConfigSnapshot(_)
     | EntryAdded(_)
     | StreamDelta(..)
+    | Committed(..)
+    | MetadataChanged
     | OperationChanged(..)
     | UsageChanged(_)
     | EscalationPending(..)
@@ -418,7 +439,41 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
   }
 }
 
+/// Decodes one uncorrelated v2 frame the daemon volunteered.
+///
+/// This is the same body vocabulary as a correlated response, plus the two
+/// shapes that exist only as a push: the commit notice, whose sequence lives
+/// beside `event` in the envelope rather than in the body, and the metadata
+/// events whose content the terminal reads from its next capture. An event
+/// name this client does not know decodes to `Ignored`, because a daemon
+/// ahead of this terminal must not be able to close its socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.decode_v2_pushed(text)
+/// ```
+@internal
+pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
+  use fields <- result.try(envelope(text, 2))
+  use name <- result.try(required_string(fields, "event"))
+  case name {
+    "committed" -> decode_committed(fields)
+    "presence" | "attachment" -> Ok(MetadataChanged)
+    other -> decode_body(other, body_of(fields))
+  }
+}
+
 fn decode_version(text: String, version: Int) -> Result(Event, String) {
+  use fields <- result.try(envelope(text, version))
+  use name <- result.try(required_string(fields, "event"))
+  decode_body(name, body_of(fields))
+}
+
+fn envelope(
+  text: String,
+  version: Int,
+) -> Result(List(#(String, JsonValue)), String) {
   use value <- result.try(
     json.parse(text)
     |> result.map_error(fn(report) { report.expected }),
@@ -428,12 +483,25 @@ fn decode_version(text: String, version: Int) -> Result(Event, String) {
     Ok(json.Int(found)) if found == version -> Ok(Nil)
     _ -> Error("event envelope has the wrong protocol version")
   })
-  use name <- result.try(required_string(fields, "event"))
-  let body = case list.key_find(fields, "body") {
+  Ok(fields)
+}
+
+// An absent body is an empty object, so an event whose meaning is entirely
+// in its name still reaches a decoder that reads fields.
+fn body_of(fields: List(#(String, JsonValue))) -> JsonValue {
+  case list.key_find(fields, "body") {
     Ok(value) -> value
     Error(Nil) -> json.Object([])
   }
-  decode_body(name, body)
+}
+
+fn decode_committed(
+  fields: List(#(String, JsonValue)),
+) -> Result(Event, String) {
+  use seq <- result.try(required_int(fields, "seq"))
+  use body <- result.try(object_fields(body_of(fields), "committed body"))
+  use strand <- result.try(required_string(body, "strand"))
+  Ok(Committed(strand:, seq:))
 }
 
 fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
@@ -576,6 +644,11 @@ fn decode_schedule(value: JsonValue) -> Result(ScheduleRow, String) {
 fn decode_delta(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "stream_delta body"))
   use strand <- result.try(required_string(fields, "strand"))
+
+  // The operation is what lets a renderer append one answer's fragments and
+  // start the next one afresh. It is read optionally so that a recording made
+  // before the field mattered still replays.
+  use operation <- result.try(defaulted_string(fields, "op"))
   use kind <- result.try(required_string(fields, "kind"))
   use text <- result.try(optional_string(fields, "text"))
   use tool <- result.try(optional_string(fields, "tool_name"))
@@ -586,7 +659,7 @@ fn decode_delta(body: JsonValue) -> Result(Event, String) {
     "tool_call" -> option.unwrap(tool, "tool")
     _ -> option.unwrap(text, "")
   }
-  Ok(StreamDelta(strand:, kind:, text: content))
+  Ok(StreamDelta(strand:, operation:, kind:, text: content))
 }
 
 fn decode_operation(body: JsonValue) -> Result(Event, String) {

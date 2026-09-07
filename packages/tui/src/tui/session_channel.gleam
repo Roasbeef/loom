@@ -4,6 +4,18 @@
 //// applies this state. A single request owns the wire at a time. One local
 //// command may wait behind reconciliation; timeouts close the socket and
 //// preserve uncertainty instead of resending a mutation on another connection.
+////
+//// A single request still owns the wire, because a pushed frame is not a
+//// request. Well-formed frames the daemon volunteers arrive in every open
+//// phase, consume no credit, allocate no identity and cannot fail the lane;
+//// a frame that does not decode closes the socket as any bad frame does.
+//// What a commit
+//// notice does is move a catch-up earlier: the lane issues it now, or at the
+//// moment the outstanding request finishes, rather than at the 250 ms idle
+//// refresh. That makes a notice idempotent and order-free — a sequence
+//// already held says nothing new, a lost notice is repaired by the refresh,
+//// and a daemon that pushes nothing leaves the refresh as the only path,
+//// which is the terminal's behaviour before live delivery existed.
 
 import core/json
 import gleam/bool
@@ -27,13 +39,34 @@ pub type Update {
   Submission(disposition: Disposition)
 
   /// Only this event may replace visible metadata and the durable projection.
-  Captured(cut: snapshot.Captured, view: snapshot_view.View)
+  Captured(
+    /// The completed, validated cut.
+    cut: snapshot.Captured,
+    /// The presentation derived from it.
+    view: snapshot_view.View,
+    /// What made the lane ask for this cut.
+    trigger: Capture,
+  )
 
   /// Exact decisions only; never a replacement conversation cut.
   LookedUp(records: List(approval.Review), missing: List(String))
 
   /// Models/schedules or a typed server refusal.
   Auxiliary(event: protocol.Event)
+
+  /// One pushed provider fragment, ordered within its operation by the
+  /// socket that delivered it. Unlike the snapshot's sampled preview these
+  /// are continuous, so a renderer appends them until the operation changes.
+  Streamed(
+    /// The strand receiving the fragment.
+    strand: String,
+    /// The operation the fragment belongs to.
+    operation: String,
+    /// The open-set stream kind, such as `thinking` or `text`.
+    kind: String,
+    /// The bounded, sanitized-later fragment bytes.
+    text: String,
+  )
 
   /// The server acknowledged one mutation without implying a later snapshot.
   Acknowledged(command: String, status: String)
@@ -43,6 +76,26 @@ pub type Update {
 
   /// The socket cannot continue, while the last completed projection survives.
   Failed(reason: String)
+}
+
+/// What made a lane ask for the cut it just completed.
+///
+/// The three are not interchangeable to a reader. Live delivery is working
+/// only when a peer's answer is painted by a `Notified` capture; the same
+/// answer painted by `Refreshed` means the notice never arrived and the
+/// terminal fell back to polling, which is correct but is not the property
+/// under test. Carrying the reason on the update is what lets a fixture tell
+/// those two apart instead of inferring it from timing.
+pub type Capture {
+  /// A pushed frame — a commit notice, presence or attachment — asked for it.
+  Notified
+
+  /// The 250 ms idle refresh, which is the recovery path and the only path
+  /// on a daemon that pushes nothing.
+  Refreshed
+
+  /// The lane's own subscribe or a recorded command produced it.
+  Requested
 }
 
 /// Local admission is distinct from a wire write and its uncertain outcome.
@@ -65,6 +118,20 @@ type Intent {
 
 type Outbound {
   Outbound(name: String, suffix: String, intent: Intent)
+}
+
+/// Whether a pushed notice is still owed a capture.
+///
+/// A notice that arrives while a request is in flight cannot be acted on
+/// then: the lane has one outstanding request and will not open a second.
+/// Remembering that one is due is enough, because a notice carries no state
+/// of its own — any number of them collapse into "capture when free".
+type Refresh {
+  /// A notice arrived mid-request; capture at the next ready transition.
+  Due
+
+  /// Nothing is owed; the 250 ms idle refresh is the only capture cadence.
+  Idle
 }
 
 type Phase {
@@ -91,6 +158,8 @@ pub opaque type Channel {
     cut: Option(snapshot.Captured),
     queued: Option(Outbound),
     refresh_at: Int,
+    refresh: Refresh,
+    trigger: Capture,
   )
 }
 
@@ -155,6 +224,23 @@ pub fn replay_with_clock(
   initial(None, expected, None, timestamp)
 }
 
+/// Records what a socketless lane would have written, for tests that need to
+/// see which request a transition issued rather than only its outcome.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.replay_traced(expected, clock, trace)
+/// ```
+@internal
+pub fn replay_traced(
+  expected: snapshot.Expected,
+  timestamp: fn() -> Int,
+  trace: attempt.Trace,
+) -> Channel {
+  initial(None, expected, Some(trace), timestamp)
+}
+
 fn initial(socket, expected, trace, timestamp) {
   Channel(
     socket: socket,
@@ -170,6 +256,8 @@ fn initial(socket, expected, trace, timestamp) {
     cut: None,
     queued: None,
     refresh_at: timestamp(),
+    refresh: Idle,
+    trigger: Requested,
   )
 }
 
@@ -360,13 +448,102 @@ pub fn receive(
     connection.Incoming(text) ->
       case channel.phase {
         Closed -> #(channel, [])
-        Ready -> fail(channel, "unsolicited conversation response")
+
+        // A ready lane has no outstanding request, so the only frame it can
+        // read is one the daemon volunteered. A correlated reply here names a
+        // request that is already finished, and an undecodable frame is not
+        // one the lane may quietly ignore; both close the socket, exactly as
+        // every incoming frame in this phase did before pushes existed.
+        Ready ->
+          case session_wire.decode(text, channel.request_id) {
+            Ok(session_wire.Pushed(event)) -> apply_pushed(channel, event)
+            Ok(session_wire.Begin(_))
+            | Ok(session_wire.Chunk(_))
+            | Ok(session_wire.End(_))
+            | Ok(session_wire.Mutation(_))
+            | Ok(session_wire.Presentation(_))
+            | Error(_) -> fail(channel, "unsolicited conversation response")
+          }
         AwaitingBegin | Receiving(..) | AwaitingReply(..) ->
           case session_wire.decode(text, channel.request_id) {
             Error(reason) -> fail(channel, reason)
+
+            // A push interleaved with a transfer belongs to no request, so
+            // it is applied without touching the phase, the credit or the
+            // outstanding identity the next chunk will be checked against.
+            Ok(session_wire.Pushed(event)) -> apply_pushed(channel, event)
             Ok(reply) -> apply_reply(channel, reply)
           }
       }
+  }
+}
+
+fn apply_pushed(channel: Channel, event: protocol.Event) {
+  case event {
+    protocol.Committed(strand: _, seq:) -> notified(channel, seq)
+
+    // Presence and attachment carry nothing renderable; what they say is
+    // that the next capture differs, which is what a notice says too.
+    protocol.MetadataChanged -> capture_or_defer(channel)
+    protocol.StreamDelta(strand:, operation:, kind:, text:) -> #(channel, [
+      Streamed(strand:, operation:, kind:, text:),
+    ])
+
+    // A pushed error reports a failure the daemon had on this terminal's
+    // behalf — a held prompt that could not be admitted when its turn came.
+    // The connection is fine, so this is the same auxiliary refusal a
+    // correlated error is, and the socket stays open.
+    protocol.ServerError(..) -> #(channel, [Auxiliary(event)])
+
+    // Everything else in the event vocabulary is either unknown to this
+    // client or reachable only as a correlated reply. Dropping it is what
+    // keeps a daemon running ahead of this terminal harmless.
+    protocol.FullSnapshot(..)
+    | protocol.StrandsSnapshot(..)
+    | protocol.ModelsSnapshot(..)
+    | protocol.SchedulesSnapshot(..)
+    | protocol.ConfigSnapshot(..)
+    | protocol.EntryAdded(..)
+    | protocol.OperationChanged(..)
+    | protocol.UsageChanged(..)
+    | protocol.EscalationPending(..)
+    | protocol.Ignored(_) -> #(channel, [])
+  }
+}
+
+// A notice for a sequence the lane already holds, or one that arrives before
+// any cut exists to compare it against, tells the lane nothing it has not
+// already fetched or is not already fetching.
+fn notified(channel: Channel, seq: Int) {
+  case channel.cut {
+    Some(cut) if seq < cut.next_seq -> #(channel, [])
+    Some(_) | None -> capture_or_defer(channel)
+  }
+}
+
+// A push that arrives before any cut exists says nothing the initial
+// transfer will not deliver, so it is dropped here for every kind of trigger
+// rather than deferred into a redundant second catch-up.
+fn capture_or_defer(channel: Channel) {
+  case channel.phase, channel.cut {
+    Ready, Some(cut) -> #(
+      capture_again(Channel(..channel, refresh: Idle), cut.next_seq, Notified),
+      [],
+    )
+
+    // The lane holds one request at a time, so a notice arriving mid-transfer
+    // is remembered rather than acted on. `send_queued` spends it at the next
+    // ready transition, which is sooner than the idle refresh would.
+    AwaitingBegin, Some(_)
+    | Receiving(..), Some(_)
+    | AwaitingReply(..), Some(_)
+    -> #(Channel(..channel, refresh: Due), [])
+    Ready, None
+    | AwaitingBegin, None
+    | Receiving(..), None
+    | AwaitingReply(..), None
+    | Closed, _
+    -> #(channel, [])
   }
 }
 
@@ -454,7 +631,7 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
               attachment: Some(cut.attachment),
               refresh_at: channel.timestamp() + 250,
             )
-          send_queued(channel, [Captured(cut, view)])
+          send_queued(channel, [Captured(cut, view, channel.trigger)])
         }
       }
     AwaitingReply(name, Mutation), session_wire.Mutation(status) -> {
@@ -545,7 +722,7 @@ pub fn tick(channel: Channel) -> #(Channel, List(Update)) {
     Ready ->
       case channel.cut {
         Some(cut) if channel.refresh_at <= timestamp -> {
-          let next = capture_again(channel, cut.next_seq)
+          let next = capture_again(channel, cut.next_seq, Refreshed)
           #(next, [])
         }
         Some(_) | None -> #(channel, [])
@@ -643,11 +820,12 @@ pub fn adopted(channel: Channel) -> Nil {
   }
 }
 
-fn capture_again(channel: Channel, cursor) {
+fn capture_again(channel: Channel, cursor, trigger: Capture) {
   let next =
     Channel(
       ..channel,
       phase: AwaitingBegin,
+      trigger: trigger,
       issued: attempt.Request(
         channel.next_id,
         "catch_up",
@@ -682,8 +860,11 @@ pub fn replay_issued(
   let next = case channel.phase, request.selection {
     Ready, attempt.Cursor(cursor) ->
       case channel.cut {
+        // A recording preserves the request, not the reason for it. Every
+        // catch-up in a recording made before pushed frames existed was the
+        // idle refresh, so that is what replay reports.
         Some(cut) if request.kind == "catch_up" && cursor == cut.next_seq ->
-          Ok(capture_again(channel, cursor))
+          Ok(capture_again(channel, cursor, Refreshed))
         Some(_) | None ->
           Error("recorded catch-up cursor does not match the adopted cut")
       }
@@ -736,7 +917,28 @@ pub fn lookup(channel: Channel, ids: List(String)) -> Result(Channel, String) {
   }
 }
 
+// Every transition back to `Ready` passes through here, so this is the one
+// place a deferred notice can be spent. A waiting local command still goes
+// first: it keeps the lane busy, and the notice survives to the transition
+// after that one.
 fn send_queued(channel: Channel, updates: List(Update)) {
+  let #(channel, updates) = flush_queued(channel, updates)
+  case channel.phase, channel.refresh, channel.cut {
+    Ready, Due, Some(cut) -> #(
+      capture_again(Channel(..channel, refresh: Idle), cut.next_seq, Notified),
+      updates,
+    )
+    Ready, Due, None
+    | Ready, Idle, _
+    | AwaitingBegin, _, _
+    | Receiving(..), _, _
+    | AwaitingReply(..), _, _
+    | Closed, _, _
+    -> #(channel, updates)
+  }
+}
+
+fn flush_queued(channel: Channel, updates: List(Update)) {
   case channel.queued {
     None -> #(channel, updates)
     Some(outbound) -> {
