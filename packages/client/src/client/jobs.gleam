@@ -1658,14 +1658,7 @@ fn cleared(
     }
 
     Ok(held), Ok(control) -> {
-      answer_starter(
-        held,
-        Ok(Started(
-          id:,
-          deadline_ms: held.record.deadline_ms,
-          wall_ms: held.record.deadline_ms - held.record.started_at_ms,
-        )),
-      )
+      answer_starter(held, Ok(started_of(held.record)))
       accepted(state, held, control)
     }
   }
@@ -1710,6 +1703,19 @@ fn accepted(
 
 fn keep(state: State, held: Held) -> actor.Next(State, Message) {
   resume(State(..state, jobs: dict.insert(state.jobs, held.record.id, held)))
+}
+
+// The terms a job is running under, read back off its own record.
+//
+// The wall is derived rather than carried because the record is the one
+// place it lives: the token, the relay, the helper's timer and the ledger
+// all read the same two instants, and so does the caller's answer.
+fn started_of(record: JobRecord) -> Started {
+  Started(
+    id: record.id,
+    deadline_ms: record.deadline_ms,
+    wall_ms: record.deadline_ms - record.started_at_ms,
+  )
 }
 
 fn answer_starter(held: Held, answer: Result(Started, Refusal)) -> Nil {
@@ -1853,6 +1859,12 @@ fn record_settlement(state: State, id: JobId, settlement: Settlement) -> State {
         None -> state
         Some(cause) -> apply(state, held, jobstate.KillRequested(by: cause))
       }
+
+      // A settlement that overtook the clearance — two senders, and
+      // nothing orders them — leaves a starter waiting on a job that has
+      // in fact run and finished. It is told so here, because detaching
+      // is what takes its reply subject away.
+      answer_starter(held, Ok(started_of(held.record)))
       let state = detach(state, id, Detached(streams: settlement.streams))
       case settlement.outcome {
         broker.CallExited(result:) ->
@@ -1925,6 +1937,18 @@ fn record_loss(state: State, id: JobId, reason: jobstate.LossReason) -> State {
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
     Ok(held) -> {
+      // The starter, if the clearance never returned to answer it. A
+      // runner that died inside `run` — before it could send `Clearance`
+      // either way — reaches this actor only as a weft outcome, and
+      // nothing else is left that knows a caller is waiting. Without this
+      // that caller sits out its whole budget and is told the actor did
+      // not answer in time, which is both slow and untrue.
+      answer_starter(
+        held,
+        Error(Unavailable(
+          reason: "the runner died before the clearance answered",
+        )),
+      )
       let state = detach(state, id, detached_of(held.custody))
       commit(state, id, jobstate.RunnerLost(reason:), None)
     }

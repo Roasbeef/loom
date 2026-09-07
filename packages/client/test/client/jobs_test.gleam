@@ -984,6 +984,47 @@ pub fn a_refused_clearance_reaches_the_starting_caller_test() {
   assert result.is_ok(started_or_refused(harness, "main", "make", None))
 }
 
+pub fn a_starter_whose_runner_died_first_is_answered_test() {
+  // The clearance runs on the runner, so a starting caller's reply
+  // subject waits inside the job's custody until the runner has said
+  // whether there is a job at all. A runner that dies before it can say
+  // anything leaves nobody holding that promise: the weft outcome is the
+  // only thing that reaches the actor, and it records the job lost.
+  //
+  // Answering there is what makes the refusal true and prompt. Without
+  // it the caller waits out its whole budget and is told the actor did
+  // not answer in time — a sentence about the actor, which is alive and
+  // serving, rather than about the job.
+  let clock = counting_clock(1_756_000_000_000, 1)
+  let runtime = open_runtime(clock)
+  let spill = start_fake_spill()
+  let name = addresses.new()
+  let assert Ok(_started) =
+    jobs.start(
+      name,
+      wiring(
+        runtime,
+        spill,
+        clock,
+        fn(_spec, _events) { panic as "this runner dies before it clears" },
+        5000,
+        policy.workspace_default("/workspace"),
+      ),
+    )
+    as "the jobs actor must start"
+
+  let assert Error(jobs.Unavailable(reason:)) =
+    jobs.start_job(
+      name,
+      strand: "main",
+      operation: an_op(),
+      request: jobs.Request(command: "sleep 999", wall_ms: None),
+      waiting: 5000,
+    )
+    as "a start whose runner died is refused rather than left hanging"
+  assert string.contains(reason, "the runner died before the clearance")
+}
+
 // --- output ---------------------------------------------------------------
 
 pub fn a_poll_reports_what_arrived_since_the_cursor_test() {
