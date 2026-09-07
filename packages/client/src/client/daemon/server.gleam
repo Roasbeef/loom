@@ -219,7 +219,8 @@ fn session_upgrade(
 fn resident(status) {
   case status {
     manager.Resident(incarnation) -> Ok(incarnation)
-    manager.Saved
+    manager.Reserved
+    | manager.Saved
     | manager.Opening(_)
     | manager.Stopping(_)
     | manager.RecoveryBlocked(_) -> Error(manager.Unavailable)
@@ -815,6 +816,11 @@ fn view_json(view: manager.View) -> JsonValue {
 
 fn status_json(status) {
   case status {
+    // Distinct from `saved` because the two differ in what a client may do
+    // with the row: a reservation has no database and only a create retry
+    // under its original request key can finish it.
+    manager.Reserved -> json.Object([#("state", json.String("reserved"))])
+
     manager.Saved -> json.Object([#("state", json.String("saved"))])
     manager.Opening(operation) ->
       json.Object([
@@ -839,6 +845,7 @@ fn status_json(status) {
 fn error_code(error) {
   case error {
     manager.StaleOperation -> "stale_operation"
+    manager.StartFailed -> "start_failed"
     manager.Capacity -> "capacity"
     manager.NotInitialized -> "not_initialized"
     manager.Unavailable | manager.Preparation(_) -> "unavailable"

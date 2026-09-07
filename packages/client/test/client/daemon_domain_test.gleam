@@ -45,11 +45,19 @@ fn resident(registry, id) {
   assert answer == poll.Answered(Nil)
 }
 
+fn reserved(registry, id) {
+  settles(registry, id, manager.Reserved)
+}
+
 fn saved(registry, id) {
+  settles(registry, id, manager.Saved)
+}
+
+fn settles(registry, id, expected) {
   let answer =
     poll.until(within: 2000, every: 1, attempt: fn() {
       case manager.get(registry, id) {
-        Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+        Ok(manager.View(status:, ..)) if status == expected -> poll.Done(Nil)
         Ok(_) -> poll.Retry
         Error(error) -> poll.Fail(string.inspect(error))
       }
@@ -224,8 +232,11 @@ pub fn cancelled_failed_domain_retires_all_waiting_sessions_test() {
     |> process.select_specific_monitor(watch, fn(down) { down.reason })
     |> process.selector_receive(2000)
     == Ok(process.Normal)
-  saved(registry, first.registration.id)
-  saved(registry, second.registration.id)
+  // Cancelled preparation never ran either builder, so neither creation was
+  // ever confirmed: these two settle back to their durable reservation, not
+  // to the saved state an initialized session retires into.
+  reserved(registry, first.registration.id)
+  reserved(registry, second.registration.id)
   assert process.receive(builds, 0) == Error(Nil)
 
   // The result and normal witness have different senders. This exercises the

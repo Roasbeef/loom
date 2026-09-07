@@ -101,6 +101,7 @@ import session/session
 import simplifile
 import storage/catalogue
 import storage/domain
+import storage/sqlite
 import telemetry/field
 import telemetry/log.{type Logger}
 import tools/agent.{type Agency}
@@ -2030,6 +2031,44 @@ fn assemble_owned_with(settings, reserved, logger, owner, services) {
   )
 }
 
+/// Renders a storage open refusal as the message the daemon classifier reads.
+///
+/// The one storage refusal an operator can act on is a writer lease that is
+/// still unexpired. A SIGKILL cannot run the release, so the row survives in
+/// the file with the expiry the dead writer last renewed, and the very next
+/// boot is refused by its own predecessor. That refusal heals by itself once
+/// the instant passes, which makes the instant the whole of the answer: this
+/// message names it so `main.start_class` can put it in the daemon log and
+/// the operator can see how long the wait is rather than guessing.
+///
+/// Every other refusal keeps the original opaque wording, and the wording is
+/// what the classifier reads. The full reason travels to the requesting
+/// terminal but never into a log record, because a corrupt-file report or an
+/// open failure can carry the session path inside it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.storage_open_refusal(session.SqliteOpenFailed(sqlite.LeaseHeld(
+/// //   owner: "loomd-a1", expires_at_ms: 42)))
+/// // == "another writer holds this session's lease until epoch ms 42"
+/// ```
+@internal
+pub fn storage_open_refusal(error: session.OpenError) -> String {
+  case error {
+    session.SqliteOpenFailed(sqlite.LeaseHeld(owner: _, expires_at_ms:)) ->
+      "another writer holds this session's lease until epoch ms "
+      <> int.to_string(expires_at_ms)
+
+    session.SqliteOpenFailed(sqlite.CorruptSession(..))
+    | session.SqliteOpenFailed(sqlite.UnsupportedVersion(..))
+    | session.SqliteOpenFailed(sqlite.OpenFailed(..))
+    | session.MemoryOpenFailed(..) ->
+      "the session did not open (held lease? bad path?): "
+      <> string.inspect(error)
+  }
+}
+
 // One namespace spans the composition services' restarts, but never a second
 // session. Boot failure retires routing; full partial-boot custody is separate.
 fn assemble_in(
@@ -2093,10 +2132,7 @@ fn assemble_in(
       lease_ttl_ms: 60_000,
       clock:,
     )
-    |> result.map_error(fn(error) {
-      "the session did not open (held lease? bad path?): "
-      <> string.inspect(error)
-    }),
+    |> result.map_error(storage_open_refusal),
   )
   use Nil <- result.try(
     retain(

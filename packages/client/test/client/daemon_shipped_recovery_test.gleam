@@ -220,9 +220,11 @@ fn assert_metadata_only(control, reserved: catalogue.Registration) {
     daemon.request(control, protocol.GetSession(reserved.id), 5000)
     as "the reserved identity remains individually discoverable"
 
-  // Slot-less rows project as Saved; the refusal distinguishes an unfinished
-  // reservation from an initialized conversation that ordinary open may resume.
-  assert row.status == protocol.Saved
+  // The status is what distinguishes an unfinished reservation from an
+  // initialized conversation that ordinary open may resume. It used to be the
+  // refusal alone: a slot-less row projected as Saved whatever the catalogue
+  // said, so this row was offered for selection and then refused.
+  assert row.status == protocol.Reserved
   let assert Error(daemon.Refused("not_initialized", _)) =
     daemon.request(control, protocol.OpenSession(reserved.id), 5000)
     as "ordinary open cannot initialize a reserved conversation"

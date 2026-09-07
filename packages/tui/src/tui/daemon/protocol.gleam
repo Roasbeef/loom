@@ -107,6 +107,10 @@ pub type Command {
 
 /// Lifecycle observations are transient; only Saved means no resident runtime.
 pub type Lifecycle {
+  /// The identity is reserved and its database was never established, so no
+  /// selection can open it — only a create retry under its request key.
+  Reserved
+
   /// Metadata is registered without a running session.
   Saved
 
@@ -538,6 +542,7 @@ fn session(body: json.JsonValue) {
 fn lifecycle(body: json.JsonValue) {
   use state <- result.try(text_at(body, "state", 64))
   case state {
+    "reserved" -> Ok(Reserved)
     "saved" -> Ok(Saved)
     "opening" -> result.map(text_at(body, "operation", 512), Opening)
     "resident" -> result.map(text_at(body, "incarnation", 512), Resident)

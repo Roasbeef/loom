@@ -424,6 +424,7 @@ A status object is discriminated by `state`:
 
 | `state` | Extra fields | Meaning |
 |---|---|---|
+| `reserved` | none | A creation reserved this identity and never reconciled it. No database stands behind the row, `sessions.open` refuses it with `not_initialized`, and only a `sessions.create` retry under its original request key can finish it. |
 | `saved` | none | Not resident. |
 | `opening` | `operation` | An open is in progress under that operation id. |
 | `resident` | `incarnation` | Resident under that runtime incarnation. |
@@ -2257,13 +2258,14 @@ Sources: (`client/protocol.gleam:489-517`),
 | `forbidden` | An owner-only command from a member, or an observer opening a session. | Disable the control. |
 | `stale_epoch` | The supplied epoch is not the daemon's current one. | Re-read `hello` and retry with the new epoch. |
 | `stale_operation` | `operations.get` named an operation from a replaced incarnation. | Re-read the session's status. |
+| `start_failed` | `operations.get` named the operation of an open whose builder returned an error. Distinct from `stale_operation`, which claims the request was overtaken. | Read `daemon.session_start_failed` in the daemon log for the classified cause, then decide whether to retry. |
 | `revision_changed` | `sessions.list` supplied a revision that no longer holds. | Restart the listing from the empty cursor. |
 | `metadata_too_large` | A single session record exceeds the page budget. | Report; nothing to page around. |
 | `isolation_required` | `sessions.invite` or a membership-creating `sessions.set_role` on a workspace-private session. | Offer `sessions.isolate` first. |
 | `not_found` | No such session, principal or operation. | Refresh the listing. |
 | `conflict` | A reused `request_key` with different metadata; a repeated invitation; an isolation with a retained slot. | Inspect, then decide. |
 | `capacity` | No free session slot. | Retry later, or stop a session. |
-| `not_initialized` | The registry has no durable identity yet. | Report. |
+| `not_initialized` | The named registration is still `reserved`: its creation never reconciled and no database stands behind it. | Retry `sessions.create` under its original request key. A listing renders such a row as `reserved`, so a client should not offer it for opening. |
 | `unavailable` | The daemon is draining, or a durable read failed. | Retry later. |
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
