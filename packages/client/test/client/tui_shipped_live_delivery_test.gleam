@@ -110,12 +110,15 @@ const shipped_open_timeout_ms = 20_000
 // (`packages/client/src/client/daemon/session_socket.gleam`, the module doc
 // and `admit`) — and a loaded hosted runner can spend both in full before
 // the socket answers at all. The command after that admission is itself
-// bounded by the gateway's own five-second request budget. Ten seconds pays
-// both budgets in full without hiding a wedged daemon behind a timeout that
-// never fires, and the fixture's own eunit timeout leaves ample room around
-// it. Every wire read this fixture makes against the shipped daemon passes
-// this constant rather than the helper's in-process default.
-const wire_read_ms = 10_000
+// bounded by the gateway's six-second request budget
+// (`gateway.connection_request`, `waiting: 6000`). Twelve seconds is the
+// daemon's own worst case for a first reply that still succeeds; fifteen
+// leaves scheduling slack on top of it without hiding a wedged daemon
+// behind a timeout that never fires, and the fixture's own eunit timeout
+// leaves ample room around it. Every wire read this fixture makes against
+// the shipped daemon passes this constant rather than the helper's
+// in-process default.
+const wire_read_ms = 15_000
 
 // Milliseconds between the scripted peer's chunks. Nine chunks make an answer
 // occupy about eight tenths of a second, which has to hold a terminal's 250 ms
