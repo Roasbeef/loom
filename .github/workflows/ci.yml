@@ -295,10 +295,16 @@ jobs:
       # always the executable bit, and a launcher or helper that silently
       # lost it fails as "permission denied" rather than anything that
       # names the real cause. Restoring it unconditionally costs nothing
-      # on the paths that already have it.
+      # on the paths that already have it. `entrypoint.sh` needs the same
+      # treatment as `bin/loomd` and `bin/loom`: both launchers `exec` it,
+      # and a downloaded copy that lost its bit fails the exec with a bare
+      # "Permission denied" (exit 126) before the daemon ever logs a line
+      # — the failure this restore step exists to prevent, just for a file
+      # one directory further in.
       - name: Restore executable bits
         run: |
           chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       - name: make check (${{ matrix.bucket }})
         env:
@@ -409,8 +415,13 @@ jobs:
         with:
           name: linux-build
 
+      # See the `check (linux, *)` bucket's own comment: `entrypoint.sh`
+      # loses its executable bit across artifact upload/download exactly
+      # like `bin/loomd` does, and this job execs it through that launcher.
       - name: Restore executable bits
-        run: chmod +x bin/* packages/sandbox/loom-exec
+        run: |
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       - name: make e2e-client-bootstrap
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap.log
@@ -458,8 +469,13 @@ jobs:
         with:
           name: linux-build
 
+      # See the `check (linux, *)` bucket's own comment: `entrypoint.sh`
+      # loses its executable bit across artifact upload/download exactly
+      # like `bin/loomd` does, and this job execs it through that launcher.
       - name: Restore executable bits
-        run: chmod +x bin/* packages/sandbox/loom-exec
+        run: |
+          chmod +x bin/* packages/sandbox/loom-exec
+          find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
       # The downloadable server carries this runner's ERTS and SQLite NIF.
       # Building it on the Linux gate proves the OTP pin reaches the shipped
