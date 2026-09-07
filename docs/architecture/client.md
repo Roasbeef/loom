@@ -63,7 +63,9 @@ socket carries conversation commands and credited transfers. The conversation
 vocabulary retains commands such as `prompt`, `steer`, and `fork`, but the v1
 envelopes and full-snapshot exchange shown in the historical sections below
 are not the current wire contract. [Protocol 015](../../protocol-change/015-daemon-control-and-session-attachments.md)
-defines that contract and its accepted transfer amendments.
+defines that contract and its accepted transfer amendments, and
+[`docs/client-protocol.md`](../client-protocol.md) is the client-facing reference
+that spells out every body, error code and limit under it.
 
 Each upgrade hashes the bearer and authenticates
 its current principal through the manager. The session route resolves an already
