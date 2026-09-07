@@ -748,6 +748,143 @@ pub fn a_field_name_the_harness_will_not_render_is_refused_test() {
   assert fake_agency.drain(seen) == []
 }
 
+// A spawn carrying whatever result shape a test wants to state.
+fn spawn_with_schema(schema: MsgPackValue) -> MsgPackValue {
+  map([
+    #("purpose", text("review")),
+    #("brief", text("b")),
+    #("within_ms", msgpack.NilValue),
+    #("detach", msgpack.BoolValue(False)),
+    #("context", text("fresh")),
+    #("tools", msgpack.NilValue),
+    #("result_schema", schema),
+  ])
+}
+
+pub fn the_width_bound_is_checked_before_the_descriptors_are_decoded_test() {
+  // The count the harness enforces is asked on the near side of the walk,
+  // so a list a program padded past the bound is refused for its length
+  // rather than decoded into JSON first. That ordering is observable: the
+  // descriptor past the bound names a field type this dialect does not
+  // have, and the refusal still names the bound rather than that type,
+  // which it could not do if `decode_field` had run over it.
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let well_formed = fn(index: Int) {
+    map([
+      #("name", text("field" <> int.to_string(index))),
+      #("type", text("string")),
+      #("items", msgpack.NilValue),
+      #("required", msgpack.BoolValue(False)),
+    ])
+  }
+  let unusable =
+    map([
+      #("name", text("odd")),
+      #("type", text("regex")),
+      #("items", msgpack.NilValue),
+      #("required", msgpack.BoolValue(False)),
+    ])
+  let inside =
+    list.index_map(list.repeat(Nil, agent.max_result_fields), fn(_nil, index) {
+      well_formed(index)
+    })
+
+  // Exactly at the bound, every descriptor is decoded and the schema
+  // reaches the Agency.
+  let _at_the_bound =
+    serviced(
+      agency,
+      "strand.spawn",
+      spawn_with_schema(msgpack.ArrayValue(inside)),
+      0,
+    )
+  let assert [fake_agency.SawSpawn(request: spawned, ..)] =
+    fake_agency.drain(seen)
+    as "a schema at the bound must reach the Agency"
+  let assert option.Some(parsed) = spawned.result_schema
+    as "the declared shape must cross as a schema"
+  assert list.length(agent.result_fields(parsed)) == agent.max_result_fields
+
+  let #(code, message) =
+    refused_by(
+      agency,
+      "strand.spawn",
+      spawn_with_schema(msgpack.ArrayValue(list.append(inside, [unusable]))),
+    )
+  assert code == "invalid_argument"
+  assert string.contains(message, "at most")
+  assert string.contains(message, int.to_string(agent.max_result_fields))
+
+  // The excess was never decoded, so `field_type_json`'s own complaint
+  // about the type it carries cannot appear — and nothing was minted.
+  assert !string.contains(message, "regex")
+  assert fake_agency.drain(seen) == []
+}
+
+pub fn the_depth_bound_is_checked_on_the_way_down_test() {
+  // The other half of the same ordering. `items` recursion used to run to
+  // whatever depth a program nested before anything looked at the depth
+  // at all; the bound now travels with the recursion, so a descriptor one
+  // level past it is refused before the level below is read. The proof is
+  // the same shape: the leaf at the bottom is an unusable type, and the
+  // refusal names the depth instead of it.
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let wrap = fn(inner) { map([#("type", text("array")), #("items", inner)]) }
+
+  // A descriptor whose `items` nest `levels` deep beneath its own type,
+  // with `leaf` at the bottom: the descriptor itself is level zero, so
+  // its own `items` is level one.
+  let chain = fn(levels: Int, leaf: MsgPackValue) {
+    msgpack.ArrayValue([
+      map([
+        #("name", text("deep")),
+        #("type", text("array")),
+        #(
+          "items",
+          list.fold(list.repeat(Nil, levels - 1), leaf, fn(inner, _nil) {
+            wrap(inner)
+          }),
+        ),
+        #("required", msgpack.BoolValue(False)),
+      ]),
+    ])
+  }
+  let usable_leaf =
+    map([#("type", text("string")), #("items", msgpack.NilValue)])
+  let unusable_leaf =
+    map([#("type", text("regex")), #("items", msgpack.NilValue)])
+
+  // Exactly at the bound, the whole chain is decoded.
+  let _at_the_bound =
+    serviced(
+      agency,
+      "strand.spawn",
+      spawn_with_schema(chain(agent.max_schema_depth, usable_leaf)),
+      0,
+    )
+  let assert [fake_agency.SawSpawn(request: spawned, ..)] =
+    fake_agency.drain(seen)
+    as "a schema at the depth bound must reach the Agency"
+  assert option.is_some(spawned.result_schema)
+
+  let #(code, message) =
+    refused_by(
+      agency,
+      "strand.spawn",
+      spawn_with_schema(chain(agent.max_schema_depth + 1, unusable_leaf)),
+    )
+  assert code == "invalid_argument"
+  assert string.contains(message, "deeper than")
+  assert string.contains(message, int.to_string(agent.max_schema_depth))
+
+  // The level past the bound was never read, so the type sitting there
+  // cannot have named itself in the refusal.
+  assert !string.contains(message, "regex")
+  assert fake_agency.drain(seen) == []
+}
+
 pub fn a_note_that_is_not_json_is_refused_test() {
   // The blackboard stores JSON. Raw bytes have no JSON form, and a note
   // silently coerced into one is a note the program cannot read back.

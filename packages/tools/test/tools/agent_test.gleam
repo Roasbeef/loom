@@ -741,6 +741,48 @@ pub fn the_field_bound_is_checked_before_the_properties_are_walked_test() {
   assert !string.contains(reason, "unusable")
 }
 
+pub fn the_required_bound_is_checked_before_the_names_are_walked_test() {
+  // `required` is the envelope's second model-supplied list and it is
+  // read three times over, so it carries the same bound as `properties`
+  // and in the same place: above its own walk. The ordering is observable
+  // here because the entries past the bound are not strings at all, and
+  // the refusal still names the bound rather than their type — which it
+  // could not do if the walk ran first.
+  let named = fn(index: Int) { "field" <> int.to_string(index) }
+  let schema = fn(required) {
+    json.Object([
+      #("type", json.String("object")),
+      #(
+        "properties",
+        json.Object(
+          list.index_map(
+            list.repeat(Nil, agent.max_result_fields),
+            fn(_nil, index) {
+              #(named(index), json.Object([#("type", json.String("string"))]))
+            },
+          ),
+        ),
+      ),
+      #("required", json.Array(required)),
+    ])
+  }
+  let inside =
+    list.index_map(list.repeat(Nil, agent.max_result_fields), fn(_nil, index) {
+      json.String(named(index))
+    })
+
+  // Exactly at the bound, every name resolves to a declared property.
+  let assert Ok(_at_the_bound) = agent.parse_result_schema(schema(inside))
+  let assert Error(reason) =
+    agent.parse_result_schema(schema(list.append(inside, [json.Int(0)])))
+  assert string.contains(reason, "at most")
+  assert string.contains(reason, int.to_string(agent.max_result_fields))
+
+  // The excess was never read, so the walk's own vocabulary — the
+  // complaint about an entry that is not a string — cannot appear.
+  assert !string.contains(reason, "must hold strings")
+}
+
 pub fn a_malformed_schema_is_refused_at_spawn_not_at_join_test() {
   // The parent learns about its own mistake in the turn it made it. The
   // Agency is never reached, so nothing was minted and nothing has to be
