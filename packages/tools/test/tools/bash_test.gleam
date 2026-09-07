@@ -202,6 +202,23 @@ pub fn bash_nonzero_exit_is_error_test() {
   assert string.contains(text, "stderr")
 }
 
+// A cancelled run whose payload backgrounded its work exits zero, so the
+// exit code cannot say the run was truncated and only `cancelled` can
+// (`protocol-change/006`). Both halves of the result are asserted: the
+// model reads the line, a program reads the key.
+pub fn bash_cancelled_is_reported_test() {
+  let #(outcome, _recorded) =
+    run_with_script(
+      [fake_broker.stdout("partial\n"), fake_broker.cancelled(code: 0)],
+      command_args("sleep 30 &"),
+    )
+  assert string.contains(first_text(outcome), "cancelled")
+  let assert Some(json.Object(fields)) = outcome.details
+    as "a settled execution always carries details"
+  assert list.key_find(fields, "cancelled") == Ok(json.Bool(True))
+  assert list.key_find(fields, "timed_out") == Ok(json.Bool(False))
+}
+
 pub fn bash_truncation_noted_test() {
   let #(outcome, _recorded) =
     run_with_script(

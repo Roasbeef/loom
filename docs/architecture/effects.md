@@ -489,6 +489,14 @@ clean success for an execution that was truncated, and `code=143` is
 what `sh -c 'exit 143'` reports with no cancel at all
 (`protocol-change/006`).
 
+The fact reaches the model rather than stopping at `ExecResult`. `bash`
+renders it as a line of the body and as `details.cancelled`, and a job
+poll carries it in the same key, in both cases beside `timed_out`
+because the two answer different questions: `timed_out` says the wall
+deadline fired, `cancelled` says the helper stopped the run rather than
+the run ending on its own, and a run killed by its deadline is both.
+`cancelled` with no `timed_out` is the broker having asked.
+
 Darwin has no PID namespace. The helper therefore starts behind a gate,
 records observed descendants with both PID and birth time, and sends TERM and
 KILL to both the original process group and the still-live recorded set. The

@@ -140,6 +140,27 @@ pub fn exited(code code: Int, stdout_bytes stdout_bytes: Int) -> CallEvent {
   )
 }
 
+/// A settled exit the helper's cancel ladder stopped, with no wall
+/// deadline involved — the shape `protocol-change/006` exists to make
+/// sayable, where the code alone is indistinguishable from a clean run.
+pub fn cancelled(code code: Int) -> CallEvent {
+  broker.CallSettled(
+    outcome: broker.CallExited(result: exec.ExecResult(
+      code:,
+      signal: 0,
+      stdout_bytes: 0,
+      stderr_bytes: 0,
+      stdout_truncated: False,
+      stderr_truncated: False,
+      enforcement: ["rlimits", "pgroup"],
+      degraded: False,
+      wall_ms: 5,
+      timed_out: False,
+      cancelled: True,
+    )),
+  )
+}
+
 /// One stdout chunk.
 pub fn stdout(data: String) -> CallEvent {
   broker.CallOutput(
