@@ -901,17 +901,22 @@ jobs:
       # toolchain, artifact restore) still does. Requiring `success` here
       # is therefore the right test for all three jobs, not a special
       # case for the advisory one.
+      #
+      # No associative array here, unlike `gate (linux)`'s version of
+      # this step: a `run:` step's default shell on a macOS runner is
+      # `/bin/bash`, Apple's stock bash 3.2, and `declare -A` is a bash-4
+      # feature. Three plain checks are exactly as readable and stay
+      # portable to whatever bash a runner image ships.
       - name: Require every upstream job to have succeeded
         run: |
-          declare -A results=(
-            [deps-macos]='${{ needs.deps-macos.result }}'
-            [check-macos]='${{ needs.check-macos.result }}'
-            [e2e-macos]='${{ needs.e2e-macos.result }}'
-          )
           fail=0
-          for job in "${!results[@]}"; do
-            echo "  ${job}: ${results[$job]}"
-            if [ "${results[$job]}" != "success" ]; then
+          for pair in "deps-macos:${{ needs.deps-macos.result }}" \
+            "check-macos:${{ needs.check-macos.result }}" \
+            "e2e-macos:${{ needs.e2e-macos.result }}"; do
+            job=${pair%%:*}
+            result=${pair#*:}
+            echo "  ${job}: ${result}"
+            if [ "${result}" != "success" ]; then
               fail=1
             fi
           done
