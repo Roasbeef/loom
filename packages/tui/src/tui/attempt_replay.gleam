@@ -206,7 +206,7 @@ fn received(lane: Lane, message) {
   let captured =
     list.fold(updates, lane.captured, fn(previous, update) {
       case update {
-        session_channel.Captured(cut, view) -> Some(#(cut, view))
+        session_channel.Captured(cut, view, _) -> Some(#(cut, view))
         _ -> previous
       }
     })

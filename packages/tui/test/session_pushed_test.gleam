@@ -12,7 +12,7 @@ import core/json
 import core/message
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam/string
 import tui/attempt
 import tui/connection
@@ -168,6 +168,14 @@ fn transfer(first, id, window, next_seq) {
   ]
 }
 
+// What a fixture reads off a capture to tell live delivery from the fallback.
+fn provenance(update) {
+  case update {
+    session_channel.Captured(trigger:, ..) -> Ok(trigger)
+    _other -> Error(Nil)
+  }
+}
+
 fn feed(channel, messages) {
   list.fold(messages, #(channel, []), fn(acc, message) {
     let #(channel, updates) = session_channel.receive(acc.0, message)
@@ -223,8 +231,8 @@ pub fn a_notice_in_ready_issues_its_catch_up_before_the_idle_refresh_test() {
   // Nothing about the notice changes what the reply has to be: the lane is in
   // an ordinary catch-up transfer and completes it in the ordinary way.
   let #(_, updates) = feed(notified, transfer(4, "1:2", "catch_up", 12))
-  let assert [session_channel.Captured(..)] = updates
-    as "the notice-driven capture completes like any other"
+  assert list.map(updates, provenance) == [Ok(session_channel.Notified)]
+    as "the capture that paints the answer is the notice's, not a refresh's"
 }
 
 pub fn a_notice_for_a_held_sequence_or_before_any_cut_changes_nothing_test() {
@@ -264,7 +272,7 @@ pub fn a_notice_in_flight_is_spent_at_the_next_ready_transition_test() {
   // The lane's own clock has not reached its refresh instant, so the capture
   // that goes out here is the deferred notice being spent and nothing else.
   let #(spent, updates) = feed(deferred, [piece(5, "1:2"), end(6, "1:2", 12)])
-  let assert [session_channel.Captured(..)] = updates
+  assert list.map(updates, provenance) == [Ok(session_channel.Notified)]
   assert session_channel.in_flight(spent)
     as "the deferred notice captures at the ready transition, not at +250ms"
   let assert [

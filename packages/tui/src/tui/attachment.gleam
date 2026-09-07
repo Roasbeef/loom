@@ -367,7 +367,7 @@ fn drain(candidate: Candidate, frames, remaining) {
 fn apply_updates(candidate: Candidate, updates) {
   case updates {
     [] -> Ok(candidate)
-    [channel.Captured(cut, view), ..rest] -> {
+    [channel.Captured(cut, view, _), ..rest] -> {
       process.send(candidate.acknowledgement, Nil)
       apply_updates(Candidate(..candidate, captured: Some(#(cut, view))), rest)
     }

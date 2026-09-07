@@ -37,7 +37,14 @@ pub type Update {
   Submission(disposition: Disposition)
 
   /// Only this event may replace visible metadata and the durable projection.
-  Captured(cut: snapshot.Captured, view: snapshot_view.View)
+  Captured(
+    /// The completed, validated cut.
+    cut: snapshot.Captured,
+    /// The presentation derived from it.
+    view: snapshot_view.View,
+    /// What made the lane ask for this cut.
+    trigger: Capture,
+  )
 
   /// Exact decisions only; never a replacement conversation cut.
   LookedUp(records: List(approval.Review), missing: List(String))
@@ -67,6 +74,26 @@ pub type Update {
 
   /// The socket cannot continue, while the last completed projection survives.
   Failed(reason: String)
+}
+
+/// What made a lane ask for the cut it just completed.
+///
+/// The three are not interchangeable to a reader. Live delivery is working
+/// only when a peer's answer is painted by a `Notified` capture; the same
+/// answer painted by `Refreshed` means the notice never arrived and the
+/// terminal fell back to polling, which is correct but is not the property
+/// under test. Carrying the reason on the update is what lets a fixture tell
+/// those two apart instead of inferring it from timing.
+pub type Capture {
+  /// A pushed frame — a commit notice, presence or attachment — asked for it.
+  Notified
+
+  /// The 250 ms idle refresh, which is the recovery path and the only path
+  /// on a daemon that pushes nothing.
+  Refreshed
+
+  /// The lane's own subscribe or a recorded command produced it.
+  Requested
 }
 
 /// Local admission is distinct from a wire write and its uncertain outcome.
@@ -130,6 +157,7 @@ pub opaque type Channel {
     queued: Option(Outbound),
     refresh_at: Int,
     refresh: Refresh,
+    trigger: Capture,
   )
 }
 
@@ -227,6 +255,7 @@ fn initial(socket, expected, trace, timestamp) {
     queued: None,
     refresh_at: timestamp(),
     refresh: Idle,
+    trigger: Requested,
   )
 }
 
@@ -494,7 +523,7 @@ fn notified(channel: Channel, seq: Int) {
 fn capture_or_defer(channel: Channel) {
   case channel.phase, channel.cut {
     Ready, Some(cut) -> #(
-      capture_again(Channel(..channel, refresh: Idle), cut.next_seq),
+      capture_again(Channel(..channel, refresh: Idle), cut.next_seq, Notified),
       [],
     )
 
@@ -593,7 +622,7 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
               attachment: Some(cut.attachment),
               refresh_at: channel.timestamp() + 250,
             )
-          send_queued(channel, [Captured(cut, view)])
+          send_queued(channel, [Captured(cut, view, channel.trigger)])
         }
       }
     AwaitingReply(name, Mutation), session_wire.Mutation(status) -> {
@@ -684,7 +713,7 @@ pub fn tick(channel: Channel) -> #(Channel, List(Update)) {
     Ready ->
       case channel.cut {
         Some(cut) if channel.refresh_at <= timestamp -> {
-          let next = capture_again(channel, cut.next_seq)
+          let next = capture_again(channel, cut.next_seq, Refreshed)
           #(next, [])
         }
         Some(_) | None -> #(channel, [])
@@ -782,11 +811,12 @@ pub fn adopted(channel: Channel) -> Nil {
   }
 }
 
-fn capture_again(channel: Channel, cursor) {
+fn capture_again(channel: Channel, cursor, trigger: Capture) {
   let next =
     Channel(
       ..channel,
       phase: AwaitingBegin,
+      trigger: trigger,
       issued: attempt.Request(
         channel.next_id,
         "catch_up",
@@ -821,8 +851,11 @@ pub fn replay_issued(
   let next = case channel.phase, request.selection {
     Ready, attempt.Cursor(cursor) ->
       case channel.cut {
+        // A recording preserves the request, not the reason for it. Every
+        // catch-up in a recording made before pushed frames existed was the
+        // idle refresh, so that is what replay reports.
         Some(cut) if request.kind == "catch_up" && cursor == cut.next_seq ->
-          Ok(capture_again(channel, cursor))
+          Ok(capture_again(channel, cursor, Refreshed))
         Some(_) | None ->
           Error("recorded catch-up cursor does not match the adopted cut")
       }
@@ -883,7 +916,7 @@ fn send_queued(channel: Channel, updates: List(Update)) {
   let #(channel, updates) = flush_queued(channel, updates)
   case channel.phase, channel.refresh, channel.cut {
     Ready, Due, Some(cut) -> #(
-      capture_again(Channel(..channel, refresh: Idle), cut.next_seq),
+      capture_again(Channel(..channel, refresh: Idle), cut.next_seq, Notified),
       updates,
     )
     Ready, Due, None

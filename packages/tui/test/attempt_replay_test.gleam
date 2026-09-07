@@ -823,7 +823,7 @@ pub fn unsent_command_waits_for_valid_end_and_never_retries_sent_mutation_test()
   let #(sent, updates) =
     read_channel(before_end, list.drop(remaining, list.length(remaining) - 1))
   let assert [
-    session_channel.Captured(_, _),
+    session_channel.Captured(_, _, session_channel.Refreshed),
     session_channel.Submission(session_channel.Sent("prompt", 8)),
   ] = updates
     as "valid End alone allocates exactly the next unused wire ID"
@@ -994,7 +994,7 @@ pub fn unsent_command_never_migrates_on_successful_or_failed_replacement_test() 
       session_channel.replay(snapshot.Expected("B", "epoch", "incarnation")),
       events(2, "B"),
     )
-  let assert [session_channel.Captured(cut, view)] = updates
+  let assert [session_channel.Captured(cut, view, _)] = updates
     as "replacement first cut was fully validated"
   let adopted =
     tui.candidate_outcome(
@@ -1054,7 +1054,7 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
       session_channel.replay(snapshot.Expected("B", "epoch", "incarnation")),
       events(2, "B"),
     )
-  let assert [session_channel.Captured(cut, view)] = updates
+  let assert [session_channel.Captured(cut, view, _)] = updates
     as "B has a validated first cut"
   let adopted =
     tui.candidate_outcome(

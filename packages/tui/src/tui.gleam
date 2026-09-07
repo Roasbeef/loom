@@ -337,6 +337,11 @@ pub type Model {
     channel: Option(session_channel.Channel),
     /// Last complete raw cut and its coherent metadata projection.
     captured: Option(#(snapshot.Captured, snapshot_view.View)),
+    /// What made the lane ask for that cut: a pushed frame, the idle
+    /// refresh, or the terminal's own command. Live delivery is the
+    /// difference between the first two, and this is where a fixture
+    /// reads it.
+    last_capture: session_channel.Capture,
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(daemon_selection.Host),
     /// One bounded metadata page request; no catalogue accumulation.
@@ -644,6 +649,7 @@ pub fn new_model_with_clock(
     candidate: attachment.idle(),
     channel: None,
     captured: None,
+    last_capture: session_channel.Requested,
     daemon_host: None,
     catalogue_request: None,
     creation_key: None,
@@ -3073,7 +3079,8 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
   case update {
     session_channel.Submission(disposition) ->
       apply_submission(model, disposition)
-    session_channel.Captured(cut, view) -> reconcile_cut(model, cut, view)
+    session_channel.Captured(cut, view, trigger) ->
+      reconcile_cut(Model(..model, last_capture: trigger), cut, view)
     session_channel.LookedUp(records, missing) -> {
       let inspected = inspect_looked_up(model, records, missing)
       let updated =
