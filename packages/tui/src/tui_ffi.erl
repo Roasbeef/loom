@@ -48,9 +48,12 @@ halt(Code) ->
 %% Asks the person at the terminal one question and answers with the line
 %% they typed. A caller with no terminal on stdin is refused rather than
 %% blocked: `loom sessions rm` in a pipeline must fail asking for --yes
-%% instead of waiting forever on input that is not coming.
+%% instead of waiting forever on input that is not coming. The terminal
+%% question goes through the documented `{terminal, boolean()}` option of
+%% io:getopts/1 rather than prim_tty:isatty/1, which is a kernel internal
+%% carrying no compatibility promise across releases.
 read_console_reply(PromptBinary) ->
-    case prim_tty:isatty(stdin) of
+    case proplists:get_value(terminal, io:getopts(standard_io), false) of
         true ->
             case io:get_line(unicode:characters_to_list(PromptBinary)) of
                 eof -> {error, <<"no reply on standard input">>};

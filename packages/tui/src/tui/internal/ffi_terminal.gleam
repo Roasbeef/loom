@@ -35,11 +35,15 @@ pub fn run_forwarding(
 
 /// Asks the person at the terminal one question and returns their reply.
 ///
-/// Uses OTP `prim_tty:isatty/1` and `io:get_line/1`. A caller whose standard
-/// input is not a terminal is refused rather than blocked, so `loom sessions
-/// rm` inside a pipeline fails asking for `--yes` instead of waiting on input
-/// that will never arrive. Neither half has an expression in `gleam_stdlib`,
-/// which reads no console at all.
+/// Uses OTP `io:getopts/1` and `io:get_line/1`. A caller whose standard input
+/// is not a terminal is refused rather than blocked, so `loom sessions rm`
+/// inside a pipeline fails asking for `--yes` instead of waiting on input that
+/// will never arrive. The terminal question is asked through the documented
+/// `{terminal, boolean()}` option of `io:getopts(standard_io)` rather than
+/// `prim_tty:isatty/1`, which is a kernel internal with no compatibility
+/// promise. Neither half has an expression in `gleam_stdlib`, `gleam_erlang`
+/// or `gleam_otp`: none of them reads a line from the console at all, which
+/// is what makes this external a last resort rather than a convenience.
 @external(erlang, "tui_ffi", "read_console_reply")
 pub fn read_console_reply(prompt: String) -> Result(String, String)
 
