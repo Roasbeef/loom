@@ -292,7 +292,20 @@ only Go module.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
-  determinism.
+  determinism. `PATH` is the one name the helper rebuilds instead of
+  forwarding: `jail.BuildPath` (`internal/jail/env.go`) folds the helper
+  process's own inherited `PATH` — the daemon's, which is where the
+  operator's toolchain actually lives (Homebrew's `/opt/homebrew/bin` on
+  macOS, say) — with a fixed floor (`/usr/local/bin`, `/usr/bin`, `/bin`),
+  keeping only entries that are absolute, name a directory that exists,
+  and are not already present. A directory list is not a secret, so
+  dropping it bought nothing but an unusable jail on the very filesystem
+  view the policy already exposes read-only. Entries under the policy's
+  writable roots (workspace, host-backed scratch) are excluded even so:
+  a directory the model can write to, sitting on `PATH`, would let a
+  jailed command shadow `rg` with a script written a moment earlier.
+  `run.go` builds this before calling `FilterEnv`, so a policy whose
+  `env_allow` never names `PATH` still sees none of it.
 - **`output_bytes` is per stream, and truncation does not stop reading.**
   After the cap the helper keeps draining and discards; stopping would
   wedge the child on a full pipe, turning an output limit into an

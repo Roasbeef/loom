@@ -359,8 +359,26 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		argv = withStartGate(argv)
 	}
 
+	// The payload's PATH is rebuilt rather than forwarded as the broker
+	// sent it: BuildPath (internal/jail/env.go) folds the helper's own
+	// inherited PATH — the daemon's, which is where the operator's
+	// toolchain actually lives — in with a fixed floor, filtered to
+	// existing directories outside the policy's writable roots. This
+	// runs unconditionally; FilterEnv still drops the result unless
+	// "PATH" is in the policy's env_allow, so a policy that never
+	// allowed PATH still sees none.
+	writableRoots := req.Policy.WritableRoots
+	if !req.Policy.ScratchIsTmpfs() {
+		writableRoots = append(append([]string(nil), writableRoots...), req.Policy.Scratch)
+	}
+	env := make(map[string]string, len(req.Env)+1)
+	for k, v := range req.Env {
+		env[k] = v
+	}
+	env["PATH"] = strings.Join(BuildPath(os.Getenv("PATH"), writableRoots), ":")
+
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = FilterEnv(req.Env, req.Policy.EnvAllow)
+	cmd.Env = FilterEnv(env, req.Policy.EnvAllow)
 	// New session ⇒ new process group with pgid = child pid, and no
 	// controlling terminal. Everything the jail spawns stays in this
 	// group unless it setsids itself — and bwrap's PID namespace covers

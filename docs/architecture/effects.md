@@ -438,8 +438,18 @@ the report says so.
 Everything else is plumbing with teeth. The child's environment is
 **constructed, never inherited**: a variable absent from `env_allow` is
 dropped even when the broker sent it, so the policy alone documents what
-a jail could see. Output is capped per stream, and past the cap the
-helper keeps reading and discarding so the child never blocks on a full
+a jail could see. `PATH` is the exception to "never inherited" in name
+only: the helper folds its own process's inherited `PATH` — the
+daemon's, wherever the operator's toolchain actually lives — with a
+fixed floor of system directories, keeping only entries that exist and
+do not fall under a writable root the model could plant a shadowing
+binary in, then hands the result through the same `env_allow` gate as
+everything else. A directory list carries no secret, so building it
+this way loses nothing the scrub was meant to protect while keeping
+`rg`, `go`, and the rest of the toolchain reachable inside the jail's
+own read-only view of the host filesystem. Output is capped per stream,
+and past the cap the helper keeps reading and discarding so the child
+never blocks on a full
 pipe. And `Wait` runs in a deliberate order: reap the direct child,
 sweep the group with `SIGKILL` (killing orphaned grandchildren that still
 hold the output pipes), then join the output pumps — which is why a
