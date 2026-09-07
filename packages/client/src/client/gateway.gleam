@@ -4,9 +4,18 @@
 ////
 //// A socket supplies one request and waits for one bounded reply. Coherent
 //// metadata and descriptors come from the bounded storage reader; raw records
-//// and metadata are fragmented under explicit client credit. No writer or bus
-//// hint subscription feeds this path. Optional provider previews use sixteen
-//// original observer leases and one bounded, explicitly discontinuous sample.
+//// and metadata are fragmented under explicit client credit. Optional provider
+//// previews use sixteen original observer leases and one bounded, explicitly
+//// discontinuous sample.
+////
+//// Alongside those replies the hub *pushes* frames that answer no request
+//// (`protocol-change/018`): a `committed` notice per durable emit the
+//// writer's commit hint made it observe, a clipped `stream_delta` while an
+//// answer is being generated, the presence roster, and a connection-scoped
+//// `error`. A push carries a notice and never a durable record, so the
+//// credited transfer remains the one place the 64 KiB bound and the
+//// retention window are enforced; and it leaves through `deliver`, so it is
+//// re-authorized per frame exactly as a reply is.
 //// Authentication is rechecked before admission and delivery. A reader that
 //// is gone, or that spends its whole budget on the server's own capture,
 //// permanently poisons this actor and invokes its exact incarnation's stop
@@ -580,10 +589,10 @@ fn start_with_delivery(
 
     // Prime: advance past everything already in the store, and learn
     // the live operations so the next pull sees changes, not history.
-    let state = case delivery {
-      Network -> state
-      HostOnly -> pull(state).0
-    }
+    // Both deliveries need it now that a network hub pushes on a hint —
+    // an unprimed one would answer its first commit with a notice for
+    // every sequence the store already held.
+    let state = pull(state).0
     actor.initialised(state)
     |> actor.selecting(process.select_monitors(selector, SocketDown))
     |> actor.returning(Gateway(name:))
@@ -1121,8 +1130,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
 // --- materializing the durable stream --------------------------------------
 
-// A network request owns exactly one reply destination. No unsolicited durable
-// payload is sent to its socket; the next request supplies the next credit.
+// A network request owns exactly one reply destination, and holds it only for
+// the turn that answers it. What the socket also receives, since
+// `protocol-change/018`, are frames that answer no request: a `committed`
+// notice, a stream delta, the roster, a fault. Those never find this
+// destination — `response` is `Some` only between the two assignments below —
+// so the credit a request buys is still exactly one bounded reply. What they
+// carry is a *notice*, never a durable payload: the record still travels the
+// credited snapshot path, which is where the size bound and the retention
+// window are enforced.
 fn request_frame(
   state: State,
   connection: Int,
@@ -1944,10 +1960,54 @@ fn read_only(command: Command) {
 }
 
 fn pull_and_broadcast(state: State) -> State {
-  use <- bool.guard(state.delivery == Network, state)
   let #(state, emits) = pull(state)
-  broadcast(state, emits)
+  case state.delivery {
+    // The host fixture stream is the whole record; it has no size bound
+    // to respect and its fixtures read the entries themselves.
+    HostOnly -> broadcast(state, emits)
+
+    // A network peer gets a notice per emit and fetches the record on the
+    // credited path (`protocol-change/018`). The seq is the emit's own, so
+    // a client that already holds it drops the frame without asking.
+    Network ->
+      broadcast(
+        state,
+        list.map(emits, fn(emit) {
+          Emit(
+            seq: emit.seq,
+            event: protocol.CommittedEvent(notice_strand(state, emit.event)),
+          )
+        }),
+      )
+  }
   state
+}
+
+// The strand a durable emit landed on, which is a notice's whole body.
+// Every event `pull` can produce names one; the rest are replies,
+// transfers and ephemera that never reach this function, and they are
+// listed rather than swept into a catch-all so that an emit kind added
+// later has to answer the question here instead of silently taking the
+// fallback.
+fn notice_strand(state: State, event: WireEvent) -> String {
+  case event {
+    protocol.EntryEvent(record:) -> record.strand
+    protocol.UsageEvent(strand:, ..) -> strand
+    protocol.OpTransitionEvent(strand:, ..) -> strand
+    protocol.EscalationEvent(record:) -> record.strand
+    protocol.StrandResultEvent(strand:, ..) -> strand
+    protocol.SnapshotBegin(..)
+    | protocol.SnapshotChunk(..)
+    | protocol.SnapshotEnd(..)
+    | protocol.SnapshotEvent(..)
+    | protocol.MutationOutcome(..)
+    | protocol.AttachmentEvent(..)
+    | protocol.PresenceEvent(..)
+    | protocol.StreamDeltaEvent(..)
+    | protocol.CommittedEvent(..)
+    | protocol.ErrorEvent(..)
+    | protocol.UnknownEvent(..) -> single_live_strand(state)
+  }
 }
 
 // Reads everything above the high-water from storage and returns it as
@@ -2503,13 +2563,24 @@ fn broadcast(state: State, emits: List(Emit)) -> Nil {
 }
 
 // Sends one event to one connection.
+//
+// A network attachment splits on the *envelope*, not on the connection.
+// An envelope carrying a `reply_to` is the answer to a command and owes
+// that command's one reply capability its bounded response. An envelope
+// with none answers nothing — a notice, a delta, a roster, a fault — and
+// leaves through `deliver`, which runs the same per-frame `check_binding`
+// the reply path runs and retires the attachment when the answer changed
+// (`protocol-change/018`). There is no third way out.
 fn send_to(state: State, connection: Int, envelope: EventEnvelope) -> Nil {
   case dict.get(state.connections, connection) {
     Ok(link) ->
-      case state.delivery, link.authentication {
-        Network, Authenticated(binding, check, close, _) ->
+      case state.delivery, link.authentication, envelope.reply_to {
+        Network, Authenticated(binding, check, close, _), Some(_) ->
           send_response(link.response, envelope, binding, check, close)
-        _, _ -> deliver(link, protocol.encode_event(envelope))
+        Network, Authenticated(..), None
+        | Network, HostFixture, _
+        | HostOnly, _, _
+        -> deliver(link, protocol.encode_event(envelope))
       }
     Error(Nil) -> Nil
   }
@@ -2586,8 +2657,13 @@ fn reply_error(
   )
 }
 
+// Deltas go to every subscribed connection under either delivery. Under
+// `Network` this is what makes a peer see an answer being generated
+// rather than the discontinuous snapshot sample; the text is clipped to
+// the same 24 KiB `preview_text` bound that sample uses, which is what
+// keeps a pushed frame under the reply ceiling without a second size
+// mechanism (`protocol-change/018`).
 fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
-  use <- bool.guard(state.delivery == Network, Nil)
   let op_text = ids.op_id_to_string(operation)
   let strand = case
     dict.to_list(state.live)
@@ -2606,7 +2682,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
         strand:,
         op: op_text,
         kind: protocol.TextKind,
-        text: Some(text),
+        text: Some(preview_text(text)),
         call_id: None,
         tool_name: None,
         arguments_fragment: None,
@@ -2616,7 +2692,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
         strand:,
         op: op_text,
         kind: protocol.ThinkingKind,
-        text: Some(thinking),
+        text: Some(preview_text(thinking)),
         call_id: None,
         tool_name: None,
         arguments_fragment: None,
@@ -2629,7 +2705,7 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
         text: None,
         call_id: Some(call_id),
         tool_name: Some(name),
-        arguments_fragment: Some(arguments_json),
+        arguments_fragment: Some(preview_text(arguments_json)),
       )
   }
   let frame =
