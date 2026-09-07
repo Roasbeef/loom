@@ -145,10 +145,19 @@
 #                            boundary as a job output) rather than
 #                            aborting partway through — the same reason
 #                            the single job gated its own census on that
-#                            outcome before the split. Runs on
-#                            `ubuntu-24.04`, not macOS: it downloads
-#                            text logs and runs a shell script, nothing
-#                            platform-specific.
+#                            outcome before the split. Runs on `macos-
+#                            15`, not Linux, even though its own steps
+#                            are just downloading logs and running a
+#                            script: `skip_census.sh` reads its platform
+#                            from this job's own `uname -s` to pick
+#                            which `.github/declared-skips` lines apply,
+#                            and the declared skip these logs actually
+#                            contain (the /proc-less MCP-teardown skip)
+#                            is declared for `darwin`. A Linux fan-in
+#                            reads "linux" from its own kernel and the
+#                            declaration never matches, which failed the
+#                            census on run 34076756645 for a skip that
+#                            was completely expected.
 #   jail-linux    the suites whose value is kernel enforcement, run on a
 #                 machine given bubblewrap and unprivileged user
 #                 namespaces. The self-test's ENFORCED/SKIPPED report is
@@ -868,15 +877,20 @@ jobs:
 
   # The macOS fan-in — the same shape as `gate (linux)`: fail if anything
   # it needs failed or was cancelled, and nothing else. Runs on
-  # `ubuntu-24.04` rather than macOS: downloading two log artifacts and
-  # running a shell script needs no Mac.
+  # `macos-15`, not `ubuntu-24.04`: skip_census.sh reads its platform
+  # from this job's own `uname -s` to decide which declared-skips lines
+  # apply, and the logs it censuses were produced on macOS runners. A
+  # Linux fan-in reads "linux" from its own kernel, the darwin-only
+  # declaration for the /proc-less MCP teardown skip never matches, and
+  # the census fails the run on a skip that is completely expected —
+  # measured on run 34076756645, where this mistake did exactly that.
   gate-macos:
     name: gate (macos)
     needs:
       - deps-macos
       - check-macos
       - e2e-macos
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 10
     if: always()
     steps:
