@@ -73,14 +73,11 @@ same 24 KiB bound the snapshot preview uses. The presence roster is pushed
 when a peer departs; a peer's arrival is learned from the next capture's
 `peers`, because the join path issues no push of its own.
 
-One caveat about the delta half, measured rather than assumed. `client/serve`
-installs `tap_preview_provider`, not `tap_provider`, so the shipped daemon
-never produces a `ProviderDelta` and `broadcast_delta` is unreachable from
-`bin/loomd`. Everything below about notices, presence, attachment and the
-queue is live in the shipped binary; pushed *deltas* are implemented and
-tested in `gateway_test` but are not yet wired into the server, so a peer's
-view of a live answer is still the bounded snapshot preview. See "Watching an
-answer arrive" below.
+The delta half runs in the shipped binary and not only in the gateway's tests.
+`client/serve` nests the two taps — `tap_provider(tap_preview_provider(...))` —
+so every token reaches the hub as a `ProviderDelta` and `broadcast_delta`
+pushes it onward, while the bounded preview stays as the catch-up fallback for
+a terminal that attaches mid-answer.
 
 A pushed frame carries no `reply_to`, so it is never confused with the answer
 to a command, and it leaves through the same per-frame authority check a reply
@@ -329,20 +326,12 @@ answer, while its own records still contain no assistant entry. All three
 terminals are sampled in one loop rather than one after another, because the
 interval is shorter than a sequence of awaits would take.
 
-**This is weaker than the design note asks, and the fixture says so.** The
-strong form counts fragments — the snapshot's sampled preview always projects
-as exactly one, so a stream that has accumulated two came from pushed
-`stream_delta` frames and nothing else — and it does not pass, because the
-shipped daemon never pushes a delta. `client/gateway` has both halves:
-`tap_provider` tees each delta to the hub as a `ProviderDelta`, and
-`broadcast_delta` pushes it to every subscribed connection with its network
-guard lifted. But `client/serve` installs `tap_preview_provider` instead, so
-no `ProviderDelta` is ever sent and `broadcast_delta` is unreachable from
-`bin/loomd`; `client/demo` and `gateway_test` are its only callers. What the
-fixture watches is therefore the bounded snapshot preview inside a credited
-cut, which is the pre-018 behaviour the note keeps as the catch-up fallback.
-`live_text_before_the_entry` carries the strong assertion in a comment and is
-the place to restore it when the wiring lands.
+The property is stated as a count, which is what makes it a statement about
+pushed deltas rather than about live text of any origin. A credited cut
+carries the snapshot's sampled preview, and that preview projects as exactly
+one fragment however many tokens it summarises, so `live_text_before_the_entry`
+requires two: a stream that has accumulated two fragments before the entry
+exists was fed by `stream_delta` frames the daemon pushed and by nothing else.
 
 Each answer's arrival is read from the capture's own recorded provenance.
 `session_channel.Capture` names what asked for a cut, `tui.Model.last_capture`

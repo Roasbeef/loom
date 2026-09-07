@@ -24,7 +24,7 @@ plane is a separate body of work and it is finished.
 |---|---|
 | Contracts and ownership, phases 0 and 1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
-| TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery now pushes: commit notices, presence and attachment leave the hub unsolicited, and concurrent prompts on one strand are queued rather than refused. Pushed token deltas are implemented in the gateway but not wired into `client/serve`. See "Live delivery" below. |
+| TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery now pushes: commit notices, presence and attachment leave the hub unsolicited, and concurrent prompts on one strand are queued rather than refused. See "Live delivery" below. |
 | Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
 | Background jobs | Landed. The pure state, the actor, the model-facing surface, the shipped fixture and the step-scoped abort are all in the tree; issue #183 is closed by them. See "Background jobs" below for what each piece is and what proves it. |
 
@@ -108,7 +108,7 @@ fix; they are the daemon acceptance evidence, not a count of the current tree.
 | Shipped fixture | What it proves |
 |---|---|
 | `tui_shipped_multiplayer_test` | Alice, Bob and Reader share exact durable records and authorship; configuration, presence, invitations, observer refusal, live revocation and refused/successful switches use real sockets. A jailed tool stays in A1 while A2 in the same workspace and B in another make progress. |
-| `tui_shipped_live_delivery_test` | Two operators submit on one strand inside a single catch-up window and the loser is answered `queued`; every terminal sees the answer's live text before its entry exists in that terminal's cut; both answers are painted by a capture whose recorded provenance is a pushed notice; a member revoked mid-answer loses his socket at the per-frame authority check and receives nothing after it. Added with #240; not part of the counts above. It does not prove pushed deltas, because the daemon does not send any. |
+| `tui_shipped_live_delivery_test` | Two operators submit on one strand inside a single catch-up window and the loser is answered `queued`; every terminal accumulates two or more pushed stream fragments prefixing the answer before its entry exists in that terminal's cut, a count the one-fragment snapshot preview cannot reach; both answers are painted by a capture whose recorded provenance is a pushed notice; a member revoked mid-answer loses his socket at the per-frame authority check and receives nothing after it. Added with #240; not part of the counts above. |
 | `daemon_shipped_recovery_test` | Whole-VM loss after durable reservation preserves the original creation identity; metadata restoration does not initialize the reserved target. |
 | `daemon_shipped_identity_recovery_test` | Whole-VM loss after SQLite identity publication preserves that identity and the original writer lease. Pending selection fails visibly; explicit recovery waits for the natural lease expiry. |
 | `daemon_shipped_stop_test` | A's original provider socket closes, owner control observes Saved, B progresses on its original attachment, and explicit reopen resumes one durable user admission under a new incarnation. |
@@ -455,10 +455,12 @@ and the wire change is
 [`protocol-change/018`](../protocol-change/018-pushed-delivery.md), ACCEPTED.
 Four pieces, all additive:
 
-- **The daemon announces.** With one gap: the delta tee is unwired, recorded
-  under "The delta half is not wired" below. `client/serve` starts a `commit_forwarder` per
+- **The daemon announces.** `client/serve` starts a `commit_forwarder` per
   session hub and subscribes the writer to it, so a commit reaches the hub at
-  all. `client/gateway` lifts the network guard on `pull_and_broadcast` and
+  all, and it nests the two provider taps — `tap_provider` around
+  `tap_preview_provider` — so every token is teed to the hub as a
+  `ProviderDelta` while the bounded preview survives as the catch-up
+  fallback. `client/gateway` lifts the network guard on `pull_and_broadcast` and
   `broadcast_delta`, primes its high-water under network delivery, and splits
   `send_to` on the *envelope*: an envelope with a `reply_to` keeps the bounded
   reply path, one without goes through `deliver`, which is the per-frame
@@ -487,16 +489,15 @@ shipped fixture, in `make e2e-client-bootstrap` after the multiplayer one and
 therefore in both `e2e-client-bootstrap (linux)` and `e2e (macos)`. Three
 native terminals against the built `bin/loomd` and a paced loopback provider
 prove five things: two operators submit inside one catch-up window and the
-loser is told `queued`; every terminal shows live text that is a prefix of the
-answer while no entry for that answer exists in its cut; both answers are
+loser is told `queued`; every terminal accumulates at least two stream
+fragments prefixing the answer while no entry for that answer exists in its
+cut, which a credited cut cannot produce because the snapshot preview projects
+as one fragment however many tokens it holds; both answers are
 painted by a capture whose recorded provenance is `Notified`, not
 `Refreshed`; the three terminals hold identical durable records with the two
 human turns attributed to the two different operators; and a member revoked
 mid-answer loses his socket at the per-frame check with neither his records
 nor his half-written stream moving afterwards.
-
-The second of those is weaker than the design note asks for, and writing the
-fixture is what found out why — see "The delta half is not wired" below.
 
 Two fixture-shape notes a later reader will want. The two operators submit
 the *same* prompt text on purpose, because which one the hub admitted first
@@ -507,35 +508,6 @@ not. `docs/architecture/multiplayer.md` has the fixture's full account.
 
 The gateway's own tests cover the queue bound, drain failure and the decoder;
 the fixture deliberately does not repeat them.
-
-### The delta half is not wired
-
-This is a defect, not a deliberate omission, and it was found by writing the
-acceptance fixture rather than by reading the code. `client/gateway` has both
-halves of pushed stream deltas: `tap_provider` wraps a provider surface so
-every delta is teed to the hub as a `ProviderDelta`, and `broadcast_delta`
-pushes it to every subscribed connection with its network guard now lifted.
-`client/serve` installs `tap_preview_provider` instead, which feeds the
-bounded snapshot preview and sends no `ProviderDelta` at all, so
-`broadcast_delta` is unreachable from `bin/loomd`. `client/demo` and
-`gateway_test` are `tap_provider`'s only callers.
-
-The consequence is exactly one clause of `protocol-change/018` and the design
-note: a peer's view of an answer being produced is still the discontinuous
-24 KiB sample carried inside a cut, not a continuous pushed stream. Notices,
-presence, attachment, the per-frame authority check and the queue are all live
-in the shipped binary.
-
-The fix is not obviously one line, which is why it was left rather than taken
-alongside the fixture. `serve` needs *both* taps — the note keeps the preview
-as the catch-up fallback for a terminal that attaches mid-answer — so
-somebody has to decide whether the two relays compose by nesting
-(`tap_provider(tap_preview_provider(...))`) or whether one surface should
-observe once and fan out twice, and whether two observation callbacks per
-generation is a cost worth paying while the preview is still needed. The
-fixture is written so that restoring one assertion turns it into the
-regression guard: `live_text_before_the_entry` carries the strong
-fragment-counting form in a comment.
 
 ### Deliberately open
 
@@ -549,7 +521,9 @@ Three, and each is recorded in the design note rather than only here:
 - **Registry-pushed revalidation.** Pushed delivery re-checks authority per
   frame, as replies do. The registry-pushed revision from the review wave
   stays deferred; the measurement that would reopen it is the soak showing the
-  per-frame cost.
+  per-frame cost. With the delta tee wired that cost is now one registry call
+  per pushed delta per peer, so the soak is measuring a per-token rate rather
+  than a per-commit one.
 - **Retiring the snapshot preview.** Once every shipping terminal consumes
   pushed deltas the `tap_preview_provider` lease machinery is redundant. It
   stays until a release has been cut with both, because it is the catch-up
@@ -567,11 +541,6 @@ successor's first text by one refresh.
 Preserve the distinction these items draw between a missing implementation,
 an unresolved design and missing evidence. The order below is a
 recommendation, not a dependency chain, except where it says so.
-
-Wiring the delta tee into `client/serve` is not in this list because it is
-small, contained and independent of everything in it; "The delta half is not
-wired" above says what has to be decided. Take it whenever somebody is in
-`client/serve` anyway.
 
 ### 1. Take per-session filesystem confinement, #242, starting with `protocol-change/004`
 
