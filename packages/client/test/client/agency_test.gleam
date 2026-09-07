@@ -301,25 +301,50 @@ fn a_spawn_wanting(purpose: String) -> agent.SpawnRequest {
   agent.SpawnRequest(..a_spawn(purpose), result_schema: Some(a_schema()))
 }
 
+// The wall-clock room a child's brief run gets before a test joins it.
+//
+// It bounds one thing and should never be reached: a driver that is
+// genuinely wedged. A child in this harness does microseconds of work —
+// the provider is a scripted immediate stream — so every millisecond
+// spent here is scheduler latency on a machine running other gates,
+// which is exactly the load that produced issue #127. Ten seconds is
+// four hundred of the runtime's own 25 ms poll intervals; a driver that
+// has not settled by then is not slow, it is stuck, and the message on
+// the assert says so instead of the join reporting a puzzling shape two
+// lines later.
+const settle_budget_ms = 10_000
+
+// Whether a child's brief run has reached a durable last result — the
+// register the Agency's own join polls, read here through the same
+// `api` call `settle_handle` makes.
+//
+// This is the barrier every join test needs before it may assert on a
+// join's shape, and the reason it is a barrier rather than a longer
+// deadline is that the deadline is not a wall clock at all. The harness
+// injects a counting clock and a no-op `rest`, so `wait(.., 200)` spends
+// two hundred units of logical time and no real time whatsoever. That
+// makes the join's answer a pure function of what has settled by the
+// time it is called — which is the property these tests are about, and
+// which only holds if the child has really settled first.
+fn settled(harness: Harness, handle: Handle) -> Bool {
+  case
+    api.await_strand_result(
+      harness.runtime,
+      strand: handle.strand,
+      operation: handle.operation,
+      within_ms: settle_budget_ms,
+    )
+  {
+    Ok(_last) -> True
+    Error(Nil) -> False
+  }
+}
+
 // Waits for a child's brief run to settle, then joins it. Every result
 // test needs the same two steps and neither is what the test is about.
 fn joined(harness: Harness, caller: Caller, handle: Handle) -> agent.Waited {
-  assert until(
-    fn() {
-      case
-        api.await_strand_result(
-          harness.runtime,
-          strand: handle.strand,
-          operation: handle.operation,
-          within_ms: 0,
-        )
-      {
-        Ok(_settled) -> True
-        Error(Nil) -> False
-      }
-    },
-    200,
-  )
+  assert settled(harness, handle)
+    as "the child's brief must settle before it is joined"
   let assert Ok([waited]) = harness.seam.wait(caller, [handle], 200)
     as "the join must answer"
   waited
@@ -666,23 +691,11 @@ pub fn a_join_answers_every_handle_against_one_deadline_test() {
     as "the child must spawn"
   // Establish the state this test promises before starting its one deadline:
   // one handle has settled and one never will. Without this barrier the
-  // zero-rest logical wait can outrun the separately scheduled child driver.
-  assert until(
-    fn() {
-      case
-        api.await_strand_result(
-          harness.runtime,
-          strand: spawned.handle.strand,
-          operation: spawned.handle.operation,
-          within_ms: 0,
-        )
-      {
-        Ok(_last) -> True
-        Error(Nil) -> False
-      }
-    },
-    200,
-  )
+  // zero-rest logical wait can outrun the separately scheduled child driver,
+  // and the deadline that is supposed to bound the wedged handle bounds the
+  // healthy one instead — which is the miss issue #127 recorded.
+  assert settled(harness, spawned.handle)
+    as "the child's brief must settle before the join's deadline is started"
   // A second handle on the same (addressable) strand naming an operation
   // that will never settle: the deadline has to answer for it.
   let #(ghost_operation, _generator) =
