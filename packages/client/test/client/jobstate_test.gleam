@@ -30,7 +30,7 @@ import core/ids
 import core/json
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/string
 
 // --- fixtures -------------------------------------------------------------
@@ -72,6 +72,16 @@ fn a_ref() -> String {
   "sha256-9c1f2ad4"
 }
 
+// The same record with a ref sealed for one stream and nothing for the
+// other, which is the asymmetric shape the stored form has to carry: a
+// job that printed to stdout and nothing to stderr.
+fn spilled(job: JobRecord) -> JobRecord {
+  JobRecord(
+    ..job,
+    spill: jobstate.JobSpill(stdout_ref: Some(a_ref()), stderr_ref: None),
+  )
+}
+
 fn an_op() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: 1000), seed: 9)
   let #(id, _generator) = ids.mint_op(generator)
@@ -94,6 +104,7 @@ fn record(state: JobState) -> JobRecord {
     started_at_ms: 1000,
     deadline_ms: 601_000,
     state:,
+    spill: jobstate.no_spill(),
   )
 }
 
@@ -150,13 +161,6 @@ pub fn a_key_outside_the_namespace_is_not_a_job_test() {
 // multiplying them into this table would hide the shape it exists to show.
 pub fn the_transition_table_is_exhaustive_test() {
   let result = settled()
-
-  // The sealed output ref rides on the exit report, so every row that
-  // ends a job carries it and a transition that dropped it on the way
-  // into a terminal state fails the row rather than the next work
-  // package's poll.
-  let spill = Some(a_ref())
-
   let rows = [
     // `Starting` accepts everything. The two that skip `Running` are the
     // interesting ones: a stop asked for before the helper accepted still
@@ -165,20 +169,20 @@ pub fn the_transition_table_is_exhaustive_test() {
     // `Starting` cell behind for a process that is gone.
     #(Starting, HelperAccepted, Ok(Running)),
     #(Starting, KillRequested(by: ByDeadline), Ok(Draining(by: ByDeadline))),
-    #(Starting, ExitReported(result:, spill:), Ok(Exited(result:, spill:))),
+    #(Starting, ExitReported(result:), Ok(Exited(result:))),
     // An end the actor never asked for is attributed from the report,
     // because the report is the only witness there is: the helper's wall
     // timer can fire before the actor's, and `broker.abort` cancels the
     // helper with no hook the actor could have heard first.
     #(
       Starting,
-      ExitReported(result: cancelled(), spill:),
-      Ok(Killed(by: ByOperationAbort, result: cancelled(), spill:)),
+      ExitReported(result: cancelled()),
+      Ok(Killed(by: ByOperationAbort, result: cancelled())),
     ),
     #(
       Starting,
-      ExitReported(result: timed_out(), spill:),
-      Ok(Killed(by: ByDeadline, result: timed_out(), spill:)),
+      ExitReported(result: timed_out()),
+      Ok(Killed(by: ByDeadline, result: timed_out())),
     ),
     #(Starting, RunnerLost(reason: HelperLoss), Ok(Lost(reason: HelperLoss))),
     // `Running` holds the one illegal live pair. A second acceptance is
@@ -186,16 +190,16 @@ pub fn the_transition_table_is_exhaustive_test() {
     // so it means one job dispatched two runs.
     #(Running, HelperAccepted, Error(jobstate.AcceptedTwice(state: Running))),
     #(Running, KillRequested(by: ByDeadline), Ok(Draining(by: ByDeadline))),
-    #(Running, ExitReported(result:, spill:), Ok(Exited(result:, spill:))),
+    #(Running, ExitReported(result:), Ok(Exited(result:))),
     #(
       Running,
-      ExitReported(result: cancelled(), spill:),
-      Ok(Killed(by: ByOperationAbort, result: cancelled(), spill:)),
+      ExitReported(result: cancelled()),
+      Ok(Killed(by: ByOperationAbort, result: cancelled())),
     ),
     #(
       Running,
-      ExitReported(result: timed_out(), spill:),
-      Ok(Killed(by: ByDeadline, result: timed_out(), spill:)),
+      ExitReported(result: timed_out()),
+      Ok(Killed(by: ByDeadline, result: timed_out())),
     ),
     #(Running, RunnerLost(reason: HelperLoss), Ok(Lost(reason: HelperLoss))),
     // `Draining` absorbs both of the events that would be surprising
@@ -210,8 +214,8 @@ pub fn the_transition_table_is_exhaustive_test() {
     ),
     #(
       Draining(by: ByOwner),
-      ExitReported(result:, spill:),
-      Ok(Killed(by: ByOwner, result:, spill:)),
+      ExitReported(result:),
+      Ok(Killed(by: ByOwner, result:)),
     ),
     // The deduction is for a job nobody told the actor about. A draining
     // job was told, so the cause the stop named wins over the one the
@@ -219,8 +223,8 @@ pub fn the_transition_table_is_exhaustive_test() {
     // abort because the helper cancelled the payload on its way out.
     #(
       Draining(by: ByOwner),
-      ExitReported(result: cancelled(), spill:),
-      Ok(Killed(by: ByOwner, result: cancelled(), spill:)),
+      ExitReported(result: cancelled()),
+      Ok(Killed(by: ByOwner, result: cancelled())),
     ),
     #(
       Draining(by: ByOwner),
@@ -230,66 +234,63 @@ pub fn the_transition_table_is_exhaustive_test() {
     // The three terminal states refuse everything, including a second
     // copy of the event that made them terminal.
     #(
-      Exited(result:, spill:),
+      Exited(result:),
       HelperAccepted,
-      Error(AlreadyTerminal(
-        state: Exited(result:, spill:),
-        event: HelperAccepted,
-      )),
+      Error(AlreadyTerminal(state: Exited(result:), event: HelperAccepted)),
     ),
     #(
-      Exited(result:, spill:),
+      Exited(result:),
       KillRequested(by: ByOwner),
       Error(AlreadyTerminal(
-        state: Exited(result:, spill:),
+        state: Exited(result:),
         event: KillRequested(by: ByOwner),
       )),
     ),
     #(
-      Exited(result:, spill:),
-      ExitReported(result:, spill:),
+      Exited(result:),
+      ExitReported(result:),
       Error(AlreadyTerminal(
-        state: Exited(result:, spill:),
-        event: ExitReported(result:, spill:),
+        state: Exited(result:),
+        event: ExitReported(result:),
       )),
     ),
     #(
-      Exited(result:, spill:),
+      Exited(result:),
       RunnerLost(reason: VmRestart),
       Error(AlreadyTerminal(
-        state: Exited(result:, spill:),
+        state: Exited(result:),
         event: RunnerLost(reason: VmRestart),
       )),
     ),
     #(
-      Killed(by: ByOwner, result:, spill:),
+      Killed(by: ByOwner, result:),
       HelperAccepted,
       Error(AlreadyTerminal(
-        state: Killed(by: ByOwner, result:, spill:),
+        state: Killed(by: ByOwner, result:),
         event: HelperAccepted,
       )),
     ),
     #(
-      Killed(by: ByOwner, result:, spill:),
+      Killed(by: ByOwner, result:),
       KillRequested(by: ByOwner),
       Error(AlreadyTerminal(
-        state: Killed(by: ByOwner, result:, spill:),
+        state: Killed(by: ByOwner, result:),
         event: KillRequested(by: ByOwner),
       )),
     ),
     #(
-      Killed(by: ByOwner, result:, spill:),
-      ExitReported(result:, spill:),
+      Killed(by: ByOwner, result:),
+      ExitReported(result:),
       Error(AlreadyTerminal(
-        state: Killed(by: ByOwner, result:, spill:),
-        event: ExitReported(result:, spill:),
+        state: Killed(by: ByOwner, result:),
+        event: ExitReported(result:),
       )),
     ),
     #(
-      Killed(by: ByOwner, result:, spill:),
+      Killed(by: ByOwner, result:),
       RunnerLost(reason: VmRestart),
       Error(AlreadyTerminal(
-        state: Killed(by: ByOwner, result:, spill:),
+        state: Killed(by: ByOwner, result:),
         event: RunnerLost(reason: VmRestart),
       )),
     ),
@@ -311,10 +312,10 @@ pub fn the_transition_table_is_exhaustive_test() {
     ),
     #(
       Lost(reason: VmRestart),
-      ExitReported(result:, spill:),
+      ExitReported(result:),
       Error(AlreadyTerminal(
         state: Lost(reason: VmRestart),
-        event: ExitReported(result:, spill:),
+        event: ExitReported(result:),
       )),
     ),
     #(
@@ -364,9 +365,9 @@ pub fn every_kill_cause_survives_to_the_terminal_state_test() {
     assert draining.state == Draining(by: cause)
 
     let assert Ok(killed) =
-      jobstate.step(draining, ExitReported(result: settled(), spill: None))
+      jobstate.step(draining, ExitReported(result: settled()))
       as "a draining job must settle as killed"
-    assert killed.state == Killed(by: cause, result: settled(), spill: None)
+    assert killed.state == Killed(by: cause, result: settled())
   })
 }
 
@@ -376,12 +377,8 @@ pub fn is_terminal_names_exactly_the_three_terminal_states_test() {
   assert !jobstate.is_terminal(Starting)
   assert !jobstate.is_terminal(Running)
   assert !jobstate.is_terminal(Draining(by: ByOwner))
-  assert jobstate.is_terminal(Exited(result: settled(), spill: None))
-  assert jobstate.is_terminal(Killed(
-    by: ByOwner,
-    result: settled(),
-    spill: None,
-  ))
+  assert jobstate.is_terminal(Exited(result: settled()))
+  assert jobstate.is_terminal(Killed(by: ByOwner, result: settled()))
   assert jobstate.is_terminal(Lost(reason: VmRestart))
 }
 
@@ -459,7 +456,7 @@ fn apply(current: JobRecord, event: JobEvent) -> JobRecord {
 // exist to make unreachable.
 fn exited_under_duress(state: JobState) -> Bool {
   case state {
-    Exited(result:, ..) -> result.cancelled || result.timed_out
+    Exited(result:) -> result.cancelled || result.timed_out
 
     Starting | Running | Draining(..) | Killed(..) | Lost(..) -> False
   }
@@ -494,9 +491,9 @@ pub fn a_stop_settles_under_the_first_cause_that_asked_test() {
     assert drained.state == Draining(by: first)
 
     let assert Ok(killed) =
-      jobstate.step(drained, ExitReported(result: settled(), spill: None))
+      jobstate.step(drained, ExitReported(result: settled()))
       as "the helper's report settles a draining job"
-    assert killed.state == Killed(by: first, result: settled(), spill: None)
+    assert killed.state == Killed(by: first, result: settled())
   })
 }
 
@@ -548,9 +545,7 @@ fn phase_of(record: JobRecord) -> String {
 // (or a later build) knows what it is looking at.
 pub fn the_stored_form_is_the_documented_object_test() {
   let stored =
-    jobstate.encode(
-      record(Killed(by: ByDeadline, result: settled(), spill: Some(a_ref()))),
-    )
+    jobstate.encode(spilled(record(Killed(by: ByDeadline, result: settled()))))
   let assert json.Object(fields) = stored as "a record encodes as an object"
   let names = list.map(fields, fn(field) { field.0 })
   assert names
@@ -562,6 +557,7 @@ pub fn the_stored_form_is_the_documented_object_test() {
       "startedAtMs",
       "deadlineMs",
       "state",
+      "spill",
     ]
 
   let assert Ok(json.Object(state)) = list.key_find(fields, "state")
@@ -569,17 +565,21 @@ pub fn the_stored_form_is_the_documented_object_test() {
   assert list.key_find(state, "phase") == Ok(json.String("killed"))
   assert list.key_find(state, "by") == Ok(json.String("deadline"))
 
-  // The spill ref is a field that is always there and sometimes null,
+  // Each stream's ref is a field that is always there and sometimes null,
   // never a field that comes and goes: an absent one would leave every
   // later reader an absent-means-nothing arm it could not tell from a
   // writer that forgot.
-  assert list.key_find(state, "spill") == Ok(json.String(a_ref()))
-  let without_ref =
-    jobstate.encode(record(Exited(result: settled(), spill: None)))
-  let assert json.Object(exited) = without_ref as "a record is an object"
-  let assert Ok(json.Object(state)) = list.key_find(exited, "state")
-    as "the state is an object"
-  assert list.key_find(state, "spill") == Ok(json.Null)
+  let assert Ok(json.Object(spill)) = list.key_find(fields, "spill")
+    as "the spill is an object"
+  assert list.key_find(spill, "stdoutRef") == Ok(json.String(a_ref()))
+  assert list.key_find(spill, "stderrRef") == Ok(json.Null)
+
+  let empty = jobstate.encode(record(Exited(result: settled())))
+  let assert json.Object(exited) = empty as "a record is an object"
+  let assert Ok(json.Object(spill)) = list.key_find(exited, "spill")
+    as "the spill is an object"
+  assert list.key_find(spill, "stdoutRef") == Ok(json.Null)
+  assert list.key_find(spill, "stderrRef") == Ok(json.Null)
 }
 
 // Every malformed payload is a corruption report naming the field that
@@ -671,27 +671,14 @@ pub fn every_malformed_payload_is_a_corruption_report_test() {
         fields,
       ),
     ),
-    // A terminal state with no spill field at all, and one whose spill is
+    // A record with no spill field at all, and one whose stream ref is
     // neither a ref nor null. Both are refused rather than read as "this
     // job printed nothing", which is the guess a decoder would have to
     // make forever if the field were ever allowed to be absent.
+    #("a record with no spill", without(fields, "spill")),
     #(
-      "an exited state with no spill",
-      phase(
-        [#("phase", json.String("exited")), #("result", stored_result())],
-        fields,
-      ),
-    ),
-    #(
-      "a spill that is neither a ref nor null",
-      phase(
-        [
-          #("phase", json.String("exited")),
-          #("result", stored_result()),
-          #("spill", json.Int(7)),
-        ],
-        fields,
-      ),
+      "a stream ref that is neither a ref nor null",
+      replace(fields, "spill", json.Object([#("stdoutRef", json.Int(7))])),
     ),
     #(
       "a result missing cancelled",
@@ -699,7 +686,6 @@ pub fn every_malformed_payload_is_a_corruption_report_test() {
         [
           #("phase", json.String("exited")),
           #("result", result_without("cancelled")),
-          #("spill", json.Null),
         ],
         fields,
       ),
@@ -710,7 +696,6 @@ pub fn every_malformed_payload_is_a_corruption_report_test() {
         [
           #("phase", json.String("exited")),
           #("result", result_replacing("cancelled", json.Int(1))),
-          #("spill", json.Null),
         ],
         fields,
       ),
@@ -732,7 +717,7 @@ pub fn every_malformed_payload_is_a_corruption_report_test() {
 // error, which a decoder that answered `on: "payload"` for everything
 // would satisfy while telling an operator nothing about which cell broke.
 // One case per level says the path is real: a top-level field, the phase
-// tag inside the state, and a field inside the terminal state.
+// tag inside the state, and a stream's ref inside the spill.
 pub fn a_corruption_report_names_the_field_that_broke_test() {
   let good = jobstate.encode(record(Running))
   let assert json.Object(fields) = good as "the fixture encodes as an object"
@@ -741,15 +726,8 @@ pub fn a_corruption_report_names_the_field_that_broke_test() {
     #(replace(fields, "id", json.String("a/b")), "id"),
     #(phase([#("phase", json.String("paused"))], fields), "state.phase"),
     #(
-      phase(
-        [
-          #("phase", json.String("exited")),
-          #("result", stored_result()),
-          #("spill", json.Int(7)),
-        ],
-        fields,
-      ),
-      "state.spill",
+      replace(fields, "spill", json.Object([#("stdoutRef", json.Int(7))])),
+      "spill.stdoutRef",
     ),
   ]
 
@@ -781,7 +759,7 @@ fn result_replacing(key: String, value: json.JsonValue) -> json.JsonValue {
 }
 
 fn stored_result() -> json.JsonValue {
-  let stored = jobstate.encode(record(Exited(result: settled(), spill: None)))
+  let stored = jobstate.encode(record(Exited(result: settled())))
   let assert json.Object(fields) = stored as "a record is an object"
   let assert Ok(json.Object(state)) = list.key_find(fields, "state")
     as "the state is an object"
@@ -901,8 +879,7 @@ fn gen_event(seed: Seed) -> #(JobEvent, Seed) {
 
     2 -> {
       let #(result, seed) = gen_result(seed)
-      let #(spill, seed) = gen_spill(seed)
-      #(ExitReported(result:, spill:), seed)
+      #(ExitReported(result:), seed)
     }
 
     _ -> {
@@ -960,21 +937,6 @@ fn gen_result(seed: Seed) -> #(ExecResult, Seed) {
   )
 }
 
-// The spill ref is drawn present and absent, because `null` and a ref are
-// both ordinary outcomes of a finished job and the codec must carry the
-// difference: a run that printed nothing seals no blob.
-fn gen_spill(seed: Seed) -> #(Option(String), Seed) {
-  let #(sealed, seed) = bool(seed)
-  case sealed {
-    True -> {
-      let #(n, seed) = int_between(seed, 0, 999_999)
-      #(Some("sha256-" <> int.to_string(n)), seed)
-    }
-
-    False -> #(None, seed)
-  }
-}
-
 // The enforcement list is drawn including the empty case, because an
 // empty array and an absent field are different facts about a run and the
 // codec must not confuse them.
@@ -998,15 +960,13 @@ fn gen_state(seed: Seed) -> #(JobState, Seed) {
 
     3 -> {
       let #(result, seed) = gen_result(seed)
-      let #(spill, seed) = gen_spill(seed)
-      #(Exited(result:, spill:), seed)
+      #(Exited(result:), seed)
     }
 
     4 -> {
       let #(cause, seed) = gen_cause(seed)
       let #(result, seed) = gen_result(seed)
-      let #(spill, seed) = gen_spill(seed)
-      #(Killed(by: cause, result:, spill:), seed)
+      #(Killed(by: cause, result:), seed)
     }
 
     _ -> {
@@ -1023,6 +983,7 @@ fn gen_record(seed: Seed) -> #(JobRecord, Seed) {
   let #(started_at_ms, seed) = int_between(seed, 0, 2_000_000_000)
   let #(wall, seed) = int_between(seed, 1000, 3_600_000)
   let #(tail, seed) = int_between(seed, 0, 999_999)
+  let #(spill, seed) = gen_spill(seed)
 
   let assert Ok(id) = jobstate.parse_job_id("01JQ" <> int.to_string(tail))
     as "a generated id carries no separator"
@@ -1039,7 +1000,24 @@ fn gen_record(seed: Seed) -> #(JobRecord, Seed) {
       started_at_ms:,
       deadline_ms: started_at_ms + wall,
       state:,
+      spill:,
     ),
     seed,
   )
+}
+
+// A spill in each of its three shapes: nothing stored, one stream
+// stored, both. The refs are the codec's subject rather than real
+// content addresses; what the round trip has to preserve is which
+// streams are present, and a null told apart from a string.
+fn gen_spill(seed: Seed) -> #(jobstate.JobSpill, Seed) {
+  let #(shape, seed) = int_between(seed, 0, 2)
+  let #(nonce, seed) = int_between(seed, 0, 999_999)
+  let out = Some("sha256-o" <> int.to_string(nonce))
+  let err = Some("sha256-e" <> int.to_string(nonce))
+  case shape {
+    0 -> #(jobstate.no_spill(), seed)
+    1 -> #(jobstate.JobSpill(stdout_ref: out, stderr_ref: None), seed)
+    _both -> #(jobstate.JobSpill(stdout_ref: out, stderr_ref: err), seed)
+  }
 }
