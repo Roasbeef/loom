@@ -324,7 +324,7 @@ fn control_upgrade(
       // used to; what it no longer does is give up at 500 ms.
       case response.body {
         mist.Websocket -> {
-          let _ = process.receive(settled, within: 2000)
+          let _ = process.receive(settled, within: 5000)
           Nil
         }
 
@@ -355,12 +355,10 @@ fn admit(
   // before anything is written to the socket.
   process.send(settled, Nil)
   case transferred {
-    // A failed transfer must not leave an unaccounted active socket actor.
-    // Self-KILL is immediate; the root keeps its charge until the DOWN.
-    Error(_) -> {
-      process.kill(process.self())
-      mist.stop()
-    }
+    // A failed transfer must not leave an unaccounted active socket actor. A
+    // stop from a handler turn is terminal, and the root keeps its charge
+    // until the DOWN, so the refusal frees nothing here.
+    Error(_) -> mist.stop()
     Ok(Nil) -> then()
   }
 }

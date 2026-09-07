@@ -149,13 +149,16 @@ pub fn upgrade(
   //
   // On a transfer the root answers promptly this waits exactly as long as the
   // initializer used to. What it no longer does is give up at 500 ms: the
-  // budget here is the transfer's own, so a root that answers late is served
-  // rather than dropped. A root too wedged to answer at all ends where it did
+  // budget here covers the transfer's own second with room for a starved
+  // websocket process that has not yet been scheduled to make it, so a root
+  // that answers late is served rather than dropped. The full wait is only
+  // ever paid on a doomed path, by a process about to exit that blocks no
+  // other connection. A root too wedged to answer at all ends where it did
   // before — the wait expires, the reservation is released, and the late
   // transfer refuses its own socket.
   case response.body {
     mist.Websocket -> {
-      let _ = process.receive(settled, within: 2000)
+      let _ = process.receive(settled, within: 5000)
       Nil
     }
 
@@ -209,13 +212,11 @@ fn admit(
     )
   }
   case admitted {
-    Error(_) -> {
-      // Continuing would leave an armed parser attached to nothing. Self-KILL
-      // is immediate; the root retains its charge until the original DOWN, so
-      // the refused capacity is freed by that DOWN and not here.
-      process.kill(process.self())
-      mist.stop()
-    }
+    // Continuing would leave an armed parser attached to nothing. A stop from
+    // a handler turn is terminal: `on_close` sees `Pending` and detaches
+    // nothing, the peer gets a close frame rather than a torn socket, and the
+    // root frees the refused capacity on the DOWN it already watches for.
+    Error(_) -> mist.stop()
     Ok(connection) -> {
       // The replacement selector must carry `outbound` as well as the monitor:
       // mist swaps the whole user selector for the one a handler turn returns.
