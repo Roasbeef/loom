@@ -94,6 +94,17 @@ pub type Line {
 // A stream stays separate from durable entries because the server may replay
 // the settled entry after its fragments. Keeping both in one list would render
 // the same assistant answer twice at the exact moment it becomes durable.
+/// The most text one live stream keeps on screen, in bytes.
+///
+/// The same 24 KiB the snapshot's sampled preview is clipped to, because the
+/// two are representations of the same thing and a live answer that could
+/// outgrow its own sample would be the only unbounded region in the model.
+/// The cost of exceeding it is not only the bytes: every paint reflows the
+/// whole live region, so an unbounded one makes the terminal slower the
+/// longer the answer runs, until it can no longer drain its socket.
+@internal
+pub const live_stream_limit = 24_576
+
 /// The undurable fragments of one strand-and-kind generation.
 ///
 /// The operation is what makes a fragment list a generation rather than a
@@ -102,6 +113,11 @@ pub type Line {
 /// answer being produced now. A snapshot's sampled preview names the same
 /// operation the cut does, which is how the two representations of one live
 /// answer are compared.
+///
+/// `bytes` is what the fragments weigh, carried rather than recomputed: the
+/// budget is checked once per delta and a delta arrives per provider token,
+/// so counting the list each time would make a bounded question cost the
+/// length of the answer.
 @internal
 pub type Stream {
   Stream(
@@ -109,6 +125,7 @@ pub type Stream {
     operation: String,
     kind: String,
     fragments: List(String),
+    bytes: Int,
   )
 }
 
@@ -3387,9 +3404,10 @@ fn render_cut(
     Error(Nil) -> []
     Ok(operation) ->
       case live_streams(model.streams, active, operation), view.preview {
-        [], Some(preview) if preview.operation == operation -> [
-          Stream(active, operation, "text", [preview.text]),
-        ]
+        [], Some(preview) if preview.operation == operation -> {
+          let text = owned(preview.text)
+          [Stream(active, operation, "text", [text], string.byte_size(text))]
+        }
         [], Some(_) | [], None -> []
         live, _ -> live
       }
@@ -4037,14 +4055,19 @@ fn append_stream(
   kind: String,
   fragment: String,
 ) -> List(Stream) {
+  let fragment = owned(fragment)
+  let width = string.byte_size(fragment)
   case streams {
-    [] -> [Stream(strand:, operation:, kind:, fragments: [fragment])]
+    [] -> [
+      Stream(strand:, operation:, kind:, fragments: [fragment], bytes: width),
+    ]
     [
       Stream(
         strand: owner,
         operation: current_op,
         kind: stream_kind,
         fragments: current,
+        bytes: held,
       ),
       ..rest
     ] ->
@@ -4052,28 +4075,86 @@ fn append_stream(
         // A fragment from a later operation replaces the previous answer
         // rather than continuing it. Tool-call fragments never accumulate at
         // all: only the latest name is renderable until the entry commits.
-        True -> [
-          Stream(
-            strand:,
-            operation:,
-            kind:,
-            fragments: case kind == "tool_call" || current_op != operation {
-              True -> [fragment]
-              False -> [fragment, ..current]
-            },
-          ),
-          ..rest
-        ]
+        True -> {
+          let #(fragments, bytes) = case
+            kind == "tool_call" || current_op != operation
+          {
+            True -> #([fragment], width)
+            False -> bounded([fragment, ..current], held + width)
+          }
+          [Stream(strand:, operation:, kind:, fragments:, bytes:), ..rest]
+        }
         False -> [
           Stream(
             strand: owner,
             operation: current_op,
             kind: stream_kind,
             fragments: current,
+            bytes: held,
           ),
           ..append_stream(rest, strand, operation, kind, fragment)
         ]
       }
+  }
+}
+
+// A delta's text is a slice of the whole frame the socket delivered, so a
+// model that keeps the slice keeps the frame: an answer of a hundred thousand
+// tokens pinned a hundred thousand frames, which is most of what the resident
+// terminals were made of. Rebuilding the string owns its bytes and lets the
+// frame go, and at token size the copy is a few dozen bytes. This is the same
+// reason, and the same remedy, as `gateway.preview_text`.
+fn owned(text: String) -> String {
+  text |> string.to_utf_codepoints |> string.from_utf_codepoints
+}
+
+// Past the budget the fragments are collapsed into one holding the newest
+// bytes. Dropping the oldest one at a time would be the length of the answer
+// per token; collapsing pays that once per budget's worth of tokens and
+// leaves a single fragment for the next batch to accumulate against. What the
+// reader loses is the head of an answer that has not committed yet, and the
+// durable record replaces the whole region the moment it does.
+//
+// The trigger is twice what the collapse keeps, and the headroom is the whole
+// point: collapsing back to exactly the limit would put the next token over
+// it again, and the amortised cost would be the copy paid per token rather
+// than once per budget. So the region is bounded by twice `live_stream_limit`
+// rather than by it, and that is the number the invariant states.
+fn bounded(fragments: List(String), bytes: Int) -> #(List(String), Int) {
+  case bytes <= live_stream_limit * 2 {
+    True -> #(fragments, bytes)
+    False -> {
+      let newest =
+        fragments
+        |> list.reverse
+        |> string.concat
+        |> newest_bytes(live_stream_limit)
+      #([newest], string.byte_size(newest))
+    }
+  }
+}
+
+// The trailing `limit` bytes, backing off to the next character boundary when
+// the cut would land inside a multi-byte one. Four attempts covers the widest
+// UTF-8 sequence.
+fn newest_bytes(text: String, limit: Int) -> String {
+  let bytes = bit_array.from_string(text)
+  let size = bit_array.byte_size(bytes)
+  newest_suffix(bytes, int.max(0, size - limit), 4)
+}
+
+fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
+  case attempts {
+    0 -> ""
+    _ -> {
+      let taken =
+        bit_array.slice(bytes, from, bit_array.byte_size(bytes) - from)
+        |> result.try(bit_array.to_string)
+      case taken {
+        Ok(text) -> text
+        Error(_) -> newest_suffix(bytes, from + 1, attempts - 1)
+      }
+    }
   }
 }
 
