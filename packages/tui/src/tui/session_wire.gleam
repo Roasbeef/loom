@@ -41,6 +41,52 @@ pub type Reply {
   Pushed(event: protocol.Event)
 }
 
+/// Whether a frame names a request, which is the only question a layer
+/// above the channel has to ask about one.
+pub type Correlation {
+  /// The frame carries a `reply_to`: it answers a request, and the credit
+  /// that request bought is what admits it.
+  NamesARequest
+
+  /// The frame carries none: the daemon volunteered it, so no request paid
+  /// for it and no credit is consumed by it.
+  NamesNoRequest
+}
+
+/// Answers that question for one frame, without decoding its body.
+///
+/// `tui/attempt_replay` is the caller: it enforces issued-request ordering
+/// over a recording, and a pushed frame is outside that ordering entirely.
+/// A frame this cannot parse is `NamesARequest`, so an undecodable
+/// recording still fails on the credit rule it used to fail on rather than
+/// being waved through as a push.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_wire.correlation(text) == session_wire.NamesNoRequest
+/// ```
+pub fn correlation(text: String) -> Correlation {
+  let named = {
+    use value <- result.try(
+      json.parse(text) |> result.replace_error("invalid conversation JSON"),
+    )
+    case value {
+      json.Object(fields) -> Ok(list.key_find(fields, "reply_to"))
+      json.Int(_)
+      | json.Float(_)
+      | json.String(_)
+      | json.Array(_)
+      | json.Bool(_)
+      | json.Null -> Error("conversation response is not an object")
+    }
+  }
+  case named {
+    Ok(Error(Nil)) -> NamesNoRequest
+    Ok(Ok(_)) | Error(_) -> NamesARequest
+  }
+}
+
 /// The exact opening bytes `command` produces, up to the request identity.
 ///
 /// `tui/session_channel` re-allocates a request identity by splitting an

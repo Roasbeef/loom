@@ -151,26 +151,11 @@ fn field(value, name) {
   value
 }
 
-// One request, answered past whatever the hub pushed around it.
-//
-// Since `protocol-change/018` a commit reaches a subscribed socket as a
-// `committed` notice with no `reply_to`, and a fixture that commits
-// between two requests can find an announcement sitting where its answer
-// used to be — before the reply if the hint won the race to the hub, after
-// it if the request did. Correlation is what separates them, which is the
-// whole reason a reply carries `reply_to` and a notice does not. That
-// notices arrive at all is asserted on its own below.
+// One request, answered past whatever the hub pushed around it. That
+// notices arrive at all is asserted on its own below; here they are noise,
+// and `wire.reply` is where the reason lives.
 fn request(socket, id, command, body) {
-  answered(socket, wire.send(socket, id, command, body), 16)
-}
-
-fn answered(socket, frame, remaining: Int) {
-  assert remaining > 0 as "the reply arrives within a bounded run of notices"
-  let assert json.Object(fields) = frame as "the wire value is an object"
-  case list.key_find(fields, "reply_to") {
-    Ok(_) -> frame
-    Error(Nil) -> answered(socket, wire.frame(socket), remaining - 1)
-  }
+  wire.reply(socket, id, command, body)
 }
 
 /// Collects a fixture transfer under an explicit finite credit budget.

@@ -174,6 +174,35 @@ pub fn send(socket, id, command, body) {
   frame(socket)
 }
 
+/// One request, answered past whatever the daemon pushed around it.
+///
+/// Since `protocol-change/018` a session socket also receives frames that
+/// answer no command — a `committed` notice, a delta, the roster — and one
+/// can land before the reply if the hint won the race to the hub, or after
+/// it if the request did. Correlation is what separates them, which is the
+/// whole reason a reply carries `reply_to` and a push does not. Use this
+/// wherever a fixture commits between two requests; `send` stays the raw
+/// "next frame" for a fixture asserting on the pushes themselves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_server_test.reply(socket, 100, "prompt", body)
+/// ```
+@internal
+pub fn reply(socket, id, command, body) {
+  answered(socket, send(socket, id, command, body), 16)
+}
+
+fn answered(socket, value, remaining: Int) {
+  assert remaining > 0 as "the reply arrives within a bounded run of notices"
+  let assert json.Object(fields) = value as "the wire value is an object"
+  case list.key_find(fields, "reply_to") {
+    Ok(_) -> value
+    Error(Nil) -> answered(socket, frame(socket), remaining - 1)
+  }
+}
+
 fn field(value, key) {
   let assert json.Object(fields) = value as "envelope is an object"
   let assert Ok(value) = list.key_find(fields, key)
