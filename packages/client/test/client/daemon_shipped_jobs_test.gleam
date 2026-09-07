@@ -5,11 +5,13 @@
 //// The motivating case is small and exact. A scripted turn calls `bash`
 //// with `mode: "background"` on `tail -f build.log`; the fixture appends
 //// three lines to that file from outside the jail; a later turn calls
-//// `job_poll` with the cursor the job started from and must be shown
-//// those three lines and nothing else, with the job still pending; a
-//// third turn calls `job_kill`; and a fourth reads the terminal state,
-//// which has to say the owner asked and carry the helper's own
-//// `cancelled` witness. Then the payload has to be gone, because a job
+//// `job_poll` with the cursor the job started from and must find the job
+//// still pending; a third turn calls `job_kill`; and a fourth polls from
+//// that same cursor again, which has to say the owner asked, carry the
+//// helper's own `cancelled` witness, and show those three lines and
+//// nothing else. The bytes are read from the terminal poll rather than
+//// the live one because that is where the ordering is real, and
+//// `read_and_stop` says why. Then the payload has to be gone, because a job
 //// whose record says stopped and whose process is still running is the
 //// failure this whole surface exists to prevent.
 ////
@@ -392,13 +394,29 @@ fn exercise_tail(
   daemon.close(session.connected.control)
 }
 
+// What the live read is for, and what it deliberately is not for.
+//
+// Only the job's own runner can say how much of the tail it has folded,
+// and `job_poll` is the only way to ask it, so there is no observable the
+// fixture could wait on before this turn that would mean "the appended
+// bytes have arrived". `await_payload` is the barrier for the *append* —
+// the process exists — and nothing more. Between the append and this poll
+// sit `tail`'s own wakeup (kqueue, or inotify, or a one-second sleep),
+// the helper's framing, the relay and the fold, and the fixture's only
+// margin is two provider round trips.
+//
+// So the live read asserts what a *running* job's record says, which
+// does not depend on that timing, and the bytes are asserted on the
+// terminal read instead, where the ordering is real: output and exit
+// reach the runner over one helper connection in order, so a record that
+// says the execution ended is a record that has already folded every
+// byte the helper sent.
 fn read_and_stop(session: Session, witness: PayloadWitness) -> Nil {
   prompt(session.driver, "read the tail")
   let read = settled(session.driver, ["read", "watching"])
   let live = latest_details(read, "job_poll")
   assert field(live, "state") == json.String("running")
   assert field(live, "pending") == json.Bool(True)
-  assert field(live, "cursor") == json.String(appended_cursor)
   prompt(session.driver, "stop it")
   let _ = settled(session.driver, ["stopped", "read", "watching"])
   assert_terminal(session, witness)
@@ -419,6 +437,10 @@ fn assert_terminal(session: Session, witness: PayloadWitness) -> Nil {
   // The helper's own witness that it climbed the ladder, which nothing
   // else in the record can say (protocol-change 006).
   assert field(terminal, "cancelled") == json.Bool(True)
+
+  // The cursor the whole stream advances a reader to, read back from the
+  // one poll whose answer is ordered after every byte `tail` produced.
+  assert field(terminal, "cursor") == json.String(appended_cursor)
   payload_departed(witness)
   stop_driver(session.driver)
 }
@@ -451,20 +473,25 @@ fn assert_tail_evidence(requests: List(provider.ObservedRequest)) -> Nil {
   ] = requests
     as "the eight scripted requests occur in their scripted order"
   assert string.starts_with(started, "started background job ")
-  assert_polled_lines(polled)
+
+  // The live poll is not barred on the fold (see `read_and_stop`), so the
+  // only thing asserted of its rendering is the state it named.
+  assert string.contains(polled, " — running, ")
   assert string.starts_with(killed, "stopped ")
-  assert string.contains(terminal, "stopped (you asked), ")
+  assert_polled_lines(terminal, "stopped (you asked), ")
 }
 
 // Everything in a poll's rendering is fixed except the job's id and its
 // age, so the assertion pins the structure line by line: the three
 // appended lines under the stdout rule, nothing under stderr, and the
-// cursor those exact bytes advance to.
-fn assert_polled_lines(polled: String) -> Nil {
+// cursor those exact bytes advance to. Read from the terminal poll, whose
+// `since` is the same zero the live one used — which is also what proves
+// a tail stays addressable after its job has ended.
+fn assert_polled_lines(polled: String, state: String) -> Nil {
   let assert [heading, stdout_rule, alpha, bravo, charlie, blank, cursor] =
     string.split(polled, on: "\n")
-    as "a live poll renders a heading, one stream and a cursor"
-  assert string.contains(heading, " — running, ")
+    as "a poll renders a heading, one stream and a cursor"
+  assert string.contains(heading, " — " <> state)
   assert stdout_rule == "--- stdout ---"
   assert [alpha, bravo, charlie] == ["alpha", "bravo", "charlie"]
   assert blank == ""
