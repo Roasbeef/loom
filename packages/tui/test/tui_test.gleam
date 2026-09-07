@@ -860,8 +860,23 @@ pub fn transcript_scroll_clamps_at_the_oldest_viewport_test() {
 
 pub fn streaming_output_preserves_the_scrollback_anchor_test() {
   assert tui.anchored_scroll_offset(0, 20, 23) == 0
+    as "a reader at the tail keeps following it"
   assert tui.anchored_scroll_offset(8, 20, 23) == 11
-  assert tui.anchored_scroll_offset(2, 20, 17) == 0
+    as "rows arriving below the reader move the tail-relative offset"
+}
+
+/// Rows leaving the bottom do not move a reader who is up in history.
+///
+/// A stream generation is cleared whole when its entry settles, so the shrink
+/// is several rows at once rather than one. Following it down would walk the
+/// reader towards the live tail, and from a shallow offset would land them on
+/// it; the second case is the one that made scrollback unusable during a
+/// running turn.
+pub fn shrinking_the_live_tail_holds_the_scrollback_anchor_test() {
+  assert tui.anchored_scroll_offset(8, 20, 17) == 8
+    as "a deep offset is unmoved by rows retiring below it"
+  assert tui.anchored_scroll_offset(2, 20, 17) == 2
+    as "a shallow offset is held rather than snapped to the live tail"
 }
 
 pub fn prompt_history_restores_the_unsent_draft_test() {

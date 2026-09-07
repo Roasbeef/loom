@@ -5140,20 +5140,31 @@ pub fn bounded_scroll_offset(
 
 /// Keeps a historical viewport anchored as rows are appended or replaced.
 ///
-/// A zero offset follows the live tail. A non-zero offset moves by the wrapped
-/// row delta so provider fragments cannot pull the reader away from scrollback.
+/// A zero offset follows the live tail. A non-zero offset is measured from the
+/// tail, so rows arriving below the reader must move it by the same amount or
+/// the text they are reading slides up the screen.
+///
+/// Rows leaving the bottom are a different event. Stream fragments are
+/// transient: they are replaced by the settled entry, and a detail toggle or a
+/// cleared generation can retire several rows at once. Following those
+/// downwards walks the reader towards the live tail a fragment at a time and,
+/// from a shallow offset, drops them out of scrollback entirely. The offset
+/// therefore holds when the bottom shrinks; `bounded_scroll_offset` still
+/// clamps it to the rows that exist when the frame is built.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert tui.anchored_scroll_offset(0, 20, 23) == 0
 /// assert tui.anchored_scroll_offset(8, 20, 23) == 11
+/// assert tui.anchored_scroll_offset(8, 20, 17) == 8
 /// ```
 @internal
 pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
-  case offset == 0 {
-    True -> 0
-    False -> int.max(0, offset + after - before)
+  case offset == 0, after >= before {
+    True, _ -> 0
+    False, True -> offset + after - before
+    False, False -> offset
   }
 }
 
