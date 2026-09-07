@@ -152,6 +152,19 @@ type ProcEntry struct {
 // process table to read, a supervisor with no grandchildren yet (a race
 // in which the payload has not appeared), and degraded mode, where there
 // is no supervisor to descend from in the first place.
+//
+// A *partial* table is the case this function cannot answer at all, and
+// the caller must not read a non-empty result as "the scan was
+// complete". A row lost to a transient `/proc` read failure orphans
+// everything below it in the walk, so losing the depth-2 row drops the
+// whole payload subtree while any unrelated deeper descendant keeps the
+// selection non-empty. TERM then goes to the wrong subset, nobody asks
+// the payload to stop, and the caller waits out the full grace before
+// SIGKILL — observed as `Code:137 Signal:9 WallMs:2016` on a run whose
+// payload had a working TERM handler (#135). The table alone cannot
+// distinguish that from a complete scan, which is why the completeness
+// the walk assumes is checked against a second, independent reading of
+// the same kernel state: see payloadRoots and termTargetsAreTrusted.
 func TermTargets(entries []ProcEntry, supervisor int) []int {
 	children := make(map[int][]int, len(entries))
 	for _, e := range entries {
@@ -213,6 +226,92 @@ func scanProcesses() []ProcEntry {
 			continue
 		}
 		out = append(out, ProcEntry{Pid: pid, Ppid: ppid})
+	}
+	return out
+}
+
+// termTargetsAreTrusted decides whether a non-empty selection may be
+// used as the TERM rung's only addressee, given the payload roots the
+// kernel says are alive right now.
+//
+// The walk in TermTargets is only as complete as the table it was given,
+// and a table that lost a row is indistinguishable from a complete one
+// once the answer is back. So the one thing the selection must contain
+// is checked directly: the processes the supervisor's own child spawned,
+// which is where the payload subtree hangs from. A live root that is
+// missing from the selection proves the scan was partial, and the caller
+// falls back to the group exactly as it does for an empty selection —
+// too wide a TERM is recoverable, a TERM the payload never received is
+// not.
+//
+// An empty root set is "no opinion" and leaves the selection trusted.
+// That is deliberate: the verification may only ever demote a selection
+// on positive evidence of a missing live root, never on the absence of
+// evidence. Otherwise a kernel built without CONFIG_PROC_CHILDREN would
+// silently reinstate the whole-group TERM that #53 removed, on every
+// cancel, for every payload.
+func termTargetsAreTrusted(targets, roots []int) bool {
+	selected := make(map[int]bool, len(targets))
+	for _, pid := range targets {
+		selected[pid] = true
+	}
+	for _, root := range roots {
+		if !selected[root] {
+			return false
+		}
+	}
+	return true
+}
+
+// payloadRoots names the processes the payload subtree hangs from: the
+// grandchildren of the supervisor, read by descending the two `children`
+// files rather than by scanning the table. It returns nothing when the
+// descent cannot be made — no procfs, a kernel without
+// CONFIG_PROC_CHILDREN, a supervisor or namespace init that has already
+// exited, or a payload that has not been forked yet — which
+// termTargetsAreTrusted reads as "no opinion".
+//
+// This is a second reading of the same kernel state, and its value is
+// that it is a much smaller one. The bug it guards against is a row lost
+// among the hundreds a full `/proc` walk reads on a loaded runner; two
+// targeted reads either succeed or fail visibly, and a failure here
+// becomes "no opinion" instead of a wrong answer.
+//
+// The roots are grandchildren rather than children because depth 1 is
+// bwrap's namespace init — the cage, spared by the same structural rule
+// TermTargets applies.
+func payloadRoots(supervisor int) []int {
+	var roots []int
+	for _, nsInit := range procChildren(supervisor) {
+		roots = append(roots, procChildren(nsInit)...)
+	}
+	sort.Ints(roots)
+	return roots
+}
+
+// procChildren reads the pids the kernel lists as children of pid's main
+// thread. Unreadable for any reason means nothing is claimed, because
+// the caller turns an empty answer into "no opinion" and a wrong answer
+// into a whole-group TERM.
+//
+// Only the main thread's children are read, and both processes this is
+// asked about are bwrap — a single-threaded C program — so that is the
+// complete set. Were it ever not, the missed child would show up as an
+// unverifiable root rather than as a false negative, since a root the
+// file does not mention is a root this never asserts.
+func procChildren(pid int) []int {
+	name := strconv.Itoa(pid)
+	raw, err := os.ReadFile("/proc/" + name + "/task/" + name + "/children")
+	if err != nil {
+		return nil
+	}
+	var out []int
+	for _, field := range strings.Fields(string(raw)) {
+		child, err := strconv.Atoi(field)
+		if err != nil {
+			continue
+		}
+		out = append(out, child)
 	}
 	return out
 }

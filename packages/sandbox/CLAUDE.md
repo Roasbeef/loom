@@ -97,7 +97,10 @@ only Go module.
 - `internal/jail.{ProcEntry, TermTargets}` — who the TERM rung is
   addressed to, selected by descent from the supervisor rather than by
   process group. `ProcEntry` is `{Pid, Ppid}`: the parent link is the
-  one relation a payload cannot rearrange.
+  one relation a payload cannot rearrange. `payloadRoots` and
+  `termTargetsAreTrusted` beside it are the completeness check on that
+  selection: a scan that lost the payload's row is not allowed to pass
+  as a complete one.
 - `internal/jail.processTracker`: Darwin's lifecycle backstop. It records
   descendants it observes with their process birth time and rechecks that
   identity immediately before signaling. This narrows PID reuse but cannot
@@ -335,6 +338,22 @@ only Go module.
   nothing a payload does to itself puts it in the exempt set. A selection
   that comes back empty still falls back to the whole group, because a
   TERM silently not sent is worse than one sent too widely.
+- **The selection is verified against the payload's own pid, because
+  non-empty is not the same as complete.** The walk is only as good as
+  the table it was handed, and one row lost to a transient `/proc` read
+  failure orphans everything below it: lose the depth-2 row and the whole
+  payload subtree drops out while any unrelated deeper descendant keeps
+  the answer non-empty. TERM then lands on the wrong subset, the ladder
+  waits out the full 2 s grace, and SIGKILL ends a payload whose TERM
+  handler was never asked to run — `Code:137 Signal:9 WallMs:2016` on a
+  green-looking cancel (#135). So `term` reads the supervisor's
+  grandchildren straight out of `/proc/<pid>/task/<pid>/children` — two
+  targeted reads, not a table walk — and a live root the selection does
+  not contain demotes it to the same whole-group fallback an empty
+  selection takes. The check only ever demotes on positive evidence: no
+  roots means "no opinion" and the selection stands, or a kernel without
+  `CONFIG_PROC_CHILDREN` would quietly reinstate the group-wide TERM #53
+  removed.
 - **TERM is complete under bwrap and best-effort without it, and the
   ladder's documentation says so.** The PID namespace is what makes the
   descendant walk exhaustive. In degraded mode there is no namespace, the
