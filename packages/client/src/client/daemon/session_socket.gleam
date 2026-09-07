@@ -44,7 +44,7 @@ type Signal {
 
 // Where this socket's process sits in the two-step admission above. There is
 // no refused variant, because a refusal never becomes a state: the handler
-// kills its own process and stops, so `on_close` only ever sees these two.
+// stops from its admission turn, so `on_close` only ever sees these two.
 type Phase {
   // Admission has not run yet. The subject is the one `on_init` selected on,
   // carried so the attach can hand its callbacks a sink reaching this process.

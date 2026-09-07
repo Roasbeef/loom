@@ -1,25 +1,24 @@
 # Next
 
-Read this first. This is the handoff for the single-daemon and multiplayer
-work: the implemented boundaries, evidence from the shipped binary, and the
-release gates deliberately left open. Rewrite it after the next completed
-body of work. Commit and review history belongs in Git and the review records,
-not in another chronological addition to this file.
+Read this first. This is the handoff for the single-daemon, multiplayer and
+background-jobs work: the implemented boundaries, evidence from the shipped
+binary, and the release gates deliberately left open. Rewrite it after the
+next completed body of work. Commit and review history belongs in Git and the
+review records, not in another chronological addition to this file.
 
-Re-baselined on 2026-09-06 against `client/daemon-acceptance` at `854a3b7d`
-and the subsequent CI corrections described below.
-Claims below were checked against that tree, exact local command results,
-or the named hosted run.
-After the closing run failed, the owner authorized CI corrections and measured
-verification. This includes the narrow Linux process-absence correction and
-the explicit macOS advisory policy below, not further acceptance slices.
+Re-baselined on 2026-09-07 against `jobs/abort-step`, which carries `main`
+plus the last of the background-jobs stack. Claims below were checked against
+that tree, exact local command results, or the named hosted run. The daemon
+acceptance material is carried forward from the 2026-09-06 edition and was
+not re-measured; where it names a run, that run is the evidence.
 
 ## Where the tree is
 
 The [single-daemon plan](design-notes/single-daemon.md) numbers seven phases,
 0 through 6. One daemon now manages sessions across workspaces. Restart
 restores catalogue metadata; only authorized explicit selection opens a
-runtime. The broader release acceptance is not complete.
+runtime. The broader release acceptance is not complete. The background-jobs
+plane is a separate body of work and it is finished.
 
 | Body of work | Current state |
 |---|---|
@@ -27,7 +26,7 @@ runtime. The broader release acceptance is not complete.
 | Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
 | TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery remains client-driven reconciliation, not pushed token streaming. |
 | Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
-| Background jobs | The pure state, the actor and the model-facing surface are built across three pull requests, and a shipped fixture proves the motivating case and the restart rule on a host with real enforcement. The design note's one open contradiction — a satellite teardown reaping the jobs the program left running — is settled; see "Background jobs" below. |
+| Background jobs | Landed. The pure state, the actor, the model-facing surface, the shipped fixture and the step-scoped abort are all in the tree; issue #183 is closed by them. See "Background jobs" below for what each piece is and what proves it. |
 
 [PR #239](https://github.com/Roasbeef/loom/pull/239) targets
 `client/daemon-review-fixes` ([#238](https://github.com/Roasbeef/loom/pull/238)),
@@ -40,10 +39,25 @@ planner and protocol 017 edits; do not build them into this candidate.
 
 ### Corrections to the previous handoff
 
-The previous edition accumulated individual test passes and described joined
-shipped schedule coverage as missing. The new native schedule fixture now
-proves Saved inactivity and once-only overdue resumption across explicit opens.
-It does not prove recurring cursors, a detached future timer, or whole-VM
+The previous edition described background jobs as three pull requests in
+flight with one open design contradiction. That is stale in both halves. Five
+pull requests landed ([#260](https://github.com/Roasbeef/loom/pull/260),
+[#263](https://github.com/Roasbeef/loom/pull/263),
+[#267](https://github.com/Roasbeef/loom/pull/267),
+[#266](https://github.com/Roasbeef/loom/pull/266) and
+[#269](https://github.com/Roasbeef/loom/pull/269)), the contradiction is
+settled by `broker.abort_step`, and the shipped fixture asserts the settled
+behaviour rather than working around it. Do not plan jobs work from the
+design note's work-package table; plan it from "Queued behind it" below.
+
+The previous edition also did not know about the websocket admission bug that
+[#268](https://github.com/Roasbeef/loom/pull/268) fixed. It is on `main` and
+it is a ruling, not a patch; see "Rulings already made".
+
+The earlier edition accumulated individual test passes and described joined
+shipped schedule coverage as missing. The native schedule fixture proves
+Saved inactivity and once-only overdue resumption across explicit opens. It
+does not prove recurring cursors, a detached future timer, or whole-VM
 schedule recovery.
 
 A shared answer appearing without another keypress is not evidence of server
@@ -83,10 +97,8 @@ The full client gate passed all **1,344 tests in 296.01 seconds**, with all
 five shipped fixtures enabled. Its command exited 0; the strict skip census
 independently exited 0 with only the declared macOS `/proc` prerequisite.
 Client lint exited 0 with zero errors and 91 warnings. The documentation gate
-also exited 0. This full gate includes `c9e043de` and the schedule candidate
-before its final review and the observe-policy unit test. The subsequent
-focused results below verify those closing changes; do not label that earlier
-full gate as a run of every test in the final tree.
+also exited 0. Those numbers predate the jobs stack and the socket admission
+fix; they are the daemon acceptance evidence, not a count of the current tree.
 
 | Shipped fixture | What it proves |
 |---|---|
@@ -95,6 +107,7 @@ full gate as a run of every test in the final tree.
 | `daemon_shipped_identity_recovery_test` | Whole-VM loss after SQLite identity publication preserves that identity and the original writer lease. Pending selection fails visibly; explicit recovery waits for the natural lease expiry. |
 | `daemon_shipped_stop_test` | A's original provider socket closes, owner control observes Saved, B progresses on its original attachment, and explicit reopen resumes one durable user admission under a new incarnation. |
 | `daemon_shipped_schedule_test` | An overdue configuration added while A is Saved does not run during B's progress. Explicit open fires it once; another reopen preserves the exact fired cell and message records. |
+| `daemon_shipped_jobs_test` | The background-jobs plane end to end. Three scenarios, described under "Background jobs" below. |
 
 The final stop fixture at `5d1decf2` independently passed in **3.72 seconds**;
 its five held-provider negative controls passed in **0.97 seconds**.
@@ -205,112 +218,260 @@ result separately. The next exact-head cycle is recorded on PR #239.
 
 ## Background jobs
 
-A separate body of work from the daemon acceptance above, and the newest
-thing in the tree. A job is a jailed process the harness starts on the
-model's behalf that outlives the tool call which started it: `bash` with
-`mode: "background"` returns a handle, `job_poll`, `job_kill` and
-`job_send` are the rest of the surface, `cap/job` is the same four
-operations for a code-mode program, and both reach one
-`client/jobseam.Door`. The design and every ruling behind it are in the
-[design note](design-notes/background-jobs.md); the mechanism is in
-[the effect plane](architecture/effects.md#background-jobs).
+A job is a jailed process the harness starts on the model's behalf that
+outlives the tool call which started it. It is bounded by a wall fixed at
+start, owned by a strand, observable through a bounded rolling tail plus a
+full spill, and killable through the same TERM-then-KILL ladder a cancelled
+foreground call climbs. The design and every ruling behind it are in the
+[design note](design-notes/background-jobs.md); the mechanism as the effect
+plane sees it is in [effects.md](architecture/effects.md#background-jobs).
 
-| Work package | Where it is |
-|---|---|
-| WP1, pure state and the `job/` fact | [#260](https://github.com/Roasbeef/loom/pull/260), on `main`. |
-| WP2, the actor, runner, tail and spill | [#263](https://github.com/Roasbeef/loom/pull/263), on `main`. |
-| WP3, the tool surface, `cap/job`, the prelude | [#264](https://github.com/Roasbeef/loom/pull/264) merged into `jobs/actor`; relanded against `main` as [#267](https://github.com/Roasbeef/loom/pull/267), open. |
-| WP4, the tail module and the staging spill | Folded into WP2 rather than shipped separately. |
-| WP5, the shipped fixture and the docs | [#266](https://github.com/Roasbeef/loom/pull/266), open, on WP3 (`jobs/fixture`). The abort-step branch below stacks on it. |
+### What landed and where
 
-`daemon_shipped_jobs_test` is the acceptance evidence, and it runs for
-real — not skipping — in two places: the macOS gate, and the Linux jail
-job's *Shipped background jobs with delegated enforcement* step, which is
-the only run that exercises the pid namespace. A scripted turn
-backgrounds `tail -f build.log`, the fixture appends three
-lines from outside the jail, the next turn's poll is shown those three
-lines and nothing else with the job still pending, a kill produces a
-terminal state naming the owner and carrying the helper's `cancelled`
-witness, and the payload is proved gone — by a birth-qualified fence
-where the host shares the payload's pid, and by the terminal record and
-the jail's containment where a pid namespace hides it. A second scenario
-runs the same door from code mode through a real hermetic build
-and a real satellite. A third SIGKILLs the VM and proves the sweep
-commits `Lost`, the model's own poll reads it, and nothing is respawned.
-On a host without demanded enforcement — the ordinary Linux gate — the
-whole file declines with one declared reason
-(`.github/declared-skips-linux-gate`).
+**The actor and one runner per job.** `client/jobs.gleam` is a `weft/actor`
+in `client/serve`'s *restartable* services tier beside `extension_hosts`,
+bound to a reclaimable `weft/registry` address so a replacement answers where
+the original did and no caller caches a subject. Each job gets a plain weft
+task of its own, and that task — not the actor — calls `broker.clear_call`.
+Both reasons come from the broker's own contract: `clear_call` waits out a
+full helper pool in the caller's process, and an actor blocked on congestion
+could not answer a poll; and the relay monitors the caller and cancels the
+execution when that process dies, so the caller has to be a process that
+lives exactly as long as the job. The runner folds the `CallOutput` stream
+and reports the outcome; the actor writes the terminal fact only when that
+outcome arrives, because a weft outcome is reported once the worker has
+exited, so the scope's exit is the drain proof. The task is plain rather
+than managed: a managed task exists to witness owners a worker discovers
+while it runs, and this one discovers none.
 
-### 0. The code-mode abort collision is settled
+**The durable record.** Each job is a `job/<id>` register in the session
+store, a key prefix inside the existing `fact.custom` namespace, so it cost
+no protocol change. It is the tenth reserved corner in `runtime/api.gleam`
+and is written only through `put_reserved_fact_expecting`; creation uses the
+expect-absent CAS, so two incarnations racing to start the same job cannot
+both land. The lifecycle and the codec are pure in `client/jobstate.gleam`,
+property-tested with no process. A restart never re-adopts: a job's process
+is a child of a helper and the helper is a child of the VM, so the
+replacement actor's first act, before it serves one request, is to sweep
+`job/*` and commit `Lost(VmRestart)` for everything still live. It holds
+those records in memory so a later poll answers `Lost` rather than
+`NotFound`, which is reserved for "no such job, or somebody else's".
+`OwnerRestart` exists in the vocabulary and is never reported; telling the
+actor's first start from a supervisor restart needs state that outlives the
+actor and dies with the VM, bought for a word nobody branches on.
 
-**Closed.** A code-mode teardown used to reap its satellite by calling
-`broker.abort` on the whole operation (`codemode/satellite.cleanup`,
-`codemode/launch.destroy`), and a job started by that program cleared
-under the same operation by decision 4 — so the record read
-`Lost(HelperLoss)` the moment the program returned, against what both
-`cap/job`'s module doc and the design note promise.
+**The bounded tail and the per-stream spill.** `client/jobtail.gleam` is a
+pure, UTF-8-safe rolling window with a monotone byte cursor: `push` appends
+and drops from the front past the cap, `since(cursor)` returns what arrived
+after the cursor plus the new cursor, and a cursor that predates the retained
+window is answered with a `dropped` count rather than a silent skip. Eight
+KiB is retained per stream. The whole of each stream goes to its own staging
+file under the blob root while the job runs and is promoted to a
+content-addressed ref at termination, recorded in the terminal fact and read
+with `fs_read`. There are two staging files rather than the one the design
+note imagined, because `JobSpill` has a field per stream and one file for
+both would have had to interleave them. A boot that finds a staging file with
+no live job unlinks it.
 
-The resolution narrowed the teardown rather than re-keying the job. The
-broker already carried a `step_id` on every active call, ledger and token
-binding, so the sweep it needed was one it could already express:
-`broker.abort_step(op_id, step_id:)` revokes that pair's tokens, cancels
-its actives and drops its ledger, and both teardown sites now call it on
-the run phase's own step. `broker.abort` is unchanged, so an operator's
-abort of the operation still reaches the jobs it started — decision 4's
-purchase is intact and only the routine teardown stopped borrowing it. A
-step sweep counts separately from an operation sweep, because bumping the
-operation's counter would refuse a resumed clearance of every sibling
-step including the spared job; a clearance is judged against the sum of
-the two. ADR-005 carries the addendum.
+**One door, two model-facing surfaces.** `client/jobseam.Door` is the whole
+of what the model can reach, and it is the only enforcer of four things: the
+per-strand ceiling, the wall clamp, ownership, and the `job/<id>` fact
+writes. `client/jobtools.gleam` translates between the actor's vocabulary and
+the tools' one. Above it, `tools/job.gleam` carries `job_poll`, `job_kill`
+and `job_send`, and `tools/bash.gleam` gains `mode`, a two-variant type whose
+`background` arm admits a job and returns the handle at once. Beside it,
+`cap/job.gleam` is `job.start`, `job.poll`, `job.list`, `job.kill` and
+`job.send` as typed Gleam a vetted program calls. The capability routes
+`ServedHere` in `codemode/workspace.gleam` rather than as a jailed
+`ClearedCall`, because the harness actor answers it and only the job's own
+process is jailed, and it sits on `default_cap_modules` and nowhere else so
+the `{cap/report}` intersection with the orchestration modules still holds. A
+job started from a tool call and one started from a program are the same
+record with the same owner, and either surface polls or kills what the other
+started, because ownership is the strand.
 
-The exit criterion is met and measured. `daemon_shipped_jobs_test`'s
-second scenario now asserts `running` rather than asserting no state, and
-asserts the payload's own birth-qualified identity — taken while the
-first satellite was being reaped — departs when the second program kills
-the job. Reverting either teardown site to the operation-wide abort and
-rebuilding the shipment kills that scenario: the payload never publishes
-a live identity at all. Note the rebuild, because the fixture drives
-`bin/loomd` rather than the freshly compiled tree, and a mutation left in
-the sources alone passes.
+**A hook may not start one.** An extension invocation whose origin is
+`hosts.HookEvent` is handed `workspace.no_jobs()` in
+`client/extension/dispatch.gleam`. A hook's operation is the single
+session-long operation minted for every hook in the session: nobody sees it
+as a running step, so nobody can abort it, and a `context` hook calling
+`job.start` on each event would leave hour-long processes owned by `main`
+that the model never asked for and cannot find. The capabilities stay routed,
+so a hook that asks reads that reason rather than an unknown-capability
+denial. `docs/architecture/extensions.md` carries the ruling.
+
+**The ceilings.** Four non-terminal jobs per strand, refused in band the way
+the orchestration seam refuses `spawn_ceiling`. There is no session-wide
+limit in this cut; the design note records the pool arithmetic instead of
+pretending it away. The wall defaults to one hour and is clamped to one hour,
+and `[jobs].max_wall` in `loom.toml` — in seconds, parsed beside the other
+known tables in `client/catalog.gleam` and read in `client/serve.gleam` —
+raises that ceiling and cannot lower it, because a lower ceiling is what the
+session's own sandbox policy already expresses. A caller that asks for longer
+than the ceiling is given the ceiling and told what it got in
+`Started.wall_ms` rather than refused. The deadline is fixed at start and
+never renewed, and its four enforcers cannot disagree because all four read
+one number: the capability token, the relay's receive deadline, the helper's
+own wall timer, and the budget ledger.
+
+**A step-scoped abort, and what it spared.** A job clears under
+`{op_id, "job/" <> id}` — the operation that started it, and a synthetic step
+naming the job — so a foreground `bash` earlier in the same batch cannot cap
+it and a second job in the batch is not refused outright. Keeping the
+operation half put the job in reach of a sweep nobody meant it to be in reach
+of: a code-mode teardown used to reap its satellite with `broker.abort` on
+the whole operation, so a job started from a program read `Lost(HelperLoss)`
+the moment the program returned. `broker.abort_step(op_id, step_id:)` is the
+narrowing. It revokes exactly that pair's tokens, cancels its actives and
+drops its ledger, and the two teardown sites in `codemode/satellite.gleam`
+and `codemode/launch.gleam` now call it on the run phase's own step. It needs
+a sweep counter of its own beside the operation's, and a clearance is judged
+against the **sum** of the two, because a step abort that bumped the
+operation's counter would refuse a resumed clearance of every sibling step,
+including the detached job it exists to spare. The step in that sweep is
+still the batch's, so a teardown reaps the batch's other tool calls exactly
+as the operation-wide abort did. ADR-005's second addendum carries all of it.
+
+**The operator's abort still reaches a job.** `broker.abort` is unchanged, so
+aborting the operation that *started* a job kills it, which is what an
+operator asking for that means. The wiring has two halves and only one is the
+runtime's: the `abort` command commits the cancel marker and stops the
+strand's live effects through `api.abort`, and a detached job is nobody's
+live effect, so the hub also sweeps the effect plane through
+`gateway.Options.effect_abort`, which `client/serve` fills with
+`broker.abort`. The host has to join the two, because `runtime` may not
+depend on `broker` and only the broker holds the other half of the ledger.
+The reach is bounded by that door and the bound is worth stating: `abort`
+names the strand's *current* operation, so it kills the jobs of the turn
+still running. A job started two turns ago outlives its operation by design,
+and the operator stops it with `job_kill` or by ending the session.
+
+### How it is verified
+
+`packages/client/test/client/daemon_shipped_jobs_test.gleam` is the
+acceptance evidence, and it runs for real in two places: the macOS gate, and
+the Linux jail job's *Shipped background jobs with delegated enforcement*
+step, which is the only run that exercises the pid namespace. On a host
+without demanded enforcement — the ordinary Linux gate — the whole file
+declines with one declared reason (`.github/declared-skips-linux-gate`).
+
+Three scenarios. The first is the motivating case: a scripted turn backgrounds
+`tail -f build.log`, the fixture appends three lines from outside the jail,
+the next turn's poll is shown those three lines and nothing else with the job
+still pending, a kill produces a terminal state naming the owner and carrying
+the helper's `cancelled` witness, and the payload is proved gone. The second
+drives the same door from code mode through a real hermetic build and a real
+jailed satellite: one program starts a job and returns its id, a later program
+in its own execution finds that record under that id **and in `running`**, and
+kills it. That `running` reading is the whole of what the scenario found the
+first time it ran, and reverting either teardown site to the operation-wide
+abort and rebuilding the shipment kills it. Note the rebuild: the fixture
+drives `bin/loomd`, so a mutation left in the sources alone passes. The third
+SIGKILLs the VM and proves the sweep commits `Lost`, the model's own poll
+reads it, and nothing is respawned.
+
+How the payload's departure is proved is a property of the host, and the
+fixture decides it once in `PayloadIdentity`. Under `HostPid` — Darwin, where
+the jail has no pid namespace — the payload publishes its own host pid and
+the fixture qualifies it by birth, exactly as the recovery fixtures qualify a
+VM. Under `NamespacedPid` no number a payload writes names a host process, so
+it writes none and the proof is the daemon's terminal record plus the jail's
+containment. The fixture fences the payload itself rather than its group;
+here they are one process, because the command `exec`s into `tail`.
+
+What the fixture deliberately does not cover is the operator's abort. Every
+turn it drives runs to completion, so by the time the fixture can send a
+command the operation that started the job has closed. `client/jobs_test`
+pins that path instead, with the real hub over the session's real open
+operation and only the broker scripted.
+
+Below it: `client/jobstate_test` property-tests the pure lifecycle and the
+codec, `client/jobtail_test` the bounded window and its `dropped` reports,
+`client/jobs_test` the actor (ceiling, deadline, cancel ladder, restart reap,
+the operator's abort), `tools/job_test` the tool surface and its refusal
+codes, `codemode/workspace_test` the five capability routes and their row
+decoding, and `broker/broker_test` the step sweep itself —
+`abort_step_reaps_one_step_and_spares_the_rest_test` and
+`an_abort_step_during_a_congestion_wait_spares_the_sibling_test`.
 
 ### Queued behind it
 
 None of these is blocking, and each is small enough to do alone.
 
-- **Collapse `client/jobtools` into a tools-vocabulary door.** It exists
-  only to translate between `client/jobs`' vocabulary and `tools/job`'s.
-  If the door spoke the tools vocabulary directly, one of the two
-  translations disappears.
-- **Cap the terminal jobs a strand retains.** The actor holds every
-  record it has decoded so a poll can answer `Lost` rather than
-  `NotFound`, and nothing evicts a terminal one. A long session
-  accumulates them without bound.
-- **Give `LossReason` a variant for a helper's own failure cause.**
-  `HelperLoss` says the helper went away and nothing about why, which is
-  the one loss a model might act on differently.
-- **Measure `cap/job`'s prelude cost.** Tool-surface cost is arithmetic
-  paid on every request of every strand; the capability prelude's is paid
-  on every code-mode build. Nobody has measured what these four
-  operations added.
+- **Collapse `client/jobtools` into a tools-vocabulary door.** It exists only
+  to translate between `client/jobs`' vocabulary and `tools/job`'s. The
+  actor's vocabulary came first because WP2 had to name the states before a
+  tool surface existed to name them for. If `jobseam` spoke the tools
+  vocabulary directly, as `client/scheduleseam` does, one of the two
+  translations disappears. Deferred because it is a rename across a working
+  surface with no behaviour behind it, and the fixture that would catch a
+  mistake is the expensive one.
+- **Evict terminal `Held` entries from the actor's table.** The actor keeps
+  every record it has decoded, deliberately, so a poll can answer `Lost`
+  rather than `NotFound`; nothing evicts a terminal one. A long session
+  accumulates them without bound. Deferred because the fix needs a retention
+  rule that says what a poll of an evicted job should read, and inventing one
+  before anybody has seen the growth is the wrong order.
+- **Give `LossReason` a variant for a helper's own failure cause.** A settled
+  `broker.CallFailed` carries an `ExecFailure` and `client/jobs` drops it,
+  committing `RunnerLost(HelperLoss)`, which says the helper went away and
+  nothing about why. That is the one loss a model might act on differently.
+  Deferred because it changes a durable codec, so it wants doing once with
+  the right variant set rather than twice.
+- **Measure `cap/job`'s prelude cost.** Tool-surface cost is arithmetic paid
+  on every request of every strand; the capability prelude's is paid on every
+  code-mode build, on every host, whether or not the program mentions jobs.
+  Nobody has measured what these five operations added. Deferred because it
+  is a measurement, and the answer might be that there is nothing to do.
 - **Size a dedicated job pool if the shared one starves.** A running job
-  holds one helper for its whole life out of a pool of four to sixteen.
-  The design note records the arithmetic and deliberately waits for real
-  use rather than pre-building a second pool.
-- **Put `job_output` on the bus once
+  holds one helper for its whole life out of a pool of four to sixteen, and
+  sixteen strands each holding four jobs would exhaust the largest pool. The
+  design note records the arithmetic and deliberately waits for real use
+  rather than pre-building a second pool; this is the one question its review
+  left open.
+- **Put `job_output` on the event bus once
   [#240](https://github.com/Roasbeef/loom/issues/240) lands.** The runner
-  already folds the `CallOutput` stream in one place, so a live event is
-  one more subscriber rather than a new mechanism. Under today's pull-only
-  delivery it would be inert.
+  already folds the `CallOutput` stream in one place, so a live event is one
+  more subscriber rather than a new mechanism. Deferred because under today's
+  pull-only delivery it would be inert.
 
 ## What to do next
 
-The closing scope does not start these follow-ups. Preserve their distinction
-between a missing implementation, an unresolved design and missing evidence.
+Preserve the distinction these items draw between a missing implementation,
+an unresolved design and missing evidence. The order below is a
+recommendation, not a dependency chain, except where it says so.
 
-### 1. Add an explicit memory-off observation
+### 1. Close the daemon domain-teardown admission window
+
+The registry fences a workspace domain when its last dependent retires and
+keeps the fenced slot in its book until the witness exits. Every admission
+naming that domain in the window is refused `unavailable`, which is a real
+refusal of a legitimate open. The shipped schedule fixture now works around
+it by waiting on the daemon's own domain census as a second barrier after
+`Saved`, and `stop_saved` in `daemon_shipped_schedule_test` says so. That is
+a fixture paying for a product behaviour. The clean fix is queueing the open
+on the closing slot so the caller waits rather than being refused.
+
+Exit: an explicit open naming a domain in `DomainClosing` is admitted once
+the witness exits, without the caller polling a census; the schedule fixture
+drops its second barrier and still passes.
+
+### 2. Take the two jobs-plane cleanups
+
+The `jobtools` collapse and the terminal `Held` eviction above. Both are
+contained, both are in one package, and doing them while the plane is fresh
+is cheaper than doing them after the next reader has learned the current
+shape. The `LossReason` variant can ride with them if the codec change is
+taken at the same time.
+
+Exit: `client/jobtools` is gone or is only what `scheduleseam`'s translation
+is; the actor's table has a stated retention rule with a test; `make
+check-client` and `make lint-client` pass.
+
+### 3. Add an explicit memory-off observation
 
 [Issue #245](https://github.com/Roasbeef/loom/issues/245) records the smallest
-follow-up, extending the existing shipped workload after native
+daemon follow-up, extending the existing shipped workload after native
 retirement. Read the existing catalogue through a read-only URI and generated
 `storage/sql.domain_page`; require its two workspace-private mappings and use
 their persisted memory/digest paths, not guessed hashes. Require those outputs
@@ -321,19 +482,20 @@ Exit: the workload proves no distillation-start event or persistent output.
 This does not prove that the explicit `remember` capability is unavailable,
 and configuring distillation off alone is not the observation.
 
-### 2. Design and implement live delivery, #240
+### 4. Design and implement live delivery, #240
 
 [Issue #240](https://github.com/Roasbeef/loom/issues/240) is the next product
 boundary, not a reason to call current reconciliation broken. Decide authority
 revalidation for pushed records/deltas and visible ordering for concurrent
-submits before changing those paths.
+submits before changing those paths. `job_output` on the bus is a follow-on
+of this and only this.
 
 Exit: a shipped fixture admits two operators' concurrent prompts in the
 chosen order, delivers records without client catch-up, streams to Reader,
 and stops revoked delivery at the required authority boundary. It does not
 silently relax membership or add a global command queue without a decision.
 
-### 3. Adopt the SQLite retirement repair
+### 5. Adopt the SQLite retirement repair
 
 Shipping resolves sqlight 1.2.0 and Hex esqlite 0.9.0, not the evaluated fork.
 [Issue #247](https://github.com/Roasbeef/loom/issues/247) owns the release or
@@ -352,7 +514,7 @@ resource/release/platform checks pass on that graph. No cache patch, forced
 collection, parallel package publication or source-built compiler workaround
 is authorized by this handoff.
 
-### 4. Resolve the remaining release evidence
+### 6. Resolve the remaining release evidence
 
 The [acceptance drive](design-notes/single-daemon.md#the-acceptance-drive)
 still requires the joined load/crash observations and application confinement.
@@ -362,7 +524,7 @@ the performance work needed to restore hosted macOS enforcement. Its design
 options remain proposals, not measured repairs. Preserve named component tests
 when composing a shipped drive.
 
-Exit: each remaining requirement below has evidence for the final artifact,
+Exit: each remaining requirement has evidence for the final artifact,
 with explicit platform limitations. Do not repeat already-proven startup,
 invitation and live-tool scenarios as if they were wholly absent.
 
@@ -375,6 +537,38 @@ the reopening where the ruling lives.
 [execution ruling](design-notes/single-daemon.md#execution-ruling) requires
 explicit authorized opens. Listing and preview never resume work. Backwards
 compatibility and legacy import were excluded.
+
+**Socket admission is a handler turn, and a deferred transfer owes a
+barrier.** mist starts every websocket process with a hard 500 ms initializer
+budget it does not expose, and a missed budget kills the process together
+with its TCP socket, which the peer reads as an abrupt close rather than a
+refusal. Admission is two cross-actor calls whose own budgets total six
+seconds, so it cannot live there: `on_init` mints its subjects, sends itself
+`Admit`, and returns, and the permit transfer and gateway attach run on that
+message. mist hands over the socket and calls `set_active` only after the
+initializer returns, so `Admit` is queued before the peer can deliver a byte.
+Deferring the transfer costs one thing the initializer gave for free: the
+upgrading HTTP process releases its reservation the instant the upgrade
+returns and then exits, and `root.transfer` refuses a reservation whose HTTP
+owner has released it. So the websocket process signals a subject owned by
+the HTTP process as soon as the transfer has been attempted, and the HTTP
+process waits on that signal before releasing. It is a consumed reply from
+the one process that sends it, not a cross-sender ordering assumption. The
+two invariants are written into `packages/client/CLAUDE.md`; the mechanism
+and the mist internals are in `client/daemon/session_socket.gleam`'s module
+doc. [PR #268](https://github.com/Roasbeef/loom/pull/268) is the change, and
+`admission_slower_than_the_initializer_budget_still_serves_test` is the
+regression, which suspends the hub with `erlang:suspend_process` so the delay
+is exact on a sixteen-core laptop and a three-core runner alike.
+
+**A routine teardown does not borrow the operator's reach.** A code-mode
+satellite is reaped with `broker.abort_step` on its own step, never
+`broker.abort` on the operation, because a background job clears under a
+sibling step of that operation and is meant to outlive it. `broker.abort`
+keeps its meaning for the operator. The step sweep counts separately and a
+clearance is judged against the sum of the two counters. ADR-005's second
+addendum records it; reverting either teardown site fails the shipped
+fixture's second scenario, but only after a rebuild of `bin/loomd`.
 
 **Retirement requires original evidence.**
 [Protocol 014](../protocol-change/014-helper-shutdown-witness.md) retains the
@@ -410,7 +604,9 @@ None of these is unfinished work somebody forgot.
 - **Shipped approval route, [#243](https://github.com/Roasbeef/loom/issues/243):** existing effect tests inject a narrower policy.
   Ordinary Bash allows and clamps to 600 seconds; no shipped configuration
   exposes the needed narrower wall budget. This is a product-policy gap, not
-  permission to fake an approval or substitute a native execution error.
+  permission to fake an approval or substitute a native execution error. It
+  applies to a job's start unchanged, since a job admits under exactly the
+  rules a foreground `bash` does.
 - **Joined authority/fault matrix, [#246](https://github.com/Roasbeef/loom/issues/246):** exact revocation between admission and
   delivery remains scripted-authority coverage. Cooperative stop is not an
   uncooperative drain or a process-kill test. Other publication-step crashes
@@ -422,6 +618,19 @@ None of these is unfinished work somebody forgot.
 - **Live delivery and memory off:** [#240](https://github.com/Roasbeef/loom/issues/240)
   is undesigned/unbuilt work; the explicit no-maintenance oracle in
   [#245](https://github.com/Roasbeef/loom/issues/245) is designed but unbuilt.
+- **The release-versus-transfer barrier has no unit test.** The regression
+  that exists covers a slow *gateway attach*, by suspending the hub. Covering
+  the barrier itself needs a slow `root.transfer`, which means a fake root
+  the socket tests do not have today. The path is exercised in every shipped
+  daemon fixture and the five-second wait is only ever paid in full on a
+  doomed path, so this is a coverage gap rather than an untested behaviour.
+- **The jobs follow-ups** listed under "Queued behind it" above, each with
+  the reason it was deferred. None gates anything.
+- **Converting an overrunning foreground call into a job** is the second half
+  of #183 and was deliberately not taken. The approval that admitted a
+  bounded call did not admit an unbounded one, so conversion needs either an
+  explicit opt-in on the call or a policy rule, and neither was obvious
+  enough to settle alongside the first cut.
 - **Toolchain freshness, [#248](https://github.com/Roasbeef/loom/issues/248):**
   Gleam 1.18.1's direct-path fingerprint handling causes repeated resolution;
   the upstream fix and release/source-build choice are recorded there. Do not
@@ -456,6 +665,11 @@ python3 scripts/with_timeout.py 900 -- \
 result. Freeze source during a gate and run the strict skip census on its
 actual logs. macOS's declared `/proc` prerequisite skips the whole real-MCP
 fixture before setup; it does not establish that exchange.
+
+**Rebuild the shipment before trusting a shipped fixture.** These fixtures
+drive `bin/loomd`, not the freshly compiled tree, so a mutation left in the
+sources alone passes. The jobs fixture's second scenario is the case that
+proved it.
 
 **Bound waits and keep notifications live.** Test wrappers enforce deadlines
 and scoped idle-sleep prevention. The crash-recovery fixture intentionally
