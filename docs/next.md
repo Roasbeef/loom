@@ -18,6 +18,25 @@ with zero errors after the citation conflict was resolved. The post-rebase
 full gate, hosted CI, and Linux signoff are the remaining validation steps;
 their results must be read from the final pushed head before merging #482.
 
+## Public Responses adapter, rebased September 22
+
+PR #278 adds `openai-responses` as a separate public API dialect. It requires
+`auth = "api-key"` and an `api_key_env` name, sends `store: false`, and replays
+Loom's durable history and tool results. The existing `openai` dialect still
+uses Chat Completions. [ADR-012](adr/012-responses-and-subscription-boundaries.md)
+records the boundary and [the review record](review/responses-api.md) records
+the original implementation and verification. The local branch has been
+rebased onto current `origin/main`; its final integrated gates and hosted CI
+must be measured at the new head.
+
+This adapter does not use ChatGPT subscription credits. The supported route
+for caller-owned inference remains a Platform API key. Codex can sign in with
+ChatGPT for subscription access, but its documented integration owns its own
+agent lifecycle. Issue #117's subscription track needs a supported inference
+boundary that preserves Loom's ownership of history, tools, and the agent loop.
+The earlier public live smoke reached `credit_balance_exhausted` and confirmed
+transport drain; a funded successful inference remains unverified.
+
 ## Inline queue follow-up, September 22
 
 Commit `6c796795` adds a composer-adjacent queue card on top of the pushed
