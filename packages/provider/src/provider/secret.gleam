@@ -13,6 +13,11 @@
 //// - `env` — reads process environment variables (`ANTHROPIC_API_KEY`,
 ////   …). Ships now, via the `provider/internal/ffi_env` shim.
 //// - `from_list` — a fixed in-memory store for tests.
+//// - `client/secrets.store` — the harness's own layering, built from a
+////   `loom.toml` `[secrets]` table: values obtained from host commands
+////   at boot, laid over `env` so a resolved name wins and every other
+////   name still comes from the process environment. It is a
+////   `from_function` and needs nothing from this module.
 //// - `from_function` — arbitrary injection, and the hook where the
 ////   planned OS-keychain backends attach: macOS `security`
 ////   find-generic-password and the Linux secret-service D-Bus API are

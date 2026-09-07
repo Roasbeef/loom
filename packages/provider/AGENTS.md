@@ -62,6 +62,11 @@ processful shell around that sans-io core. WP-F.
   `httpc_transport()` is the production wiring.
 - `provider/secret.SecretStore` — an injected `fn(String) ->
   Result(String, Nil)`; backends are `env()`, `from_list`, `from_function`.
+  The harness layers its own on top: `client/secrets.store` lays the
+  `[secrets]` table's boot-resolved values over `env()` through
+  `from_function`, so a name obtained from a host command and a name the
+  operator exported are indistinguishable here — by design, since this
+  package must not learn where a value came from.
 - `provider/retry.{RetryClass, RetryPolicy}` — `classify`, `backoff_ms`,
   `is_overflow_message`, `overflow_message`.
 - `provider/internal/diagnostic` — the pure resource and redaction boundary for
