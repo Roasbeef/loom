@@ -997,13 +997,28 @@ fn eager(
               <> ":` is "
               <> describe(argument)
               <> "; an eager argument is built on every call, taken or not, "
-              <> "so use `"
-              <> spec.lazy
-              <> "`",
+              <> "so use "
+              <> advice(spec.lazy),
           ),
           ..acc
         ]
       }
+  }
+}
+
+/// What the finding tells the reader to reach for, in a code span.
+///
+/// Almost every row's `lazy` is the name of the lazy variant —
+/// `bool.lazy_guard` — and a name is set in code. The exception is a
+/// combinator with no lazy variant to name: `tools/fs.require`'s row spells
+/// out the change instead, in a sentence that sets its own spans, and
+/// wrapping that sentence in one more pair rendered spans inside spans
+/// (issue #73, report quality). A backtick already in the text is the
+/// signal that the row formatted itself.
+fn advice(lazy: String) -> String {
+  case string.contains(lazy, "`") {
+    True -> lazy
+    False -> "`" <> lazy <> "`"
   }
 }
 

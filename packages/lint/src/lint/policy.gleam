@@ -21,7 +21,10 @@ pub type Eager {
     /// The eager argument's position when it is given positionally, counting
     /// from zero in the call as written.
     position: Int,
-    /// What to reach for instead.
+    /// What to reach for instead: the name of the lazy variant, which the
+    /// finding sets in a code span. A row with no variant to name may
+    /// spell the change out in a sentence and set its own spans instead;
+    /// `scan.advice` tells the two apart by the backticks.
     lazy: String,
   )
 }

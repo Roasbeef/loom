@@ -50,6 +50,16 @@ wrote ourselves. Nothing here is a security control.
 - `lint.package_of(path) -> Option(String)` — which package a path
   belongs to, which is the judgement R6 rests on and the census prints
   rows by.
+- `lint.is_generated(code) -> Bool` — whether a generator wrote this
+  source. The one exemption the rules themselves know nothing about:
+  every rule advises an edit, and an edit to `storage/sql`,
+  `storage/sql_schema`, `storage/session_schema`, `events/sql` or
+  `tools/prelude` is one the next `make gen-sql` discards, so a finding
+  there is noise that never clears. The marker is the `DO NOT EDIT.`
+  header, read only in the first 400 characters — a module that talks
+  *about* the marker further down, as this package's own sources do, is
+  still hand-written. `lint/cli` drops these between the reading and the
+  two passes.
 - `lint/finding.{Rule, Finding, id, name, parse, render, rules,
   error_by_default}` — the vocabulary. `Rule` is `Unparseable |
   EagerFallback | NestingDepth | CatchAll | PanicInSource |
@@ -121,8 +131,8 @@ wrote ourselves. Nothing here is a security control.
   span for), and the line classification the layout rules index.
   `classify` reads comments from `glexer`'s tokens rather than from the
   text, so a line of a multi-line string beginning `//` is code.
-- `lint/cli.main` — argument parsing, file discovery, the report and the
-  census. The only module here that does I/O.
+- `lint/cli.main` — argument parsing, file discovery, the generated-source
+  skip, the report and the census. The only module here that does I/O.
 
 ## Relationships
 
