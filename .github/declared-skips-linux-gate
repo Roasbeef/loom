@@ -9,3 +9,11 @@ declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavaila
 # helper cannot enforce a policy, the scenarios are not weaker — they are
 # different — so the file declines rather than pretending.
 declared|linux|SKIP shipped jobs live tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the jail job's "Shipped background jobs with delegated enforcement" step run every jobs scenario for real, the latter under the pid namespace the fixture is written against.
+
+# The state-root masking fixture asks whether a jail actually masks the
+# daemon's secrets while leaving the workspace readable. That is a question
+# only a real jail can answer, so on a runner whose helper cannot enforce a
+# policy the fixture declines rather than asserting against an unenforced
+# execution. Its resolution half — which entries the daemon masks, and the
+# refusal of a workspace inside one — is pure and runs everywhere.
+declared|linux|SKIP daemon state-root masking: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate runs the jailed readings for real, and the pure resolution assertions in the same file run on every runner without this waiver.

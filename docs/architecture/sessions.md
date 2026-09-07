@@ -369,6 +369,36 @@ start time. `Ready` adds the actual loopback host/port and daemon epoch.
 The record contains no workspace, session database, bearer credential, or
 redirectable token path. The fixed credential path is `owner.token`.
 
+### What a session's jail may see of the state root
+
+The state root is a directory an operator has reasons to work in — the model
+catalogues live there — so it is not itself masked from a session's jail.
+Masking it wholesale was the shipped behaviour and it was a bug: a session
+opened with the state root as its workspace got a profile denying reads over
+the jail's own working directory, and every jailed command failed on `getcwd`
+before it ran.
+
+`client/serve.state_root_masks` enumerates what stays masked instead, each
+entry decided on whether a jailed process reading or writing it could obtain a
+credential, another session's data, or the daemon's control. The credential
+(`owner.token`) and the launcher's bearer tokens (`tokens/`); every session's
+database (`sessions/`); the catalogue and its WAL family; the per-workspace and
+per-session domain state (`workspaces/`, `domains/`); the locks (`locks/`,
+`daemon.lock`, `launch.lock`); and the endpoint records (`endpoints/`,
+`daemon.endpoint`), which hold no secret but are what a launcher adopts a
+running daemon by. The `loom*.toml` catalogues, `extensions/`, `logs/` and
+`daemon.log` are left alone. The blob store is masked by the workspace policy
+itself rather than by this list.
+
+A workspace that *is* one of those entries, or lies under one, is refused at
+boot and at session creation, naming the entry — because `protected` is the
+policy's only subtractive verb and no grant carves a hole in one, so such a
+session would come up and then fail on every call.
+
+Confining one session's database from another session's jail is a separate,
+open piece of work (issue #242); this list is where the daemon's own secrets
+are held.
+
 Automatic startup acquires `launch.lock`, checks the existing native fence,
 starts a paused wrapper, observes its birth identity, and writes `Starting`
 before releasing the child. The launcher then releases `launch.lock` before
