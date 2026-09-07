@@ -1532,6 +1532,7 @@ fn create_session(
             False, True -> #(book, Error(Capacity))
             False, False -> prepare_slot(book, record)
           }
+
           // Admission compares immutable creation metadata, but the response
           // displays the current name even when this was an old key's retry.
           let viewed = {
