@@ -265,8 +265,10 @@ fn first_phase(
       "/v2/sessions/" <> record.id <> "/ws",
     )
   assert string.contains(response, "101 Switching Protocols")
-  let #(_, transfer) = session_socket_test.begin(socket, record.id)
-  let _ = session_socket_test.drain(socket, transfer, 0, [], 32)
+  let #(_, transfer) =
+    session_socket_test.begin(socket, record.id, within_ms: 1000)
+  let _ =
+    session_socket_test.drain(socket, transfer, 0, [], 32, within_ms: 1000)
   assert gateway.attached(instance.gateway) == 1
   let _ = ffi_ws.tcp_close(socket)
   await(fn() { gateway.attached(instance.gateway) == 0 })

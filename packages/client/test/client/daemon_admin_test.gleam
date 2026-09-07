@@ -272,6 +272,7 @@ pub fn owner_role_change_closes_original_member_attachment_test() {
         json.Object([
           #("session", json.String(session)),
         ]),
+        within_ms: 1000,
       )
     assert field(field(begin, "body"), "role") == json.String("observer")
     let assert Ok(_) =
@@ -315,7 +316,7 @@ pub fn lost_invitation_reply_recovers_by_explicit_principal_rotation_test() {
     let #(socket, response) =
       daemon_server_test.connect(port, owner_token, "/v2/control")
     assert string.contains(response, "101 Switching Protocols")
-    let _ = daemon_server_test.frame(socket)
+    let _ = daemon_server_test.frame(socket, within_ms: 1000)
     send_unread(
       socket,
       "sessions.invite",

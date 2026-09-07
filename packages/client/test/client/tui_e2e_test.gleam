@@ -711,8 +711,10 @@ fn snapshot_text(booted: Booted) -> String {
       booted.served.token,
       "/v2/sessions/" <> booted.session_id <> "/ws",
     )
-  let #(_, capture) = session_socket_test.begin(socket, booted.session_id)
-  let chunks = session_socket_test.drain(socket, capture, 0, [], 32)
+  let #(_, capture) =
+    session_socket_test.begin(socket, booted.session_id, within_ms: 1000)
+  let chunks =
+    session_socket_test.drain(socket, capture, 0, [], 32, within_ms: 1000)
   ffi_ws.tcp_close(socket)
   chunks
   |> list.filter_map(fn(chunk) {

@@ -133,28 +133,47 @@ fn headers(socket, accumulated, remaining) {
   }
 }
 
+/// Reads one complete WebSocket text frame and decodes its JSON body.
+///
+/// `within_ms` is the caller's budget, not this module's: an in-process
+/// fixture answers inside its own event loop turn, so every in-file test
+/// passes `1000` explicitly. A fixture that attaches to the *shipped* daemon
+/// answers past a real admission handshake first — `session_socket.admit`
+/// spends a one-second root permit transfer and a five-second gateway
+/// attach before the first reply can be written — so that caller passes a
+/// wider budget of its own derivation instead of inheriting this one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // frame(socket, within_ms: 1000)
+/// ```
 @internal
-pub fn frame(socket: Socket) {
-  let assert Ok(<<0x81, marker>>) = ffi_ws.tcp_receive(socket, 2, 1000)
+pub fn frame(socket: Socket, within_ms within_ms: Int) {
+  let assert Ok(<<0x81, marker>>) = ffi_ws.tcp_receive(socket, 2, within_ms)
     as "server sends a text frame"
   let size = case marker {
     126 -> {
-      let assert Ok(<<size:16>>) = ffi_ws.tcp_receive(socket, 2, 1000)
+      let assert Ok(<<size:16>>) = ffi_ws.tcp_receive(socket, 2, within_ms)
         as "extended frame length arrives"
       size
     }
     size if size < 126 -> size
     _ -> panic as "control response exceeds fixture frame budget"
   }
-  let assert Ok(bytes) = ffi_ws.tcp_receive(socket, size, 1000)
+  let assert Ok(bytes) = ffi_ws.tcp_receive(socket, size, within_ms)
     as "complete response arrives"
   let assert Ok(text) = bit_array.to_string(bytes) as "response is UTF-8"
   let assert Ok(value) = json.parse(text) as "response is total JSON"
   value
 }
 
+/// Sends one v2 command and reads back the very next frame, whatever it is.
+///
+/// See `frame`'s doc for why `within_ms` is the caller's to set: this
+/// forwards it unchanged to the read that follows the write.
 @internal
-pub fn send(socket, id, command, body) {
+pub fn send(socket, id, command, body, within_ms within_ms: Int) {
   let text =
     json.to_string(
       json.Object([
@@ -171,7 +190,7 @@ pub fn send(socket, id, command, body) {
     False -> <<0x81, 0xfe, size:16, 0:32, bytes:bits>>
   }
   assert ffi_daemon_socket.send(socket, masked) == Ok(Nil)
-  frame(socket)
+  frame(socket, within_ms:)
 }
 
 /// One request, answered past whatever the daemon pushed around it.
@@ -187,19 +206,20 @@ pub fn send(socket, id, command, body) {
 /// ## Examples
 ///
 /// ```gleam
-/// // daemon_server_test.reply(socket, 100, "prompt", body)
+/// // daemon_server_test.reply(socket, 100, "prompt", body, within_ms: 1000)
 /// ```
 @internal
-pub fn reply(socket, id, command, body) {
-  answered(socket, send(socket, id, command, body), 16)
+pub fn reply(socket, id, command, body, within_ms within_ms: Int) {
+  answered(socket, send(socket, id, command, body, within_ms:), 16, within_ms)
 }
 
-fn answered(socket, value, remaining: Int) {
+fn answered(socket, value, remaining: Int, within_ms: Int) {
   assert remaining > 0 as "the reply arrives within a bounded run of notices"
   let assert json.Object(fields) = value as "the wire value is an object"
   case list.key_find(fields, "reply_to") {
     Ok(_) -> value
-    Error(Nil) -> answered(socket, frame(socket), remaining - 1)
+    Error(Nil) ->
+      answered(socket, frame(socket, within_ms:), remaining - 1, within_ms)
   }
 }
 
@@ -214,10 +234,10 @@ pub fn owner_control_uses_v2_and_never_implicitly_opens_test() {
   fixture(fn(_, ready, port, credential) {
     let #(socket, response) = connect(port, credential, "/v2/control")
     assert string.contains(response, "101 Switching Protocols")
-    let hello = frame(socket)
+    let hello = frame(socket, within_ms: 1000)
     assert field(hello, "v") == json.Int(2)
     assert field(hello, "event") == json.String("hello")
-    let status = send(socket, 1, "status", json.Object([]))
+    let status = send(socket, 1, "status", json.Object([]), within_ms: 1000)
     assert field(status, "reply_to") == json.Int(1)
     assert field(field(status, "body"), "occupied") == json.Int(0)
     assert field(field(status, "body"), "domain_capacity") == json.Int(2)
@@ -229,6 +249,7 @@ pub fn owner_control_uses_v2_and_never_implicitly_opens_test() {
         2,
         "sessions.list",
         json.Object([#("after", json.String(""))]),
+        within_ms: 1000,
       )
     assert field(field(listing, "body"), "sessions") == json.Array([])
     let stale =
@@ -237,6 +258,7 @@ pub fn owner_control_uses_v2_and_never_implicitly_opens_test() {
         3,
         "daemon.shutdown",
         json.Object([#("epoch", json.String("previous-epoch"))]),
+        within_ms: 1000,
       )
     assert field(field(stale, "body"), "code") == json.String("stale_epoch")
     assert manager.summary(ready.registry)
@@ -304,13 +326,14 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
       == Ok(Nil)
     let #(socket, response) = connect(port, credential, "/v2/control")
     assert string.contains(response, "101")
-    let _hello = frame(socket)
+    let _hello = frame(socket, within_ms: 1000)
     let denied =
       send(
         socket,
         1,
         "sessions.default",
         json.Object([#("workspace", json.String(ready.state_root))]),
+        within_ms: 1000,
       )
     assert field(field(denied, "body"), "code") == json.String("forbidden")
     let listing =
@@ -319,6 +342,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
         2,
         "sessions.list",
         json.Object([#("after", json.String(""))]),
+        within_ms: 1000,
       )
     let assert json.Array([only]) = field(field(listing, "body"), "sessions")
       as "authorization precedes list pagination"
@@ -333,10 +357,11 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
           #("session_id", json.String(visible.registration.id)),
           #("epoch", json.String(ready.epoch)),
         ]),
+        within_ms: 1000,
       )
     assert field(field(denied, "body"), "code") == json.String("forbidden")
     assert access.revoke_credential(store, digest) == Ok(Nil)
-    let revoked = send(socket, 4, "status", json.Object([]))
+    let revoked = send(socket, 4, "status", json.Object([]), within_ms: 1000)
     assert field(field(revoked, "body"), "code") == json.String("unauthorized")
     let _ = ffi_ws.tcp_close(socket)
     assert catalogue.close(store) == Ok(Nil)
@@ -347,7 +372,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
   fixture(fn(_, ready, port, credential) {
     assert simplifile.write(ready.state_root <> "/loom.toml", "") == Ok(Nil)
     let #(socket, _) = connect(port, credential, "/v2/control")
-    let _hello = frame(socket)
+    let _hello = frame(socket, within_ms: 1000)
     let creation =
       json.Object([
         #("request_key", json.String("wire-create")),
@@ -355,11 +380,11 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
         #("name", json.String("Wire session")),
         #("configuration", json.String(ready.state_root <> "/loom.toml")),
       ])
-    let created = send(socket, 1, "sessions.create", creation)
+    let created = send(socket, 1, "sessions.create", creation, within_ms: 1000)
     assert field(created, "event") == json.String("sessions.create")
     let assert json.String(id) = field(field(created, "body"), "session_id")
       as "creation exposes its reserved canonical identity"
-    let retried = send(socket, 2, "sessions.create", creation)
+    let retried = send(socket, 2, "sessions.create", creation, within_ms: 1000)
     assert field(field(retried, "body"), "session_id") == json.String(id)
     let selected =
       send(
@@ -370,6 +395,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
           #("workspace", json.String(ready.state_root)),
           #("session_id", json.String(id)),
         ]),
+        within_ms: 1000,
       )
     assert field(selected, "event") == json.String("sessions.set_default")
     let selected =
@@ -380,6 +406,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
         json.Object([
           #("workspace", json.String(ready.state_root)),
         ]),
+        within_ms: 1000,
       )
     assert field(field(selected, "body"), "session_id") == json.String(id)
 
@@ -403,6 +430,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
           #("operation", json.String(incarnation)),
           #("epoch", json.String(ready.epoch)),
         ]),
+        within_ms: 1000,
       )
     assert field(operation, "event") == json.String("operations.get")
     let stopped =
@@ -414,6 +442,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
           #("session_id", json.String(id)),
           #("epoch", json.String(ready.epoch)),
         ]),
+        within_ms: 1000,
       )
     assert field(stopped, "event") == json.String("sessions.stop")
     let assert poll.Answered(Nil) =
@@ -435,6 +464,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
           #("operation", json.String(incarnation)),
           #("epoch", json.String(ready.epoch)),
         ]),
+        within_ms: 1000,
       )
     assert field(field(stale, "body"), "code") == json.String("stale_operation")
     let #(attachment, response) =
@@ -452,7 +482,7 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
 pub fn control_rejects_v1_and_oversized_frame_header_test() {
   fixture(fn(_, _, port, credential) {
     let #(socket, _) = connect(port, credential, "/v2/control")
-    let _hello = frame(socket)
+    let _hello = frame(socket, within_ms: 1000)
     let text = "{\"v\":1,\"id\":1,\"cmd\":\"status\",\"body\":{}}"
     let bytes = bit_array.from_string(text)
     assert ffi_daemon_socket.send(socket, <<
@@ -463,7 +493,7 @@ pub fn control_rejects_v1_and_oversized_frame_header_test() {
         bytes:bits,
       >>)
       == Ok(Nil)
-    assert field(field(frame(socket), "body"), "code")
+    assert field(field(frame(socket, within_ms: 1000), "body"), "code")
       == json.String("unsupported_version")
     assert ffi_daemon_socket.send(socket, <<0x81, 0xff, 1_000_000:64>>)
       == Ok(Nil)

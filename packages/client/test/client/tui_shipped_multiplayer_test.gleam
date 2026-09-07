@@ -71,6 +71,16 @@ type LiveTool {
 // macOS. This fixture alone allows twenty seconds for initial session opening.
 const shipped_open_timeout_ms = 20_000
 
+// `daemon_server_test.frame`'s 1 s default assumes an in-process fixture;
+// against the shipped daemon it must instead cover session_socket.admit's
+// own budget — a one-second root permit transfer plus a five-second
+// gateway attach (`packages/client/src/client/daemon/session_socket.gleam`,
+// the module doc and `admit`) — before the reply this fixture is reading
+// for can be written at all. Ten seconds pays that budget in full on a
+// loaded runner without silently swallowing a wedged daemon, and stays
+// well inside this fixture's own eunit timeout.
+const wire_read_ms = 10_000
+
 // This command owns only fixture workspace markers. Its internal deadline
 // prevents an assertion failure from leaving a shell waiting for test cleanup.
 fn held_arguments() -> json.JsonValue {
@@ -1127,8 +1137,17 @@ fn revoke_live_member(
   let #(socket, response) =
     wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
   assert string.starts_with(response, "HTTP/1.1 101 ")
-  let #(_, transfer) = session_socket_test.begin(socket, session)
-  let _ = session_socket_test.drain(socket, transfer, 0, [], 32)
+  let #(_, transfer) =
+    session_socket_test.begin(socket, session, within_ms: wire_read_ms)
+  let _ =
+    session_socket_test.drain(
+      socket,
+      transfer,
+      0,
+      [],
+      32,
+      within_ms: wire_read_ms,
+    )
 
   // An already-disconnected terminal cannot witness membership revocation.
   // Wait through any normal capture before retaining its live, writable cut.
@@ -1351,6 +1370,7 @@ fn observer_mutation_refused(
         #("strand", json.String("main")),
         #("config", json.Object([#("thinking_level", json.String("high"))])),
       ]),
+      within_ms: wire_read_ms,
     )
   let assert json.Object(fields) = denied
     as "the server returns a complete envelope"
