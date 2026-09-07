@@ -13,7 +13,8 @@ it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 
 The prelude serves **three seams**, and a submission is vetted against one
 of them (`codemode/vet/policy.Seam`). The *workspace* seam is
-`cap/{fs, proc, net, git, lsp, report, task, actor, kv}` — a program that
+`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job}` — a
+program that
 orchestrates effects. The *orchestration* seam is `cap/strand` +
 `cap/report` and nothing else — a program that orchestrates agents. Those
 two sets are disjoint but for `cap/report`, and that disjointness is the
@@ -184,6 +185,40 @@ below.
   strand it runs on schedule a heartbeat through the `schedule_*` tools.
   The intersection test pinning `["cap/report"]` is the ruling's
   checkable form.
+- `cap/job.{Started, State, StopCause, LostReason, Exit, Stream, Spill,
+  Job, Row, Cursors, JobError}` with `start`, `start_within`, `poll`,
+  `list`, `kill`, `send`, `send_last`, `from_start`, `after`,
+  `is_pending` — background jobs a program starts, watches, feeds and
+  stops, the code-mode half of the door `bash`'s `mode` argument and the
+  `job_*` tools open for a tool call. Both land on one implementation
+  (`client/jobseam.Door`), so a job is the same record with the same
+  owner whichever door made it and either may poll or kill what the other
+  started; ownership is the **strand**, never the caller.
+  **A program's own `within_ms` is unrelated to a job's deadline.** The
+  satellite ends when the program returns and the job keeps running under
+  its own token, so a program that starts one and returns has neither
+  leaked anything nor waited for anything — if the point was the output,
+  either `poll` until `is_pending` is false or use `proc.run`. The
+  deadline is fixed at `start` and never renewed; `Started.wall_ms` is
+  what the host actually granted after its own clamp and the session
+  policy's narrowing, and is not always what was asked for.
+  This is the thing `proc.run` cannot be: `run` blocks for the whole
+  command and dies with the execution, so "start a server, poll until a
+  line matches, run the tests, kill the server" is a loop here and is
+  nothing there — which is exactly why the top-level tool surface has no
+  "wait until the output contains X" argument.
+  `poll` answers a bounded rolling tail *since a cursor*; `Stream.dropped`
+  above zero means output left the window unread, never that it was lost,
+  because `Job.spill` carries the whole of each stream content-addressed
+  once the job is terminal. Cursors are the harness's tokens — take
+  `after(job)`, never compute one. `send` leaves stdin open and
+  `send_last` closes it, so the end-of-input boolean is converted once at
+  the wire and never appears at a call site.
+  `JobError` is split the way `cap/proc`'s is: `JobCeilingReached`,
+  `JobNotFound` and `JobRefused` for the reasons a program branches on,
+  `JobDenied` carrying any other host code verbatim, `JobUnavailable` for
+  a channel that could not carry the call or a host with no jobs plane.
+  Workspace seam only, like `cap/schedule`.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services

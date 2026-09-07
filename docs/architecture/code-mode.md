@@ -199,7 +199,8 @@ deferred hardening.
 
 The **cap prelude** is the set of modules a code-mode program may import:
 `cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/lsp`, `cap/task`,
-`cap/actor`, `cap/report`, and `cap/kv`. Each is an ordinary typed Gleam
+`cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, and `cap/job`. Each
+is an ordinary typed Gleam
 module whose functions look like local calls but whose bodies are stubs: a
 call marshals its arguments and sends them as a `cap_call` over the framed
 channel to the satellite host, carrying the execution's capability token,
@@ -217,11 +218,12 @@ guarantees no other path exists. Permissions are not a configuration
 attached to the program from outside; they are visible in the first few
 lines the program wrote.
 
-No one router services all ten. `satellite.default_router` maps exactly
+No one router services them all. `satellite.default_router` maps exactly
 one capability, `proc.run`, onto a jailed `broker.clear_call`, and a
 caller stacks the harness-side bridges over it, since the host is
 generic over the table: `codemode/workspace.routing` serves `fs.*`,
-`kv.*`, `schedule.*` and `report.emit` against the session's own tools,
+`kv.*`, `schedule.*`, `job.*` and `report.emit` against the session's own
+tools,
 `client/mcp.routing` serves the generated per-server modules, and for an
 installed extension `client/extension/seam.routing` serves `net.request`
 and nothing else. What no layer in a given stack answers comes back
@@ -239,7 +241,7 @@ access — but it holds in the broker, not in the prelude.
 
 ### The modules a host adds: MCP servers
 
-The nine are what Loom ships. A host may serve more, and exactly one
+Those are what Loom ships. A host may serve more, and exactly one
 thing generates them today: each `[mcp.<name>]` server in `loom.toml`
 becomes a `cap/mcp/<name>` module of typed façades, generated at boot
 from that server's own `tools/list` (issue #106). A program reaches an
@@ -397,7 +399,8 @@ one layer the code-mode path does not.
 
 ```
 client/extension/seam.routing        net.request
-  codemode/workspace.routing         fs.*, kv.*, schedule.*, report.emit
+  codemode/workspace.routing         fs.*, kv.*, schedule.*, job.*,
+                                     report.emit
     codemode/satellite.default_router  proc.run, then unsupported_cap
 ```
 
@@ -568,7 +571,7 @@ understand.
 the import lists already take: modules on every offered seam are rendered
 once under a shared heading, and each seam renders only its own. An
 orchestration-only host pays for `cap/strand` and `cap/report` and for
-none of the other nine.
+none of the others.
 
 The price is real and is written down where it can be checked: against
 the shipped allowlists a workspace-only host's whole description is
