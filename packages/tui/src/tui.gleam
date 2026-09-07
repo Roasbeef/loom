@@ -3095,6 +3095,15 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
       }
     }
     session_channel.Auxiliary(event) -> apply_event(model, event)
+
+    // A pushed fragment is the same thing the directly attached client
+    // receives as a stream delta, so it lands in the same live-stream region
+    // by the same route rather than through a second renderer.
+    session_channel.Streamed(strand:, operation:, kind:, text:) ->
+      apply_event(
+        model,
+        protocol.StreamDelta(strand:, operation:, kind:, text:),
+      )
     session_channel.Acknowledged(command, status) ->
       Model(..model, notice: command <> " " <> status) |> invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->

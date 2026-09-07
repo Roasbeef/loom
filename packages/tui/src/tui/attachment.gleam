@@ -372,6 +372,12 @@ fn apply_updates(candidate: Candidate, updates) {
       apply_updates(Candidate(..candidate, captured: Some(#(cut, view))), rest)
     }
     [channel.Failed(reason), ..] -> Error(reason)
+
+    // A candidate has no view to stream into yet, and a fragment pushed
+    // during its initial capture is superseded by the capture itself. It is
+    // dropped rather than treated as a command result the candidate never
+    // asked for.
+    [channel.Streamed(..), ..rest] -> apply_updates(candidate, rest)
     [channel.Auxiliary(_), ..]
     | [channel.Submission(_), ..]
     | [channel.LookedUp(..), ..]
