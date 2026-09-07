@@ -879,6 +879,149 @@ pub fn shrinking_the_live_tail_holds_the_scrollback_anchor_test() {
     as "a shallow offset is held rather than snapped to the live tail"
 }
 
+/// Enter on a running strand sends a prompt, and tab is what steers.
+///
+/// The two are told apart by the notice each path sets, which is also the
+/// label the operator reads in the footer. Steering is deliberately not
+/// echoed: it is folded into the run that is already on screen, so it comes
+/// back as part of that answer rather than as a turn of its own.
+pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
+  let live = live_model("look at this too")
+
+  let queued = tui.update(backend.KeyPress("enter"), live)
+  assert string.contains(queued.notice, "prompt sent")
+    as "enter sends a prompt, which the daemon holds until the run settles"
+  assert queued.queued == ["look at this too"]
+    as "the operator's line is echoed the moment it is submitted"
+
+  let steered =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(..live, submission_mode: tui.SteerNow),
+    )
+  assert string.contains(steered.notice, "steered")
+    as "tab mode folds the draft into the run that is already going"
+  assert steered.queued == []
+    as "a steer joins the visible answer and needs no echo of its own"
+}
+
+/// The echo stands in for the turn until that turn's own entry arrives.
+///
+/// Both halves matter. An echo that never retired would sit under the
+/// transcript beside the committed copy of itself; one retired by any entry
+/// at all would disappear while the daemon was still holding the prompt.
+pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
+  let submitted =
+    tui.update(backend.KeyPress("enter"), live_model("look at this too"))
+
+  let after_assistant =
+    tui.accept_connection_message(
+      submitted,
+      connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
+    )
+  assert after_assistant.queued == ["look at this too"]
+    as "the run's own output does not retire a prompt the daemon still holds"
+
+  let after_user =
+    tui.accept_connection_message(
+      after_assistant,
+      connection.Incoming(gateway.user_entry("main", "look at this too", 5)),
+    )
+  assert after_user.queued == []
+    as "the committed user turn replaces the echo that stood in for it"
+}
+
+/// The echo is drawn under the live tail, where the operator is looking.
+///
+/// Position is the whole point of it: local notices are written above the
+/// durable history, so an echo placed there would be off the top of the
+/// screen in any session long enough for the wait to matter. The check is
+/// that the queued line renders below an answer that is already on screen.
+pub fn a_queued_echo_renders_below_the_live_transcript_test() {
+  let inbox = connection.new_inbox()
+  let steps =
+    list.flatten([
+      [
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.full_snapshot("demo")),
+        ),
+        virtual_backend.Deliver(
+          connection.Incoming(
+            gateway.strands_snapshot([
+              #("main", "main", "assistant"),
+            ]),
+          ),
+        ),
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.assistant_entry(
+            "main",
+            "earlier answer",
+            3,
+          )),
+        ),
+      ],
+      "and one more thing"
+        |> string.to_graphemes
+        |> list.map(fn(character) {
+          virtual_backend.Input(backend.KeyPress(character))
+        }),
+      [virtual_backend.Input(backend.KeyPress("enter"))],
+    ])
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 20),
+      steps,
+      inbox,
+    )
+  let assert Ok(run) =
+    tui.run_script(tui.Model(..quiet_model(inbox), peer: tui.Replaying), script)
+    as "the scripted backend cannot refuse to start"
+  let assert Ok(last) = list.last(run.frames)
+    as "every run draws at least its initial frame"
+
+  assert run.final.queued == ["and one more thing"]
+    as "premise: the submission produced an echo to look for"
+  let rows = string.split(frame.buffer_to_text(last), "\n")
+  let assert Ok(answer_row) = row_containing(rows, "earlier answer")
+    as "premise: the answer already on screen is visible"
+  let assert Ok(echo_row) = row_containing(rows, "and one more thing")
+    as "the echoed line is on screen the moment it is submitted"
+  let assert Ok(marker_row) = row_containing(rows, "queued ·")
+    as "the echo says what it is waiting for"
+
+  assert echo_row > answer_row
+    as "the echo is drawn under the transcript, not above the history"
+  assert marker_row > echo_row
+    as "the queued marker trails the lines it describes"
+}
+
+// The index of the first row containing `needle`, which is what an ordering
+// check between two rendered lines compares.
+fn row_containing(rows: List(String), needle: String) -> Result(Int, Nil) {
+  rows
+  |> list.index_map(fn(row, index) { #(row, index) })
+  |> list.find_map(fn(pair) {
+    let #(row, index) = pair
+    case string.contains(row, needle) {
+      True -> Ok(index)
+      False -> Error(Nil)
+    }
+  })
+}
+
+// One attached-looking client whose active strand is mid-answer, with a
+// draft in the editor. `Replaying` performs the whole local half of a
+// submission and writes to no socket, which is the half these checks read.
+fn live_model(draft: String) -> tui.Model {
+  tui.Model(
+    ..quiet_model(connection.new_inbox()),
+    peer: tui.Replaying,
+    active_strand: "main",
+    strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
+    input: text_area.state_from_string(draft),
+  )
+}
+
 pub fn prompt_history_restores_the_unsent_draft_test() {
   let history = ["newest", "older"]
   let #(index, draft, value) =

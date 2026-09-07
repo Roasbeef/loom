@@ -901,7 +901,7 @@ fn waiting_model(source) {
       pending_submission: Some(source),
       input: textarea.state_from_string("visible draft"),
       attachments: [composer.Attachment("unchanged attachment", 5)],
-      submission_mode: tui.QueueAfter,
+      submission_mode: tui.SteerNow,
     )
   #(model, remaining)
 }
@@ -932,13 +932,13 @@ pub fn unsent_composer_locks_then_cancels_without_abort_or_draft_copy_test() {
       fn(model, event) { tui.update(event, model) },
     )
   assert textarea.value(unchanged.input) == "visible draft"
-  assert unchanged.submission_mode == tui.QueueAfter
+  assert unchanged.submission_mode == tui.SteerNow
   assert unchanged.attachments == model.attachments
   assert unchanged.next_id == model.next_id
   let cancelled = tui.update(backend.KeyPress("esc"), unchanged)
   assert cancelled.pending_submission == None
   assert textarea.value(cancelled.input) == "visible draft"
-  assert cancelled.submission_mode == tui.QueueAfter
+  assert cancelled.submission_mode == tui.SteerNow
   assert cancelled.attachments == model.attachments
   assert cancelled.next_id == model.next_id
     as "Escape cancels unsent intent without emitting abort"
@@ -961,7 +961,7 @@ pub fn unsent_composer_clears_only_on_send_and_overlay_preserves_unrelated_text_
   let #(overlay, remaining) = waiting_model(tui.OverlaySubmission)
   let sent = finish_model(overlay, remaining)
   assert textarea.value(sent.input) == "visible draft"
-  assert sent.submission_mode == tui.QueueAfter
+  assert sent.submission_mode == tui.SteerNow
   assert sent.attachments == overlay.attachments
   assert sent.pending_submission == None
   let #(model, _) = waiting_model(tui.ComposerSubmission)

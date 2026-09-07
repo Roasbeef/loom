@@ -189,10 +189,20 @@ type ReplayOptions {
 }
 
 /// What Enter does to a draft while an operation is live.
+///
+/// The two are different requests, not two shades of one. A steer is folded
+/// into the run that is already going, which is what an operator wants when
+/// they are correcting it; a prompt is a turn of its own, held by the daemon
+/// until the run settles, which is what they want the rest of the time. The
+/// common case is the default and `tab` reaches the other one for a single
+/// draft.
 @internal
 pub type SubmissionMode {
+  /// Send `prompt`. On a busy strand the daemon holds it and runs it next.
+  PromptNext
+
+  /// Send `steer`, folding the draft into the run that is already going.
   SteerNow
-  QueueAfter
 }
 
 // Interrupt state belongs to the client because the server's abort contract
@@ -326,6 +336,10 @@ pub type Model {
     pending_submission: Option(SubmissionSource),
     interrupt: Option(Interrupt),
     submitting: Option(String),
+    /// Prompts sent to a busy active strand, drawn under the live tail until
+    /// the daemon drains them and their entries arrive. Oldest first, which
+    /// is the order the daemon runs them in.
+    queued: List(String),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
     notice: String,
@@ -635,10 +649,11 @@ pub fn new_model_with_clock(
     history_index: 0,
     history_draft: "",
     command_selected: 0,
-    submission_mode: SteerNow,
+    submission_mode: PromptNext,
     pending_submission: None,
     interrupt: None,
     submitting: None,
+    queued: [],
     transcript: [
       Line(System, "etui input and gateway paths ready"),
       Line(
@@ -2298,15 +2313,14 @@ fn input_title(model: Model) -> String {
   {
     Some(_), _, _ -> " interrupting · enter steers after stop "
     None, None, _ -> " prompt · / commands "
-    None, Some(_), QueueAfter ->
-      " queue after turn · enter queues · tab steers "
-    None, Some(status), SteerNow ->
+    None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
+    None, Some(status), PromptNext ->
       " "
       <> activity_glyph(model.activity_frame)
       <> " "
       <> status
       <> elapsed_label(model.activity_elapsed_s)
-      <> " · enter steers · tab queues "
+      <> " · enter queues · tab steers "
   }
 }
 
@@ -2934,6 +2948,7 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
       |> list.reverse
     False, False ->
       stream_lines(model.streams, model.active_strand, model.details_expanded)
+      |> list.append(queued_lines(model.queued))
       |> transcript_content
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
@@ -3164,15 +3179,19 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
 
     // A prompt aimed at a busy strand used to come back as a conflict, with
     // the draft still the operator's problem. The daemon now holds it and
-    // runs it on the strand's next turn, so the composer is done with it: the
-    // line says the turn is booked, and nothing is running here yet, which is
-    // why the submitting indicator clears rather than spinning until the held
-    // prompt starts.
+    // runs it on the strand's next turn, so the composer is done with it, and
+    // nothing is running here yet, which is why the submitting indicator
+    // clears rather than spinning until the held prompt starts. The transcript
+    // already shows the line and says it is queued — the echo went in when the
+    // frame was written — so this confirms the booking in the footer rather
+    // than writing a second copy of the same news.
     session_channel.Acknowledged("prompt", "queued") ->
-      append_system(
-        Model(..model, submitting: None),
-        "prompt queued · it runs when the strand finishes its turn",
+      Model(
+        ..model,
+        submitting: None,
+        notice: "prompt queued for the next turn",
       )
+      |> invalidate_frame
     session_channel.Acknowledged(command, status) ->
       Model(..model, notice: command <> " " <> status) |> invalidate_frame
     session_channel.UnknownOutcome(command, request_id) ->
@@ -3746,6 +3765,12 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             True -> [record, ..model.pending_records]
             False -> model.pending_records
           },
+          // A committed user turn on this strand is the daemon draining the
+          // head of its queue, so the echo standing in for it goes away.
+          queued: case strand == model.active_strand {
+            True -> drained_echoes(model.queued, record)
+            False -> model.queued
+          },
         )
       case strand == model.active_strand {
         True -> invalidate_transcript(updated)
@@ -3978,6 +4003,22 @@ fn clear_streams(streams: List(Stream), strand: String) -> List(Stream) {
     let Stream(strand: owner, ..) = stream
     owner != strand
   })
+}
+
+// The echoes are the newest thing on screen: they were typed after the run
+// that is streaming above them started, and they run after it finishes. One
+// trailer under the group says what they are waiting for, rather than a
+// marker repeated beside every line of it.
+fn queued_lines(queued: List(String)) -> List(Line) {
+  case queued {
+    [] -> []
+    [_, ..] ->
+      queued
+      |> list.map(fn(text) { Line(User, text) })
+      |> list.append([
+        Line(System, "queued · runs when this turn finishes"),
+      ])
+  }
 }
 
 fn stream_lines(
@@ -5352,7 +5393,7 @@ fn submit_text(model: Model) -> Model {
   let prompt_cleared = case model.pending_submission {
     Some(ComposerSubmission) -> cleared
     Some(OverlaySubmission) | None ->
-      Model(..cleared, attachments: [], submission_mode: SteerNow)
+      Model(..cleared, attachments: [], submission_mode: PromptNext)
   }
   case command.parse(input) {
     command.Empty ->
@@ -5576,7 +5617,7 @@ fn send_prompt_content(
 ) -> Model {
   let sent =
     Model(
-      ..model,
+      ..echo_queued_prompt(model, text),
       submitting: Some(model.active_strand),
       notice: "image prompt sent to " <> model.active_strand,
     )
@@ -5709,8 +5750,12 @@ fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
     None ->
       case active_strand_live(before), before.submission_mode {
         False, _ -> send_prompt(cleared, text)
+
+        // A prompt aimed at a running strand is held by the daemon and run
+        // when that strand settles, so this is the same frame as the idle
+        // case and needs no command of its own. Only the local echo differs.
+        True, PromptNext -> send_prompt(cleared, text)
         True, SteerNow -> send_steer(cleared, text)
-        True, QueueAfter -> send_follow_up(cleared, text)
       }
   }
 }
@@ -5759,7 +5804,7 @@ fn send_prompt(model: Model, text: String) -> Model {
 fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
   let sent =
     Model(
-      ..model,
+      ..echo_queued_prompt(model, text),
       submitting: Some(strand),
       notice: "prompt sent to " <> strand,
     )
@@ -5785,6 +5830,50 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
   }
 }
 
+// A prompt submitted to a running strand does not become an entry until the
+// daemon drains it, which is a whole turn away. Without a local copy the
+// operator's line simply vanishes for as long as the run lasts, and the
+// natural reading is that the keystroke was lost — which is what sent people
+// looking for the bug this answers. The echo is drawn under the live tail and
+// retired by the entry it stands for.
+//
+// `Preview` draws its own echo and `Disconnected` sent nothing, so neither
+// gets one here. An idle strand does not either: its entry is already on its
+// way back and two copies would be worse than a slow one.
+fn echo_queued_prompt(model: Model, text: String) -> Model {
+  case model.peer, active_strand_live(model) {
+    Attached(..), True | Replaying, True ->
+      Model(..model, queued: list.append(model.queued, [text]))
+      |> invalidate_transcript
+    Attached(..), False | Replaying, False | Preview, _ | Disconnected, _ ->
+      model
+  }
+}
+
+// Retires the oldest echo when a user turn commits on the strand it is on.
+//
+// The daemon drains its per-strand queue in arrival order, so the first user
+// entry to commit after a submission is the one that submission produced.
+// Matching on the text would have to reproduce the server's authorship prefix
+// and its block layout, and would still pick the wrong echo for two identical
+// prompts. A second operator's turn on the same strand can retire an echo
+// early; that costs a queued marker one turn of visibility, and the entry it
+// stood for still arrives in its place.
+fn drained_echoes(
+  queued: List(String),
+  record: protocol.EntryRecord,
+) -> List(String) {
+  let protocol.EntryRecord(entry: value, ..) = record
+  case value {
+    entry.MessageEntry(message: message.UserMessage(..), ..) ->
+      list.drop(queued, 1)
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> queued
+  }
+}
+
 fn send_steer(model: Model, text: String) -> Model {
   send_frame(
     Model(..model, notice: "steered " <> model.active_strand),
@@ -5807,11 +5896,11 @@ fn toggle_submission_mode(model: Model) -> Model {
   {
     Some(_), _, _ -> Model(..model, notice: "interrupt steer is already armed")
     None, False, _ ->
-      Model(..model, notice: "queue is available while an agent runs")
-    None, True, SteerNow ->
-      Model(..model, submission_mode: QueueAfter, notice: "queue message")
-    None, True, QueueAfter ->
+      Model(..model, notice: "steering is available while an agent runs")
+    None, True, PromptNext ->
       Model(..model, submission_mode: SteerNow, notice: "steer now")
+    None, True, SteerNow ->
+      Model(..model, submission_mode: PromptNext, notice: "queue for next turn")
   }
 }
 
@@ -5825,7 +5914,7 @@ fn interrupt_active(model: Model) -> Model {
         Model(
           ..model,
           interrupt: Some(Interrupt(strand:, pending: None)),
-          submission_mode: SteerNow,
+          submission_mode: PromptNext,
           notice: "interrupt requested; type the replacement steer",
         ),
         protocol.abort(model.next_id, strand),
@@ -5992,7 +6081,7 @@ fn apply_submission(
 
 fn clear_composer(model: Model) -> Model {
   let cleared = clear_composer_text(model)
-  Model(..cleared, attachments: [], submission_mode: SteerNow)
+  Model(..cleared, attachments: [], submission_mode: PromptNext)
 }
 
 fn clear_composer_text(model: Model) -> Model {
@@ -6063,6 +6152,7 @@ fn switch_active_strand(model: Model, strand: String) -> Model {
       ..model,
       overlay: NoOverlay,
       active_strand: strand,
+      queued: [],
       current_model: "loading…",
       scroll_offset: 0,
       record_cache_valid: False,
