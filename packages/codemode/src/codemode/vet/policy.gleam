@@ -539,7 +539,7 @@ pub fn extension_authority_modules() -> List(String) {
 pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv", "cap/schedule",
+    "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job",
   ]
 }
 

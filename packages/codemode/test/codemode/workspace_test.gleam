@@ -41,6 +41,7 @@ import simplifile
 import support/fake_helper
 import support/satellite_peer.{type PeerCtx}
 import tools/fs
+import tools/job
 import tools/tool
 
 const t = 1_700_000_000_000
@@ -68,6 +69,17 @@ type Seen {
 
   ScheduleListAsked
   ScheduleCancelAsked(name: String)
+
+  JobStartAsked(command: String)
+
+  // The clamped wait and the stdout cursor as the arm computed them, so
+  // a test can prove the clamp and the cursor default rather than only
+  // that a call arrived.
+  JobPollAsked(id: String, wait_ms: Int, since_stdout: Int)
+
+  JobListAsked
+  JobKillAsked(id: String)
+  JobSendAsked(id: String, bytes: Int, end: job.StdinEnd)
 }
 
 const file_contents = "the file's own bytes\n"
@@ -160,9 +172,71 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
       process.send(seen, ScheduleCancelAsked(name))
       Ok(Nil)
     },
+    jobs: answering_jobs(seen),
     emit_ceiling: artifact.default_emit_ceiling,
   )
 }
+
+// The job half of the same fake. `poll` answers a *terminal* job, which
+// is the shape with the most wire in it — the state name, the two
+// streams, the spill refs and the whole exit report — so the arm that
+// renders it is exercised rather than the empty live one.
+fn answering_jobs(seen: Subject(Seen)) -> workspace.JobDoor {
+  workspace.JobDoor(
+    start: fn(command, _wall) {
+      process.send(seen, JobStartAsked(command))
+      Ok(job.Started(id: job_id, deadline_ms: 5000, wall_ms: 3000))
+    },
+    poll: fn(id, wait_ms, cursors) {
+      process.send(seen, JobPollAsked(id, wait_ms, cursors.stdout))
+      Ok(job.Polled(
+        id:,
+        state: job.Exited(result: exit_report),
+        age_ms: 1200,
+        deadline_ms: 5000,
+        stdout: job.Streamed(bytes: <<"out":utf8>>, cursor: 3, dropped: 1),
+        stderr: job.Streamed(bytes: <<>>, cursor: 0, dropped: 0),
+        spill: job.JobSpill(stdout_ref: Some("sha256-aa"), stderr_ref: None),
+      ))
+    },
+    list: fn() {
+      process.send(seen, JobListAsked)
+      Ok([
+        job.Listed(
+          id: job_id,
+          state: job.Running,
+          age_ms: 900,
+          deadline_ms: 5000,
+        ),
+      ])
+    },
+    kill: fn(id) {
+      process.send(seen, JobKillAsked(id))
+      Ok(Nil)
+    },
+    send: fn(id, data, end) {
+      process.send(seen, JobSendAsked(id, bit_array.byte_size(data), end))
+      Ok(Nil)
+    },
+    max_wait_ms: 30_000,
+  )
+}
+
+const job_id = "01JQ8XZ"
+
+const exit_report = exec.ExecResult(
+  code: 2,
+  signal: 0,
+  stdout_bytes: 3,
+  stderr_bytes: 0,
+  stdout_truncated: False,
+  stderr_truncated: False,
+  enforcement: [],
+  degraded: False,
+  wall_ms: 1100,
+  timed_out: False,
+  cancelled: False,
+)
 
 // A seam whose every closure refuses, with the refusal each arm is meant
 // to translate.
@@ -707,7 +781,7 @@ pub fn every_serviced_cap_routes_and_none_builds_a_clearance_test() {
       }
     })
   assert served == list.repeat(True, list.length(workspace.serviced_caps))
-  assert list.length(workspace.serviced_caps) == 11
+  assert list.length(workspace.serviced_caps) == 16
 }
 
 pub fn an_unrouted_cap_is_handed_to_the_inner_router_test() {
@@ -749,6 +823,15 @@ fn well_formed(cap: String) -> MsgPackValue {
     "kv.set" ->
       map([#("key", text("k")), #("value", msgpack.BinaryValue(<<1, 2>>))])
     "report.emit" -> emit_args("out.txt", "hello")
+    "job.start" -> map([#("command", text("make"))])
+    "job.poll" | "job.kill" -> map([#("job_id", text(job_id))])
+
+    "job.send" ->
+      map([
+        #("job_id", text(job_id)),
+        #("data", msgpack.BinaryValue(<<"y\n":utf8>>)),
+      ])
+
     _other -> map([])
   }
 }
@@ -1213,4 +1296,223 @@ pub fn every_schedule_refusal_has_its_own_code_test() {
     ]
   // Distinct, which is the whole point of giving each one a code.
   assert list.length(list.unique(codes)) == 5
+}
+
+// --- job ---------------------------------------------------------------------
+//
+// The five arms answer one door, and what is worth proving here is
+// carriage: which arguments reach the door as the arm read them, which
+// wire shape an answer comes back in, and which code a refusal keeps. The
+// door's own behaviour — the ceiling, the clearance, the fact writes —
+// is `client`'s.
+
+pub fn job_start_carries_the_command_and_answers_the_handle_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(answering(seen), "job.start", map([#("command", text("make"))]))
+    as "job.start must be serviced"
+
+  assert drain(seen) == [JobStartAsked("make")]
+  assert field(value, "job_id") == Ok(text(job_id))
+  assert field(value, "wall_ms") == Ok(int(3000))
+}
+
+// The wall crosses the router untouched: the host clamps it to its own
+// ceiling and answers with what it granted, so this package states no
+// bound of its own.
+pub fn a_requested_wall_reaches_the_host_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(
+      answering(seen),
+      "job.start",
+      map([#("command", text("make")), #("wall_ms", int(60_000))]),
+    )
+    as "a walled start must be serviced"
+
+  assert drain(seen) == [JobStartAsked("make")]
+  assert field(value, "deadline_ms") == Ok(int(5000))
+}
+
+pub fn a_poll_defaults_its_wait_and_its_cursors_test() {
+  let seen = recorder()
+  let assert framing.CapOk(_value) =
+    serviced(answering(seen), "job.poll", map([#("job_id", text(job_id))]))
+    as "job.poll must be serviced"
+
+  assert drain(seen) == [JobPollAsked(job_id, 0, 0)]
+}
+
+// Clamped rather than refused, for the reason the host clamps a wall: a
+// program told "30_001 is too long" learns to retry against a wall that
+// will not move.
+pub fn a_poll_wait_is_clamped_to_the_doors_ceiling_test() {
+  let seen = recorder()
+  let assert framing.CapOk(_value) =
+    serviced(
+      answering(seen),
+      "job.poll",
+      map([#("job_id", text(job_id)), #("wait_ms", int(900_000))]),
+    )
+    as "a long wait must still be serviced"
+
+  assert drain(seen) == [JobPollAsked(job_id, 30_000, 0)]
+}
+
+// A cursor is a token the harness minted, so one that could not have been
+// minted means the program computed its own — and a silent rewind to the
+// start of the stream would hide that behind output it had already read.
+pub fn a_negative_cursor_is_refused_before_the_door_test() {
+  let seen = recorder()
+  let denial =
+    refused(
+      answering(seen),
+      "job.poll",
+      map([#("job_id", text(job_id)), #("since_stdout", int(-1))]),
+    )
+
+  assert denial.code == args.invalid_argument_code
+  assert drain(seen) == []
+}
+
+// The whole terminal answer, because it is the shape with the most wire
+// in it and `cap/job` reads `state` first and only then the fields that
+// state licenses.
+pub fn a_terminal_poll_answers_the_state_the_streams_and_the_exit_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(answering(seen), "job.poll", map([#("job_id", text(job_id))]))
+    as "job.poll must be serviced"
+
+  assert field(value, "state") == Ok(text("exited"))
+  assert field(value, "stdout_ref") == Ok(text("sha256-aa"))
+  assert field(value, "stderr_ref") == Ok(msgpack.NilValue)
+
+  let assert Ok(stdout) = field(value, "stdout")
+    as "a poll answers a stdout stream"
+  assert field(stdout, "cursor") == Ok(int(3))
+  assert field(stdout, "dropped") == Ok(int(1))
+
+  let assert Ok(exit) = field(value, "exit")
+    as "a terminal poll answers an exit report"
+  assert field(exit, "code") == Ok(int(2))
+  assert field(exit, "cancelled") == Ok(msgpack.BoolValue(False))
+}
+
+// A live job carries no exit report at all, so a program cannot read one
+// that has not happened.
+pub fn a_live_poll_carries_no_exit_report_test() {
+  let seen = recorder()
+  let live =
+    workspace.Workspace(
+      ..answering(seen),
+      jobs: workspace.JobDoor(..answering_jobs(seen), poll: fn(id, _w, _c) {
+        Ok(job.Polled(
+          id:,
+          state: job.Running,
+          age_ms: 10,
+          deadline_ms: 5000,
+          stdout: job.Streamed(bytes: <<>>, cursor: 0, dropped: 0),
+          stderr: job.Streamed(bytes: <<>>, cursor: 0, dropped: 0),
+          spill: job.JobSpill(stdout_ref: None, stderr_ref: None),
+        ))
+      }),
+    )
+  let assert framing.CapOk(value:) =
+    serviced(live, "job.poll", map([#("job_id", text(job_id))]))
+    as "job.poll must be serviced"
+
+  assert field(value, "state") == Ok(text("running"))
+  assert field(value, "exit") == Error(Nil)
+  assert field(value, "stopped_by") == Error(Nil)
+}
+
+pub fn a_listing_answers_one_row_per_job_test() {
+  let seen = recorder()
+  let assert framing.CapOk(value:) =
+    serviced(answering(seen), "job.list", map([]))
+    as "job.list must be serviced"
+
+  assert drain(seen) == [JobListAsked]
+  let assert Ok(msgpack.ArrayValue(items: [row])) = field(value, "jobs")
+    as "a listing answers an array of rows"
+  assert field(row, "job_id") == Ok(text(job_id))
+  assert field(row, "state") == Ok(text("running"))
+}
+
+pub fn a_kill_reaches_the_door_test() {
+  let seen = recorder()
+  let assert framing.CapOk(_value) =
+    serviced(answering(seen), "job.kill", map([#("job_id", text(job_id))]))
+    as "job.kill must be serviced"
+
+  assert drain(seen) == [JobKillAsked(job_id)]
+}
+
+// `eof` is optional and absent leaves stdin open, which is what a write
+// that never considered the question means.
+pub fn a_send_defaults_to_leaving_stdin_open_test() {
+  let seen = recorder()
+  let assert framing.CapOk(_value) =
+    serviced(
+      answering(seen),
+      "job.send",
+      map([
+        #("job_id", text(job_id)),
+        #("data", msgpack.BinaryValue(<<"y\n":utf8>>)),
+      ]),
+    )
+    as "job.send must be serviced"
+
+  assert drain(seen) == [JobSendAsked(job_id, 2, job.KeepStdinOpen)]
+}
+
+pub fn a_send_can_close_stdin_test() {
+  let seen = recorder()
+  let assert framing.CapOk(_value) =
+    serviced(
+      answering(seen),
+      "job.send",
+      map([
+        #("job_id", text(job_id)),
+        #("data", msgpack.BinaryValue(<<"q":utf8>>)),
+        #("eof", msgpack.BoolValue(True)),
+      ]),
+    )
+    as "job.send must be serviced"
+
+  assert drain(seen) == [JobSendAsked(job_id, 1, job.CloseStdin)]
+}
+
+// The codes are `tools/job.refusal_code`'s rather than a second set: the
+// same five strings reach a model in a tool result and a program in a
+// denial, so a reader of either transcript reads one contract.
+pub fn every_job_refusal_keeps_its_own_code_test() {
+  let cases = [
+    #(job.CeilingReached(limit: 4), "job_ceiling"),
+    #(job.NotFound(id: job_id), "job_not_found"),
+    #(job.Invalid(reason: "no"), "invalid_job_request"),
+    #(job.ClearanceRefused(reason: "policy"), "job_clearance_refused"),
+    #(job.Unavailable(reason: "down"), "jobs_unavailable"),
+  ]
+  list.each(cases, fn(one) {
+    assert workspace.job_denial(one.0).code == one.1
+  })
+}
+
+// A host with no jobs actor answers in band rather than leaving the
+// capabilities unrouted, because the model is offered jobs
+// unconditionally through `bash`'s `mode` argument.
+pub fn a_host_with_no_jobs_plane_refuses_in_band_test() {
+  let seen = recorder()
+  let shut = workspace.Workspace(..answering(seen), jobs: workspace.no_jobs())
+
+  // Routed and *then* refused, rather than refused at plan time: the
+  // capability exists on every host, and what differs is the answer.
+  let assert framing.CapErr(code:, message: _) =
+    serviced(shut, "job.start", map([#("command", text("make"))]))
+    as "job.start must still be serviced on a host with no jobs plane"
+
+  assert code == "jobs_unavailable"
+  assert drain(seen) == []
 }
