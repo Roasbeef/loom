@@ -974,6 +974,27 @@ per-invocation binding, holding a node open would quietly convert a
 per-call grant into a session-long one, which is exactly the widening
 phase 2's disposable node avoided by accident rather than by design.
 
+**A hook starts no background jobs.** `cap/job` reaches an extension the
+way `cap/schedule` does — `extension_cap_modules` is the workspace seam
+widened by the `ext` vocabulary, so both arrive as workspace
+capabilities rather than as a second shared entry
+(`codemode/vet/policy.gleam`, beside the `cap/schedule` ruling). For a
+*tool* call that is the whole story: the job runs under the model's own
+operation, appears in the strand's transcript, and an abort of that
+operation reaches it. A *hook* is different, and the difference is the
+operation. `client/serve.hook_coordinates` mints one session-long
+operation for every hook in a session and attributes it to the root
+strand for reads — deliberately, because a hook fires on the harness's
+timeline and has no run whose `{op_id, step_id}` it could borrow. Nobody
+sees that operation as a running step, so nobody can abort it. A
+`context` or pre-tool hook that called `job.start` on every event would
+therefore leave hour-long processes owned by `main`, spending the
+model's ceiling of live jobs on work it never asked for and cannot find.
+So `dispatch.bridge` reads `Coordinates.origin` and serves a hook
+`workspace.no_jobs()`: the five capabilities are still routed, and each
+refuses in band naming the reason. Without the split, installing an
+extension would be a way to run background work no operator can stop.
+
 **The record is written last and the tree is renamed into place after
 it.** Everything happens under `<root>/.staging/<random>/`. Without the
 ordering there would be a window in which a half-installed extension is

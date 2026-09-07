@@ -3119,6 +3119,11 @@ fn hook_coordinates(
 ) -> extension_hosts.Coordinates {
   let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
   extension_hosts.Coordinates(
+    // What makes this operation attribution-only also makes it the
+    // wrong owner for a background job: nobody sees it as a running
+    // step, so nobody can abort it. `dispatch.bridge` reads this and
+    // serves a hook a workspace with no jobs plane.
+    origin: extension_hosts.HookEvent,
     op_id:,
     step_id: hook_step_id,
     // Attribution only: `hosts.Coordinates.strand` names the workspace

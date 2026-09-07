@@ -143,6 +143,7 @@ fn coordinates() -> hosts.Coordinates {
   let #(op_id, _generator) =
     ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 11))
   hosts.Coordinates(
+    origin: hosts.ToolCall,
     op_id:,
     step_id: "step-1",
     strand: "main",

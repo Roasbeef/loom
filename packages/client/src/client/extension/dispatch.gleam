@@ -368,6 +368,10 @@ fn call(dispatching: Dispatching) -> ToolOutcome {
 ///
 pub fn coordinates(ctx: Ctx) -> hosts.Coordinates {
   hosts.Coordinates(
+    // A `tool.Ctx` exists only because the model called a tool, so this
+    // is the one origin this function can honestly report. The hook bus
+    // builds its own record and says `HookEvent` there.
+    origin: hosts.ToolCall,
     op_id: ctx.op_id,
     step_id: ctx.step_id,
     strand: ctx.strand,
@@ -693,17 +697,37 @@ fn router(
 // closures a code-mode program on this host gets, bound to this call's
 // workspace and strand.
 fn bridge(config: Config, at: hosts.Coordinates) -> workspace.Workspace {
-  codemode.workspace_seam_for(
-    config.host,
-    workspace: at.workspace,
-    strand: at.strand,
-    // An extension's own invocation is the operation a job it starts
-    // clears under, exactly as a code-mode program's is: an abort of
-    // this invocation's operation reaches the job, and an abort of a
-    // later one does not.
-    operation: at.op_id,
-    protected: at.base_policy.protected,
-  )
+  let seam =
+    codemode.workspace_seam_for(
+      config.host,
+      workspace: at.workspace,
+      strand: at.strand,
+      // An extension's own invocation is the operation a job it starts
+      // clears under, exactly as a code-mode program's is: an abort of
+      // this invocation's operation reaches the job, and an abort of a
+      // later one does not.
+      operation: at.op_id,
+      protected: at.base_policy.protected,
+    )
+
+  // A hook fires with nobody watching, so it gets no jobs plane. The
+  // rest of the bridge is the same on both paths: `fs`, `kv` and
+  // `schedule` all act inside the invocation or against a store that
+  // bounds itself, and a `job.start` is the one arm that leaves a
+  // process running for up to an hour afterwards. On the tool path that
+  // is fine — the strand's model sees the job in its own transcript and
+  // can kill it, and an abort of the model's operation reaches it. A
+  // hook's operation is the session-long attribution-only one minted in
+  // `client/serve.hook_coordinates` and owned by the root strand: no
+  // operator sees it as a running step, so no operator can abort it,
+  // and jobs started there would spend the model's own ceiling on work
+  // it never asked for and cannot find. The ruling is recorded beside
+  // `cap/schedule`'s in `codemode/vet/policy` and in
+  // `docs/architecture/extensions.md`.
+  case at.origin {
+    hosts.ToolCall -> seam
+    hosts.HookEvent -> workspace.Workspace(..seam, jobs: workspace.no_jobs())
+  }
 }
 
 // How `net.request` is answered, with the policy and the credential
