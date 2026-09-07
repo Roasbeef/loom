@@ -315,6 +315,15 @@ the registry then refuses with `not_initialized`. Listing joins the durable
 state with the live one and renders it `reserved`; the terminal declines
 to offer it for opening and says a create retry is what it needs.
 
+A **failed open is not a stale one.** An open whose builder returns an
+error has its slot deleted as soon as ordered cleanup drains, usually
+before the requesting terminal's first `operations.get` poll. The registry
+remembers the operation of the most recent failed build per session —
+capped at the same limit that bounds live slots, cleared when that session
+opens again — so that poll is answered `start_failed` rather than
+`stale_operation`, which would have claimed a replacement overtook a
+request that in truth never started.
+
 Nothing here deletes operator data. The `<session>.db.tmp` directory beside
 each database is the session's own scratch directory, made by assembly on
 every open; a stranded one is harmless and is not swept.

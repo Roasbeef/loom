@@ -845,6 +845,7 @@ fn status_json(status) {
 fn error_code(error) {
   case error {
     manager.StaleOperation -> "stale_operation"
+    manager.StartFailed -> "start_failed"
     manager.Capacity -> "capacity"
     manager.NotInitialized -> "not_initialized"
     manager.Unavailable | manager.Preparation(_) -> "unavailable"

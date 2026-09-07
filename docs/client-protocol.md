@@ -2258,6 +2258,7 @@ Sources: (`client/protocol.gleam:489-517`),
 | `forbidden` | An owner-only command from a member, or an observer opening a session. | Disable the control. |
 | `stale_epoch` | The supplied epoch is not the daemon's current one. | Re-read `hello` and retry with the new epoch. |
 | `stale_operation` | `operations.get` named an operation from a replaced incarnation. | Re-read the session's status. |
+| `start_failed` | `operations.get` named the operation of an open whose builder returned an error. Distinct from `stale_operation`, which claims the request was overtaken. | Read `daemon.session_start_failed` in the daemon log for the classified cause, then decide whether to retry. |
 | `revision_changed` | `sessions.list` supplied a revision that no longer holds. | Restart the listing from the empty cursor. |
 | `metadata_too_large` | A single session record exceeds the page budget. | Report; nothing to page around. |
 | `isolation_required` | `sessions.invite` or a membership-creating `sessions.set_role` on a workspace-private session. | Offer `sessions.isolate` first. |

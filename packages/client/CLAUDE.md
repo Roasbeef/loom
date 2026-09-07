@@ -119,6 +119,14 @@ catalogue without opening runtimes. Explicit admission invokes
   database behind it — indistinguishable from an openable session in a listing,
   and every selection of one was refused `NotInitialized`. `tui/daemon/selection`
   now declines such a row locally and names the create retry it needs.
+- `manager.StartFailed` is distinct from `manager.StaleOperation`. A build that
+  returns an error has its slot deleted the moment ordered cleanup drains,
+  usually before the requesting terminal's first `operations.get`, so the read
+  would otherwise be answered "some replacement overtook you" for an open that
+  never started. `Book.failed_operations` remembers the failing operation per
+  session — one entry each, capped at the slot limit, dropped when that session
+  opens again — and the reason itself is deliberately not kept: it can name the
+  session path, and `daemon.session_start_failed` already carries the class.
 - `client/daemon/main.start_class` classifies a start failure into a stage, a
   class, and the structured detail that class permits. Only values proven free
   of a path or a credential may be logged, which is why the reason string is

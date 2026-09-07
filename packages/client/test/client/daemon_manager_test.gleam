@@ -1233,3 +1233,27 @@ pub fn incomplete_reservation_lists_as_reserved_rather_than_saved_test() {
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
+
+pub fn failed_builder_answers_its_own_operation_rather_than_stale_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 941)
+
+  // What a stranded writer lease looks like from here: the builder reaches
+  // the session's own database and is refused by its dead predecessor.
+  let registry = start(store, 1, fn(_record, _) { Error("storage refused") })
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, record.id)
+    as "admission accepts the open before the builder runs"
+
+  // Cleanup drains and deletes the slot, usually before the requesting
+  // terminal polls at all. That is what used to make a failure indistinguishable
+  // from a request some replacement had overtaken.
+  await_status(registry, record.id, manager.Saved)
+  assert manager.operation(registry, record.id, operation)
+    == Error(manager.StartFailed)
+
+  // One open is all the memo answers for; anything else is genuinely stale.
+  assert manager.operation(registry, record.id, "another-operation")
+    == Error(manager.StaleOperation)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}

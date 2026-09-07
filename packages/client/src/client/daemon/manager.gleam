@@ -87,6 +87,11 @@ pub type Error {
   /// The operation no longer names the retained incarnation of this session.
   StaleOperation
 
+  /// This exact operation's builder returned an error. Distinct from
+  /// `StaleOperation`, which claims the request was overtaken; the daemon log
+  /// carries the classified cause under `daemon.session_start_failed`.
+  StartFailed
+
   /// Parked process preparation failed before session work began.
   Preparation(reason: String)
 }
@@ -495,6 +500,14 @@ type Book(instance) {
     epoch: String,
     next: Int,
     slots: Dict(String, Slot(instance)),
+    // The operation of the most recent build that returned an error, per
+    // session. A failed build's slot is deleted as soon as its cleanup drains,
+    // which is usually before the requesting terminal's first poll, so without
+    // this the poll finds no slot and is answered `StaleOperation` — telling
+    // an operator their request was overtaken when in truth it failed. One
+    // entry per session, capped at `limit`, cleared when that session opens
+    // again; see `remember_failure`.
+    failed_operations: Dict(String, String),
     domains: Dict(String, DomainSlot),
     commands: Subject(Message(instance)),
     parent: Pid,
@@ -532,6 +545,7 @@ pub fn start(
             epoch:,
             next: 0,
             slots: dict.new(),
+            failed_operations: dict.new(),
             domains: dict.new(),
             commands:,
             parent:,
@@ -1198,7 +1212,15 @@ fn handle(
           |> result.map_error(Catalogue)
           |> result.map(fn(record) { View(record, status(book, record)) })
 
-        Ok(Slot(..)) | Error(Nil) -> Error(StaleOperation)
+        // No slot answers to this operation. Before calling it stale, ask
+        // whether it is the operation whose builder failed: the terminal that
+        // is polling it deserves the failure rather than a claim that some
+        // replacement overtook it.
+        Ok(Slot(..)) | Error(Nil) ->
+          case dict.get(book.failed_operations, id) == Ok(operation) {
+            True -> Error(StartFailed)
+            False -> Error(StaleOperation)
+          }
       }
       process.send(reply, view)
       sm.keep(book)
@@ -1662,6 +1684,10 @@ fn prepare_domain_slot(
           ..book,
           next: book.next + 1,
           slots: dict.insert(book.slots, record.id, slot),
+          // A fresh attempt supersedes whatever the last one failed at, and
+          // dropping the memo here is what keeps the map to one entry per
+          // session however many times an operator retries.
+          failed_operations: dict.delete(book.failed_operations, record.id),
           domains: depend(book.domains, selected.id, 1),
         )
 
@@ -2139,10 +2165,44 @@ fn opened(
                 ),
               )
           }
-        Building, Error(_reason) -> stop_slot(book, id)
+
+        // Cleanup is ordered by the same `stop_slot` a deliberate stop uses,
+        // but a build that returned an error is not a stop: the memo is what
+        // keeps that distinction observable after the slot is gone. The
+        // reason itself stays out of it — it can name the session path, and
+        // the classified cause already reached the daemon log.
+        Building, Error(_reason) ->
+          remember_failure(stop_slot(book, id), id, operation)
         WaitingForDomain, _ | Closing, _ | Blocked(_), _ | Running(_), _ -> book
       }
     Ok(_) | Error(Nil) -> book
+  }
+}
+
+// Records that this operation's builder failed, so a later read of that exact
+// operation is answered `StartFailed` rather than `StaleOperation`.
+//
+// The memo is capped at the same limit that bounds live slots, and a session
+// holds at most one entry, so a daemon that fails opens all night cannot grow
+// this map past the size the operator already provisioned. At the cap the
+// newest failure loses its diagnosis rather than the map losing its bound: an
+// operator with `limit` undiagnosed failures already has a bigger problem than
+// the wording of the next refusal.
+fn remember_failure(
+  book: Book(instance),
+  id: String,
+  operation: String,
+) -> Book(instance) {
+  case
+    dict.has_key(book.failed_operations, id)
+    || dict.size(book.failed_operations) < book.limit
+  {
+    True ->
+      Book(
+        ..book,
+        failed_operations: dict.insert(book.failed_operations, id, operation),
+      )
+    False -> book
   }
 }
 

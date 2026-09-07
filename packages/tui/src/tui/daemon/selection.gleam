@@ -284,6 +284,14 @@ pub fn failure(reason: daemon.Failure) -> String {
     daemon.Busy -> "daemon control is busy"
     daemon.TimedOut -> "daemon control timed out; reconnect explicitly"
     daemon.Disconnected -> "daemon control disconnected; reconnect explicitly"
+
+    // The daemon admitted this open and its builder then failed. The cause is
+    // classified into the daemon log rather than sent here, because it can
+    // name the session's own path; the terminal says where to read it.
+    daemon.Refused("start_failed", _) ->
+      "session startup failed; the daemon log records the cause under "
+      <> "daemon.session_start_failed"
+
     daemon.Refused(code, message) -> code <> ": " <> message
     daemon.UnknownOutcome(command) ->
       "unknown outcome for " <> command <> "; request was not retried"
