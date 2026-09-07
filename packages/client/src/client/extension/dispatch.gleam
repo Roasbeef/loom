@@ -697,6 +697,11 @@ fn bridge(config: Config, at: hosts.Coordinates) -> workspace.Workspace {
     config.host,
     workspace: at.workspace,
     strand: at.strand,
+    // An extension's own invocation is the operation a job it starts
+    // clears under, exactly as a code-mode program's is: an abort of
+    // this invocation's operation reaches the job, and an abort of a
+    // later one does not.
+    operation: at.op_id,
     protected: at.base_policy.protected,
   )
 }

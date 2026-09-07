@@ -401,9 +401,9 @@ pub fn the_resident_allowlist_is_pinned_test() {
 /// resident seam because the filter matched on the `cap/` prefix.
 pub fn the_extension_allowlist_is_pinned_test() {
   let expected = [
-    "cap/actor", "cap/fs", "cap/git", "cap/kv", "cap/lsp", "cap/net", "cap/proc",
-    "cap/report", "cap/schedule", "cap/task", "ext", "ext/hook", "ext/memory",
-    "gleam/bit_array", "gleam/bool", "gleam/dict", "gleam/dynamic",
+    "cap/actor", "cap/fs", "cap/git", "cap/job", "cap/kv", "cap/lsp", "cap/net",
+    "cap/proc", "cap/report", "cap/schedule", "cap/task", "ext", "ext/hook",
+    "ext/memory", "gleam/bit_array", "gleam/bool", "gleam/dict", "gleam/dynamic",
     "gleam/dynamic/decode", "gleam/float", "gleam/function", "gleam/int",
     "gleam/json", "gleam/list", "gleam/option", "gleam/order", "gleam/pair",
     "gleam/result", "gleam/set", "gleam/string", "gleam/string_tree",
