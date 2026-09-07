@@ -223,18 +223,23 @@ operations for a code-mode program, and both reach one
 | WP4, the tail module and the staging spill | Folded into WP2 rather than shipped separately. |
 | WP5, the shipped fixture and the docs | `jobs/fixture`, on WP3. |
 
-`daemon_shipped_jobs_test` is the acceptance evidence, and it ran for
-real on macOS with a live enforcement layer rather than skipping: a
-scripted turn backgrounds `tail -f build.log`, the fixture appends three
+`daemon_shipped_jobs_test` is the acceptance evidence, and it runs for
+real — not skipping — in two places: the macOS gate, and the Linux jail
+job's *Shipped background jobs with delegated enforcement* step, which is
+the only run that exercises the pid namespace. A scripted turn
+backgrounds `tail -f build.log`, the fixture appends three
 lines from outside the jail, the next turn's poll is shown those three
 lines and nothing else with the job still pending, a kill produces a
 terminal state naming the owner and carrying the helper's `cancelled`
-witness, and the payload's birth-qualified identity departs. A second
-scenario runs the same door from code mode through a real hermetic build
+witness, and the payload is proved gone — by a birth-qualified fence
+where the host shares the payload's pid, and by the terminal record and
+the jail's containment where a pid namespace hides it. A second scenario
+runs the same door from code mode through a real hermetic build
 and a real satellite. A third SIGKILLs the VM and proves the sweep
 commits `Lost`, the model's own poll reads it, and nothing is respawned.
-On a host without demanded enforcement the whole file declines with one
-declared reason (`.github/declared-skips-linux-gate`).
+On a host without demanded enforcement — the ordinary Linux gate — the
+whole file declines with one declared reason
+(`.github/declared-skips-linux-gate`).
 
 ### 0. Settle the code-mode abort collision
 

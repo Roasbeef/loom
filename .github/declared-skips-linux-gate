@@ -8,4 +8,4 @@ declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavaila
 # asks the same measured question through the same probe. On a runner whose
 # helper cannot enforce a policy, the scenarios are not weaker — they are
 # different — so the file declines rather than pretending.
-declared|linux|SKIP shipped jobs live tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; a host that supplies it (macOS, or the delegated jail setup) runs every jobs scenario for real.
+declared|linux|SKIP shipped jobs live tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the jail job's "Shipped background jobs with delegated enforcement" step run every jobs scenario for real, the latter under the pid namespace the fixture is written against.
