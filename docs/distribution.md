@@ -9,6 +9,21 @@ Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.24.7 by running the targets it
 describes. They are not fresh measurements of the single-daemon implementation.
 Current verification and remaining release gates are recorded in [next.md](next.md).
 
+CI currently builds its own `gleam` from a pinned commit on gleam-lang/gleam's
+`main` instead of installing the 1.18.1 release named above. Gleam 1.18.1
+rewrites a path dependency's freshness fingerprint one at a time, so a tree
+with many path dependencies re-resolves through the Hex API on every
+successive `gleam` invocation and a burst of pull requests can trip Hex's
+rate limit (issue #248, gleam-lang/gleam#6244); the pinned commit carries the
+fix, merged upstream as gleam-lang/gleam#6246. The exact commit lives in
+`ci.yml`'s `GLEAM_COMMIT` variable, not here, so this paragraph does not go
+stale as the pin moves. A developer building locally on the 1.18.1 release
+sees the repeated Hex re-resolution described above but no difference in
+what the compiler produces; the two toolchains agree on output, only on
+how often the built-from-source one re-checks Hex. The pin is removed, and
+CI reverts to installing the named release, the day a Gleam release ships
+carrying that commit.
+
 ## The problem
 
 `gleam export erlang-shipment` is Gleam's only packaging verb, and what
