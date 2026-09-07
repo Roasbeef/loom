@@ -116,6 +116,12 @@ jobs:
           cache-epoch: ${{ env.CACHE_EPOCH }}
           cache: "false"
 
+      # `tools`' integration suite runs a real jailed search against the
+      # ripgrep the host resolved; without one it skips, and this job's
+      # census is strict about a suite that did not run.
+      - name: Install search test prerequisite
+        run: sudo apt-get install -y --no-install-recommends ripgrep
+
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 

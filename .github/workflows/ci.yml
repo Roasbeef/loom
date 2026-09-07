@@ -379,6 +379,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # `tools`' integration suite runs a real jailed search, and the
+      # `grep` tool is built from the ripgrep its host resolved — so a
+      # runner without one skips the search rather than proving it. Install
+      # the prerequisite rather than letting the skip census expose a hole,
+      # the way the macOS job installs tmux for the live TUI test.
+      - name: Install search test prerequisite
+        run: sudo apt-get install -y --no-install-recommends ripgrep
+
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
@@ -800,10 +808,15 @@ jobs:
       # job that runs `make check`'s full package loop, so the only one
       # that needs tmux. macOS runners do not include it, so install the
       # prerequisite rather than letting the skip census expose a hole.
-      - name: Install terminal test prerequisite
+      #
+      # ripgrep is here for the same reason at one remove: `tools`'
+      # integration suite runs a real jailed search, and the `grep` tool
+      # is built from the ripgrep the host resolved, so a runner without
+      # one skips the search rather than proving it.
+      - name: Install terminal and search test prerequisites
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
-        run: brew install tmux
+        run: brew install tmux ripgrep
 
       - uses: ./.github/actions/setup-toolchain
         with:
