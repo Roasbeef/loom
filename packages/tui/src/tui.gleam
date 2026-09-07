@@ -3123,6 +3123,7 @@ fn apply_channel_update(model: Model, update: session_channel.Update) -> Model {
         model,
         protocol.StreamDelta(strand:, operation:, kind:, text:),
       )
+
     // A prompt aimed at a busy strand used to come back as a conflict, with
     // the draft still the operator's problem. The daemon now holds it and
     // runs it on the strand's next turn, so the composer is done with it: the
@@ -3253,6 +3254,7 @@ fn render_cut(
     None -> "Recent window; older history may be unloaded."
     Some(id) -> "History not loaded beyond " <> id <> "."
   }
+
   // Pushed deltas accumulate a continuous transcript of the live answer, so
   // where both describe the strand's current operation they outrank the
   // snapshot's discontinuous sample. The preview remains the fallback for a
@@ -3793,6 +3795,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       append_error(model, "approval required for " <> tool <> " [" <> id <> "]")
     protocol.ServerError(code:, message:) ->
       append_error(Model(..model, submitting: None), code <> ": " <> message)
+
     // A commit notice and a metadata change say only that the next capture
     // will differ. `tui/session_channel` acts on them by capturing; there is
     // nothing for a renderer to draw from the frame itself.
