@@ -2159,33 +2159,40 @@ fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
   )
 }
 
-fn input_layout(
+/// Divides the prompt panel's interior between attachment chips and the editor.
+///
+/// The chip row is stacked above the editor rather than placed beside it. A
+/// chip summary carries a filename, a mime type and a byte count, so a side by
+/// side split gave the chip most of the panel and left the editor a column or
+/// two — the operator could no longer read the sentence they were typing. A
+/// full width editor with one row of chips above it costs a single terminal
+/// row and never depends on how long the filename is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(chips, editor) = tui.input_layout(area, [])
+/// assert chips == geometry.rect_zero()
+/// assert editor == area
+/// ```
+///
+@internal
+pub fn input_layout(
   area: Rect,
   attachments: List(composer.Attachment),
 ) -> #(Rect, Rect) {
   case composer.summary(attachments) {
     None -> #(geometry.rect_zero(), area)
-    Some(summary) -> {
-      let width = attachment_width(summary, area.size.width)
-      case geometry.split_h(area, [Length(width), Fill]) {
-        [paste_area, editor_area] -> #(paste_area, editor_area)
-        _ -> #(area, geometry.rect_zero())
-      }
-    }
-  }
-}
 
-/// Measures one attachment chip in terminal cells and leaves editor padding.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert tui.attachment_width("界.png", 20) == 9
-/// ```
-///
-@internal
-pub fn attachment_width(summary: String, available_width: Int) -> Int {
-  int.min(int.max(0, available_width - 2), text.cell_width(summary) + 3)
+    // A panel one row tall has nothing to give the chip row. Yielding the
+    // whole area to the editor keeps the prompt usable; the chip is dropped
+    // for this frame rather than the text the operator is writing.
+    Some(_) ->
+      case geometry.split_v(area, [Length(1), Fill]) {
+        [chip_area, editor_area] -> #(chip_area, editor_area)
+        [] | [_] | [_, _, _, ..] -> #(geometry.rect_zero(), area)
+      }
+  }
 }
 
 // The editor owns the unwrapped source text, while its view is wrapped to the
@@ -2259,22 +2266,28 @@ fn wrapped_cursor(prefix: String, width: Int, rows: Int) -> #(Int, Int) {
 }
 
 fn input_height(model: Model) -> Int {
+  // The chip row is the height `input_layout` will take off the top of the
+  // panel. Counting it here is what stops the split from stealing a row the
+  // editor was already drawing text into.
+  let chip_rows = case model.attachments {
+    [] -> 0
+    [_, ..] -> 1
+  }
+
   let content_rows =
     model.input
     |> input_view_state(editor_content_width(model))
     |> text_area.line_count
     |> int.max(1)
     |> int.min(4)
-  content_rows + 2
+
+  content_rows + 2 + chip_rows
 }
 
+// Stacking the chips leaves the editor the full interior width, so the wrap
+// the operator sees no longer depends on what is attached.
 fn editor_content_width(model: Model) -> Int {
-  let inner_width = int.max(2, model.width - 2)
-  let chip_width = case composer.summary(model.attachments) {
-    None -> 0
-    Some(summary) -> attachment_width(summary, inner_width)
-  }
-  int.max(2, inner_width - chip_width)
+  int.max(2, model.width - 2)
 }
 
 fn input_title(model: Model) -> String {
@@ -2380,15 +2393,24 @@ fn render_paste_chip(
   area: Rect,
   attachments: List(composer.Attachment),
 ) -> buffer.Buffer {
-  case composer.summary(attachments), area.size.width > 0 {
-    Some(summary), True ->
+  case
+    composer.summary(attachments),
+    area.size.width > 0 && area.size.height > 0
+  {
+    Some(summary), True -> {
+      // The chip owns its whole row now, so a long summary would run off the
+      // panel instead of pushing the editor aside. Truncating to the row less
+      // its two brackets keeps the ellipsis inside the border.
+      let truncated =
+        text.truncate(summary, int.max(0, area.size.width - 2), "…")
+
       paragraph.render_styled(buf, area, [
         span.line_new([
-          span.span_styled("[" <> summary <> "]", theme.signal_bold()),
-          span.span_plain(" "),
+          span.span_styled("[" <> truncated <> "]", theme.signal_bold()),
         ]),
       ])
-    _, _ -> buf
+    }
+    Some(_), False | None, True | None, False -> buf
   }
 }
 

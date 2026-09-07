@@ -1072,9 +1072,29 @@ pub fn image_attachment_summary_sanitizes_the_filename_test() {
     == Some("red.png next · image/png · 1 B")
 }
 
-pub fn image_attachment_layout_measures_terminal_cells_test() {
-  assert tui.attachment_width("界.png", 20) == 9
-  assert tui.attachment_width("界.png", 8) == 6
+/// An attached image must not cost the editor its width.
+///
+/// The chip row is taken off the top of the prompt interior, so the editor
+/// keeps every column it had and loses one row. Both halves are asserted:
+/// a layout that gave the editor the full rectangle would pass a width
+/// check alone while drawing the chip over the first line of the prompt.
+pub fn attachment_chips_stack_above_a_full_width_editor_test() {
+  let area = geometry.rect_new(1, 10, 80, 4)
+
+  let #(no_chips, whole_area) = tui.input_layout(area, [])
+  assert no_chips == geometry.rect_zero()
+    as "an unattached prompt draws no chip row"
+  assert whole_area == area
+    as "an unattached prompt gives the editor the whole interior"
+
+  let image = test_image("screenshot.png", 1000)
+  let #(chips, editor) =
+    tui.input_layout(area, [composer.ImageAttachment(image)])
+
+  assert chips == geometry.rect_new(1, 10, 80, 1)
+    as "the chip row is one row at the top of the interior"
+  assert editor == geometry.rect_new(1, 11, 80, 3)
+    as "the editor keeps the full width and gives up one row"
 }
 
 pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
