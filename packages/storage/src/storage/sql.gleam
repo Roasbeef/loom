@@ -236,6 +236,32 @@ pub fn confirm_registration(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type RegistrationDisplayName {
+  RegistrationDisplayName(name: String)
+}
+
+pub fn registration_display_name(session_id session_id: String) {
+  let sql = "SELECT name FROM catalogue_session_names WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], registration_display_name_decoder())
+}
+
+pub fn registration_display_name_decoder() -> decode.Decoder(
+  RegistrationDisplayName,
+) {
+  use name <- decode.field(0, decode.string)
+  decode.success(RegistrationDisplayName(name:))
+}
+
+pub fn set_registration_display_name(
+  session_id session_id: String,
+  name name: String,
+) {
+  let sql =
+    "INSERT INTO catalogue_session_names (session_id, name) VALUES (?, ?)
+ON CONFLICT(session_id) DO UPDATE SET name = excluded.name"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(name)])
+}
+
 pub type RegistrationPage {
   RegistrationPage(
     session_id: String,
@@ -251,10 +277,12 @@ pub type RegistrationPage {
 
 pub fn registration_page(session_id session_id: String) {
   let sql =
-    "SELECT session_id, path, workspace, name, configuration, created_at, request_key, state
-FROM catalogue_sessions
-WHERE session_id > ?
-ORDER BY session_id
+    "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+       s.configuration, s.created_at, s.request_key, s.state
+FROM catalogue_sessions AS s
+LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
+WHERE s.session_id > ?
+ORDER BY s.session_id
 LIMIT 100"
   #(sql, [dev.ParamString(session_id)], registration_page_decoder())
 }
@@ -312,10 +340,11 @@ pub fn member_registration_page(
   session_id session_id: String,
 ) {
   let sql =
-    "SELECT s.session_id, s.path, s.workspace, s.name, s.configuration,
+    "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
        s.created_at, s.request_key, s.state
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE m.principal_id = ? AND s.session_id > ?
   AND m.role IN ('operator', 'observer')
 ORDER BY s.session_id
