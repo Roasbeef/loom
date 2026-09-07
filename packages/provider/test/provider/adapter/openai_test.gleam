@@ -551,3 +551,70 @@ pub fn cache_write_counts_toward_overflow_test() {
   assert retry.is_overflow_message(error_message)
   assert string.contains(error_message, "260000")
 }
+
+// --- malformed tool arguments ---------------------------------------------
+
+// A turn carrying text, a tool call whose accumulated argument text never
+// closes its brace, and a second call that is well formed. Before issue
+// #189 the parse failure in the middle call failed the whole stream as
+// `MalformedStream` — terminal by `retry.classify` — taking the text and
+// the good call with it and leaving the model nothing to correct.
+fn one_malformed_tool_call_transcript() -> String {
+  content_chunk("Checking both.")
+  <> chunk(
+    "\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_bad\","
+    <> "\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},"
+    <> "\"finish_reason\":null}]",
+  )
+  <> chunk(
+    "\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
+    <> "\"function\":{\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"\"}}]},\"finish_reason\":null}]",
+  )
+  <> chunk(
+    "\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_good\","
+    <> "\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},"
+    <> "\"finish_reason\":null}]",
+  )
+  <> chunk(
+    "\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,"
+    <> "\"function\":{\"arguments\":\"{\\\"city\\\":\\\"Rome\\\"}\"}}]},\"finish_reason\":null}]",
+  )
+  <> finish_chunk("tool_calls")
+  <> usage_chunk(60, 15, 0)
+  <> done()
+}
+
+pub fn malformed_tool_arguments_settle_the_stream_test() {
+  let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
+  let assert Ok(stream.Settled(message: settled, usage: _)) = list.last(events)
+  let assert message.AssistantMessage(content:, stop_reason:, ..) =
+    stream.message(settled)
+
+  // The turn settles as the tool-use turn it was; nothing about it failed.
+  assert stop_reason == message.ToolUse
+
+  // The text and the well-formed call are untouched, and the bad call is
+  // still a call — same id, same name, same position in the response.
+  let assert [
+    message.AssistantText(text: "Checking both.", text_signature: None),
+    message.AssistantToolCall(call: bad),
+    message.AssistantToolCall(call: good),
+  ] = content
+  assert bad.id == "call_bad"
+  assert bad.name == "get_weather"
+  assert good.id == "call_good"
+  assert good.arguments == json.Object([#("city", json.String("Rome"))])
+}
+
+pub fn malformed_tool_arguments_carry_the_raw_text_and_the_error_test() {
+  let events = fixture.drive_ok(machine(), one_malformed_tool_call_transcript())
+  let assert Ok(stream.Settled(message: settled, usage: _)) = list.last(events)
+  let assert message.AssistantMessage(
+    content: [_text, message.AssistantToolCall(call: bad), _good],
+    ..,
+  ) = stream.message(settled)
+
+  let assert Ok(#(raw, reason)) = message.malformed_arguments_of(bad.arguments)
+  assert raw == "{\"city\": \"Paris\""
+  assert string.contains(reason, "core/json.parse")
+}

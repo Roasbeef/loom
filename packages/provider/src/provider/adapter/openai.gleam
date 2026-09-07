@@ -917,11 +917,7 @@ fn settle_with_stop(
   acc: Accumulator,
   stop: StopReason,
 ) -> #(Accumulator, List(StreamEvent)) {
-  use content <- or_fail(
-    build_blocks(list.reverse(acc.blocks), []),
-    acc,
-    MalformedStream,
-  )
+  let content = build_blocks(list.reverse(acc.blocks), [])
   let usage = build_usage(acc)
 
   // Spec §1.5 words this as input plus cache-read, from before either
@@ -987,12 +983,18 @@ fn or_fail(
   }
 }
 
+// Folds the accumulated blocks into the settled assistant content.
+//
+// Total: every arm produces a block. A tool call whose argument text did
+// not parse is settled by `wire.tool_arguments` as a call carrying the
+// failure, not raised as an error that would fail the stream, so there is
+// no longer a failure mode here for the caller to settle.
 fn build_blocks(
   blocks: List(OaBlock),
   built: List(message.AssistantBlock),
-) -> Result(List(message.AssistantBlock), CorruptionReport) {
+) -> List(message.AssistantBlock) {
   case blocks {
-    [] -> Ok(list.reverse(built))
+    [] -> list.reverse(built)
     [OaText(index: _, text:), ..rest] ->
       build_blocks(rest, [AssistantText(text:, text_signature: None), ..built])
     [OaThinking(index: _, thinking:), ..rest] ->
@@ -1003,23 +1005,17 @@ fn build_blocks(
     [
       OaTool(index: _, provider_index: _, call_id:, name:, arguments_json:),
       ..rest
-    ] -> {
-      let parsed = case arguments_json {
-        "" -> Ok(json.Object([]))
-        _ -> json.parse(arguments_json)
-      }
-      use arguments <- result.try(parsed)
+    ] ->
       build_blocks(rest, [
         AssistantToolCall(call: ToolCall(
           id: call_id,
           name:,
-          arguments:,
+          arguments: wire.tool_arguments(arguments_json),
           thought_signature: None,
           namespace: None,
         )),
         ..built
       ])
-    }
   }
 }
 

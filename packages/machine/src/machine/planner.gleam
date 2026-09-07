@@ -1788,8 +1788,9 @@ fn first_planned(frontier: List(ToolCallState)) -> Option(Int) {
 }
 
 /// Works one planned call: stage the machine-built synthetic when the
-/// call must not execute (cancelled control, truncated source response),
-/// otherwise ask for its clearance.
+/// call must not execute (cancelled control, truncated source response,
+/// arguments the adapter could not parse), otherwise ask for its
+/// clearance.
 fn work_planned_call(
   pass: RunPass,
   batch: ToolBatch,
@@ -1806,7 +1807,16 @@ fn work_planned_call(
         <> "the call arguments may be truncated; answer with corrected "
         <> "calls",
       )
-    Running, _ -> None
+
+    // Nothing about the *turn* is wrong here — the response settled, and
+    // its other calls will run — so only this call is refused, and it is
+    // refused before clearance rather than at it. Clearance is where a
+    // tool's own arguments are judged, and the arguments a tool would be
+    // judging are not the model's: they are the sentinel standing in for
+    // text that never became JSON. Letting that reach a tool would ask a
+    // schema whose fields are all optional to run on defaults the model
+    // never asked for.
+    Running, _ -> malformed_arguments_text(source, source_index)
   }
   case synthetic_text {
     Some(text) -> {
@@ -1825,6 +1835,42 @@ fn work_planned_call(
         step_id: batch.turn_id,
         source_index:,
       ))
+  }
+}
+
+/// The refusal text for a planned call whose arguments never parsed, or
+/// `None` for the ordinary call.
+///
+/// The provider adapters settle such a call carrying
+/// `message.malformed_arguments` in place of the object the model meant to
+/// send, because failing the stream over one bad brace ends the turn
+/// terminally and tells the model nothing. Reading it back here is what
+/// turns that carried failure into the in-band correction the model
+/// answers: the parser's complaint says what was wrong, and the raw text
+/// says which call it was wrong in — the model wrote it, so it recognizes
+/// it.
+///
+/// A call whose source block cannot be found is not this function's
+/// business; it reports no refusal and the ordinary clearance path faults
+/// on the same lookup.
+fn malformed_arguments_text(
+  source: AgentMessage,
+  source_index: Int,
+) -> Option(String) {
+  case source_call(source, source_index) {
+    Error(_report) -> None
+    Ok(call) ->
+      case message.malformed_arguments_of(call.arguments) {
+        Error(Nil) -> None
+        Ok(#(raw, reason)) ->
+          Some(
+            "tool call not executed: its arguments were not valid JSON ("
+            <> reason
+            <> "); the call carried: "
+            <> raw
+            <> "; answer with a corrected call",
+          )
+      }
   }
 }
 

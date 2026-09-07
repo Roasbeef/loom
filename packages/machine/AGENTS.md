@@ -153,6 +153,15 @@ package is wrong.
   still-*planned* call even while earlier calls are effect-pending, and
   parks on the first pending call only once nothing is left to plan. Tree
   materialization stays source-ordered in both modes.
+- **A call whose arguments never parsed is refused before clearance, not
+  at it** (issue #189). The streaming adapters settle such a call carrying
+  `message.malformed_arguments` instead of failing the whole stream, and
+  `work_planned_call` reads that back into the same machine-built
+  synthetic `is_error` result a cancelled or truncated call gets. Clearance
+  is where a *tool* judges arguments, and the arguments here are not the
+  model's — they are the sentinel standing in for text that never became
+  JSON, which a schema of all-optional fields would happily accept as
+  defaults the model never asked for.
 - **A really-settled response under cancelled control keeps its content and
   its reported usage** (pi §4.6, ORCH-M3), committed normalized to
   `aborted`. Only an *unknown-outcome* orphan gets the synthetic
