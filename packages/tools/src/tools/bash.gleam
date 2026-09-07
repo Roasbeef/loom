@@ -334,6 +334,15 @@ fn settle(ctx: Ctx, collected: tool.Collected) -> ToolOutcome {
   }
 }
 
+// Render a settled execution twice over: as the prose a model reads and
+// as the `details` object a program reads, from the same `ExecResult` so
+// the two cannot disagree. Both halves report `cancelled` alongside
+// `timed_out` because neither flag implies the other's answer:
+// `timed_out` says the wall deadline fired, `cancelled` says the helper
+// stopped the run rather than the run ending on its own, and a run
+// killed by its deadline is both. Only `cancelled` can distinguish a
+// truncated run from a clean one, since a cancelled payload that had
+// backgrounded its work exits zero (`protocol-change/006`).
 fn exited(
   ctx: Ctx,
   collected: tool.Collected,
@@ -359,9 +368,18 @@ fn exited(
         True -> ["[stderr truncated at the output cap]"]
         False -> []
       },
-      case result.timed_out {
-        True -> ["[command timed out]"]
-        False -> []
+      // The two flags answer different questions, so the line reports
+      // the pair. `cancelled` is the helper's own witness that it
+      // climbed the cancel ladder, and nothing else in the record can
+      // stand in for it: a cancelled run whose payload had backgrounded
+      // its work reports `code=0 signal=0`, an ordinary clean success
+      // (`protocol-change/006`). When it is set, the output above is
+      // only what arrived before the stop.
+      case result.timed_out, result.cancelled {
+        True, True -> ["[command timed out and was stopped; output is partial]"]
+        True, False -> ["[command timed out]"]
+        False, True -> ["[command was cancelled; output is partial]"]
+        False, False -> []
       },
       case result.code, result.signal {
         0, 0 -> []
@@ -382,6 +400,10 @@ fn exited(
       #("signal", json.Int(result.signal)),
       #("wall_ms", json.Int(result.wall_ms)),
       #("timed_out", json.Bool(result.timed_out)),
+      // `cancelled` without `timed_out` is the broker having asked for
+      // the stop; the two together are the policy's wall clock running
+      // out, which climbs the same ladder (`protocol-change/006`).
+      #("cancelled", json.Bool(result.cancelled)),
       #("stdout_bytes", json.Int(result.stdout_bytes)),
       #("stderr_bytes", json.Int(result.stderr_bytes)),
       #("stdout_truncated", json.Bool(collected.stdout_truncated)),
