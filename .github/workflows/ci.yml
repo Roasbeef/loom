@@ -90,17 +90,26 @@
 # gleam-invoking steps.
 #
 # Gleam compiler: every `setup-toolchain` use below also passes
-# `gleam-commit: ${{ env.GLEAM_COMMIT }}`, which builds the compiler from
-# that gleam-lang/gleam commit instead of installing the GLEAM_VERSION
-# release. The commit is past the fingerprint fix (gleam-lang/gleam#6246),
-# so the bug the paragraph above describes does not reproduce on this
-# compiler; `hex_retry.sh` stays wrapped around every gleam-invoking step
-# regardless, belt-and-braces until a release carries the fix, since a
-# fixed compiler removes the repeated re-resolution but not every other
-# way a shared-egress runner can trip Hex's rate limit. Drop
-# `GLEAM_COMMIT` and every `gleam-commit:` line the day a release does
-# carry it — GLEAM_VERSION alone is the pin from then on, exactly as it
-# was before this variable existed.
+# `gleam-patches: ${{ env.GLEAM_PATCHES }}`, which builds the compiler
+# from the GLEAM_VERSION release tag with that gleam-lang/gleam commit
+# cherry-picked on top, instead of installing the release unmodified.
+# It is a patched release, not a build from `main`: an earlier version
+# of this pin built `main` at the fix commit directly, which passed
+# `deps` but failed `gleam format --check` across the tree, because
+# `main`'s formatter had drifted from 1.18.1's between the release and
+# the fix — reformatting the tree to an unreleased formatter would fail
+# every contributor's `make fmt-check` on the released compiler they
+# actually run locally. Building the tag plus one cherry-picked commit
+# keeps the formatter, and everything else this pin is not patching,
+# byte-for-byte the release. The commit is past the fingerprint fix
+# (gleam-lang/gleam#6246), so the bug the paragraph above describes does
+# not reproduce on this compiler; `hex_retry.sh` stays wrapped around
+# every gleam-invoking step regardless, belt-and-braces until a release
+# carries the fix, since a fixed compiler removes the repeated
+# re-resolution but not every other way a shared-egress runner can trip
+# Hex's rate limit. Drop `GLEAM_PATCHES` and every `gleam-patches:` line
+# the day a release does carry it — GLEAM_VERSION alone is the pin from
+# then on, exactly as it was before this variable existed.
 #
 #   the macOS gate    the same package gate on the second platform §0.3
 #                     demands, plus the Seatbelt self-test and both
@@ -209,16 +218,22 @@ env:
   # Exact, never floating. The rationale for each number, and where it
   # came from, is in .github/actions/setup-toolchain/action.yml.
   GLEAM_VERSION: "1.18.1"
-  # A commit on gleam-lang/gleam's `main`, past the fix for issue #248 /
-  # gleam-lang/gleam#6244 (merged 2026-08-31 as gleam-lang/gleam#6246),
-  # built from source instead of the 1.18.1 release every job below
-  # would otherwise install — see the "Gleam compiler" paragraph further
-  # down this file, under the six-job Linux gate header, and
-  # docs/distribution.md for the developer-facing note. Remove this
-  # variable and the `gleam-commit` line at every `setup-toolchain` use
+  # A space-separated list of commits on gleam-lang/gleam's `main`, past
+  # the fix for issue #248 / gleam-lang/gleam#6244 (merged 2026-08-31 as
+  # gleam-lang/gleam#6246), cherry-picked onto the GLEAM_VERSION tag and
+  # built from source instead of installing the 1.18.1 release every job
+  # below would otherwise use — see the "Gleam compiler" paragraph
+  # further down this file, under the six-job Linux gate header, and
+  # docs/distribution.md for the developer-facing note. Building the
+  # tag plus this one commit, rather than `main` at the commit, is
+  # deliberate: `main`'s formatter has already drifted from 1.18.1's, so
+  # a build straight from `main` passes `deps` but fails `gleam format
+  # --check` across the tree on an unreleased formatter every
+  # contributor's local, released compiler disagrees with. Remove this
+  # variable and the `gleam-patches` line at every `setup-toolchain` use
   # below the day a Gleam release carries this commit; GLEAM_VERSION
   # alone is the pin from then on.
-  GLEAM_COMMIT: "860f8224ddb7e1ecb7f983fb622ede12466225e5"
+  GLEAM_PATCHES: "860f8224ddb7e1ecb7f983fb622ede12466225e5"
   OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
   GO_VERSION: "1.24.7"
@@ -264,7 +279,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -367,7 +382,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -449,7 +464,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -497,7 +512,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -547,7 +562,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -718,7 +733,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -793,7 +808,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -856,7 +871,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -1020,7 +1035,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
@@ -1259,7 +1274,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           gleam-version: ${{ env.GLEAM_VERSION }}
-          gleam-commit: ${{ env.GLEAM_COMMIT }}
+          gleam-patches: ${{ env.GLEAM_PATCHES }}
           otp-version: ${{ env.OTP_VERSION }}
           rebar3-version: ${{ env.REBAR3_VERSION }}
           go-version: ${{ env.GO_VERSION }}
