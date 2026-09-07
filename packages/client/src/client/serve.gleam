@@ -2471,7 +2471,17 @@ fn assemble_in(
   let effects_record =
     effects.Effects(
       ..built,
-      provider: hub.tap_preview_provider(built.provider, to: name),
+      // Two taps, nested. The inner one feeds the bounded snapshot preview,
+      // which stays the catch-up fallback for a terminal that reconnects
+      // mid-answer; the outer one tees every delta to the hub as a
+      // `ProviderDelta`, which is what `broadcast_delta` pushes to peers
+      // (`protocol-change/018`). Without the outer tap the push path is
+      // unreachable from the shipped daemon, which the live-delivery
+      // fixture is what measured.
+      provider: hub.tap_provider(
+        hub.tap_preview_provider(built.provider, to: name),
+        to: name,
+      ),
       // The only work this adds on the driver process is one
         // `process.spawn_unlinked`; everything a reap actually does
         // happens on that spawned process. See `client/agency`. The notes
