@@ -307,11 +307,12 @@ type State {
     //
     // What is left is the size, and it is small and bounded. This grows
     // by one entry per *operation ever aborted*, not per abort: repeat
-    // aborts of one operation `upsert` its counter. The same law bounds
-    // the step table below, whose one routine caller — code mode's
-    // teardown, which reaps its own step on every execution, the
-    // successful ones included — costs one entry per `{op_id, step_id}`
-    // that ran a program at all, however many times it ran one. An entry
+    // aborts of one operation `upsert` its counter. The step table below
+    // is bounded the same way at its own key: its one routine caller is
+    // code mode's teardown, which sweeps the tool batch's step on every
+    // execution — the successful ones included — so it costs one entry
+    // per *batch that ran a program*, however many programs that batch
+    // ran. Nothing sweeps a `"job/<id>"` step, so jobs add none. An entry
     // measures ~110 bytes, and the
     // broker's lifetime is exactly one `loomd` process serving
     // one session (its death is fatal to the server; nothing restarts
@@ -339,8 +340,8 @@ type State {
     // The growth law and the argument against pruning are the field
     // above's, unchanged: entries are never removed because absence
     // reads as "never swept", and code mode's abort-on-every-teardown
-    // costs one entry per `{op_id, step_id}` that ran a program at all,
-    // however many times it ran one.
+    // costs one entry per batch that ran a program, however many
+    // programs it ran.
     step_abort_epochs: Dict(#(OpId, String), Int),
     // The broker's own subject, handed to relays for Settle reports.
     self: Subject(Msg),

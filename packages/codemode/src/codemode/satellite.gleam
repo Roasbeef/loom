@@ -59,9 +59,9 @@
 ////   with the wall deadline of `budget.deadline_ms`. The host additionally
 ////   enforces the wall deadline itself: on expiry it sweeps its own step
 ////   with `broker.abort_step` and closes the socket, killing the node and
-////   every executor it fanned out. Closing the socket mid-`cap_call` surfaces to the
-////   program as an `Unreachable` capability error before the node dies
-////   (J3a EOF semantics), a clean way to unblock it.
+////   every executor it fanned out. Closing the socket mid-`cap_call`
+////   surfaces to the program as an `Unreachable` capability error before
+////   the node dies (J3a EOF semantics), a clean way to unblock it.
 ////
 //// # The cap-channel token: what it defends, and what it does not
 ////
@@ -1355,9 +1355,18 @@ fn terminate(
 
 // Destroys the satellite as a unit and unlinks the token file, returning
 // what the kernel enforced on the node. `abort_step` revokes every token
-// bound to the run phase's own `{op_id, step_id}` and cancels every
-// executor it fanned out under it; `destroy` closes the socket, reaps the
-// node, and hands back its helper's report.
+// bound to the run phase's `{op_id, step_id}` and cancels every executor
+// under it; `destroy` closes the socket, reaps the node, and hands back
+// its helper's report.
+//
+// That step is the *batch's*, not this execution's own: `tool.Ctx`
+// carries the step id of the producing tool batch, and the run phase's
+// identity is minted from it. So the sweep reaches every sibling tool
+// call of the same batch — a foreground `bash` clearing under the same
+// key, a second program in the same batch — exactly as the operation-wide
+// `abort` it replaced did. ADR-005 forbids a finer coordinate within a
+// batch, and nothing here wants one: the sweep is bounded by a batch
+// whose calls are ending anyway.
 //
 // The sweep comes first, exactly as before: the deadline path must not
 // wait on anything before killing the node. What the launcher's `destroy`
@@ -1366,11 +1375,12 @@ fn terminate(
 // truth this whole path exists to carry.
 //
 // It is the *step* rather than the operation, and the difference is the
-// one the design note promises: a satellite reaps itself, and it does not
-// reap what the program asked to outlive it. A background job the program
-// started clears under the sibling step `{op_id, "job/" <> id}`, so an
-// operation-wide sweep here killed it the instant the program returned. An
-// operator aborting the whole operation still does reach it.
+// one the design note promises: a teardown reaps its own batch, and it
+// does not reap what the program asked to outlive it. A background job
+// the program started clears under the sibling step
+// `{op_id, "job/" <> id}`, so an operation-wide sweep here killed it the
+// instant the program returned. An operator aborting the whole operation
+// still does reach it, through the hub's `abort` command.
 fn cleanup(state: State) -> Report {
   broker.abort_step(
     state.broker,

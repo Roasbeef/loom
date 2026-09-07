@@ -295,15 +295,22 @@ fn start_reader(
 // waits (bounded) for the settlement, and hands the report to the caller —
 // which is the host, about to report the execution's outcome (issue #5).
 //
-// The sweep is `abort_step` rather than `abort` because a satellite reaps
-// itself and must not reap what the program asked to outlive it. A
+// The sweep is `abort_step` rather than `abort` because a teardown reaps
+// its own batch and must not reap what the program asked to outlive it. A
 // background job the program started clears under `{op_id, "job/" <> id}`,
 // a sibling step of the same operation, and an operation-wide abort
 // cancelled its helper the moment the program returned — the record read
 // `Lost(HelperLoss)` against a design note that promises a job keeps
 // running under its own token. An operator's `abort` of the operation
-// still reaches that job, which is the semantics the shared operation was
-// chosen for.
+// still reaches that job (`client/gateway.abort`), which is the semantics
+// the shared operation was chosen for.
+//
+// The step being swept is the tool *batch's*, since that is what
+// `tool.Ctx` carries and what the run phase's identity is minted from. So
+// a sibling call of the same batch — a foreground `bash`, a second
+// program — is still reaped here, as it was under the operation-wide
+// abort this replaced. What the narrowing buys is the sibling *step*, and
+// the job is the only caller that has one.
 fn destroy(
   config: LaunchConfig,
   spec: LaunchSpec,

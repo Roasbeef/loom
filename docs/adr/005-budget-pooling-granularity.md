@@ -261,7 +261,7 @@ example.** A new kind of caller may take a step of its own when its
 lifetime and its parallelism are genuinely not the batch's. A finer
 coordinate *within* a batch still may not.
 
-**A satellite's teardown reaps its own step, not its operation.** Keeping
+**A satellite's teardown reaps its batch's step, not its operation.** Keeping
 the operation in the key put the job in reach of a sweep nobody meant it
 to be in reach of. A code-mode execution ends by reaping its satellite,
 and that reaper used to be `broker.abort` on the whole operation — the
@@ -278,3 +278,12 @@ reach. The step-scoped sweep needs a sweep counter of its own beside the
 operation's, because a step abort that bumped the operation's counter
 would refuse a resumed clearance of every sibling step — including the
 job it just spared.
+
+The step in that sweep is the **batch's**, which is the granularity this
+ADR chose and the only one the harness has: `tool.Ctx` carries the step
+id of the producing tool batch, and a code-mode run phase's identity is
+minted from it. So the teardown still reaps the batch's other tool calls
+— a foreground `bash` clearing under the same key, a second program in
+the same batch — exactly as the operation-wide `abort` before it did.
+What the narrowing spares is a sibling *step* of the same operation, and
+a background job is the only caller that has one.
