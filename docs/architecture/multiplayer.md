@@ -243,7 +243,7 @@ stateDiagram-v2
 
 The restart edge is why the reply says `queued` and never `admitted`. A
 prompt that survived a restart would need a pending-run operation in
-`machine`, a new durable operation kind with its own state space, bought
+`machine`, a new durable operation kind with its own state space, added
 for a convenience nothing else needs, so the wire carries the weaker
 status rather than hiding it, and the terminal clears its own queued
 state when the socket closes. `steer` and `follow_up` are unchanged: a
