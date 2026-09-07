@@ -36,6 +36,14 @@ pub type Hello {
 
 /// Requests are explicit; metadata reads never imply an open.
 pub type Command {
+  /// Renames the active session without changing its identity or lifetime.
+  RenameSession(
+    /// Canonical session identity selected by the owner.
+    session_id: String,
+    /// New nonempty display label, bounded to 256 UTF-8 bytes.
+    name: String,
+  )
+
   /// Reads readiness and capacity.
   Status
 
@@ -269,6 +277,7 @@ pub type Event {
 /// ```
 pub fn name(command: Command) -> String {
   case command {
+    RenameSession(..) -> "sessions.rename"
     Status -> "status"
     ListSessions(..) -> "sessions.list"
     GetSession(..) -> "sessions.get"
@@ -297,6 +306,7 @@ pub fn mutates(command: Command) -> Bool {
     | WorkspaceDefault(..)
     | GetOperation(..) -> False
     SetDefault(..)
+    | RenameSession(..)
     | CreateSession(..)
     | OpenSession(..)
     | StopSession(..)
@@ -355,18 +365,33 @@ fn command_fields(command: Command, epoch: Epoch) {
     GetSession(id) -> identity_fields(id)
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
+    RenameSession(id, name) -> {
+      use fields <- result.try(identity_fields(id))
+      use other <- result.map(text_fields([#("name", name, 256)]))
+      [#("epoch", json.String(epoch.value)), ..list.append(fields, other)]
+    }
     SetDefault(workspace, id) -> {
       use fields <- result.try(identity_fields(id))
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration) ->
-      text_fields([
-        #("request_key", key, 256),
-        #("workspace", workspace, 4096),
-        #("name", name, 256),
-        #("configuration", configuration, 4096),
-      ])
+    CreateSession(key, workspace, name, configuration) -> {
+      use fields <- result.try(
+        text_fields([
+          #("request_key", key, 256),
+          #("workspace", workspace, 4096),
+          #("name", name, 256),
+        ]),
+      )
+
+      // Empty configuration preserves daemon defaults; other control text is
+      // still nonempty. The same byte ceiling applies to an explicit path.
+      use configuration <- result.map(case configuration {
+        "" -> Ok("")
+        path -> bounded_text(json.String(path), 4096)
+      })
+      [#("configuration", json.String(configuration)), ..fields]
+    }
     OpenSession(id) | StopSession(id) -> {
       use fields <- result.map(identity_fields(id))
       [#("epoch", json.String(epoch_value)), ..fields]
@@ -463,6 +488,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "status" -> result.map(summary(body), StatusReply)
     "sessions.list" -> result.map(page(body), SessionsReply)
     "sessions.get"
+    | "sessions.rename"
     | "sessions.default"
     | "sessions.set_default"
     | "sessions.create"

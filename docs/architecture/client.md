@@ -54,6 +54,13 @@ execute, closing the launcher's handle is not a guarantee that the daemon died.
 Executable, helper, and configuration discovery comes from trusted launcher
 choices, not files selected by the workspace.
 
+For a local New session, the terminal resolves an explicit `--config` path
+from its own working directory. With no flag, it uses `<state-root>/loom.toml`
+when present, normally `~/.loom/loom.toml`. This resolution also runs when
+the daemon is already live. An absent file leaves the configuration reference
+empty and retains the daemon's runtime defaults. Configuration lookup failure
+is reported before retaining a creation key, so it cannot strand a local retry.
+
 ### The authenticated v2 boundary
 
 The loopback listener serves `/v2/control` and

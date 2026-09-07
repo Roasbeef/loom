@@ -44,6 +44,9 @@ pub type Command {
   /// Choose another locally managed session.
   Sessions
 
+  /// Change the current session's saved display name.
+  Rename(name: String)
+
   /// Show captured decisions, or explicitly load one exact historical decision.
   Approvals(id: Option(String))
 
@@ -213,6 +216,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/model", "choose a model", False),
     Suggestion("/agents", "inspect agents and sub-agents", False),
     Suggestion("/sessions", "switch local sessions", False),
+    Suggestion("/rename", "rename the current session", True),
     Suggestion("/notes", "browse agent notes", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
@@ -274,6 +278,8 @@ pub fn parse(input: String) -> Command {
     "/unschedule" -> MissingArgument("unschedule")
     "/agents" -> Agents
     "/sessions" -> Sessions
+    "/rename" -> MissingArgument("rename")
+    "/rename " <> rest -> required_argument("rename", rest, Rename)
     "/approvals" -> Approvals(None)
     "/approve" -> MissingArgument("approve")
     "/deny" -> MissingArgument("deny")
@@ -361,6 +367,7 @@ pub fn help_text() -> String {
   <> "/model <name>     switch the active strand model\n"
   <> "/agents           inspect agents and sub-agents\n"
   <> "/sessions         switch locally managed sessions\n"
+  <> "/rename <name>    rename the current session\n"
   <> "/notes            browse the active strand's agent notes\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"

@@ -56,6 +56,7 @@ import tui/protocol as conversation
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/workspace
 import weft
 import weft/actor
 import weft/poll
@@ -287,7 +288,13 @@ fn exercise(
   let assert Ok(host) = selection.host(connected.control, address, owner)
     as "the authenticated control retains its own route"
   let assert Ok(target) =
-    selection.create(host, "shipped-members", workspace, configuration)
+    selection.create_named(
+      host,
+      "shipped-members",
+      workspace,
+      workspace.session_name(workspace.Context(workspace, None)),
+      configuration,
+    )
     as "explicit creation opens the fixture session"
   let id = target.expected.session
 
@@ -326,10 +333,11 @@ fn exercise(
   let assert Ok(Nil) = simplifile.create_directory_all(foreign_workspace)
     as "the uninvited session has a distinct real workspace mapping"
   let assert Ok(foreign) =
-    selection.create(
+    selection.create_named(
       host,
       "uninvited-session",
       foreign_workspace,
+      workspace.session_name(workspace.Context(foreign_workspace, None)),
       configuration,
     )
     as "the owner creates an independently resident uninvited session"
@@ -547,7 +555,13 @@ fn live_tool_switches(
   reader: actor.Started(process.Subject(tui_driver.Message)),
 ) -> Nil {
   let assert Ok(target) =
-    selection.create(host, "held-tool-a2", workspace, configuration)
+    selection.create_named(
+      host,
+      "held-tool-a2",
+      workspace,
+      workspace.session_name(workspace.Context(workspace, None)),
+      configuration,
+    )
     as "A2 is a separate durable session in A1's actual workspace"
   let a2 = target.expected.session
   let control = selection.control(host)

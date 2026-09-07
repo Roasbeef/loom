@@ -1278,6 +1278,17 @@ fn begin_open(model: Model, session: String) -> Model {
 }
 
 fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
+  load_catalogue_after(model, after, revision, None)
+}
+
+// Rename and its refreshed page share the existing bounded metadata worker.
+// The mutation is sent once; a lost response never triggers an automatic retry.
+fn load_catalogue_after(
+  model: Model,
+  after: String,
+  revision: Option(Int),
+  rename: Option(control_protocol.Command),
+) -> Model {
   case model.catalogue_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
@@ -1297,6 +1308,13 @@ fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
         weft.new([
           fn() {
             use host <- daemon_selection.with_live_control(host)
+            use Nil <- result.try(case rename {
+              None -> Ok(Nil)
+              Some(command) ->
+                daemon.request(daemon_selection.control(host), command, 5000)
+                |> result.map_error(daemon_selection.failure)
+                |> result.replace(Nil)
+            })
             use reply <- result.try(
               daemon.request(
                 daemon_selection.control(host),
@@ -1307,7 +1325,11 @@ fn load_catalogue(model: Model, after: String, revision: Option(Int)) -> Model {
             )
             use page <- result.try(case reply {
               control_protocol.SessionsReply(page) -> Ok(page)
-              _ -> Error("catalogue returned an unexpected control reply")
+              control_protocol.StatusReply(_)
+              | control_protocol.SessionReply(_)
+              | control_protocol.LifecycleReply(_)
+              | control_protocol.ShutdownReply ->
+                Error("catalogue returned an unexpected control reply")
             })
             let selected = case session {
               "" -> default_selection(host, workspace)
@@ -1431,6 +1453,26 @@ fn finish_catalogue(model, result) {
 }
 
 fn create_session(model: Model) -> Model {
+  // Resolve local paths before retaining a creation key: a local failure sent
+  // nothing and must leave the operator free to correct the invocation.
+  //
+  // Resolution runs per attempt, so a retained key retried after a lost reply
+  // carries whatever `<state-root>/loom.toml` says at that moment, and
+  // `reserve_creation` answers `Conflict` if the answer changed. That is
+  // accepted rather than cached: the file would have to appear inside a single
+  // lost-reply window, and the operator sees a named conflict, not a session
+  // created under a catalogue they did not ask for.
+  let configuration = case model.local_options {
+    Some(options) -> bootstrap.session_configuration(options)
+    None -> Ok("")
+  }
+  case configuration {
+    Error(reason) -> append_error(model, reason)
+    Ok(config) -> create_session_configured(model, config)
+  }
+}
+
+fn create_session_configured(model: Model, config: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
   case model.creation_key, model.daemon_host, attachment.busy(model.candidate) {
     Some(key), _, _ ->
@@ -1451,16 +1493,13 @@ fn create_session(model: Model) -> Model {
         <> int.to_string(host_bootstrap.system_time_ms())
         <> "-"
         <> int.to_string(model.next_id)
-      let config = case model.local_options {
-        Some(options) -> options.config
-        None -> ""
-      }
 
       // Bound outside the closure for the same reason the catalogue job binds
       // its two: a reference to `model.workspace` would put the whole
       // presentation state, cached frame included, in the worker's copied
       // environment.
       let workspace = model.workspace.path
+      let name = workspace.session_name(model.workspace)
       Model(
         ..model,
         creation_key: Some(key),
@@ -1470,7 +1509,7 @@ fn create_session(model: Model) -> Model {
         candidate: attachment.start_recorded(
           fn() {
             use host <- daemon_selection.with_live_control(host)
-            daemon_selection.create(host, key, workspace, config)
+            daemon_selection.create_named(host, key, workspace, name, config)
           },
           90_000,
           recording.trace(model.recorder, attempt.Id(model.next_attempt)),
@@ -2939,6 +2978,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           model.records,
           model.active_strand,
           model.details_expanded,
+          solo_owner(model.captured),
         ))
         |> transcript_content
         |> fn(content) { markdown.wrap_lines(content.lines, width) }
@@ -2957,7 +2997,11 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     True, pending -> {
       let newest_rows =
         pending
-        |> record_lines(model.active_strand, model.details_expanded)
+        |> record_lines(
+          model.active_strand,
+          model.details_expanded,
+          solo_owner(model.captured),
+        )
         |> transcript_content
         |> fn(content) { markdown.wrap_lines(content.lines, width) }
         |> list.reverse
@@ -3373,6 +3417,23 @@ fn render_cut(
     snapshot.Operator -> "operator"
     snapshot.Observer -> "observer · read-only"
   }
+
+  // The same coherent presence test governs both turn labels and the
+  // attachment banner. A lone owner needs no redundant name or role; every
+  // other attachment retains the full identity and participant count.
+  let #(notice, attachment_banner) = case solo_owner(Some(#(cut, view))) {
+    Some(_) -> #("1 present", "Attached · 1 present")
+    None -> {
+      let identity =
+        cut.attachment.origin.name
+        <> " · "
+        <> role
+        <> " · "
+        <> int.to_string(list.length(view.peers))
+        <> " present"
+      #(identity, "Attached as: " <> identity)
+    }
+  }
   let boundary = case branch.unloaded {
     None -> "Recent window; older history may be unloaded."
     Some(id) -> "History not loaded beyond " <> id <> "."
@@ -3407,24 +3468,10 @@ fn render_cut(
     streams: streams,
     submitting: None,
     record_cache_valid: False,
-    notice: cut.attachment.origin.name
-      <> " · "
-      <> role
-      <> " · "
-      <> int.to_string(list.length(view.peers))
-      <> " present",
+    notice: notice,
     transcript: [
       Line(System, boundary),
-      Line(
-        System,
-        "Attached as: "
-          <> cut.attachment.origin.name
-          <> " · "
-          <> role
-          <> " · "
-          <> int.to_string(list.length(view.peers))
-          <> " present",
-      ),
+      Line(System, attachment_banner),
       ..list.append(
         configuration_lines(view, active),
         list.append(
@@ -4155,6 +4202,7 @@ fn record_lines(
   records: List(protocol.EntryRecord),
   active_strand: String,
   details_expanded: Bool,
+  local_owner: Option(message.Origin),
 ) -> List(Line) {
   records
   |> list.reverse
@@ -4164,16 +4212,20 @@ fn record_lines(
   })
   |> list.flat_map(fn(record) {
     let protocol.EntryRecord(entry: value, ..) = record
-    entry_lines(value, details_expanded)
+    entry_lines(value, details_expanded, local_owner)
   })
 }
 
-fn entry_lines(value: entry.Entry, details_expanded: Bool) -> List(Line) {
+fn entry_lines(
+  value: entry.Entry,
+  details_expanded: Bool,
+  local_owner: Option(message.Origin),
+) -> List(Line) {
   case value {
     entry.MessageEntry(message: value, ..) ->
       case agent_notes_payload(value) {
         Some(_) -> []
-        None -> message_lines(value, details_expanded)
+        None -> message_lines(value, details_expanded, local_owner)
       }
     entry.CompactionEntry(summary:, tokens_before:, ..) -> [
       Line(
@@ -4219,12 +4271,13 @@ pub fn agent_notes_payload(value: message.AgentMessage) -> Option(String) {
 fn message_lines(
   value: message.AgentMessage,
   details_expanded: Bool,
+  local_owner: Option(message.Origin),
 ) -> List(Line) {
   case value {
     message.UserMessage(content:, origin:, ..) -> [
       Line(
         User,
-        user_author_prefix(origin)
+        user_author_prefix(origin, local_owner)
           <> {
           content
           |> list.map(user_block_text)
@@ -4249,9 +4302,29 @@ fn message_lines(
   }
 }
 
-fn user_author_prefix(origin: Option(message.Origin)) -> String {
+// Only a coherent presence cut can establish that this terminal is alone.
+// Matching the connection as well as the historical identity keeps remote
+// authors and pre-rename messages attributed even after their peers leave.
+fn solo_owner(
+  captured: Option(#(snapshot.Captured, snapshot_view.View)),
+) -> Option(message.Origin) {
+  use #(cut, view) <- option.then(captured)
+  case cut.attachment.role, view.peers {
+    snapshot.Owner, [peer]
+      if peer.connection_id == cut.attachment.connection_id
+      && peer.origin == cut.attachment.origin
+    -> Some(cut.attachment.origin)
+    _, _ -> None
+  }
+}
+
+fn user_author_prefix(
+  origin: Option(message.Origin),
+  local_owner: Option(message.Origin),
+) -> String {
   case origin {
     None -> ""
+    Some(author) if Some(author) == local_owner -> ""
     Some(author) -> text_hygiene.single_line(author.name) <> ":\n"
   }
 }
@@ -5372,6 +5445,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Schedules
     | command.Agents
     | command.Sessions
+    | command.Rename(_)
     | command.Approvals(_)
     | command.Notes
     | command.Details
@@ -5573,6 +5647,17 @@ fn submit_text(model: Model) -> Model {
       )
     }
     command.Sessions -> open_session_selector(cleared)
+    command.Rename(name) ->
+      case cleared.session {
+        "" -> append_error(cleared, "no session is attached")
+        id ->
+          load_catalogue_after(
+            cleared,
+            "",
+            None,
+            Some(control_protocol.RenameSession(id, name)),
+          )
+      }
     command.Approvals(None) ->
       list.fold(approval_lines(cleared.approvals), cleared, fn(model, line) {
         append_system(model, line.text)
@@ -5659,6 +5744,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.Unschedule(..)
     | command.Agents
     | command.Sessions
+    | command.Rename(_)
     | command.Approvals(_)
     | command.Approve(_)
     | command.Deny(_)

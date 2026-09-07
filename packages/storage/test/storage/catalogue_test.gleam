@@ -11,6 +11,7 @@ import gleam/string
 import simplifile
 import sqlight
 import storage/catalogue
+import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
 import support/fixtures
@@ -19,6 +20,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(schema) = simplifile.read("sql/schema.sql")
     as "canonical schema is checked in"
   assert sql_schema.schema == schema
+  let assert Ok(names) = simplifile.read("sql/catalogue_names.sql")
+    as "name migration is checked in"
+  assert catalogue_names_schema.schema == names
 }
 
 pub fn generated_queries_match_the_sqlc_input_test() {
@@ -29,6 +33,8 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.find_registrations("", "", "").0,
     sql.insert_registration("", "", "", "", "", 0, "").0,
     sql.confirm_registration("").0,
+    sql.registration_display_name("").0,
+    sql.set_registration_display_name("", "").0,
     sql.registration_page("").0,
     sql.catalogue_revision().0,
     sql.member_registration_page("", "").0,
@@ -58,6 +64,53 @@ fn normalize_queries(source: String) -> String {
 
 fn fresh_path(name: String) -> String {
   fixtures.scratch("catalogue-" <> name) <> "/catalogue.db"
+}
+
+pub fn display_rename_preserves_creation_retry_and_revision_test() {
+  let path = fresh_path("display-rename")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(899)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(before) = catalogue.page(store, after: "")
+    as "original page loads"
+  let renamed = catalogue.Registration(..record, name: "review auth")
+  assert catalogue.rename(store, record.id, "review auth") == Ok(renamed)
+  assert catalogue.get(store, record.id) == Ok(renamed)
+  assert catalogue.by_request_key(store, record.request_key) == Ok(record)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.reserve(store, renamed) == Error(catalogue.Conflict)
+  let assert Ok(after) = catalogue.page(store, after: "")
+    as "display page loads"
+  assert after.records == [renamed]
+  assert after.revision == before.revision + 1
+  assert catalogue.rename(store, record.id, "review auth") == Ok(renamed)
+  assert catalogue.page(store, after: "") == Ok(after)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
+  assert catalogue.get(reopened, record.id) == Ok(renamed)
+  assert catalogue.by_request_key(reopened, record.request_key) == Ok(record)
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn version_one_catalogue_migrates_without_losing_creation_test() {
+  let path = fresh_path("rename-migration")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let record = registration(898)
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path)
+    as "fixture downgrades only its new empty table"
+  assert sqlight.exec(
+      "DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+  let assert Ok(migrated) = catalogue.open(path) as "version one migrates"
+  assert catalogue.by_request_key(migrated, record.request_key) == Ok(record)
+  let assert Ok(_) = catalogue.rename(migrated, record.id, "migrated")
+    as "new name table works"
+  assert catalogue.close(migrated) == Ok(Nil)
 }
 
 pub fn read_snapshots_do_not_reserve_the_writer_but_mutations_do_test() {

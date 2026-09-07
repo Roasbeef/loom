@@ -415,6 +415,7 @@ fn control(
             | protocol.WorkspaceDefault(_)
             | protocol.GetOperation(..)
             | protocol.SetDefault(..)
+            | protocol.RenameSession(..)
             | protocol.IsolateSession(..)
             | protocol.Invite(..)
             | protocol.SetRole(..)
@@ -446,6 +447,7 @@ fn control_use(command: protocol.Command) {
     | protocol.WorkspaceDefault(_)
     | protocol.GetOperation(..) -> root.ControlRead
     protocol.SetDefault(..)
+    | protocol.RenameSession(..)
     | protocol.IsolateSession(..)
     | protocol.Invite(..)
     | protocol.SetRole(..)
@@ -500,6 +502,11 @@ fn dispatch(
   // authority is narrower: an operator may open a granted identity, but cannot
   // choose another workspace, configuration, or durable default.
   case command {
+    protocol.RenameSession(id, name, supplied) -> {
+      manager.rename(state.registry, digest, supplied, id, name)
+      |> result.map_error(admin_error_code)
+      |> result.map(fn(view) { #("sessions.rename", view_json(view)) })
+    }
     protocol.IsolateSession(id, supplied) -> {
       use selected <- result.try(
         manager.isolate(state.registry, digest, supplied, id, state.state_root)
@@ -636,7 +643,12 @@ fn dispatch(
         |> result.replace_error("invalid_workspace"),
       )
       use configuration <- result.try(
-        bootstrap.canonical_path(configuration)
+        case configuration {
+          // Absence is a registration choice, not the daemon's current path.
+          // Canonicalizing it would replace inherited defaults with a directory.
+          "" -> Ok("")
+          path -> bootstrap.canonical_path(path)
+        }
         |> result.replace_error("invalid_configuration"),
       )
       manager.create_scoped(

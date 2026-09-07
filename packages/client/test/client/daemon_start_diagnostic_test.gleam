@@ -141,3 +141,63 @@ pub fn daemon_start_diagnostic_keeps_other_storage_failures_opaque_test() {
   assert main.start_class(main.RuntimeAssembly, unclassified)
     == #("runtime_assembly", "storage_open_failed", [])
 }
+
+pub fn daemon_start_diagnostic_classifies_rejected_domain_configuration_test() {
+  let settings = owned_assembly_test.settings()
+  let directory = filepath.directory_name(settings.session_path)
+  let workspace = directory <> "-workspace"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(workspace)
+    as "fixture workspace is outside protected daemon state"
+  let private_detail = "diagnostic-private-missing-model"
+  let configuration = workspace <> "/loom.toml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      configuration,
+      "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"UNUSED_TEST_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\nsummarize = [\""
+        <> private_detail
+        <> "\"]\n[memory]\ndistill = \"off\"\n",
+    )
+    as "valid TOML still rejects a role naming an absent model"
+  let assert Ok(config) = main.parse(["--state-dir", directory])
+    as "metadata startup must not eagerly validate a domain catalogue"
+  let events = process.new_subject()
+  let logger = log.new(sink: log.to_subject(events), threshold: level.Error)
+  let assert Ok(daemon) = main.prepare(config, logger)
+    as "production daemon starts before explicit domain admission"
+  let assert Ok(ready) = root.ready(daemon, within: 5000)
+    as "the real registry is ready before creation"
+
+  // Domain loading fails before a session builder can report anything. Keep
+  // the logger's event outside that retiring owner, then join root cleanup
+  // before asserting so a regression cannot strand the fixture's catalogue.
+  let created =
+    manager.create_scoped(
+      ready.registry,
+      manager.Creation(
+        "invalid-domain-config",
+        workspace,
+        "Fixture",
+        configuration,
+      ),
+      directory: ready.sessions_directory,
+      generator: ids.generator(clock.fixed(1000), 993),
+      scope: domain.WorkspacePrivate,
+      configuration: configuration,
+    )
+  let observed = process.receive(events, 5000)
+  let retired = root.shutdown(daemon, within: 10_000)
+  assert retired == Ok(Nil)
+  let assert Ok(_) = created
+    as "creation reserves identity before domain loading"
+  let assert Ok(event) = observed
+    as "domain failure emits a classification before operation retirement"
+  assert event.level == level.Error
+  assert event.event == "daemon.domain_start_failed"
+  assert event.fields
+    == [
+      field.text("stage", "domain_assembly"),
+      field.text("class", "configuration_rejected"),
+    ]
+  assert !string.contains(record.render(event), private_detail)
+  assert !string.contains(record.render(event), workspace)
+}

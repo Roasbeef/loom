@@ -10,10 +10,58 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import simplifile
 import tui/internal/workspace_file
+import tui/text_hygiene
 
 /// The repository root and branch visible to the terminal process.
 pub type Context {
   Context(path: String, branch: Option(String))
+}
+
+/// Chooses a saved session name from the context captured by the terminal.
+///
+/// The branch is a creation-time label, not a live claim about a repository
+/// that may later change. Terminal normalization happens before the wire's
+/// 256-byte bound, and cuts preserve complete graphemes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace.session_name(workspace.Context("/work/loom", Some("main")))
+///   == "loom · main"
+/// ```
+pub fn session_name(context: Context) -> String {
+  let base = context.path |> filepath.base_name |> text_hygiene.single_line
+  let branch = case context.branch {
+    Some(branch) -> branch |> text_hygiene.single_line |> string.trim
+    None -> ""
+  }
+  let name = case string.trim(base), branch {
+    "", _ | "/", _ | ".", _ -> "New session"
+    base, "" -> base
+    base, branch -> base <> " · " <> branch
+  }
+
+  // A single grapheme can itself exceed the byte budget. Keep the fallback
+  // nonempty rather than splitting it or rejecting creation at the codec.
+  case name_prefix(string.to_graphemes(name), 256) |> string.trim {
+    "" -> "New session"
+    name -> name
+  }
+}
+
+// Stop at the first grapheme that does not fit: skipping it would silently
+// join unrelated parts of the original name instead of preserving a prefix.
+fn name_prefix(graphemes: List(String), remaining: Int) -> String {
+  case graphemes {
+    [] -> ""
+    [first, ..rest] -> {
+      let bytes = string.byte_size(first)
+      case bytes <= remaining {
+        True -> first <> name_prefix(rest, remaining - bytes)
+        False -> ""
+      }
+    }
+  }
 }
 
 /// Discovers the nearest repository surrounding the current directory.

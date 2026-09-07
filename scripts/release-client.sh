@@ -46,7 +46,7 @@ if [ "$SMOKE" = 1 ]; then
   erts_bin="$(ls -d "$REL"/erts-*/bin | head -1)"
   out="$(env -i PATH=/usr/bin:/bin HOME="${HOME:-/tmp}" \
     "$erts_bin/erl" -boot "$REL/bin/no_dot_erlang" -pa "$REL"/lib/*/ebin -noshell \
-    -eval '{module, M} = code:ensure_loaded(tui@@main), io:format("~s~n", [M]), halt().' \
+    -eval '{module, M} = code:ensure_loaded(tui@@main), case os:type() of {unix, darwin} -> "loom" = string:trim(os:cmd("/bin/ps -p " ++ os:getpid() ++ " -o ucomm=")); _ -> ok end, io:format("~s~n", [M]), halt().' \
     2>&1 || true)"
   case "$out" in
     "tui@@main") echo "release-client smoke: the bundled runtime boots and loads the client without erl on PATH" ;;
@@ -122,6 +122,15 @@ if [ "$STRIP_ERTS" = 1 ]; then
   echo "==> stripping the copied ERTS"
   find "$REL/erts-$ERTS_VSN/bin" -type f -exec sh -c '
     file -b "$1" | grep -q "ELF.*not stripped" && strip -s "$1"' _ {} \; || true
+fi
+
+# macOS names a process for the resolved native executable, not the shell
+# launcher or argv[0]. Keep OTP's expected path as an alias so erl and escript
+# still use the unmodified startup machinery. Moving the binary changes no
+# signed bytes and adds no second copy to the executable manifest.
+if [ "$(uname -s)" = Darwin ]; then
+  mv "$REL/erts-$ERTS_VSN/bin/beam.smp" "$REL/erts-$ERTS_VSN/bin/loom"
+  ln -s loom "$REL/erts-$ERTS_VSN/bin/beam.smp"
 fi
 
 # The launcher: the shipment entrypoint's invocation over the bundled

@@ -127,9 +127,9 @@ pub type Options {
     ///
     /// Named by the operator on the command line, so it is trusted the way
     /// an explicitly attached server's `--config` is; the launcher still
-    /// never reads a catalogue out of the workspace. It shapes a *cold*
-    /// start only — a recorded endpoint whose server is still alive is
-    /// reused as it is, whatever catalogue that server booted with.
+    /// never reads a catalogue out of the workspace. It shapes cold startup
+    /// and each newly created session. Reusing the daemon or opening an
+    /// existing registration does not replace that registration's catalogue.
     config: String,
   )
 }
@@ -1198,6 +1198,23 @@ fn resolve_config(
         "resolve config " <> path <> ": " <> reason
       })
   }
+}
+
+/// Resolves creation configuration even when the daemon was already running.
+///
+/// A local selection uses the same trusted catalogue as cold startup. Relative
+/// flags belong to the terminal's working directory, never the daemon's.
+/// An absent catalogue stays empty so the daemon can use its own defaults.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.session_configuration(options)
+/// ```
+@internal
+pub fn session_configuration(options: Options) -> Result(String, String) {
+  use state <- result.try(state_directory(options.state_directory))
+  resolve_config(options.config, state)
 }
 
 /// Builds the fixed server argument surface used by automatic startup.

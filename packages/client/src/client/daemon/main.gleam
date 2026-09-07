@@ -296,6 +296,7 @@ pub fn prepare(
     manager.Assembly(
       domain_build: fn(selected, sources, owner) {
         serve.build_domain(selected, sources, logger, owner)
+        |> diagnose_domain_start(logger, selected.configuration)
       },
       build: fn(registration, selected, services, owner) {
         use identity <- result.try(
@@ -321,6 +322,37 @@ pub fn prepare(
       fatal: serve.instance_children,
     ),
   )
+}
+
+// Domain construction precedes session assembly, so its failures never reach
+// the session diagnostic below. Preserve a fixed classification before the
+// failed owner retires; the domain identity itself contains a workspace path.
+fn diagnose_domain_start(
+  outcome: Result(value, String),
+  logger: Logger,
+  configuration: String,
+) -> Result(value, String) {
+  outcome
+  |> result.map_error(fn(reason) {
+    let class = case
+      configuration != ""
+      && {
+        string.starts_with(reason, configuration <> ": ")
+        || string.starts_with(
+          reason,
+          "the config file " <> configuration <> " is unreadable: ",
+        )
+      }
+    {
+      True -> "configuration_rejected"
+      False -> "assembly_failed"
+    }
+    log.error(logger, "daemon.domain_start_failed", [
+      field.text("stage", "domain_assembly"),
+      field.text("class", class),
+    ])
+    reason
+  })
 }
 
 // A failed builder can retire before the control client reads its operation.

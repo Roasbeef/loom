@@ -28,6 +28,7 @@ import tui/daemon/protocol
 import tui/daemon/selection
 import tui/session_channel
 import tui/snapshot
+import tui/workspace
 import weft
 import weft/actor
 import weft/poll
@@ -145,10 +146,23 @@ fn exercise(
   let owner = string.trim(token)
   let assert Ok(host) = selection.host(connected.control, address, owner)
     as "the authenticated owner has a session selector"
-  let assert Ok(a) = selection.create(host, "held-A", workspace, a_config)
+  let assert Ok(a) =
+    selection.create_named(
+      host,
+      "held-A",
+      workspace,
+      workspace.session_name(workspace.Context(workspace, None)),
+      a_config,
+    )
     as "A starts through ordinary durable creation"
   let assert Ok(b) =
-    selection.create(host, "peer-B", directory <> "/b", b_config)
+    selection.create_named(
+      host,
+      "peer-B",
+      directory <> "/b",
+      workspace.session_name(workspace.Context(directory <> "/b", None)),
+      b_config,
+    )
     as "B has an independent configured workspace"
   let assert Ok(a_driver) = tui_driver.start(address, owner, a.expected.session)
     as "A uses a real native terminal"

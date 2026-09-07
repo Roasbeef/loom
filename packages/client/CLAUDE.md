@@ -22,6 +22,12 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- Daemon control `RenameSession` calls `manager.rename`, whose `Rename` message
+  reauthenticates owner and daemon epoch before `catalogue.rename` in the same
+  serialized dispatch. Its reply is a `View`; no runtime is opened or stopped.
+  [Protocol 019](../../protocol-change/019-session-display-names.md) keeps mutable
+  display labels separate from immutable creation-key metadata.
+
 - `client/daemon/admin.Request` is the one-shot `loomd access` command.
   It reads existing private endpoint/owner-token records, verifies the hello
   epoch, and sends one control mutation through `host/websocket`. It never

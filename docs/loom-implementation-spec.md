@@ -262,7 +262,7 @@ c→s: {v:2, id, cmd, body}
 s→c: {v:2, reply_to?, event, seq?, body}
 ```
 
-Control commands are `status`, `sessions.list`, `sessions.get`, `sessions.default`, `sessions.set_default`, `sessions.create`, `sessions.open`, `sessions.stop`, `operations.get` and `daemon.shutdown`. The server's opening `hello` event carries no `reply_to`, and names the protocol version, the daemon epoch, the authenticated principal and the advertised limits; every later reply repeats its command's name as the `event`. Metadata reads never open a conversation database.
+Control commands are `status`, `sessions.list`, `sessions.get`, `sessions.default`, `sessions.set_default`, `sessions.create`, `sessions.rename`, `sessions.open`, `sessions.stop`, `operations.get` and `daemon.shutdown`. The server's opening `hello` event carries no `reply_to`, and names the protocol version, the daemon epoch, the authenticated principal and the advertised limits; every later reply repeats its command's name as the `event`. Metadata reads never open a conversation database. Owner-only `sessions.rename` checks the daemon epoch and changes only display metadata; [protocol-change/019](../protocol-change/019-session-display-names.md) preserves the original name for creation-key equality.
 
 [`docs/client-protocol.md`](client-protocol.md) is the client-facing reference for all of this: every command and event body, the transfer procedure, the error codes and the limits, written so a new frontend can be built from it alone.
 

@@ -1,9 +1,23 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import tui/command
 import tui/daemon/protocol
 
 const hello = "{\"v\":2,\"event\":\"hello\",\"body\":{\"protocol\":2,\"epoch\":\"epoch-one\",\"principal\":\"owner\",\"limits\":{\"control_bytes\":65536}}}"
+
+pub fn rename_command_preserves_spaces_and_requires_argument_test() {
+  assert command.parse("/rename review auth") == command.Rename("review auth")
+  assert command.parse("/rename   ") == command.MissingArgument("rename")
+  assert protocol.mutates(protocol.RenameSession("invalid", "name"))
+  let assert Error(_) =
+    protocol.encode(
+      1,
+      protocol.RenameSession("invalid", "name"),
+      protocol.Epoch("epoch"),
+    )
+    as "rename retains canonical session identity validation"
+}
 
 pub fn every_truncated_hello_is_rejected_test() {
   assert protocol.decode(hello)
@@ -78,6 +92,30 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
     == Ok(
       "{\"v\":2,\"id\":1,\"cmd\":\"daemon.shutdown\",\"body\":{\"epoch\":\"current\"}}",
     )
+}
+
+pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
+  let epoch = protocol.Epoch("current")
+  let assert Ok(encoded) =
+    protocol.encode(
+      1,
+      protocol.CreateSession("key", "/work", "New session", ""),
+      epoch,
+    )
+    as "omitted config can reach the daemon's inherited defaults"
+  assert string.contains(encoded, "\"configuration\":\"\"")
+  let assert Error(_) =
+    protocol.encode(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/work",
+        "New session",
+        string.repeat("x", 4097),
+      ),
+      epoch,
+    )
+    as "allowing absence does not relax the explicit path ceiling"
 }
 
 pub fn domain_status_counts_are_separate_required_observations_test() {

@@ -93,6 +93,7 @@ import tui/protocol as conversation
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui/workspace
 import weft
 import weft/actor
 import weft/poll
@@ -236,7 +237,13 @@ fn exercise(
   let workspace = filepath.join(directory, "workspace")
   let configuration = filepath.join(directory, "fixture.toml")
   let assert Ok(target) =
-    selection.create(host, "shipped-live", workspace, configuration)
+    selection.create_named(
+      host,
+      "shipped-live",
+      workspace,
+      workspace.session_name(workspace.Context(workspace, None)),
+      configuration,
+    )
     as "explicit creation opens the fixture session"
   let id = target.expected.session
   share_session(connected.control, address, owner, epoch, id)

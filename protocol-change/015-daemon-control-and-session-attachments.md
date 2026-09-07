@@ -414,6 +414,21 @@ configuration file. This change does not claim to freeze runtime defaults at
 session creation. A resolution regression uses valid session-B configuration
 and an invalid domain-A configuration while preserving the domain's exact paths.
 
+### Implementation correction: empty creation configuration
+
+The runtime-default rule above also applies to `sessions.create` on the
+control wire. Its `configuration` field is required bounded text, but may be
+empty; request keys, workspaces and names remain nonempty. The TUI encoder
+and daemon decoder incorrectly rejected that existing representation. The
+daemon also tried to canonicalize it as a filesystem path. The repair accepts
+empty configuration unchanged and retains the 4,096-byte bound for explicit
+paths. No envelope version, catalogue schema or stored record format changes.
+
+Local clients resolve their trusted default catalogue before creation, even
+when attaching to an existing daemon. They never select a workspace catalogue
+implicitly. An empty reference remains available when no trusted file exists
+or a remote owner client requests the daemon's defaults.
+
 ## Accepted addendum: retained domain ownership and status
 
 The registry admits at most one resource owner for each retained domain. Its

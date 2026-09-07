@@ -144,6 +144,13 @@ if [ "$SMOKE" = 1 ]; then
   done
   [ -n "$LINE" ] || { echo "release.sh: the release never announced its port:" >&2; tail -40 "$LOG" >&2; exit 1; }
 
+  # Inspect the native process identity, not argv or an Erlang node name.
+  if [ "$(uname -s)" = Darwin ]; then
+    NATIVE_NAME="$(ps -p "$SERVER_PID" -o ucomm= | tr -d '[:space:]')"
+    [ "$NATIVE_NAME" = loomd ] || {
+      echo "release.sh: expected native process loomd, got $NATIVE_NAME" >&2; exit 1; }
+  fi
+
   PORT="$(printf '%s\n' "$LINE" | sed -n 's|.*ws://[^:]*:\([0-9]*\)/v2/control.*|\1|p')"
   LEGACY_HEALTH="$(curl --connect-timeout 2 --max-time 5 -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")"
   [ "$LEGACY_HEALTH" = 404 ] || { echo "release.sh: unexpected legacy health route: $LEGACY_HEALTH" >&2; exit 1; }
@@ -403,6 +410,15 @@ if [ "$STRIP_ERTS" = 1 ]; then
   echo "==> stripping the copied ERTS"
   find "$REL/erts-$ERTS_VSN/bin" -type f -exec sh -c '
     file -b "$1" | grep -q "ELF.*not stripped" && strip -s "$1"' _ {} \; || true
+fi
+
+# macOS displays the resolved native executable's basename. Preserve the
+# beam.smp entry point as a relative alias so erl, escript and the code-mode
+# compiler retain OTP's startup path. The signed bytes stay unchanged, and
+# the renamed executable remains covered by the manifest generated below.
+if [ "$(uname -s)" = Darwin ]; then
+  mv "$REL/erts-$ERTS_VSN/bin/beam.smp" "$REL/erts-$ERTS_VSN/bin/loomd"
+  ln -s loomd "$REL/erts-$ERTS_VSN/bin/beam.smp"
 fi
 
 # The launcher. It is the shipment entrypoint's invocation with two

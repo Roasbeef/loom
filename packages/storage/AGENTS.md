@@ -12,6 +12,14 @@ by WP-C-full.
 
 ## Key Types
 
+- `catalogue.rename` writes a session display-name override and increments the
+  catalogue revision in one immediate transaction. Schema version 2 adds
+  `catalogue_session_names`; the embedded `catalogue_names_schema` migrates
+  version 1 atomically. Display reads join the override, while `by_request_key`
+  and reservation comparisons retain the original creation name. Named queries
+  remain SQLC-generated. [Protocol 019](../../protocol-change/019-session-display-names.md)
+  defines the owner-facing operation.
+
 - `storage/internal/history_source.{Source, Cut}` binds a read-only native
   connection to its canonical source path. `inspect` reads identity, generation,
   and high-water in one short transaction on that retained connection; `page`,
@@ -73,7 +81,8 @@ by WP-C-full.
   `ReadTimedOut` or `ReaderUnavailable` instead of panicking.
 - `storage/sql` contains parrot/sqlc-generated catalogue and snapshot queries.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
-  embeds conversation `sql/session.sql`. Generation loads both schemas for
+  embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the
+  version-2 name-override table. Generation loads all three schemas for
   query checking, but each database executes only its own schema. `make gen-sql`
   regenerates these artifacts, and tests pin them to their sources.
 - `storage/catalogue.{query, statement, atomic, coherent}` are internal

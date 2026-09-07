@@ -1,4 +1,6 @@
 import core/json
+import etui/backend
+import etui/widgets/textarea as text_area
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
@@ -9,6 +11,7 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import host/endpoint
 import simplifile
+import tui
 import tui/attachment
 import tui/bootstrap
 import tui/connection
@@ -16,7 +19,9 @@ import tui/daemon
 import tui/daemon/protocol as control
 import tui/daemon/selection
 import tui/session_channel
+import tui/session_selector
 import tui/sessions
+import tui/workspace
 import weft
 import weft/poll
 
@@ -95,6 +100,30 @@ pub fn launch_arguments_do_not_trust_workspace_configuration_test() {
 pub fn the_default_catalogue_lives_in_the_state_root_test() {
   assert bootstrap.default_catalogue_path("/home/me/.loom")
     == "/home/me/.loom/loom.toml"
+}
+
+pub fn session_configuration_resolves_trusted_default_and_explicit_paths_test() {
+  let root = test_root("creation-config")
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(root)
+    as "fixture state root exists"
+  let workspace = filepath.join(root, "workspace")
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(workspace)
+    as "fixture workspace exists"
+  assert simplifile.write(filepath.join(workspace, "loom.toml"), "untrusted")
+    == Ok(Nil)
+  let options = bootstrap.Options(workspace, "", "", root, "")
+  assert bootstrap.session_configuration(options) == Ok("")
+
+  let path = bootstrap.default_catalogue_path(root)
+  assert !string.starts_with(path, "/")
+  assert simplifile.write(path, "trusted") == Ok(Nil)
+  let assert Ok(canonical) = host_bootstrap.canonical_path(path)
+    as "trusted default has a canonical path"
+  assert bootstrap.session_configuration(options) == Ok(canonical)
+  assert bootstrap.session_configuration(
+      bootstrap.Options(..options, config: path),
+    )
+    == Ok(canonical)
 }
 
 pub fn launch_arguments_forward_an_operator_named_config_test() {
@@ -386,7 +415,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     as "wire workspace paths are absolute, not relative to the daemon cwd"
   let assert Ok(other_workspace) =
     host_bootstrap.canonical_directory(other_workspace)
-  let configuration = filepath.join(root, "fixture.toml")
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(state)
+    as "the trusted default belongs to the private state root"
+  let configuration = bootstrap.default_catalogue_path(state)
   let assert Ok(Nil) =
     simplifile.write(
       configuration,
@@ -394,7 +425,8 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     )
     as "a deterministic launch never uses environment-backed maintenance"
   let assert Ok(configuration) = host_bootstrap.absolute_path(configuration)
-  let options = bootstrap.Options(workspace, "", server, state, configuration)
+  let options = bootstrap.Options(workspace, "", server, state, "")
+  assert bootstrap.session_configuration(options) == Ok(configuration)
   let terminal = process.self()
   let launched =
     weft.new(
@@ -417,13 +449,47 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   assert first.paths.token == filepath.join(first.paths.root, "owner.token")
   let assert Ok(host) =
     selection.host(first.control, address, string.trim(token))
-  let assert Ok(target) =
-    selection.create(host, "bootstrap-fixture", workspace, configuration)
-    as "an explicit create reserves and opens a canonical session"
-  let switched =
-    wait_for_attachment(attachment.start(fn() { Ok(target) }, 20_000), 20_000)
+  let model =
+    tui.new_model(connection.new_inbox(), workspace.discover_from(workspace))
+  let model =
+    tui.Model(
+      ..model,
+      local_options: Some(options),
+      daemon_host: Some(host),
+      overlay: tui.DaemonSelector(session_selector.new(empty, "")),
+      input: text_area.state_from_string("retained draft"),
+    )
+
+  // A local path failure sends no creation request and retains no durable key.
+  // Correcting the option must permit the same selector action immediately.
+  let invalid =
+    tui.Model(
+      ..model,
+      local_options: Some(
+        bootstrap.Options(
+          ..options,
+          config: filepath.join(root, "absent/loom.toml"),
+        ),
+      ),
+    )
+  let refused = tui.update(backend.KeyPress("n"), invalid)
+  assert refused.creation_key == None
+  assert text_area.value(refused.input) == "retained draft"
+  assert !attachment.busy(refused.candidate)
+  let creating =
+    tui.update(
+      backend.KeyPress("n"),
+      tui.Model(..refused, local_options: Some(options)),
+    )
+  let switched = wait_for_attachment(creating.candidate, 20_000)
   let assert attachment.Adopted(channel, cut, _, _, _, _) = switched
     as "the terminal validates the bounded capture before actual adoption"
+  let adopted =
+    tui.candidate_outcome(creating, attachment.idle(), Some(switched))
+  assert adopted.current_model == "fixture"
+  assert adopted.creation_key == None
+  let assert Ok(target) = selection.open(host, cut.attachment.expected.session)
+    as "the created session is already resident"
   assert cut.attachment.expected == target.expected
   session_channel.close(channel)
 

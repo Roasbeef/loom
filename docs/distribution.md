@@ -311,6 +311,14 @@ The client ships in two shapes, and `make dist` produces both:
 Either way the server tarball is a separate download and remains
 self-contained.
 
+On macOS, the bundled releases appear in Activity Monitor as `loom` for the
+terminal and `loomd` for the server. The release renames the native emulator
+and keeps `beam.smp` as a relative symlink for OTP's launchers. The emulator's
+signed contents and startup arguments are unchanged. A slim client uses the
+host's emulator and still appears as `beam.smp`; Linux packaging is unchanged.
+Short-lived compiler and code-mode processes using the bundled server emulator
+also appear as `loomd`, so the name alone does not identify the daemon.
+
 When both downloads are installed on one machine, `loom` can start a local
 server as a convenience. It finds a sibling `loomd`, an explicit `--server` or
 `LOOM_SERVER`, or `loomd` through an absolute directory on `PATH`, then attaches
@@ -319,9 +327,15 @@ entries are ignored because they would make the workspace launch authority. It
 neither loads a workspace `loom.toml` nor uses the workspace as the server's
 working directory, because both surfaces can select host-side processes. A
 catalogue the operator names on the command line, `loom --config <loom.toml>`,
-is a different matter — it is trusted the way an explicit server's `--config`
-is — and it is forwarded to a *cold* start only: a recorded endpoint whose
-server is still alive is reused with whatever catalogue it booted with.
+is trusted like an explicit server's `--config`. Without that flag, the local
+client uses `<state-root>/loom.toml` when present, normally `~/.loom/loom.toml`.
+The client resolves that path for automatic daemon startup and each new
+session, including creation through an already-running daemon. Explicit relative
+paths resolve from the terminal's working directory. If no trusted file exists,
+an empty session configuration retains the daemon's session defaults.
+
+Reusing a daemon does not reconfigure its shared maintenance services, and
+opening an existing session preserves its recorded configuration reference.
 Nothing is linked or bundled together: a remote
 client still carries no server runtime, a headless server still carries no
 terminal, and `--addr` remains the attachment path between machines.
