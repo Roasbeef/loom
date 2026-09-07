@@ -1165,9 +1165,9 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:480`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:486`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
-are already durable in the intent (`client/agency.gleam:494`):
+are already durable in the intent (`client/agency.gleam:500`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
 the digest is sixteen fixed hex characters over the operation, the
 minting step and the source index. The model never supplies a name, so it

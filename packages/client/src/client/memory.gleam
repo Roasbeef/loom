@@ -1677,8 +1677,16 @@ pub fn digest_hooks(
   read: fn() -> Option(String),
   clock: Clock,
 ) -> effects.Hooks {
+  // The closure captures the slot it wraps, never the record it came from.
+  // Capturing `hooks` would put a second reference to all twelve slots in the
+  // environment, so each wrapping layer would double the record's *flat* size
+  // — the size a copy costs. Sharing hides that in place and message passing
+  // does not preserve it, so four wrappers cost sixteen copies of the base in
+  // every process a session spawns. See docs/design-notes/daemon-memory.md.
+  let inner = hooks.run_start
+
   effects.Hooks(..hooks, run_start: fn(operation) {
-    list.append(hooks.run_start(operation), injected(read(), clock))
+    list.append(inner(operation), injected(read(), clock))
   })
 }
 

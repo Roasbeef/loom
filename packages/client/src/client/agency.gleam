@@ -353,9 +353,14 @@ pub fn seam(config: Config) -> Agency {
 /// ```
 ///
 pub fn reaping_hooks(hooks: effects.Hooks, config: Config) -> effects.Hooks {
+  // Capture the slot, not the record: a closure over `hooks` doubles the
+  // record's flat size at every wrapping layer, and flat size is what a copy
+  // into a spawned process costs. See docs/design-notes/daemon-memory.md.
+  let inner = hooks.run_end
+
   effects.Hooks(..hooks, run_end: fn(operation) {
     let _reaper = process.spawn_unlinked(fn() { reap_run(config, operation) })
-    hooks.run_end(operation)
+    inner(operation)
   })
 }
 
