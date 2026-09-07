@@ -422,6 +422,17 @@ pub type Event {
   /// A display-level operation phase change.
   OpTransitionEvent(op: String, strand: String, phase: String)
 
+  /// A notice that the durable stream reached the envelope's `seq`, with
+  /// no record attached (`protocol-change/018`).
+  ///
+  /// This is the pushed counterpart of `EntryEvent` and the rest of the
+  /// durable stream: the record itself still travels the credited
+  /// snapshot path, and a receiver that has not seen `seq` asks for it
+  /// now rather than at its next idle refresh. Idempotent and
+  /// order-free by construction — it carries the strand it landed on
+  /// and nothing that depends on an earlier notice.
+  CommittedEvent(strand: String)
+
   /// A live streaming fragment (`ephemeral` always true on the wire).
   StreamDeltaEvent(
     strand: String,
@@ -462,6 +473,13 @@ pub type ResultError {
 /// One event envelope. `reply_to` names the command this answers on the
 /// issuing connection; `seq` is present exactly on durable-stream events
 /// (`snapshot`, `stream_delta`, and `error` never carry one).
+///
+/// An absent `reply_to` answers no command. On the host fixture stream
+/// that has always been a broadcast; since `protocol-change/018` it is
+/// also what an authenticated socket's pushed frames carry — a
+/// `committed` notice, a `stream_delta`, `presence`, `attachment`, or a
+/// connection-scoped `error`. A receiver must accept such a frame in any
+/// phase and must not correlate it with the request it has outstanding.
 pub type EventEnvelope {
   EventEnvelope(reply_to: Option(Int), seq: Option(Int), event: Event)
 }
@@ -929,6 +947,10 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         #("phase", json.String(phase)),
       ]),
     )
+    CommittedEvent(strand:) -> #(
+      "committed",
+      json.Object([#("strand", json.String(strand))]),
+    )
     StreamDeltaEvent(
       strand:,
       op:,
@@ -1205,7 +1227,11 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use fields <- result.try(body_fields(body))
       use status <- result.try(required_string(fields, "status"))
       case status {
-        "admitted" | "committed" -> Ok(MutationOutcome(body))
+        // `queued` (protocol-change/018) is the third: the hub holds the
+        // message in memory for a busy strand. It is deliberately not a
+        // durable acknowledgement, so it is spelled beside the two that
+        // are rather than folded in with them.
+        "admitted" | "committed" | "queued" -> Ok(MutationOutcome(body))
         _ -> Error("unknown mutation outcome")
       }
     }
@@ -1231,6 +1257,11 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use strand <- result.try(required_string(fields, "strand"))
       use phase <- result.try(required_string(fields, "phase"))
       Ok(OpTransitionEvent(op:, strand:, phase:))
+    }
+    "committed" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      Ok(CommittedEvent(strand:))
     }
     "stream_delta" -> {
       use fields <- result.try(body_fields(body))
