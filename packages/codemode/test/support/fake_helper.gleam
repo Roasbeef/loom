@@ -109,7 +109,7 @@ fn wait_attach(behavior: Behavior, inbox: Subject(FakeMsg)) -> Nil {
           framing.Frame(
             id: 1,
             body: framing.Hello(
-              proto: framing.protocol_version,
+              proto: framing.exec_protocol_version,
               peer: "codemode-fake",
               features: ["rlimits", "pgroup", "bwrap", "landlock", "seccomp"],
             ),

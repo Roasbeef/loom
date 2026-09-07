@@ -184,7 +184,17 @@ protocol (spec Part 1.4). WP-G.
   (`protocol-change/014-helper-shutdown-witness.md`). The helper sends no
   acknowledgement: it cancels and joins its jail, then exits. The BEAM
   drains stdout and retains the port until `exit_status`.
-  `protocol_version` is 1; `max_frame_bytes` is 16 MiB. The base policy
+  `envelope_version` (the `v` key) is 1; `exec_protocol_version` (the
+  `hello.proto` value) is 3; `max_frame_bytes` is 16 MiB. **A
+  `protocol-change` that adds, removes, or makes-required a key on a
+  frame the exec helper sends or receives — or adds a kind to that
+  channel — bumps `exec_protocol_version` and the Go
+  `framing.ExecProtocolVersion` in the same commit** (the addendum to
+  `protocol-change/006` is the ruling; the constants' doc comments carry
+  the mapping, and `protocol_version_test` reads the Go source so the two
+  literals cannot drift). The envelope version stays fixed while the
+  container's shape does, which is what lets a stale helper's `hello`
+  still decode and the failure name both numbers. The base policy
   additionally travels on fd 3 at spawn (see below). **`hook_call` and
   `hook_result` never cross the exec channel**: they belong to the
   capability socket between the harness and a persistent satellite, so the
@@ -464,7 +474,11 @@ protocol (spec Part 1.4). WP-G.
   `exec_start.policy` remains authoritative; fd 3 only seeds the helper.
 - **Helper failure of any kind settles in-band** as an `ExecFailure` — a
   refusal, a channel death, degraded enforcement, cancel escalation — never
-  a crash of the caller.
+  a crash of the caller. `ProtocolVersionMismatch(helper:, broker:)` is
+  the handshake's own: it carries both version numbers so the rendering
+  can say which build is behind, and it is distinct from
+  `ProtocolViolation` because nothing was violated — the peer spoke its
+  protocol correctly and it was the wrong one.
 - **`FullEnforcement` demands presence, not the absence of complaints.**
   It refuses degraded helpers at dispatch from `hello.features` *and*
   fails executions whose `exec_exit` falls short in any of three ways:

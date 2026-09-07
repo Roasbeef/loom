@@ -34,7 +34,11 @@ fn ready_controlled(transport: exec.Transport) -> exec.Helper {
   let assert Ok(hello) =
     framing.encode(framing.Frame(
       id: 1,
-      body: framing.Hello(proto: 1, peer: "exec-helper", features: []),
+      body: framing.Hello(
+        proto: framing.exec_protocol_version,
+        peer: "exec-helper",
+        features: [],
+      ),
     ))
     as "hello encodes"
   process.send(exec.wire(helper), exec.WireBytes(hello))
@@ -236,7 +240,11 @@ pub fn prepared_helper_has_no_acquisition_before_begin_test() {
   let assert Ok(hello) =
     framing.encode(framing.Frame(
       id: 1,
-      body: framing.Hello(proto: 1, peer: "exec-helper", features: []),
+      body: framing.Hello(
+        proto: framing.exec_protocol_version,
+        peer: "exec-helper",
+        features: [],
+      ),
     ))
     as "hello encodes"
   process.send(exec.wire(helper), exec.WireBytes(hello))

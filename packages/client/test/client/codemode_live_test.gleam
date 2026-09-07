@@ -1424,19 +1424,40 @@ pub fn live_root_discriminators_make_reserved_roots_unique_test() {
     != select_live_root(["/safe"], "1111111111111111", reserve)
 }
 
-// --- helper staleness (issue #61) -------------------------------------------
+// --- helper staleness (issues #61, #64) -------------------------------------
 //
-// `bin/loom-exec` is a checked-in artifact, refreshed only by `make
-// binaries`; every other live-helper suite in this tree builds its own
-// helper from source into its own build directory on every run and so can
-// never go stale (`broker/integration_test`, `codemode/support/rig`,
+// `bin/loom-exec` is the one helper path in this tree that is not rebuilt
+// by the suite that uses it: `make binaries` refreshes it and nothing
+// else does. Every other live-helper suite builds its own from source
+// into its own build directory on every run and so can never go stale
+// (`broker/integration_test`, `codemode/support/rig`,
 // `conformance/support/jail`, `tools/integration_test` — grepped for
 // `loom-exec` across `packages/*/test` to confirm this is the one site
-// with the trap). A helper from any commit before the wire protocol's
-// most recent required-field change passes a bare `simplifile.is_file`
-// check and then fails 3/3 as an anonymous `ChannelFault` — the decode is
-// correctly refusing a frame the stale helper never learned to send — so
-// the check here establishes *currency*, not merely presence.
+// with the trap). So the check here establishes *currency*, not merely
+// presence.
+//
+// This is no longer the mechanism that catches a wire mismatch. Issue #64
+// gave the helper a protocol version in its `hello`, so a binary
+// predating a required-key change now dies at the handshake with
+// `exec.ProtocolVersionMismatch` naming both numbers and the remedy —
+// wherever it happens, in production as much as here, and including the
+// case an mtime cannot see at all: a helper copied in from another
+// checkout with a plausible timestamp.
+//
+// What is left for the mtime comparison is the question the version check
+// deliberately does not answer: **was this binary built from the sources
+// beside it**, when the protocol did not move. A jail fix, an enforcement
+// change, a cancel-ladder repair — none of those bump a version, and all
+// of them are things these four live runs exist to exercise. Running them
+// against last week's binary would give a confident wrong answer with
+// nothing to explain it, which is the shape of #61 with the wire part
+// removed. The two checks are therefore not the same question, and the
+// mtime one is kept for the narrower half.
+//
+// It is kept honest about its limits, too: mtimes are not preserved
+// across checkouts, so this comparison is only meaningful in the tree that
+// built the binary. That is exactly the tree a developer runs `make check`
+// in, and outside it the binary is absent rather than misleading.
 //
 // Absent and stale are told apart in the message even though `make
 // binaries` remedies both, because only one of them looks like a missing

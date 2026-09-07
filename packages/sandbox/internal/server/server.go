@@ -49,7 +49,7 @@ func (s *Server) Run() error {
 	// The helper introduces itself first: the broker learns the honest
 	// feature set before it commits any work to us.
 	if err := s.conn.Write(s.originID(), framing.KindHello, framing.Hello{
-		Proto:    framing.ProtoVersion,
+		Proto:    framing.ExecProtocolVersion,
 		Peer:     "exec-helper",
 		Features: s.feat.List(),
 	}); err != nil {
@@ -80,10 +80,16 @@ func (s *Server) Run() error {
 				_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, err.Error())
 				return err
 			}
-			if h.Proto != framing.ProtoVersion {
+			// Name both numbers, not just the peer's. A helper and a
+			// broker built from different trees is the failure this
+			// check exists for, and "unsupported proto 1" alone leaves
+			// the reader to guess what this binary wanted.
+			if h.Proto != framing.ExecProtocolVersion {
 				_ = s.conn.WriteError(f.ID, framing.ErrCodeProto,
-					fmt.Sprintf("unsupported proto %d", h.Proto))
-				return fmt.Errorf("server: proto mismatch %d", h.Proto)
+					fmt.Sprintf("peer speaks exec protocol %d; this helper speaks %d",
+						h.Proto, framing.ExecProtocolVersion))
+				return fmt.Errorf("server: exec protocol mismatch: peer %d, helper %d",
+					h.Proto, framing.ExecProtocolVersion)
 			}
 			helloSeen = true
 

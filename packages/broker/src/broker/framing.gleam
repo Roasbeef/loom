@@ -9,6 +9,14 @@
 ////            heartbeat, error
 //// ```
 ////
+//// Two versions travel here and they are not the same number. `v` is
+//// `envelope_version`, the container format above, and has never moved.
+//// `hello.proto` is `exec_protocol_version`, the vocabulary *inside*
+//// `body` on the exec channel, and every protocol change to that
+//// vocabulary bumps it. Keeping them apart is what lets a stale helper
+//// be diagnosed rather than merely rejected: its frames still decode, so
+//// the broker can read its `hello`, see which side is behind, and say so.
+////
 //// `hook_call` and `hook_result` are the one pair that flows the other
 //// way: the harness asks and the satellite answers
 //// (`protocol-change/012-hook-call.md`). They exist because a satellite
@@ -38,8 +46,47 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 
-/// The protocol version spoken in frame envelopes and hellos.
-pub const protocol_version = 1
+/// The frame envelope's own version, stamped as `v` on every frame of
+/// every effect-plane channel and rejected on sight when it differs.
+///
+/// It describes the *container* — a `u32_be` length prefix around a
+/// msgpack map of exactly `v`, `id`, `kind`, `body` — and says nothing
+/// about what is inside `body`. No protocol change has altered that
+/// shape, which is why this has stayed 1 while `exec_protocol_version`
+/// has moved. The exec helper (`sandbox/internal/framing.EnvelopeVersion`)
+/// and the satellite prelude (`cap/internal/wire.protocol_version`) pin
+/// the same literal.
+pub const envelope_version = 1
+
+/// The version of the exec channel's *body* vocabulary: what
+/// `exec_start`, `exec_exit`, `shutdown` and the rest carry. The helper
+/// announces it as `hello.proto`, the broker answers with its own, and
+/// either side refuses a peer that does not match.
+///
+/// This is the number a protocol change moves. **A `protocol-change`
+/// that adds, removes, or makes-required a key on a frame the exec
+/// helper sends or receives — or adds a kind to that channel — bumps
+/// this constant on both sides in the same commit.** Before that rule
+/// existed a stale helper failed as an anonymous decoder error on some
+/// later frame (issue #61); now it fails at the handshake, naming both
+/// numbers.
+///
+/// The history the current value back-fills:
+///
+/// - **1** — the vocabulary frozen in spec Part 1.4 as first shipped.
+/// - **2** — `protocol-change/006`: `exec_exit` gained a required
+///   `cancelled` key, so a helper at 1 cannot produce a frame a broker
+///   at 2 will accept.
+/// - **3** — `protocol-change/014`: the harness-to-helper `shutdown`
+///   frame, which a helper at 2 answers as an unknown kind rather than
+///   by retiring.
+///
+/// Two accepted changes touch Part 1.4 and are deliberately *not*
+/// counted. `protocol-change/012`'s `hook_call`/`hook_result` pair
+/// crosses only the capability socket, which carries no `hello` and so
+/// no `proto` — the exec helper neither sends nor parses those frames.
+/// `protocol-change/004` is still PROPOSED and unimplemented.
+pub const exec_protocol_version = 3
 
 /// The cap on a frame's msgpack payload, mirroring the Go helper's
 /// 16 MiB `MaxFrameLen`: a corrupt or hostile length prefix must not
@@ -64,7 +111,9 @@ pub type OutputStream {
 /// helper's structs byte for byte on the wire.
 pub type Body {
   /// The handshake: the helper sends its hello first; the broker must
-  /// answer with its own before any other frame.
+  /// answer with its own before any other frame. `proto` is the peer's
+  /// `exec_protocol_version`, and a mismatch is fatal to the channel on
+  /// both sides.
   Hello(proto: Int, peer: String, features: List(String))
 
   /// Starts an execution. `policy` overrides the helper's fd-3 base
@@ -179,7 +228,10 @@ pub type FrameError {
   /// The bytes were not a well-formed frame of this protocol.
   Malformed(report: CorruptionReport)
 
-  /// The envelope carried a version other than `protocol_version`.
+  /// The envelope carried a version other than `envelope_version`. A
+  /// peer whose *container* format differs is unreadable; a peer whose
+  /// body vocabulary differs is not, and is caught by `hello.proto`
+  /// instead so the failure can name both numbers.
   UnsupportedVersion(version: Int)
 
   /// A well-formed frame of a kind this broker does not know.
@@ -215,7 +267,7 @@ pub fn encode_payload(frame: Frame) -> Result(BitArray, msgpack.EncodeError) {
     False ->
       msgpack.encode(
         msgpack.MapValue([
-          #(msgpack.StringValue("v"), msgpack.IntValue(protocol_version)),
+          #(msgpack.StringValue("v"), msgpack.IntValue(envelope_version)),
           #(msgpack.StringValue("id"), msgpack.IntValue(frame.id)),
           #(
             msgpack.StringValue("kind"),
@@ -441,7 +493,7 @@ pub fn decode_payload(payload: BitArray) -> Result(Frame, FrameError) {
   use entries <- result.try(envelope_map(value))
   use Nil <- result.try(check_keys(entries, ["v", "id", "kind", "body"]))
   use v <- result.try(envelope_int(entries, "v"))
-  use Nil <- result.try(case v == protocol_version {
+  use Nil <- result.try(case v == envelope_version {
     True -> Ok(Nil)
     False -> Error(UnsupportedVersion(version: v))
   })

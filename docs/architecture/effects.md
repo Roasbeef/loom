@@ -279,6 +279,19 @@ prefix cannot make anyone allocate gigabytes. The helper sends its hello
 first — the broker learns the honest feature set before committing work —
 and refuses every other frame until the broker's hello answers it.
 
+**Two versions, and they answer different questions.** The envelope's
+`"v"` describes the container above — the length prefix and the four map
+keys — and has never moved. The `proto` in `hello` describes the *body*
+vocabulary of the exec channel, and every protocol change to that
+vocabulary bumps it on both sides in the same commit; it is at 3, for
+`protocol-change/006`'s required `exec_exit.cancelled` and
+`protocol-change/014`'s `shutdown` frame. Keeping them apart is what
+makes a stale helper diagnosable rather than merely unreadable: its
+frames still decode, so the broker reads its hello, sees which side is
+behind, and settles with both numbers and the remedy. Before that,
+issue #61 spent an hour on a binary whose only symptom was a decode
+failure on a frame several steps later.
+
 **Malformed and unknown are different failures.** A frame that does not
 parse closes the channel, after an error frame so the effect can settle
 in-band; that is security invariant 6 taken literally. A frame that
