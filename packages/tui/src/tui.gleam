@@ -5498,44 +5498,44 @@ fn submit_text(model: Model) -> Model {
   }
 }
 
-// Images are new prompt content, never live-turn steering. Refusing before the
-// editor is cleared preserves both the instruction and every local attachment.
+// Images are new prompt content, never live-turn steering, and `prompt_content`
+// is the only frame that carries them. A slash command therefore has nowhere to
+// put an attachment; refusing before the editor is cleared preserves both the
+// instruction and every local attachment. Liveness is not this client's
+// question: `prompt` on a busy strand is held by the daemon and drained when
+// the run settles, so an image prompt goes out and comes back `queued`.
 fn submit_with_images(model: Model) -> Model {
   let input = text_area.value(model.input)
-  case image_prompt_allowed(active_strand_live(model)) {
-    False -> append_error(model, "image prompts require an idle strand")
-    True ->
-      case command.parse(input) {
-        command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
-        command.Help
-        | command.Models
-        | command.Model(_)
-        | command.Strands
-        | command.Schedules
-        | command.Unschedule(..)
-        | command.Agents
-        | command.Sessions
-        | command.Approvals(_)
-        | command.Approve(_)
-        | command.Deny(_)
-        | command.Notes
-        | command.Details
-        | command.Strand(_)
-        | command.Fork(_)
-        | command.Effort(_)
-        | command.Compact
-        | command.Abort
-        | command.Steer(_)
-        | command.Queue(_)
-        | command.Clear
-        | command.Quit
-        | command.Unknown(_)
-        | command.MissingArgument(_) ->
-          append_error(
-            model,
-            "image attachments can only accompany an ordinary prompt",
-          )
-      }
+  case command.parse(input) {
+    command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
+    command.Help
+    | command.Models
+    | command.Model(_)
+    | command.Strands
+    | command.Schedules
+    | command.Unschedule(..)
+    | command.Agents
+    | command.Sessions
+    | command.Approvals(_)
+    | command.Approve(_)
+    | command.Deny(_)
+    | command.Notes
+    | command.Details
+    | command.Strand(_)
+    | command.Fork(_)
+    | command.Effort(_)
+    | command.Compact
+    | command.Abort
+    | command.Steer(_)
+    | command.Queue(_)
+    | command.Clear
+    | command.Quit
+    | command.Unknown(_)
+    | command.MissingArgument(_) ->
+      append_error(
+        model,
+        "image attachments can only accompany an ordinary prompt",
+      )
   }
 }
 
@@ -5566,12 +5566,6 @@ pub fn image_prompt_content(
       message.UserImage(data, mime_type)
     })
   list.append(text_blocks, image_blocks)
-}
-
-/// Reports whether image content may start a new turn on this strand.
-@internal
-pub fn image_prompt_allowed(strand_live: Bool) -> Bool {
-  !strand_live
 }
 
 fn send_prompt_content(

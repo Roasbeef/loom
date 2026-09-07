@@ -1187,9 +1187,34 @@ fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
   )
 }
 
-pub fn image_submission_is_refused_while_the_strand_is_live_test() {
-  assert tui.image_prompt_allowed(False)
-  assert !tui.image_prompt_allowed(True)
+/// An image prompt goes out while the strand is running.
+///
+/// The client used to refuse one, because `prompt` on a busy strand was a
+/// conflict. The daemon now holds it and drains it when the run settles, so
+/// the refusal only cost the operator their attachment. `Replaying` is the
+/// peer here because it performs the whole local half of a submission and
+/// writes nothing to a socket, which is exactly the half under test.
+pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
+  let live =
+    tui.Model(
+      ..quiet_model(connection.new_inbox()),
+      peer: tui.Replaying,
+      active_strand: "main",
+      strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
+      attachments: [composer.ImageAttachment(test_image("shot.png", 12))],
+      input: text_area.state_from_string("what is wrong with this screen"),
+    )
+
+  let submitted = tui.update(backend.KeyPress("enter"), live)
+
+  assert submitted.submitting == Some("main")
+    as "the image prompt was submitted rather than refused"
+  assert submitted.attachments == []
+    as "a submitted image prompt clears the composer"
+  assert !list.any(submitted.transcript, fn(line) {
+    line.speaker == tui.Failure
+  })
+    as "no local refusal was written"
 }
 
 pub fn code_mode_program_renders_as_gleam_test() {
