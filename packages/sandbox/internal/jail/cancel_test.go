@@ -119,6 +119,62 @@ func TestTermTargetsTerminateOnACycle(t *testing.T) {
 	}
 }
 
+// #135: a table that lost the depth-2 row still answers non-empty if
+// any unrelated deeper descendant survived the scan, and the walk cannot
+// tell that apart from a complete answer. The kernel's own list of the
+// supervisor's grandchildren can: pid 103 is alive, the selection does
+// not contain it, so the scan was partial and the caller must fall back
+// to the group rather than TERM a subset that does not include the
+// payload.
+func TestTermTargetsPartialScanIsNotTrusted(t *testing.T) {
+	// 103 (the payload) and its child 104 are lost with it, leaving a
+	// second descendant of the namespace init as the only selection.
+	partial := []ProcEntry{
+		{Pid: 100, Ppid: 1},   // supervisor
+		{Pid: 101, Ppid: 100}, // bwrap's ns init
+		{Pid: 110, Ppid: 101}, // an unrelated deeper descendant
+	}
+	targets := TermTargets(partial, 100)
+	if want := []int{110}; !reflect.DeepEqual(targets, want) {
+		t.Fatalf("TermTargets = %v, want %v (the premise of the test)",
+			targets, want)
+	}
+
+	// What the kernel says is actually hanging off the namespace init.
+	roots := []int{103, 110}
+	if termTargetsAreTrusted(targets, roots) {
+		t.Fatal("a selection missing a live payload root was trusted; " +
+			"the caller would TERM a subset and wait out the grace")
+	}
+}
+
+// The converse, and the case that must keep working: the payload row is
+// present, so every live root is covered and the narrow selection —
+// which spares the supervisor and the namespace init — is the one that
+// gets the TERM.
+func TestTermTargetsCompleteScanIsTrusted(t *testing.T) {
+	targets := TermTargets(append(jailedTree(100),
+		ProcEntry{Pid: 104, Ppid: 103}), 100)
+	if want := []int{103, 104}; !reflect.DeepEqual(targets, want) {
+		t.Fatalf("TermTargets = %v, want %v (the premise of the test)",
+			targets, want)
+	}
+	if !termTargetsAreTrusted(targets, []int{103}) {
+		t.Fatal("a complete selection was demoted to the group fallback")
+	}
+}
+
+// An unreadable `children` file gives no roots, and no roots must mean
+// "no opinion" rather than "nothing is alive". Reading it the other way
+// would demote every cancel on a kernel without CONFIG_PROC_CHILDREN to
+// the whole-group TERM that #53 removed.
+func TestTermTargetsTrustedWithoutRoots(t *testing.T) {
+	if !termTargetsAreTrusted([]int{103}, nil) {
+		t.Fatal("an unverifiable selection was demoted; absence of " +
+			"evidence is not evidence of a partial scan")
+	}
+}
+
 func TestParseStatPpid(t *testing.T) {
 	cases := []struct {
 		name string

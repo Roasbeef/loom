@@ -612,9 +612,21 @@ func (e *Exec) Cancel() {
 // before the payload appeared — falls back to the group, because a TERM
 // that was silently not sent is worse than one sent too widely: the
 // caller would wait out a grace nobody was asked to use.
+//
+// A non-empty selection is not by itself evidence that the scan saw the
+// whole jail, and #135 is what that costs: one row lost to a transient
+// `/proc` read failure orphans the payload subtree from the walk while
+// some unrelated descendant keeps the answer non-empty, so TERM lands on
+// the wrong subset and the grace runs out with nobody having been asked
+// to stop. The selection is therefore checked against the payload roots
+// the kernel reports directly, and a live root it does not contain
+// demotes it to the same whole-group fallback an empty one takes.
 func (e *Exec) term() {
 	if e.feat.BwrapPath != "" {
-		if targets := TermTargets(scanProcesses(), e.pgid); len(targets) > 0 {
+		targets := TermTargets(scanProcesses(), e.pgid)
+		if len(targets) > 0 &&
+			termTargetsAreTrusted(targets, payloadRoots(e.pgid)) {
+
 			for _, pid := range targets {
 				_ = syscall.Kill(pid, syscall.SIGTERM)
 			}
