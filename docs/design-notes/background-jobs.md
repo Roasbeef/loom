@@ -188,6 +188,15 @@ is what the record reads afterwards, and
 `an_operators_abort_of_the_operation_kills_the_job_test` in
 `client/jobs_test` is what pins the whole path.
 
+The reach is bounded by that door, and the bound is worth stating rather
+than discovering. The `abort` command aborts the strand's *current*
+operation, so it kills the jobs of the turn that is still running. A job
+started two turns ago outlives its operation by design, and by then no
+command names that operation any more — the operator stops it with
+`job_kill`, or by ending the session. Nothing is lost that the broker
+could have given us: the sweep is a scoped cancel an operator asks for,
+and there is no operator asking once the turn is over.
+
 Session stop reaches
 every job through the actor's position in the ordered `Part` shutdown
 (`instance_owner.gleam:30-50`): jobs die before `Broker` and `Helpers`
@@ -537,6 +546,16 @@ The fixture now asserts both halves: the later program finds the record
 under its own id **and running**, and the payload's own identity — taken
 while the first satellite was being reaped — departs only when the second
 program kills it.
+
+What the fixture deliberately does *not* cover is the operator's abort.
+Every turn it drives runs to completion, and by the time the fixture can
+send a command the operation that started the job has closed — so an
+abort would name the next operation and correctly touch nothing. Proving
+the sweep end to end there would mean a scripted turn that stalls while
+the fixture aborts it, which is a scenario of its own rather than a line
+added to this one. `client/jobs_test` pins the path instead, with the
+real hub over the session's real open operation and only the broker
+scripted.
 
 ## Settled on review
 
