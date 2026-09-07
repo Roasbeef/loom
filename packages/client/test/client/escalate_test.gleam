@@ -918,6 +918,56 @@ pub fn the_record_id_is_deterministic_test() {
     == escalate.record_id("main", "bash", list.reverse(pair))
 }
 
+// Every `Grant` constructor, and which side of the dedup line it sits
+// on. `GrantLimit` collapses its magnitude so a retry loop stepping a
+// model-chosen number cannot mint a record per attempt; the other five
+// keep their whole encoded payload, because that payload comes from the
+// tool's `call_spec` and *is* the question a human is being asked.
+//
+// The invariant behind that split — "the rest of a tool's requirements
+// are static" — is enforced by nothing but the reading of it, so
+// `dedup_key` names its variants one by one and this pins the verdict
+// each one was given. A sixth grant learning to carry a magnitude
+// changes an assertion here.
+pub fn every_grant_has_a_pinned_dedup_verdict_test() {
+  let id = fn(grant) { escalate.record_id("main", "bash", [grant]) }
+
+  // The one collapsing constructor: field is identity, value is not.
+  assert id(policy.GrantLimit(field: policy.WallSeconds, value: 30))
+    == id(policy.GrantLimit(field: policy.WallSeconds, value: 600))
+
+  // The five payload-carrying ones. For each, two values that differ
+  // only in the payload must dedupe *apart*; collapsing any of them
+  // would fail here rather than quietly widening a record's scope.
+  assert id(policy.GrantWritableRoot(path: "/work"))
+    != id(policy.GrantWritableRoot(path: "/etc"))
+  assert id(policy.GrantReadableRoot(path: "/work"))
+    != id(policy.GrantReadableRoot(path: "/etc"))
+  assert id(policy.GrantEnv(name: "PATH")) != id(policy.GrantEnv(name: "HOME"))
+  assert id(
+      policy.GrantNetwork(policy.NetworkProxy(
+        allow: ["registry.npmjs.org"],
+        proxy: "127.0.0.1:9",
+      )),
+    )
+    != id(policy.GrantNetwork(policy.NetworkFull))
+  assert id(policy.GrantScratch(policy.ScratchTmpfs))
+    != id(policy.GrantScratch(policy.ScratchPath(path: "/scratch")))
+
+  // And no two constructors share a key: one grant of each kind, all
+  // six ids distinct. `list.unique` would hide a collision by
+  // shortening the list, which is exactly what this counts.
+  let one_of_each = [
+    id(policy.GrantWritableRoot(path: "/work")),
+    id(policy.GrantReadableRoot(path: "/work")),
+    id(policy.GrantNetwork(policy.NetworkFull)),
+    id(policy.GrantEnv(name: "PATH")),
+    id(policy.GrantLimit(field: policy.WallSeconds, value: 30)),
+    id(policy.GrantScratch(policy.ScratchTmpfs)),
+  ]
+  assert list.length(list.unique(one_of_each)) == 6
+}
+
 // A session nobody is attached to records the refusal and settles it,
 // rather than holding a call open for a decision that can never come.
 // This is the interactive flag, and it decides *parking* only — never

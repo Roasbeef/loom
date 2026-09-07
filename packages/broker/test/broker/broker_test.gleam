@@ -2,6 +2,7 @@ import broker/broker
 import broker/budget
 import broker/escalation
 import broker/exec
+import broker/framing
 import broker/policy
 import broker/support/fake_helper
 import broker/token
@@ -9,7 +10,7 @@ import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 
 fn op() -> ids.OpId {
@@ -896,4 +897,83 @@ pub fn a_clearance_begun_after_an_abort_still_runs_test() {
   let assert Ok(_handle) =
     broker.clear_call(started, spec(op_id), events:, waiting: 2000)
   broker.stop(started)
+}
+
+// One `ExecResult` shaped as a degraded exit, for the failure table
+// below: it ran, it reported which layers applied, and `degraded` says
+// the demand was not met.
+fn degraded_result() -> exec.ExecResult {
+  exec.ExecResult(
+    code: 0,
+    signal: 0,
+    stdout_bytes: 0,
+    stderr_bytes: 0,
+    stdout_truncated: False,
+    stderr_truncated: False,
+    enforcement: ["landlock", "skip:seccomp"],
+    degraded: True,
+    wall_ms: 5,
+    timed_out: False,
+    cancelled: False,
+  )
+}
+
+/// Every `ExecFailure`, and whether it converts to a denial. The point
+/// of the table is the *absences*: `None` settles a call in band and
+/// asks nobody, so a variant that silently joined that column would be
+/// an enforcement shortfall no operator ever sees. `denial_for_failure`
+/// enumerates its variants for that reason, and this pins the verdict
+/// each one was given.
+pub fn every_exec_failure_has_a_pinned_denial_verdict_test() {
+  let escalated = [
+    exec.DegradedHelper(features: ["landlock"]),
+    exec.DegradedExecution(result: degraded_result()),
+  ]
+  let settled = [
+    exec.NotReady,
+    exec.HandshakeTimeout,
+    exec.HelperBusy,
+    exec.RefusedByHelper(code: "bad_policy", message: "root not absolute"),
+    exec.ChannelFault(fault: framing.VersionMismatch(version: 99)),
+    exec.ChannelClosed(status: 137),
+    exec.ProtocolViolation(kind: "exec_start"),
+    exec.SendFailed,
+    exec.CancelEscalated,
+    exec.HeartbeatMissed,
+    exec.HelperUnresponsive,
+  ]
+
+  // The two enforcement shortfalls escalate, and each carries the
+  // enforcement actually applied as the denial's source — which is the
+  // diff a human is being asked to accept.
+  assert list.map(escalated, broker.denial_for_failure)
+    == [
+      Some(
+        escalation.Denial(
+          reason: "helper cannot provide the demanded enforcement",
+          source: escalation.ExecutionDenial(enforcement: ["landlock"]),
+          wanted: [],
+        ),
+      ),
+      Some(
+        escalation.Denial(
+          reason: "execution ran without the demanded enforcement",
+          source: escalation.ExecutionDenial(enforcement: [
+            "landlock", "skip:seccomp",
+          ]),
+          wanted: [],
+        ),
+      ),
+    ]
+
+  // The other eleven are availability, a helper refusal, or a dead
+  // channel: nothing was weakened, so there is nothing to put to a
+  // human.
+  assert list.map(settled, broker.denial_for_failure)
+    == list.map(settled, fn(_failure) { None })
+
+  // The table is the whole type, not a sample of it. Thirteen today;
+  // the `case` in `denial_for_failure` breaks the build on a
+  // fourteenth, and this count says the test must be extended too.
+  assert list.length(escalated) + list.length(settled) == 13
 }

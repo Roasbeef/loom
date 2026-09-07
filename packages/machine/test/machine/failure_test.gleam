@@ -9,20 +9,23 @@ import core/ids
 import core/json
 import core/message
 import core/register
+import gleam/list
 import gleam/option.{None, Some}
 import machine/acceptance.{AcceptCompaction, AcceptRun}
 import machine/operation.{
-  Assistant, Checkpoint, Compacting, CompactionLastResult,
-  ConfigurationProvenance, Deciding, FailureDrain, GenerationRetryWait,
-  NeedAssistant, OperationError, OverflowReason, PendingMessage, RunCompleted,
-  RunLastResult, RunState, StructuralAborted, ThresholdReason, Tools,
+  Assistant, Checkpoint, Compacting, CompactionIntent, CompactionLastResult,
+  CompactionState, ConfigurationProvenance, Deciding, FailureDrain,
+  GenerationRetryWait, NavigationIntent, NavigationState, NeedAssistant,
+  Operation, OperationError, OverflowReason, PendingMessage, RunCompleted,
+  RunIntent, RunLastResult, RunState, Running, StructuralAborted,
+  ThresholdReason, Tools, UnsummarizedNavigation,
 }
 import machine/planner.{
-  Admitted, AwaitEffect, Dispatch, Finish, ModelResolved, ModelUnresolved,
+  Admitted, AwaitEffect, Dispatch, Fault, Finish, ModelResolved, ModelUnresolved,
   NoObservation, ObservedAdmission, ObservedAssistantOrphaned,
   ObservedAssistantSettled, ObservedResolution, ObservedRunEnd, ObservedRunStart,
   ObservedStructuralDecision, ObservedSummaryProgress, ObservedSummaryReturned,
-  Prepared, SummaryFailed, ThresholdExceeded, VerdictGenerate,
+  Prepared, SummaryFailed, ThresholdExceeded, Transition, VerdictGenerate,
 }
 import machine/queue
 import support/fixture
@@ -220,6 +223,118 @@ pub fn truncated_batch_stages_synthetic_errors_test() {
     scenario.read_op_state(world.store, world.op.id)
   let assert NeedAssistant(overflow_recovery_used: False) =
     checkpoint.continuation
+}
+
+/// The stop reason read off a batch source, constructor by constructor.
+/// The test above proves what `Length` buys — synthetic results and
+/// another turn — so what this pins is the other side: which sources are
+/// answered "not truncated", and that the answer is a decision rather
+/// than a default. `message_stop_reason` enumerates its constructors so
+/// a fifth one cannot inherit `Stop` in silence, and a mapping changed
+/// here changes an assertion.
+pub fn every_agent_message_has_a_pinned_stop_reason_test() {
+  // An assistant message is the only constructor carrying a provider
+  // stop reason, and it is passed through unchanged — every reason, not
+  // just the two the planner branches on.
+  let passed_through = [
+    message.Pending,
+    message.Stop,
+    message.Length,
+    message.ToolUse,
+    message.Errored,
+    message.Aborted,
+    message.Deferred,
+  ]
+  assert list.map(passed_through, fn(reason) {
+      planner.message_stop_reason(fixture.assistant(reason, "hi", 10))
+    })
+    == passed_through
+
+  // The other three were never provider responses, so no token limit
+  // applied to them and `Stop` is the claim "this was not truncated".
+  // That claim is exactly what the sole caller reads.
+  let not_a_response = [
+    fixture.user("hello"),
+    fixture.tool_result("call-1", "bash", "ok"),
+    message.CustomMessage(schema: "note", payload: json.Object([])),
+  ]
+  assert list.map(not_a_response, planner.message_stop_reason)
+    == list.map(not_a_response, fn(_message) { message.Stop })
+
+  // Four constructors, all of them here. A fifth breaks the `case` in
+  // `message_stop_reason`, and this count says to extend the table too.
+  assert list.length(not_a_response) + 1 == 4
+}
+
+// Whether an action is the intent/state mismatch fault, told apart from
+// every other action by name rather than by a catch-all — the same
+// reason the planner arm it is checking was enumerated.
+fn is_mismatch_fault(action: planner.Action) -> Bool {
+  case action {
+    Fault(report:) ->
+      report.expected == "state kind compatible with the operation intent"
+    Transition(..)
+    | Dispatch(..)
+    | AwaitEffect(..)
+    | planner.Wait(..)
+    | Finish(..) -> False
+  }
+}
+
+/// The mismatched cells of `next_action`'s intent/state matrix. A state
+/// whose kind disagrees with its operation's intent is corruption and
+/// faults, and the six ways to disagree are enumerated in the planner
+/// rather than swept into `_, _` — otherwise a fourth operation kind
+/// would land its own *diagonal* in this fault, and every operation of
+/// that kind would fail at runtime with the compiler silent.
+pub fn next_action_faults_on_every_mismatched_state_and_intent_test() {
+  let world = start_run("mismatched state")
+  let assert Ok(run_state) = scenario.read_op_state(world.store, world.op.id)
+  let inputs = scenario.build_inputs(world, run_state, NoObservation, opts())
+
+  // One state value of each kind. The run state is the live one; the
+  // other two are shaped only enough to be matched on.
+  let compaction_state =
+    CompactionState(
+      control: Running,
+      custom_instructions: None,
+      structural: Deciding(task_id: "task-1"),
+    )
+  let navigation_state =
+    NavigationState(
+      control: Running,
+      navigation: UnsummarizedNavigation(target: None, label: None),
+    )
+
+  // One intent of each kind, worn by the same operation.
+  let with_intent = fn(intent) { Operation(..world.op, intent:) }
+  let run = with_intent(RunIntent(prompt_entries: []))
+  let compaction = with_intent(CompactionIntent(custom_instructions: None))
+  let navigation =
+    with_intent(NavigationIntent(
+      target: None,
+      summarize: False,
+      label: None,
+      custom_instructions: None,
+    ))
+
+  // All six off-diagonal cells, and every one of them a fault. The
+  // three diagonal cells are the rest of this suite and the scenario
+  // tests; there they are behaviour, not corruption.
+  let mismatched = [
+    #(run_state, compaction),
+    #(run_state, navigation),
+    #(compaction_state, run),
+    #(compaction_state, navigation),
+    #(navigation_state, run),
+    #(navigation_state, compaction),
+  ]
+  let faulted =
+    list.filter(mismatched, fn(cell) {
+      let #(state, op) = cell
+      is_mismatch_fault(planner.next_action(op, state, inputs))
+    })
+  assert list.length(faulted) == 6
 }
 
 pub fn abort_during_structural_deciding_finishes_aborted_test() {
