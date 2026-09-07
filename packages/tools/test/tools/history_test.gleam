@@ -375,6 +375,33 @@ pub fn a_refused_query_settles_in_band_test() {
   assert field(details, "error") == Ok(json.String("history_refused"))
 }
 
+// A transient refusal must not read as a usage error. The model that gave up
+// on this tool had simplified a perfectly good query first, because the text
+// it was handed told it to.
+pub fn a_transient_refusal_asks_for_the_same_call_again_test() {
+  let starting =
+    run(refusing(history.IndexNotReady(reason: "the index is still opening")), [
+      #("query", json.String("auth")),
+    ])
+  assert starting.is_error
+  assert string.contains(text_of(starting), "not ready yet")
+  assert string.contains(text_of(starting), "send the same call again")
+  assert !string.contains(text_of(starting), "simplify")
+  let assert option.Some(details) = starting.details
+    as "a not-ready refusal must be machine-readable too"
+  assert field(details, "error") == Ok(json.String("history_not_ready"))
+
+  let busy =
+    run(refusing(history.IndexBusy(reason: "another request is in flight")), [
+      #("query", json.String("auth")),
+    ])
+  assert string.contains(text_of(busy), "serving another request")
+  assert string.contains(text_of(busy), "send the same call again")
+  let assert option.Some(busy_details) = busy.details
+    as "a busy refusal must be machine-readable too"
+  assert field(busy_details, "error") == Ok(json.String("history_busy"))
+}
+
 // Exact reads return fields absent from FTS excerpts, without copying an
 // unbounded payload into either content or details.
 pub fn exact_read_and_large_spill_preserve_complete_entry_test() {

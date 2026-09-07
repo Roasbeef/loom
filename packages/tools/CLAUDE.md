@@ -157,7 +157,10 @@ can repair from.
   seam and the `history_search` tool over it. `History.search` takes a
   trimmed query, an already-clamped limit and a `Scope`
   (`Repository` | `ThisSession`) and answers hits or a `Refusal`
-  (`IndexUnavailable` | `IndexRefused`). `History.read` takes canonical
+  (`IndexUnavailable` | `IndexRefused` | `IndexNotReady` | `IndexBusy`).
+  The last two are transient and their rendered text says the request was
+  fine and to send the same call again; only `IndexRefused` tells the model
+  to change the query or check the IDs. `History.read` takes canonical
   session and entry IDs and returns a complete codec entry. The host
   resolves registered source paths and validates source identity without
   acquiring a writer lease. `action=read` spills entries over 64 KiB through

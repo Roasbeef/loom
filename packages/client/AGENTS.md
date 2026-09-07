@@ -84,6 +84,15 @@ catalogue without opening runtimes. Explicit admission invokes
   source authorization precedes ranking and exact reads; stored index locators
   do not grant access. Retirement succeeds only after actual close results and
   the original owner exits normally. Failed close retains the owner and handles.
+  A call arriving while the owner is opening its index, or while it is indexing
+  a commit hint of its own, is held in a waiting list of at most eight and
+  admitted the next time the owner reaches `Ready`; the terminal phases
+  (`StartupFailed`, `Blocked`, retirement) drain that list with their own
+  reason. Only a call arriving while *another caller's* request is in flight is
+  refused immediately. Replies carry `tools/history.Refusal`, so the arm that
+  decides a refusal also decides its model-facing sentence: `IndexNotReady` and
+  `IndexBusy` say the request was fine and to send it again, and only
+  `IndexRefused` blames the request.
 - `manager.Summary` reports session occupancy separately from `domain_capacity`,
   `domain_occupied`, and `domain_blocked`. Saved session metadata does not prove
   domain retirement. After the last clean session retirement, `notify_closed`

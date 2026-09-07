@@ -96,6 +96,15 @@ pub type Refusal {
   /// The index answered, and its answer was a refusal — a malformed
   /// FTS5 query is the common one.
   IndexRefused(reason: String)
+
+  /// The index is reachable and starting, and has not opened yet. The
+  /// request itself was fine; nothing about it needs changing before it
+  /// is sent again.
+  IndexNotReady(reason: String)
+
+  /// The holder is answering somebody else's call right now. Again the
+  /// request was fine, and the same call sent again will be served.
+  IndexBusy(reason: String)
 }
 
 /// The recall seam: everything the tool may ask of the index.
@@ -463,9 +472,16 @@ fn refusal_code(refusal: Refusal) -> String {
   case refusal {
     IndexUnavailable(..) -> "history_unavailable"
     IndexRefused(..) -> "history_refused"
+    IndexNotReady(..) -> "history_not_ready"
+    IndexBusy(..) -> "history_busy"
   }
 }
 
+// The model reads this text and decides from it alone whether to retry the
+// same call, change the call, or drop the tool. Only `IndexRefused` blames
+// the request; the two transient variants have to say so plainly, because a
+// model told to "simplify the query" for a timing problem will simplify a
+// perfectly good query, be refused again, and stop using the tool.
 fn describe(refusal: Refusal) -> String {
   case refusal {
     IndexUnavailable(reason:) ->
@@ -476,6 +492,14 @@ fn describe(refusal: Refusal) -> String {
       "history recall refused the request: "
       <> reason
       <> ". Check the IDs for a read, or simplify the query for a search"
+    IndexNotReady(reason:) ->
+      "history recall is not ready yet: "
+      <> reason
+      <> ". Nothing is wrong with the request — send the same call again"
+    IndexBusy(reason:) ->
+      "history recall is serving another request: "
+      <> reason
+      <> ". Nothing is wrong with the request — send the same call again"
   }
 }
 

@@ -4,8 +4,17 @@
 //// callback. It then owns the index and at most one read-only source. Source
 //// work advances by ordinary mailbox messages, one fragment or short indexed
 //// operation at a time, so stop and coalesced commit hints remain observable.
-//// Foreground calls are refused while another job is active rather than
-//// accumulating a waiter registry. A timeout never closes a native handle.
+//// A timeout never closes a native handle.
+////
+//// A foreground call that arrives while the owner is still opening its index,
+//// or while it is working through a commit hint of its own, is held in a
+//// bounded waiting list rather than refused: neither state says anything about
+//// the request, and a model told "no" twice in the first seconds of a session
+//// stops calling the tool. A held call is admitted the next time the owner
+//// reaches `Ready`, and refused with the startup or blocked reason if the owner
+//// lands there instead. A call arriving while another *caller's* request is in
+//// flight is still refused at once, because that wait has no bound the caller
+//// can see.
 ////
 //// Catalogue membership is resolved afresh before source reads and before FTS
 //// ranking. Index locators and rows are projections, never authorization. Close
@@ -21,6 +30,7 @@ import gleam/bit_array
 import gleam/bool
 import gleam/dict
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -74,10 +84,21 @@ type Message {
   Step
 }
 
+// A reply carries the tool package's own refusal vocabulary rather than a bare
+// string, so the arm that decided the refusal also decides which sentence the
+// model reads. `tools/history` renders every variant in one place.
 type Reply {
-  Hits(Result(List(tool.Hit), String))
-  Entry(Result(json.JsonValue, String))
+  Hits(Result(List(tool.Hit), tool.Refusal))
+  Entry(Result(json.JsonValue, tool.Refusal))
 }
+
+/// How many foreground calls may wait at once for the owner to reach `Ready`.
+///
+/// A held call occupies a caller that is already blocked in `call.try_call`,
+/// so the list is really a count of concurrent seams, and eight is more
+/// concurrent recall than a workspace produces. Past it the honest answer is
+/// that the owner is oversubscribed, which is a refusal the model can act on.
+const waiting_limit = 8
 
 type Phase {
   Parked
@@ -138,6 +159,9 @@ type State {
     index: Option(search.Search),
     source: Option(source.Source),
     pending: dict.Dict(ids.SessionId, Nil),
+    /// Foreground calls held until the owner next reaches `Ready`, in
+    /// arrival order and never longer than `waiting_limit`.
+    waiting: List(Request),
   )
 }
 
@@ -159,7 +183,9 @@ pub fn prepare(config: Config) -> Result(Prepared, String) {
   )
   use started <- result.map(
     actor.new_with_initialiser(1000, fn(subject) {
-      actor.initialised(State(config, subject, Parked, None, None, dict.new()))
+      actor.initialised(
+        State(config, subject, Parked, None, None, dict.new(), []),
+      )
       |> actor.returning(subject)
       |> Ok
     })
@@ -206,7 +232,7 @@ pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
         |> result.map_error(tool.IndexUnavailable),
       )
       case reply {
-        Hits(answer) -> answer |> result.map_error(tool.IndexRefused)
+        Hits(answer) -> answer
         Entry(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
       }
     },
@@ -216,7 +242,7 @@ pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
         |> result.map_error(tool.IndexUnavailable),
       )
       case reply {
-        Entry(answer) -> answer |> result.map_error(tool.IndexRefused)
+        Entry(answer) -> answer
         Hits(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
       }
     },
@@ -289,7 +315,7 @@ fn step(state: State) -> actor.Next(State, Message) {
         Error(error) -> {
           let reason = string.inspect(error)
           process.send(reply, Error(reason))
-          actor.continue(State(..state, phase: StartupFailed(reason)))
+          fail_startup(state, reason)
         }
       }
     Initializing(reply) ->
@@ -304,11 +330,18 @@ fn step(state: State) -> actor.Next(State, Message) {
             Error(error) -> {
               let reason = string.inspect(error)
               process.send(reply, Error(reason))
-              actor.continue(State(..state, phase: StartupFailed(reason)))
+              fail_startup(state, reason)
             }
           }
       }
-    Ready -> next_hint(state)
+
+    // Held calls are served before commit hints. A hint costs nothing by
+    // waiting one more turn; a caller is already blocked in `call.try_call`.
+    Ready ->
+      case state.waiting {
+        [] -> next_hint(state)
+        [held, ..rest] -> admit(State(..state, waiting: rest), held)
+      }
     Busy(job) -> {
       case bootstrap.monotonic_time_ms() >= job.deadline {
         True ->
@@ -330,7 +363,21 @@ fn advance(state: State) -> actor.Next(State, Message) {
 }
 
 fn block(state: State, reason: String) -> actor.Next(State, Message) {
+  let state = drain(state, tool.IndexUnavailable(reason))
   actor.continue(State(..state, phase: Blocked(reason)))
+}
+
+// Startup and blocking are the two terminal phases: the owner will never
+// reach `Ready` again on its own, so anything held has to be answered here
+// or it waits for its caller's own deadline instead.
+fn fail_startup(state: State, reason: String) -> actor.Next(State, Message) {
+  let state = drain(state, tool.IndexUnavailable(reason))
+  actor.continue(State(..state, phase: StartupFailed(reason)))
+}
+
+fn drain(state: State, refusal: tool.Refusal) -> State {
+  list.each(state.waiting, refuse(_, refusal))
+  State(..state, waiting: [])
 }
 
 fn authorized(config: Config) {
@@ -411,18 +458,62 @@ fn admit(state: State, request: Request) {
       }
       case permitted {
         Ok(sources) -> begin_job(state, request, sources)
+
+        // A refusal here ends the chain of self-sent steps, so anything
+        // still held would sit until the next hint. One more step costs a
+        // mailbox message and stops on an empty waiting list.
         Error(reason) -> {
-          refuse(request, reason)
-          actor.continue(state)
+          refuse(request, tool.IndexRefused(reason))
+          advance(state)
         }
       }
     }
+
     Blocked(reason) | StartupFailed(reason) -> {
-      refuse(request, reason)
+      refuse(request, tool.IndexUnavailable(reason))
       actor.continue(state)
     }
-    Parked | Opening(_) | Initializing(_) | Busy(_) -> {
-      refuse(request, "shared history is busy or has not begun")
+
+    // Nothing has called `begin`, so no later transition will serve this
+    // call. Holding it would only spend the caller's deadline.
+    Parked -> {
+      refuse(request, tool.IndexNotReady("the index owner has not begun"))
+      actor.continue(state)
+    }
+
+    // Startup and the owner's own commit-hint refresh both end at `Ready`
+    // within a step or two, and neither is anything the caller did.
+    Opening(_) | Initializing(_) | Busy(Job(request: Background, ..)) ->
+      hold(state, request)
+
+    // Another caller's request is in flight. Its work is bounded by that
+    // job's deadline, which may be the whole of this caller's window, so
+    // the honest answer is a refusal now rather than a wait it cannot see.
+    Busy(_) -> {
+      refuse(request, tool.IndexBusy("another recall request is in flight"))
+      actor.continue(state)
+    }
+  }
+}
+
+fn hold(state: State, request: Request) -> actor.Next(State, Message) {
+  // Room for one more is a question about the first `waiting_limit - 1`
+  // elements, so it is answered by dropping them rather than by measuring
+  // the whole list.
+  case list.drop(state.waiting, waiting_limit - 1) == [] {
+    True ->
+      actor.continue(
+        State(..state, waiting: list.append(state.waiting, [request])),
+      )
+    False -> {
+      refuse(
+        request,
+        tool.IndexBusy(
+          "the index owner already has "
+          <> int.to_string(waiting_limit)
+          <> " calls waiting for it to open",
+        ),
+      )
       actor.continue(state)
     }
   }
@@ -440,12 +531,19 @@ fn begin_job(state: State, request: Request, sources: List(distill.Source)) {
   advance(State(..state, phase: Busy(job)))
 }
 
-fn refuse(request: Request, reason: String) {
+fn refuse(request: Request, refusal: tool.Refusal) {
   case request {
     Background -> Nil
-    SearchRequest(_, _, _, _, reply) -> process.send(reply, Hits(Error(reason)))
-    EntryRequest(_, _, _, reply) -> process.send(reply, Entry(Error(reason)))
+    SearchRequest(_, _, _, _, reply) ->
+      process.send(reply, Hits(Error(refusal)))
+    EntryRequest(_, _, _, reply) -> process.send(reply, Entry(Error(refusal)))
   }
+}
+
+// A step of the owner's own work failed. That is the index answering, so the
+// model reads it as a refusal of the request it actually made.
+fn refuse_job(request: Request, reason: String) {
+  refuse(request, tool.IndexRefused(reason))
 }
 
 fn work(state: State, job: Job) {
@@ -684,7 +782,7 @@ fn publish_record(
       use Nil <- or_job(permitted, state, job)
       case close_source(state) {
         Error(reason) -> {
-          refuse(job.request, reason)
+          refuse_job(job.request, reason)
           block(state, "history source retirement unconfirmed: " <> reason)
         }
         Ok(state) -> {
@@ -784,7 +882,7 @@ fn close_source(state: State) {
 fn close_source_and_continue(state, job: Job) {
   case close_source(state) {
     Error(reason) -> {
-      refuse(job.request, reason)
+      refuse_job(job.request, reason)
       block(state, "history source retirement unconfirmed: " <> reason)
     }
     Ok(state) ->
@@ -793,7 +891,7 @@ fn close_source_and_continue(state, job: Job) {
 }
 
 fn fail_job(state: State, job: Job, reason: String) {
-  refuse(job.request, reason)
+  refuse_job(job.request, reason)
   case close_source(state) {
     Error(close_reason) ->
       block(state, "history source retirement unconfirmed: " <> close_reason)
@@ -830,7 +928,7 @@ fn finish_job(state: State, job: Job) {
           list.map(_, fn(hit) { tool.Hit(hit.session, hit.entry, hit.snippet) }),
         )
       }
-      process.send(reply, Hits(answer))
+      process.send(reply, Hits(answer |> result.map_error(tool.IndexRefused)))
       advance(State(..state, phase: Ready))
     }
   }
@@ -843,6 +941,9 @@ fn stop(state: State, reply: process.Subject(String)) {
       actor.continue(state)
     }
     _ -> {
+      // Retirement is the last transition this owner makes, so a held call
+      // has to be answered before the handles close under it.
+      let state = drain(state, tool.IndexUnavailable("the index owner retired"))
       let closed = {
         use state <- result.try(close_source(state))
         case state.index {
