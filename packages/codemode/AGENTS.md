@@ -624,10 +624,19 @@ session and sends it many invocations.
   the submitted source (issue #65) — and this package must not have a
   second door that skips it.
 - **The node runs under the host's own `{op_id, step_id}`.** That is what
-  makes `broker.abort` at the deadline actually kill it, and what pools
-  the budget across the whole execution — fan-out buys parallelism, not
-  extra resources. The node itself holds one outstanding effect, so a
+  makes `broker.abort_step` at the deadline actually kill it, and what
+  pools the budget across the whole execution — fan-out buys parallelism,
+  not extra resources. The node itself holds one outstanding effect, so a
   pooled cap below two is refused.
+- **Teardown reaps the step, not the operation.** `launch.destroy` and
+  `satellite.cleanup` call `broker.abort_step` on the run phase's own
+  `{op_id, step_id}`. A satellite reaps itself; it does not reap what the
+  program asked to outlive it. A background job started through `cap/job`
+  clears under the sibling step `{op_id, "job/" <> id}`, so sweeping the
+  operation here cancelled it the moment the program returned — the
+  collision ADR-005's third addendum records. An operator's `abort` of
+  the whole operation still reaches such a job, which is the semantics
+  the shared operation was chosen for.
 - **On a persistent host the invocation is the unit of authority.** A
   token is minted for one `{op_id, step_id}` and checked on every
   `cap_call`, so a node that outlives an execution has no token of its

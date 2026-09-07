@@ -251,3 +251,21 @@ would have to re-derive every rule this ADR settles.
 example.** A new kind of caller may take a step of its own when its
 lifetime and its parallelism are genuinely not the batch's. A finer
 coordinate *within* a batch still may not.
+
+**A satellite's teardown reaps its own step, not its operation.** Keeping
+the operation in the key put the job in reach of a sweep nobody meant it
+to be in reach of. A code-mode execution ends by reaping its satellite,
+and that reaper used to be `broker.abort` on the whole operation — the
+operation the job had just been keyed under — so a job started from a
+program was cancelled the moment the program returned, and a `bash`
+background job started in a batch that also ran a program went the same
+way. The two teardown sites now call `broker.abort_step` on the run
+phase's own `{op_id, step_id}`, which is the granularity the broker
+already had in every active call, ledger and token binding and had no
+public way to ask for. An operator's `abort` of the operation still
+reaches the job, so nothing this addendum argued for is given up; what
+changes is that a *routine* teardown no longer borrows the operator's
+reach. The step-scoped sweep needs a sweep counter of its own beside the
+operation's, because a step abort that bumped the operation's counter
+would refuse a resumed clearance of every sibling step — including the
+job it just spared.

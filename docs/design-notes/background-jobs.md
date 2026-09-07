@@ -352,7 +352,10 @@ a program spawning in a loop is refused at the same count a tool call
 would be, and a tight poll loop is bounded by the `wait_ms` clamp, which
 is at least a slice. A program's own `within_ms` is unrelated to the
 job's deadline: the satellite ends when the program returns, and the
-job it started keeps running under its own token.
+job it started keeps running under its own token. That takes one thing
+of the teardown, and it is the thing the shipped fixture found missing:
+reaping a satellite sweeps the execution's own step
+(`broker.abort_step`), never the operation the job shares with it.
 
 ## What the client sees
 
@@ -387,7 +390,7 @@ first consumer of `CallOutput` chunks as a stream. #185, adjacent: the
 spill is called from one place for jobs, and the seam-level refactor for
 foreground tools stays #185. #74 lands first, because the jobs work adds
 variants to `ExecFailure` and today they would fall silently into
-`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:616`).
+`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:662`).
 
 ## Contracts touched
 
@@ -492,20 +495,33 @@ state name without the fields that state licenses, so `cap/job` refused
 the whole listing the moment a strand held any job that had ended — which
 is every strand, eventually.
 
-The second is open and is a real contradiction of this note. "The
+The second was a real contradiction of this note, and it is fixed. "The
 satellite ends when the program returns; a job it started keeps running
-under its own token" is not true today. A code-mode execution ends by
-calling `broker.abort` on its operation to reap its satellite
+under its own token" was not true: a code-mode execution ended by calling
+`broker.abort` on its operation to reap its satellite
 (`codemode/satellite.cleanup`, `codemode/launch.destroy`), and by
 decision 4 a job started by that program cleared under the same
-operation — so the abort cancels the job's helper and the record reads
-`Lost(HelperLoss)`. The same collision reaches a `bash` background job
-started in a batch that also runs a program. The fix is a choice between
-narrowing what a satellite's teardown aborts and re-keying a
-program-started job, and it is not made here; `docs/next.md` carries it
-as the next thing to settle. The fixture asserts the durable half — a
-later program finds the record under its own id — and asserts no state,
-with the reason written where the assertion is missing.
+operation — so the abort cancelled the job's helper and the record read
+`Lost(HelperLoss)`. The same collision reached a `bash` background job
+started in a batch that also ran a program.
+
+The fix narrows what a teardown sweeps rather than re-keying the job,
+because the job's key is load-bearing and the teardown's reach was not.
+The broker already carried a `step_id` on every active call, ledger and
+token binding, so `broker.abort_step(op_id, step_id:)` is the sweep it
+could already express and had no public way to ask for; both teardown
+sites now call it on the run phase's own step. Decision 4's abort
+semantics are untouched — an operator's `abort` of the operation still
+reaches the jobs it started — and what is given up is only a *routine*
+teardown borrowing the operator's reach. The step needs its own sweep
+counter beside the operation's, because a step sweep that bumped the
+operation's counter would refuse a resumed clearance of every sibling
+step, the spared job included. ADR-005's third addendum records it.
+
+The fixture now asserts both halves: the later program finds the record
+under its own id **and running**, and the payload's own identity — taken
+while the first satellite was being reaped — departs only when the second
+program kills it.
 
 ## Settled on review
 
