@@ -2111,14 +2111,24 @@ fn frame_authorized(
 // The credential resolution behind a frame check, answered from `book.authority`
 // when it has been answered before.
 //
-// This is memoisation rather than a cache: the tables it reads —
-// `access_credential`, `access_principal`, `access_membership`, and the session
-// registration row — are written in exactly one place, `administer_member`,
-// reached only by the `Administer` message this same actor serialises, and that
-// arm drops the whole memo before it replies. Startup's `access.bootstrap_owner`
-// runs in the root before the registry exists. So a remembered answer cannot
-// differ from the live read it replaces, and a revoked credential still closes
-// its attachment on the very next frame.
+// This is memoisation rather than a cache, and two fences hold it to that. The
+// first is the single writer: the tables it reads — `access_credential`,
+// `access_principal`, `access_membership`, and the session registration row —
+// are written in exactly one place, `administer_member`, reached only by the
+// `Administer` message this same actor serialises, and that arm drops the whole
+// memo before it replies. Startup's `access.bootstrap_owner` runs in the root
+// before the registry exists. The second is the slot lifetime: `frame_authority`
+// resolves nothing without a `Running` slot for the session, and `forget_authority`
+// drops an entry when that slot goes, so no remembered answer outlives the
+// incarnation that could read it. A remembered answer therefore cannot differ
+// from the live read it replaces, and a revoked credential still closes its
+// attachment on the very next frame. A change that relaxes either fence — a
+// second writer of those tables, or a memo that survives its slot — has to
+// restore the property some other way.
+//
+// The slot fence is also why a session deletion has nothing of its own to clear
+// here: a session with no slot has no entries left, whatever its memberships did
+// while it was resident.
 //
 // What this removes is real work rather than a round trip. `access.authenticate`
 // and `access.authorization` together issue about ten SQLite statements, each
@@ -2168,6 +2178,19 @@ fn resolve_authority(
     Ok(#(principal, authority))
   }
   |> result.replace_error(Unauthorized)
+}
+
+// Removing a slot takes the memo entries keyed on its session with it. Nothing
+// reads such an entry while the session is gone, but the key is credential and
+// session alone, so a reopened session would answer from a memo written under
+// the previous incarnation, which may predate an administration made in
+// between. Dropping the keys here also bounds the memo by the sessions the
+// daemon currently holds rather than by every session it has ever held.
+fn forget_authority(book: Book(instance), id: String) -> Book(instance) {
+  Book(
+    ..book,
+    authority: dict.filter(book.authority, fn(key, _) { key.1 != id }),
+  )
 }
 
 fn stop_slot(book: Book(instance), id: String) -> Book(instance) {
@@ -2273,6 +2296,7 @@ fn retired(
               slots: dict.delete(book.slots, id),
               domains: depend(book.domains, slot.domain_id, -1),
             )
+            |> forget_authority(id)
           clean_session_retired(book, slot.domain_id, id)
         }
         _ -> failed(book, id, operation, string.inspect(reason))

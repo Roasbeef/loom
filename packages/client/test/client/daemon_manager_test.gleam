@@ -1107,6 +1107,71 @@ pub fn one_turn_answers_epoch_incarnation_and_authority_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+/// A remembered frame authority does not outlive the slot it was resolved for.
+///
+/// The memo is keyed by credential and session, not by incarnation, so an entry
+/// left behind by a retired slot would be read again when the same session
+/// reopens. This fixture revokes while nothing is resident — the window in which
+/// the registry sees no `Administer` and drops nothing — and the reopened
+/// session must refuse the member. It also pins the bound on the memo: entries
+/// belong to resident sessions, not to every session the daemon has ever held.
+pub fn a_retired_slot_takes_its_remembered_authority_with_it_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 720)
+  let assert Ok(owner_digest) = access.credential_digest(string.repeat("c", 64))
+    as "owner digest is valid"
+  let assert Ok(member_digest) =
+    access.credential_digest(string.repeat("d", 64))
+    as "member digest is valid"
+  let assert Ok(_owner) =
+    access.bootstrap_owner(store, "owner", "Owner", owner_digest)
+    as "the durable owner is established"
+  let assert Ok(member) =
+    access.create_member(store, "reader", "Reader", member_digest)
+    as "the participant exists"
+  let assert Ok(Nil) =
+    access.grant(store, member.id, record.id, access.Observer)
+    as "membership grants only this session"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, record.id)
+    as "explicit admission"
+  await_status(registry, record.id, manager.Resident(operation))
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: operation,
+      digest: member_digest,
+    )
+    == Ok(#(member, access.Participant(access.Observer)))
+
+  // The slot retires, and with it the answer just remembered for this member.
+  let _closing = manager.stop_session(registry, record.id)
+  await_status(registry, record.id, manager.Saved)
+  await_domains_retired(registry)
+
+  // Writing the catalogue directly is the point of the fixture rather than an
+  // impersonation of a production path: it changes membership without the
+  // `Administer` message that would drop the memo wholesale, so only the
+  // removal at slot retirement can be what makes the next answer current.
+  assert access.revoke_membership(store, member.id, record.id) == Ok(Nil)
+
+  let assert Ok(manager.Opening(reopened)) = manager.open(registry, record.id)
+    as "the saved identity reopens under a new incarnation"
+  await_status(registry, record.id, manager.Resident(reopened))
+  assert manager.frame_authority(
+      registry,
+      epoch: "daemon-test",
+      id: record.id,
+      incarnation: reopened,
+      digest: member_digest,
+    )
+    == Error(manager.Unauthorized)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 /// Domain source enumeration walks its pages on the builder's own process.
 ///
 /// A hundred and twenty sources span two pages, so a walk that stopped at the
