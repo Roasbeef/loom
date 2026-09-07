@@ -4,11 +4,11 @@
 attributed commands, presence, pushed delivery and the native terminal
 replace the baseline surveyed at `f019322`. Live delivery has its own
 shipped fixture. What is still open is the release acceptance, not this
-design: two rows of the scenario matrix below are proven at host level
-rather than from the shipped binary, and the handoff still lists four
-pieces of release evidence (the resource soak behind #247, hosted latency
+design. Two rows of the scenario matrix below are proven at host level
+rather than from the shipped binary. The handoff also still lists four
+pieces of release evidence: the resource soak behind #247, hosted latency
 in #241, the joined load and crash observations in #246, and filesystem
-confinement in #242). The last section says which fixture proves which
+confinement in #242. The last section says which fixture proves which
 row.
 
 This page is for an implementer who is tracing one collaborator's command
@@ -18,8 +18,8 @@ daemon are, and nothing about this subsystem. The
 [client protocol reference](../client-protocol.md) defines every message
 on the wire; this page explains the design behind them.
 [Sessions](sessions.md) explains how many shared sessions coexist in one
-daemon, [client](client.md) describes the transport and the terminal, and
-the [brief](../design-notes/multiplayer.md) records the initial survey.
+daemon. [Client](client.md) describes the transport and the terminal. The
+[brief](../design-notes/multiplayer.md) records the initial survey.
 
 ## Identity and authority
 
@@ -230,18 +230,18 @@ sequenceDiagram
     end
 ```
 
-The drain runs inside the gateway's pull. `drain_idle_strands`
-(`client/gateway.gleam:3536`) is called from `pull_and_broadcast`
-(`client/gateway.gleam:1983`) after `state.live` has been refreshed from
-the registers and before any frame leaves, because that pull is the one
-place where the gateway observes that a strand has gone idle. Only the
+The drain runs inside the gateway's pull, because that pull is the one
+place where the gateway observes that a strand has gone idle.
+`drain_idle_strands` (`client/gateway.gleam:3536`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:1983`) after `state.live` has
+been refreshed from the registers and before any frame leaves. Only the
 head of a queue is submitted (`drain_strand`,
 `client/gateway.gleam:3548`), since the writer would reject a second
-prompt on the strand it just opened. A `StrandBusy` at drain time keeps
-the head in place for the next transition. Any other refusal belongs to
-that prompt alone, so the prompt is dropped, the submitter receives a
-pushed `error`, and the next held prompt is tried immediately, because
-nothing else will transition an idle strand.
+prompt on the strand it has just opened. A `StrandBusy` at drain time
+keeps the head in place for the next transition. Any other refusal
+belongs to that prompt alone: the prompt is dropped and the submitter
+receives a pushed `error`. The next held prompt is then tried at once,
+because nothing else will transition an idle strand.
 
 ```mermaid
 stateDiagram-v2
@@ -453,16 +453,15 @@ rejoining in between. All three terminals must end with identical durable
 records, exact authors and answer text.
 
 The same fixture proves the authority boundary. An uninvited session in a
-separate workspace is invisible to the operator and observer: its
+separate workspace is invisible to the operator and observer. Its
 metadata, open and lifecycle requests return `not_found`, owner-only
 mutations return `forbidden`, and both credentials fail its WebSocket
 upgrade, while the owner can read and attach to it. An observer's valid
 `set_config` frame sent straight to the gateway receives a correlated
 `forbidden`. Revoking Bob while his terminal and a raw socket are attached
-must close the socket at the TCP level, remove him from the roster, and
-leave his credential able to authenticate control with an empty
-catalogue, which distinguishes membership revocation from credential
-revocation.
+must close the socket at the TCP level and remove him from the roster.
+His credential must still authenticate control with an empty catalogue,
+which distinguishes membership revocation from credential revocation.
 
 Two further stages cover session switching and a live tool. Alice
 switches to a second session and back while the Reader stays attached to
@@ -470,7 +469,7 @@ the first; a revocation before she confirms the switch must leave her
 original attachment intact. A fixed bash tool runs in one session while
 Alice switches away and back, and its result must merge with no later
 input. The tool stage runs only where the shipped helper reports full
-enforcement: the ordinary Linux CI job declares that prerequisite
+enforcement. The ordinary Linux CI job declares that prerequisite
 missing, the delegated jail job runs the stage and rejects the skip, and
 macOS runs the full drive. What the fixture does not prove: filesystem
 confinement, an approval decision, and revocation of a command already
@@ -482,12 +481,12 @@ records which revision passed each gate.
 `tui_shipped_live_delivery_test` proves the last three matrix rows. It
 builds the same session shape, except that Bob is a raw v2 wire client on
 the same authenticated route the terminals use. Bob is a wire client
-because only a wire client reaches the queue on every run: a terminal
+because only a wire client reaches the queue on every run. A terminal
 sends `prompt` only while its own view shows the strand idle, and against
 a pushing daemon that view is stale for a few milliseconds at most. The
 fixture waits until Alice's terminal reports the strand running, which
-means the run exists at the gateway, and then writes Bob's prompt, so the
-`queued` reply is deterministic.
+means the run exists at the gateway, and then writes Bob's prompt. The
+`queued` reply is therefore deterministic.
 
 The scripted provider is paced with `provider_http.Paced`, which splits an
 answer across content deltas with a wait between them, so an answer
@@ -497,9 +496,9 @@ entry yet. Both delivery properties are counts rather than timings. A
 stream holding two or more fragments before the entry exists can only
 have come from `stream_delta` frames, because the snapshot preview always
 projects as one fragment. Each terminal's `Model.notices` must rise by at
-least the four records the two turns commit; which capture painted an
-answer is not asserted, because the idle refresh may legitimately have a
-catch-up in flight when the commit lands.
+least the four records the two turns commit. Which capture painted an
+answer is not asserted, because the idle refresh may have a catch-up in
+flight when the commit lands.
 
 A third turn exists so that Bob can be revoked while frames are in flight
 to him. The fixture reads his socket until it carries a prefix of the
@@ -520,7 +519,7 @@ provider socket must close, the same control connection must observe
 `Saved`, and the second session completes another turn without replacing
 its attachment. Reopening the first session creates a new incarnation and
 resumes its admitted operation, and its durable history must contain one
-user message, the interrupted settlement and the final answer. This is
+user message, the interrupted settlement and the final answer. That fixture covers
 cooperative stop and recovery; a process kill or an uncooperative drain is
 separate injected-transport coverage.
 
@@ -554,10 +553,10 @@ exhaustive fault or interleaving test.
 Each driver creates its inbox and runs its terminal loop in one process,
 because sharing a model or constructing both inboxes in the coordinator
 would bypass the ownership rules the shipped client relies on. Server
-responses arrive through each client's real connection, and the driver
+responses arrive through each client's real connection. The driver
 transfers each message into a separate model inbox that has no other
-sender, so socket order is preserved and the coordinator never fabricates
-a gateway response.
+sender, so socket order is preserved, and the coordinator never
+fabricates a gateway response.
 
 Every wait names an observable condition and a deadline, such as both
 clients holding the committed entry sequence; a fixed number of ticks
