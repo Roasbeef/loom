@@ -1,7 +1,9 @@
 //// Feature-detected end-to-end test: builds the real `loom-exec`
 //// helper with the Go toolchain, starts a real broker over it, and
-//// runs `echo hello` through the bash tool. Skipped (with the reason
-//// printed) when `go` is missing or the build fails.
+//// runs `echo hello` through the bash tool and a real search through
+//// the grep tool. Skipped (with the reason printed) when `go` is
+//// missing, the build fails, or — for the search — no ripgrep is
+//// installed.
 ////
 //// The development container usually lacks bwrap, so the helper runs
 //// degraded; the context demands `BestEffort` and asserts on the tool
@@ -23,6 +25,7 @@ import simplifile
 import support/shell
 import tools/bash
 import tools/fs
+import tools/grep
 import tools/job
 import tools/tool
 
@@ -109,37 +112,88 @@ pub fn real_broker_bash_echo_test() {
   }
 }
 
+// The regression, end to end through a real helper: a `grep` built with
+// the ripgrep this host resolved must find a match while the jailed
+// process's `PATH` is the production one — the three system directories,
+// which on macOS contain no Homebrew `rg`. Before the fix `argv[0]` was
+// the bare name and this run died in stage-2 resolution with exit 126.
+pub fn real_broker_grep_finds_a_match_test() {
+  case helper_config(), shell.find_executable("rg") {
+    Error(reason), _ -> io.println_error("SKIP real_broker_grep: " <> reason)
+    _, Error(Nil) -> io.println_error("SKIP real_broker_grep: no rg on PATH")
+
+    Ok(#(spawn_config, workspace)), Ok(rg_path) -> {
+      let assert Ok(Nil) =
+        simplifile.write(
+          to: workspace <> "/haystack.txt",
+          contents: "a
+needle here
+b
+",
+        )
+      let assert Ok(helper) = exec.spawn_helper(spawn_config)
+        as "the helper failed to spawn"
+      let assert Ok(broker_actor) =
+        broker.start(
+          broker.BrokerConfig(
+            entropy: token.production_entropy(),
+            clock: clock.fixed(at: 0),
+            checkout: fn() { Ok(helper) },
+            checkin: fn(_helper) { Nil },
+          ),
+        )
+      let outcome =
+        grep.tool(rg_path).run(
+          ctx(broker_actor, workspace),
+          json.Object([#("pattern", json.String("needle"))]),
+        )
+      broker.stop(broker_actor)
+      exec.shutdown(helper)
+      assert outcome.is_error == False
+      let assert [message.ToolResultText(text:, text_signature: _)] =
+        outcome.content
+        as "expected a single text block"
+      assert string.contains(text, "needle here")
+    }
+  }
+}
+
 fn run_echo(
   broker_actor: broker.Broker,
   workspace: String,
 ) -> tool.ToolOutcome {
-  let #(op_id, _generator) =
-    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
-  let ctx =
-    tool.Ctx(
-      workspace:,
-      op_id:,
-      step_id: "integration-1",
-      source_index: 0,
-      strand: "main",
-      base_policy: base_policy(workspace),
-      grants: [],
-      // No bwrap in most dev containers: accept whatever enforcement
-      // the helper honestly reports.
-      demand: exec.BestEffort,
-      env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
-      clock: clock.fixed(at: 0),
-      filesystem: fs.real_filesystem(),
-      blob_root: workspace <> "/.blobs",
-      clear_call: tool.broker_runner(broker: broker_actor, waiting: 10_000),
-      raise_refusal: tool.no_raise(),
-    )
   bash.tool(job.unavailable()).run(
-    ctx,
+    ctx(broker_actor, workspace),
     json.Object([
       #("command", json.String("echo hello")),
       #("timeout_ms", json.Int(30_000)),
     ]),
+  )
+}
+
+// The context a jailed tool runs under here. Its `PATH` is deliberately
+// the production one `client/serve` constructs, so a tool that resolved
+// its binary against the *server's* PATH is genuinely being tested.
+fn ctx(broker_actor: broker.Broker, workspace: String) -> tool.Ctx {
+  let #(op_id, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 1))
+  tool.Ctx(
+    workspace:,
+    op_id:,
+    step_id: "integration-1",
+    source_index: 0,
+    strand: "main",
+    base_policy: base_policy(workspace),
+    grants: [],
+    // No bwrap in most dev containers: accept whatever enforcement
+    // the helper honestly reports.
+    demand: exec.BestEffort,
+    env: [#("PATH", "/usr/local/bin:/usr/bin:/bin")],
+    clock: clock.fixed(at: 0),
+    filesystem: fs.real_filesystem(),
+    blob_root: workspace <> "/.blobs",
+    clear_call: tool.broker_runner(broker: broker_actor, waiting: 10_000),
+    raise_refusal: tool.no_raise(),
   )
 }
 

@@ -87,6 +87,18 @@ can repair from.
   `no_raise()` is the seam for a host with no escalation plane. It exists
   for `code_mode`, whose clearances happen inside the code-mode pipeline
   and so never pass `clear_call` (#97).
+- `tools/grep.{Ripgrep, Found, Absent}` — where this host's ripgrep is,
+  decided once by whoever builds the registry (`client/contributions
+  .ripgrep`, over the daemon's own `PATH`) rather than per call. `Found`
+  carries the **absolute** path that goes into `argv[0]`; `Absent`
+  carries the sentence an operator can act on. `grep.tools(ripgrep)`
+  turns that into one tool or none — a host without `rg` advertises no
+  `grep`, because a tool that can only fail costs the model turns to
+  discover. The bare name in `argv` was the bug: stage 2 resolves
+  `argv[0]` against the jail's *constructed* `PATH`
+  (`/usr/local/bin:/usr/bin:/bin`, or the code-mode toolchain's), which
+  on macOS never contains Homebrew's `bin`, so every call died with exit
+  126.
 - `tools/agent.Agency` — the messaging seam: `spawn`, `send`, `wait`,
   `note`, `notes`, `roster`, plus the published `max_wait_ms` the wait
   tool's schema states. Every closure takes a `Caller` first and is
@@ -330,6 +342,13 @@ can repair from.
   without them `git commit` dies on the index lock. Asking for the base's
   own roots cannot widen past the base. `grep` and the rest keep their
   narrower requirements.
+- **A jailed tool names its binary by absolute path.** The jail's
+  environment is built from a policy allowlist rather than inherited
+  (`jail.FilterEnv`), so `PATH` inside is the harness's, not the
+  operator's, and a bare `argv[0]` is resolved against a `PATH` no
+  package manager writes to. `grep` resolves ripgrep harness-side and
+  passes the absolute path; `bash` is the exception that needs none,
+  since a shell at `/bin/bash` is on every `PATH` the harness constructs.
 - **Tools never crash the strand.** Bad arguments, a policy refusal, a dead
   helper, a stale anchor, an unknown tool name — every one comes back as a
   structured `is_error` result the model can read. Dispatching an unknown

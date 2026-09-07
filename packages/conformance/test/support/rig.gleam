@@ -7,6 +7,7 @@ import client/escalate
 import client/wiring
 import core/clock
 import gleam/option.{Some}
+import gleam/result
 import machine/operation
 import machine/strand.{
   type StrandConfiguration, ModelIdentity, StrandConfiguration, ThinkingOff,
@@ -37,10 +38,18 @@ pub fn configuration() -> StrandConfiguration {
 }
 
 /// The full core tool registry.
+///
+/// `grep` is built with this host's real ripgrep where there is one, the
+/// way `client/contributions` builds it in production. On a host without
+/// `rg` the tool is still registered under a name that will not resolve:
+/// the registry's shape is what the suite's tool-array assertions read,
+/// and the scenarios that actually search are the ones that need the
+/// binary.
 pub fn registry() -> Registry {
+  let rg = result.unwrap(ffi_shell.find_executable("rg"), "rg")
   tool.registry([
     bash.tool(job.unavailable()),
-    grep.tool(),
+    grep.tool(rg),
     fs.read_tool(),
     fs.write_tool(),
     fs.edit_tool(),

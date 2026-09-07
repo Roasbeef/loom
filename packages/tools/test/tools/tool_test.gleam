@@ -18,6 +18,10 @@ import tools/remember
 import tools/schedule
 import tools/tool
 
+// The absolute ripgrep a host would have resolved before building the
+// tool; these tests care about registry shape, not about the path.
+const ripgrep_path = "/usr/bin/rg"
+
 fn ctx() -> tool.Ctx {
   let filesystem = memory_fs.filesystem(memory_fs.start())
   let recorded = process.new_subject()
@@ -33,7 +37,7 @@ fn ctx() -> tool.Ctx {
 fn full_registry() -> tool.Registry {
   tool.registry([
     bash.tool(job.unavailable()),
-    grep.tool(),
+    grep.tool(ripgrep_path),
     fs.read_tool(),
     fs.write_tool(),
     fs.edit_tool(),
@@ -95,12 +99,12 @@ pub fn snippets_follow_registration_order_and_omit_the_silent_test() {
   let silent = tool.Tool(..fs.read_tool(), prompt_snippet: None)
   let registry =
     tool.registry([
-      grep.tool(),
+      grep.tool(ripgrep_path),
       silent,
       fs.write_tool(),
       bash.tool(job.unavailable()),
     ])
-  let assert Some(grep_snippet) = grep.tool().prompt_snippet
+  let assert Some(grep_snippet) = grep.tool(ripgrep_path).prompt_snippet
   let assert Some(write_snippet) = fs.write_tool().prompt_snippet
   let assert Some(bash_snippet) = bash.tool(job.unavailable()).prompt_snippet
   assert tool.snippets(registry) == [grep_snippet, write_snippet, bash_snippet]
@@ -120,7 +124,7 @@ pub fn every_built_in_tool_carries_a_snippet_test() {
     list.flatten([
       [
         bash.tool(job.unavailable()),
-        grep.tool(),
+        grep.tool(ripgrep_path),
         fs.read_tool(),
         fs.write_tool(),
         fs.edit_tool(),
@@ -164,7 +168,7 @@ pub fn replay_flags_test() {
   // Safe — fs_edit via its digest binding to the exact pre-image
   // content, fs_write via idempotent overwrite, reads trivially.
   assert bash.tool(job.unavailable()).replay == tool.Never
-  assert grep.tool().replay == tool.Safe
+  assert grep.tool(ripgrep_path).replay == tool.Safe
   assert fs.read_tool().replay == tool.Safe
   assert fs.write_tool().replay == tool.Safe
   assert fs.edit_tool().replay == tool.Safe

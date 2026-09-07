@@ -15,6 +15,11 @@ import tools/tool
 
 const workspace = "/work"
 
+// A host's resolved ripgrep. Absolute on purpose: `argv[0]` is resolved
+// against the jail's constructed PATH, so a bare name is what the exit
+// 126 this suite pins was.
+const ripgrep_path = "/opt/homebrew/bin/rg"
+
 const now = 9000
 
 fn run_with_script(
@@ -24,7 +29,7 @@ fn run_with_script(
   let filesystem = memory_fs.filesystem(memory_fs.start())
   let recorded = process.new_subject()
   let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
-  let outcome = grep.tool().run(ctx, args)
+  let outcome = grep.tool(ripgrep_path).run(ctx, args)
   #(outcome, recorded)
 }
 
@@ -118,8 +123,8 @@ pub fn grep_call_spec_shape_test() {
   let spec = recorded_spec(recorded)
   assert spec.argv
     == [
-      "rg", "--json", "--regexp", "todo", "--context", "2", "--glob", "*.gleam",
-      workspace,
+      ripgrep_path, "--json", "--regexp", "todo", "--context", "2", "--glob",
+      "*.gleam", workspace,
     ]
   assert spec.cwd == workspace
   assert spec.response == broker.RefuseNarrowed
@@ -127,6 +132,32 @@ pub fn grep_call_spec_shape_test() {
   assert spec.requirements.writable_roots == []
   assert spec.requirements.readable_roots == [workspace]
   assert spec.budget.deadline_ms == now + grep.timeout_ms
+}
+
+// The bug this pins: a bare `rg` in `argv[0]` is resolved by stage 2
+// against the jail's constructed PATH, which is the harness's system
+// directories and not the operator's, so a Homebrew ripgrep was invisible
+// and every call died with exit 126. The host resolves once and the tool
+// carries the absolute path it was built with.
+pub fn grep_argv_names_the_resolved_binary_test() {
+  let #(_outcome, recorded) =
+    run_with_script(
+      [fake_broker.exited(code: 1, stdout_bytes: 0)],
+      pattern_args("todo"),
+    )
+  let spec = recorded_spec(recorded)
+  assert list.first(spec.argv) == Ok(ripgrep_path)
+  assert string.starts_with(ripgrep_path, "/")
+}
+
+// `Absent` builds nothing at all, so a host without ripgrep advertises no
+// `grep` rather than one that can only fail.
+pub fn grep_tools_gated_on_resolution_test() {
+  assert list.map(grep.tools(grep.Found(path: ripgrep_path)), fn(tool) {
+      tool.name
+    })
+    == ["grep"]
+  assert grep.tools(grep.Absent(reason: "no rg on PATH")) == []
 }
 
 pub fn grep_path_scopes_search_test() {
@@ -236,7 +267,7 @@ pub fn grep_negative_context_rejected_test() {
 // --- contract flags ------------------------------------------------------
 
 pub fn grep_flags_test() {
-  let grep_tool = grep.tool()
+  let grep_tool = grep.tool(ripgrep_path)
   assert grep_tool.name == "grep"
   assert grep_tool.replay == tool.Safe
   assert grep_tool.execution_mode == tool.Concurrent
@@ -249,7 +280,7 @@ pub fn grep_flags_test() {
 /// any one call's fan-out (`broker/budget`'s module doc, ADR-005) — so
 /// two genuinely concurrent `grep` calls in one batch share the ledger
 /// the *first* one opens. Reproduces that sharing directly against the
-/// real `broker/budget` ledger, under exactly the budget `grep.tool()`
+/// real `broker/budget` ledger, under exactly the budget `grep.tool`
 /// declares, rather than asserting the constant's value in isolation:
 /// the second reservation is what a second concurrent call in the same
 /// batch would actually need to succeed.
@@ -293,7 +324,10 @@ pub fn grep_stays_offline_under_an_opened_base_test() {
       network: policy.NetworkFull,
     )
   let _outcome =
-    grep.tool().run(tool.Ctx(..ctx, base_policy: opened), pattern_args("todo"))
+    grep.tool(ripgrep_path).run(
+      tool.Ctx(..ctx, base_policy: opened),
+      pattern_args("todo"),
+    )
   let assert Ok(fake_broker.Spec(spec:)) = process.receive(recorded, 1000)
     as "the tool never cleared a call"
   assert spec.requirements.network == policy.NetworkOff

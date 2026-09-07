@@ -35,6 +35,7 @@ import client/contributions
 import client/escalate
 import client/gateway
 import client/grants
+import client/internal/ffi_os
 import client/protocol
 import client/server
 import client/wiring
@@ -1322,7 +1323,16 @@ fn compaction_wiring(
   // asserted away, because `wiring.Config` is built inside a `Result`
   // already and a refusal costs one line.
   use tool_registry <- result.try(
-    contributions.built_in(None, None, None, None, None, None, None)
+    contributions.built_in(
+      contributions.ripgrep(ffi_os.find_executable),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+    )
     |> contributions.registry
     |> result.map_error(contributions.collision_message),
   )

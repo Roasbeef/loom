@@ -361,7 +361,7 @@ pub opaque type Registry {
 /// ## Examples
 ///
 /// ```gleam
-/// let registry = tool.registry([bash.tool(), grep.tool()])
+/// let registry = tool.registry([bash.tool(), grep.tool("/usr/bin/rg")])
 /// assert tool.names(registry) == ["bash", "grep"]
 /// ```
 ///
@@ -416,7 +416,7 @@ pub fn names(registry: Registry) -> List(String) {
 /// ## Examples
 ///
 /// ```gleam
-/// let registry = tool.registry([grep.tool(), bash.tool()])
+/// let registry = tool.registry([grep.tool("/usr/bin/rg"), bash.tool()])
 /// let named = list.map(tool.registered(registry), fn(t) { t.name })
 /// assert named == ["grep", "bash"]
 /// ```

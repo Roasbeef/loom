@@ -104,6 +104,7 @@ import storage/domain
 import telemetry/field
 import telemetry/log.{type Logger}
 import tools/agent.{type Agency}
+import tools/grep
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -2375,9 +2376,27 @@ fn assemble_in(
         fallback: settings.context_window,
       )
     })
+
+  // Where this host's ripgrep is, decided once. An `Absent` answer
+  // drops `grep` from the registry, and the line below is the only place
+  // an operator could learn why — the same `codemode.unavailable`
+  // posture, for the same reason: an absent tool is otherwise silent.
+  let ripgrep = contributions.ripgrep(ffi_os.find_executable)
+  case ripgrep {
+    grep.Found(path: _) -> Nil
+    grep.Absent(reason:) ->
+      log.warn(logger, "grep.unavailable", [
+        field.text(key: "reason", value: reason),
+        field.text(
+          key: "remedy",
+          value: "install ripgrep where the server's PATH can see it",
+        ),
+      ])
+  }
   use tool_registry <- result.try(
     list.append(
       contributions.built_in(
+        ripgrep,
         Some(agency_seam),
         code_mode,
         history_seam,

@@ -138,6 +138,39 @@ pub type Collision {
   Collision(name: String, first: Origin, second: Origin)
 }
 
+/// The executable name `grep` searches with.
+const ripgrep_name = "rg"
+
+/// Decides, once per host, where ripgrep is.
+///
+/// `lookup` is the daemon's own `PATH` resolution — `ffi_os
+/// .find_executable` in the server, a fake in tests — and it is asked
+/// here rather than inside the jail on purpose. The jailed payload's
+/// environment is *constructed* from a policy allowlist
+/// (`jail.FilterEnv`), so its `PATH` is the harness's three system
+/// directories and not the operator's shell; a Homebrew or Nix ripgrep
+/// is invisible from in there, which is exactly how a bare `rg` in
+/// `argv` came to fail with exit 126 on every macOS host. Resolving on
+/// this side and passing an absolute path makes the jail's `PATH`
+/// irrelevant to the question.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert contributions.ripgrep(fn(_name) { Error(Nil) })
+///   == grep.Absent("no `rg` on the server's PATH")
+/// ```
+///
+pub fn ripgrep(lookup: fn(String) -> Result(String, Nil)) -> grep.Ripgrep {
+  case lookup(ripgrep_name) {
+    Ok(path) -> grep.Found(path:)
+    Error(Nil) ->
+      grep.Absent(
+        reason: "no `" <> ripgrep_name <> "` on the " <> "server's PATH",
+      )
+  }
+}
+
 /// The one contribution a host's own planes make, in the order the
 /// registry has always been built in: the five core tools, the six
 /// `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
@@ -149,7 +182,10 @@ pub type Collision {
 /// prompt, and is the byte prefix of the provider's cached region — so a
 /// permanently-refusing definition would be paid for on every request of
 /// every strand for the life of the session. A host with none of the
-/// planes offers five tools. `context_remaining` is the one whose plane
+/// planes offers five tools, or four where `ripgrep` is `Absent` —
+/// `grep` is gated on the same arithmetic even though it is a core
+/// tool, because a `grep` whose binary does not exist can only spend
+/// the model's turns discovering that. `context_remaining` is the one whose plane
 /// every served session has — it needs the session store and the
 /// compaction settings and nothing else — so its `Option` is for a
 /// registry built with no session behind it, which only a test does.
@@ -159,6 +195,7 @@ pub type Collision {
 /// ```gleam
 /// let assert [contributions.Contribution(origin: contributions.BuiltIn, ..)] =
 ///   contributions.built_in(
+///     grep.Absent("no rg"),
 ///     option.None,
 ///     option.None,
 ///     option.None,
@@ -170,6 +207,7 @@ pub type Collision {
 /// ```
 ///
 pub fn built_in(
+  ripgrep: grep.Ripgrep,
   agency: Option(Agency),
   code_mode: Option(codemode_tool.CodeMode),
   history: Option(history_tool.History),
@@ -190,13 +228,14 @@ pub fn built_in(
     Contribution(
       origin: BuiltIn,
       tools: list.flatten([
-        [
-          bash.tool(door),
-          grep.tool(),
-          fs.read_tool(),
-          fs.write_tool(),
-          fs.edit_tool(),
-        ],
+        [bash.tool(door)],
+
+        // `grep` is the one core tool a host can lack. Ripgrep is not
+        // shipped with the harness, so a host without it contributes no
+        // definition rather than one that fails on first use — the same
+        // gating the optional planes get, for the same reason.
+        grep.tools(ripgrep),
+        [fs.read_tool(), fs.write_tool(), fs.edit_tool()],
         case agency {
           None -> []
           Some(agency) -> agent.tools(agency)

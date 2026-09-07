@@ -16,10 +16,14 @@ import client/contributions
 import gleam/option.{type Option, None}
 import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
+import tools/grep
 import tools/history as history_tool
 import tools/remember
 import tools/schedule as schedule_tool
 import tools/tool.{type Registry}
+
+/// The ripgrep path the built-in registry is built with here.
+pub const fake_ripgrep = "/usr/bin/rg"
 
 /// The registry a host with these planes would build.
 ///
@@ -47,6 +51,10 @@ pub fn built_in(
 ) -> Registry {
   let assert Ok(registry) =
     contributions.built_in(
+      // A fixed path, not this host's: a registry a test asserts the tool
+      // names of must not depend on whether ripgrep is installed on the
+      // machine running the suite.
+      grep.Found(path: fake_ripgrep),
       agency,
       code_mode,
       history,

@@ -3,9 +3,17 @@
 ////
 //// The call runs `rg --json` under a read-only policy (workspace
 //// readable, nothing writable, network off) and parses ripgrep's JSON
-//// event stream into a match list capped at `max_results`. When the
-//// jail has no `rg` binary the call settles as a structured error
-//// suggesting the bash tool as a fallback.
+//// event stream into a match list capped at `max_results`.
+////
+//// The binary is named by **absolute path**, decided once when the host
+//// builds its registry rather than per call. A jailed payload runs with
+//// a constructed `PATH` (`jail.FilterEnv`, and the harness hands it
+//// `/usr/local/bin:/usr/bin:/bin`), which on macOS does not contain the
+//// Homebrew directory ripgrep is usually installed in — so a bare `rg`
+//// in `argv` made every call on such a host fail stage-2 resolution with
+//// exit 126. `Ripgrep` carries that one decision: `Found` builds the
+//// tool, `Absent` builds nothing at all, because a tool that can only
+//// fail is worse for the model than a tool that is not offered.
 ////
 //// `replay: Safe` — a search is a read; re-executing it after a crash
 //// repeats no external effect. `execution_mode` is `Concurrent`.
@@ -53,8 +61,50 @@ pub const max_concurrent_searches = 16
 /// Slack added to the receive window beyond the execution deadline.
 const settle_grace_ms = 10_000
 
-/// The `grep` tool.
-pub fn tool() -> tool.Tool {
+/// Where this host's ripgrep is, or why there is none.
+///
+/// The question is answered once, on the harness side, against the
+/// daemon's own `PATH` — never inside the jail, whose `PATH` is
+/// constructed from an allowlist and is not the operator's. Two variants
+/// and no third: either there is a binary to name in `argv`, or the tool
+/// is not built.
+pub type Ripgrep {
+  /// An absolute path to an executable `rg`.
+  Found(path: String)
+
+  /// No `rg` was found, with the sentence an operator can act on.
+  Absent(reason: String)
+}
+
+/// The `grep` tools this host offers: one when ripgrep resolved, none
+/// when it did not.
+///
+/// This is the same shape the optional planes use — a capability the
+/// host does not have contributes no definition, so no permanently
+/// failing tool is paid for in the cached prefix of every request.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert grep.tools(grep.Absent("no rg on PATH")) == []
+/// ```
+///
+pub fn tools(ripgrep: Ripgrep) -> List(tool.Tool) {
+  case ripgrep {
+    Found(path:) -> [tool(path)]
+    Absent(reason: _) -> []
+  }
+}
+
+/// The `grep` tool, searching with the ripgrep at `rg_path`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert grep.tool("/opt/homebrew/bin/rg").name == "grep"
+/// ```
+///
+pub fn tool(rg_path: String) -> tool.Tool {
   tool.Tool(
     name: "grep",
     description: "Search file contents with ripgrep. Returns matching "
@@ -95,11 +145,11 @@ pub fn tool() -> tool.Tool {
     replay: tool.Safe,
     execution_mode: tool.Concurrent,
     requirements: tool.read_requirements,
-    run:,
+    run: fn(ctx, args) { run(rg_path, ctx, args) },
   )
 }
 
-fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run(rg_path: String, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use pattern <- tool.with_arg(tool.required_string(args, "pattern"))
   use path <- tool.with_arg(tool.optional_string(args, "path"))
   use globs <- tool.with_arg(tool.optional_string_list(args, "globs"))
@@ -116,7 +166,7 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   )
   use root <- tool.or_outcome(search_root(ctx, path), identity_outcome)
   let #(now, _clock) = clock.read(ctx.clock)
-  let spec = call_spec(ctx, pattern, root, globs, context, now)
+  let spec = call_spec(rg_path, ctx, pattern, root, globs, context, now)
   let events = process.new_subject()
   use call <- tool.or_outcome(
     ctx.clear_call(spec, events),
@@ -153,6 +203,7 @@ fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
 }
 
 fn call_spec(
+  rg_path: String,
   ctx: Ctx,
   pattern: String,
   root: String,
@@ -160,9 +211,12 @@ fn call_spec(
   context: Int,
   now: Int,
 ) -> broker.CallSpec {
+  // The absolute path the host resolved, not the bare name: stage 2
+  // resolves `argv[0]` against the jail's constructed `PATH`, which is
+  // the harness's allowlist rather than the operator's shell.
   let argv =
     list.flatten([
-      ["rg", "--json", "--regexp", pattern],
+      [rg_path, "--json", "--regexp", pattern],
       case context > 0 {
         True -> ["--context", int.to_string(context)]
         False -> []
@@ -205,8 +259,9 @@ fn settle(
   }
 }
 
-// A spawn failure means the jail has no rg; every other failure keeps
-// its generic in-band rendering.
+// A spawn failure means the rg the host resolved at boot is no longer
+// runnable — uninstalled, or outside what this policy's mount plan
+// exposes. Every other failure keeps its generic in-band rendering.
 fn failed(failure: exec.ExecFailure) -> ToolOutcome {
   case failure {
     exec.RefusedByHelper(code: "spawn_failed", message: _) -> rg_unavailable()
