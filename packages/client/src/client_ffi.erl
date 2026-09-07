@@ -10,7 +10,7 @@
          wait_for_sigterm/0, halt/1, constant_time_equal/2,
          create_exclusive_private_file/2, platform/0,
          terminate_supervisor/2, code_root_dir/0, erts_version/0,
-         inflate_gzip/2]).
+         inflate_gzip/2, run_capture/3]).
 
 %% gen_event callbacks (the SIGTERM relay).
 -export([init/1, handle_event/2, handle_call/2, handle_info/2,
@@ -49,6 +49,69 @@ find_executable(Name) ->
     case os:find_executable(binary_to_list(Name)) of
         false -> {error, nil};
         Path -> {ok, list_to_binary(Path)}
+    end.
+
+%% Runs one host executable to completion with a deadline, answering
+%% {ok, {Status, Stdout}}. Reached only through client/secrets, which
+%% documents why a host command resolves a credential at all.
+%%
+%% spawn_executable with {args, _} keeps every argument whole: no shell
+%% parses this, so nothing in an operator's argv is split or expanded.
+%% stderr stays inherited -- open_port can only merge it into stdout, and
+%% a merged stream would let a helper's chatter become part of a
+%% credential.
+run_capture(Executable, Args, TimeoutMs) ->
+    Argv = [binary_to_list(A) || A <- Args],
+    try erlang:open_port({spawn_executable, binary_to_list(Executable)},
+                         [binary, exit_status, hide, {args, Argv}]) of
+        Port ->
+            Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+            capture_loop(Port, Deadline, [])
+    catch
+        _:_ -> {error, <<"the command could not be started">>}
+    end.
+
+%% The deadline covers the whole run, not the gap between two chunks, so
+%% the remaining budget is recomputed on every chunk. A child that
+%% overruns is killed rather than merely abandoned: an unreaped
+%% credential helper holding a vault session open is exactly what the
+%% bound exists to prevent.
+capture_loop(Port, Deadline, Acc) ->
+    Remaining = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {Port, {data, Chunk}} ->
+            capture_loop(Port, Deadline, [Chunk | Acc]);
+        {Port, {exit_status, Status}} ->
+            Output = iolist_to_binary(lists:reverse(Acc)),
+            case unicode:characters_to_binary(Output, utf8, utf8) of
+                Text when is_binary(Text) -> {ok, {Status, Text}};
+                _NotUtf8 -> {error, <<"the command's output is not UTF-8">>}
+            end
+    after Remaining ->
+        kill_capture(Port),
+        {error, <<"the command did not finish in time">>}
+    end.
+
+%% SIGKILL first, then close: closing alone only drops this end of the
+%% pipe, and the child may go on running. The drain that follows keeps a
+%% late port message out of the booting process's mailbox.
+kill_capture(Port) ->
+    case erlang:port_info(Port, os_pid) of
+        {os_pid, OsPid} when is_integer(OsPid), OsPid > 1 ->
+            os:cmd("kill -KILL " ++ integer_to_list(OsPid));
+        _Gone -> ok
+    end,
+    try erlang:port_close(Port) of
+        true -> ok
+    catch
+        _:_ -> ok
+    end,
+    flush_capture(Port).
+
+flush_capture(Port) ->
+    receive
+        {Port, _Message} -> flush_capture(Port)
+    after 0 -> ok
     end.
 
 %% Replaces the default erl_signal_handler (whose sigterm response is an
