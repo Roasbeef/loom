@@ -2652,10 +2652,11 @@ fn assemble_in(
     // state at all, in fact — one writer publication in, one hub hint out
     // — so a restart costs whichever hints landed in the gap, and the
     // hub's next pull covers them.
-    |> sup.add(hub.supervised_commit_forwarder(
-      to: name,
-      as_name: forwarder_name,
-    ))
+    |> sup.add(
+      supervision.worker(fn() {
+        hub.commit_forwarder(to: name, as_name: forwarder_name)
+      }),
+    )
     |> sup.add(
       supervision.worker(fn() {
         hub.start(

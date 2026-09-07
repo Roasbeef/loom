@@ -163,7 +163,6 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -844,22 +843,6 @@ pub fn commit_forwarder(
   |> actor.start
 }
 
-/// The commit forwarder as a supervision child, so a crash restarts it
-/// under the same name instead of ending the server.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // sup.add(builder, gateway.supervised_commit_forwarder(to: name, as_name: forwarder))
-/// ```
-///
-pub fn supervised_commit_forwarder(
-  to name: address.Address(Message),
-  as_name as_name: address.Address(writer.Event),
-) -> ChildSpecification(Subject(writer.Event)) {
-  supervision.worker(fn() { commit_forwarder(to: name, as_name:) })
-}
-
 /// Wraps a provider surface so every streamed delta is teed to the hub
 /// as an ephemeral `stream_delta` broadcast while the runtime's effect
 /// process consumes the stream unchanged (same events, same terminal,
@@ -1155,8 +1138,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     CommitHint -> actor.continue(pull_and_broadcast(revalidate_all(state)))
     BusHint(published: _) ->
       actor.continue(pull_and_broadcast(revalidate_all(state)))
+
+    // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
+    // as the frame leaves, and a second check on the same evidence in the
+    // same turn would only double the registry calls per token per peer.
     ProviderDelta(operation:, delta:) -> {
-      let state = revalidate_all(state)
       broadcast_delta(state, operation, delta)
       actor.continue(state)
     }
@@ -3590,7 +3576,11 @@ fn drain_strand(state: State, strand: String) -> State {
               event: protocol.ErrorEvent(code:, message:, details: None),
             ),
           )
-          put_held(state, strand, rest)
+
+          // The strand is still idle and nothing else will transition it,
+          // so the next held prompt tries now rather than waiting for a
+          // terminal transition that a dropped head can never produce.
+          drain_strand(put_held(state, strand, rest), strand)
         }
       }
     }

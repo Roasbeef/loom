@@ -68,9 +68,10 @@ answers it. What the gateway now also does, since
 *announce*. A commit reaches every subscribed socket as a `committed` frame
 carrying the sequence and the strand and no record; the terminal that has not
 seen that sequence issues its catch-up immediately instead of at the next idle
-refresh. Token deltas, the presence roster and attachment metadata are pushed
-inline, and a delta's text is clipped to the same 24 KiB bound the snapshot
-preview uses.
+refresh. Token deltas are pushed inline, with a delta's text clipped to the
+same 24 KiB bound the snapshot preview uses. The presence roster is pushed
+when a peer departs; a peer's arrival is learned from the next capture's
+`peers`, because the join path issues no push of its own.
 
 A pushed frame carries no `reply_to`, so it is never confused with the answer
 to a command, and it leaves through the same per-frame authority check a reply

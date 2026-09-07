@@ -3,6 +3,7 @@
 //// and the semantic error codes of the command table.
 
 import broker/escalation as broker_escalation
+import broker/internal/call
 import broker/policy.{type Grant}
 import client/catalog
 import client/gateway
@@ -25,6 +26,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/operation
 import machine/strand as machine_strand
@@ -242,9 +244,10 @@ fn start_harness_reserved(
   // `protocol-change/018` the network hub pulls above its own high-water
   // on every commit hint, so it scans — always from a lower bound it
   // computed, never from the beginning. The guards below therefore refuse
-  // an *unbounded* scan and pass a bounded one through to the real
-  // backend, which keeps the property the fixture was written for and
-  // fails just as loudly on the read it was written against.
+  // a scan with no lower bound and pass one that names a bound through to
+  // the real backend. That is a check on the query's shape, not its size:
+  // the prime at start names sequence one and reads the whole history
+  // once, which is the same read the host fixture always made.
   // The separate snapshot_reader still borrows the real backend capability.
   let backend = runtime.session.store
   let runtime = case reserved {
@@ -430,7 +433,10 @@ fn attach_socket(
         role,
         digest,
       ),
-      fn() { process.call(auth.data, waiting: 1000, sending: ReadAuth) },
+      fn() {
+        call.try_call(auth.data, waiting: 1000, sending: ReadAuth)
+        |> result.unwrap(Error("authority fixture unavailable"))
+      },
       fn(frame) { process.send(inbox, frame) },
       fn() { process.send(closed, Nil) },
       fn() { Nil },
@@ -2898,9 +2904,12 @@ pub fn a_provider_delta_reaches_only_a_subscribed_socket_test() {
   assert process.receive(quiet, within: 100) == Error(Nil)
 }
 
-/// Push opens no second way out. Every frame goes through the same
-/// per-delivery `check_binding` a reply goes through, so a membership that
-/// changed retires the attachment instead of being written to.
+/// Push opens no second way out. A membership that changed retires the
+/// attachment before the commit's notice is built — the hint's
+/// `revalidate_all` runs ahead of the pull — so the revoked socket is
+/// closed and written nothing. The per-frame check inside `deliver` is
+/// the second line, reached only by a change between those two reads in
+/// one turn, which this fixture does not stage.
 pub fn a_revoked_socket_is_retired_rather_than_pushed_to_test() {
   let harness = network_harness()
   let inbox = process.new_subject()

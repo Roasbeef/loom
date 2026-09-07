@@ -2059,7 +2059,9 @@ an install is under the extensions root.
 - **The hub primes its high-water under network delivery too.**
   `start_with_delivery` runs `pull` before serving under either delivery.
   Without it a restarted hub's first hint would push a notice for every
-  sequence the store already held.
+  sequence the store already held. The prime reads the whole history once
+  per start, so a supervised restart of a long session's hub pays that
+  read again.
 - **Held prompts are hub memory, four per strand.** A `prompt` refused
   with `StrandBusy` is held with the origin recorded at submission and
   answered `queued`; the hub drains the head when a pull observes the

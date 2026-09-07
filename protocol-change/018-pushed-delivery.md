@@ -56,7 +56,10 @@ The body carries the strand and nothing else.
 **2. `stream_delta`, `presence` and `attachment` may arrive unsolicited.**
 The events are unchanged on the wire. What changes is that a client must
 accept them with no `reply_to` in any phase, rather than treating an
-uncorrelated frame as a protocol violation.
+uncorrelated frame as a protocol violation. The hub pushes `presence` on a
+departure; a join is not announced by a push, since every pushed frame
+costs one authority check per peer and the joiner's own capture already
+carries the roster.
 
 **3. `mutation_outcome` gains the status `queued`.**
 
