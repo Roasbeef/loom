@@ -175,15 +175,30 @@ All of the following is additive and lands as `protocol-change/018`:
 
 ## What proves it
 
-A shipped fixture in the `tui_shipped_multiplayer_test` style, in its own
-module and CI step: Alice and Bob submit on the same strand within one
-catch-up window; the loser's reply is `queued`; both answers render at Alice,
-Bob and the Reader without an idle refresh firing (the driver asserts the
-capture that painted each answer was notice-driven); the Reader observes
-`stream_delta` frames before the answer's entry exists in its cut; Bob is
-revoked mid-answer and his socket closes at the per-delivery check with no
-further frames written. The scripted provider gains a per-chunk pacing option
-so the stream is observable.
+`tui_shipped_live_delivery_test` is what landed, in its own module and CI
+step, against the built daemon. Two native terminals run Alice and the
+Reader; Bob is a raw v2 wire client on the same authenticated route, because
+a terminal cannot reach the queue deterministically. A terminal sends
+`prompt` only while its own model shows the strand idle, and against a
+pushing daemon that window is a few milliseconds wide.
+
+Five properties, and two of them are counts rather than the provenance this
+note first asked for. Bob submits on a strand Alice's terminal reports live
+and is answered `queued`. Both terminals accumulate at least two stream
+fragments prefixing the first answer while no assistant entry for it exists
+in that terminal's cut, which the snapshot preview cannot produce, since it
+projects as one fragment however many tokens it summarises; two fragments
+are therefore two pushed `stream_delta` frames. Both terminals'
+`Model.notices` rise by at least the four durable records the two shared
+turns commit, counted as arrivals rather than read off a capture, because
+the idle refresh may legitimately paint first and leave the notice naming a
+sequence already held. Bob's own credited `catch_up` reassembles, through
+the shared core decoder, to exactly the records the terminals hold. And Bob
+is revoked once his socket carries a prefix of a third answer: the hub's
+next write to him fails the per-delivery check, the socket closes, a further
+read returns the transport's own closure rather than a timeout, and the two
+remaining terminals complete that answer. The scripted provider gained a
+per-chunk pacing option so the stream occupies an interval.
 
 ## Open, deliberately
 
