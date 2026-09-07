@@ -3,8 +3,9 @@
 ## Purpose
 
 The provider SDK: a typed registry of provider configurations and role
-routes, a pure incremental server-sent-events parser, three wire adapters
-(Anthropic Messages, OpenAI chat-completions, Gemini generateContent), retry
+routes, a pure incremental server-sent-events parser, four wire adapters
+(Anthropic Messages, OpenAI chat-completions, Gemini generateContent, public
+OpenAI Responses), retry
 and overflow
 classification, and the secret-injection seam. SSE parsing and adapter folds
 are pure Gleam; the gateway custodian and native transport owner are the small
@@ -145,6 +146,12 @@ processful shell around that sans-io core. WP-F.
   - OpenAI chat-completions SSE — unnamed events whose `data:` is a chunk
     document, terminated by the literal `[DONE]`; tool calls arrive as
     `choices[0].delta.tool_calls` fragments carrying a provider-side index.
+  - OpenAI Responses SSE — named item/part lifecycle events, indexed text
+    and argument deltas, then a terminal response object. Completion
+    records must agree with the deltas and final output. Requests post to
+    `/responses` with flat function definitions, `store: false`, and
+    caller-owned input history. API-key authentication uses the existing
+    HTTP transport owner, not a Codex helper or subscription credential.
   - Anthropic requests carry four `cache_control` breakpoints — one-hour
     on the last tool definition and on the system block, five-minute on
     the last block of each of the final two user turns. The system prompt
@@ -158,8 +165,9 @@ processful shell around that sans-io core. WP-F.
     `thinkingConfig` whose knob follows the model generation
     (`thinkingLevel` for Gemini 3, `thinkingBudget` for 2.5). The key
     travels in `x-goog-api-key`.
-  - `api_name` constants pin the three dialects: `"anthropic-messages"`,
-    `"openai-completions"`, `"gemini-generate-content"`.
+  - `api_name` constants pin the four dialects: `"anthropic-messages"`,
+    `"openai-completions"`, `"gemini-generate-content"`,
+    `"openai-responses"`.
 
 ## Invariants
 
@@ -257,14 +265,18 @@ processful shell around that sans-io core. WP-F.
   fails immediately if the next chunk would cross it. OTP `httpc` buffers
   non-200/206 bodies before delivery, so this does not bound native error-body
   memory; issue #147 owns transport replacement or isolation.
-- **Wire leniency is deliberate and asymmetric.** SSE `data:` payloads must
+- **Wire leniency does not authorize content loss.** SSE `data:` payloads must
   parse as JSON (malformed data fails the stream in-band as
   `MalformedStream`), but *fields* are read leniently — absent usage
-  counters read as zero, unknown event and delta types are ignored per the
-  Messages API versioning policy. The total-decoder doctrine governs *our*
-  durability boundaries, not foreign wire vocabularies.
+  counters read as zero, and unknown fields are ignored. The older adapters
+  retain their existing unknown-event conventions. Responses rejects
+  unknown content-bearing events and item kinds while explicitly accepting
+  known lifecycle markers; otherwise a new output variant could disappear
+  from a successful settled message. Replayed metadata passes through the
+  same allowlisted item decoder rather than becoming arbitrary request JSON.
 - **A tool call the model got wrong is not a malformed stream** (issue
-  #189). The Anthropic and OpenAI dialects accumulate a call's arguments as
+  #189). The Anthropic, OpenAI Chat Completions, and Responses dialects
+  accumulate a call's arguments as
   text and parse it at settlement; a parse failure there used to fail the
   whole stream as `MalformedStream`, which `retry.classify` marks terminal,
   killing a turn whose other blocks were fine. `wire.tool_arguments` now
@@ -274,6 +286,25 @@ processful shell around that sans-io core. WP-F.
   keeps its narrower meaning: bytes the *provider* produced that were not
   the protocol. Gemini needs none of this; its `args` arrive already parsed
   inside the response document.
+- **Responses has one local conversation owner.** The request carries
+  reconstructed history, never `conversation` or `previous_response_id`.
+  Encrypted reasoning is opaque replay data, not an authentication token.
+  Subscription inference is deliberately deferred under ADR-012; adding a
+  dialect name or reading a Codex credential file would not satisfy its
+  support gate.
+- **Responses replay is bounded metadata plus durable content.** The
+  namespaced hint retains item IDs, statuses, message phases, part boundaries, annotations,
+  and the permutation between provider order and delta block order. It does
+  not duplicate answer text. A hint larger than 64 KiB fails settlement;
+  missing or invalid stored metadata cannot authorize a reasoning item
+  without its required ID. Ordinary text and calls have a metadata-free
+  projection. A foreign dialect's signature is never interpreted as
+  Responses encrypted content.
+- **A reasoning item's ciphertext is stored once.** Its first canonical
+  thinking block carries the signature; later summary or reasoning-text
+  blocks carry `None`. Replay reconstructs the one provider item. Copying a
+  large signature onto every short summary part would multiply durable
+  encoding size despite the transport's byte budget.
 - **Usage counters are clamped, not trusted.** `wire.count_field_or` /
   `optional_count_field` clamp into `[0, max_usage_count]` (1e12) at the
   read, so no count an untrusted proxy reports can reach a settled message
@@ -283,7 +314,7 @@ processful shell around that sans-io core. WP-F.
   decision — so a lying proxy can at worst waste a compact-and-retry cycle.
 - **Usage costs are zeroed**; token extraction only. Pricing tables are a
   ledger-side concern, not an adapter's.
-- **Human attribution is projected here and nowhere else.** All three
+- **Human attribution is projected here and nowhere else.** All four
   adapters encode a `UserMessage` through `core/origin.project`
   (`adapter/anthropic.gleam:199`, `adapter/openai.gleam:190`,
   `adapter/gemini.gleam:308`), which prepends one JSON-quoted author label
@@ -291,7 +322,7 @@ processful shell around that sans-io core. WP-F.
   are unchanged, so a message keeps one durable form no matter how many
   dialects render it, and the label reaches the model as data inside the
   user turn rather than as a role or a system instruction
-  (`protocol-change/016`). One pure helper serves the three dialects
+  (`protocol-change/016`). One pure helper serves all four dialects
   because the label's wording is part of the durable contract, not an
   adapter's taste.
 - **Cache breakpoint placement is deterministic and adapter-local.** No
@@ -323,6 +354,9 @@ processful shell around that sans-io core. WP-F.
 
 ## Deep Docs
 
+- [docs/adr/012-responses-and-subscription-boundaries.md](../../docs/adr/012-responses-and-subscription-boundaries.md)
+  — public API inference, the deferred subscription support gate, and the
+  distinction between model argument mistakes and provider corruption.
 - [docs/architecture/effects.md](../../docs/architecture/effects.md) —
   "Providers", and the plane this package sits in.
 - [docs/spec-gaps.md](../../docs/spec-gaps.md) — "From WP-F (`provider`)":

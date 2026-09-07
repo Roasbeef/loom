@@ -847,21 +847,27 @@ compact, not retry unchanged. "Negligible" was left open by the spec and
 is quantified in the code as at most 64 output tokens, so a real answer
 that merely tripped a counter is never discarded as overflow.
 
-Decoding posture here is deliberately asymmetric to the rest of the
-system. Stream payloads must parse as JSON — malformed data fails the
-stream in-band as a corruption report — but *fields* are read leniently:
-absent counters read as zero and unknown enum values are ignored, which
-is what provider versioning policies prescribe. The total-decoder
-doctrine governs boundaries we own; strict decoding of a foreign
-vocabulary breaks against real proxies and gains nothing.
+Decoding distinguishes an additive field from unknown content. Stream
+payloads must parse as JSON, while absent usage counters read as zero and
+unknown fields are ignored. The older adapters also ignore unknown event
+types under their existing versioning conventions. Responses instead
+rejects unknown content-bearing events and item kinds: silently dropping
+one would let the final message omit part of the provider's answer. It
+explicitly recognizes harmless lifecycle markers and verifies agreement
+between deltas, completion records, and final output. Malformed model
+arguments remain an in-band corrective tool result under #189; conflicting
+wire records are `MalformedStream`.
 
 **Secrets live in exactly one place.** Provider configuration holds a
 secret *name*, never a value. The secret store is an injected lookup
 whose only call site is gateway dispatch, which copies the value straight
-into one outbound request header. Errors carry names and status codes and
-never headers, bodies, or values, so nothing the gateway returns or
-persists can embed a key; a grep-based leak test over a full session
-fixture is the check. The environment-variable backend ships now, and OS
+into one outbound request header. Remote error diagnostics are bounded and
+the gateway scrubs the exact request key before an error leaves the
+attempt. Successful streamed content is a different boundary: fragmented
+credential redaction there remains issue #148, so the gateway does not
+claim that arbitrary successful provider output can never contain a key.
+The full-turn Responses fixture checks that its request-only key does not
+enter replay or durable session data. The environment-variable backend ships now, and OS
 keychain backends slot into the same `fn(name) -> Result(String, Nil)`
 seam without touching a caller.
 
