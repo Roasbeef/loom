@@ -73,7 +73,11 @@ pub type AcceptRequest {
 /// the commit refuses the acceptance instead of mis-parenting its
 /// entries (review finding ORCH-L6); `settings` is the current global
 /// run-settings snapshot captured into the run; `pending` holds the
-/// payloads of every id in `strand_state.pending_next_run`; `generator`
+/// payloads of every id in `strand_state.pending_next_run` when the
+/// request is an `AcceptRun`, and is the caller's to leave empty
+/// otherwise — the structural intents carry the queue across untouched
+/// and never read it, so making them read it only widens what a corrupt
+/// payload can refuse; `generator`
 /// must be fresh (see `PlannerInputs.generator`); `now` is the injected
 /// clock time.
 pub type AcceptCtx {

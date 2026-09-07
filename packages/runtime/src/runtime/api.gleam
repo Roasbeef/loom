@@ -515,8 +515,9 @@ pub fn navigate(
 }
 
 // The retry-admission body shared by every acceptance: read the
-// serialization line (strand state, leaf, pending queue), build the
-// request's plan against it, commit, and reload-and-retry on nothing but
+// serialization line (strand state, leaf, and — for a run — the pending
+// queue), build the request's plan against it, commit, and
+// reload-and-retry on nothing but
 // a lost seq race. `accept_quietly`, `compact`, and `navigate` differ
 // only in which `AcceptRequest` they hand this; `accept_quietly_marking`
 // is the one caller that hands a `Some(mark)` — the rest pass `None`,
@@ -534,7 +535,7 @@ fn accept_request(
       runtime,
     ))
     use #(leaf_seq, leaf) <- result.try(read_leaf(runtime))
-    use pending <- result.try(read_pending(runtime))
+    use pending <- result.try(read_pending_for(runtime, request))
     use defaults <- result.try(run_defaults_cell(runtime))
     let #(now, generator) = mint_context(runtime)
     let ctx =
@@ -2696,6 +2697,29 @@ fn read_leaf(
       register.read_leaf(value)
       |> result.map(fn(leaf) { #(Some(seq), leaf) })
       |> result.map_error(fn(report) { ReadFailed(reason: report.boundary) })
+  }
+}
+
+// The queue read, scoped to the one admission that consumes it.
+// `accept_run` places every captured next-run item from its stored
+// payload, so a run has to see the queue and has to refuse when a
+// captured id's payload is missing or undecodable. Compaction and
+// navigation carry `pending_next_run` across untouched and never read
+// `ctx.pending` at all, so for them the empty dict is the whole truth.
+//
+// The distinction is worth a function because `pending.entry` keys are
+// entry ids with no strand in them, and `read_pending` decodes every
+// one of them under `try_map`. Reading the queue for a structural
+// admission therefore let one strand's corrupt queue item refuse every
+// other strand's compaction, and made a path that wants three point
+// lookups scan the whole session (issue #70).
+fn read_pending_for(
+  runtime: Runtime,
+  request: acceptance.AcceptRequest,
+) -> Result(dict.Dict(String, operation.PendingEntry), ApiError) {
+  case request {
+    AcceptRun(..) -> read_pending(runtime)
+    AcceptCompaction(..) | AcceptNavigation(..) -> Ok(dict.new())
   }
 }
 

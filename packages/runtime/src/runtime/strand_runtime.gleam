@@ -59,9 +59,10 @@ import machine/operation.{
   type NormalizedRetryPolicy, type Operation, type OperationState,
   type PendingEntry, type StructuralPreparation, type SummaryGeneration,
   Assistant, AwaitingDeferred, BranchSummaryPreparation, Compacting,
-  CompactionPreparation, CompactionState, DeferredEffectPending,
-  DeferredSuspended, Generating, GenerationReady, NavigationState,
-  OverflowReason, RunState, SummarizedNavigation, ThresholdReason, Tools,
+  CompactionIntent, CompactionPreparation, CompactionState,
+  DeferredEffectPending, DeferredSuspended, Generating, GenerationReady,
+  NavigationIntent, NavigationState, OverflowReason, RunIntent, RunState,
+  SummarizedNavigation, ThresholdReason, Tools,
 }
 import machine/planner.{type Observation, type StructuralVerdict, NoObservation}
 import machine/queue
@@ -2106,7 +2107,7 @@ fn load_operation(
       use Nil <- result.try(validate_meta(state, op, op_id))
       use batch_source <- result.try(load_batch_source(state, op_state))
       use deferred_source <- result.try(load_deferred_source(state, op_state))
-      use pending <- result.try(load_pending(state))
+      use pending <- result.try(load_pending_for(state, op))
       use tool_args_keys <- result.try(list_keys(
         state,
         register.OpToolArgs,
@@ -2208,6 +2209,32 @@ fn entry_message(
     Error(Nil) -> Ok(None)
     Ok(entry.MessageEntry(message:, ..)) -> Ok(Some(message))
     Ok(_) -> Ok(None)
+  }
+}
+
+// The drive loop's half of the rule `runtime/api.read_pending_for`
+// states for the admission path: the queue is read only by the intent
+// that consumes it. `pending` leaves here for `PlannerInputs.pending`,
+// and the planner's only two readers of that dict — `place_pending` and
+// `place_ready_run` — both sit under a `RunPass`, which `next_action`
+// enters for a `RunIntent` operation and nothing else. A compaction or
+// a navigation carries `pending_next_run` across untouched and never
+// dereferences an id, so for those the empty dict is the whole truth.
+//
+// The distinction earns a function for the same reason it did on the
+// admission side: `pending.entry` keys are entry ids with no strand in
+// them, and `load_pending` decodes every register in the session under
+// `try_map`. Reading the queue for a structural operation therefore let
+// one strand's undecodable payload fault every other strand's
+// compaction and navigation driver — repeatedly, until the supervisor
+// gave up on a tree whose real work was fine (issue #70).
+fn load_pending_for(
+  state: State,
+  op: Operation,
+) -> Result(Dict(String, PendingEntry), String) {
+  case op.intent {
+    RunIntent(..) -> load_pending(state)
+    CompactionIntent(..) | NavigationIntent(..) -> Ok(dict.new())
   }
 }
 

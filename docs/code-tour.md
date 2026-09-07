@@ -238,7 +238,7 @@ the pure planner:
           Error(tx.StaleExpectation(..)) -> Ok(Retry)
 ```
 
-`accept_prompt` (`machine/acceptance.gleam:126`) refuses immediately if
+`accept_prompt` (`machine/acceptance.gleam:133`) refuses immediately if
 `strand_state.current_operation` is already set, and otherwise builds one
 transaction: any captured next-run items placed as entries first, the
 prompt entries after them, the leaf moved to the newest, `op.meta` and
