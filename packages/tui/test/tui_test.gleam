@@ -891,7 +891,7 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
   let queued = tui.update(backend.KeyPress("enter"), live)
   assert string.contains(queued.notice, "prompt sent")
     as "enter sends a prompt, which the daemon holds until the run settles"
-  assert queued.queued == ["look at this too"]
+  assert queued.queued == [tui.HeldPrompt("look at this too")]
     as "the operator's line is echoed the moment it is submitted"
 
   let steered =
@@ -901,8 +901,8 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
     )
   assert string.contains(steered.notice, "steered")
     as "tab mode folds the draft into the run that is already going"
-  assert steered.queued == []
-    as "a steer joins the visible answer and needs no echo of its own"
+  assert steered.queued == [tui.Interjection]
+    as "a steer draws nothing but is still owed an entry of its own"
 }
 
 /// The echo stands in for the turn until that turn's own entry arrives.
@@ -919,7 +919,7 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
       submitted,
       connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
     )
-  assert after_assistant.queued == ["look at this too"]
+  assert after_assistant.queued == [tui.HeldPrompt("look at this too")]
     as "the run's own output does not retire a prompt the daemon still holds"
 
   let after_user =
@@ -929,6 +929,52 @@ pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
     )
   assert after_user.queued == []
     as "the committed user turn replaces the echo that stood in for it"
+}
+
+/// This terminal's own steer does not retire the prompt it queued behind.
+///
+/// Both entries arrive as an ordinary user turn on the active strand, so
+/// nothing in the entry itself says which is which. The steer commits during
+/// the run and the held prompt is drained only once that run has settled, and
+/// the interjection recorded at submission is what carries that order across
+/// to the retirement rule. Without it the operator queues a prompt, steers the
+/// running turn, and watches their queued line vanish while the daemon is
+/// still holding it.
+pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
+  let live = live_model("look at this too")
+  let submitted = tui.update(backend.KeyPress("enter"), live)
+  let steered =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(
+        ..submitted,
+        submission_mode: tui.SteerNow,
+        input: text_area.state_from_string("actually try the other file"),
+      ),
+    )
+  assert steered.queued
+    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    as "premise: the steer commits before the prompt the daemon still holds"
+
+  let after_steer_entry =
+    tui.accept_connection_message(
+      steered,
+      connection.Incoming(gateway.user_entry(
+        "main",
+        "actually try the other file",
+        5,
+      )),
+    )
+  assert after_steer_entry.queued == [tui.HeldPrompt("look at this too")]
+    as "the steer's own entry retires the steer, not the prompt behind it"
+
+  let after_prompt_entry =
+    tui.accept_connection_message(
+      after_steer_entry,
+      connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
+    )
+  assert after_prompt_entry.queued == []
+    as "the drained prompt's entry then retires the echo standing for it"
 }
 
 /// The echo is drawn under the live tail, where the operator is looking.
@@ -979,7 +1025,7 @@ pub fn a_queued_echo_renders_below_the_live_transcript_test() {
   let assert Ok(last) = list.last(run.frames)
     as "every run draws at least its initial frame"
 
-  assert run.final.queued == ["and one more thing"]
+  assert run.final.queued == [tui.HeldPrompt("and one more thing")]
     as "premise: the submission produced an echo to look for"
   let rows = string.split(frame.buffer_to_text(last), "\n")
   let assert Ok(answer_row) = row_containing(rows, "earlier answer")

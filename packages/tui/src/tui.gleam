@@ -205,6 +205,30 @@ pub type SubmissionMode {
   SteerNow
 }
 
+/// One submission this terminal made that the daemon answers with a user
+/// entry of its own.
+///
+/// The list of these is what tells a drained prompt's entry apart from the
+/// entry a steer commits. Both arrive as an ordinary `UserMessage` on the
+/// active strand and neither reply carries an entry id — the gateway rewrites
+/// a steer's entry reply to a bare `mutation_outcome` before it reaches the
+/// wire — so the only discriminator left is the order this terminal issued
+/// them in, which is the order the daemon commits them in: a steer joins the
+/// run that is already open, and a held prompt is drained only once that run
+/// has settled.
+@internal
+pub type Submission {
+  /// A prompt aimed at a busy strand. The daemon holds it and runs it on
+  /// that strand's next turn, so it is drawn under the live tail until the
+  /// entry it stands for commits.
+  HeldPrompt(text: String)
+
+  /// A steer or a follow-up. It is folded into the answer already on screen
+  /// and so draws nothing of its own, but its entry still commits, and that
+  /// entry is not the one a held prompt is waiting for.
+  Interjection
+}
+
 // Interrupt state belongs to the client because the server's abort contract
 // deliberately drains queued steer entries. Holding one instruction here until
 // the durable operation settles preserves the operator's intent without racing
@@ -336,10 +360,12 @@ pub type Model {
     pending_submission: Option(SubmissionSource),
     interrupt: Option(Interrupt),
     submitting: Option(String),
-    /// Prompts sent to a busy active strand, drawn under the live tail until
-    /// the daemon drains them and their entries arrive. Oldest first, which
-    /// is the order the daemon runs them in.
-    queued: List(String),
+    /// Submissions to the active strand whose entries have not committed
+    /// yet, oldest first, which is the order the daemon commits them in.
+    /// The held prompts among them are drawn under the live tail; the
+    /// interjections draw nothing and are here to consume the entries they
+    /// produce, so that a steer cannot retire a prompt's echo.
+    queued: List(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
     notice: String,
@@ -4009,13 +4035,21 @@ fn clear_streams(streams: List(Stream), strand: String) -> List(Stream) {
 // that is streaming above them started, and they run after it finishes. One
 // trailer under the group says what they are waiting for, rather than a
 // marker repeated beside every line of it.
-fn queued_lines(queued: List(String)) -> List(Line) {
-  case queued {
+fn queued_lines(queued: List(Submission)) -> List(Line) {
+  let held =
+    list.filter_map(queued, fn(submission) {
+      case submission {
+        HeldPrompt(text:) -> Ok(Line(User, text))
+
+        // An interjection is on this list to consume an entry, not to be
+        // read: the run it steered is already drawing its answer above.
+        Interjection -> Error(Nil)
+      }
+    })
+  case held {
     [] -> []
     [_, ..] ->
-      queued
-      |> list.map(fn(text) { Line(User, text) })
-      |> list.append([
+      list.append(held, [
         Line(System, "queued · runs when this turn finishes"),
       ])
   }
@@ -5617,7 +5651,7 @@ fn send_prompt_content(
 ) -> Model {
   let sent =
     Model(
-      ..echo_queued_prompt(model, text),
+      ..expect_own_turn(model, HeldPrompt(text)),
       submitting: Some(model.active_strand),
       notice: "image prompt sent to " <> model.active_strand,
     )
@@ -5804,7 +5838,7 @@ fn send_prompt(model: Model, text: String) -> Model {
 fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
   let sent =
     Model(
-      ..echo_queued_prompt(model, text),
+      ..expect_own_turn(model, HeldPrompt(text)),
       submitting: Some(strand),
       notice: "prompt sent to " <> strand,
     )
@@ -5830,39 +5864,77 @@ fn send_prompt_to(model: Model, strand: String, text: String) -> Model {
   }
 }
 
-// A prompt submitted to a running strand does not become an entry until the
-// daemon drains it, which is a whole turn away. Without a local copy the
-// operator's line simply vanishes for as long as the run lasts, and the
-// natural reading is that the keystroke was lost — which is what sent people
-// looking for the bug this answers. The echo is drawn under the live tail and
-// retired by the entry it stands for.
+// Records one submission this terminal made to a running active strand, so
+// that the entry it eventually produces is accounted for.
+//
+// For a `HeldPrompt` the record is also what the operator sees. A prompt
+// submitted to a running strand does not become an entry until the daemon
+// drains it, which is a whole turn away. Without a local copy the operator's
+// line simply vanishes for as long as the run lasts, and the natural reading
+// is that the keystroke was lost — which is what sent people looking for the
+// bug this answers. The echo is drawn under the live tail and retired by the
+// entry it stands for.
 //
 // `Preview` draws its own echo and `Disconnected` sent nothing, so neither
-// gets one here. An idle strand does not either: its entry is already on its
-// way back and two copies would be worse than a slow one.
-fn echo_queued_prompt(model: Model, text: String) -> Model {
+// records anything here. An idle strand does not either: nothing is held, its
+// entry is already on its way back, and two copies would be worse than a slow
+// one.
+fn expect_own_turn(model: Model, submission: Submission) -> Model {
   case model.peer, active_strand_live(model) {
     Attached(..), True | Replaying, True ->
-      Model(..model, queued: list.append(model.queued, [text]))
+      Model(..model, queued: in_commit_order(model.queued, submission))
       |> invalidate_transcript
     Attached(..), False | Replaying, False | Preview, _ | Disconnected, _ ->
       model
   }
 }
 
-// Retires the oldest echo when a user turn commits on the strand it is on.
+// Places one submission where the daemon will commit it.
 //
-// The daemon drains its per-strand queue in arrival order, so the first user
-// entry to commit after a submission is the one that submission produced.
-// Matching on the text would have to reproduce the server's authorship prefix
-// and its block layout, and would still pick the wrong echo for two identical
-// prompts. A second operator's turn on the same strand can retire an echo
-// early; that costs a queued marker one turn of visibility, and the entry it
-// stood for still arrives in its place.
+// Submission order is not commit order, which is the trap here. An
+// interjection joins the run that is already open and commits during it,
+// while every held prompt waits for that run to settle — so a steer typed
+// after a prompt was queued still commits first. Keeping the list in commit
+// order is what lets `drained_echoes` stay a drop of the head, and it is the
+// list's whole invariant: interjections first, in the order they were made,
+// then the held prompts in the order the daemon drains them.
+fn in_commit_order(
+  queued: List(Submission),
+  submission: Submission,
+) -> List(Submission) {
+  case submission {
+    HeldPrompt(..) -> list.append(queued, [submission])
+    Interjection -> {
+      let #(interjections, held) =
+        list.split_while(queued, fn(earlier) {
+          case earlier {
+            Interjection -> True
+            HeldPrompt(..) -> False
+          }
+        })
+      list.flatten([interjections, [submission], held])
+    }
+  }
+}
+
+// Retires the oldest outstanding submission when a user turn commits on the
+// strand it was made on.
+//
+// `in_commit_order` holds the list in the order the daemon commits these, so
+// the head is what the entry belongs to, and an interjection at the head
+// absorbs the entry without touching the echo behind it — which is the whole
+// reason steers and follow-ups are recorded here at all. Matching on the text
+// instead would have to reproduce the server's authorship prefix and its
+// block layout, and would still pick the wrong entry for two identical
+// prompts.
+//
+// A second operator's prompt or steer on the same strand still retires the
+// head early. That costs a queued marker one turn of visibility, and the
+// entry it stood for still arrives in its place.
 fn drained_echoes(
-  queued: List(String),
+  queued: List(Submission),
   record: protocol.EntryRecord,
-) -> List(String) {
+) -> List(Submission) {
   let protocol.EntryRecord(entry: value, ..) = record
   case value {
     entry.MessageEntry(message: message.UserMessage(..), ..) ->
@@ -5874,16 +5946,29 @@ fn drained_echoes(
   }
 }
 
+// A steer draws no echo, but the entry it commits is indistinguishable from a
+// drained prompt's, so it is recorded as an interjection: without that, a
+// steer typed while a prompt is held retires the prompt's echo and the
+// operator watches their own line disappear, which is the symptom the echo
+// exists to prevent.
 fn send_steer(model: Model, text: String) -> Model {
   send_frame(
-    Model(..model, notice: "steered " <> model.active_strand),
+    Model(
+      ..expect_own_turn(model, Interjection),
+      notice: "steered " <> model.active_strand,
+    ),
     protocol.steer(model.next_id, model.active_strand, text),
   )
 }
 
+// `/queue` lands on the same run as a steer and commits the same kind of
+// entry, one turn later, so it is recorded the same way.
 fn send_follow_up(model: Model, text: String) -> Model {
   send_frame(
-    Model(..model, notice: "queued after " <> model.active_strand),
+    Model(
+      ..expect_own_turn(model, Interjection),
+      notice: "queued after " <> model.active_strand,
+    ),
     protocol.follow_up(model.next_id, model.active_strand, text),
   )
 }
