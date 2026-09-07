@@ -33,14 +33,14 @@
 ////   ad6d88ed6bec1e7bbbef9f96431b1a217db683a7c1564cb3eb6db9648febfa05  packages/cap/src/cap/mcp.gleam
 ////   5d130bfe00a9ea5275c03dce003e6238d497e389d261fb7d6a0e78f83dbde2b3  packages/cap/src/cap/net.gleam
 ////   68ea7061715254f5dbbcf0242552d89a788b72d896513223e1055704a99d15ef  packages/cap/src/cap/proc.gleam
-////   42cd31d198f57cb9314d5e8cebdc77a2acafc80eb7eb57d7858483894eeee432  packages/cap/src/cap/report.gleam
+////   9f573452d1333b42e16a9521c08a7c3597e4daa4cb09a937307095641b1a232f  packages/cap/src/cap/report.gleam
 ////   e598c08fecc9068f608dd85f7ed334435fa47a1e68ab6cce1ac98ed92eecab68  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 38c76574eada838ca64aedf9132e321bd01df412ca50b6dfa9eff53b75b726fd
+//// Body digest (every line after the marker): 50be672535d4c0b5502f0cdf267624f57c74ea2bbf9ff2101465e9a634dafeb9
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -654,7 +654,10 @@ pub fn as_bool(Value) -> Result(Bool, Nil)
 /// A value's floating-point number, or `Error(Nil)` when it is not one.
 /// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
 /// the two tags are distinct on the wire, and a reader that widened one
-/// into the other would leave a program no way to ask which arrived.
+/// into the other would leave a program no way to ask which arrived. A
+/// field a schema declared as `number` may nonetheless arrive int-tagged
+/// — `number` admits `42`, and the value crosses the wire carrying the
+/// tag it was written with — so try `as_int` when `as_float` refuses one.
 pub fn as_float(Value) -> Result(Float, Nil)
 /// A value's whole number, or `Error(Nil)` when it is not one. A float is
 /// *not* accepted: rounding silently is how a count becomes wrong.
