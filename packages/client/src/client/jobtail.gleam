@@ -257,27 +257,34 @@ fn complete_prefix(bytes: BitArray) -> BitArray {
 // `at` over at most `budget` continuation bytes to find the last lead.
 fn complete_length(bytes: BitArray, size: Int, at: Int, budget: Int) -> Int {
   use <- bool.guard(when: at < 0 || budget < 0, return: size)
-  case byte_at(bytes, at) {
+  use byte <- or_whole(byte_at(bytes, at), size)
+
+  // Still inside a character, so its lead byte is further back. The
+  // guard is the lazy form because its answer recurses, and the eager
+  // one would walk the whole tail on every byte.
+  use <- bool.lazy_guard(when: is_continuation(byte), return: fn() {
+    complete_length(bytes, size, at - 1, budget - 1)
+  })
+
+  // A byte that leads no character at all: the stream is not UTF-8 here,
+  // so there is no boundary to wait for.
+  use width <- or_whole(character_width(byte), size)
+  case at + width <= size {
+    True -> size
+    False -> at
+  }
+}
+
+// use byte <- or_whole(byte_at(bytes, at), size)
+//
+// Short-circuits a question this walk cannot answer into "keep
+// everything". Every failure here means the same thing — the bytes are
+// not UTF-8 where they were expected to be — and the walk exists to make
+// text read cleanly, never to refuse binary output.
+fn or_whole(value: Result(a, Nil), size: Int, then: fn(a) -> Int) -> Int {
+  case value {
     Error(Nil) -> size
-
-    Ok(byte) ->
-      case is_continuation(byte) {
-        // Still inside a character; its lead byte is further back.
-        True -> complete_length(bytes, size, at - 1, budget - 1)
-
-        False ->
-          case character_width(byte) {
-            // A byte that leads no character. The stream is not UTF-8
-            // here, so there is no boundary to wait for.
-            Error(Nil) -> size
-
-            Ok(width) ->
-              case at + width <= size {
-                True -> size
-                False -> at
-              }
-          }
-      }
+    Ok(inner) -> then(inner)
   }
 }
 

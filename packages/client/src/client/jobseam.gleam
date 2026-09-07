@@ -288,9 +288,9 @@ fn poll_for(
 // looking for.
 fn parse(id: String) -> Result(JobId, jobs.Refusal) {
   jobstate.parse_job_id(id)
-  |> result.replace_error(jobs.Invalid(
-    reason: "\"" <> id <> "\" is not a job id",
-  ))
+  |> result.map_error(fn(_malformed) {
+    jobs.Invalid(reason: "\"" <> id <> "\" is not a job id")
+  })
 }
 
 /// The door's default resting function: the real sleep.

@@ -1095,7 +1095,7 @@ fn admitted(
   use Nil <- result.try(room_for_one_more(state, strand))
   let #(now, _clock) = clock.read(state.wiring.clock)
   let wall_ms = granted_wall(state.wiring.policy, request.wall_ms)
-  let #(id, generator) = mint(state.generator)
+  use #(id, generator) <- result.try(mint(state.generator))
   let record =
     jobstate.JobRecord(
       id:,
@@ -1167,24 +1167,19 @@ fn granted_wall(policy: JobsPolicy, requested: Option(Int)) -> Int {
 // on. Reaching for the generator rather than for entropy directly is the
 // tree's rule about identity being injected, and it is what makes a
 // simulated session's job ids reproducible.
-fn mint(generator: ids.Generator) -> #(JobId, ids.Generator) {
+fn mint(generator: ids.Generator) -> Result(#(JobId, ids.Generator), Refusal) {
   let #(minted, generator) = ids.mint_entry(generator)
   case jobstate.parse_job_id(ids.entry_id_to_string(minted)) {
-    Ok(id) -> #(id, generator)
+    Ok(id) -> Ok(#(id, generator))
 
     // Unreachable: a UUID's canonical text is thirty-six characters of
-    // hexadecimal and hyphens, so it is neither empty nor does it carry a
-    // separator. Minting again cannot help and would recurse, so the arm
-    // takes the one id that is certainly well-formed and lets the claim
-    // below refuse it if it is somehow already taken.
-    Error(Nil) -> #(fallback_id(), generator)
+    // hexadecimal and hyphens, so it is neither empty nor does it carry
+    // a separator. Refused rather than crashed all the same — a minting
+    // that started producing ids this namespace cannot hold should stop
+    // one caller, not take every other job's bookkeeping with it.
+    Error(Nil) ->
+      Error(Unavailable(reason: "a job id could not be minted for this key"))
   }
-}
-
-fn fallback_id() -> JobId {
-  let assert Ok(id) = jobstate.parse_job_id("job")
-    as "a literal with no separator is a valid job id"
-  id
 }
 
 fn argv(command: String) -> List(String) {
