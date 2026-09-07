@@ -108,7 +108,7 @@ fix; they are the daemon acceptance evidence, not a count of the current tree.
 | Shipped fixture | What it proves |
 |---|---|
 | `tui_shipped_multiplayer_test` | Alice, Bob and Reader share exact durable records and authorship; configuration, presence, invitations, observer refusal, live revocation and refused/successful switches use real sockets. A jailed tool stays in A1 while A2 in the same workspace and B in another make progress. |
-| `tui_shipped_live_delivery_test` | Two operators submit on one strand inside a single catch-up window and the loser is answered `queued`; every terminal accumulates two or more pushed stream fragments prefixing the answer before its entry exists in that terminal's cut, a count the one-fragment snapshot preview cannot reach; both answers are painted by a capture whose recorded provenance is a pushed notice; a member revoked mid-answer loses his socket at the per-frame authority check and receives nothing after it. Added with #240; not part of the counts above. |
+| `tui_shipped_live_delivery_test` | Two native terminals and one raw v2 wire client. The wire client submits on a strand already running and is answered `queued`, which only a client that tracks no liveness can reach; both terminals accumulate two or more pushed stream fragments prefixing the answer before its entry exists in that terminal's cut, a count the one-fragment snapshot preview cannot reach; both terminals' `Model.notices` rise by at least the four records the two turns commit; the wire client's own `catch_up` reassembles to the same durable records; a member revoked mid-answer loses his socket at the per-frame authority check and no frame follows the close. Added with #240; not part of the counts above. |
 | `daemon_shipped_recovery_test` | Whole-VM loss after durable reservation preserves the original creation identity; metadata restoration does not initialize the reserved target. |
 | `daemon_shipped_identity_recovery_test` | Whole-VM loss after SQLite identity publication preserves that identity and the original writer lease. Pending selection fails visibly; explicit recovery waits for the natural lease expiry. |
 | `daemon_shipped_stop_test` | A's original provider socket closes, owner control observes Saved, B progresses on its original attachment, and explicit reopen resumes one durable user admission under a new incarnation. |
@@ -479,30 +479,39 @@ Four pieces, all additive:
   gained a `Pushed` outcome, `tui/session_channel` turns a notice into an
   immediate catch-up (deferred to the next `Ready` while a request is in
   flight) and records *why* it asked, and `tui.Model.last_capture` keeps that
-  reason on the capture that painted something. A queued prompt renders as a
-  booked turn rather than a refusal.
+  reason on the capture that painted something. Every notice is separately
+  reported as `Update.Noticed` before the lane decides whether to capture, and
+  `tui.Model.notices` counts them: which capture painted is a race with the
+  idle refresh, whereas the arrival of the frame is not. A queued prompt
+  renders as a booked turn rather than a refusal.
 
 ### How it is verified
 
 `packages/client/test/client/tui_shipped_live_delivery_test.gleam` is the
 shipped fixture, in `make e2e-client-bootstrap` after the multiplayer one and
-therefore in both `e2e-client-bootstrap (linux)` and `e2e (macos)`. Three
-native terminals against the built `bin/loomd` and a paced loopback provider
-prove five things: two operators submit inside one catch-up window and the
-loser is told `queued`; every terminal accumulates at least two stream
-fragments prefixing the answer while no entry for that answer exists in its
-cut, which a credited cut cannot produce because the snapshot preview projects
-as one fragment however many tokens it holds; both answers are
-painted by a capture whose recorded provenance is `Notified`, not
-`Refreshed`; the three terminals hold identical durable records with the two
-human turns attributed to the two different operators; and a member revoked
-mid-answer loses his socket at the per-frame check with neither his records
-nor his half-written stream moving afterwards.
+therefore in both `e2e-client-bootstrap (linux)` and `e2e (macos)`. Two
+native terminals and one raw v2 wire client, against the built `bin/loomd`
+and a paced loopback provider, prove five things: a second operator submits
+on a strand that is already running and is told `queued`; both terminals
+accumulate at least two stream fragments prefixing the answer while no entry
+for that answer exists in their cuts, which a credited cut cannot produce
+because the snapshot preview projects as one fragment however many tokens it
+holds; both terminals' `Model.notices` rise by at least the four records the
+two shared turns commit; the two terminals and the wire client's own
+`catch_up` hold identical durable records with the two human turns attributed
+to the two different operators; and a member revoked mid-answer loses his
+socket at the per-frame check, after which the socket produces no frame at
+all.
 
-Two fixture-shape notes a later reader will want. The two operators submit
-the *same* prompt text on purpose, because which one the hub admitted first
-is decided by arrival order at one actor and is not a property under test.
-And `provider_http.Paced` exists only so that an answer occupies an interval
+Three fixture-shape notes a later reader will want. Bob is a wire client and
+not a terminal because the queue is reachable only from a client whose view
+of the strand is stale, which a terminal on a pushing daemon is not for long:
+it would send `steer`, for which there is no `queued` acknowledgement. Live
+delivery is counted rather than read off `last_capture`, because which capture
+painted an answer is a race with the 250 ms idle refresh — a legitimate path
+that, when its catch-up is already in flight, paints first and leaves the
+notice to be dropped as naming a sequence already held. And
+`provider_http.Paced` exists only so that an answer occupies an interval
 — without it there is no moment in which a fragment exists and its entry does
 not. `docs/architecture/multiplayer.md` has the fixture's full account.
 

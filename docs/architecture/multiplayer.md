@@ -305,26 +305,29 @@ revision passed each local and hosted gate.
 `tui_shipped_live_delivery_test` is the shipped proof of the three last
 matrix rows, and the one fixture whose subject is *when* a frame arrives
 rather than what it says. It builds the same session shape — owner creates,
-isolates and reopens; Alice and Bob operate, Reader observes — and then
-does four things the multiplayer drive cannot.
+isolates and reopens; Alice and Bob operate, Reader observes — but Bob is a
+raw v2 wire client rather than a terminal, on the same authenticated
+websocket route the two terminals use. Two terminals and one wire client,
+and four things the multiplayer drive cannot do.
 
-Alice and Bob submit on the same strand inside one catch-up window. The
-terminal sends `prompt` only while its own model still shows the strand
-idle, so Bob's draft is composed before Alice submits and only one actor
-call separates their two keystrokes; a terminal that lost that window would
-send `steer`, no queued acknowledgement would ever appear, and the fixture
-fails on its deadline rather than testing something else. Which of the two
-the hub admitted first is the daemon's decision, made by arrival order at
-one actor, so both operators submit the *same* prompt text and the fixture
-reads back which one was held instead of assuming it.
+Bob submits on a strand that is already running, and the hub holds his
+prompt. He is a wire client precisely because that is the only client which
+can. A terminal sends `prompt` while its own model shows the strand idle and
+`steer` once it has captured a running operation, and against a pushing
+daemon the stale window is a few milliseconds wide; `steer` has no `queued`
+acknowledgement, so a terminal in Bob's role tests the queue only when it
+loses a race. A raw client tracks no liveness, so the fixture waits until
+Alice's terminal reports the strand live — which means the run exists at the
+hub — and only then writes Bob's prompt. The `queued` reply is then a fact
+about the hub rather than about scheduling.
 
 The scripted peer is paced: `provider_http.Paced` splits an answer across
 four content deltas and waits between chunks, so an answer occupies an
-interval rather than an instant. Inside that interval every terminal must
+interval rather than an instant. Inside that interval both terminals must
 show live text for the running operation that is a genuine prefix of the
-answer, while its own records still contain no assistant entry. All three
-terminals are sampled in one loop rather than one after another, because the
-interval is shorter than a sequence of awaits would take.
+answer, while their own records still contain no assistant entry. They are
+sampled in one loop rather than one after another, because the interval is
+shorter than a sequence of awaits would take.
 
 The property is stated as a count, which is what makes it a statement about
 pushed deltas rather than about live text of any origin. A credited cut
@@ -333,27 +336,37 @@ one fragment however many tokens it summarises, so `live_text_before_the_entry`
 requires two: a stream that has accumulated two fragments before the entry
 exists was fed by `stream_delta` frames the daemon pushed and by nothing else.
 
-Each answer's arrival is read from the capture's own recorded provenance.
-`session_channel.Capture` names what asked for a cut, `tui.Model.last_capture`
-keeps the reason on the capture that painted something, and the fixture
-requires `Notified` on the sample where each answer first appears at each
-terminal. The same answer painted by `Refreshed` means the notice never
-arrived and the terminal fell back to polling — correct behaviour, and not
-this property. Nothing here asserts on elapsed time.
+That notices reached each terminal is a *count*, not a provenance.
+`session_channel.Capture` still names what asked for a given cut, but which
+capture paints an answer is a race the design keeps: the 250 ms idle refresh
+may already have a catch-up in flight when the commit lands, in which case it
+paints first and the notice that follows names a sequence already held and is
+correctly dropped. So the lane reports every `committed` frame it reads as
+`Update.Noticed` before deciding what to do with it, `tui.Model.notices`
+accumulates them, and the fixture requires each terminal's count to have risen
+by at least the four durable records the two shared turns commit — two user
+entries and two assistant entries. `last_capture` survives in the fixture's
+diagnostic dump, where knowing which path a cut took is useful and asserting
+on it is not. Nothing here asserts on elapsed time.
 
 A third turn exists only so that Bob's membership can be revoked while
-pushed frames are genuinely in flight to him: the fixture waits for his own
-stream to accumulate before the owner revokes. His socket must close at the
-per-frame authority check, and after the two remaining terminals have
-completed the whole answer his records *and* his half-written stream must be
-byte-for-byte what they were at closure. The stream is what makes that a
-statement about pushed frames rather than about catch-up.
+pushed frames are genuinely in flight to him: the fixture reads his socket
+forward until it carries a prefix of the third answer, and only then does the
+owner revoke. The hub's next write to him fails its per-delivery authority
+check and the socket is closed. The witness is a frame count on the raw
+socket, which is the stronger form of the old one: a terminal can only show
+that nothing arrived during some quiet interval, while a socket read past the
+server's close frame returns the transport's own refusal to produce anything
+further.
 
-The three terminals then hold identical durable records, in one order, with
-the two human turns attributed to the two different operators. This fixture
-does not cover the durable-queue behaviour a hub restart would need, the
-four-deep queue bound, or a drain failure; those are the gateway's own
-tests. `make e2e-client-bootstrap` supplies its executable and dummy
+Bob's history is read back through his own credited `catch_up` and must
+reassemble, through the shared core decoder, to exactly the records the
+terminals hold — two independent reads of one history rather than a
+comparison against something the fixture kept. The two terminals then hold
+identical durable records, in one order, with the two human turns attributed
+to the two different operators. This fixture does not cover the durable-queue
+behaviour a hub restart would need, the four-deep queue bound, or a drain
+failure; those are the gateway's own tests. `make e2e-client-bootstrap` supplies its executable and dummy
 provider credential, and it skips itself when `LOOM_BOOTSTRAP_E2E_SERVER`
 is unset.
 

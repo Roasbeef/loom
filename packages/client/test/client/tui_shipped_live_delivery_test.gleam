@@ -1,5 +1,5 @@
-//// Live delivery through the shipped daemon, watched from three native
-//// terminals.
+//// Live delivery through the shipped daemon, watched from two native
+//// terminals and one raw wire client.
 ////
 //// The shipped server used to serve every terminal by pull: a peer's answer
 //// arrived at the 250 ms idle refresh, a live answer was visible only as the
@@ -8,19 +8,30 @@
 //// frames, and this fixture is the shipped proof that they work end to end
 //// rather than in the gateway's own tests.
 ////
-//// Five properties, in the order the drive establishes them. Two operators
-//// submit on one strand inside a single catch-up window and the hub holds the
-//// loser's prompt rather than refusing it. Every terminal shows the first
-//// answer's text while no entry for it exists in that terminal's cut. Both
-//// answers are painted by a notice-driven capture, read from the capture's
-//// own recorded provenance rather than from timing. The three terminals hold
-//// the same durable records, in one order, with the two human turns
-//// attributed to the two different operators. A third answer is then started
-//// so that Bob can be revoked while an answer is being written to him: his
-//// socket closes at the per-frame authority check and nothing further is
-//// written to it.
+//// Five properties, in the order the drive establishes them. A second
+//// operator submits on a strand that is already running and the hub holds his
+//// prompt rather than refusing it. Both terminals show the first answer's
+//// text while no entry for it exists in that terminal's cut. Both terminals
+//// are pushed the commit notices for the two turns, counted on their own
+//// models. The terminals and the wire client hold the same durable records,
+//// in one order, with the two human turns attributed to the two different
+//// operators. A third answer is then started so that Bob can be revoked while
+//// an answer is being written to him: his socket closes at the per-frame
+//// authority check and nothing further is written to it.
 ////
-//// The second of those is a statement about pushed deltas and not merely
+//// Bob is a wire client and not a terminal, because the queue is reachable
+//// only from a client whose view of the strand is stale. A terminal sends
+//// `prompt` while its own model shows the strand idle and `steer` once it has
+//// captured a running operation, and against a daemon that pushes, the stale
+//// window is a few milliseconds wide. There is no `queued` acknowledgement
+//// for `steer`, so a terminal in that role tests the queue only when it loses
+//// a race. A raw v2 client tracks no liveness and sends `prompt` whenever the
+//// fixture says to, which makes the held prompt a fact about the hub rather
+//// than about scheduling. It also gives the revocation a stronger witness:
+//// frames can be counted directly off the socket instead of inferred from a
+//// terminal's stream going quiet.
+////
+//// The live-text property is a statement about pushed deltas and not merely
 //// about live text. `live_text_before_the_entry` requires the running
 //// operation's stream to have accumulated at least two fragments, and a
 //// credited cut cannot produce that: the snapshot preview projects as one
@@ -29,27 +40,37 @@
 //// what `client/serve` nesting `tap_provider` around `tap_preview_provider`
 //// made true of the shipped binary.
 ////
-//// Two deliberate choices make the drive independent of races it does not
-//// test. The two operators submit the *same* prompt text, so which of them
-//// the hub admitted first — a decision made by arrival order at one actor,
-//// between two terminals that wrote within an actor call of each other —
-//// changes no expectation here; the fixture reads which one was queued
-//// instead of assuming it. And the scripted peer is paced, so an answer
-//// occupies an interval rather than an instant; without that there is no
-//// moment in which a fragment exists and its entry does not.
+//// The notice property is counted rather than read off a capture. Which
+//// capture painted an answer is not a deterministic observable: the 250 ms
+//// idle refresh is a path the design keeps, and when its catch-up is already
+//// in flight at the commit it paints first, after which the notice arrives
+//// for a sequence already held and is correctly dropped. `Model.notices`
+//// counts arrivals instead, before that decision, so it moves for every
+//// notice the daemon pushed however the lane spent it.
+////
+//// Two turns commit at least four durable records — two user entries and two
+//// assistant entries — so at least four notices must reach every attached
+//// terminal. The scripted peer is paced, so an answer occupies an interval
+//// rather than an instant; without that there is no moment in which a
+//// fragment exists and its entry does not.
 ////
 //// The coordinator retains the endpoint path outside the bounded body, so a
 //// failed assertion still retires the native lifetime before reporting
 //// failure.
 
 import client/daemon/admin
+import client/daemon_server_test as wire
+import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
+import core/codec
 import core/entry
 import core/json
 import core/message
 import etui/backend
 import filepath
+import gleam/bit_array
+import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -59,6 +80,7 @@ import gleam/string
 import host/bootstrap as native
 import host/endpoint
 import simplifile
+import support/internal/ffi_ws.{type Socket}
 import support/provider_http
 import support/tui_driver
 import tui
@@ -67,6 +89,7 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/protocol as conversation
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -84,9 +107,8 @@ const shipped_open_timeout_ms = 20_000
 // refresh, the capture it triggers, and the sampling that reads it.
 const stream_gap_ms = 100
 
-// Both operators send this exact text. Identical prompts are what make the
-// drive independent of which terminal reached the hub first: the script
-// matches either order, and authorship is read from the durable origins.
+// Both operators send this exact text, so the two provider requests are
+// distinguished by there being two of them rather than by their content.
 const window_prompt = "same window turn"
 
 const first_answer = "livedeliveryone"
@@ -97,14 +119,18 @@ const revoked_prompt = "revocation turn"
 
 const third_answer = "revokedmidanswer"
 
-// Which operator's prompt the hub held. The daemon decides it by arrival
-// order at one actor and the fixture reads the decision back, because both
-// terminals write within a single actor call of each other and neither
-// order is a defect.
-type Held {
-  AliceHeld
-  BobHeld
-}
+// Two user entries and two assistant entries commit across the two shared
+// turns, and every commit is one pushed notice to every attachment. Operation
+// transitions and usage commit alongside them, so this is a floor and not a
+// count: what it rules out is a terminal that was pushed nothing.
+const shared_turn_records = 4
+
+// Bob's own request identities on the raw socket. `subscribe` takes 1 and the
+// credited transfer takes the small numbers after it, so the fixture's own
+// commands start well clear of both.
+const bob_prompt_id = 900
+
+const bob_catch_up_id = 901
 
 pub fn tui_shipped_live_delivery_pushes_both_answers_test_() -> EunitTest {
   // The runner scales EUnit timeouts by ten. The provider callback has 120
@@ -187,6 +213,8 @@ fn exercise(
 ) -> Nil {
   let #(connected, address, owner, epoch, host) =
     open_daemon(server, directory, paths, provider_url)
+  let assert endpoint.Ready(port:, ..) = connected.record
+    as "authenticated bootstrap retains the published listener port"
   let workspace = filepath.join(directory, "workspace")
   let configuration = filepath.join(directory, "fixture.toml")
   let assert Ok(target) =
@@ -202,38 +230,35 @@ fn exercise(
   let assert Ok(_) = selection.open(host, id)
     as "only the owner's explicit reopen starts the isolated session"
 
-  // Three independent native terminals, each with its own socket. Nothing
-  // below fabricates a frame: every observation is one of these three
-  // terminals' own model after its own traffic.
+  // Two independent native terminals, each with its own socket, and one raw
+  // v2 client. Nothing below fabricates a frame: every observation is one of
+  // these three attachments' own state after its own traffic.
   let assert Ok(alice) = tui_driver.start(address, alice_token, id)
     as "Alice owns one native terminal and socket"
-  let assert Ok(bob) = tui_driver.start(address, bob_token, id)
-    as "Bob owns a separate native terminal and socket"
   let assert Ok(reader) = tui_driver.start(address, reader_token, id)
     as "the observer attaches without opening execution"
+  let bob = attach_wire(port, bob_token, id)
   let _ = await_open(alice.data, writable)
-  let _ = await_open(bob.data, writable)
   let observed = await_open(reader.data, attached_observer)
   assert !writable(observed)
 
-  let held = one_window(alice, bob)
-  live_text_before_the_entry([alice, bob, reader])
-  let #(winner, loser) = attribution(held)
-  let shared = [
-    #(winner, window_prompt),
-    #(loser, window_prompt),
-  ]
-  notice_painted([alice, bob, reader], first_answer)
-  notice_painted([alice, bob, reader], second_answer)
-  assert_shared_turns([alice, bob, reader], shared, [
-    first_answer,
-    second_answer,
-  ])
+  // The notice count is a delta, so the terminals are read before any of the
+  // traffic under test exists.
+  let before = list.map([alice, reader], notices_of)
+  held_behind_a_running_turn(alice, bob)
+  live_text_before_the_entry([alice, reader])
+  let shared = [#("alice", window_prompt), #("bob", window_prompt)]
+  let answers = [first_answer, second_answer]
+  let painted = assert_shared_turns([alice, reader], shared, answers)
+  notices_reached([alice, reader], before)
+  let assert [alice_painted, ..] = painted
+    as "Alice's completed sample is the fixture's durable reference"
+  wire_saw_both_answers(bob, alice_painted)
   revoke_mid_answer(address, owner, epoch, id, shared, alice, bob, reader)
 
   // Observe each driver exit before retiring the native daemon. Failure of
   // any preceding assertion instead closes them through their worker links.
-  list.each([alice, bob, reader], stop_driver)
+  list.each([alice, reader], stop_driver)
   daemon.close(connected.control)
 }
 
@@ -304,83 +329,62 @@ fn share_session(
   Nil
 }
 
-// Two operators submit on one strand inside one catch-up window, and the
-// fixture reads back which of them the hub held.
+// Bob's attachment: the same authenticated websocket route the terminals use,
+// subscribed and reconciled through its own credited transfer, with no client
+// state machine above it. Draining that first transfer matters because a
+// socket which still owes credit is not the socket the queue property is
+// about; from here on Bob's only outstanding work is what the fixture asks
+// for.
+fn attach_wire(port: Int, bearer: String, session: String) -> Socket {
+  let #(socket, response) =
+    wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
+  assert string.starts_with(response, "HTTP/1.1 101 ")
+    as "the invited operator's credential upgrades on the shipped route"
+  let #(_, transfer) = session_socket_test.begin(socket, session)
+  let _ = session_socket_test.drain(socket, transfer, 0, [], 32)
+  socket
+}
+
+// Alice opens a turn, and Bob submits on the same strand while it is running.
 //
-// The terminal sends `prompt` only while its own model still shows the strand
-// idle; once it has captured a running operation, Enter means `steer`, which
-// is a different command with different semantics and is not what the queue
-// exists for. Under network delivery a terminal learns a strand went live
-// only through a commit notice and the catch-up it triggers — a full snapshot
-// transfer — so the window is the daemon's whole round trip. Bob's draft is
-// therefore composed *first*, leaving exactly one actor call between Alice's
-// submission and his. A terminal that lost that window sends `steer`, no
-// queued acknowledgement ever appears, and this function fails on its
-// deadline rather than quietly testing something else.
-fn one_window(
+// The strand being *observably* live before Bob writes is what makes the
+// queue deterministic. Alice's terminal reports a live phase only after the
+// daemon told it so, which means the run exists at the hub; Bob's prompt is
+// therefore admitted against a busy strand every time, and a raw client never
+// substitutes `steer` for it. The reply is read by correlation, past whatever
+// the hub pushed around it.
+fn held_behind_a_running_turn(
   alice: actor.Started(process.Subject(tui_driver.Message)),
-  bob: actor.Started(process.Subject(tui_driver.Message)),
-) -> Held {
-  let _ = tui_driver.play(bob.data, [backend.Paste(window_prompt)])
+  bob: Socket,
+) -> Nil {
   let _ =
     tui_driver.play(alice.data, [
       backend.Paste(window_prompt),
       backend.KeyPress("enter"),
     ])
-  let _ = tui_driver.play(bob.data, [backend.KeyPress("enter")])
-
-  // The acknowledgement is a transient line: the next capture rebuilds the
-  // transcript. Both terminals are therefore sampled together on a short
-  // period, and the first sighting settles the poll.
+  let _ = tui_v2_test.await(alice.data, strand_is_running)
   let outcome =
-    poll.fold_until(
-      clock: poll.monotonic(),
-      within: 15_000,
-      every: poll.Fixed(5),
-      from: "no queued acknowledgement",
-      attempt: fn(_) {
-        let alice_sample = tui_driver.play(alice.data, [])
-        let bob_sample = tui_driver.play(bob.data, [])
-        case queued(alice_sample), queued(bob_sample) {
-          True, False -> poll.Settled(AliceHeld)
-          False, True -> poll.Settled(BobHeld)
-          True, True ->
-            poll.Broken("both prompts were held; neither opened the run")
-          False, False -> poll.Pending(pending_note(alice_sample, bob_sample))
-        }
-      },
+    wire.reply(
+      bob,
+      bob_prompt_id,
+      "prompt",
+      json.Object([
+        #("strand", json.String("main")),
+        #("text", json.String(window_prompt)),
+      ]),
     )
-  case outcome {
-    poll.Answer(held) -> held
-    poll.RanOut(note) -> {
-      let reason = "no queued acknowledgement: " <> note
-      panic as reason
-    }
-    poll.Failure(reason) -> panic as reason
-  }
+  assert field(outcome, "reply_to") == json.Int(bob_prompt_id)
+    as "the acknowledgement answers Bob's own prompt and no pushed frame"
+  assert field(outcome, "event") == json.String("mutation_outcome")
+  assert field(field(outcome, "body"), "status") == json.String("queued")
+    as "a prompt for a running strand is held for its next turn, not refused"
 }
 
-// The queued reply is rendered as a booked turn, never as a refusal. Reading
-// the transcript line rather than the wire is the point: the property is that
-// the terminal shows an operator their prompt was accepted for the next turn.
-fn queued(sample: tui_driver.Sample) -> Bool {
-  list.any(sample.model.transcript, fn(line) {
-    let tui.Line(speaker:, text:) = line
-    speaker == tui.System && string.contains(text, "prompt queued")
+// Whether this terminal has captured a live operation on the shared strand.
+fn strand_is_running(sample: tui_driver.Sample) -> Bool {
+  list.any(sample.model.strands, fn(row) {
+    row.id == "main" && row.live_phase != None
   })
-}
-
-// Diagnostics carry the two notices and the strand phases, never the model,
-// the frame, or anything a credential could be read out of.
-fn pending_note(alice: tui_driver.Sample, bob: tui_driver.Sample) -> String {
-  "alice="
-  <> string.slice(alice.model.notice, 0, 160)
-  <> "/"
-  <> phase_of(alice)
-  <> " bob="
-  <> string.slice(bob.model.notice, 0, 160)
-  <> "/"
-  <> phase_of(bob)
 }
 
 fn phase_of(sample: tui_driver.Sample) -> String {
@@ -404,11 +408,11 @@ fn phase_of(sample: tui_driver.Sample) -> String {
 fn live_text_before_the_entry(
   drivers: List(actor.Started(process.Subject(tui_driver.Message))),
 ) -> Nil {
-  // All three terminals are sampled in one loop rather than one after the
-  // other. The window this property lives in is the answer's own streaming
-  // interval — under a second — and awaiting the terminals in sequence spends
-  // that interval on the first one, so the second would be asked about a
-  // stream that has already committed.
+  // Both terminals are sampled in one loop rather than one after the other.
+  // The window this property lives in is the answer's own streaming interval
+  // — under a second — and awaiting the terminals in sequence spends that
+  // interval on the first one, so the second would be asked about a stream
+  // that has already committed.
   let outcome =
     poll.fold_until(
       clock: poll.monotonic(),
@@ -449,9 +453,14 @@ fn sample_waiting(
   })
 }
 
-// Streams and phase only. The model, the frame and the records are excluded:
-// EUnit prints a failed assertion's value, and this fixture's models carry
-// member credentials.
+// Streams, phase and capture provenance only. The model, the frame and the
+// records are excluded: EUnit prints a failed assertion's value, and this
+// fixture's models carry member credentials.
+//
+// `last_capture` appears here and nowhere else. Which capture painted a given
+// answer is a race with the idle refresh and so is not something to assert
+// on, but it is exactly what a reader wants to know when the drive has just
+// failed on a timeout.
 fn stream_note(sample: tui_driver.Sample) -> String {
   let streams =
     list.map(sample.model.streams, fn(stream) {
@@ -470,24 +479,14 @@ fn stream_note(sample: tui_driver.Sample) -> String {
   <> sample.model.active_strand
   <> " phase="
   <> phase_of(sample)
+  <> " notices="
+  <> int.to_string(sample.model.notices)
+  <> " capture="
+  <> string.inspect(sample.model.last_capture)
   <> " streams="
   <> string.join(streams, ",")
   <> " answers="
   <> int.to_string(list.length(assistant_texts(sample)))
-}
-
-// Live text on the active strand that is a nonempty prefix of the answer
-// still being written. Fragments are newest first, so they are reversed
-// before they are read as text.
-fn live_prefix_of(sample: tui_driver.Sample, answer: String) -> Bool {
-  list.any(sample.model.streams, fn(stream) {
-    let tui.Stream(strand:, kind:, fragments:, ..) = stream
-    let text = string.concat(list.reverse(fragments))
-    strand == sample.model.active_strand
-    && kind == "text"
-    && text != ""
-    && string.starts_with(answer, text)
-  })
 }
 
 // The strong form of the live-text property, and the only place that counts
@@ -514,28 +513,158 @@ fn accumulated(fragments: List(String)) -> Bool {
   }
 }
 
-// Each terminal's first sample carrying the answer must record a notice as
-// what asked for the cut. The same answer painted by `Refreshed` means the
-// notice never arrived and the terminal fell back to polling, which is
-// correct behaviour and is not this property.
-fn notice_painted(
+fn notices_of(
+  driver: actor.Started(process.Subject(tui_driver.Message)),
+) -> Int {
+  let sample = tui_driver.play(driver.data, [])
+  sample.model.notices
+}
+
+// Every terminal was pushed the commit notices for the two shared turns.
+//
+// This is the fixture's account of live delivery, and it is a count rather
+// than a provenance because provenance is not deterministic here: the idle
+// refresh may already have a catch-up in flight when a commit lands, in which
+// case it paints first and the notice is correctly dropped as naming a
+// sequence already held. `Model.notices` moves either way, so the floor below
+// fails only if frames did not arrive.
+fn notices_reached(
   drivers: List(actor.Started(process.Subject(tui_driver.Message))),
-  answer: String,
+  before: List(Int),
 ) -> Nil {
-  list.each(drivers, fn(driver) {
-    let sample =
-      tui_v2_test.await(driver.data, fn(sample) {
-        list.contains(assistant_texts(sample), answer)
-      })
-    assert sample.model.last_capture == session_channel.Notified
-      as "the capture that painted a peer's answer was asked for by a pushed notice"
+  list.each(list.zip(drivers, before), fn(pair) {
+    let #(driver, baseline) = pair
+    let sample = tui_driver.play(driver.data, [])
+    assert sample.model.notices - baseline >= shared_turn_records
+      as "the two shared turns pushed a commit notice per record to this terminal"
   })
 }
 
+// Bob's socket is read only after both answers are durable at the terminals,
+// which is what makes this a scan of buffered frames rather than a wait. The
+// hub writes one notice to every attachment in a single fan-out, before any
+// terminal can complete the catch-up that fan-out triggers, so a sequence a
+// terminal has already painted is a sequence Bob's socket has already been
+// sent.
+//
+// The durable comparison then runs on Bob's own credited catch-up rather than
+// on anything the fixture kept, so what it compares is two independent reads
+// of the same history.
+fn wire_saw_both_answers(bob: Socket, painted: tui_driver.Sample) -> Nil {
+  let wanted = answer_sequences(painted)
+  let assert [_, _] = wanted
+    as "the completed sample holds exactly the two shared answers"
+  notices_for(bob, wanted, 4096)
+  let entries = wire_entries(bob)
+  assert entries == list.reverse(list.map(painted.model.records, entry_of))
+    as "the wire client's own catch-up holds the terminals' durable records"
+}
+
+fn entry_of(record: conversation.EntryRecord) -> entry.Entry {
+  record.entry
+}
+
+// The durable sequences of the assistant entries a terminal has painted.
+fn answer_sequences(sample: tui_driver.Sample) -> List(Int) {
+  list.filter_map(sample.model.records, fn(record) {
+    case record.entry {
+      entry.MessageEntry(seq:, message: message.AssistantMessage(..), ..) ->
+        Ok(seq)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+// Reads forward until a `committed` notice has been seen for every wanted
+// sequence. The budget is a frame count rather than a clock: the frames are
+// already in the socket, so a run of this loop that does not find them is a
+// missing notice and not a slow one.
+fn notices_for(socket: Socket, wanted: List(Int), remaining: Int) -> Nil {
+  case wanted {
+    [] -> Nil
+    [_, ..] -> {
+      assert remaining > 0
+        as "every answer's commit notice reaches the wire client"
+      let frame = wire.frame(socket)
+      let seen = case field(frame, "event") {
+        json.String("committed") -> [field(frame, "seq")]
+        _other -> []
+      }
+      let left =
+        list.filter(wanted, fn(seq) { !list.contains(seen, json.Int(seq)) })
+      notices_for(socket, left, remaining - 1)
+    }
+  }
+}
+
+// Bob's whole history, read back through his own credited catch-up from the
+// first sequence and reassembled with the shared core decoder.
+fn wire_entries(socket: Socket) -> List(entry.Entry) {
+  let response =
+    wire.reply(
+      socket,
+      bob_catch_up_id,
+      "catch_up",
+      json.Object([#("from_seq", json.Int(0))]),
+    )
+  let assert json.String(transfer) =
+    field(field(response, "body"), "snapshot_id")
+    as "the catch-up owns a new fixed cut"
+  let chunks = session_socket_test.drain(socket, transfer, 0, [], 128)
+  chunks
+  |> list.filter_map(fn(chunk) {
+    case field(chunk, "record_id") {
+      json.String("metadata") -> Error(Nil)
+      json.String(record) -> Ok(record)
+      _other -> Error(Nil)
+    }
+  })
+  |> list.unique
+  |> list.map(fn(record) { decoded_entry(chunks, record) })
+}
+
+// One record's fragments, in the order the transfer wrote them, decoded
+// through the same codec the terminal's snapshot decoder uses.
+fn decoded_entry(chunks: List(json.JsonValue), record: String) -> entry.Entry {
+  let bytes =
+    chunks
+    |> list.filter(fn(chunk) {
+      field(chunk, "record_id") == json.String(record)
+    })
+    |> list.map(fn(chunk) {
+      let assert json.String(data) = field(chunk, "data")
+        as "fragment data is base64"
+      let assert Ok(bytes) = bit_array.base64_decode(data)
+        as "fragment data decodes"
+      bytes
+    })
+    |> bit_array.concat
+  let assert Ok(text) = bit_array.to_string(bytes)
+    as "the reassembled record is UTF-8"
+  let assert Ok(value) = json.parse(text)
+    as "the reassembled record is total JSON"
+  let assert Ok(row) = codec.decode_entry(value)
+    as "the reassembled record decodes through the shared core codec"
+  row
+}
+
+fn field(value: json.JsonValue, name: String) -> json.JsonValue {
+  let assert json.Object(fields) = value as "the wire value is an object"
+  let assert Ok(found) = list.key_find(fields, name)
+    as "the expected wire field is present"
+  found
+}
+
 // Alice submits a third turn only so that Bob can lose his membership while
-// pushed frames are actually in flight to him. Waiting for his own stream to
-// accumulate is what makes "mid-answer" a fact about his socket rather than
-// about the clock.
+// pushed frames are actually in flight to him. Reading his socket forward
+// until it carries a prefix of the third answer is what makes "mid-answer" a
+// fact about that socket rather than about the clock.
+//
+// The witness is then a frame count rather than an absence. A terminal can
+// only show that nothing further arrived, which is a statement about a quiet
+// interval; a raw socket can be read until the server's own close frame and
+// then read again, and the second read is the transport refusing to produce
+// anything at all.
 fn revoke_mid_answer(
   address: String,
   owner: String,
@@ -543,7 +672,7 @@ fn revoke_mid_answer(
   session: String,
   shared: List(#(String, String)),
   alice: actor.Started(process.Subject(tui_driver.Message)),
-  bob: actor.Started(process.Subject(tui_driver.Message)),
+  bob: Socket,
   reader: actor.Started(process.Subject(tui_driver.Message)),
 ) -> Nil {
   let _ =
@@ -551,55 +680,107 @@ fn revoke_mid_answer(
       backend.Paste(revoked_prompt),
       backend.KeyPress("enter"),
     ])
-  let _ = tui_v2_test.await(bob.data, live_prefix_of(_, third_answer))
+  pushed_prefix(bob, third_answer, 4096)
   let assert Ok(revoke) = admin.parse(["revoke", session, "bob"])
     as "membership revocation names the existing principal and session"
   let assert Ok(_) = admin.exchange(address, owner, epoch, revoke)
     as "the owner receives acknowledgement of durable membership revocation"
 
   // The next frame the hub tries to write to Bob fails its per-delivery
-  // authority check and retires the attachment. His terminal reports the
-  // closure; his last authorized projection survives it.
-  let closed =
-    tui_v2_test.await(bob.data, fn(sample) {
-      sample.model.peer == tui.Disconnected
-    })
-  assert !list.contains(assistant_texts(closed), third_answer)
-    as "Bob loses the socket while the third answer is still being written"
+  // authority check and retires the attachment. Frames already written before
+  // that check are legitimately his; frames after the close are the property.
+  let _ = frames_until_close(bob, 0, 4096)
+  let assert Error(reason) = ffi_ws.tcp_receive(bob, 1, 250)
+    as "no pushed frame follows the close the revocation caused"
+  assert reason == atom.to_dynamic(atom.create("closed"))
+    as "actual TCP closure, never a timeout, proves the transport retired"
+  let _ = ffi_ws.tcp_close(bob)
 
   // A whole answer completing at the surviving terminals is the positive
-  // barrier. Bob's records and his half-written stream must both be exactly
-  // what they were at closure: not one further pushed frame reached him.
+  // barrier: the hub kept pushing, and it kept pushing to everyone else.
   let turns = list.append(shared, [#("alice", revoked_prompt)])
   let answers = [first_answer, second_answer, third_answer]
   let assert [alice_done, reader_done] =
     captured_turns([alice, reader], turns, answers)
     as "the two remaining terminals complete the third turn"
   assert alice_done.model.records == reader_done.model.records
-  let retained = tui_driver.play(bob.data, [])
-  assert retained.model.peer == tui.Disconnected
-  assert retained.model.records == closed.model.records
-  assert retained.model.streams == closed.model.streams
 }
 
-// The winner and loser as principals, in durable order.
-fn attribution(held: Held) -> #(String, String) {
-  case held {
-    AliceHeld -> #("bob", "alice")
-    BobHeld -> #("alice", "bob")
+// Reads forward until the socket carries a nonempty prefix of the answer now
+// being written. Earlier answers cannot satisfy it: no other answer in this
+// drive shares a first character with this one.
+fn pushed_prefix(socket: Socket, answer: String, remaining: Int) -> Nil {
+  assert remaining > 0
+    as "the third answer is pushed to the wire client before its budget runs out"
+  let frame = wire.frame(socket)
+  let text = case field(frame, "event") {
+    json.String("stream_delta") -> field(field(frame, "body"), "text")
+    _other -> json.Null
   }
+  case text {
+    json.String(text) if text != "" ->
+      case string.starts_with(answer, text) {
+        True -> Nil
+        False -> pushed_prefix(socket, answer, remaining - 1)
+      }
+    _other -> pushed_prefix(socket, answer, remaining - 1)
+  }
+}
+
+// Frames written before the server's close, counted rather than inspected.
+// The count itself asserts nothing — those frames were authorized when they
+// were written — but the loop has to consume them to reach the close, and
+// reporting it keeps a failure here readable.
+fn frames_until_close(socket: Socket, seen: Int, remaining: Int) -> Int {
+  assert remaining > 0
+    as "the revoked attachment is closed within the fixture's frame budget"
+  let assert Ok(<<opcode, marker>>) = ffi_ws.tcp_receive(socket, 2, 5000)
+    as "the hub writes a frame or closes the revoked socket"
+  case opcode {
+    // A close frame ends the stream. Its payload is the status code, read so
+    // that the next receive observes the transport and not a leftover byte.
+    0x88 -> {
+      let assert Ok(<<1000:16>>) = ffi_ws.tcp_receive(socket, marker, 1000)
+        as "the server closes normally rather than aborting the connection"
+      seen
+    }
+    _other -> {
+      assert opcode == 0x81
+        as "the hub writes text frames until it closes the socket"
+      skip_payload(socket, marker)
+      frames_until_close(socket, seen + 1, remaining - 1)
+    }
+  }
+}
+
+// Consumes one text frame's body without decoding it. `wire.frame` is the
+// decoder a fixture normally wants; here the frames are being counted on the
+// way to a close, and their contents were already authorized.
+fn skip_payload(socket: Socket, marker: Int) -> Nil {
+  let size = case marker {
+    126 -> {
+      let assert Ok(<<size:16>>) = ffi_ws.tcp_receive(socket, 2, 1000)
+        as "an extended frame length arrives with its frame"
+      size
+    }
+    size if size < 126 -> size
+    _other -> panic as "a pushed frame exceeds the fixture's frame budget"
+  }
+  let assert Ok(_) = ffi_ws.tcp_receive(socket, size, 1000)
+    as "a frame's announced payload arrives complete"
+  Nil
 }
 
 fn assert_shared_turns(
   drivers: List(actor.Started(process.Subject(tui_driver.Message))),
   turns: List(#(String, String)),
   answers: List(String),
-) -> Nil {
-  let assert [first, second, observer] = captured_turns(drivers, turns, answers)
-    as "the two operators and observer each completed their own credited capture"
-  assert first.model.records == second.model.records
-  assert first.model.records == observer.model.records
+) -> List(tui_driver.Sample) {
+  let assert [operator, observer] = captured_turns(drivers, turns, answers)
+    as "the operator and the observer each completed their own credited capture"
+  assert operator.model.records == observer.model.records
   assert !writable(observer)
+  [operator, observer]
 }
 
 // Waits until each terminal's own records are exactly the expected human
