@@ -478,23 +478,30 @@ fn assert_tail_evidence(requests: List(provider.ObservedRequest)) -> Nil {
   // only thing asserted of its rendering is the state it named.
   assert string.contains(polled, " — running, ")
   assert string.starts_with(killed, "stopped ")
-  assert_polled_lines(terminal, "stopped (you asked), ")
+  assert_polled_lines(terminal)
 }
 
-// Everything in a poll's rendering is fixed except the job's id and its
-// age, so the assertion pins the structure line by line: the three
-// appended lines under the stdout rule, nothing under stderr, and the
-// cursor those exact bytes advance to. Read from the terminal poll, whose
-// `since` is the same zero the live one used — which is also what proves
-// a tail stays addressable after its job has ended.
-fn assert_polled_lines(polled: String, state: String) -> Nil {
-  let assert [heading, stdout_rule, alpha, bravo, charlie, blank, cursor] =
+// Everything in the terminal poll's rendering is fixed except the job's
+// id, its age and the digest of its staged stream, so the assertion pins
+// the structure line by line: the three appended lines under the stdout
+// rule, nothing under stderr, the spill a finished job stages, and the
+// cursor those exact bytes advance to. Read from the terminal poll —
+// whose `since` is the same zero the live one used, which is also what
+// proves a tail stays addressable after its job has ended.
+fn assert_polled_lines(polled: String) -> Nil {
+  let assert [heading, rule, alpha, bravo, charlie, blank, spill, cursor] =
     string.split(polled, on: "\n")
-    as "a poll renders a heading, one stream and a cursor"
-  assert string.contains(heading, " — " <> state)
-  assert stdout_rule == "--- stdout ---"
+    as "the terminal poll renders a heading, one stream, its spill and a cursor"
+  assert string.contains(heading, " — stopped (you asked), ")
+  assert rule == "--- stdout ---"
   assert [alpha, bravo, charlie] == ["alpha", "bravo", "charlie"]
   assert blank == ""
+
+  // A job that ends stages its whole stream and the rendering names it by
+  // digest, so a reader who wants more than the bounded tail can ask for
+  // it. Nothing under stderr, which is what the absence of a second rule
+  // and a second reference says.
+  assert string.starts_with(spill, "whole stdout: sha256-")
   assert cursor == "cursor: " <> appended_cursor
 }
 
