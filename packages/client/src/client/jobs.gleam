@@ -1546,12 +1546,18 @@ fn cleared(
   case dict.get(state.jobs, id), outcome {
     Error(Nil), _outcome -> actor.continue(state)
 
+    // The cell goes before the caller is told, and the order is the
+    // whole of what makes the refusal honest. A caller that had its
+    // answer while the record was still being deleted could read the
+    // store — or start its replacement job — and find a `Starting` cell
+    // for a job that never ran, which is exactly the ghost the delete
+    // exists to prevent.
     Ok(held), Error(refusal) -> {
+      let _dropped = discard(state, id)
       answer_starter(
         held,
         Error(ClearanceRefused(reason: refusal_text(refusal))),
       )
-      let _dropped = discard(state, id)
       resume(State(..state, jobs: dict.delete(state.jobs, id)))
     }
 

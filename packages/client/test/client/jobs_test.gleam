@@ -25,17 +25,32 @@
 ////
 //// ## The mutation checks
 ////
-//// Four removals, each of which must fail exactly one test. They are
-//// recorded here so the next reader can re-run them rather than trust
-//// this sentence: remove the ceiling
-//// (`client/jobs.room_for_one_more`'s refusal) and
-//// `the_fifth_job_on_one_strand_is_refused_test` fails; remove the
-//// terminal commit (`commit`'s call to `persist`) and
-//// `an_exit_is_recorded_with_its_result_test` fails; remove the cancel
-//// (`client/jobs.cancel`'s `control.cancel()`) and
-//// `a_kill_climbs_the_ladder_test` fails; remove the reap
-//// (`client/jobs.sweep`'s `reap_one`) and
-//// `a_restart_declares_a_running_job_lost_test` fails.
+//// Four removals, each run against the whole suite, recorded here so the
+//// next reader can repeat them rather than trust this paragraph.
+////
+//// | Removed | Fails |
+//// |---|---|
+//// | `room_for_one_more`'s `CeilingReached` | `the_fifth_job_on_one_strand_is_refused_test` |
+//// | `commit`'s call to `persist` | `an_exit_is_recorded_with_its_result_test`, `the_spill_lands_content_addressed_past_the_cap_test`, `a_terminal_record_survives_a_restart_unchanged_test`, `a_session_stop_kills_every_live_job_test` |
+//// | `cancel`'s `control.cancel()` | `a_kill_climbs_the_ladder_test`, `a_session_stop_kills_every_live_job_test` |
+//// | `sweep`'s `reap_one` | `a_restart_declares_a_running_job_lost_test` |
+////
+//// Two of them catch more than one test, and that is worth saying rather
+//// than trimming the tests until the table is diagonal. `persist` is the
+//// *only* durable write on the commit path, so every assertion about
+//// what the store holds after a job ends rests on it; and the cancel is
+//// reached by two callers, the owner's `job_kill` and the session stop,
+//// which are two different reasons for the same ladder. What the checks
+//// establish is that none of the four is dead weight, and the narrowest
+//// test in each row is the one that names the mechanism.
+////
+//// Removing `persist` also, on the first run, failed
+//// `a_refused_clearance_reaches_the_starting_caller_test` — which turned
+//// out to have nothing to do with the mutation and everything to do with
+//// an ordering flaw it shook loose: the actor answered the starting
+//// caller *before* deleting the record of the job that never ran, so a
+//// caller could read a `Starting` cell for it. The delete moved ahead of
+//// the answer, and that is the mutation check paying for itself.
 
 import broker/broker
 import broker/exec.{type ExecResult, ExecResult}
