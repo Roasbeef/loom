@@ -148,8 +148,14 @@ import weft/registry as address
 /// shared one starving.
 pub const max_jobs_per_strand = 4
 
-/// The wall a job gets when its caller names none, and the ceiling a
-/// larger request is clamped to unless `[jobs].max_wall` raises it.
+/// The longest wall a job gets when its caller names none, and the
+/// ceiling a larger request is clamped to unless `[jobs].max_wall` raises
+/// it.
+///
+/// A default is met with the session policy's own `limits.wall_s` before
+/// it becomes a deadline, so a workspace granting ten minutes starts a
+/// job with no timeout at ten minutes rather than having its clearance
+/// refused for asking for an hour. `granted_wall` has the argument.
 pub const default_wall_ms = 3_600_000
 
 /// How many bytes of each stream the rolling tail retains.
@@ -209,7 +215,10 @@ pub type Request {
     /// The shell command, run exactly as `bash -lc` runs a foreground one.
     command: String,
     /// The wall the caller asked for, in milliseconds, or `None` for the
-    /// default. Clamped to the policy's ceiling, never widened.
+    /// default. Clamped to the operator's ceiling, never widened; a
+    /// `None` is additionally met with the session policy's own wall, so
+    /// a job that named no timeout is admitted under the policy as it
+    /// stands rather than refused for asking for the whole hour.
     wall_ms: Option(Int),
   )
 }
@@ -221,9 +230,10 @@ pub type Started {
     /// The absolute instant the job's wall expires at, on the session's
     /// own time base.
     deadline_ms: Int,
-    /// The wall actually granted, which is what the caller asked for
-    /// clamped by the policy. A caller that asked for more is told what
-    /// it got rather than left to assume.
+    /// The wall actually granted: what the caller asked for clamped by
+    /// the operator's ceiling, or — for a caller that asked for nothing —
+    /// the default hour met with the session policy's own wall. Either
+    /// way the caller is told what it got rather than left to assume.
     wall_ms: Int,
   )
 }
@@ -1094,7 +1104,7 @@ fn admitted(
   use runtime <- result.try(borrow(state))
   use Nil <- result.try(room_for_one_more(state, strand))
   let #(now, _clock) = clock.read(state.wiring.clock)
-  let wall_ms = granted_wall(state.wiring.policy, request.wall_ms)
+  let wall_ms = granted_wall(state.wiring, request.wall_ms)
   use #(id, generator) <- result.try(mint(state.generator))
   let record =
     jobstate.JobRecord(
@@ -1146,18 +1156,46 @@ fn room_for_one_more(state: State, strand: String) -> Result(Nil, Refusal) {
   }
 }
 
-// What a caller asked for, clamped by the operator's ceiling.
+// What a caller asked for, clamped by the operator's ceiling — or, when
+// it asked for nothing, the longest wall the session policy already
+// grants.
 //
-// Clamped rather than refused, for the reason `client/schedule.wake_under`
-// caps rather than vetoes: a job that asked for two hours on an hour's
-// ceiling gets an hour and is told so in `Started.wall_ms`, where
-// refusing would teach a model to retry against a wall that will not move.
-fn granted_wall(policy: JobsPolicy, requested: Option(Int)) -> Int {
-  int.clamp(
-    option.unwrap(requested, default_wall_ms),
-    min: 1,
-    max: policy.max_wall_ms,
-  )
+// The two halves answer to different parties, which is why they are not
+// one clamp.
+//
+// An **explicit** request is clamped rather than refused, for the reason
+// `client/schedule.wake_under` caps rather than vetoes: a job that asked
+// for two hours on an hour's ceiling gets an hour and is told so in
+// `Started.wall_ms`. What the operator's ceiling cannot do is widen the
+// session's own `limits.wall_s`, so a caller that still asks for more
+// than the policy allows meets `RefuseNarrowed` at the clearance and is
+// refused in the broker's own words — exactly what a foreground `bash`
+// asking for a longer timeout than the policy grants is told, and what
+// gives an escalation a narrowing to offer a grant against.
+//
+// A **default** has no such caller to escalate for. Asking for the whole
+// hour against a policy granting ten minutes would make every job
+// started without a timeout a policy refusal, which is a session-wide
+// outage dressed as a verdict about one command. So the default is the
+// meet of the hour and what the policy grants, admitted as the policy
+// stands, and `Started.wall_ms` says which of the two it was.
+fn granted_wall(wiring: Wiring, requested: Option(Int)) -> Int {
+  case requested {
+    Some(asked) -> int.clamp(asked, min: 1, max: wiring.policy.max_wall_ms)
+
+    None -> meet_wall(default_wall_ms, wiring.base_policy.limits.wall_s * 1000)
+  }
+}
+
+// The narrower of two walls in milliseconds, with zero meaning
+// unlimited.
+//
+// `broker/policy.meet_limit`'s own lattice, read in the units this
+// module counts in: a session policy with no wall at all is the top of
+// it and leaves the hour standing.
+fn meet_wall(ours: Int, theirs: Int) -> Int {
+  use <- bool.guard(when: theirs <= 0, return: ours)
+  int.min(ours, theirs)
 }
 
 // A fresh job id from the session's own generator.
@@ -1483,12 +1521,18 @@ fn promote_stream(
 //
 // The step id is the job's own key rather than the model batch's turn, so
 // each job opens its own ledger at a cap of one — `docs/adr/005`'s second
-// addendum. The wall is the job's rather than `bash`'s ten-minute clamp,
-// and the same number reaches the token, the relay, the helper's timer
-// and the ledger because all four read this one record. And no escalation
-// grants are carried: the approval that admitted the starting call bound
-// to that call's arguments, and a detached job has no later call to spend
-// a grant on.
+// addendum.
+//
+// The wall is the job's rather than `bash`'s ten-minute clamp, and the
+// same number reaches the token, the relay, the helper's timer and the
+// ledger because all four read this one record. That is also why
+// `granted_wall` meets a *default* against the base policy before it ever
+// becomes a deadline: `response` below is `RefuseNarrowed`, so a wall the
+// base does not grant is refused here rather than quietly clamped.
+//
+// And no escalation grants are carried: the approval that admitted the
+// starting call bound to that call's arguments, and a detached job has no
+// later call to spend a grant on.
 fn call_spec(wiring: Wiring, record: JobRecord, now: Int) -> CallSpec {
   let base_requirements =
     tool.asking_base_network(

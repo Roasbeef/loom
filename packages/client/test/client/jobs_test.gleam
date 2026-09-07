@@ -56,9 +56,11 @@ import broker/broker
 import broker/exec.{type ExecResult, ExecResult}
 import broker/framing
 import broker/policy
+import broker/token
 import client/internal/ffi_os
 import client/jobs
 import client/jobstate.{type JobId}
+import client/serve
 import core/clock.{type Clock}
 import core/ids
 import gleam/bit_array
@@ -447,16 +449,37 @@ fn start_harness_on(clock: Clock) -> Harness {
   let spill = start_fake_spill()
   let name = addresses.new()
   let assert Ok(_started) =
-    jobs.start(name, wiring(runtime, fake, spill, clock))
+    jobs.start(name, fake_wiring(runtime, fake, spill, clock))
     as "the jobs actor must start"
   Harness(name:, fake:, spill:, runtime:, operation: an_op())
 }
 
-fn wiring(
+// The wiring every test but the policy pair uses: the scripted broker,
+// and the restrictive workspace default as the session base.
+fn fake_wiring(
   runtime: Runtime,
   fake: FakeBroker,
   spill: FakeSpill,
   clock: Clock,
+) -> jobs.Wiring {
+  wiring(
+    runtime,
+    spill,
+    clock,
+    clear_seam(fake),
+    5000,
+    policy.workspace_default("/workspace"),
+  )
+}
+
+fn wiring(
+  runtime: Runtime,
+  spill: FakeSpill,
+  clock: Clock,
+  clear: fn(broker.CallSpec, Subject(broker.CallEvent)) ->
+    Result(tool.RunningCall, broker.Refusal),
+  clearance_ms: Int,
+  base: policy.SandboxPolicy,
 ) -> jobs.Wiring {
   jobs.Wiring(
     runtime: fn() { Ok(runtime) },
@@ -464,11 +487,11 @@ fn wiring(
     clock:,
     seed: 42,
     workspace: "/workspace",
-    base_policy: policy.workspace_default("/workspace"),
+    base_policy: base,
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin:/bin")],
-    clear_call: clear_seam(fake),
-    clearance_ms: 5000,
+    clear_call: clear,
+    clearance_ms:,
     spill: spill_seam(spill),
     blob_root: "/blobs",
   )
@@ -816,6 +839,102 @@ pub fn a_requested_wall_is_clamped_to_the_ceiling_test() {
   assert started.wall_ms == jobs.default_wall_ms
 }
 
+pub fn a_default_wall_is_met_with_the_session_policys_own_test() {
+  // The hour is a ceiling, not a demand. This harness's session base is
+  // the restrictive workspace default, whose wall is ten minutes, so a
+  // job started with no timeout is given ten minutes and asks the broker
+  // for exactly that — which is what keeps it on the admitted side of a
+  // `RefuseNarrowed` composition.
+  let base = policy.workspace_default("/workspace")
+  assert base.limits.wall_s * 1000 < jobs.default_wall_ms
+
+  let harness = start_harness()
+  let started = start_job(harness, "main", "tail -f build.log")
+  assert started.wall_ms == base.limits.wall_s * 1000
+
+  let assert [spec] = specs(harness) as "exactly one clearance"
+  assert spec.requirements.limits.wall_s == base.limits.wall_s
+}
+
+pub fn the_real_policy_admits_a_default_and_refuses_a_longer_wall_test() {
+  // The scripted broker composes no policy, so nothing else in this file
+  // can see the meet the real one performs. `serve.base_policy` is what
+  // a session hands this actor and its wall is ten minutes, so the two
+  // halves of `granted_wall` land on opposite sides of the composition.
+  let name = start_over_a_real_broker()
+
+  // A default start gets past `policy.compose` and is refused only for
+  // want of a helper. That is a different sentence from a policy
+  // refusal, and telling the two apart is the whole of this test.
+  let assert Error(jobs.ClearanceRefused(reason: admitted)) =
+    start_over(name, None)
+    as "an empty pool refuses every start it admits"
+  assert string.contains(admitted, "no sandbox helper")
+
+  // An explicit hour is more than the policy grants, so the composition
+  // narrows it and `RefuseNarrowed` refuses before the pool is ever
+  // asked — in the broker's own words, carrying the narrowing an
+  // escalation would offer a grant against.
+  let assert Error(jobs.ClearanceRefused(reason: refused)) =
+    start_over(name, Some(jobs.default_wall_ms))
+    as "an hour exceeds a ten-minute policy"
+  assert string.contains(refused, "exceed the session policy")
+}
+
+fn start_over(
+  name: address.Address(jobs.Message),
+  wall_ms: Option(Int),
+) -> Result(jobs.Started, jobs.Refusal) {
+  jobs.start_job(
+    name,
+    strand: "main",
+    operation: an_op(),
+    request: jobs.Request(command: "tail -f build.log", wall_ms:),
+    waiting: 10_000,
+  )
+}
+
+// A jobs actor whose clearance goes through a *real* broker composing
+// the session's real base policy.
+//
+// The helper pool is empty on purpose, and `AllBusy(size: 0)` is a
+// hopeless pool rather than a congested one, so a clearance the policy
+// admits comes straight back as `NoHelper`. Nothing here has to run a
+// command: what the test needs to distinguish is which side of
+// `policy.compose` a start lands on, and the two sides have different
+// words.
+fn start_over_a_real_broker() -> address.Address(jobs.Message) {
+  let clock = counting_clock(1_756_000_000_000, 1)
+  let runtime = open_runtime(clock)
+  let spill = start_fake_spill()
+  let assert Ok(broker_actor) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1_756_000_000_000),
+        checkout: fn() { Error(exec.AllBusy(size: 0)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+    as "the real broker must start"
+
+  let name = addresses.new()
+  let assert Ok(_started) =
+    jobs.start(
+      name,
+      wiring(
+        runtime,
+        spill,
+        clock,
+        tool.broker_runner(broker: broker_actor, waiting: 1000),
+        1000,
+        serve.base_policy("/workspace"),
+      ),
+    )
+    as "the jobs actor must start"
+  name
+}
+
 pub fn a_refused_clearance_reaches_the_starting_caller_test() {
   // The start is synchronous over the clearance, so a policy refusal
   // arrives in the broker's own words instead of on some later poll —
@@ -1133,7 +1252,7 @@ pub fn a_restart_declares_a_running_job_lost_test() {
   let assert Ok(_replacement) =
     jobs.start(
       second,
-      wiring(
+      fake_wiring(
         harness.runtime,
         harness.fake,
         harness.spill,
@@ -1171,7 +1290,7 @@ pub fn a_terminal_record_survives_a_restart_unchanged_test() {
   let assert Ok(_replacement) =
     jobs.start(
       second,
-      wiring(
+      fake_wiring(
         harness.runtime,
         harness.fake,
         harness.spill,
