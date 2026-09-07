@@ -1081,8 +1081,20 @@ pub fn one_turn_answers_epoch_incarnation_and_authority_test() {
     )
     == Error(manager.StaleIncarnation)
 
-  // Revocation is answered by the same call, live, with no cached membership.
-  assert access.revoke_membership(store, member.id, record.id) == Ok(Nil)
+  // Revocation is answered by the very next frame check. It reaches the
+  // catalogue through `administer`, which is the only way a running daemon
+  // writes the credential, principal and membership tables, and which drops
+  // the registry's remembered authorities as it goes. Revoking behind the
+  // registry's back by writing `store` directly is not a path any production
+  // caller has, and a test that took it would be pinning the mechanism rather
+  // than the property.
+  assert manager.administer(
+      registry,
+      owner_digest,
+      "daemon-test",
+      manager.RevokeMembership(member.id, record.id),
+    )
+    == Ok(member)
   assert manager.frame_authority(
       registry,
       epoch: "daemon-test",

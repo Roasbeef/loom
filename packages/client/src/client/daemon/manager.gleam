@@ -493,6 +493,10 @@ type Book(instance) {
     domains: Dict(String, DomainSlot),
     commands: Subject(Message(instance)),
     parent: Pid,
+    authority: Dict(
+      #(access.Digest, String),
+      #(access.Principal, access.Authority),
+    ),
   )
 }
 
@@ -530,6 +534,7 @@ pub fn start(
             domains: dict.new(),
             commands:,
             parent:,
+            authority: dict.new(),
           )
         sm.initialised(Ready, book)
         |> sm.selecting(selector(book))
@@ -1025,10 +1030,9 @@ fn handle(
       sm.keep(book)
     }
     FrameAuthority(epoch, id, incarnation, digest, reply) -> {
-      process.send(
-        reply,
-        frame_authorized(book, epoch, id, incarnation, digest),
-      )
+      let #(book, answer) =
+        frame_authorized(book, epoch, id, incarnation, digest)
+      process.send(reply, answer)
       sm.keep(book)
     }
     DomainServices(id, operation, reply) -> {
@@ -1063,8 +1067,17 @@ fn handle(
       )
       sm.keep(book)
     }
+
+    // Administration is the only writer of the credential, principal and
+    // membership tables, so it is also the only thing that can make a
+    // remembered frame authority wrong. The memo is dropped whatever the
+    // outcome and before the reply leaves: a refused mutation is cheap to
+    // forget, and a caller must never be told a change landed while a frame
+    // check can still answer from state that predates it.
     Administer(digest, epoch, action, reply) -> {
-      process.send(reply, administer_now(phase, book, digest, epoch, action))
+      let outcome = administer_now(phase, book, digest, epoch, action)
+      let book = Book(..book, authority: dict.new())
+      process.send(reply, outcome)
       sm.keep(book)
     }
     Census(reply) -> {
@@ -2069,16 +2082,82 @@ fn frame_authorized(
   id: String,
   incarnation: String,
   digest: access.Digest,
+) -> #(
+  Book(instance),
+  Result(#(access.Principal, access.Authority), FrameRefusal),
+) {
+  let answer = {
+    use Nil <- result.try(case epoch == book.epoch {
+      True -> Ok(Nil)
+      False -> Error(StaleEpoch)
+    })
+    use Nil <- result.try(case dict.get(book.slots, id) {
+      Ok(Slot(phase: Running(_), operation:, ..)) if operation == incarnation ->
+        Ok(Nil)
+      Ok(Slot(..)) | Error(Nil) -> Error(StaleIncarnation)
+    })
+    Ok(Nil)
+  }
+
+  // The two fences above are answered from this actor's own state, so they run
+  // on every call. Only the third question reaches the catalogue, and only it
+  // is worth remembering.
+  case answer {
+    Error(refusal) -> #(book, Error(refusal))
+    Ok(Nil) -> resolved_authority(book, id, digest)
+  }
+}
+
+// The credential resolution behind a frame check, answered from `book.authority`
+// when it has been answered before.
+//
+// This is memoisation rather than a cache: the tables it reads —
+// `access_credential`, `access_principal`, `access_membership`, and the session
+// registration row — are written in exactly one place, `administer_member`,
+// reached only by the `Administer` message this same actor serialises, and that
+// arm drops the whole memo before it replies. Startup's `access.bootstrap_owner`
+// runs in the root before the registry exists. So a remembered answer cannot
+// differ from the live read it replaces, and a revoked credential still closes
+// its attachment on the very next frame.
+//
+// What this removes is real work rather than a round trip. `access.authenticate`
+// and `access.authorization` together issue about ten SQLite statements, each
+// freshly prepared, and the per-frame check runs once per pushed provider delta
+// per attached terminal on top of twice per command. Measured against the
+// shipped live-delivery fixture that was the daemon's entire steady-state
+// profile: the fourteen most-called functions in the process were all
+// `esqlite3` statement preparation and `storage/access` string validation.
+//
+// A refusal is not remembered. It is the path that closes the attachment, so
+// there is no second frame to pay for it, and remembering it would keep a
+// principal out between a grant and the next administration.
+fn resolved_authority(
+  book: Book(instance),
+  id: String,
+  digest: access.Digest,
+) -> #(
+  Book(instance),
+  Result(#(access.Principal, access.Authority), FrameRefusal),
+) {
+  let key = #(digest, id)
+  case dict.get(book.authority, key) {
+    Ok(remembered) -> #(book, Ok(remembered))
+    Error(Nil) ->
+      case resolve_authority(book, id, digest) {
+        Error(refusal) -> #(book, Error(refusal))
+        Ok(answer) -> #(
+          Book(..book, authority: dict.insert(book.authority, key, answer)),
+          Ok(answer),
+        )
+      }
+  }
+}
+
+fn resolve_authority(
+  book: Book(instance),
+  id: String,
+  digest: access.Digest,
 ) -> Result(#(access.Principal, access.Authority), FrameRefusal) {
-  use Nil <- result.try(case epoch == book.epoch {
-    True -> Ok(Nil)
-    False -> Error(StaleEpoch)
-  })
-  use Nil <- result.try(case dict.get(book.slots, id) {
-    Ok(Slot(phase: Running(_), operation:, ..)) if operation == incarnation ->
-      Ok(Nil)
-    Ok(Slot(..)) | Error(Nil) -> Error(StaleIncarnation)
-  })
   {
     use principal <- result.try(access.authenticate(book.catalogue, digest))
     use authority <- result.try(access.authorization(
