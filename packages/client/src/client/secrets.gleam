@@ -1,5 +1,6 @@
-//// The `[secrets]` table: credential values obtained from the host once,
-//// at daemon boot, and held in memory for the life of the process.
+//// The `[secrets]` table: credential values obtained by running a host
+//// command, once per session assembly, and held in memory for the life
+//// of that session's stores.
 ////
 //// ## Why the table exists
 ////
@@ -24,25 +25,36 @@
 //// GH_TOKEN = { command = ["gh", "auth", "token"] }
 //// ```
 ////
+//// ## When the commands run
+////
+//// Resolution happens where a session's stores are built, which is every
+//// session create and every session open, and not once for the life of
+//// the daemon. That is deliberate: a token the operator rotates, or a
+//// credential store they sign back into, is picked up by the next
+//// session without restarting the daemon. What it costs is that a create
+//// or an open pays for every entry serially, so a wedged helper delays
+//// that one session by up to `default_timeout_ms` per entry. Sessions
+//// already running are unaffected, because each holds the store it was
+//// built with.
+////
 //// ## What resolution promises
 ////
-//// The command runs once, at boot, on the host and outside every jail,
-//// as the operator, with the daemon's own environment — the same trust
+//// The command runs on the host and outside every jail, as the
+//// operator, with the daemon's own environment — the same trust
 //// the operator already extends to `helper_path`. Its stdout, less one
 //// trailing newline, is the value, and empty stdout is a failure rather
 //// than an empty value: a helper that exits 0 with nothing to say has
 //// not produced a credential, and recording `""` would shadow an
 //// environment variable of the same name without a word of warning. A
-//// resolved value lives in daemon
-//// memory only: it is never written to the catalogue, a session, a
-//// transcript or a log, and `Failure` carries a name and an exit status
-//// rather than any output. The command's own stderr is not captured; it
-//// is inherited, so it reaches the daemon log the way any other boot
+//// resolved value lives in daemon memory only: it is never written to
+//// the catalogue, a session, a transcript or a log, and `Failure` carries
+//// a name and an exit status rather than any output. The command's own stderr is not captured; it
+//// is inherited, so it reaches the daemon log the way any other startup
 //// diagnostic does, and the harness never has to decide whether a line
 //// of it was a value.
 ////
 //// A command that fails or overruns its deadline is one warned line and
-//// not a boot failure, exactly as an unset `[tools] env` name is: a
+//// not a refused session, exactly as an unset `[tools] env` name is: a
 //// missing `gh` login must not stop a daemon whose other work does not
 //// need it, and the tool or provider that did need it fails in band when
 //// it runs.
@@ -71,8 +83,8 @@ import tom
 /// variants, each with the fields its own backend needs, instead of a
 /// widening row of optional keys nobody can tell apart.
 pub type Source {
-  /// An argv run on the host at boot. Invariants (owed by `parse`, and
-  /// by any hand construction): `argv` is non-empty and every element is
+  /// An argv run on the host. Invariants (owed by `parse`, and by any
+  /// hand construction): `argv` is non-empty and every element is
   /// a whole argument, never a shell word — nothing splits or expands
   /// it, so no quoting rule applies and no metacharacter is honoured.
   Command(argv: List(String))
@@ -121,7 +133,9 @@ pub type Runner =
 /// entry reported unresolved. Ten seconds is chosen against the slowest
 /// realistic helper — an `op read` that has to touch the network and
 /// possibly prompt a local agent — while staying short enough that a
-/// wedged helper cannot hold a whole daemon boot.
+/// wedged helper cannot hold a session open for long. The bound is per
+/// entry and resolution is serial, so a table of several wedged helpers
+/// costs their sum.
 pub const default_timeout_ms = 10_000
 
 // --- the [secrets] table ---------------------------------------------------
@@ -131,7 +145,7 @@ pub const default_timeout_ms = 10_000
 ///
 /// The order is sorted rather than the file's, for the reason the model
 /// entries are: TOML hands its keys back through a dict, so file order
-/// is not recoverable, and a boot's warning lines should not depend on
+/// is not recoverable, and the warning lines should not depend on
 /// which order a dict happened to iterate.
 ///
 /// The top-level key `secrets` must also appear in `client/catalog`'s

@@ -675,9 +675,10 @@ pub fn build_domain(
   <- result.try(load_config(configuration))
 
   // The `[secrets]` table resolved before the gateway that will spend
-  // what it holds. A failed entry is a warned line rather than a refused
-  // boot, for the reason `client/secrets` gives: a credential this
-  // domain's work may never need must not stop it starting.
+  // what it holds, once per domain assembly rather than once per daemon.
+  // A failed entry is a warned line rather than a refused assembly, for
+  // the reason `client/secrets` gives: a credential this domain's work
+  // may never need must not stop it starting.
   let secret_store = resolved_secrets(entries, logger)
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
@@ -880,12 +881,18 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   )
   use codemode_seams <- result.try(parse_codemode_seams(flags.codemode_seams))
 
-  // Every `[secrets]` entry run once, here, because the gateway built a
-  // few lines down closes over the store and every later reader of a
+  // Every `[secrets]` entry run here, because the gateway built a few
+  // lines down closes over the store and every later reader of a
   // credential name reads the same one. `resolve` has no logger of its
   // own, so the failures ride along in `Settings` and `boot` warns about
   // them beside the `[tools] env` names it could not find — one place,
   // one moment, for both kinds of missing credential.
+  //
+  // This runs on each session create and open, not once per daemon,
+  // because `resolve_managed` reaches it every time. A rotated token is
+  // therefore picked up without restarting the daemon; the cost is that
+  // an open pays for every entry serially, bounded by
+  // `secrets.default_timeout_ms` each.
   let #(resolved, secret_failures) =
     secrets.resolve(
       secret_entries,
@@ -1272,7 +1279,9 @@ fn env_text(name: String) -> Result(String, Nil) {
 
 // The `[secrets]` table run and layered over the process environment, in
 // the one place a domain assembly has a logger to warn with. `resolve`
-// keeps its failures in `Settings` instead, because it has none.
+// keeps its failures in `Settings` instead, because it has none. Like
+// `resolve`, this runs per assembly rather than per daemon, so the
+// commands are re-run and a rotated credential is picked up.
 fn resolved_secrets(
   entries: List(secrets.Entry),
   logger: Logger,

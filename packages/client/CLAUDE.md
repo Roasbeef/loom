@@ -312,16 +312,20 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/secrets.{Source, Entry, Failure, Capture, Runner, parse,
   resolve, store, host_runner}` — the `[secrets]` table of the same
   `loom.toml`: how the daemon *obtains* a named credential the operator's
-  shell never exported. One source today, `Command(argv)`, run once at
-  boot on the host and outside every jail with the daemon's own
-  environment, bounded by `default_timeout_ms` (10s), stdout less one
-  trailing newline as the value. `store` layers the resolved pairs over a
+  shell never exported. One source today, `Command(argv)`, run on the
+  host and outside every jail with the daemon's own environment, bounded
+  by `default_timeout_ms` (10s), stdout less one trailing newline as the
+  value — and empty stdout is a failure rather than an empty value, so
+  such a name keeps falling through to the environment. The entries run
+  on each session create and open rather than once per daemon, so a
+  rotated token is picked up with no restart, at the price of one serial
+  pass over the entries per open. `store` layers the resolved pairs over a
   base `provider/secret.SecretStore` — resolved name wins, everything
   else falls through to the process environment — and that layered store
   is `Settings.secrets`, the one seam `api_key_env` (models and MCP), an
   extension's bound egress secret, and `[tools] env` all read. A failed
   entry is a `secrets.unresolved` warning carrying the name and an exit
-  status, never output and never a boot failure.
+  status, never output and never a refused session.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -2535,8 +2539,9 @@ an install is under the extensions root.
   working layer logs `mcp.ready` with each server's name and tool count.
 - **Every credential name resolves through exactly one store.**
   `Settings.secrets` is the layered `provider/secret.SecretStore` built
-  once in `serve.resolve`: the `[secrets]` table's resolved pairs over
-  the process environment. The provider gateway, an MCP server's
+  in `serve.resolve`, once per session assembly rather than once per
+  daemon: the `[secrets]` table's resolved pairs over the process
+  environment. The provider gateway, an MCP server's
   `api_key_env`, an extension's bound egress secret, and the `reading:`
   seam `tool_environment` builds a jailed shell's environment from are
   all handed that same store, so a backend added to `client/secrets`
