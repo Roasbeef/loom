@@ -1266,15 +1266,31 @@ pub fn a_restart_declares_a_running_job_lost_test() {
   // replacement is proof the sweep is already complete. `start`
   // returning is not: the acknowledgement is released before the
   // injected queue drains.
-  let assert Ok(_listed) = jobs.list_jobs(second, strand: "main", waiting: 5000)
+  let assert Ok(listed) = jobs.list_jobs(second, strand: "main", waiting: 5000)
     as "the replacement must answer, which proves it swept first"
 
-  // Read the store rather than the new actor: the sweep's whole job is
-  // the durable record, and the replacement holds nothing in memory.
+  // The store first, because the sweep's whole job is the durable record
+  // and everything below is read back from it.
   let record = record_in_store(harness, started.id)
   assert record.state == jobstate.Lost(reason: jobstate.VmRestart)
   assert cleared_steps(harness) == [jobstate.job_key(started.id)]
   assert staged_paths(harness) == []
+
+  // And the same answer through the door, which is the only one a model
+  // ever gets. A sweep that wrote the store and kept nothing would answer
+  // this poll `NotFound` — the sentence for a job that never existed —
+  // and would leave the listing empty.
+  let assert Ok(polled) =
+    jobs.poll_job(
+      second,
+      strand: "main",
+      id: started.id,
+      cursors: jobs.Cursors(0, 0),
+      waiting: 5000,
+    )
+    as "a job the restart reaped is still this strand's to poll"
+  assert polled.state == jobstate.Lost(reason: jobstate.VmRestart)
+  assert list.map(listed, fn(row) { row.id }) == [started.id]
 }
 
 pub fn a_terminal_record_survives_a_restart_unchanged_test() {

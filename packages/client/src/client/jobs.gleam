@@ -64,6 +64,12 @@
 //// before it serves a single request — is to sweep `job/*` and commit
 //// `Lost` for everything it finds still live.
 ////
+//// The replacement then holds every record that sweep decoded, detached
+//// and with two empty tails, so a model polling the job the restart
+//// killed is told `Lost` rather than `NotFound`. Answering from memory is
+//// what makes that one sentence: `NotFound` is reserved for "no such job,
+//// or somebody else's", and a job the harness lost is neither.
+////
 //// That sweep reports `VmRestart` for both of the cases it covers, and
 //// the distinction `jobstate.OwnerRestart` names is deliberately not
 //// drawn. Telling "the first start of this session's actor" from "a
@@ -1332,10 +1338,7 @@ fn run(
           until: record.deadline_ms,
           phase: Streaming,
           stopped_by: None,
-          streams: Streams(
-            stdout: jobtail.new(capacity: tail_bytes),
-            stderr: jobtail.new(capacity: tail_bytes),
-          ),
+          streams: no_streams(),
           staged: [],
         ),
       )
@@ -1851,12 +1854,17 @@ fn record_loss(state: State, id: JobId, reason: jobstate.LossReason) -> State {
 fn detached_of(custody: Custody) -> Custody {
   case custody {
     Detached(streams:) -> Detached(streams:)
-    Dispatching(..) | Attached(..) ->
-      Detached(streams: Streams(
-        stdout: jobtail.new(capacity: tail_bytes),
-        stderr: jobtail.new(capacity: tail_bytes),
-      ))
+    Dispatching(..) | Attached(..) -> Detached(streams: no_streams())
   }
+}
+
+// Two empty tails: what a job whose runner never published any has to
+// show, and what a poll of it therefore reads.
+fn no_streams() -> Streams {
+  Streams(
+    stdout: jobtail.new(capacity: tail_bytes),
+    stderr: jobtail.new(capacity: tail_bytes),
+  )
 }
 
 // --- transitions and commits ----------------------------------------------
@@ -1995,20 +2003,12 @@ fn streams_of(custody: Custody) -> Streams {
   case custody {
     Detached(streams:) -> streams
 
-    Dispatching(..) ->
-      Streams(
-        stdout: jobtail.new(capacity: tail_bytes),
-        stderr: jobtail.new(capacity: tail_bytes),
-      )
+    Dispatching(..) -> no_streams()
 
     Attached(control:, ..) ->
       case ask_runner(control) {
         Ok(streams) -> streams
-        Error(Nil) ->
-          Streams(
-            stdout: jobtail.new(capacity: tail_bytes),
-            stderr: jobtail.new(capacity: tail_bytes),
-          )
+        Error(Nil) -> no_streams()
       }
   }
 }
@@ -2135,53 +2135,80 @@ fn closes(end: StdinEnd) -> Bool {
 // would mean guessing at a job's owner and state, and both guesses are
 // harmful in the same direction the codec's own doc names: nothing here
 // invents a record it could not read.
+//
+// What the sweep reads it also *keeps*. A record declared lost that stayed
+// only in the store would answer a poll `NotFound` — the sentence reserved
+// for "there is no such job, or it is somebody else's" — and would be
+// missing from a listing, so the model whose job the restart killed would
+// be told the job never existed rather than that it was lost. Every record
+// the sweep decoded is therefore held detached, with two empty tails,
+// which is exactly what a job whose runner is gone has left to show.
 fn reap(state: State) -> State {
   case state.wiring.runtime() {
     Error(Nil) -> state
     Ok(runtime) -> {
-      let _swept = sweep(runtime)
+      let swept = sweep(runtime) |> result.unwrap([])
 
       // This incarnation owns no job, so every staging file the store
       // holds belongs to one that is gone.
       let _unlinked = unlink_orphans(state)
-      state
+      State(..state, jobs: list.fold(swept, state.jobs, remember))
     }
   }
 }
 
-fn sweep(runtime: Runtime) -> Result(Nil, Refusal) {
+// One swept record, held as a job with nothing left to ask.
+//
+// Every one of these is terminal — the sweep either found it so or made it
+// so — which is what keeps them out of `room_for_one_more`'s count and
+// makes them answerable from `state.jobs` alone.
+fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
+  dict.insert(
+    jobs,
+    record.id,
+    Held(record:, custody: Detached(streams: no_streams())),
+  )
+}
+
+// Every job the store still holds a record for, as this incarnation now
+// believes it stands: the ones already terminal unchanged, and the ones
+// still live declared lost and written back.
+//
+// A record whose `Lost` could not be written is dropped rather than kept,
+// because holding it would answer a poll with a state the store does not
+// carry — and the next boot's sweep will meet the same cell and try again.
+fn sweep(runtime: Runtime) -> Result(List(JobRecord), Refusal) {
   use cells <- result.try(
     api.reserved_facts(runtime, prefix: jobstate.key_prefix)
     |> result.map_error(commit_refused),
   )
-  list.each(cells, fn(cell) {
-    let #(_key, payload) = cell
-    case jobstate.decode(payload) {
-      Error(_corrupt) -> Nil
-      Ok(record) ->
-        case jobstate.is_terminal(record.state) {
-          True -> Nil
-          False -> {
-            let _reaped = reap_one(runtime, record)
-            Nil
+  Ok(
+    list.filter_map(cells, fn(cell) {
+      let #(_key, payload) = cell
+      case jobstate.decode(payload) {
+        Error(_corrupt) -> Error(Nil)
+        Ok(record) ->
+          case jobstate.is_terminal(record.state) {
+            True -> Ok(record)
+            False -> reap_one(runtime, record)
           }
-        }
-    }
-  })
-  Ok(Nil)
+      }
+    }),
+  )
 }
 
-fn reap_one(runtime: Runtime, record: JobRecord) -> Result(Nil, Refusal) {
-  case jobstate.step(record, jobstate.RunnerLost(reason: jobstate.VmRestart)) {
-    Error(_illegal) -> Ok(Nil)
-    Ok(lost) ->
-      api.put_reserved_fact(
-        runtime,
-        jobstate.job_key(lost.id),
-        jobstate.encode(lost),
-      )
-      |> result.map_error(commit_refused)
-  }
+fn reap_one(runtime: Runtime, record: JobRecord) -> Result(JobRecord, Nil) {
+  use lost <- result.try(
+    jobstate.step(record, jobstate.RunnerLost(reason: jobstate.VmRestart))
+    |> result.replace_error(Nil),
+  )
+  api.put_reserved_fact(
+    runtime,
+    jobstate.job_key(lost.id),
+    jobstate.encode(lost),
+  )
+  |> result.replace(lost)
+  |> result.replace_error(Nil)
 }
 
 fn unlink_orphans(state: State) -> Result(Nil, String) {
@@ -2253,8 +2280,7 @@ fn drain(state: State, until: Int) -> State {
     | Ok(ListAll(..))
     | Ok(Kill(..))
     | Ok(Write(..))
-    | Ok(DeadlinePassed(..))
-    | Ok(StopAll(..)) -> drain(state, until)
+    | Ok(DeadlinePassed(..)) -> drain(state, until)
   }
 }
 
