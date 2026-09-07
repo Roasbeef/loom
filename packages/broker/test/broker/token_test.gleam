@@ -136,6 +136,53 @@ pub fn revoke_all_kills_every_op_token_test() {
   assert token.revoke_all(vault, op) == vault
 }
 
+/// `revoke_step` is `revoke_all` one key finer: the step's tokens die and
+/// its siblings under the same operation live. That is what lets a
+/// code-mode satellite revoke its own channel on teardown without
+/// revoking the token a job it started is still executing under.
+///
+/// Revoked entries are retained here as everywhere, so the dead token
+/// refuses as `Revoked` rather than as `UnknownToken` — the caller learns
+/// the token was taken away, not that it was never minted.
+pub fn revoke_step_kills_only_that_steps_tokens_test() {
+  let #(op, other_op) = two_ops()
+  let vault = token.new(entropy: token.production_entropy())
+  let assert Ok(#(vault, satellite)) =
+    token.mint(vault, binding(op, "turn-4", 1000))
+  let assert Ok(#(vault, job)) = token.mint(vault, binding(op, "job/j1", 1000))
+  let assert Ok(#(vault, elsewhere)) =
+    token.mint(vault, binding(other_op, "turn-4", 1000))
+  let vault = token.revoke_step(vault, op, step_id: "turn-4")
+
+  // The reaped step's token is gone, and says so as a revocation.
+  assert token.check(vault, token.to_bytes(satellite), now: 0)
+    == Error(token.Revoked)
+
+  // The sibling step's token is live and still passes the bound check
+  // every `cap_call` and exec dispatch makes.
+  let assert Ok(_) =
+    token.check_for(
+      vault,
+      token.to_bytes(job),
+      op_id: op,
+      step_id: "job/j1",
+      now: 0,
+    )
+
+  // A same-named step of another operation is a different key entirely.
+  let assert Ok(_) =
+    token.check_for(
+      vault,
+      token.to_bytes(elsewhere),
+      op_id: other_op,
+      step_id: "turn-4",
+      now: 0,
+    )
+
+  // Idempotent.
+  assert token.revoke_step(vault, op, step_id: "turn-4") == vault
+}
+
 pub fn entropy_failure_refused_test() {
   let #(op, _) = two_ops()
   let vault = token.new(entropy: fn(_count) { <<1, 2, 3>> })

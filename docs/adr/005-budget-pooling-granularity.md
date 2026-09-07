@@ -234,6 +234,15 @@ abort of a later operation does not — because detachment is what the
 model asked for. The job's record carries the same `op_id` as
 `started_by`, so the durable trail and the cancel authority agree.
 
+That reach is only real if something calls it, and the caller is the
+hub. The operator's `abort` command commits the cancel marker and stops
+the strand's live effects through `api.abort`, and a detached job is not
+one of them; `client/gateway.abort` therefore also calls the
+`effect_abort` seam that `client/serve` fills with `broker.abort`. The
+host has to be the one to join the two halves, because `runtime` may not
+depend on `broker` and only the broker holds the ledger this addendum is
+about.
+
 **What it costs, stated plainly.** The key space grows by one entry per
 live job, which the per-strand ceiling bounds and which `release_slot`
 deletes on settlement like any other. And the synthetic step is a
@@ -251,3 +260,30 @@ would have to re-derive every rule this ADR settles.
 example.** A new kind of caller may take a step of its own when its
 lifetime and its parallelism are genuinely not the batch's. A finer
 coordinate *within* a batch still may not.
+
+**A satellite's teardown reaps its batch's step, not its operation.** Keeping
+the operation in the key put the job in reach of a sweep nobody meant it
+to be in reach of. A code-mode execution ends by reaping its satellite,
+and that reaper used to be `broker.abort` on the whole operation — the
+operation the job had just been keyed under — so a job started from a
+program was cancelled the moment the program returned, and a `bash`
+background job started in a batch that also ran a program went the same
+way. The two teardown sites now call `broker.abort_step` on the run
+phase's own `{op_id, step_id}`, which is the granularity the broker
+already had in every active call, ledger and token binding and had no
+public way to ask for. An operator's `abort` of the operation still
+reaches the job, so nothing this addendum argued for is given up; what
+changes is that a *routine* teardown no longer borrows the operator's
+reach. The step-scoped sweep needs a sweep counter of its own beside the
+operation's, because a step abort that bumped the operation's counter
+would refuse a resumed clearance of every sibling step — including the
+job it just spared.
+
+The step in that sweep is the **batch's**, which is the granularity this
+ADR chose and the only one the harness has: `tool.Ctx` carries the step
+id of the producing tool batch, and a code-mode run phase's identity is
+minted from it. So the teardown still reaps the batch's other tool calls
+— a foreground `bash` clearing under the same key, a second program in
+the same batch — exactly as the operation-wide `abort` before it did.
+What the narrowing spares is a sibling *step* of the same operation, and
+a background job is the only caller that has one.

@@ -27,7 +27,7 @@ runtime. The broader release acceptance is not complete.
 | Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
 | TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery remains client-driven reconciliation, not pushed token streaming. |
 | Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
-| Background jobs | The pure state, the actor and the model-facing surface are built across three pull requests, and a shipped fixture proves the motivating case and the restart rule on a host with real enforcement. One contradiction of the design note is open; see "Background jobs" below. |
+| Background jobs | The pure state, the actor and the model-facing surface are built across three pull requests, and a shipped fixture proves the motivating case and the restart rule on a host with real enforcement. The design note's one open contradiction — a satellite teardown reaping the jobs the program left running — is settled; see "Background jobs" below. |
 
 [PR #239](https://github.com/Roasbeef/loom/pull/239) targets
 `client/daemon-review-fixes` ([#238](https://github.com/Roasbeef/loom/pull/238)),
@@ -241,29 +241,37 @@ On a host without demanded enforcement — the ordinary Linux gate — the
 whole file declines with one declared reason
 (`.github/declared-skips-linux-gate`).
 
-### 0. Settle the code-mode abort collision
+### 0. The code-mode abort collision is settled
 
-**This one blocks the design note's own claim and comes first.** A
-code-mode execution ends by calling `broker.abort` on its operation to
-reap its satellite (`codemode/satellite.cleanup`,
-`codemode/launch.destroy`). A job started by that program cleared under
-the same operation, by decision 4 of the design note — so the teardown
-cancels the job's helper and the record reads `Lost(HelperLoss)` the
-moment the program returns. `cap/job`'s own module doc and the design
-note both promise the opposite. The same collision reaches a `bash`
-background job started in a batch that also runs a program.
+**Closed.** A code-mode teardown used to reap its satellite by calling
+`broker.abort` on the whole operation (`codemode/satellite.cleanup`,
+`codemode/launch.destroy`), and a job started by that program cleared
+under the same operation by decision 4 — so the record read
+`Lost(HelperLoss)` the moment the program returned, against what both
+`cap/job`'s module doc and the design note promise.
 
-The choice is between narrowing what a satellite's teardown aborts —
-which today has only operation granularity, so it is a broker change with
-an abort epoch to think about — and re-keying a program-started job away
-from the execution's operation, which costs the abort semantics decision
-4 bought deliberately. Neither is obviously right, which is why WP5 did
-not take it.
+The resolution narrowed the teardown rather than re-keying the job. The
+broker already carried a `step_id` on every active call, ledger and token
+binding, so the sweep it needed was one it could already express:
+`broker.abort_step(op_id, step_id:)` revokes that pair's tokens, cancels
+its actives and drops its ledger, and both teardown sites now call it on
+the run phase's own step. `broker.abort` is unchanged, so an operator's
+abort of the operation still reaches the jobs it started — decision 4's
+purchase is intact and only the routine teardown stopped borrowing it. A
+step sweep counts separately from an operation sweep, because bumping the
+operation's counter would refuse a resumed clearance of every sibling
+step including the spared job; a clearance is judged against the sum of
+the two. ADR-005 carries the addendum.
 
-Exit: a program starts a job, returns, and a later program finds it
-`running` with its own output; `daemon_shipped_jobs_test`'s second
-scenario asserts that state instead of asserting none, and the comment on
-`watching_program` that explains the omission goes with it.
+The exit criterion is met and measured. `daemon_shipped_jobs_test`'s
+second scenario now asserts `running` rather than asserting no state, and
+asserts the payload's own birth-qualified identity — taken while the
+first satellite was being reaped — departs when the second program kills
+the job. Reverting either teardown site to the operation-wide abort and
+rebuilding the shipment kills that scenario: the payload never publishes
+a live identity at all. Note the rebuild, because the fixture drives
+`bin/loomd` rather than the freshly compiled tree, and a mutation left in
+the sources alone passes.
 
 ### Queued behind it
 

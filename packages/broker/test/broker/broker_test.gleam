@@ -353,6 +353,65 @@ pub fn abort_frees_all_op_reservations_test() {
   broker.stop(started)
 }
 
+/// `abort_step` sweeps one `{op_id, step_id}` and nothing else, and the
+/// interesting half is what it leaves running.
+///
+/// The two steps here are the pair the design collides on: a code-mode
+/// execution's own step, and the sibling `job/<id>` a program started
+/// under the same operation. Reaping the satellite must cancel the
+/// satellite's execution, drop the satellite's ledger, and leave the
+/// job's execution and the job's reservation exactly as they were. An
+/// operator's `abort` of the whole operation then still reaches the job,
+/// which is the semantics the shared operation was chosen for and which
+/// this change deliberately does not touch.
+pub fn abort_step_reaps_one_step_and_spares_the_rest_test() {
+  let #(started, _checkins) =
+    broker_with_fresh_helpers(fake_helper.SleepUntilCancel, at: 1000)
+  let op_id = op()
+  let reaped = broker.CallSpec(..capped_spec(op_id, 1), step_id: "turn-4")
+  let detached = broker.CallSpec(..capped_spec(op_id, 1), step_id: "job/j1")
+  let reaped_events = process.new_subject()
+  let detached_events = process.new_subject()
+  let assert Ok(_satellite) =
+    broker.clear_call(started, reaped, events: reaped_events, waiting: 2000)
+  let assert Ok(_job) =
+    broker.clear_call(started, detached, events: detached_events, waiting: 2000)
+
+  // Each step opened its own ledger and each is at its cap of one, so a
+  // refusal below is evidence the ledger is still there.
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, reaped, events: reaped_events, waiting: 2000)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, detached, events: detached_events, waiting: 2000)
+
+  broker.abort_step(started, op_id, step_id: "turn-4")
+
+  // The satellite's execution is cancelled; the fake settles with signal 15.
+  let assert Ok(broker.CallSettled(broker.CallExited(result))) =
+    process.receive(reaped_events, 2000)
+  assert result.signal == 15
+
+  // The job's is not, and its reservation survived with it: nothing
+  // settled, and its ledger still refuses a second call.
+  assert process.receive(detached_events, 300) == Error(Nil)
+  let assert Error(broker.BudgetRefused(_)) =
+    broker.clear_call(started, detached, events: detached_events, waiting: 2000)
+
+  // The reaped step's ledger went with the sweep, so its key opens a
+  // fresh one rather than answering out of the dropped account.
+  let assert Ok(_second_satellite) =
+    broker.clear_call(started, reaped, events: reaped_events, waiting: 2000)
+
+  // An operator aborting the operation still reaches both steps.
+  broker.abort(started, op_id)
+  let assert Ok(broker.CallSettled(broker.CallExited(job_result))) =
+    process.receive(detached_events, 2000)
+  assert job_result.signal == 15
+  let assert Ok(broker.CallSettled(broker.CallExited(_))) =
+    process.receive(reaped_events, 2000)
+  broker.stop(started)
+}
+
 pub fn relay_death_reclaims_slot_and_helper_test() {
   let #(started, checkins) =
     broker_with_fresh_helpers(fake_helper.SleepUntilCancel, at: 1000)
@@ -628,6 +687,46 @@ pub fn an_abort_during_a_congestion_wait_refuses_the_retry_test() {
   broker.abort(started, op_id)
   let assert Ok(Error(broker.OperationAborted)) =
     process.receive(verdicts, 2000)
+  broker.stop(started)
+}
+
+/// The step-scoped twin of the test above, and the reason `abort_step`
+/// carries an epoch of its own rather than borrowing the operation's.
+///
+/// Two callers are waiting out the same congested pool under one
+/// operation: the code-mode satellite's own step, and the job it started.
+/// The satellite's teardown sweeps its step. Its parked retry must be
+/// refused for exactly the reason an operation abort refuses one — the
+/// sweep cannot cancel an execution it has not dispatched yet — while the
+/// job's waiter, which the sweep deliberately spared, must still be
+/// waiting rather than holding a refusal. Bumping the operation's own
+/// counter here would refuse both, which is the collision this whole
+/// change exists to undo.
+pub fn an_abort_step_during_a_congestion_wait_spares_the_sibling_test() {
+  let assert Ok(started) =
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: clock.fixed(at: 1000),
+        checkout: fn() { Error(exec.AllBusy(size: 2)) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
+  let op_id = op()
+  let reaped = broker.CallSpec(..spec(op_id), step_id: "turn-4")
+  let detached = broker.CallSpec(..spec(op_id), step_id: "job/j1")
+  let reaped_verdicts = clear_elsewhere(started, reaped, waiting: 5000)
+  let detached_verdicts = clear_elsewhere(started, detached, waiting: 5000)
+
+  // Let both callers reach their wait, then reap one step underneath them.
+  process.sleep(80)
+  broker.abort_step(started, op_id, step_id: "turn-4")
+  let assert Ok(Error(broker.OperationAborted)) =
+    process.receive(reaped_verdicts, 2000)
+
+  // The job's waiter has no verdict at all: it is still waiting out the
+  // pool, which is what being spared looks like from outside.
+  assert process.receive(detached_verdicts, 300) == Error(Nil)
   broker.stop(started)
 }
 

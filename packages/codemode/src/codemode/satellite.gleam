@@ -57,11 +57,11 @@
 //// - **policy** is network OFF except the one cap socket, the session base
 ////   composed for this execution, and a cgroup capping memory/CPU/pids
 ////   with the wall deadline of `budget.deadline_ms`. The host additionally
-////   enforces the wall deadline itself: on expiry it `broker.abort`s the
-////   operation and closes the socket, killing the node and every executor
-////   it fanned out. Closing the socket mid-`cap_call` surfaces to the
-////   program as an `Unreachable` capability error before the node dies
-////   (J3a EOF semantics), a clean way to unblock it.
+////   enforces the wall deadline itself: on expiry it sweeps its own step
+////   with `broker.abort_step` and closes the socket, killing the node and
+////   every executor it fanned out. Closing the socket mid-`cap_call`
+////   surfaces to the program as an `Unreachable` capability error before
+////   the node dies (J3a EOF semantics), a clean way to unblock it.
 ////
 //// # The cap-channel token: what it defends, and what it does not
 ////
@@ -77,7 +77,7 @@
 //// satellite, anything that found the socket — is refused, and the token
 //// is bound to one `{op_id, step_id, deadline}`, so a captured token
 //// cannot be replayed into another execution or after the deadline.
-//// Revoking it (`broker.abort` on teardown) shuts the channel.
+//// Revoking it (`broker.abort_step` on teardown) shuts the channel.
 ////
 //// What the check does **not** buy is confinement of a hostile `.beam`
 //// that slipped vetting. The token file is readable inside the jail —
@@ -408,7 +408,7 @@ pub type LaunchSpec {
     cap_socket_path: String,
     /// The run phase's identity: the `{op_id, step_id}` the node is
     /// dispatched under — the host's own, which is what makes
-    /// `broker.abort` at the deadline reach it — and the pooled budget
+    /// `broker.abort_step` at the deadline reach it — and the pooled budget
     /// and wall deadline it shares with every `cap_call`.
     identity: PhaseIdentity,
     /// The session base policy (network off except the cap socket).
@@ -848,7 +848,7 @@ fn handle_connected(
   list.each(list.reverse(state.pending_out), send)
 
   // The node exists from here, so the wall deadline starts here: after it,
-  // the node dies as a unit (`broker.abort` plus `destroy`).
+  // the node dies as a unit (`broker.abort_step` plus `destroy`).
   let #(now, clock) = clock.read(state.clock)
   let delay = int.max(pooled(state).deadline_ms - now, 0)
   let _ = process.send_after(state.commands, delay, Deadline)
@@ -1354,17 +1354,39 @@ fn terminate(
 }
 
 // Destroys the satellite as a unit and unlinks the token file, returning
-// what the kernel enforced on the node. `abort` revokes every token of the
-// operation and cancels every executor it fanned out; `destroy` closes the
-// socket, reaps the node, and hands back its helper's report.
+// what the kernel enforced on the node. `abort_step` revokes every token
+// bound to the run phase's `{op_id, step_id}` and cancels every executor
+// under it; `destroy` closes the socket, reaps the node, and hands back
+// its helper's report.
 //
-// `abort` comes first, exactly as before: the deadline path must not wait
-// on anything before killing the node. What the launcher's `destroy` then
-// waits for is the settlement the abort itself provokes — a cancelled
+// That step is the *batch's*, not this execution's own: `tool.Ctx`
+// carries the step id of the producing tool batch, and the run phase's
+// identity is minted from it. So the sweep reaches every sibling tool
+// call of the same batch — a foreground `bash` clearing under the same
+// key, a second program in the same batch — exactly as the operation-wide
+// `abort` it replaced did. ADR-005 forbids a finer coordinate within a
+// batch, and nothing here wants one: the sweep is bounded by a batch
+// whose calls are ending anyway.
+//
+// The sweep comes first, exactly as before: the deadline path must not
+// wait on anything before killing the node. What the launcher's `destroy`
+// then waits for is the settlement the abort itself provokes — a cancelled
 // execution still answers with `exec_exit`, and that report is the ground
 // truth this whole path exists to carry.
+//
+// It is the *step* rather than the operation, and the difference is the
+// one the design note promises: a teardown reaps its own batch, and it
+// does not reap what the program asked to outlive it. A background job
+// the program started clears under the sibling step
+// `{op_id, "job/" <> id}`, so an operation-wide sweep here killed it the
+// instant the program returned. An operator aborting the whole operation
+// still does reach it, through the hub's `abort` command.
 fn cleanup(state: State) -> Report {
-  broker.abort(state.broker, identity.op_id(state.identity))
+  broker.abort_step(
+    state.broker,
+    identity.op_id(state.identity),
+    step_id: identity.step_id(state.identity),
+  )
   let node = case state.destroy {
     Some(destroy) -> destroy()
     None -> enforcement.Unreported("no node was launched")

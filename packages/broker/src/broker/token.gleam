@@ -4,8 +4,9 @@
 //// minted by the broker, valid for one `{op_id, step_id}`, bound to the
 //// policy and deadline of the execution it clears, transmitted only over
 //// the channel it authorizes, and checked on every capability call. The
-//// revocation list is broker-local; abort revokes every token of an
-//// operation.
+//// revocation list is broker-local; an operation abort revokes every token
+//// of an operation, and a step abort revokes only the tokens of one
+//// `{op_id, step_id}`.
 ////
 //// Entropy is injected (`fn(Int) -> BitArray`), so minting is
 //// deterministic under test; production injects
@@ -211,6 +212,40 @@ pub fn revoke_all(vault: Vault, op_id: OpId) -> Vault {
   let entries =
     list.map(vault.entries, fn(entry) {
       case entry.binding.op_id == op_id {
+        True -> Entry(..entry, revoked: True)
+        False -> entry
+      }
+    })
+  Vault(..vault, entries:)
+}
+
+/// Revokes every token of one step of an operation — the step-scoped
+/// abort path (`broker.abort_step`). Idempotent.
+///
+/// This exists because a satellite's teardown reaps itself and must not
+/// reap what the program deliberately left running: a job started from
+/// code mode clears under `{op_id, "job/" <> id}`, a sibling of the
+/// execution's own step under the same operation, and `revoke_all` cannot
+/// tell the two apart. Revoked entries are retained exactly as they are
+/// elsewhere, so a token revoked this way refuses as `Revoked` rather
+/// than as `UnknownToken`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // token.revoke_step(vault, op, step_id: "job/j1")
+/// //   |> token.check(bytes_of_the_job_token, now: 0)
+/// //   == Error(token.Revoked)
+/// ```
+///
+pub fn revoke_step(
+  vault: Vault,
+  op_id: OpId,
+  step_id step_id: String,
+) -> Vault {
+  let entries =
+    list.map(vault.entries, fn(entry) {
+      case entry.binding.op_id == op_id && entry.binding.step_id == step_id {
         True -> Entry(..entry, revoked: True)
         False -> entry
       }

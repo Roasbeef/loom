@@ -173,7 +173,31 @@ build. `broker.abort(op_id)` revokes every token of the operation and
 cancels every active helper under it (`broker.gleam:677-705`). So an
 operator aborting the operation that *started* a job kills that job,
 which is what they meant; an abort of a later operation does not touch
-it, because detachment is what the model asked for. Session stop reaches
+it, because detachment is what the model asked for.
+
+The wiring that makes that true is worth naming, because the operator's
+abort has two halves and only one of them is the runtime's. The `abort`
+command commits the cancel marker and stops the strand's live effects
+through `api.abort`, and a detached job is nobody's live effect — so the
+hub also sweeps the effect plane, through the `effect_abort` seam
+`client/serve` fills with `broker.abort` (`client/gateway.abort`,
+`client/serve`'s `hub.start`). It has to be the host that joins them:
+`runtime` may not depend on `broker`, and the broker is the only thing
+that holds the other half of the ledger. `client/jobs`' `ByOperationAbort`
+is what the record reads afterwards, and
+`an_operators_abort_of_the_operation_kills_the_job_test` in
+`client/jobs_test` is what pins the whole path.
+
+The reach is bounded by that door, and the bound is worth stating rather
+than discovering. The `abort` command aborts the strand's *current*
+operation, so it kills the jobs of the turn that is still running. A job
+started two turns ago outlives its operation by design, and by then no
+command names that operation any more — the operator stops it with
+`job_kill`, or by ending the session. Nothing is lost that the broker
+could have given us: the sweep is a scoped cancel an operator asks for,
+and there is no operator asking once the turn is over.
+
+Session stop reaches
 every job through the actor's position in the ordered `Part` shutdown
 (`instance_owner.gleam:30-50`): jobs die before `Broker` and `Helpers`
 close and long before `Storage` does.
@@ -352,7 +376,10 @@ a program spawning in a loop is refused at the same count a tool call
 would be, and a tight poll loop is bounded by the `wait_ms` clamp, which
 is at least a slice. A program's own `within_ms` is unrelated to the
 job's deadline: the satellite ends when the program returns, and the
-job it started keeps running under its own token.
+job it started keeps running under its own token. That takes one thing
+of the teardown, and it is the thing the shipped fixture found missing:
+reaping a satellite sweeps the execution's own step
+(`broker.abort_step`), never the operation the job shares with it.
 
 ## What the client sees
 
@@ -361,7 +388,7 @@ registers, and `Cut.cells` is namespace and key addressed
 (`storage/snapshot.gleam:149`), so the TUI's cut decoder can count
 `job/*` cells without a type change; poll results are tool results and
 already visible. `live_phase` cannot express *n* jobs because it is
-derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:3185`),
+derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:3219`),
 and we do not bend it: an idle strand with two jobs shows idle, with a
 job count beside it once the renderer grows one. A live `job_output`
 event and a jobs panel are follow-ups that #186 and #240 already own,
@@ -387,7 +414,7 @@ first consumer of `CallOutput` chunks as a stream. #185, adjacent: the
 spill is called from one place for jobs, and the seam-level refactor for
 foreground tools stays #185. #74 lands first, because the jobs work adds
 variants to `ExecFailure` and today they would fall silently into
-`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:616`).
+`denial_for_failure`'s `_ -> None` (`broker/broker.gleam:662`).
 
 ## Contracts touched
 
@@ -492,25 +519,49 @@ state name without the fields that state licenses, so `cap/job` refused
 the whole listing the moment a strand held any job that had ended — which
 is every strand, eventually.
 
-The second is open and is a real contradiction of this note. "The
+The second was a real contradiction of this note, and it is fixed. "The
 satellite ends when the program returns; a job it started keeps running
-under its own token" is not true today. A code-mode execution ends by
-calling `broker.abort` on its operation to reap its satellite
+under its own token" was not true: a code-mode execution ended by calling
+`broker.abort` on its operation to reap its satellite
 (`codemode/satellite.cleanup`, `codemode/launch.destroy`), and by
 decision 4 a job started by that program cleared under the same
-operation — so the abort cancels the job's helper and the record reads
-`Lost(HelperLoss)`. The same collision reaches a `bash` background job
-started in a batch that also runs a program. The fix is a choice between
-narrowing what a satellite's teardown aborts and re-keying a
-program-started job, and it is not made here; `docs/next.md` carries it
-as the next thing to settle. The fixture asserts the durable half — a
-later program finds the record under its own id — and asserts no state,
-with the reason written where the assertion is missing.
+operation — so the abort cancelled the job's helper and the record read
+`Lost(HelperLoss)`. The same collision reached a `bash` background job
+started in a batch that also ran a program.
+
+The fix narrows what a teardown sweeps rather than re-keying the job,
+because the job's key is load-bearing and the teardown's reach was not.
+The broker already carried a `step_id` on every active call, ledger and
+token binding, so `broker.abort_step(op_id, step_id:)` is the sweep it
+could already express and had no public way to ask for; both teardown
+sites now call it on the run phase's own step. Decision 4's abort
+semantics are untouched — an operator's `abort` of the operation still
+reaches the jobs it started — and what is given up is only a *routine*
+teardown borrowing the operator's reach. The step needs its own sweep
+counter beside the operation's, because a step sweep that bumped the
+operation's counter would refuse a resumed clearance of every sibling
+step, the spared job included. ADR-005's third addendum records it.
+
+The fixture now asserts both halves: the later program finds the record
+under its own id **and running**, and the payload's own identity — taken
+while the first satellite was being reaped — departs only when the second
+program kills it.
+
+What the fixture deliberately does *not* cover is the operator's abort.
+Every turn it drives runs to completion, and by the time the fixture can
+send a command the operation that started the job has closed — so an
+abort would name the next operation and correctly touch nothing. Proving
+the sweep end to end there would mean a scripted turn that stalls while
+the fixture aborts it, which is a scenario of its own rather than a line
+added to this one. `client/jobs_test` pins the path instead, with the
+real hub over the session's real open operation and only the broker
+scripted.
 
 ## Settled on review
 
 The ceiling is per strand with no session-wide limit yet; the wall
 defaults to an hour with an operator knob for longer; an abort of the
-starting operation kills its jobs; and `job_send` ships in the first
+starting operation kills its jobs, wired at the hub's `abort` command
+(decision 4); and `job_send` ships in the first
 cut. The one question still open is whether a dedicated job pool should
 come before real use shows the shared pool starving.

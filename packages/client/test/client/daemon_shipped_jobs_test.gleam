@@ -24,13 +24,22 @@
 //// record plus the jail's containment.
 ////
 //// The second scenario is the same door from code mode, through a real
-//// hermetic build and a real jailed satellite. One program starts a job
-//// and returns its id; a later program, in its own execution, asks the
-//// strand what it owns and finds that record under that id — so the two
-//// lifetimes are independent as far as the durable half goes. It stops
-//// short of asserting the job's *process* is still running, and the
-//// comment on `watching_program` says exactly why, because that is a bug
-//// this fixture found rather than a property it is waiving.
+//// hermetic build and a real jailed satellite, and it is the one that
+//// pins the design note's central promise about the two lifetimes: the
+//// satellite ends when the program returns, and a job it started keeps
+//// running under its own token. One program starts a job and returns its
+//// id; the fixture takes the payload's birth-qualified identity while the
+//// first satellite is being reaped; a later program, in its own
+//// execution, asks the strand what it owns and must find that record
+//// under that id **and in `running`**, not merely present. Then it kills
+//// it, and the payload has to depart — because a promise that a job
+//// outlives its satellite is only worth what the process behind it says.
+////
+//// The `running` reading is the whole of what this scenario found the
+//// first time it ran. Teardown used to abort the execution's entire
+//// operation, and a job cleared under a sibling step of that operation,
+//// so the record read `lost` the moment the program returned. Teardown
+//// now sweeps only its own step (`broker.abort_step`).
 ////
 //// The third is the restart rule. A job's process is a child of a helper
 //// and the helper is a child of the VM, so nothing here survives the VM:
@@ -544,24 +553,45 @@ fn program_announcement(identity: PayloadIdentity) -> String {
 // strand what it owns. That is the proof the durable record outlived the
 // satellite, rather than that a string was carried between two turns.
 //
-// It reports the row's id and the fixture asserts no state. That is
-// deliberate and it is not a gap being papered over: a code-mode
-// execution ends by aborting its whole operation to reap its satellite
-// (`codemode/satellite.cleanup`), and a job the program started cleared
-// under that same operation, so the abort cancels the job's helper too
-// and the record reads `lost`. The design says the opposite — the
-// satellite ends when the program returns and a job it started keeps
-// running under its own token — so which state belongs here is decided by
-// the fix rather than by this fixture. `docs/next.md` carries it.
+// It reports the state it found rather than asserting on it in-jail, and
+// that is deliberate: a program that answered `report.failure` for a
+// wrong state would tell the fixture only that something was wrong, while
+// a state *name* carried out names which wrong thing. The one this
+// fixture was written against is `lost` — what a job read while teardown
+// still swept the whole operation — and a failure that prints it is a
+// diagnosis rather than a puzzle. Naming every variant also keeps the
+// program free of a catch-all arm.
+//
+// The kill is the second half. Killing here rather than in a third turn
+// is what lets the fixture watch the payload depart inside this same
+// scenario, and it leaves nothing sleeping for ten minutes behind a
+// passing test.
 fn watching_program() -> String {
   "import cap/job\n"
   <> "import cap/report\n"
   <> "\n"
   <> "pub fn main() -> report.Outcome {\n"
   <> "  case job.list() {\n"
-  <> "    Ok([row]) -> report.text(\"listed \" <> row.id)\n"
+  <> "    Ok([row]) -> {\n"
+  <> "      let seen = state_name(row.state)\n"
+  <> "      case job.kill(row.id) {\n"
+  <> "        Ok(Nil) -> report.text(\"listed \" <> row.id <> \" \" <> seen)\n"
+  <> "        Error(_error) -> report.failure(\"job.kill did not answer\")\n"
+  <> "      }\n"
+  <> "    }\n"
   <> "    Ok(_rows) -> report.failure(\"the strand owns no single job\")\n"
   <> "    Error(_error) -> report.failure(\"job.list did not answer\")\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn state_name(state: job.State) -> String {\n"
+  <> "  case state {\n"
+  <> "    job.Starting -> \"starting\"\n"
+  <> "    job.Running -> \"running\"\n"
+  <> "    job.Draining(..) -> \"draining\"\n"
+  <> "    job.Exited(..) -> \"exited\"\n"
+  <> "    job.Killed(..) -> \"killed\"\n"
+  <> "    job.Lost(..) -> \"lost\"\n"
   <> "  }\n"
   <> "}\n"
 }
@@ -650,7 +680,7 @@ fn report_code_mode(
     CodeModeReady -> {
       let #(Nil, report) =
         provider.with_server(code_mode_script(identity), fn(url) {
-          drive_programs(connected, directory, workspace, url)
+          drive_programs(connected, identity, directory, workspace, url)
         })
       let assert Ok(requests) = report
         as "only the four scripted code-mode requests occur"
@@ -664,6 +694,7 @@ fn report_code_mode(
 // one this callback owns.
 fn drive_programs(
   connected: Connected,
+  identity: PayloadIdentity,
   directory: String,
   workspace: String,
   url: String,
@@ -676,12 +707,24 @@ fn drive_programs(
   let assert Ok(#(_before, id)) =
     string.split_once(program_value(started), on: "started ")
     as "the first program reports the job it admitted"
+
+  // Taken with the first satellite already reaped: the payload published
+  // an identity of its own and is still holding it, which is the process
+  // half of the promise the state below is the record half of. Under a pid
+  // namespace the witness is the containment itself, as everywhere else in
+  // this fixture.
+  let witness = await_payload(identity, workspace)
   prompt(session.driver, "read it from another program")
   let read = settled(session.driver, ["read", "started"])
 
   // The satellite that started the job has returned and been reaped, and
-  // the record it left is still the strand's to find under its own id.
-  assert program_value(read) == "listed " <> id
+  // what it left behind is the strand's to find under its own id and
+  // still running — not a record of something teardown took with it.
+  assert program_value(read) == "listed " <> id <> " running"
+
+  // The second program's kill reaches the same process, so the identity
+  // that survived one teardown departs when its owner asks.
+  payload_departed(witness)
   stop_driver(session.driver)
 }
 

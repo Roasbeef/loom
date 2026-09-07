@@ -2643,6 +2643,14 @@ fn assemble_in(
           hub.default_options(settings.session_id, runtime)
             |> hub.with_catalog(settings.catalog)
             |> hub.with_registry(tool_registry)
+            // The operator's abort reaches the effect plane here, and
+            // this is the only place it can: the runtime stops the
+            // strand's live effects, but a background job runs under a
+            // sibling step of the same operation and is nobody's live
+            // effect, and `runtime` may not depend on `broker` to go
+            // looking for it. The host owns both halves, so the host
+            // joins them.
+            |> hub.with_effect_abort(fn(op) { broker.abort(broker_actor, op) })
             |> with_schedule_admin(schedule_admin),
           name,
         )

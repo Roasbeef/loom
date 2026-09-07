@@ -12,7 +12,8 @@ protocol (spec Part 1.4). WP-G.
 ## Key Types
 
 - `broker/broker.Broker` — opaque actor handle. `clear_call` is the whole
-  story; `stdin`, `cancel`, `abort(op_id)`, `stop` round it out.
+  story; `stdin`, `cancel`, `abort(op_id)`, `abort_step(op_id, step_id:)`
+  and `stop` round it out.
 - `broker/broker.{CallSpec, CallHandle, CallEvent, CallOutcome, Refusal}` —
   the request, its handle, the streamed `CallOutput` / `CallSettled`
   events, and `CallExited(result)` versus `CallFailed(failure)`.
@@ -117,7 +118,8 @@ protocol (spec Part 1.4). WP-G.
 - **Actor messages**
   - `broker.Msg` — `ClearCall(spec, events, reply)`,
     `SendStdin(handle, data, eof)`, `CancelCall(handle)`, `AbortOp(op_id)`,
-    `Settle(call_id)`, `RelayDown(down)`, `QueryRelay(handle, reply)`,
+    `AbortStep(op_id, step_id)`, `Settle(call_id)`, `RelayDown(down)`,
+    `QueryRelay(handle, reply)`,
     `QueryEpochs(reply)`, `StopBroker`. The last two are `@internal`
     observability, reached only by `relay_pid` and `abort_epoch_count`.
   - `exec.Msg` (per helper) — `AwaitReady(reply)`, `QueryStatus(reply)`,
@@ -359,23 +361,37 @@ protocol (spec Part 1.4). WP-G.
   bound to `{op_id, step_id, policy, deadline}`, transmitted only over the
   channel they authorize, revoked at settlement. `abort` revokes every
   token of an operation and kills the OS process group through the helper's
-  cancel ladder. Presented bytes are compared in constant time and the
+  cancel ladder; `abort_step` does the same for one `{op_id, step_id}` and
+  leaves the operation's other steps alone. Presented bytes are compared in constant time and the
   check scans every entry without early exit, so a match's position leaks
   nothing either.
-- **A clearance cannot resume across an abort.** `abort` is a *scoped*
-  cancel, not a verdict that an operation is over: code mode runs its
-  satellite under the strand's own `{op_id, step_id}` precisely so
-  `abort` reaches it, and calls it on every teardown including the
-  successful one — so a strand goes on clearing calls under the same key
-  afterwards, and blanket-refusing an aborted operation would brick every
-  strand after its first `code_mode`. What must not survive is a
-  clearance that *began before* the sweep and finished after it: since
-  `clear_call` waits out a congested pool, a retry could otherwise
-  compose a fresh policy, open a fresh ledger, mint a token `revoke_all`
-  never saw, and start the one jailed execution the abort could not
-  reach. So the broker counts aborts per operation, a retry states the
-  epoch it last saw, and a mismatch is `OperationAborted`. A first
-  attempt carries no epoch and is judged on its own merits.
+- **A sweep reaches exactly one scope, and the caller chooses which.**
+  `abort(op_id)` empties an operation; `abort_step(op_id, step_id:)`
+  empties one step of it — its tokens, its actives, its ledger — and
+  nothing else. Both exist because two different callers own two
+  different things. An *operator* aborting a strand means the operation,
+  jobs it started included. A code-mode teardown owns only its own step:
+  it reaps its satellite on every execution, the successful ones
+  included, and a background job started by the program clears under the
+  sibling step `{op_id, "job/" <> id}` and is meant to outlive it. Using
+  the operation there cancelled the job the instant the program returned
+  (ADR-005's third addendum).
+- **A clearance cannot resume across a sweep.** Neither kind of abort is
+  a verdict that an operation is over — a strand goes on clearing calls
+  under the same key afterwards, and blanket-refusing an aborted
+  operation would brick every strand after its first `code_mode`. What
+  must not survive is a clearance that *began before* a sweep and
+  finished after it: since `clear_call` waits out a congested pool, a
+  retry could otherwise compose a fresh policy, open a fresh ledger, mint
+  a token the sweep never saw, and start the one jailed execution it
+  could not reach. So the broker counts sweeps per operation *and* per
+  `{op_id, step_id}`; a clearance is judged against the sum of the two,
+  a retry states the sum it last saw, and a mismatch is
+  `OperationAborted`. A first attempt carries no count and is judged on
+  its own merits. The sum is a faithful composite because both counters
+  only ever increase, and the step needs a counter of its own because a
+  step sweep that bumped the operation's would refuse a resumed
+  clearance of every sibling step — including the job it just spared.
 - **That epoch table is never pruned, and the bound is measured rather
   than mechanised** (issue #104). A missing key reads as epoch 0, which
   is exactly what a waiter that started before any abort of its
@@ -386,10 +402,11 @@ protocol (spec Part 1.4). WP-G.
   `release_slot` may delete a ledger with nothing outstanding because
   absence and emptiness mean the same thing there; absence here means
   "never aborted", which is the one thing a pruned entry is not. What
-  makes retention affordable is the growth law: one entry per operation
-  *ever aborted*, not one per abort — repeat aborts upsert the counter,
-  and code mode, the only production caller of `abort`, aborts the
-  strand's own operation on every teardown. At ~110 bytes an entry, in a
+  makes retention affordable is the growth law, which is the same for
+  both tables: one entry per key *ever swept*, not one per sweep — repeat
+  sweeps upsert the counter, so code mode's teardown, the one routine
+  caller, costs one step entry per `{op_id, step_id}` that ran a program
+  at all. At ~110 bytes an entry, in a
   broker that lives exactly as long as one `loomd` process serving
   one session (its death is fatal to the server and nothing restarts
   it), ten thousand such operations cost about a megabyte beside a
