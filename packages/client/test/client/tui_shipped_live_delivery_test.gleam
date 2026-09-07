@@ -20,14 +20,14 @@
 //// socket closes at the per-frame authority check and nothing further is
 //// written to it.
 ////
-//// The second of those is weaker than the design note asks for, and
-//// deliberately so rather than by oversight. `live_text_before_the_entry`
-//// carries the whole account: the shipped daemon never pushes a
-//// `stream_delta`, because `client/serve` installs `tap_preview_provider`
-//// and not `tap_provider`, so what a terminal shows mid-answer is still the
-//// bounded snapshot preview. The stronger fragment-counting form of the
-//// assertion is written out there and is what to restore when the wiring
-//// lands.
+//// The second of those is a statement about pushed deltas and not merely
+//// about live text. `live_text_before_the_entry` requires the running
+//// operation's stream to have accumulated at least two fragments, and a
+//// credited cut cannot produce that: the snapshot preview projects as one
+//// fragment however many tokens it summarises. So two fragments before the
+//// entry exists are two `stream_delta` frames the daemon pushed, which is
+//// what `client/serve` nesting `tap_provider` around `tap_preview_provider`
+//// made true of the shipped binary.
 ////
 //// Two deliberate choices make the drive independent of races it does not
 //// test. The two operators submit the *same* prompt text, so which of them
@@ -392,29 +392,15 @@ fn phase_of(sample: tui_driver.Sample) -> String {
 
 // Every terminal must show the answer being written before any entry for it
 // exists in that terminal's cut: a live text stream on the strand carrying
-// the running operation, whose visible text is a genuine prefix of the answer
-// that has not committed. A prefix rather than merely non-empty text, so an
-// unrelated fragment cannot satisfy it.
+// the running operation, holding at least two fragments whose visible text is
+// a genuine prefix of the answer that has not committed.
 //
-// **What this does not distinguish, and why.** The stronger form of this
-// property counts fragments: the snapshot's sampled preview always projects
-// as exactly one, so a stream that has accumulated two came from pushed
-// `stream_delta` frames and from nothing else. That form was written first
-// and does not pass, because the shipped daemon never pushes a delta.
-// `client/gateway` has both halves — `tap_provider` tees every delta to the
-// hub as a `ProviderDelta`, and `broadcast_delta` pushes it to every
-// subscribed connection with its network guard now lifted — but `client/serve`
-// installs `tap_preview_provider` instead, so no `ProviderDelta` is ever sent
-// and `broadcast_delta` is unreachable from `bin/loomd`. `client/demo` and
-// `gateway_test` are the only callers of `tap_provider`.
-//
-// So what this fixture observes here is the bounded snapshot preview arriving
-// inside a credited cut, which is the behaviour that predates
-// `protocol-change/018` and which the design note keeps as the catch-up
-// fallback. The property the note actually asks for — the Reader seeing
-// `stream_delta` frames — is not shipped, and this comment is the marker to
-// delete when it is: restore the two-fragment count above and this becomes
-// the regression guard for the wiring.
+// The fragment count is what makes this a statement about pushed delivery
+// rather than about polling. A catch-up cut carries the snapshot's sampled
+// preview, and that preview always projects as exactly one fragment however
+// many tokens it summarises, so a stream that has accumulated two of them was
+// fed by `stream_delta` frames and by nothing else. The prefix check costs
+// nothing beside it and rules out an unrelated fragment satisfying the count.
 fn live_text_before_the_entry(
   drivers: List(actor.Started(process.Subject(tui_driver.Message))),
 ) -> Nil {
@@ -504,8 +490,28 @@ fn live_prefix_of(sample: tui_driver.Sample, answer: String) -> Bool {
   })
 }
 
+// The strong form of the live-text property, and the only place that counts
+// fragments. Two of them on the running operation's stream cannot have come
+// from a credited cut, because the snapshot preview projects as one fragment
+// whatever it holds; they are the pushed `stream_delta` frames themselves.
 fn live_prefix(sample: tui_driver.Sample) -> Bool {
-  live_prefix_of(sample, first_answer)
+  list.any(sample.model.streams, fn(stream) {
+    let tui.Stream(strand:, kind:, fragments:, ..) = stream
+    let text = string.concat(list.reverse(fragments))
+    strand == sample.model.active_strand
+    && kind == "text"
+    && accumulated(fragments)
+    && string.starts_with(first_answer, text)
+  })
+}
+
+// Whether a stream holds more than one fragment. The question is bounded, so
+// it is answered by the list's shape rather than by measuring its length.
+fn accumulated(fragments: List(String)) -> Bool {
+  case fragments {
+    [] | [_] -> False
+    [_, _, ..] -> True
+  }
 }
 
 // Each terminal's first sample carrying the answer must record a notice as
