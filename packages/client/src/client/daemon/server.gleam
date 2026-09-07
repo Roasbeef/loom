@@ -3,8 +3,9 @@
 //// Every upgrade authenticates a digest against the durable access catalogue.
 //// Control requests repeat that check; membership and operation identities are
 //// checked by the serialized registry. Session routing never opens a runtime.
-//// The supplied conversation adapter must speak v2 and transfer its parser
-//// reservation before socket activation; the legacy gateway is not an adapter.
+//// The supplied conversation adapter must speak v2 and must not return before
+//// its websocket process has attempted the parser reservation's transfer, or
+//// the release here would race it; the legacy gateway is not an adapter.
 
 import broker/token
 import client/daemon/manager
@@ -61,7 +62,8 @@ pub type Attachment(instance) {
     authority: access.Authority,
     /// Digest for repeated authorization; never the plaintext credential.
     digest: access.Digest,
-    /// Transfer to the actual WebSocket PID before activating its parser.
+    /// Transferred to the actual WebSocket PID in that process's first
+    /// handler turn, before it serves a frame.
     permit: root.Permit,
     /// The registry that answers every later question about this attachment.
     /// It is captured here so per-frame authorization and reader failure
@@ -73,7 +75,9 @@ pub type Attachment(instance) {
 }
 
 type Signal {
-  Hello
+  // The self-addressed message that runs the permit transfer. The control
+  // socket's initializer queues it and nothing else ever sends it.
+  Admit
 }
 
 type AfterReply {
@@ -232,6 +236,10 @@ fn control_upgrade(
   case root.acquire(config.daemon, root.Control, within: 1000) {
     Error(_) -> plain(503, "connection capacity unavailable")
     Ok(permit) -> {
+      // The barrier that keeps the permit's custody transfer ordered against
+      // the release below. This process owns it; the websocket process signals
+      // it once the transfer has been attempted.
+      let settled = process.new_subject()
       let response =
         mist.websocket_with_options(
           request:,
@@ -241,49 +249,54 @@ fn control_upgrade(
             mist.CompressionDisabled,
           ),
           on_init: fn(_) {
-            // Failed transfer cannot return an unaccounted active socket actor.
-            case root.transfer(config.daemon, permit, within: 1000) {
-              Ok(Nil) -> Nil
-              Error(_) -> process.kill(process.self())
-            }
             let signals = process.new_subject()
-            process.send(signals, Hello)
+
+            // The permit transfer is a one second call into the root, and mist
+            // allows this initializer 500 ms it does not expose, killing the
+            // process and its socket when that budget is missed. So the call
+            // is paid for in the first handler turn, and this self-send is
+            // what makes that turn the transfer's: mist arms the socket only
+            // after the initializer returns (`mist.websocket_upgrade`), so
+            // `Admit` is queued ahead of any frame the peer sends.
+            process.send(signals, Admit)
             #(Nil, Some(process.new_selector() |> process.select(signals)))
           },
           handler: fn(_, message, socket) {
             case message {
-              mist.Custom(Hello) ->
-                send(
-                  socket,
-                  protocol.event(
-                    None,
-                    "hello",
-                    json.Object([
-                      #("protocol", json.Int(2)),
-                      #("epoch", json.String(state.epoch)),
-                      #("principal", json.String(principal.id)),
-                      #(
-                        "limits",
-                        json.Object([
-                          #("control_bytes", json.Int(protocol.max_bytes)),
-                          #(
-                            "observer_bytes",
-                            json.Int(root.message_limit(root.Observer)),
-                          ),
-                          #(
-                            "operator_bytes",
-                            json.Int(root.message_limit(root.Operator)),
-                          ),
-                          #("connections", json.Int(root.max_connections)),
-                          #(
-                            "reserved_message_bytes",
-                            json.Int(root.max_reserved_message_bytes),
-                          ),
-                        ]),
-                      ),
-                    ]),
-                  ),
-                )
+              mist.Custom(Admit) ->
+                admit(config.daemon, permit, settled, fn() {
+                  send(
+                    socket,
+                    protocol.event(
+                      None,
+                      "hello",
+                      json.Object([
+                        #("protocol", json.Int(2)),
+                        #("epoch", json.String(state.epoch)),
+                        #("principal", json.String(principal.id)),
+                        #(
+                          "limits",
+                          json.Object([
+                            #("control_bytes", json.Int(protocol.max_bytes)),
+                            #(
+                              "observer_bytes",
+                              json.Int(root.message_limit(root.Observer)),
+                            ),
+                            #(
+                              "operator_bytes",
+                              json.Int(root.message_limit(root.Operator)),
+                            ),
+                            #("connections", json.Int(root.max_connections)),
+                            #(
+                              "reserved_message_bytes",
+                              json.Int(root.max_reserved_message_bytes),
+                            ),
+                          ]),
+                        ),
+                      ]),
+                    ),
+                  )
+                })
               mist.Text(frame) -> {
                 let #(reply, after) = control(config, state, digest, frame)
                 let next = send(socket, reply)
@@ -300,9 +313,55 @@ fn control_upgrade(
           },
           on_close: fn(_) { Nil },
         )
+
+      // Hold this HTTP process until the websocket process has attempted the
+      // transfer. The release below and this process's own exit would each
+      // race a transfer still in flight, and a release that won would leave an
+      // admitted socket refused with its accounting already freed. The reply
+      // is consumed from the single process that sends it, so it orders the
+      // two rather than assuming anything about two senders. On a transfer the
+      // root answers promptly this waits exactly as long as the initializer
+      // used to; what it no longer does is give up at 500 ms.
+      case response.body {
+        mist.Websocket -> {
+          let _ = process.receive(settled, within: 2000)
+          Nil
+        }
+
+        // No websocket process was started, so nothing will ever signal; mist
+        // answers a failed start with an empty 400.
+        mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents ->
+          Nil
+      }
       root.release(config.daemon, permit)
       response
     }
+  }
+}
+
+// Takes the reserved permit in the control socket's first handler turn and
+// then writes whatever the caller had waiting. `process.self()` is still the
+// websocket process here, so the permit's new owner and the PID the root
+// monitors are the ones the initializer would have named.
+fn admit(
+  daemon,
+  permit,
+  settled: process.Subject(Nil),
+  then: fn() -> mist.Next(Nil, Signal),
+) {
+  let transferred = root.transfer(daemon, permit, within: 1000)
+
+  // Custody is decided either way now, so the waiting HTTP process is released
+  // before anything is written to the socket.
+  process.send(settled, Nil)
+  case transferred {
+    // A failed transfer must not leave an unaccounted active socket actor.
+    // Self-KILL is immediate; the root keeps its charge until the DOWN.
+    Error(_) -> {
+      process.kill(process.self())
+      mist.stop()
+    }
+    Ok(Nil) -> then()
   }
 }
 
