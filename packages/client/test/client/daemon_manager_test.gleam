@@ -1386,3 +1386,55 @@ pub fn failed_builder_answers_its_own_operation_rather_than_stale_test() {
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
+
+pub fn delete_refuses_a_registration_outside_the_sessions_directory_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+
+  // The victim is a directory holding a file, which is what makes the
+  // refusal observable: a recursive unlink of `outside` would take the
+  // file with it, while a refusal leaves both in place.
+  let assert Ok(cwd) = simplifile.current_directory()
+    as "the catalogue accepts only absolute paths"
+  let root =
+    cwd
+    <> "/build/test_db/foreign-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let outside = root <> "/elsewhere"
+  let assert Ok(Nil) = simplifile.create_directory_all(outside)
+    as "the tree the daemon must not touch exists"
+  assert simplifile.write(to: outside <> "/keep", contents: "keep") == Ok(Nil)
+
+  // Only a hand-edited or migrated row can name a path the daemon did not
+  // mint, so the fixture writes one directly rather than going through
+  // creation, which always lands under the sessions directory.
+  let record = catalogue.Registration(..registration(4211), path: outside)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(record) = catalogue.confirm(store, record.id)
+    as "the foreign row is an ordinary saved registration"
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+    as "owner exists"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+
+  // Containment is decided before the transaction, so the registration
+  // survives the refusal along with the tree it names.
+  assert manager.delete_session(
+      registry,
+      owner,
+      "daemon-test",
+      record.id,
+      root <> "/sessions",
+    )
+    == Error(manager.AdminForeignPath)
+  assert simplifile.is_directory(outside) == Ok(True)
+  assert simplifile.is_file(outside <> "/keep") == Ok(True)
+  let assert Ok(_) = manager.get(registry, record.id)
+    as "a refused delete leaves the row readable"
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _ = simplifile.delete(root)
+  Nil
+}

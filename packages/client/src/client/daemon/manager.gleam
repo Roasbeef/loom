@@ -395,6 +395,7 @@ type Message(instance) {
     access.Digest,
     String,
     String,
+    String,
     Subject(Result(catalogue.Registration, AdminError)),
   )
   WorkspaceDefault(String, Subject(Result(View, Error)))
@@ -480,6 +481,12 @@ pub type AdminError {
   /// use. Deletion is refused rather than stopping the session on the
   /// caller's behalf: the caller stops it and observes the drain first.
   AdminBusy
+
+  /// The registration names a database outside the daemon's own sessions
+  /// directory, so the unlink is refused before any file is touched. Only a
+  /// hand-edited or migrated row can reach this, and the alternative is a
+  /// recursive removal of whatever directory that row happens to name.
+  AdminForeignPath
 
   /// The atomic durable mutation was refused.
   AdminMetadata(error: catalogue.Error)
@@ -840,10 +847,15 @@ pub fn isolate(
 /// first, a crash after the transaction leaves files nothing refers to
 /// rather than a registration whose database is gone.
 ///
+/// The caller supplies the daemon's own sessions directory, and a row whose
+/// path lies outside it is refused with `AdminForeignPath` before the row is
+/// removed. Every path the daemon mints is already under that directory, so
+/// the check only rejects a row that was hand-edited or migrated in.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // manager.delete_session(registry, owner_digest, epoch, session_id)
+/// // manager.delete_session(registry, owner_digest, epoch, session_id, sessions)
 /// ```
 @internal
 pub fn delete_session(
@@ -851,11 +863,13 @@ pub fn delete_session(
   caller: access.Digest,
   epoch: String,
   id: String,
+  sessions: String,
 ) -> Result(catalogue.Registration, AdminError) {
   call.try_call(manager.commands, waiting: 5000, sending: Delete(
     caller,
     epoch,
     id,
+    sessions,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -1176,8 +1190,8 @@ fn handle(
       )
       sm.keep(book)
     }
-    Delete(caller, epoch, id, reply) -> {
-      process.send(reply, delete_now(phase, book, caller, epoch, id))
+    Delete(caller, epoch, id, sessions, reply) -> {
+      process.send(reply, delete_now(phase, book, caller, epoch, id, sessions))
       sm.keep(book)
     }
 
@@ -1491,12 +1505,27 @@ fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
 // to open it. The unlink follows the commit for the same reason isolation
 // writes metadata first — a half-applied delete must leave files without a
 // registration, never a registration without files.
-fn delete_now(phase, book: Book(instance), caller, epoch, id) {
+fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
   use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
   use Nil <- result.try(case dict.has_key(book.slots, id) {
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
+
+  // Containment is decided against the row still in the catalogue, before
+  // the transaction removes it. A row naming a path outside the sessions
+  // directory keeps both its registration and its files: refusing early is
+  // what stops the scratch-directory removal below from being pointed at an
+  // arbitrary tree by a row nobody minted here.
+  use existing <- result.try(
+    catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
+  )
+  use Nil <- result.try(
+    case string.starts_with(existing.path, sessions <> "/") {
+      True -> Ok(Nil)
+      False -> Error(AdminForeignPath)
+    },
+  )
   use record <- result.try(
     catalogue.delete(book.catalogue, id) |> result.map_error(AdminMetadata),
   )
@@ -1511,13 +1540,22 @@ fn delete_now(phase, book: Book(instance), caller, epoch, id) {
 // from the filesystem is not reported: the registration is already gone and
 // the daemon must not resurrect it.
 fn unlink_conversation(path: String) -> Nil {
+  // Each of these is a single file, so the non-recursive removal is the one
+  // that matches: a `delete` here would descend into anything that turned
+  // out to be a directory instead.
   list.each(
-    [path <> "-wal", path <> "-shm", path <> "-journal", path <> ".tmp", path],
+    [path <> "-wal", path <> "-shm", path <> "-journal", path],
     fn(target) {
-      let _removed = simplifile.delete(target)
+      let _removed = simplifile.delete_file(target)
       Nil
     },
   )
+
+  // The scratch sidecar is a directory when SQLite left one behind, which is
+  // the single place recursion is wanted. `delete_now` has already confirmed
+  // the whole family sits under the daemon's sessions directory.
+  let _scratch = simplifile.delete(path <> ".tmp")
+  Nil
 }
 
 fn admin_member(store, id) {

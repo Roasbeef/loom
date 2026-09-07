@@ -684,7 +684,13 @@ fn dispatch(
       // registry's own dispatch; the check here would only widen the window
       // between deciding and removing.
       use registration <- result.try(
-        manager.delete_session(state.registry, digest, supplied, id)
+        manager.delete_session(
+          state.registry,
+          digest,
+          supplied,
+          id,
+          state.sessions_directory,
+        )
         |> result.map_error(admin_error_code),
       )
       Ok(#(
@@ -761,6 +767,7 @@ fn admin_error_code(error) {
     manager.AdminForbidden -> "forbidden"
     manager.AdminStaleEpoch -> "stale_epoch"
     manager.AdminUnavailable -> "unavailable"
+    manager.AdminForeignPath -> "unavailable"
     manager.AdminBusy -> "busy"
     manager.AdminMetadata(error) -> error_code(manager.Catalogue(error))
   }
