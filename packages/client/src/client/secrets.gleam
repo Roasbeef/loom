@@ -29,7 +29,11 @@
 //// The command runs once, at boot, on the host and outside every jail,
 //// as the operator, with the daemon's own environment — the same trust
 //// the operator already extends to `helper_path`. Its stdout, less one
-//// trailing newline, is the value. A resolved value lives in daemon
+//// trailing newline, is the value, and empty stdout is a failure rather
+//// than an empty value: a helper that exits 0 with nothing to say has
+//// not produced a credential, and recording `""` would shadow an
+//// environment variable of the same name without a word of warning. A
+//// resolved value lives in daemon
 //// memory only: it is never written to the catalogue, a session, a
 //// transcript or a log, and `Failure` carries a name and an exit status
 //// rather than any output. The command's own stderr is not captured; it
@@ -317,8 +321,23 @@ fn resolve_one(
   use capture <- result.try(runner(argv, timeout_ms))
 
   case capture.status {
-    0 -> Ok(without_trailing_newline(capture.output))
+    0 -> resolved_value(without_trailing_newline(capture.output))
     status -> Error("the command exited " <> int.to_string(status))
+  }
+}
+
+// A successful command that wrote nothing has not produced a credential,
+// and saying so is what keeps the name unset. Several helpers exit 0 with
+// empty stdout when the operator is signed out, and an empty string
+// recorded here would be a `dict.get` hit in `store` — the environment
+// fallback would never be consulted, so an operator who had also exported
+// the variable would get an authentication failure and no warning, because
+// `resolve` recorded no failure. Refusing the empty result puts the entry
+// on the failure side instead, where `log_secret_failures` names it.
+fn resolved_value(value: String) -> Result(String, String) {
+  case value {
+    "" -> Error("the command produced no output")
+    _value -> Ok(value)
   }
 }
 

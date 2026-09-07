@@ -137,6 +137,53 @@ pub fn a_failing_command_yields_a_warning_and_no_value_test() {
   assert string.contains(reason, "3")
 }
 
+pub fn an_empty_success_yields_a_failure_and_no_value_test() {
+  // A scripted runner, because the case being pinned is the resolution
+  // rule rather than any host command's behaviour: exit 0 with nothing
+  // on stdout.
+  let runner = fn(_argv, _timeout_ms) { Ok(secrets.Capture(0, "")) }
+  let #(resolved, failures) =
+    secrets.resolve(
+      [entry("K", ["helper"])],
+      running: runner,
+      within: secrets.default_timeout_ms,
+    )
+  assert resolved == []
+  let assert [secrets.Failure(name: "K", reason:)] = failures
+  assert string.contains(reason, "no output")
+}
+
+pub fn a_newline_only_success_yields_a_failure_test() {
+  // The newline is framing, so a helper that writes only one has still
+  // written nothing. It has to land on the failure side too, or the name
+  // would be bound to "" and stop falling through.
+  let runner = fn(_argv, _timeout_ms) { Ok(secrets.Capture(0, "\n")) }
+  let #(resolved, failures) =
+    secrets.resolve(
+      [entry("K", ["helper"])],
+      running: runner,
+      within: secrets.default_timeout_ms,
+    )
+  assert resolved == []
+  assert list.length(failures) == 1
+}
+
+pub fn an_empty_result_leaves_the_environment_in_charge_test() {
+  // The consequence the rule exists for. An operator who exported the
+  // variable *and* wrote an entry for it keeps the exported value when
+  // the helper says nothing, instead of an empty header.
+  let runner = fn(_argv, _timeout_ms) { Ok(secrets.Capture(0, "")) }
+  let #(resolved, _failures) =
+    secrets.resolve(
+      [entry("K", ["helper"])],
+      running: runner,
+      within: secrets.default_timeout_ms,
+    )
+  let base = secret.from_list([#("K", "from the environment")])
+  assert secret.lookup(secrets.store(resolved, beneath: base), "K")
+    == Ok("from the environment")
+}
+
 pub fn a_command_that_is_not_on_path_yields_a_failure_test() {
   let #(resolved, failures) =
     secrets.resolve(
