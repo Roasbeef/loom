@@ -1192,11 +1192,27 @@ fn resolve_config(
 ) -> Result(String, String) {
   case config {
     "" -> Ok(present_default_catalogue(state_directory))
-    path ->
+    path -> {
+      // What the path names is asked separately because canonicalisation does
+      // not answer it: Linux `realpath` resolves a missing final component so
+      // long as its parent directory exists, so a mistyped
+      // `<existing-dir>/missing.toml` would survive to creation and retain
+      // an idempotency key for a session the daemon then refuses. A regular
+      // file is the whole requirement, so a directory refuses here too:
+      // `--config ~/.loom` is the same typo for `~/.loom/loom.toml` and would
+      // otherwise reach the daemon and come back `configuration_rejected`.
+      use Nil <- result.try(case host.path_kind(path) {
+        host.RegularFile -> Ok(Nil)
+        host.OtherEntry ->
+          Error("resolve config " <> path <> ": not a regular file")
+        host.NoEntry ->
+          Error("resolve config " <> path <> ": file does not exist")
+      })
       host.canonical_path(path)
       |> result.map_error(fn(reason) {
         "resolve config " <> path <> ": " <> reason
       })
+    }
   }
 }
 

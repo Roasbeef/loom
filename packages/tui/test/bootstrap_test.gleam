@@ -124,6 +124,35 @@ pub fn session_configuration_resolves_trusted_default_and_explicit_paths_test() 
       bootstrap.Options(..options, config: path),
     )
     == Ok(canonical)
+
+  // Linux realpath accepts a missing final component when its parent exists.
+  // Creation must refuse that path before it retains an idempotency key.
+  let missing = filepath.join(root, "missing.toml")
+  assert bootstrap.session_configuration(
+      bootstrap.Options(..options, config: missing),
+    )
+    == Error("resolve config " <> missing <> ": file does not exist")
+
+  // `--config ~/.loom` is the ordinary typo for `~/.loom/loom.toml`, and a
+  // directory exists, canonicalises, and survives to creation unless the
+  // requirement is a regular file rather than an entry of some kind.
+  let directory = filepath.join(root, "catalogue.d")
+  let assert Ok(Nil) = host_bootstrap.ensure_private_directory(directory)
+    as "the fixture directory exists"
+  assert bootstrap.session_configuration(
+      bootstrap.Options(..options, config: directory),
+    )
+    == Error("resolve config " <> directory <> ": not a regular file")
+
+  // A dangling symbolic link is an entry by `link_info` and nothing at all by
+  // `file_info`. It is the second path the old existence check let through.
+  let dangling = filepath.join(root, "dangling.toml")
+  assert simplifile.create_symlink(filepath.join(root, "absent.toml"), dangling)
+    == Ok(Nil)
+  assert bootstrap.session_configuration(
+      bootstrap.Options(..options, config: dangling),
+    )
+    == Error("resolve config " <> dangling <> ": file does not exist")
 }
 
 pub fn launch_arguments_forward_an_operator_named_config_test() {
