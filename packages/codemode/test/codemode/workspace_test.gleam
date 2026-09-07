@@ -34,7 +34,7 @@ import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -70,7 +70,12 @@ type Seen {
   ScheduleListAsked
   ScheduleCancelAsked(name: String)
 
-  JobStartAsked(command: String)
+  // The command and the wall as the arm read them. The wall is here for
+  // the reason `ScheduleOffsetAsked` carries its offset: without it a
+  // test asserting on the *answer* proves only what the fake was written
+  // to return, and `job_start_plan` could drop `wall_ms` on the floor
+  // without a single assertion moving.
+  JobStartAsked(command: String, wall_ms: Option(Int))
 
   // The clamped wait and the stdout cursor as the arm computed them, so
   // a test can prove the clamp and the cursor default rather than only
@@ -183,8 +188,8 @@ fn answering(seen: Subject(Seen)) -> workspace.Workspace {
 // renders it is exercised rather than the empty live one.
 fn answering_jobs(seen: Subject(Seen)) -> workspace.JobDoor {
   workspace.JobDoor(
-    start: fn(command, _wall) {
-      process.send(seen, JobStartAsked(command))
+    start: fn(command, wall_ms) {
+      process.send(seen, JobStartAsked(command, wall_ms))
       Ok(job.Started(id: job_id, deadline_ms: 5000, wall_ms: 3000))
     },
     poll: fn(id, wait_ms, cursors) {
@@ -1312,7 +1317,7 @@ pub fn job_start_carries_the_command_and_answers_the_handle_test() {
     serviced(answering(seen), "job.start", map([#("command", text("make"))]))
     as "job.start must be serviced"
 
-  assert drain(seen) == [JobStartAsked("make")]
+  assert drain(seen) == [JobStartAsked("make", None)]
   assert field(value, "job_id") == Ok(text(job_id))
   assert field(value, "wall_ms") == Ok(int(3000))
 }
@@ -1330,7 +1335,7 @@ pub fn a_requested_wall_reaches_the_host_test() {
     )
     as "a walled start must be serviced"
 
-  assert drain(seen) == [JobStartAsked("make")]
+  assert drain(seen) == [JobStartAsked("make", Some(60_000))]
   assert field(value, "deadline_ms") == Ok(int(5000))
 }
 
