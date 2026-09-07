@@ -37,6 +37,16 @@ inputs:
   gleam-version:
     description: Exact Gleam version.
     required: true
+  gleam-patches:
+    description: >-
+      Space-separated list of full 40-character commit SHAs on
+      github.com/gleam-lang/gleam, each cherry-picked onto the
+      `v${gleam-version}` tag, in order, before the compiler is built
+      from source. Empty (the default) installs the `gleam-version`
+      release exactly as before; see ci.yml's `GLEAM_PATCHES` for why
+      the tree currently sets this.
+    required: false
+    default: ""
   otp-version:
     description: Exact Erlang/OTP version.
     required: true
@@ -71,14 +81,108 @@ inputs:
 runs:
   using: composite
   steps:
+    # `gleam-version` is left blank here when `gleam-patches` is set, so
+    # setup-beam installs only OTP and rebar3 — the release binary would
+    # otherwise sit on PATH ahead of the source build until the step
+    # below prepends over it, and a stray release copy in that window is
+    # a second, unpinned compiler this job could accidentally run.
     - name: Install Erlang/OTP, Gleam and rebar3
       # erlef/setup-beam v1.24.1
       uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124
       with:
         otp-version: ${{ inputs.otp-version }}
-        gleam-version: ${{ inputs.gleam-version }}
+        gleam-version: ${{ inputs.gleam-patches == '' && inputs.gleam-version || '' }}
         rebar3-version: ${{ inputs.rebar3-version }}
         version-type: strict
+
+    # The built binary is cached by the tag and every patch SHA, so
+    # this and the two steps after it run once per OS/architecture;
+    # every later job on a warm runner restores the binary instead of
+    # rebuilding the compiler. A cache miss is the only path that
+    # touches Rust or gleam-lang/gleam's source at all.
+    - name: Cache Gleam ${{ inputs.gleam-version }} + patches
+      if: inputs.gleam-patches != ''
+      id: gleam-patches-cache
+      # actions/cache v6.1.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ runner.temp }}/gleam-from-source/gleam
+        key: >-
+          gleam-patches-${{ runner.os }}-${{ runner.arch }}-${{
+          inputs.gleam-version }}-${{ inputs.gleam-patches }}
+
+    - name: Install a Rust toolchain to build Gleam from source
+      if: inputs.gleam-patches != '' && steps.gleam-patches-cache.outputs.cache-hit != 'true'
+      # dtolnay/rust-toolchain, stable channel, pinned to a commit as the
+      # other third-party actions in this file are.
+      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      with:
+        toolchain: stable
+
+    # Cloning the tag rather than `main` means the formatter, the
+    # warning set, and everything else the compiler is not being
+    # patched for stays byte-for-byte the release the tree is developed
+    # against — only the listed commits move at all. `git init` plus
+    # `git fetch --depth 1 origin refs/tags/v<version>` pulls exactly
+    # that tag's tree at depth 1, and each patch is then fetched at
+    # depth 2 (a commit plus its parent, the minimum a cherry-pick needs
+    # to compute a diff) and cherry-picked in order with a fixed
+    # committer identity, since neither `user.name` nor `user.email` is
+    # configured on a fresh `git init` and cherry-pick needs one to
+    # commit the result. `-X ours` resolves any conflicting hunk in
+    # favor of the tag's side rather than the incoming patch: the only
+    # conflict seen in practice is CHANGELOG.md, whose unreleased-notes
+    # section on `main` has moved on since the tag and carries no
+    # weight in a binary neither CI nor a developer reads that file
+    # from — every hunk the diff actually needs to apply for the fix
+    # itself (the compiler source) merges without a conflict, verified
+    # locally before this pin was written. A conflict outside
+    # CHANGELOG.md would still fail the cherry-pick and this step, which
+    # is the point: `-X ours` papers over a changelog entry, not a
+    # patch that no longer applies cleanly to the code. The binary comes
+    # from `gleam-bin`, the thin workspace member whose package is named
+    # `gleam` and which depends on `compiler-cli` for everything but the
+    # entry point — `compiler-cli` alone is a library crate with no
+    # `[[bin]]` and produces no executable, confirmed by building it
+    # directly and finding only a `.rlib` in `target/release`. Building
+    # from inside `gleam-bin` still writes to the workspace's shared
+    # `target/` at the clone root, which is where the copy step below
+    # reads from.
+    - name: Build Gleam ${{ inputs.gleam-version }} + patches from source
+      if: inputs.gleam-patches != '' && steps.gleam-patches-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        src="${{ runner.temp }}/gleam-src"
+        rm -rf "$src"
+        mkdir -p "$src"
+        git -C "$src" init -q
+        git -C "$src" remote add origin https://github.com/gleam-lang/gleam
+        git -C "$src" fetch --depth 1 origin "refs/tags/v${{ inputs.gleam-version }}"
+        git -C "$src" checkout -q FETCH_HEAD
+        for patch in ${{ inputs.gleam-patches }}; do
+          git -C "$src" fetch --depth 2 origin "$patch"
+          git -C "$src" -c user.name=ci -c user.email=ci@localhost \
+            cherry-pick -X ours "$patch"
+        done
+        (cd "$src/gleam-bin" && cargo build --release)
+        mkdir -p "${{ runner.temp }}/gleam-from-source"
+        cp "$src/target/release/gleam" "${{ runner.temp }}/gleam-from-source/gleam"
+
+    # Runs whether the binary just got built or was restored from cache,
+    # and it is the last step to touch PATH in this action, so it wins
+    # over the (possibly absent) release copy setup-beam installed
+    # above. Printing the version here, not just in the toolchain census
+    # below, means a log that fails before the census step still says
+    # which compiler was live.
+    - name: Put the source-built Gleam on PATH
+      if: inputs.gleam-patches != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        chmod +x "${{ runner.temp }}/gleam-from-source/gleam"
+        echo "${{ runner.temp }}/gleam-from-source" >> "$GITHUB_PATH"
+        "${{ runner.temp }}/gleam-from-source/gleam" --version
 
     - name: Install Go
       # actions/setup-go v7.0.0
@@ -113,6 +217,14 @@ runs:
     # whole tree from nothing every day, so a cache that has started
     # lying — a lingering module for a source file that was deleted, say —
     # is found within a day rather than at the next eviction.
+    #
+    # The key's `-p${gleam-patches}` segment exists for the same reason
+    # as the version segments: `gleam-version` alone names the same
+    # string whether that release or a source build with patches on top
+    # of it produced the module, so without the patch list in the key a
+    # run with `gleam-patches` set and a run without it could hand each
+    # other artifacts built by two different compilers under one
+    # identical-looking key.
     - name: Cache compiled Gleam artifacts
       if: inputs.cache == 'true'
       # actions/cache v6.1.0
@@ -121,13 +233,14 @@ runs:
         path: packages/*/build
         key: >-
           gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
-          }}-g${{ inputs.gleam-version }}-o${{ inputs.otp-version }}-e${{
-          inputs.cache-epoch }}-${{ hashFiles('packages/*/manifest.toml',
-          'packages/*/gleam.toml', 'packages/*/src/**', 'packages/*/test/**') }}
+          }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-o${{
+          inputs.otp-version }}-e${{ inputs.cache-epoch }}-${{
+          hashFiles('packages/*/manifest.toml', 'packages/*/gleam.toml',
+          'packages/*/src/**', 'packages/*/test/**') }}
         restore-keys: >-
           gleambuild-${{ inputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch
-          }}-g${{ inputs.gleam-version }}-o${{ inputs.otp-version }}-e${{
-          inputs.cache-epoch }}-
+          }}-g${{ inputs.gleam-version }}-p${{ inputs.gleam-patches }}-o${{
+          inputs.otp-version }}-e${{ inputs.cache-epoch }}-
 
     # Ground truth in every log: what actually ran, not what was asked
     # for. A silently-substituted toolchain shows up here.
@@ -140,7 +253,7 @@ runs:
           echo
           echo '```'
           echo "runner       ${RUNNER_OS} ${RUNNER_ARCH} (${ImageOS:-unknown image})"
-          echo "gleam        $(gleam --version)"
+          echo "gleam        $(gleam --version) (${{ inputs.gleam-patches != '' && format('v{0} + patches {1}', inputs.gleam-version, inputs.gleam-patches) || 'release' }})"
           echo "erl          OTP $(erl -noshell -eval \
             'io:format("~s / ERTS ~s",[erlang:system_info(otp_release), erlang:system_info(version)]), halt().')"
           echo "rebar3       $(rebar3 --version | head -1)"
