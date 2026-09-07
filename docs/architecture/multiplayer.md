@@ -60,25 +60,36 @@ are admitted in the session's existing order and carry their authors
 through the queue into eventual user turns. No controlling terminal,
 global command queue, transcript CRDT, or per-strand ACL is introduced.
 
-### Current network delivery is pull-only
+### Network delivery pushes notices and pulls records
 
-Attached network terminals request credited reconciliation; the gateway does
-not push new committed records or token deltas to them. Network mode guards
-both durable broadcast and stream-delta broadcast, and the outbound adapter
-also discards unsolicited envelopes. Removing only the broadcast guards would
-not implement pushed delivery.
+Records are still credited: a terminal asks for a cut and the bounded reader
+answers it. What the gateway now also does, since
+[`protocol-change/018`](../../protocol-change/018-pushed-delivery.md), is
+*announce*. A commit reaches every subscribed socket as a `committed` frame
+carrying the sequence and the strand and no record; the terminal that has not
+seen that sequence issues its catch-up immediately instead of at the next idle
+refresh. Token deltas, the presence roster and attachment metadata are pushed
+inline, and a delta's text is clipped to the same 24 KiB bound the snapshot
+preview uses.
 
-After a successful capture, the client schedules its next refresh for 250 ms
-later and starts it when the channel is ready. That is neither a fixed-rate
-poll nor a delivery-latency guarantee. It can paint a peer's completed answer
-without another keypress, but does not stream that peer's generated tokens.
-A second prompt conflicts only when its target strand has a live operation;
-independent sessions and strands can still progress concurrently.
+A pushed frame carries no `reply_to`, so it is never confused with the answer
+to a command, and it leaves through the same per-frame authority check a reply
+does: a membership that changed retires the attachment rather than being
+written to. A notice is idempotent and order-free — a terminal that already
+holds the sequence drops it — and the 250 ms idle refresh remains, as the
+recovery path for a lost notice and as the whole story on a daemon that
+predates this change.
 
-[Issue #240](https://github.com/Roasbeef/loom/issues/240) tracks push on commit,
-streaming to network peers, and ordered concurrent submissions. Those changes
-need explicit delivery-authority and ordering decisions. The current shipped
-fixtures prove shared state through reconciliation, not that proposed behavior.
+Concurrent submissions on one strand are ordered rather than refused. The
+first opens the run; a second is held in the hub's per-strand queue, answered
+`mutation_outcome {status: "queued"}`, and submitted with its own submitter's
+origin when the run settles. The queue is hub memory, four deep per strand,
+and a fifth submission gets the `conflict` the command used to answer with.
+
+[Issue #240](https://github.com/Roasbeef/loom/issues/240) is what this
+implements; `docs/design-notes/live-delivery.md` is the ruling, and the two
+open questions it leaves — a durable queue, and registry-pushed revalidation
+in place of the per-frame check — are recorded there.
 
 ```mermaid
 sequenceDiagram
@@ -91,10 +102,10 @@ sequenceDiagram
     G->>W: Admit turn with Alice's origin
     W-->>G: Admission result
     G-->>A: Correlated admission reply
-    A->>G: Request credited reconciliation
-    G-->>A: Bounded committed-entry fragments
+    W-->>G: Post-commit publication
+    G-->>B: Pushed committed notice (seq, strand)
     B->>G: Request credited reconciliation
-    G-->>B: Same durable entries and sequences
+    G-->>B: Bounded committed-entry fragments
 ```
 
 Origin travels with user turns, queued steers, and approval resolutions.
