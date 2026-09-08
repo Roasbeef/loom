@@ -213,7 +213,7 @@ The deadline is fixed at start and never renewed. Four enforcers agree on
 it by construction because they all read the same number: the token, the
 relay's receive deadline, the helper's own wall timer, and the budget
 ledger. Renewal at runtime would need the helper's timer to move, and
-that timer is armed once from the request's own `WallSeconds` (`sandbox/internal/jail/run.go:556`),
+that timer is armed once from the request's own `WallSeconds` (`sandbox/internal/jail/run.go:572`),
 so extending it is a new frame and a protocol change. Long-lived servers
 are covered the other way round: the clamp is an operator knob, a
 `[jobs]` table in `loom.toml` with `max_wall` (parsed beside the known

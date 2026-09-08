@@ -115,3 +115,48 @@ also remains explicit through `--best-effort`; it accepts gaps beyond this
 ADR's narrow Darwin set. This split lets the default use the kernel boundary
 Darwin can enforce without turning a missing Seatbelt layer into a successful
 execution.
+
+## Addendum: reads are an allowlist
+
+**Date**: 2026-09-08
+
+The Consequences above say that the Darwin filesystem view is "the same broad
+contract as Linux's read-only root": every host path readable, `protected` the
+only subtraction, `readable_roots` not an allowlist. That is no longer what the
+profile does. Under protocol-change/020 the unconditional `(allow file-read*)`
+is gone, and reads are granted per region: the system view
+(`jail.DarwinSystemRoots`), the policy's readable and writable roots, its
+explicit mounts, the per-execution scratch, the per-user temp and cache
+directories, and the helper's own binary. The trailing protected denies are
+unchanged and still final.
+
+The open question when 020 was written was whether SBPL subpath read allows
+behave that way on current macOS, since `sandbox-exec` is undocumented and this
+ADR claims only what stage 2 witnesses. They do. On macOS 15 with the profile
+above, `make selftest` reports eleven of eleven probes enforced, including the
+new `host path outside the mount plan unreadable`, and the existing probes are
+unchanged: `/bin/sh` runs, the dyld shared cache maps, a Homebrew `erl` boots a
+node and loads a hand-compiled `.beam`, and `command -v rg` still resolves
+through the inherited PATH. So the `known-gap` line 020 held in reserve was not
+needed, and the probe is `required` on both platforms.
+
+Three things had to be granted that a reading of the profile alone would not
+predict, and each is recorded in the code beside the rule it justifies. The
+root directory needs `file-read*` rather than `file-read-metadata`: with every
+system subpath allowed and `/` denied, `/bin/sh` aborts with exit 134 and no
+diagnostic at all, because path resolution walks the root. The three top-level
+symlinks into `/private` — `/etc`, `/tmp`, `/var` — need metadata reads,
+because profile paths are normalized to their resolved form while the paths a
+caller hands the payload are not, and an unresolvable `argv[0]` is reported as
+`execvp() ... Operation not permitted` for a binary the profile does grant. And
+the process now starts in the working directory the request named rather than
+in the helper's own, since an inherited working directory outside the profile
+makes every `getcwd(3)` fail and stops an `erl` launcher script that cds to its
+own directory.
+
+What this addendum does not change: the lifecycle gap, the two resource gaps,
+and the enforcement demands the previous addendum settled. The private scratch
+directory is still not a tmpfs. What it does change is the last sentence of
+Consequences: `readable_roots` on Darwin now restricts reads, as it does on
+Linux, and a path named by no part of the policy is not visible to a jailed
+payload.

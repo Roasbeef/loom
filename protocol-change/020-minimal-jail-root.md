@@ -1,10 +1,10 @@
 # protocol-change/020 — a minimal jail root
 
-**Status**: PROPOSED 2026-09-08 · **Affects**: the helper's base view (not a
+**Status**: ACCEPTED 2026-09-08 · **Affects**: the helper's base view (not a
 Part 1 interface; the wire vocabulary this needs is
 [`protocol-change/004`](004-sandbox-policy-explicit-mounts.md)) ·
 **Raised by**: issue #242 (per-session filesystem confinement) ·
-**Implemented**: no
+**Implemented**: helper yes, harness pending
 
 ## Problem
 
