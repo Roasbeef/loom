@@ -35,6 +35,22 @@ them from their own test mains.
   clearance raises an escalation scoped to exactly that call, approves
   it, and restarts the strand driver so the same durable coordinates
   re-clear with the grant, all under the fault schedule.
+- `conformance/simulation/daemon/harness.{Harness, Row, Snapshot}` — the
+  real daemon root, registry and catalogue over a temporary state root and
+  the simulation's logical clock, with no listener. The root starts a
+  listener only when a caller asks it to, creation takes its id generator
+  from the caller, and assembly is a record of caller-supplied callbacks,
+  so no seam had to be added to `client/daemon/root` to construct one from
+  a test. Its operations are keyed by creation request key and canonical
+  session id; a `Row` has the run's temporary state root substituted out of
+  every path so two runs under two directories are comparable.
+- `conformance/simulation/daemon/daemon_runner.{run, observe, Verdict}` —
+  one hand-written multi-session script, no faults and no generator, run
+  twice from two fresh state roots and compared. This is the fault-free
+  baseline the faulted daemon scripts are measured against. It carries its
+  own `Verdict` rather than widening the session runner's, whose `Report`
+  is shaped for one conversation, and reuses `runner.Failure` so the named
+  checks print the same way.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -183,6 +199,24 @@ them from their own test mains.
   there. An unstable verdict is not an all-clear: a genuine race in the
   code under test is unreproducible too, so what it licenses is
   comparing *rates*, never dismissing the run.
+- **A daemon script's identities come from the logical clock and the
+  seed, and from nothing else.** `manager.create` mints a session id from
+  the generator its caller supplies, so a daemon harness reading the
+  simulation's `Clockwork` mints the same ids on a replay. Everything else
+  a run leaves behind is derived: the database path from the id, the
+  creation time from the clock, the domain record from the workspace. The
+  daemon script's convergence check compares those rows and the catalogue
+  revision they were read at, because a run that wrote a row twice would
+  carry identical rows at a higher revision.
+- **The daemon harness's waits are deadlock backstops, not simulated
+  time.** `manager.create` returns while a builder still owns the
+  operation, so the harness polls the registry (`weft/poll.until`) for the
+  published incarnation before reading a row back. Those milliseconds are
+  real, because the registry is a real process; what the logical clock
+  governs is what gets *minted*, which is what a replay has to agree on.
+  A daemon run therefore has more real processes than a session run, and
+  its failure rate over a seed range is the signal rather than any single
+  red.
 - **Fault addressing is ordinal, not temporal.** Commit-indexed faults name
   a global commit ordinal counted across writer restarts; effect-indexed
   faults name a dispatch ordinal. Neither is a wall-clock instant, so a
