@@ -2132,6 +2132,12 @@ build plane masks them where the jail can build the mask.
   stream needs no side index and `catch_up` rebuilds it with
   `scan_entries` / `scan_usage` plus register reads.
 
+- `conformance/simulation/daemon/harness` is a sanctioned caller of the
+  `@internal` `daemon/root` and `daemon/manager` functions (`start`,
+  `ready`, `shutdown`, `create`, `get`, `page`, `open`, `session_domain`).
+  It is the only `src/` module outside this package that reaches them;
+  a rename here is a rename there.
+
 ## Invariants
 
 - **A linked git worktree widens the session base to its git directories.**
