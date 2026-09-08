@@ -1,5 +1,5 @@
-//// A faulted daemon script: a restart with a lifecycle request still in
-//// flight.
+//// Two faulted daemon scripts: a restart with a lifecycle request still in
+//// flight, and a revocation landing on a command already through admission.
 ////
 //// The fault-free baseline in `daemon_runner` establishes that a script's
 //// durable rows are decided by the script, the logical clock and the seed.
@@ -18,6 +18,17 @@
 //// ambiguity `lifecycle/no-resend` is about, and it does not need a socket to
 //// exist.
 ////
+//// **What "principal" means here.** Also without a listener, so not a
+//// connection. A principal is an identity the registry knows: an invited
+//// member with a credential digest and a session grant. The boundary it
+//// crosses is `manager.frame_authority`, which the transport asks once when a
+//// command is admitted and again when the reply is delivered. A command in
+//// flight is therefore exactly a pair of those answers with a gap between
+//// them, and a revocation lands in the gap. What this cannot reach is the
+//// socket itself: that no frame is written to a closed connection is a
+//// gateway claim, and `tui_shipped_multiplayer_test` is what proves it. What
+//// is checked here is the decision the gateway acts on.
+////
 //// This module is test infrastructure, so `let assert` appears in it under
 //// the exemption `packages/conformance/CLAUDE.md` records.
 
@@ -25,7 +36,8 @@ import broker/token
 import client/daemon/manager
 import conformance/simulation/daemon/harness.{type Harness, type Snapshot}
 import conformance/simulation/daemon/lifecycle_faults.{
-  type Fault, type Pending, FaultFree, KillDaemonWithPending, PendingOpen,
+  type Coordinate, type Fault, type Pending, BeforeAdmission,
+  BetweenAdmissionAndDelivery, FaultFree, KillDaemonWithPending, PendingOpen,
   PendingStop, RevokeAt,
 }
 import conformance/simulation/runner.{type Failure, Failure}
@@ -36,6 +48,7 @@ import gleam/list
 import gleam/option.{None}
 import gleam/result
 import gleam/string
+import storage/access
 import storage/catalogue
 import weft/poll
 
@@ -47,13 +60,19 @@ pub const origin_ms = 1_700_000_000_000
 /// reopened incarnation a restart could ask for.
 const capacity = 2
 
-/// The workspace the script creates its session under. It is a synthetic
+/// The workspace both scripts create their session under. It is a synthetic
 /// absolute path: the registry records a workspace as owner-supplied metadata
 /// and never opens it.
 const workspace = "/simulation/lifecycle"
 
 /// The creation request key the restart script reserves its session under.
 const restart_key = "lifecycle"
+
+/// The creation request key the revocation script reserves its session under.
+const revocation_key = "revocation"
+
+/// The member id the revocation script invites and then revokes.
+const member_id = "operator"
 
 /// The verdict for one seed of the lifecycle and revocation scripts.
 pub type Verdict {
@@ -71,7 +90,7 @@ pub type Verdict {
 pub type Report =
   Snapshot
 
-/// Runs the script under both schedules the seed draws and reports the
+/// Runs both scripts under both schedules the seed draws and reports the
 /// verdict.
 ///
 /// ## Examples
@@ -82,7 +101,11 @@ pub type Report =
 pub fn run(seed seed: Int) -> Verdict {
   case restart_converges(seed) {
     Error(failure) -> failed(seed, failure)
-    Ok(Nil) -> Passed
+    Ok(Nil) ->
+      case revocation_converges(seed) {
+        Error(failure) -> failed(seed, failure)
+        Ok(Nil) -> Passed
+      }
   }
 }
 
@@ -100,6 +123,22 @@ pub fn restart_converges(seed: Int) -> Result(Nil, Failure) {
   use base <- result.try(restart_script(seed, FaultFree, pending))
   use faulted <- result.try(restart_script(seed, kill, pending))
   compare("lifecycle/converges-with-baseline", base, faulted)
+}
+
+/// Runs the revocation script fault-free and then under the revocation the
+/// seed drew, and compares the two.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lifecycle_runner.revocation_converges(4471)
+/// ```
+pub fn revocation_converges(seed: Int) -> Result(Nil, Failure) {
+  let at = lifecycle_faults.coordinate_for(seed)
+  let revoke = RevokeAt(principal: member_id, at:)
+  use base <- result.try(revocation_script(seed, FaultFree, at))
+  use faulted <- result.try(revocation_script(seed, revoke, at))
+  compare("revocation/converges-with-baseline", base, faulted)
 }
 
 /// Runs the restart script once under the named schedule and reports the
@@ -121,6 +160,30 @@ pub fn restart_script(
   let clock = vclock.start(from: origin_ms)
   let path = state_root(seed, "restart-" <> lifecycle_faults.label(fault))
   let outcome = restart_over(path, clock, seed, fault, pending)
+  vclock.stop(clock)
+  outcome
+}
+
+/// Runs the revocation script once under the named schedule and reports the
+/// durable rows it left behind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lifecycle_runner.revocation_script(4471, FaultFree, BeforeAdmission)
+/// ```
+pub fn revocation_script(
+  seed: Int,
+  fault: Fault,
+  at: Coordinate,
+) -> Result(Report, Failure) {
+  let clock = vclock.start(from: origin_ms)
+  let path = state_root(seed, "revocation-" <> lifecycle_faults.label(fault))
+  let outcome = {
+    use daemon <- result.try(started(path, clock))
+    let observed = revocation_body(daemon, seed, fault, at)
+    retire(daemon, observed)
+  }
   vclock.stop(clock)
   outcome
 }
@@ -415,6 +478,222 @@ fn is_resident(status: manager.Status) -> Bool {
   }
 }
 
+// The revocation script proper. One session, one invited principal, and a
+// command that straddles the authority boundary twice.
+//
+// The fault-free run never revokes, so its principal is admitted at both
+// coordinates. The faulted run revokes at the coordinate the seed drew. Both
+// end with the same durable rows, because a membership is not a registration:
+// a revocation that moved a session's catalogue row would be a finding, and
+// the comparison the caller runs afterwards is what says so.
+fn revocation_body(
+  daemon: Harness,
+  seed: Int,
+  fault: Fault,
+  at: Coordinate,
+) -> Result(Report, Failure) {
+  use record <- result.try(create_shared(daemon, revocation_key, seed))
+  use incarnation <- result.try(incarnation_of(daemon, record.id))
+  use owner <- result.try(
+    harness.owner_digest(daemon)
+    |> result.map_error(fn(reason) { Failure("revocation/owner", reason) }),
+  )
+  use member <- result.try(member_digest(seed))
+  use Nil <- result.try(invite(daemon, owner, member, record.id))
+
+  // The grant is read twice before anything is revoked. The registry
+  // remembers a resolved grant for the lifetime of the session's slot, so a
+  // check that only ever asked once would never exercise the remembered
+  // answer, and the mutation that keeps a remembered grant alive across an
+  // administration would pass.
+  use Nil <- result.try(admitted(daemon, record.id, incarnation, member))
+  use Nil <- result.try(admitted(daemon, record.id, incarnation, member))
+  use Nil <- result.try(case fault {
+    FaultFree -> fault_free_command(daemon, record.id, incarnation, member)
+    KillDaemonWithPending(..) | RevokeAt(..) ->
+      revoked_command(daemon, owner, member, record.id, incarnation, at)
+  })
+  snapshot(daemon)
+}
+
+// With nothing revoked, both halves of the queued command are admitted. This
+// is the "before it, its admissions succeed" half of the claim, and it is
+// what makes the refusal under the fault mean something.
+fn fault_free_command(
+  daemon: Harness,
+  id: String,
+  incarnation: String,
+  member: access.Digest,
+) -> Result(Nil, Failure) {
+  use Nil <- result.try(admitted(daemon, id, incarnation, member))
+  admitted(daemon, id, incarnation, member)
+}
+
+// `revocation/silence-after-close`: once the owner has revoked a principal,
+// the boundary refuses it, and it refuses the command the principal already
+// had in flight.
+//
+// The two coordinates are the two places a revocation can land relative to a
+// command. `BeforeAdmission` refuses the command outright, so nothing is ever
+// queued. `BetweenAdmissionAndDelivery` is the one that matters: the command
+// was admitted under a grant that was live at the time, and the delivery
+// check must still refuse, so what the principal queued is never delivered.
+// Both then check that the principal stays refused, which is the silence the
+// name is about.
+fn revoked_command(
+  daemon: Harness,
+  owner: access.Digest,
+  member: access.Digest,
+  id: String,
+  incarnation: String,
+  at: Coordinate,
+) -> Result(Nil, Failure) {
+  use Nil <- result.try(case at {
+    BeforeAdmission -> Ok(Nil)
+    BetweenAdmissionAndDelivery -> admitted(daemon, id, incarnation, member)
+  })
+  use Nil <- result.try(revoke(daemon, owner))
+  use Nil <- result.try(refused(daemon, id, incarnation, member))
+
+  // A second refusal, because one refusal could be a transient read. The
+  // claim is that the principal stays out, not that it was out once.
+  use Nil <- result.try(refused(daemon, id, incarnation, member))
+  let check = "revocation/silence-after-close"
+  case manager.session_authority(harness.registry(daemon), member, id) {
+    Error(_refused) -> Ok(Nil)
+    Ok(answer) ->
+      Error(Failure(
+        check,
+        "a revoked principal still resolves session authority as "
+          <> string.inspect(answer),
+      ))
+  }
+}
+
+fn admitted(
+  daemon: Harness,
+  id: String,
+  incarnation: String,
+  member: access.Digest,
+) -> Result(Nil, Failure) {
+  let check = "revocation/admitted-before-close"
+  let answer =
+    manager.frame_authority(
+      harness.registry(daemon),
+      epoch: harness.epoch(daemon),
+      id:,
+      incarnation:,
+      digest: member,
+    )
+  case answer {
+    Ok(#(_principal, access.Participant(access.Operator))) -> Ok(Nil)
+    _other ->
+      Error(Failure(
+        check,
+        "an invited operator was answered "
+          <> string.inspect(answer)
+          <> " at the admission boundary of "
+          <> id,
+      ))
+  }
+}
+
+fn refused(
+  daemon: Harness,
+  id: String,
+  incarnation: String,
+  member: access.Digest,
+) -> Result(Nil, Failure) {
+  let check = "revocation/silence-after-close"
+  let answer =
+    manager.frame_authority(
+      harness.registry(daemon),
+      epoch: harness.epoch(daemon),
+      id:,
+      incarnation:,
+      digest: member,
+    )
+  case answer {
+    Error(manager.Unauthorized) -> Ok(Nil)
+    _other ->
+      Error(Failure(
+        check,
+        "a revoked principal was answered "
+          <> string.inspect(answer)
+          <> " at the admission boundary of "
+          <> id
+          <> ", so a command it queued would still be delivered",
+      ))
+  }
+}
+
+fn invite(
+  daemon: Harness,
+  owner: access.Digest,
+  member: access.Digest,
+  id: String,
+) -> Result(Nil, Failure) {
+  let action =
+    manager.Invite(member_id, "Operator", member, id, access.Operator)
+  case
+    manager.administer(
+      harness.registry(daemon),
+      owner,
+      harness.epoch(daemon),
+      action,
+    )
+  {
+    Ok(_principal) -> Ok(Nil)
+    Error(error) ->
+      Error(Failure(
+        "revocation/invited",
+        "the owner could not invite a principal to "
+          <> id
+          <> ": "
+          <> string.inspect(error),
+      ))
+  }
+}
+
+// Revoking every credential rather than one session grant. The narrower
+// mutation would leave the principal authenticated, and the claim under test
+// is about the boundary refusing it, not about which of the two admin actions
+// reached it.
+fn revoke(daemon: Harness, owner: access.Digest) -> Result(Nil, Failure) {
+  case
+    manager.administer(
+      harness.registry(daemon),
+      owner,
+      harness.epoch(daemon),
+      manager.RevokeMember(member_id),
+    )
+  {
+    Ok(_principal) -> Ok(Nil)
+    Error(error) ->
+      Error(Failure(
+        "revocation/administered",
+        "the owner could not revoke "
+          <> member_id
+          <> ": "
+          <> string.inspect(error),
+      ))
+  }
+}
+
+// A session an owner may invite anyone to has to have an aggregate of its
+// own; sharing a workspace-private one requires an explicit stopped isolation
+// first, which is a different claim with its own fixture.
+fn create_shared(
+  daemon: Harness,
+  key: String,
+  seed: Int,
+) -> Result(catalogue.Registration, Failure) {
+  harness.create_isolated(daemon, key:, workspace:, name: "Shared", seed:)
+  |> result.map_error(fn(reason) {
+    Failure("creation/accepted", key <> ": " <> reason)
+  })
+}
+
 fn create(
   daemon: Harness,
   key: String,
@@ -423,6 +702,48 @@ fn create(
   harness.create(daemon, key:, workspace:, name: "Lifecycle", seed:)
   |> result.map_error(fn(reason) {
     Failure("creation/accepted", key <> ": " <> reason)
+  })
+}
+
+// The incarnation the authority boundary is fenced on. It is a durable
+// coordinate of the admission, and every frame check the script makes names
+// it, so a session that were silently restarted underneath the script would
+// fail the admission check rather than pass under a new instance.
+fn incarnation_of(daemon: Harness, id: String) -> Result(String, Failure) {
+  let check = "revocation/resident"
+  use status <- result.try(
+    harness.status(daemon, id)
+    |> result.map_error(fn(reason) { Failure(check, reason) }),
+  )
+  case status {
+    manager.Resident(operation) -> Ok(operation)
+    manager.Reserved
+    | manager.Saved
+    | manager.Opening(_)
+    | manager.Stopping(_)
+    | manager.RecoveryBlocked(_) ->
+      Error(Failure(
+        check,
+        id
+          <> " is "
+          <> string.inspect(status)
+          <> ", so it has no admitted incarnation",
+      ))
+  }
+}
+
+// The member's credential is derived from the seed rather than fixed, so two
+// seeds do not invite the same digest into two catalogues, and a single seed
+// derives the same one on both of its runs.
+fn member_digest(seed: Int) -> Result(access.Digest, Failure) {
+  let hex = string.lowercase(int.to_base16(seed))
+  let padded = string.slice(hex <> string.repeat("b", 64), 0, 64)
+  access.credential_digest(padded)
+  |> result.map_error(fn(_) {
+    Failure(
+      "revocation/credential",
+      "the seed did not derive a canonical credential digest: " <> padded,
+    )
   })
 }
 
