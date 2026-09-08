@@ -66,6 +66,7 @@ func Run(w io.Writer, selfExe string) bool {
 		{"write outside writable_roots denied", probeWriteOutside},
 		{"protected path masked from reads and writes", probeProtected},
 		{"daemon state root unreachable from a session jail", probeDaemonStateRoot},
+		{"host path outside the mount plan unreadable", probeOutsideMountPlan},
 		{"direct socket denied under network off", probeSocketOff},
 		{"env not in allowlist withheld", probeEnvAllowlist},
 		{"fork bomb capped by pids limit", probeForkBomb},
@@ -406,10 +407,10 @@ func probeDaemonStateRoot(feat jail.Features, selfExe string) probeResult {
 	}
 
 	// The session's own workspace is the writable root, and the state
-	// root sits outside it. That is the arrangement the daemon builds:
-	// nothing grants the state root, and on both platforms the jail's
-	// base view is readable anyway, so the mask is the only thing
-	// standing between the payload and the token.
+	// root sits outside it. That is the arrangement the daemon builds,
+	// and the mask is the only thing standing between the payload and the
+	// token: both runs below grant the state root as a readable root, so
+	// the two differ in the mask and in nothing else.
 	workspace := filepath.Join(dir, "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
@@ -421,14 +422,20 @@ func probeDaemonStateRoot(feat jail.Features, selfExe string) probeResult {
 		allowed, token, catalogue, sessionDB, sessions)
 
 	// The unmasked control runs first. The claim this probe makes is
-	// that the mask is what keeps the token from the payload, and that
-	// claim is only testable while the base view exposes the state root
-	// at all. Today it does on both platforms, but that fact lives in the
-	// mount plan and the profile, not here, and a base view narrowed to
-	// the readable roots would leave the masked run passing for a reason
-	// this probe never checked. Reading the marker without the mask is
-	// the proof that the masked run below proves something.
+	// that the mask is what keeps the token from the payload, so the
+	// control has to be a jail in which the payload could reach the token
+	// if the mask were the only thing removed. Since
+	// protocol-change/020 the base view no longer supplies that on its
+	// own: a state root outside every root is absent from a minimal jail
+	// whether or not it is masked, and a control relying on the base view
+	// would report a broken probe on a correct jail. So the control names
+	// the state root as a readable root and reads the marker through it.
+	// The masked run below keeps that grant, which is what makes it a
+	// test of the mask rather than of the base view — `protected` is the
+	// policy's only subtractive verb, and this is the arrangement in
+	// which that matters.
 	control := basePolicy(workspace)
+	control.ReadableRoots = []string{stateRoot}
 	_, seen, err := runShell(feat, selfExe, control, script)
 	if err != nil {
 		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
@@ -440,6 +447,7 @@ func probeDaemonStateRoot(feat jail.Features, selfExe string) probeResult {
 	}
 
 	pol := basePolicy(workspace)
+	pol.ReadableRoots = []string{stateRoot}
 	pol.Protected = []string{token, catalogue, lock, sessions}
 
 	// The witness next, for the reason probeProtected states: an
@@ -471,6 +479,90 @@ func probeDaemonStateRoot(feat jail.Features, selfExe string) probeResult {
 	if strings.Contains(out, filepath.Base(sessionDB)) {
 		return probeResult{outcome: failed,
 			detail: "the sessions directory could be enumerated from inside the jail"}
+	}
+	return probeResult{outcome: enforced}
+}
+
+// probeOutsideMountPlan is the base view's own probe: a host file that
+// no part of the policy names must not be readable from inside the jail.
+//
+// Every other filesystem probe here measures a subtraction — a write
+// refused outside the writable roots, a path removed by `protected`.
+// This one measures the absence of a grant, which is the property
+// protocol-change/020 introduced and the only one that scales: `protected`
+// is a denylist and covers the paths the harness thought to name, while a
+// minimal base view covers everything nobody named. The file is a sibling
+// of the workspace, the arrangement probeDaemonStateRoot uses, because a
+// path under the probe's own directory is the closest thing to "another
+// session's workspace" this suite can build.
+//
+// The control comes first and is the reason the probe proves anything. A
+// jail that refuses every read looks exactly like a jail whose base view
+// is minimal, and the difference is a readable root: the same script,
+// under a policy that names the file's directory, must return the marker.
+// Only then does its absence in the second run say something about the
+// base view rather than about a broken jail.
+//
+// Neither run may name "/" as a readable root, since that is the
+// pre-020 whole-host view and would make the second run a test of
+// nothing. See jail.PlanIsMinimal, which is what the enforcement report's
+// `base=` field is derived from.
+func probeOutsideMountPlan(feat jail.Features, selfExe string) probeResult {
+	if !feat.HasFilesystemJail() {
+		return probeResult{outcome: skipped,
+			detail: "a minimal base view needs bwrap's mount namespace or a " +
+				"deny-default Seatbelt profile; Landlock cannot narrow reads " +
+				"the mount layer has already granted"}
+	}
+	dir, err := probeDir()
+	if err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	defer os.RemoveAll(dir)
+
+	const marker = "LOOM-PROBE-OUTSIDE-THE-PLAN-SECRET"
+	outside := filepath.Join(dir, "elsewhere")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	victim := filepath.Join(outside, "host-secret")
+	if err := os.WriteFile(victim, []byte(marker+"\n"), 0o600); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+
+	workspace := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	allowed := filepath.Join(workspace, "allowed")
+	script := fmt.Sprintf("echo ok > %s && echo ALLOWED-OK; cat %s",
+		allowed, victim)
+
+	control := basePolicy(workspace)
+	control.ReadableRoots = []string{outside}
+	_, seen, err := runShell(feat, selfExe, control, script)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+	}
+	if !strings.Contains(seen, marker) {
+		return probeResult{outcome: failed,
+			detail: "the control could not read the file through a readable " +
+				"root, so its absence without one would prove nothing"}
+	}
+
+	_, out, err := runShell(feat, selfExe, basePolicy(workspace), script)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+	}
+	if !strings.Contains(out, "ALLOWED-OK") {
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("the payload never announced itself, so the "+
+				"unread file is evidence of nothing (out %q)", out)}
+	}
+	if strings.Contains(out, marker) {
+		return probeResult{outcome: failed,
+			detail: "a host file no part of the policy names was readable " +
+				"from inside the jail"}
 	}
 	return probeResult{outcome: enforced}
 }

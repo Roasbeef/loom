@@ -361,7 +361,7 @@ func (r *hostileRig) jailed(
 		Argv:   hostileArgv(r.erl, r.ebin, p, r.port),
 		Env:    defaultEnv,
 		Cwd:    "/",
-		Policy: hostilePolicy(p, confined),
+		Policy: hostilePolicy(p, r.ebin, confined),
 	}, feat, selfExe, sink)
 	if err != nil {
 		return hostileReport{}, "", err
@@ -387,13 +387,23 @@ func (r *hostileRig) jailed(
 // Even permissive stays inside the rig's scratch directory. "Writable
 // root" here is a temp directory the probe made and deletes; the
 // adversary is being handed its own sandbox back, not the host.
-func hostilePolicy(p hostilePaths, confined bool) policy.Policy {
+func hostilePolicy(p hostilePaths, ebin string, confined bool) policy.Policy {
+	// The adversary's own .beam directory is a readable root in both
+	// policies. It is the module under test rather than an effect being
+	// measured, and the minimal base view of protocol-change/020 does not
+	// carry it: a jail that cannot load the module reports a node that
+	// never booted, which this probe correctly refuses to read as
+	// containment. Granting it keeps the three measured reaches — the
+	// protected secret, the write outside, the network — as the only
+	// difference between the two runs.
 	if !confined {
 		pol := basePolicy(filepath.Dir(p.inside))
+		pol.ReadableRoots = []string{ebin}
 		pol.Network = policy.Network{Mode: policy.NetworkFull}
 		return pol
 	}
 	pol := basePolicy(p.inside)
+	pol.ReadableRoots = []string{ebin}
 	pol.Protected = []string{p.vault}
 	return pol
 }

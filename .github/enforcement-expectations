@@ -52,9 +52,21 @@ required|orphaned grandchild reaped via pgroup
 # not obtainable by a jailed payload. Required on both platforms, because
 # masking is enforced on both and by different mechanisms — a /dev/null
 # bind and a read-only tmpfs on Linux, terminal deny rules on Darwin.
+# "host path outside the mount plan unreadable" is the base view's own
+# probe, and the only one here that measures the absence of a grant
+# rather than a subtraction. A host file that no part of the policy names
+# — a sibling of the workspace, standing in for another session's — must
+# not be readable from inside the jail. It is required on both platforms,
+# and on both it was made true by protocol-change/020: bubblewrap mounts
+# an empty tmpfs at "/" and binds back only the system roots, and the
+# Seatbelt profile replaced its unconditional `(allow file-read*)` with
+# per-root subpath allows over the same view. The probe runs its own
+# control first — the same file, read through a readable root — so a jail
+# that refuses everything cannot be read as a pass.
 required|write outside writable_roots denied
 required|protected path masked from reads and writes
 required|daemon state root unreachable from a session jail
+required|host path outside the mount plan unreadable
 required|direct socket denied under network off
 
 # --- Process ceilings.
