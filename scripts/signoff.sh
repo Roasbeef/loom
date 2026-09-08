@@ -68,6 +68,15 @@
 # enforcement lane then fails honestly, because the expectations file
 # requires the pids probe, rather than the gate quietly proving less.
 #
+# Hex. Gleam 1.18.1 as released re-resolves path dependencies through
+# the Hex API on every invocation (issue #248), and seven lanes at once
+# is a burst the per-address rate limit answers with 429 — the first
+# dry run of this script lost five lanes to exactly that within seconds.
+# The real fix is the compiler CI builds, the release tag plus the fix
+# commit named by GLEAM_PATCHES in .github/workflows/ci.yml; run that
+# compiler here too. Every gleam-invoking lane is wrapped in
+# .github/scripts/hex_retry.sh regardless, as CI wraps its own steps.
+#
 # Exit status is the gate's verdict. Every lane runs to completion even
 # after one fails, so one run reports everything wrong, and the status is
 # posted only from the verdict: `gh signoff <name>` on green, `gh signoff
@@ -125,35 +134,36 @@ export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
 export LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key"
 export LOOM_DECLARED_SKIPS="$root/.github/declared-skips"
 started=$(date +%s)
+retry=.github/scripts/hex_retry.sh
 
 echo "== $context on $sha"
 echo "== prep"
-if ! make codemode-seed build binaries server-shipment 2>&1 | tee "$logs/prep.log"; then
+if ! $retry make codemode-seed build binaries server-shipment 2>&1 | tee "$logs/prep.log"; then
 	echo "prep failed; see $logs/prep.log" >&2
 	verdict=1
 fi
 
-lane_client() { bash scripts/check.sh client; }
-lane_mid() { bash scripts/check.sh runtime storage session events; }
+lane_client() { $retry bash scripts/check.sh client; }
+lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
 lane_conformance() {
-	bash scripts/check.sh conformance &&
-		make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}"
+	$retry bash scripts/check.sh conformance &&
+		$retry make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}"
 }
 lane_fast() {
-	bash scripts/check.sh host core machine prompt telemetry provider \
+	$retry bash scripts/check.sh host core machine prompt telemetry provider \
 		broker mcp tools cap ext codemode tui lint sandbox
 }
 lane_static() {
 	python3 scripts/with_timeout.py 20 -- \
 		python3 -m unittest discover -s scripts -p 'test_*.py' &&
-		make fmt-check && make lint && make doc-check
+		make fmt-check && $retry make lint && make doc-check
 }
 lane_enforcement() {
 	./packages/sandbox/loom-exec --self-test 2>&1 | tee "$logs/selftest.log"
 	.github/scripts/enforcement_report.sh "$logs/selftest.log" \
 		.github/enforcement-expectations "$context (self-test)"
 }
-lane_bootstrap() { bash scripts/e2e_client_bootstrap.sh; }
+lane_bootstrap() { $retry bash scripts/e2e_client_bootstrap.sh; }
 
 lanes=(client mid conformance fast static enforcement bootstrap)
 pids=()
