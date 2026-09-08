@@ -16,6 +16,7 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import machine/strand.{ModelIdentity, StrandConfiguration, ThinkingOff}
 import session/repo
@@ -423,15 +424,35 @@ pub fn sqlite_rewrite_retires_the_source_wal_before_the_copy_test() {
     )
   let assert Ok(Nil) = session.ensure_strand(source, "main", configuration())
   let _ctx = seed_secrets(source)
+
+  // The state this rewrite has to cope with is captured while the writer
+  // still holds it, rather than inherited from what the close happens to
+  // leave behind. `session.close` returns once the actor has released the
+  // lease, but the connection underneath it closes on its own schedule, and
+  // SQLite's last-connection close checkpoints the WAL and unlinks it.
+  // Sequentially the assertion below ran before that landed and saw the
+  // frames; under a loaded scheduler the close won six runs in thirty and
+  // the assertion read `enoent`. Which of the two wins is not what this
+  // test is about.
+  //
+  // All three files are captured together because only the three of them
+  // are coherent. Restoring the frames over a database the close had
+  // already checkpointed leaves a WAL whose salt no longer matches the
+  // header beside it, and SQLite reports that as a disk I/O error rather
+  // than replaying anything.
+  let assert Ok(abandoned) = list.try_map(session_files(path), read_file)
+    as "the open writer's database, frames and index must be on disk"
   let assert Ok(Nil) = session.close(source)
 
-  // A clean close leaves the `-wal` sibling on disk with the committed
-  // frames still in it (the actor's close releases the lease but does
-  // not checkpoint), and SQLite would replay any WAL whose checksums and
-  // page size match the file at its path — which the old WAL does,
-  // against the swapped-in copy, by construction. The rewrite must
-  // therefore retire those frames *before* the copy is sworn in, not
+  // The scenario, now stated rather than hoped for: the database is exactly
+  // as a writer that vanished without checkpointing left it, with the
+  // committed frames still in the `-wal` sibling. SQLite would replay any
+  // WAL whose checksums and page size match the file at its path — which
+  // these do, against the swapped-in copy, by construction. The rewrite
+  // must therefore retire those frames *before* the copy is sworn in, not
   // unlink the file afterwards and hope.
+  let assert Ok(Nil) = list.try_each(abandoned, write_file)
+    as "the abandoned writer's files must be restorable"
   assert wal_bytes(path) > 0
 
   let seen = process.new_subject()
@@ -572,6 +593,24 @@ pub fn sqlite_rewrite_requires_an_existing_file_test() {
 
 // The size of the session's `-wal` sibling, with "absent" as zero — what
 // matters to the audit is whether any replayable frame exists.
+// The three files one open SQLite session occupies: the database itself and
+// the write-ahead log's two siblings. They are only meaningful together, so
+// they are captured and restored together.
+fn session_files(path: String) -> List(String) {
+  [path, path <> "-wal", path <> "-shm"]
+}
+
+fn read_file(
+  path: String,
+) -> Result(#(String, BitArray), simplifile.FileError) {
+  use bytes <- result.map(simplifile.read_bits(path))
+  #(path, bytes)
+}
+
+fn write_file(file: #(String, BitArray)) -> Result(Nil, simplifile.FileError) {
+  simplifile.write_bits(to: file.0, bits: file.1)
+}
+
 fn wal_bytes(path: String) -> Int {
   case simplifile.read_bits(path <> "-wal") {
     Ok(bits) -> bit_array.byte_size(bits)
