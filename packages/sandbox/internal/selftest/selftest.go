@@ -414,17 +414,37 @@ func probeDaemonStateRoot(feat jail.Features, selfExe string) probeResult {
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return probeResult{outcome: failed, detail: err.Error()}
 	}
-	pol := basePolicy(workspace)
-	pol.Protected = []string{token, catalogue, lock, sessions}
-
-	// The witness first, for the reason probeProtected states: an
-	// unobtained secret is equally consistent with a mask that held and
-	// with a payload that never ran.
 	allowed := filepath.Join(workspace, "allowed")
 	script := fmt.Sprintf(
 		"echo ok > %s && echo ALLOWED-OK; "+
 			"cat %s; cat %s; cat %s; ls %s",
 		allowed, token, catalogue, sessionDB, sessions)
+
+	// The unmasked control runs first. The claim this probe makes is
+	// that the mask is what keeps the token from the payload, and that
+	// claim is only testable while the base view exposes the state root
+	// at all. Today it does on both platforms, but that fact lives in the
+	// mount plan and the profile, not here, and a base view narrowed to
+	// the readable roots would leave the masked run passing for a reason
+	// this probe never checked. Reading the marker without the mask is
+	// the proof that the masked run below proves something.
+	control := basePolicy(workspace)
+	_, seen, err := runShell(feat, selfExe, control, script)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+	}
+	if !strings.Contains(seen, tokenMarker) {
+		return probeResult{outcome: failed,
+			detail: "the unmasked control could not read the token, so a " +
+				"masked run would prove nothing about the mask"}
+	}
+
+	pol := basePolicy(workspace)
+	pol.Protected = []string{token, catalogue, lock, sessions}
+
+	// The witness next, for the reason probeProtected states: an
+	// unobtained secret is equally consistent with a mask that held and
+	// with a payload that never ran.
 	_, out, err := runShell(feat, selfExe, pol, script)
 	if err != nil {
 		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}

@@ -634,6 +634,18 @@ can be narrowed, and `make selftest` reports the narrowing as an enforced
 layer rather than as prose. Do not retry restricted native implementation
 through another worker or tool.
 
+The design pass (recorded on the issue, 2026-09-08) found the credential
+half already built: every daemon session's base policy masks the state root's
+secrets, and [PR #319](https://github.com/Roasbeef/loom/pull/319) declared
+that as the required self-test probe `daemon state root unreachable from a
+session jail` and extended the masks to the extension install's build plane.
+One residual stays open until the base view is narrowed: the install infers
+the state root as the parent of its extensions root, so a daemon started with
+`--state-dir` elsewhere, or an install run under a different `HOME`, leaves
+the live token unmasked in the build jail. It is operator-only, since no
+tool or session reaches the build plane, and the minimal-root work closes it
+by omission rather than by a second guess at the path.
+
 ### 2. Then #85's remaining prerequisites
 
 [Issue #85](https://github.com/Roasbeef/loom/issues/85) shares that first
