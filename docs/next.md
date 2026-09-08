@@ -37,6 +37,61 @@ mean green CI or completed release acceptance. The integration worktree is
 `.claude/worktrees/single-daemon` tree and its excluded native-policy,
 planner and protocol 017 edits; do not build them into this candidate.
 
+### The merge gate runs locally now
+
+The `main` ruleset requires a pull request and a `signoff/linux` commit
+status, and that status is produced on a developer machine rather than by
+waiting on hosted CI. [PR #308](https://github.com/Roasbeef/loom/pull/308)
+added `scripts/signoff.sh`, which runs every CI command as six parallel lanes
+on one checkout, reads a skip census over all of their logs using the hosted
+jail job's declarations, and posts the verdict. On Linux it obtains a
+process-empty cgroup v2 base without root by re-executing itself under
+`systemd-run --user --scope -p Delegate=yes`, so the shipped fixtures that
+demand helper enforcement run enforced rather than degraded. Every
+gleam-invoking lane is wrapped in `.github/scripts/hex_retry.sh`.
+`scripts/signoff_remote.sh` runs the same gate for a pushed HEAD on a Linux
+box named only by `LOOM_SIGNOFF_HOST`, in a `loom-signoff` checkout the
+script owns. `scripts/e2e_client_bootstrap.sh` is the former Makefile recipe
+extracted so a lane and CI run the same file, and Go 1.26.3 is pinned by a
+`toolchain` line in `packages/sandbox/go.mod`. The first real
+`signoff/linux` status was posted on #308's own head by the script.
+
+The measured shape of a warm run on a 32-core Linux box is about ten minutes
+of wall clock. The critical path is entirely the client lane: the client
+package suite takes about 390 seconds serially, and the bootstrap fixtures
+run behind it in the same lane. Every other lane finishes inside three
+minutes, the 200-seed soak and the enforcement self-test included; the self
+test reported 9 of 9 layers enforced with no sudo. The macOS lane on the
+developer's Mac ran green in 573 seconds. Hosted CI keeps running as the
+record, but nothing waits on it.
+
+Running the whole suite under real bubblewrap is what the local gate proved
+first, and it found bugs hosted CI could not see: the hosted Linux check
+runner has no bubblewrap, so the helper runs degraded there, and Seatbelt
+tolerates a missing path. Five defects and one gate race surfaced on the
+first local runs. [#303](https://github.com/Roasbeef/loom/issues/303) was the
+jail evasion test's own `unshare --fork`, which on util-linux before 2.38
+inherits `SIG_IGN` for TERM; the cancel ladder under test was correct, and
+the payload now traps with perl.
+[#304](https://github.com/Roasbeef/loom/issues/304) was the extension
+install's build plane inheriting the session policy's `.blobs` mask over a
+path that never exists under a read-only parent; it now has
+`serve.build_plane_policy` with no mask and a pure regression test.
+[#307](https://github.com/Roasbeef/loom/issues/307) was four drifted
+`serve.gleam` citations, which had left `doc-check` red on `main`.
+[#306](https://github.com/Roasbeef/loom/issues/306), filing
+[#305](https://github.com/Roasbeef/loom/issues/305), was the two-approvals
+fixture pressing Esc before the inspector had opened; it now waits for the
+overlay. [#310](https://github.com/Roasbeef/loom/issues/310) was the
+code-mode test rig naming its scratch root `$HOME/.loom-cmtest/e2e-<fixed
+name>`, shared by every checkout on a machine and deleted at each start, so
+two concurrent checkouts corrupted each other's build root and failed the
+manifest-hash reproducibility assertion; the root is now per-checkout by a
+12-hex digest of the checkout path, kept short for the `sun_path` bound. The
+sixth was a race in the gate itself rather than in the product: tui's
+launch-lock test and the bootstrap fixtures both name scratch roots by the
+millisecond, so they now run in one lane.
+
 ### Corrections to the previous handoff
 
 The previous edition described background jobs as three pull requests in
@@ -149,6 +204,10 @@ daemon shutdown. That live drive used no tools and proves neither distinct
 principal authority nor filesystem confinement.
 
 ### Hosted evidence
+
+The merge gate this section describes as the thing to wait on is
+superseded by the local signoff above; hosted runs remain the record and
+the historical evidence below, but no merge waits on one.
 
 The first closing cycle finished red at `854a3b7d`. The owner then authorized
 a test-only correction and another measured cycle; this is not a blind rerun
@@ -667,10 +726,49 @@ Exit: each remaining requirement has evidence for the final artifact,
 with explicit platform limitations. Do not repeat already-proven startup,
 invitation and live-tool scenarios as if they were wholly absent.
 
+### 8. Declare the sequential groups the parallel test flag needs
+
+[PR #309](https://github.com/Roasbeef/loom/pull/309) added an opt-in
+`LOOM_TEST_PARALLEL=N` to `scripts/test.sh`, which wraps the runner's test
+list in an EUnit `inparallel` group. The ordering pushes down to individual
+tests rather than stopping at the module boundary, so N counts tests and no
+module is internally sequential. [The design
+note](design-notes/parallel-tests.md) carries the timing table and the census
+of what breaks, grouped by the resource each failure collides on: the
+VM-global atom counter that three `runtime` tests assert does not move, the
+capability channel's single `persistent_term` slot that every fake-channel
+test in `cap` and `ext` writes, the shared `httpc` profile behind `provider`
+and `broker`, the broker scratch directory one test asserts is empty while
+its siblings write policy files into it, and four tests whose fixed
+wall-clock deadlines fail under load without colliding on anything.
+
+The recommended next step is a declared per-package sequential group, an
+EUnit `inorder` group nested inside the `inparallel` one, for the modules
+that touch VM-global state, plus a private `httpc` profile for `provider`,
+a per-helper tmp root for the broker emptiness assertion, and rewriting the
+four fixed-deadline tests to wait on their observable rather than on a
+duration. The expected result is a client lane near three minutes and a
+whole Linux gate near four. This is queued behind the owner's ruling on the
+serial-group pattern; do not encode a default N before that ruling.
+
+Exit: the sequential groups are declared beside the packages they belong to,
+`make signoff` runs the client lane with the flag on, and no test buys its
+green run with a longer sleep.
+
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record
 the reopening where the ruling lives.
+
+**The merge gate is local, and its status is only ever posted by the
+script.** A pull request is still required by the `main` ruleset and stays
+required with signoff in place, because the PR is the paper trail. The
+`signoff/linux` status attests that a named person ran the gate and nothing
+more, so it is posted only from `scripts/signoff.sh`'s verdict; never type
+`gh signoff` by hand. The Linux lane is the required status; macOS stays
+advisory until its lane has a flake-free record. No machine, hostname or
+address for a signoff runner enters the tree: the host lives in
+`LOOM_SIGNOFF_HOST` and in the developer's ssh config.
 
 **One daemon, metadata-only restart.** The
 [execution ruling](design-notes/single-daemon.md#execution-ruling) requires
@@ -805,6 +903,22 @@ LOOM_TEST_TIMEOUT_SECONDS=600 \
 python3 scripts/with_timeout.py 900 -- \
   make check dist e2e-client-bootstrap e2e-multiplayer soak-daemon
 ```
+
+Signing off is a separate command and it is the one the merge waits on:
+
+```sh
+make signoff SIGNOFF_ARGS=--dry-run
+LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote
+```
+
+The first runs every lane on this platform and posts nothing. The second
+pushes nothing for you, so push the branch first: the remote box fetches by
+SHA and `gh signoff` refuses a commit no remote holds. Per-lane logs land
+under `build/signoff/`, and the lane table printed at the end says which to
+read. The Linux box must run the compiler CI builds, the Gleam 1.18.1 tag
+plus the fix commit named by `GLEAM_PATCHES` in `.github/workflows/ci.yml`;
+the released compiler re-resolves path dependencies through the Hex API on
+every invocation and seven lanes at once meet the per-address rate limit.
 
 **Capture each gate's own exit code.** A successful log tail is not a test
 result. Freeze source during a gate and run the strict skip census on its
