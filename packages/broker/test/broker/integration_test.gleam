@@ -114,6 +114,7 @@ fn base_policy(work_dir: String) -> policy.SandboxPolicy {
     ),
     env_allow: ["PATH"],
     scratch: policy.ScratchTmpfs,
+    mounts: [],
   )
 }
 

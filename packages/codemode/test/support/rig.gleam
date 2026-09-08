@@ -162,6 +162,7 @@ pub fn base_policy(root: String) -> SandboxPolicy {
     ),
     env_allow: ["PATH", launch.sock_env, launch.token_env],
     scratch: policy.ScratchTmpfs,
+    mounts: [],
   )
 }
 

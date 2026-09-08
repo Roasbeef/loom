@@ -26,6 +26,7 @@ fn proxy_policy() -> policy.SandboxPolicy {
     ),
     env_allow: ["PATH", "HOME"],
     scratch: policy.ScratchPath(path: "/work/.scratch"),
+    mounts: [],
   )
 }
 
@@ -58,6 +59,7 @@ pub fn roundtrip_empty_lists_test() {
       ),
       env_allow: [],
       scratch: policy.ScratchTmpfs,
+      mounts: [],
     )
   let assert Ok(bytes) = policy.encode(empty)
   assert policy.decode(bytes) == Ok(empty)
