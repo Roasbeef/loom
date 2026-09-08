@@ -204,10 +204,65 @@ per-chunk pacing option so the stream occupies an interval.
 
 - **Durable queue.** A held prompt that survives a hub restart needs a
   pending-run operation in `machine`. Not needed for the property above.
-- **Per-frame versus registry-pushed revalidation.** Pushed delivery re-checks
-  per frame, as replies do. The registry-pushed revision from the review wave
-  stays deferred; if the per-frame cost shows up in the soak, that is the
-  measurement that reopens it.
 - **Dropping the snapshot preview.** Once every shipping terminal consumes
   pushed deltas the preview lease machinery is redundant. It stays until a
   release has been cut with both.
+
+## Resolved: the per-frame check stays, its catalogue read does not
+
+*This settles the "per-frame versus registry-pushed revalidation" question
+left open above. The measurement that reopened it is recorded here.*
+
+The per-frame cost did show up, and it was larger than the frame path itself.
+Profiling the shipped daemon under `tui_shipped_live_delivery_test` — two
+native terminals and one wire client on one session, with call-count tracing
+on the daemon's own modules — the fourteen most-called functions in the whole
+process were `esqlite3` statement preparation and `storage/access` string
+validation, and nothing else appeared. At steady state the daemon ran about
+1,550 SQLite statements per second and prepared each one afresh.
+
+The cause is arithmetic rather than a mistake in the delivery path.
+`manager.frame_authority` answers epoch, incarnation and authority in one
+registry turn, but the authority half is `access.authenticate` followed by
+`access.authorization`, and those two issue about ten SQLite statements
+between them — the credential row, the principal row, the principal row a
+second time inside `authorization`'s transaction, the session registration,
+and the membership row. The check runs twice per command and once per pushed
+frame per attached terminal, so on a real provider its cost grows with tokens
+multiplied by terminals.
+
+The resolution is neither of the two options the question posed. The registry
+keeps the *answer* to the catalogue half, keyed by credential digest and
+session, and drops the whole memo in the `Administer` arm. Epoch and
+incarnation are still resolved live on every call, from the registry's own
+state, which is where the two fences that matter for a stale socket live.
+
+What makes this exact rather than a cache with a staleness window is that the
+tables underneath have one writer. `administer_member` performs every
+credential, principal and membership mutation a running daemon makes, and it
+is reached only through the `Administer` message the registry itself
+serialises; the sole other writer, `access.bootstrap_owner`, runs in the root
+before the registry exists. A remembered answer therefore cannot differ from
+the live read it replaces, and revocation still closes the attachment on the
+very next frame — which is what the fixture proves, since it revokes Bob
+through `loomd access` and asserts his socket closes mid-answer.
+
+Registry-pushed revalidation stays deferred, and now has less to buy: what
+remains per frame is one registry round trip and two dictionary lookups.
+
+| Same fixture, whole run | Baseline | With the memo |
+|---|---:|---:|
+| `manager.frame_authority` calls | 392–414 | 407–437 |
+| `access.authenticate` calls | 464–486 | 74–78 |
+| `access.authorization` calls | 418–440 | 30–32 |
+| `sqlight:query` statements | 4,323–4,520 | 2,399–2,488 |
+
+| Steady state, per second | Baseline | With the memo |
+|---|---:|---:|
+| SQLite statements | ~1,550 | ~765 |
+| Daemon CPU (ms per second) | ~143 | ~112 |
+
+The half of the SQLite traffic that remains is not authority. It belongs to
+`storage/internal/snapshot_sqlite` and `storage.get_register`, reached by the
+`catch_up` every attached terminal issues on the 250 ms idle refresh, and it
+is the next thing to measure rather than something this change addresses.
