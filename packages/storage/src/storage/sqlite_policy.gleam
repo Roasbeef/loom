@@ -18,10 +18,10 @@
 //// connection a second time. The second close frees memory SQLite may have
 //// handed to another connection in the same emulator, and that connection's
 //// next statement answers `SQLITE_MISUSE` from a header check on memory it no
-//// longer owns. The damage is node-wide and lands on whichever database
-//// happens to be open at the time, so a caller that hands SQLite a path it
-//// cannot open corrupts unrelated work. Refusing such a path before the open
-//// is what keeps that unreachable.
+//// longer owns. The damage is node-wide and lands on whichever connection is
+//// handed the freed block, so a caller that hands SQLite a path it cannot open
+//// corrupts unrelated work. Refusing such a path before the open is what keeps
+//// that unreachable.
 
 import gleam/bool
 import gleam/dynamic/decode

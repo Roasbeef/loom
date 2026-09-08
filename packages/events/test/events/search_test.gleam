@@ -476,6 +476,20 @@ pub fn sqlite_rewrite_invalidates_index_test() {
   let assert Ok(Nil) = storage.close(reopened)
 }
 
+// The message matters as much as the refusal. SQLite's own answer to an
+// obstructed path arrives only after the failed open that frees a block under
+// another connection, so a fault carrying the guard's wording is the evidence
+// that the open never happened.
+pub fn a_directory_in_the_index_place_is_refused_before_the_open_test() {
+  let path = fresh_index_path("obstructed")
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+    as "the obstruction must exist before the index path is judged"
+  let assert Error(search.IndexFault(message)) = search.open(path)
+    as "a directory in the index's place is refused"
+  assert string.contains(message, "a directory sits at")
+  assert string.contains(message, path)
+}
+
 pub fn malformed_query_is_an_error_not_a_crash_test() {
   let service = open_search()
   let assert Error(search.IndexFault(..)) =

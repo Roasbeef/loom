@@ -343,6 +343,18 @@ file stays allowed, since a first open creating its database is what the
 durability plane relies on. Twenty consecutive `client` runs at N=8 on the
 gate box afterwards, against three failures in eight immediately before.
 
+The two production read-only opens, `storage/internal/history_source.acquire`
+and `storage/sqlite.read_entry`, take the stricter
+`refusing_unreadable_path`, since `mode=ro` never creates the file and a
+registered session file that has since been deleted or moved is the same
+`SQLITE_CANTOPEN`; both judge the decoded path before building their `file:`
+URI. This is a third defect in the binding, distinct from the two ADR-002 and
+issue #247 already record (private query statements retained on close, and
+the untotal `'$busy'` atom), and it is present on upstream master; the
+upstream fix is one line, setting `conn->db = NULL` after the close on the
+open-failure path in `esqlite3_nif.c`, and issue #247 owns the decision to
+fork the dependency or retire it.
+
 ### Not a parallelism failure
 
 `client@extension_test:real_jailed_build`

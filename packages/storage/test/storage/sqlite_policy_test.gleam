@@ -106,10 +106,10 @@ pub fn invalid_options_fail_before_any_pragma_changes_test() {
   assert sqlight.close(connection) == Ok(Nil)
 }
 
-// The refusal exists because a failed `sqlite3_open` corrupts every other
-// connection in the emulator, not because opening a directory is untidy, so
-// what these cases pin is that the refusal happens before SQLite sees the
-// path at all.
+// The refusal exists because a failed `sqlite3_open` frees a block that
+// corrupts whichever connection is handed it next, not because opening a
+// directory is untidy, so what these cases pin is that the refusal happens
+// before SQLite sees the path at all.
 pub fn a_directory_is_refused_before_the_open_test() {
   let scratch = fixtures.scratch("sqlite-policy-unopenable")
   let occupied = scratch <> "/loom-search.db"

@@ -109,8 +109,8 @@ WP-K.
 
 - **The index open refuses a path SQLite would fail on.** `search.acquire`
   calls `storage/sqlite_policy.refusing_unopenable_path` before
-  `sqlight.open`, because a failed open corrupts unrelated connections in the
-  same emulator through the binding's double close; `packages/storage/CLAUDE.md`
+  `sqlight.open`, because a failed open frees a block through the binding's
+  double close and corrupts whichever connection is handed it next; `packages/storage/CLAUDE.md`
   has the mechanism. The index is the database most exposed to it, since it is
   a deletable projection beside a session file and repairing it means removing
   it.

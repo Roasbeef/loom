@@ -287,9 +287,10 @@ pub fn open(path: String) -> Result(Search, SearchError) {
 /// fail to open. The index is the database in this tree most likely to be
 /// pointed at a path that is not there: it is a projection beside a session
 /// file, it is safe to delete, and an operator repairing a corrupt index does
-/// exactly that. A failed `sqlite3_open` corrupts every other connection in
-/// the emulator through the binding's double close, which
-/// `storage/sqlite_policy` documents, so the refusal has to come first.
+/// exactly that. A failed `sqlite3_open` frees a block through the binding's
+/// double close, which `storage/sqlite_policy` documents, and corrupts
+/// whichever connection is handed that block next, so the refusal has to come
+/// first.
 ///
 /// ## Examples
 ///
