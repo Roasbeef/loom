@@ -42,7 +42,11 @@ func TestSeatbeltEnforcesFilesystemAndNetworkOnDarwin(t *testing.T) {
 		Network:       policy.Network{Mode: policy.NetworkOff},
 		Scratch:       "tmpfs",
 	}
-	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"))
+	// The child is this test binary, which go test builds under its own
+	// cache directory; the profile reads nothing it is not given, so the
+	// binary is passed as the helper path exactly as run.go passes
+	// loom-exec's.
+	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"), os.Args[0])
 
 	insideFile := filepath.Join(writable, "created")
 	runSeatbeltChild(t, plan, "write", insideFile)
@@ -89,6 +93,10 @@ func runSeatbeltChild(t *testing.T, plan SeatbeltPlan, mode, target string) {
 	argv := plan.Args([]string{os.Args[0], "-test.run=TestSeatbeltChildProcess"})
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "LOOM_SEATBELT_CHILD="+mode, "LOOM_SEATBELT_TARGET="+target)
+	// Start where the profile can read, as run.go does: an inherited
+	// working directory the profile does not grant makes getcwd(3) fail
+	// inside the jail.
+	cmd.Dir = "/"
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Seatbelt child failed: %v\n%s", err, out)
 	}
@@ -99,6 +107,7 @@ func runSeatbeltChildMustFail(t *testing.T, plan SeatbeltPlan, mode, target stri
 	argv := plan.Args([]string{os.Args[0], "-test.run=TestSeatbeltChildProcess"})
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "LOOM_SEATBELT_CHILD="+mode, "LOOM_SEATBELT_TARGET="+target)
+	cmd.Dir = "/"
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("Seatbelt allowed %s on %s:\n%s", mode, target, out)
 	}
@@ -169,7 +178,7 @@ func TestSeatbeltJailedPathFindsHomebrewTools(t *testing.T) {
 		Network: policy.Network{Mode: policy.NetworkOff},
 		Scratch: "tmpfs",
 	}
-	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"))
+	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"), "")
 
 	// Mirrors run.go: an inherited PATH naming only the Homebrew
 	// directory, folded with the fixed defaults by BuildPath, is what the
@@ -179,6 +188,7 @@ func TestSeatbeltJailedPathFindsHomebrewTools(t *testing.T) {
 	argv := plan.Args([]string{"/bin/sh", "-c", "command -v rg"})
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = []string{"PATH=" + jailedPath}
+	cmd.Dir = "/"
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("jailed `command -v rg` failed: %v\n%s", err, out)
