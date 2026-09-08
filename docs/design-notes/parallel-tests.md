@@ -371,3 +371,61 @@ resources to declare.
 `scripts/signoff.sh` reads `SIGNOFF_PARALLEL` and exports it as
 `LOOM_TEST_PARALLEL` for every lane. It defaults to 1 until (3) and (4)
 land.
+
+### Measured with the declaration in place
+
+Same 32-core Linux box, same exported fixtures, three runs per cell,
+wall-clock seconds around `bash scripts/test.sh <package>`. The first run of
+a package includes its compile, which is why several N=8 columns lead with a
+much larger number than they end with.
+
+| package | N=8 | N=16 | result |
+|---|---|---|---|
+| host | 0/1/0 | 1/0/1 | one failure at N=16 |
+| core | 0/1/0 | 1/0/1 | pass |
+| storage | 3/3/3 | 11/3/11 | two failures at N=16 |
+| session | 32/1/1 | 1/0/1 | one failure at N=16 |
+| machine | 2/0/1 | 0/1/0 | pass |
+| prompt | 2/1/0 | 1/0/1 | pass |
+| telemetry | 2/1/1 | 1/0/1 | pass |
+| runtime | 44/12/11 | 7/7/8 | pass |
+| provider | 5/5/4 | 2/3/3 | fails every run |
+| broker | 5/3/3 | 2/3/2 | fails every run |
+| mcp | 3/1/1 | 0/1/1 | pass |
+| tools | 3/1/0 | 1/1/0 | pass |
+| cap | 3/2/2 | 2/2/2 | pass |
+| ext | 2/0/1 | 0/1/1 | pass |
+| codemode | 10/10/11 | 9/8/9 | three failures |
+| events | 37/3/2 | 2/3/2 | pass |
+| client | 263/222/221 | 176/181/176 | one failure per setting |
+| conformance | 49/10/10 | 9/10/10 | pass |
+| tui | 16/10/10 | 10/9/10 | pass |
+| lint | 2/1/0 | 1/0/1 | pass |
+
+`runtime`, `cap` and `ext` are the three the declaration was written for, and
+all three now pass at both settings; `cap` previously failed 11 of its 65
+tests from N=4. `client` runs its declared module without the atom failure at
+either setting.
+
+The `client` package was also run once at N=8 under a delegated cgroup base,
+the configuration `scripts/signoff.sh` builds for its lanes: 222 seconds,
+pass.
+
+The remaining failures split into two groups. The fixtures being repaired
+separately — a shared `httpc` profile in `provider` and `broker`, a scratch
+directory asserted empty in `broker@integration_test`, and the wall-clock
+deadlines in `storage@sqlite_test` and `client@daemon_manager_test` — account
+for `provider` and `broker` failing every run and for `storage` at N=16. They
+are deliberately not declared: a wall-clock assumption is a bug in the test,
+and the declaration is for resources, not for flakiness.
+
+Three failures this measurement saw that the earlier census did not:
+`host@bootstrap_test:a_log_tail_cut_inside_a_codepoint_still_reports_test`
+(one run at N=16),
+`session@rewrite_test:sqlite_rewrite_retires_the_source_wal_before_the_copy_test`
+(one run at N=16), `codemode@e2e_test`'s end-to-end generator (three runs of
+six), and
+`client@serve_test:reopened_instance_does_not_revive_an_expired_writer_test`
+(one run at N=16). Each is a single occurrence in three or six runs, and none
+was diagnosed here. They belong with item (4) rather than with the
+declaration.
