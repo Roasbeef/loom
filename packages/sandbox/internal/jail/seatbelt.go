@@ -227,6 +227,45 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath, helper string) SeatbeltPlan
 		bindRO++
 	}
 
+	// Every granted region needs metadata reads on the directories
+	// leading to it. realpath(3) stats each ancestor of the path it
+	// canonicalizes, so a readable root several levels below "/" was
+	// granted while the path to it was not, and a jailed `gleam build` of
+	// a project with a path dependency failed with "Operation not
+	// permitted" on a file the profile did grant. Under the pre-020
+	// whole-host view the ancestors came for free. What this exposes is
+	// the existence, mode and mtime of directories the payload already
+	// knows the names of, not their contents: the grant is
+	// file-read-metadata and never file-read-data. Linux has the same
+	// shape, because bwrap creates the parents of every mountpoint in the
+	// root tmpfs and a jailed process can stat them.
+	//
+	// Both spellings are emitted, the policy's own and the
+	// symlink-resolved one, for the reason protectedSeatbeltPaths emits
+	// both: a caller's path is resolved against the profile as written,
+	// and /tmp and /private/tmp are different literals.
+	regions := append([]string{}, pol.WritableRoots...)
+	regions = append(regions, pol.ReadableRoots...)
+	for _, m := range pol.Mounts {
+		regions = append(regions, m.Path)
+	}
+	regions = append(regions, DarwinUserDirectories()...)
+	regions = append(regions, DarwinSystemRoots...)
+	if scratchPath != "" {
+		regions = append(regions, scratchPath)
+	} else if !pol.ScratchIsTmpfs() {
+		regions = append(regions, pol.Scratch)
+	}
+	if helper != "" {
+		regions = append(regions, helper)
+	}
+	for i, path := range seatbeltAncestorMetadata(regions) {
+		key := fmt.Sprintf("ANCESTOR_%d", i)
+		definitions = append(definitions, key+"="+path)
+		sections = append(sections, fmt.Sprintf(
+			"(allow file-read-metadata (literal (param %q)))", key))
+	}
+
 	// Subtractive rules are last. No later broad allow may reopen a protected
 	// path or let a writable ancestor be renamed around its carveout.
 	for i, path := range protected {
@@ -385,6 +424,32 @@ func normalizeSeatbeltPath(path string) string {
 		}
 		prefix = parent
 	}
+}
+
+// seatbeltAncestorMetadata lists every proper ancestor of every granted
+// region, in both the region's own spelling and its symlink-resolved one,
+// up to and including the root. The root itself is already granted
+// `file-read*` by the base profile, so its appearance here is redundant
+// rather than a widening, and dropping it would cost a special case for
+// no gain.
+func seatbeltAncestorMetadata(regions []string) []string {
+	var out []string
+	for _, region := range regions {
+		for _, spelling := range []string{
+			filepath.Clean(region), normalizeSeatbeltPath(region),
+		} {
+			for a := filepath.Dir(spelling); ; a = filepath.Dir(a) {
+				out = append(out, a)
+
+				// filepath.Dir("/") is "/", so the root is
+				// where the walk stops.
+				if a == filepath.Dir(a) {
+					break
+				}
+			}
+		}
+	}
+	return uniqueSorted(out)
 }
 
 func protectedSeatbeltAncestors(writable, protected []string) []string {

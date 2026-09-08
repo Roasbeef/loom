@@ -160,3 +160,35 @@ directory is still not a tmpfs. What it does change is the last sentence of
 Consequences: `readable_roots` on Darwin now restricts reads, as it does on
 Linux, and a path named by no part of the policy is not visible to a jailed
 payload.
+
+## Addendum: ancestor metadata is granted on Darwin
+
+**Date**: 2026-09-08
+
+The allowlist addendum above is complete about which regions are readable and
+silent about the directories leading to them, and that gap broke a real build.
+`realpath(3)` stats every ancestor of the path it canonicalizes, so a readable
+root nested several levels below `/` was granted while the path down to it was
+not. A jailed `gleam build` of a project with a `path` dependency failed with
+`Operation not permitted` while canonicalizing a file the profile did grant.
+Under the pre-020 whole-host view the ancestors were covered by the same
+unconditional read that covered everything else, so the narrowing is what
+introduced the failure.
+
+The profile therefore emits `(allow file-read-metadata (literal ...))` for
+every proper ancestor of every granted region: each writable root, each
+readable root, each explicit mount, the per-execution scratch, the helper's own
+binary, the per-user temp and cache directories, and each entry of
+`DarwinSystemRoots`. Both spellings are emitted, the policy's own and the
+symlink-resolved one, for the reason the protected denies emit both. The rules
+are placed before the trailing protected denies, so a protected ancestor is
+still denied by the final word of the profile.
+
+What this exposes is the existence, mode and modification time of directories
+whose names the payload was already given, and no contents: the verb is
+`file-read-metadata` and never `file-read-data`. Linux exposes the same shape
+without anyone deciding to, because bwrap creates the parents of every
+mountpoint in the root tmpfs and a jailed process can stat them. The eleven
+self-test probes are unchanged and all eleven remain enforced, including `host
+path outside the mount plan unreadable`, which reads a file rather than
+stat-ing a directory.
