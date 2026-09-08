@@ -232,8 +232,18 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		return nil, fmt.Errorf("jail: report pipe: %w", err)
 	}
 
-	stage2 := []string{selfExe, "--exec", "--cwd", req.Cwd, "--"}
-	stage2 = append(stage2, req.Argv...)
+	// Stage 2 is told whether the tmpfs scratch is really mounted,
+	// because its Landlock rules have to grant write on it and it cannot
+	// see the mount namespace it was placed in. Only the bwrap branch
+	// below mounts one, so every other branch says no.
+	stage2Argv := func(scratchMounted bool) []string {
+		argv := []string{selfExe, "--exec", "--cwd", req.Cwd}
+		if scratchMounted {
+			argv = append(argv, ScratchMountedFlag)
+		}
+		return append(append(argv, "--"), req.Argv...)
+	}
+	stage2 := stage2Argv(false)
 
 	var argv []string
 	var mounts MountReport
@@ -332,7 +342,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		// was actually executed. See mounts.go for both halves.
 		mounts = AuditMounts(jailed, plan)
 		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds, selfExe)...)
-		argv = append(argv, stage2...)
+		argv = append(argv, stage2Argv(jailed.ScratchIsTmpfs())...)
 	case feat.Platform.GOOS == "darwin":
 		if feat.SeatbeltPath != SeatbeltExecutable {
 			policyR.Close()

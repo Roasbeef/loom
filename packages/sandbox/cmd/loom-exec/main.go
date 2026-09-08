@@ -175,6 +175,9 @@ func runStage2(rest []string) {
 			}
 			cfg.Cwd = rest[i+1]
 			i += 2
+		case jail.ScratchMountedFlag:
+			cfg.ScratchMounted = true
+			i++
 		case "--":
 			cfg.Argv = rest[i+1:]
 			i = len(rest)
