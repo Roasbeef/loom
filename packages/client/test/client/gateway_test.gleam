@@ -3074,6 +3074,96 @@ pub fn a_prompt_on_a_busy_strand_is_queued_and_drained_test() {
   assert author == message.Origin("bob", "Bob")
 }
 
+/// An observer meeting a busy strand is refused at admission rather than
+/// held. The queue is a courtesy extended to a principal who may write; a
+/// principal who may not write must learn that from the authority check on
+/// the frame, before anything is held on its behalf, because a refusal that
+/// waited for the drain would let an observer keep hub memory reserved and
+/// would report the refusal at a moment the client can no longer tie to its
+/// command.
+pub fn an_observer_on_a_busy_strand_is_refused_at_admission_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(alice, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let #(bob, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+  let #(carol, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("carol", "Carol"),
+      access.Participant(access.Observer),
+    )
+
+  let assert Ok(first) =
+    gateway.connection_request(alice, prompt_frame(730, "main", "first"))
+    as "Alice's prompt is answered"
+  assert outcome_status(first) == "admitted"
+
+  let assert Ok(second) =
+    gateway.connection_request(bob, prompt_frame(731, "main", "second"))
+    as "Bob's prompt is answered"
+  assert outcome_status(second) == "queued"
+
+  // The refusal is the authority check's, not the queue's: `forbidden`
+  // rather than the `conflict` an over-full queue answers with.
+  let assert Ok(refused) =
+    gateway.connection_request(carol, prompt_frame(732, "main", "third"))
+    as "Carol's prompt is answered"
+  let assert Ok(envelope) = protocol.decode_event(refused)
+    as "the refusal decodes"
+  let assert protocol.ErrorEvent(code: "forbidden", ..) = envelope.event
+    as "an observer may not submit, busy strand or not"
+
+  release_gate(gate)
+  let assert poll.Answered(_author) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case held_entry_origin(harness, "second") {
+        Some(origin) -> poll.Done(origin)
+        None -> poll.Retry
+      }
+    })
+    as "the held prompt is admitted once the strand goes idle"
+
+  // Nothing Carol sent reached the transcript, and the drain did not admit
+  // it late under somebody else's origin.
+  assert held_entry_origin(harness, "third") == None
+  assert user_prompt_texts(harness) == ["first", "second"]
+}
+
+// Every user prompt the transcript holds, in commit order.
+fn user_prompt_texts(harness: Harness) -> List(String) {
+  let assert Ok(rows) =
+    storage.scan_entries(
+      harness.runtime.session.store,
+      storage.entry_scan() |> storage.entry_seq_range(Some(1), None),
+    )
+    as "the fixture reads its own transcript"
+  list.filter_map(rows, fn(row) {
+    case row {
+      core_entry.MessageEntry(
+        message: message.UserMessage(content: [message.UserText(text:, ..)], ..),
+        ..,
+      ) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+}
+
 // The origin on the durable user entry carrying `text`, once one exists.
 // That origin is the whole assertion: a queue that re-minted it at drain
 // time would credit whoever happened to be attached by then.
