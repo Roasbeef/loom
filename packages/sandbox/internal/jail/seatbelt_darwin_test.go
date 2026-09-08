@@ -198,3 +198,56 @@ func TestSeatbeltJailedPathFindsHomebrewTools(t *testing.T) {
 		t.Fatalf("jailed `command -v rg` = %q, want %q", got, rgPath)
 	}
 }
+
+// TestSeatbeltCanonicalizesInsideAGrantedRoot covers the failure
+// protocol-change/020's narrowing introduced. realpath(3) reads metadata
+// on every ancestor of the path it canonicalizes, so a readable root
+// nested a few levels below "/" was granted while the directories leading
+// to it were not, and a jailed `gleam build` of a project with a path
+// dependency failed with "Operation not permitted" while canonicalizing a
+// file it was allowed to read.
+func TestSeatbeltCanonicalizesInsideAGrantedRoot(t *testing.T) {
+	if _, err := os.Stat(SeatbeltExecutable); err != nil {
+		t.Skipf("%s unavailable: %v", SeatbeltExecutable, err)
+	}
+	if _, err := os.Stat("/bin/realpath"); err != nil {
+		t.Skipf("/bin/realpath unavailable: %v", err)
+	}
+
+	// The root lives under the private scratch parent, whose own
+	// ancestors (/private/tmp and /private) are granted by no part of the
+	// plan, which is exactly the shape the regression needs.
+	root, err := os.MkdirTemp(SeatbeltScratchParent, "loom-seatbelt-realpath-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+
+	nested := filepath.Join(root, "project", "build")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(nested, "manifest")
+	if err := os.WriteFile(target, []byte("manifest"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	pol := policy.Policy{
+		ReadableRoots: []string{nested},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+	}
+	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"), "")
+
+	argv := plan.Args([]string{"/bin/realpath", target})
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.Dir = "/"
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("jailed realpath failed: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != target {
+		t.Fatalf("jailed realpath = %q, want %q", got, target)
+	}
+}

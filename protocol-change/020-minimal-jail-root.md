@@ -173,7 +173,11 @@ that way on current macOS is an empirical question: `sandbox-exec` is
 undocumented, and ADR-006 claims only what stage 2 witnesses. If the probe
 cannot be made to pass, the line is
 `known-gap|host path outside the mount plan unreadable|Seatbelt profile grants unconditional file-read*`,
-with a filed issue and an addendum inside ADR-006. It is never deleted.
+with a filed issue and an addendum inside ADR-006. It is never deleted. The
+per-root grants also need `file-read-metadata` on every ancestor of every
+granted region, because `realpath(3)` stats each one and a build that
+canonicalizes a path inside a nested readable root otherwise fails with
+`Operation not permitted`; ADR-006 records the grant and what it exposes.
 
 ### Rollout
 
