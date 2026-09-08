@@ -44,6 +44,7 @@ import support/internal/ffi_ws
 import support/provider as provider_test
 import support/tui_driver
 import telemetry/log
+import tui
 import tui/approval
 import weft
 import weft/poll
@@ -427,16 +428,32 @@ fn exercise(
       backend.Paste("/approvals " <> pending.id),
       backend.KeyPress("enter"),
     ])
-  let _resolved =
+
+  // The keystroke does not open the inspector. `/approvals <id>` only sends a
+  // decision lookup, and the overlay appears when the daemon's reply is
+  // applied. The streamed approval record arrives on its own channel, so it is
+  // no evidence that the lookup has landed. Esc closes an overlay that is
+  // already open and is discarded otherwise, which fixes the ordering: the
+  // close must follow the inspector, or a late reply opens the panel over the
+  // transcript the fixture then reads.
+  let inspected =
     tui_v2_test.await(terminal.data, fn(sample) {
-      list.any(sample.model.approvals, fn(record) {
-        record.id == pending.id && record.origin == Some(author)
-      })
+      case sample.model.overlay {
+        tui.ApprovalInspector(_) ->
+          list.any(sample.model.approvals, fn(record) {
+            record.id == pending.id && record.origin == Some(author)
+          })
+        _ -> False
+      }
     })
+  assert string.contains(inspected.frame, "EXACT APPROVAL")
+    as "the inspector the fixture is about to close is actually painted"
 
   // Exact-action inspection is modal and covers the transcript summaries.
   // Close that panel before asking whether the winning author is painted.
-  let _ = tui_driver.play(terminal.data, [backend.KeyPress("esc")])
+  let closed = tui_driver.play(terminal.data, [backend.KeyPress("esc")])
+  assert closed.model.overlay == tui.NoOverlay
+    as "Esc dismissed the inspector rather than being dropped before it opened"
   let observed =
     tui_v2_test.await(terminal.data, fn(sample) {
       string.contains(sample.frame, author.name)
