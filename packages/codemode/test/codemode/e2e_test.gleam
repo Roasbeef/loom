@@ -244,6 +244,15 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   assert !rig.exists(stale)
   assert again.manifest_hash == artifact.manifest_hash
 
+  // Why the two hashes agree, rather than that they happened to. Every
+  // dependency's compiled bytes must be the seed's own, byte for byte: a
+  // build root recompiles the program and nothing else. The hash was
+  // unstable while that was untrue, because a recompiled module records
+  // the build root's path in its own chunks, and which modules were
+  // recompiled depended on the order the host's filesystem handed back
+  // the seed's directories.
+  assert_dependencies_came_from_the_seed(live, prerequisites)
+
   // The acceptance issue #5 asks for: a *healthy* run — this one, the one
   // everybody actually runs — carries the enforcement report for both
   // jailed stages, not just the build's. The node's used to arrive (when
@@ -257,6 +266,52 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   assert_both_stages_reported(repeat.enforcement)
   announce(execution.enforcement)
   rig.stop(live)
+}
+
+// Every compiled module in the build root that did not come from the
+// program's own package is byte-identical to the seed's copy of it.
+//
+// The comparison is over bytes rather than over the recorded source path
+// because bytes are what the content address is taken over: a dependency
+// that was recompiled differs from the seed's copy in three chunks, all
+// of which carry the absolute path of the directory it was compiled in.
+// A dependency that was not recompiled was copied, so it is identical.
+fn assert_dependencies_came_from_the_seed(
+  live: Rig,
+  prerequisites: Prerequisites,
+) -> Nil {
+  let seed_erlang = prerequisites.seed_root <> "/build/dev/erlang"
+  let built_erlang = live.build_root <> "/build/dev/erlang"
+  let assert Ok(packages) = simplifile.read_directory(built_erlang)
+    as "the build root must hold compiled packages"
+
+  list.each(packages, fn(package) {
+    case package == compile.package_name {
+      True -> Nil
+      False ->
+        assert_package_matches_seed(
+          seed_erlang <> "/" <> package <> "/" <> build.beam_directory,
+          built_erlang <> "/" <> package <> "/" <> build.beam_directory,
+        )
+    }
+  })
+}
+
+// One dependency package's `ebin`, module by module. A package directory
+// with no `ebin` is bookkeeping and contributes nothing, exactly as it
+// does when the products are gathered.
+fn assert_package_matches_seed(seeded: String, built: String) -> Nil {
+  case simplifile.read_directory(built) {
+    Error(_absent) -> Nil
+    Ok(modules) ->
+      list.each(modules, fn(module) {
+        let from_seed = simplifile.read_bits(seeded <> "/" <> module)
+        let from_build = simplifile.read_bits(built <> "/" <> module)
+
+        assert from_build == from_seed
+          as { "a dependency was recompiled in the build root: " <> module }
+      })
+  }
 }
 
 // Both jailed stages of an execution said what the kernel applied to them.
