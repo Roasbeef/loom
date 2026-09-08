@@ -36,9 +36,11 @@
 import gleam/bit_array
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import provider/secret
 import simplifile
+import tools/blob
 
 /// The working extension: one tool that echoes its `say` argument.
 pub fn hello() -> List(#(String, String)) {
@@ -341,9 +343,20 @@ pub fn materialise(files: List(#(String, String)), into: String) -> String {
   into
 }
 
-/// A scratch directory under `LOOM_TEST_SCRATCH`, then `HOME`, then the
-/// package's own `build/`. Never under `/tmp`, which the jail replaces
-/// with its own scratch tmpfs.
+/// A scratch directory under `LOOM_TEST_SCRATCH`, then a per-checkout
+/// directory under `HOME`, then the package's own `build/`. Never under
+/// `/tmp`, which the jail replaces with its own scratch tmpfs.
+///
+/// The `HOME` branch carries a digest of the running checkout's directory
+/// because these fixtures delete the directory before use: without it, two
+/// checkouts of this repository on one machine would take turns deleting
+/// each other's live fixture state. The digest rather than the path itself
+/// keeps the result short, which matters because a socket under one of
+/// these roots must stay inside the kernel's `sun_path` limit.
+///
+/// This repeats `support/scratch` in the `codemode` package rather than
+/// importing it, because a Gleam package exports only its `src` modules and
+/// a test support module in another package cannot be reached from here.
 ///
 /// ## Examples
 ///
@@ -352,18 +365,28 @@ pub fn materialise(files: List(#(String, String)), into: String) -> String {
 /// ```
 ///
 pub fn scratch(name: String) -> String {
-  let base = case env("LOOM_TEST_SCRATCH") {
-    Ok(configured) -> configured
-    Error(Nil) ->
-      case env("HOME") {
-        Ok(home) -> home <> "/.loom-exttest"
-        Error(Nil) -> "build/exttest"
-      }
+  let here =
+    simplifile.current_directory()
+    |> result.unwrap("build/exttest")
+  let base = case env("LOOM_TEST_SCRATCH"), env("HOME") {
+    Ok(configured), _ -> configured
+    Error(Nil), Ok(home) -> home <> "/.loom-exttest/" <> checkout_tag(here)
+    Error(Nil), Error(Nil) -> "build/exttest"
   }
   let dir = base <> "/" <> name
   let _cleared = simplifile.delete(dir)
   let _made = simplifile.create_directory_all(dir)
   dir
+}
+
+// The first twelve hex characters of a directory's SHA-256 digest, which is
+// what separates one checkout's scratch state from another's.
+fn checkout_tag(checkout: String) -> String {
+  checkout
+  |> bit_array.from_string
+  |> blob.ref_for
+  |> string.drop_start(string.length("sha256-"))
+  |> string.slice(at_index: 0, length: 12)
 }
 
 /// The `extension.toml` a fixture carries, under a chosen name.

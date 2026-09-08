@@ -22,6 +22,7 @@ import gleam/option
 import gleam/string
 import simplifile
 import support/internal/ffi_peer
+import support/scratch
 
 /// The external things an end-to-end run needs, each located once.
 pub type Prerequisites {
@@ -94,17 +95,7 @@ pub fn start(
   prerequisites prerequisites: Prerequisites,
   pool_size pool_size: Int,
 ) -> Rig {
-  let assert Ok(here) = simplifile.current_directory()
-  let base = case ffi_peer.get_env("LOOM_TEST_SCRATCH") {
-    Ok(scratch) -> scratch
-    Error(Nil) ->
-      case ffi_peer.get_env("HOME") {
-        Ok(home) -> home <> "/.loom-cmtest"
-        Error(Nil) -> here <> "/build/e2e-codemode"
-      }
-  }
-  let root = base <> "/e2e-" <> name
-  let _cleared = simplifile.delete(root)
+  let root = scratch.fresh("e2e-" <> name)
   let workspace = root <> "/work"
   let build_root = root <> "/build-root"
   let helper_tmp = root <> "/tmp"

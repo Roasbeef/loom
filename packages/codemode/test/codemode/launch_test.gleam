@@ -26,6 +26,7 @@ import simplifile
 import support/fake_helper
 import support/internal/ffi_peer
 import support/rig
+import support/scratch
 
 const t = 1_700_000_000_000
 
@@ -42,27 +43,12 @@ fn op_id() -> ids.OpId {
   op
 }
 
-// A Unix socket path may not exceed the kernel's `sun_path` limit, which
-// is 104 bytes on macOS. Prefer an explicitly configured short scratch,
-// then a directory under HOME. Neither fallback is under `/tmp`, because
-// the production jail replaces `/tmp` with its scratch tmpfs and correctly
-// refuses a cap socket hidden there. With neither variable set, the test
-// stays in-tree and lets the launcher's own 100-byte guard name a checkout
-// that is too deep.
+// A scratch directory for one launch, chosen by `support/scratch`, which
+// owns both reasons the choice is not obvious: the cap socket path must
+// stay inside the kernel's `sun_path` limit, and two checkouts of this
+// repository on one machine must not delete each other's state.
 fn fresh_dir(name: String) -> String {
-  let assert Ok(here) = simplifile.current_directory()
-  let base = case ffi_peer.get_env("LOOM_TEST_SCRATCH") {
-    Ok(scratch) -> scratch
-    Error(Nil) ->
-      case ffi_peer.get_env("HOME") {
-        Ok(home) -> home <> "/.loom-cmtest"
-        Error(Nil) -> here <> "/build/cmtest"
-      }
-  }
-  let dir = base <> "/launch-" <> name
-  let _cleared = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  dir
+  scratch.fresh("launch-" <> name)
 }
 
 fn artifact(dir: String) -> compile.Artifact {
