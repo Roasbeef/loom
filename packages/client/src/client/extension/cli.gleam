@@ -386,7 +386,11 @@ pub fn build_for(
       seed_root: plane.toolchain.seed_root,
       gleam_path: plane.toolchain.gleam_path,
       base_policy: plane.base_policy,
-      toolchain_roots: ["/"],
+      // The build plane's base names the toolchain regions it admitted
+      // (`serve.start_build_plane`), so the build asks for those rather
+      // than for the whole host: under `protocol-change/020` a wider
+      // requirement is a narrowing the meet refuses, not a widening.
+      toolchain_roots: plane.base_policy.readable_roots,
       demand:,
       env: [#("PATH", serve.toolchain_path_of(plane))],
       dependencies: compile.default_dependencies(),

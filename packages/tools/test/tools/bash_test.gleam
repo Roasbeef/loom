@@ -79,10 +79,13 @@ pub fn bash_call_spec_shape_test() {
   assert spec.step_id == "step-1"
   assert spec.response == broker.RefuseNarrowed
   assert spec.env == [#("PATH", "/usr/bin:/bin")]
-  // Requirements: workspace writable, whole fs readable, network off,
-  // exactly the passed env names, tmpfs scratch.
+  // Requirements: workspace writable, the base's own readable reach and
+  // mounts asked for rather than restated, network off, exactly the
+  // passed env names, tmpfs scratch.
   assert spec.requirements.writable_roots == [workspace]
-  assert spec.requirements.readable_roots == ["/"]
+  assert spec.requirements.readable_roots
+    == [workspace, fake_broker.system_region]
+  assert spec.requirements.mounts == spec.base_policy.mounts
   assert spec.requirements.network == policy.NetworkOff
   assert spec.requirements.env_allow == ["PATH"]
   assert spec.requirements.scratch == policy.ScratchTmpfs

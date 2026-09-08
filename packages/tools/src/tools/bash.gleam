@@ -162,17 +162,22 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
   )
 }
 
-/// The bash tool's policy-shaped needs: workspace writable, the whole
-/// filesystem readable (interpreters and system libraries live outside
-/// the workspace), network off, tmpfs scratch. The environment
-/// allowlist is added per call from the context's env, and so is the
-/// network — `call_spec` takes the session base's through
-/// `tool.asking_base_network`, so the `NetworkOff` stated here is the
-/// posture of a host that configured none rather than a ceiling this
-/// tool imposes.
+/// The bash tool's policy-shaped needs: workspace writable, network off,
+/// tmpfs scratch. The environment allowlist is added per call from the
+/// context's env, and so is the network — `call_spec` takes the session
+/// base's through `tool.asking_base_network`, so the `NetworkOff` stated
+/// here is the posture of a host that configured none rather than a
+/// ceiling this tool imposes.
+///
+/// The readable reach is added per call for the same reason. It used to
+/// be `["/"]` here, which was true of a base view that bound the whole
+/// host; under `protocol-change/020` the base names the regions a jail
+/// may read, so `call_spec` asks for the base's own readable roots and
+/// mounts. A shell that restated `["/"]` would be asking for a root no
+/// base covers, and the meet would refuse every call.
 pub fn requirements(workspace: String) -> policy.SandboxPolicy {
   let base = policy.workspace_default(workspace)
-  policy.SandboxPolicy(..base, readable_roots: ["/"], env_allow: [])
+  policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
 fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
@@ -302,6 +307,13 @@ fn call_spec(
   // `git commit` here dies on the index lock. Asking for the base's own
   // roots can never widen past the base: the intersection of a set with
   // itself is itself.
+  //
+  // The readable roots and the mounts are asked for the same way and on
+  // the same argument. An interpreter, a system library and a toolchain
+  // cache all sit outside the workspace, and under
+  // `protocol-change/020` the session base is what says which of them a
+  // jail may reach. Mounts compose by exact path, so a shell that named
+  // none would run with none of them bound at all.
   let tool_requirements =
     policy.SandboxPolicy(
       ..base_requirements,
@@ -309,6 +321,11 @@ fn call_spec(
         base_requirements.writable_roots,
         ctx.base_policy.writable_roots,
       )),
+      readable_roots: list.unique(list.append(
+        base_requirements.readable_roots,
+        ctx.base_policy.readable_roots,
+      )),
+      mounts: ctx.base_policy.mounts,
       env_allow: list.map(ctx.env, fn(pair) { pair.0 }),
       limits: policy.Limits(..base_requirements.limits, wall_s:),
     )

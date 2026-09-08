@@ -310,9 +310,14 @@ fn run_escalation(helper_path: String) -> Nil {
     wiring.Config(
       ..rig.config(rig_jail, rig.scripted_gateway(turns), sess),
       // Narrower than `bash` requires, which is what provokes the
-      // refusal: the tool wants the whole filesystem readable and this
-      // grants only the workspace.
-      base_policy: policy.workspace_default(rig_jail.workspace),
+      // refusal: the call passes `PATH` and this base allows no
+      // environment name at all. The readable roots used to be the
+      // narrowed dimension, until `protocol-change/020` made the shell
+      // ask for the base's own reach rather than for the whole host.
+      base_policy: policy.SandboxPolicy(
+        ..policy.workspace_default(rig_jail.workspace),
+        env_allow: [],
+      ),
       escalations: escalate.seam(escalate_config),
     )
   let effects = wiring.build_effects(config)

@@ -100,16 +100,32 @@ fn base_ctx(
   )
 }
 
-/// The fake sessions' base policy: whole filesystem readable, workspace
-/// writable, `PATH` allowed — wide enough that the shipped tool
-/// requirements compose without narrowing.
+/// The fake sessions' base policy: the workspace writable, one system
+/// region readable and mounted, `PATH` allowed — wide enough that the
+/// shipped tool requirements compose without narrowing.
+///
+/// The region is stated rather than answered with `["/"]`. Under
+/// `protocol-change/020` a session base names what a jail may reach, so
+/// a fixture that granted the whole host would be testing the tools
+/// against a base view nothing ships any more.
 pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..policy.workspace_default(workspace),
-    readable_roots: ["/"],
+    readable_roots: [workspace, system_region],
     env_allow: ["PATH"],
+    mounts: [
+      policy.Mount(
+        path: system_region,
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+    ],
   )
 }
+
+/// The one out-of-workspace region the fake base grants: where a shell's
+/// interpreter and system libraries live.
+pub const system_region = "/usr"
 
 fn replay(script: List(CallEvent), events: Subject(CallEvent)) -> Nil {
   case script {

@@ -121,14 +121,17 @@ pub fn start(
   )
 }
 
-/// The e2e session base policy: workspace writable, the whole
-/// filesystem readable (interpreters live outside the workspace),
-/// network off — wide enough to cover the bash tool's requirements so
-/// the happy path composes without narrowing.
+/// The e2e session base policy: the workspace writable and readable,
+/// network off — enough to cover the bash tool's requirements so the
+/// happy path composes without narrowing.
+///
+/// It used to grant `readable_roots: ["/"]`, which restated the helper's
+/// old base view rather than any need of this session's. Under
+/// `protocol-change/020` the regions outside the workspace an ordinary
+/// command needs are the helper's per-OS system roots and the mounts a
+/// real boot derives, neither of which a fixture supplies or should.
 pub fn base_policy(workspace: String) -> SandboxPolicy {
-  policy.SandboxPolicy(..policy.workspace_default(workspace), readable_roots: [
-    "/",
-  ])
+  policy.workspace_default(workspace)
 }
 
 /// Stops the broker and the pool. A helper still lent to an in-flight
