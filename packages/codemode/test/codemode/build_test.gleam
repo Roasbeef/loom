@@ -171,3 +171,38 @@ pub fn a_seed_pinned_to_other_dependencies_is_refused_test() {
   assert string.contains(reason, "different dependency table")
   let assert enforcement.Unreported(_why) = built.enforcement
 }
+
+// --- the clone's copy order ------------------------------------------------
+
+// The manifest hash was once unstable because cloning a seed copied its
+// whole `build` tree in one go, leaving the relative age of the
+// dependencies' sources and the artifacts derived from them to directory
+// traversal order. Gleam re-copies and re-`erlc`s a dependency's native
+// `.erl` whenever the source reads as newer than the copy under
+// `build/dev`, and that is the one freshness question with no content
+// hash behind it — so on a host whose traversal happened to reach `dev`
+// first, 39 of the 78 compiled modules were rebuilt, each recording the
+// build root's path in its own chunks and moving the address.
+//
+// The order is now decided here rather than by the filesystem, so this is
+// the assertion that keeps it decided.
+pub fn a_clone_copies_dependency_sources_first_test() {
+  assert build.clone_order(["dev", "packages"]) == ["packages", "dev"]
+
+  // Traversal order is what varied between hosts, so the answer must not
+  // depend on the order the children arrive in.
+  assert build.clone_order(["packages", "dev"]) == ["packages", "dev"]
+}
+
+// The lock files sitting beside `packages` and `dev` are children of the
+// same directory, and a clone that dropped one would leave the build root
+// missing something the seed had. Ordering the copy must not become
+// filtering it.
+pub fn a_clone_carries_every_child_of_the_seeds_build_test() {
+  let entries = ["dev", "gleam-dev-erlang.lock", "packages", "gleam.lock"]
+  let ordered = build.clone_order(entries)
+
+  assert list.sort(ordered, string.compare)
+    == list.sort(entries, string.compare)
+  assert list.first(ordered) == Ok(build.package_sources)
+}

@@ -213,6 +213,43 @@ fn install_generated(
 
 // --- preparing the root ---------------------------------------------------
 
+/// The child of a seed's `build` directory that holds the dependencies'
+/// own sources. Everything else under `build` holds artifacts derived
+/// from them.
+pub const package_sources = "packages"
+
+/// Orders the children of a seed's `build` directory for cloning, so that
+/// the dependencies' sources are written before anything derived from
+/// them.
+///
+/// This exists because of the one freshness question in a Gleam build
+/// with no content hash behind it. A dependency's native `.erl` files are
+/// copied forward from `build/packages/<pkg>/src` into
+/// `build/dev/erlang/<pkg>`, and the compiler skips that copy — and the
+/// `erlc` run behind it — only while the source is no newer than the
+/// destination. Gleam modules are not exposed to this: their mtimes are a
+/// cheap gate in front of a source fingerprint, which decides.
+///
+/// A directory copy does not carry mtimes across, so both trees are
+/// stamped with the time they were written, and whichever is written
+/// second reads as the newer one. Cloning `build` wholesale leaves that
+/// to directory traversal order, which is a property of the filesystem
+/// rather than of this program. Naming the order here removes the
+/// question instead of answering it per host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert build.clone_order(["dev", "packages"]) == ["packages", "dev"]
+/// ```
+///
+pub fn clone_order(entries: List(String)) -> List(String) {
+  let #(sources, derived) =
+    list.partition(entries, fn(entry) { entry == package_sources })
+
+  list.append(sources, derived)
+}
+
 // Clones the seed's vendored prelude, resolved manifest, and package cache
 // into the build root the compile service already wrote sources into. The
 // seed's own compiled program is dropped: an artifact from the placeholder
@@ -221,6 +258,13 @@ fn install_generated(
 // Anything a previous build left in the root goes first. The build root is
 // meant to be fresh, but "meant to be" is not a guarantee, and a stale
 // `ebin` would silently join the artifact — and its content address.
+//
+// The sequence below is the ordering `clone_order` explains, and it runs
+// wider than that one directory: `vendor` holds the path dependencies'
+// sources, including `cap`'s own native `.erl`, so it too must land
+// before `build/dev` receives the copies made from it. Written this way,
+// no dependency is ever recompiled in a build root, and the compiled
+// bytes the address is taken over are the seed's own.
 fn clone_seed(seed_root: String, root: String) -> Result(Nil, CompileError) {
   let _cleared =
     simplifile.delete_all([
@@ -234,10 +278,44 @@ fn clone_seed(seed_root: String, root: String) -> Result(Nil, CompileError) {
     seed_root <> "/manifest.toml",
     root <> "/manifest.toml",
   ))
-  use _ <- result.try(copy_tree(seed_root <> "/build", root <> "/build"))
+  use _ <- result.try(clone_build(seed_root <> "/build", root <> "/build"))
   let _dropped =
     simplifile.delete(root <> "/build/dev/erlang/" <> compile.package_name)
   Ok(Nil)
+}
+
+// Copies the seed's `build` directory one child at a time, in the order
+// `clone_order` gives, rather than as a single tree.
+//
+// The children are a mixture: `packages` and `dev` are directories, the
+// per-target lock files beside them are ordinary files, so each is
+// dispatched on what it is. A child the seed does not have cannot appear
+// here, since the list is read from the seed itself.
+fn clone_build(
+  source: String,
+  destination: String,
+) -> Result(Nil, CompileError) {
+  use entries <- result.try(
+    simplifile.read_directory(source) |> file_error("read " <> source),
+  )
+  use _ <- result.try(
+    simplifile.create_directory_all(destination)
+    |> file_error("create " <> destination),
+  )
+
+  list.try_each(clone_order(entries), fn(entry) {
+    clone_child(source <> "/" <> entry, destination <> "/" <> entry)
+  })
+}
+
+fn clone_child(
+  source: String,
+  destination: String,
+) -> Result(Nil, CompileError) {
+  case simplifile.is_directory(source) {
+    Ok(True) -> copy_tree(source, destination)
+    Ok(False) | Error(_) -> copy_file(source, destination)
+  }
 }
 
 // --- running the build ----------------------------------------------------
@@ -478,9 +556,19 @@ fn gather(
 }
 
 /// A content address over a whole compiled set: every file's name and the
-/// hash of its bytes, sorted, hashed again. Two builds of the same source
-/// against the same seed produce the same value; one changed byte anywhere
-/// in the artifact changes it.
+/// hash of its bytes, sorted, hashed again. One changed byte anywhere in
+/// the artifact changes it.
+///
+/// The address is a function of three things and no others: the seed's
+/// compiled bytes, which arrive here by copy and are never recompiled
+/// (`clone_order`); the program's source, which is what the build
+/// actually compiles; and the path of the build root it was compiled in,
+/// because `erlc` records the absolute source path of each module it
+/// compiles in three of the module's chunks. The last of those is why two
+/// builds must share a build root to share an address, and why they then
+/// do so reliably — a dependency that recompiled would drag the same path
+/// into its own chunks, and which dependencies recompiled was once a
+/// property of the host's directory traversal order.
 ///
 /// Public and reading the directory itself, because the address has to be
 /// recomputable *later*, over a copy, by something that never saw the
