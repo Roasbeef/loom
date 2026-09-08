@@ -22,6 +22,14 @@
 //// session posture that must not regress and the build posture that was
 //// wrong.
 ////
+//// The third posture arrived with issue #242. The extensions root is
+//// `<state_root>/extensions` by default, so an install's build runs one
+//// directory below the daemon's owner token, catalogue and session
+//// databases — under `readable_roots: ["/"]`, on a jail whose base view
+//// is the whole host. Those entries are masked when they exist and
+//// filtered when they do not, which is the same buildability question
+//// the blob store failed, answered the other way round.
+////
 //// Pure: no helper, no kernel, no bwrap. The real jailed run lives in
 //// `client/extension_test`.
 
@@ -39,19 +47,59 @@ import simplifile
 
 const t = 1_700_000_000_000
 
-pub fn the_build_plane_masks_nothing_test() {
+pub fn the_build_plane_masks_no_blob_store_test() {
   let root = fresh_dir("plane")
+  let state_root = root <> "-state"
 
   // An install root holds no blob store, so there is nothing under it a
-  // mask would be protecting. An empty list is the whole claim: it is
-  // what makes the unbuildable mask unrepresentable rather than merely
-  // filtered out one composition step later.
-  assert serve.build_plane_policy(root).protected == []
-    as "an install's build plane masks nothing"
+  // mask would be protecting. Not constructing the entry is what makes
+  // the unbuildable mask unrepresentable rather than merely filtered out
+  // one composition step later.
+  let masks = serve.build_plane_policy(root, state_root).protected
+  assert !list.any(masks, string.ends_with(_, "/.blobs"))
+    as "an install's build plane masks no blob store"
+
+  // A state root no daemon has written is a set of paths that do not
+  // exist under a parent the build may not write, which is the shape
+  // bwrap refuses. The filter is what keeps an install on a fresh host
+  // working at all.
+  assert masks == [] as "an unwritten state root contributes no mask"
 
   // And the plane starts on it, which is the check `start_build_plane`
   // makes before it spawns anything.
-  assert serve.base_policy_fault(serve.build_plane_policy(root)) == Ok(Nil)
+  assert serve.base_policy_fault(serve.build_plane_policy(root, state_root))
+    == Ok(Nil)
+}
+
+pub fn the_build_plane_masks_the_daemon_state_root_test() {
+  let root = fresh_dir("state-plane")
+  let state_root = fresh_dir("state-plane-state")
+
+  // The four entries `client/daemon/root.directories` writes before it
+  // admits anything. They exist on this host, so the jail can bind over
+  // them whatever the build's writable root has been narrowed to, which
+  // is why these are the ones the probe asserts on.
+  let established = [
+    state_root <> "/owner.token",
+    state_root <> "/catalogue.db",
+    state_root <> "/daemon.lock",
+    state_root <> "/sessions",
+  ]
+  let assert Ok(Nil) = simplifile.create_directory(state_root <> "/sessions")
+    as "the fixture sessions directory must be creatable"
+  list.each(established, fn(path) {
+    let _written = simplifile.write(path, "x")
+  })
+
+  // Without this the install's jailed build reads the owner token by
+  // absolute path: the build plane grants `readable_roots: ["/"]` and
+  // the jail's base view is the whole host, so a mask is the only thing
+  // in the way.
+  let masks = serve.build_plane_policy(root, state_root).protected
+  list.each(established, fn(path) {
+    assert list.contains(masks, path)
+      as { "the build plane must mask " <> path }
+  })
 }
 
 pub fn a_session_still_masks_its_blob_store_test() {
@@ -95,7 +143,7 @@ fn build_requirements(
       broker: idle_broker(),
       seed_root: root <> "/seed",
       gleam_path: "/usr/local/bin/gleam",
-      base_policy: serve.build_plane_policy(root),
+      base_policy: serve.build_plane_policy(root, root <> "-state"),
       toolchain_roots: ["/"],
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin")],

@@ -486,7 +486,8 @@ pub type BuildPlane {
 ///
 /// ```gleam
 /// // serve.start_build_plane(helper: None, seed: None, workspace: ".",
-/// //   writable: staging, tmp_dir: staging, clock:)
+/// //   writable: staging, state_root: home <> "/.loom", tmp_dir: staging,
+/// //   clock:)
 /// ```
 ///
 pub fn start_build_plane(
@@ -494,6 +495,7 @@ pub fn start_build_plane(
   seed seed: Option(String),
   workspace workspace: String,
   writable writable: String,
+  state_root state_root: String,
   tmp_dir tmp_dir: String,
   clock clock: Clock,
 ) -> Result(BuildPlane, String) {
@@ -506,8 +508,9 @@ pub fn start_build_plane(
   // where the build root is, which for an install is under the
   // extensions root and nowhere near the checkout. The policy is the
   // build plane's own rather than a session's for the reason
-  // `build_plane_policy` gives: an install has no blob store to mask.
-  let base = build_plane_policy(writable)
+  // `build_plane_policy` gives: an install has no blob store to mask,
+  // and it does have the daemon's credentials one directory up.
+  let base = build_plane_policy(writable, state_root)
 
   // The same refusal the boot makes, in the same place in the order: a
   // base policy the sandbox cannot enforce is a failure now, not a
@@ -4366,7 +4369,8 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 
 /// The base policy an install's build plane runs under: the staging root
 /// writable, the whole filesystem readable so the toolchain is reachable,
-/// network off, and nothing masked.
+/// network off, and the daemon's state root masked where the jail can
+/// build the mask.
 ///
 /// Separate from `base_policy` because the blob mask is the one thing a
 /// build plane must not inherit. A session's blob store exists — `boot`
@@ -4383,16 +4387,40 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 /// keeps that state out of reach; dropping it later would leave the same
 /// mistake one composition step away.
 ///
+/// The state root is the other half of that lesson applied the other
+/// way. A build step is a jailed compile of code an operator fetched
+/// from somewhere, running under `readable_roots: ["/"]` on a host whose
+/// base view is the whole filesystem, so without a mask it can read
+/// `<state_root>/owner.token` exactly as a session's jail once could.
+/// Every entry goes in conditionally rather than unconditionally,
+/// because the extensions root is `<state_root>/extensions` by default
+/// and an install may be the first thing that ever runs on a host: a
+/// daemon that has never started has written no token, and a mask over a
+/// missing path under a read-only parent is the refusal this function's
+/// first paragraph is about.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // serve.build_plane_policy("/ext").protected == []
+/// // serve.build_plane_policy("/home/o/.loom/extensions", "/home/o/.loom")
 /// ```
 ///
-pub fn build_plane_policy(writable: String) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(..policy.workspace_default(writable), readable_roots: [
-    "/",
-  ])
+pub fn build_plane_policy(
+  writable: String,
+  state_root: String,
+) -> policy.SandboxPolicy {
+  let base =
+    policy.SandboxPolicy(..policy.workspace_default(writable), readable_roots: [
+      "/",
+    ])
+  protecting(
+    base,
+    always: [],
+    where_maskable: list.flatten([
+      established_masks(state_root),
+      lazy_masks(state_root),
+    ]),
+  )
 }
 
 /// Why this server will not boot on the base policy it was given, worded

@@ -65,6 +65,7 @@ func Run(w io.Writer, selfExe string) bool {
 	}{
 		{"write outside writable_roots denied", probeWriteOutside},
 		{"protected path masked from reads and writes", probeProtected},
+		{"daemon state root unreachable from a session jail", probeDaemonStateRoot},
 		{"direct socket denied under network off", probeSocketOff},
 		{"env not in allowlist withheld", probeEnvAllowlist},
 		{"fork bomb capped by pids limit", probeForkBomb},
@@ -336,6 +337,120 @@ func probeProtected(feat jail.Features, selfExe string) probeResult {
 		return probeResult{outcome: failed,
 			detail: fmt.Sprintf("the payload never announced itself, so the "+
 				"untouched secret is evidence of nothing (out %q)", out)}
+	}
+	return probeResult{outcome: enforced}
+}
+
+// probeDaemonStateRoot runs the masks a real daemon session is built
+// with against a real jail. The masks themselves are chosen by
+// client/serve.protecting_state_root; this probe reconstructs the same
+// shape — three files and one directory under a state root — and asks
+// the kernel whether a jailed payload can still obtain their bytes.
+//
+// It is a different claim from "protected path masked from reads and
+// writes". That probe proves the mechanism on a synthetic path inside
+// the writable root. This one proves the daemon's own layout, with the
+// state root outside every writable root, which is the arrangement a
+// session actually gets and the one issue #242 asks about. The owner
+// token alone is the authority to open a session on any workspace on the
+// host, so the two probes are worth keeping apart even though they share
+// a mechanism.
+//
+// The refusal has two shapes and the assertion must survive both. On
+// Linux a protected file becomes a bind of /dev/null, so the read
+// succeeds and yields zero bytes, while a protected directory becomes an
+// empty read-only tmpfs, so the session database is simply absent. On
+// Darwin all three are denied outright and the read fails. Asserting on
+// the error code would therefore be wrong on Linux and asserting on
+// emptiness would be wrong on Darwin, so the assertion is on the secret:
+// the marker bytes must not appear in the payload's output.
+func probeDaemonStateRoot(feat jail.Features, selfExe string) probeResult {
+	if !feat.HasFilesystemJail() {
+		return probeResult{outcome: skipped,
+			detail: "state-root masking needs bwrap or Seatbelt (Landlock has no deny rules)"}
+	}
+	dir, err := probeDir()
+	if err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	defer os.RemoveAll(dir)
+
+	// One marker per credential, so a leak names which of them leaked
+	// rather than only that something did.
+	const tokenMarker = "LOOM-PROBE-OWNER-TOKEN-SECRET"
+	const catalogueMarker = "LOOM-PROBE-CATALOGUE-SECRET"
+	const sessionMarker = "LOOM-PROBE-SESSION-SECRET"
+
+	// The layout is client/daemon/root.directories': the root holds the
+	// lock, the catalogue, the owner token and a sessions directory with
+	// one database per session.
+	stateRoot := filepath.Join(dir, "state")
+	sessions := filepath.Join(stateRoot, "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	token := filepath.Join(stateRoot, "owner.token")
+	catalogue := filepath.Join(stateRoot, "catalogue.db")
+	lock := filepath.Join(stateRoot, "daemon.lock")
+	sessionDB := filepath.Join(sessions, "other-session.db")
+	files := map[string]string{
+		token:     tokenMarker + "\n",
+		catalogue: catalogueMarker + "\n",
+		lock:      "1234\n",
+		sessionDB: sessionMarker + "\n",
+	}
+	for path, contents := range files {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			return probeResult{outcome: failed, detail: err.Error()}
+		}
+	}
+
+	// The session's own workspace is the writable root, and the state
+	// root sits outside it. That is the arrangement the daemon builds:
+	// nothing grants the state root, and on both platforms the jail's
+	// base view is readable anyway, so the mask is the only thing
+	// standing between the payload and the token.
+	workspace := filepath.Join(dir, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return probeResult{outcome: failed, detail: err.Error()}
+	}
+	pol := basePolicy(workspace)
+	pol.Protected = []string{token, catalogue, lock, sessions}
+
+	// The witness first, for the reason probeProtected states: an
+	// unobtained secret is equally consistent with a mask that held and
+	// with a payload that never ran.
+	allowed := filepath.Join(workspace, "allowed")
+	script := fmt.Sprintf(
+		"echo ok > %s && echo ALLOWED-OK; "+
+			"cat %s; cat %s; cat %s; ls %s",
+		allowed, token, catalogue, sessionDB, sessions)
+	_, out, err := runShell(feat, selfExe, pol, script)
+	if err != nil {
+		return probeResult{outcome: failed, detail: "spawn: " + err.Error()}
+	}
+	if !strings.Contains(out, "ALLOWED-OK") {
+		return probeResult{outcome: failed,
+			detail: fmt.Sprintf("the payload never announced itself, so the "+
+				"unread credentials are evidence of nothing (out %q)", out)}
+	}
+	for marker, what := range map[string]string{
+		tokenMarker:     "the owner token",
+		catalogueMarker: "the catalogue",
+		sessionMarker:   "another session's database",
+	} {
+		if strings.Contains(out, marker) {
+			return probeResult{outcome: failed,
+				detail: what + " was readable from inside the jail"}
+		}
+	}
+
+	// Listing the masked directory must not name the database either. A
+	// session identifier is not a secret on its own, but the enumeration
+	// is what turns a mask into a directory the payload can plan against.
+	if strings.Contains(out, filepath.Base(sessionDB)) {
+		return probeResult{outcome: failed,
+			detail: "the sessions directory could be enumerated from inside the jail"}
 	}
 	return probeResult{outcome: enforced}
 }

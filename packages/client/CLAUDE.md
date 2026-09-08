@@ -1450,6 +1450,20 @@ catalogue without opening runtimes. Explicit admission invokes
   catalogue WAL readable from every jail. The public
   `state_root_mask_candidates` is the unfiltered list; `protecting_state_root`
   is what a session actually gets.
+- `client/serve.build_plane_policy(writable, state_root)` — the base an
+  extension install's jailed build runs under, and the second place the
+  state root has to be masked. The extensions root is
+  `<state_root>/extensions` by default, so the build runs one directory
+  below `owner.token` with `readable_roots: ["/"]` on a jail whose base
+  view is the whole host. Every state-root entry goes in **conditionally**
+  here, `established_masks` included, because an install may be the first
+  thing that ever runs on a host and a mask over a path a daemon has not
+  yet written, under a parent the narrowed build may not write, is the
+  refusal that took every jailed compile with it in #304. The blob mask is
+  still not constructed at all: an install has no content-addressed store.
+  `serve.start_build_plane` therefore takes a `state_root` argument, and
+  `client/extension/cli` derives it as the parent of the extensions root,
+  which is the inverse of `record.root_for`.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a
@@ -1924,7 +1938,9 @@ implementations would be two answers to "may this build run". The
 `writable` and `workspace` arguments are separate questions and a boot
 only ever asks them of one directory: the seed ladder looks in the
 checkout, and the jail may write only where the build root is, which for
-an install is under the extensions root.
+an install is under the extensions root. `state_root` is the third: the
+daemon's credentials sit one directory above the extensions root and the
+build plane masks them where the jail can build the mask.
 
 ## Relationships
 

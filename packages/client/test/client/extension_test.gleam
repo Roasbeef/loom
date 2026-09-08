@@ -867,6 +867,10 @@ fn real_jailed_build() -> Nil {
       seed: None,
       workspace: repository_root(),
       writable: record.path(root),
+      // A state root outside the writable root which no daemon has
+      // ever written, so every mask filters away and the plane starts
+      // on the same policy it always did.
+      state_root: record.path(root) <> "-state",
       tmp_dir: staging,
       // A real wall clock, not the fixture one the rest of this suite
       // uses: the broker turns `deadline - now` into a receive timeout,
