@@ -292,7 +292,31 @@ only Go module.
 - **The environment is constructed, never inherited.** A name absent from
   `env_allow` is dropped even when the broker sent it, so the policy alone
   is enough to audit what a jail could see. Output is sorted for
-  determinism.
+  determinism. `PATH` is the one name the helper rebuilds instead of
+  forwarding: `jail.BuildPath` (`internal/jail/env.go`) folds the broker's
+  requested `PATH` and the helper process's own inherited `PATH` — the
+  daemon's, which is where the operator's toolchain actually lives
+  (Homebrew's `/opt/homebrew/bin` on macOS, say) — with a fixed floor
+  (`/usr/local/bin`, `/usr/bin`, `/bin`), keeping only entries that are
+  absolute, name a directory that exists, and are not already present. A
+  directory list is not a secret, so dropping it bought nothing but an
+  unusable jail on the very filesystem view the policy already exposes
+  read-only. **The requested list leads the inherited one**, because it is
+  the only half that can name a bundled toolchain: an unpacked release
+  ships `erl` at `erts-<vsn>/bin/erl`, which the client discovers and
+  sends, and which is never on the daemon's PATH. That fold is safe
+  because the broker's environment is harness-authored, so a model still
+  cannot influence PATH resolution. Entries under anything the jail makes
+  writable are excluded from both lists: a directory the model can write
+  to, sitting on `PATH`, would let a jailed command shadow `rg` with a
+  script written a moment earlier. `pathExcludedRoots` computes that set
+  — the policy's writable roots, a host-backed scratch, `ScratchMount`
+  when the Linux scratch is a tmpfs (inside the jail `/tmp` is the
+  model's own tmpfs), and `DarwinUserDirectories()` on macOS (the
+  Seatbelt profile grants `file-write*` there) — and entries are
+  `filepath.Clean`ed before the containment test.
+  `run.go` builds this before calling `FilterEnv`, so a policy whose
+  `env_allow` never names `PATH` still sees none of it.
 - **`output_bytes` is per stream, and truncation does not stop reading.**
   After the cap the helper keeps draining and discards; stopping would
   wedge the child on a full pipe, turning an output limit into an

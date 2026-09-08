@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/roasbeef/loom/sandbox/internal/policy"
@@ -126,5 +127,64 @@ func TestSeatbeltChildProcess(t *testing.T) {
 	}
 	if err != nil {
 		os.Exit(42)
+	}
+}
+
+// TestSeatbeltJailedPathFindsHomebrewTools proves BuildPath end to end on
+// this host: given an inherited PATH containing Homebrew's
+// /opt/homebrew/bin — where rg actually lives on the repository owner's
+// machine, and nowhere named by jailedPathDefaults — the jailed shell
+// still finds it. The Seatbelt profile's own filesystem grants (/usr,
+// /opt, /bin) already make the binary visible inside the jail; the only
+// question this test answers is whether the environment we hand the
+// jail carries the directory that names it.
+func TestSeatbeltJailedPathFindsHomebrewTools(t *testing.T) {
+	if _, err := os.Stat(SeatbeltExecutable); err != nil {
+		t.Skipf("%s unavailable: %v", SeatbeltExecutable, err)
+	}
+	rgPath, err := exec.LookPath("rg")
+	if err != nil {
+		t.Skip("rg not installed on this host")
+	}
+	homebrewBin := filepath.Dir(rgPath)
+
+	// Without this guard the test proves nothing on a host that installs
+	// rg into /usr/local/bin: the hardcoded floor would supply the
+	// directory whether or not BuildPath forwarded anything, so a
+	// regression that dropped the inherited PATH entirely would still
+	// pass here.
+	for _, dir := range jailedPathDefaults {
+		if homebrewBin == dir {
+			t.Skipf("rg lives in %s, which jailedPathDefaults already supplies", dir)
+		}
+	}
+
+	root, err := os.MkdirTemp(SeatbeltScratchParent, "loom-seatbelt-path-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+
+	pol := policy.Policy{
+		Network: policy.Network{Mode: policy.NetworkOff},
+		Scratch: "tmpfs",
+	}
+	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"))
+
+	// Mirrors run.go: an inherited PATH naming only the Homebrew
+	// directory, folded with the fixed defaults by BuildPath, is what the
+	// jailed process actually receives as its PATH.
+	jailedPath := strings.Join(BuildPath("", homebrewBin, nil), ":")
+
+	argv := plan.Args([]string{"/bin/sh", "-c", "command -v rg"})
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=" + jailedPath}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("jailed `command -v rg` failed: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != rgPath {
+		t.Fatalf("jailed `command -v rg` = %q, want %q", got, rgPath)
 	}
 }
