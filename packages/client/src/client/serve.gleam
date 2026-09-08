@@ -2515,7 +2515,13 @@ fn assemble_in(
       hosts_seam,
       extension_hosts.invoker(
         hosts_seam,
-        at: hook_coordinates(settings, entropy(), clock, environment),
+        at: hook_coordinates(
+          settings,
+          base_policy,
+          entropy(),
+          clock,
+          environment,
+        ),
       ),
       code_mode_host,
       extension_memory.for_session(agency_config),
@@ -3309,8 +3315,19 @@ fn policy_label(policy: schedule.Policy) -> String {
 // capability token is bound to and what its effects clear against — so a
 // hook's reads are attributable to "the extension hooks", never to
 // whichever run happened to be in flight.
-fn hook_coordinates(
+//
+// The base policy is a parameter rather than a read of
+// `settings.base_policy`, because the two are not the same value: the
+// session base is the settings' policy after the index, memory,
+// worktree and code-mode passes have widened and masked it, and only
+// that assembled base carries the toolchain mounts an extension node
+// requires. A hook handed the settings' policy would meet an empty
+// mount list against three required mounts and every hook-fired launch
+// would be refused.
+@internal
+pub fn hook_coordinates(
   settings: Settings,
+  base_policy: policy.SandboxPolicy,
   seed: Int,
   clock: Clock,
   environment: List(#(String, String)),
@@ -3329,7 +3346,7 @@ fn hook_coordinates(
     // strand's. The session's root strand is the honest name for that.
     strand: root_strand,
     workspace: settings.workspace,
-    base_policy: settings.base_policy,
+    base_policy:,
     demand: settings.demand,
     env: environment,
   )

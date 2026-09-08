@@ -1648,6 +1648,25 @@ pub fn the_state_root_masks_do_not_meet_the_toolchain_mounts_test() {
   assert serve.base_policy_fault(admitted) == Ok(Nil)
 }
 
+pub fn a_hook_runs_under_the_assembled_session_base_test() {
+  // The drift this holds shut: hooks fire on the harness's own timeline,
+  // so their coordinates are built once at assembly rather than borrowed
+  // from a run. Built from the settings' own policy they would carry
+  // neither the toolchain mounts an extension node requires nor the
+  // index, memory and worktree masks the session runs under, and every
+  // hook-fired launch would meet three required mounts against an empty
+  // base list and be refused.
+  let settings = settings_under("hook-base")
+  let assembled =
+    settings.base_policy
+    |> serve.protecting_index(settings.workspace <> "/.loom/index.sqlite")
+    |> serve.admitting_codemode(Ok(a_toolchain()))
+  assert assembled != settings.base_policy
+  let at =
+    serve.hook_coordinates(settings, assembled, 7, clock.fixed(at: 0), [])
+  assert at.base_policy == assembled
+}
+
 pub fn a_toolchain_inside_the_state_root_refuses_the_boot_test() {
   // And the pathological arrangement is refused by name rather than
   // enforced differently on the two platforms: a seed unpacked inside the
