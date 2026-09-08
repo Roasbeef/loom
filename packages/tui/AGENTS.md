@@ -270,16 +270,30 @@ that tree separately from the self-contained server.
   command, and Enter on an agent opens its strand transcript. A strand switch
   requests its effective config so the header never attributes the previous
   strand's model to it.
-- **Live submission**: Enter steers the current live operation by default.
-  Tab changes one draft to a `follow_up` queued after that operation, then
-  resets to steer mode. `/steer` and `/queue` expose both paths explicitly.
+- **Live submission**: Enter sends a `prompt` whether or not the strand is
+  running. On a running strand the daemon holds it and runs it when the strand
+  settles, answering `queued`; the client draws the operator's line under the
+  live tail with a queued marker until the entry it stands for commits. Tab
+  changes one draft to a `steer`, folded into the run already going, then
+  resets. `/steer` and `/queue` expose `steer` and `follow_up` explicitly.
+  A steer and a follow-up commit an ordinary user entry too, so they are
+  recorded alongside the held prompts as interjections that draw nothing;
+  the list is kept in commit order — interjections join the open run and
+  commit during it, held prompts wait for it to settle — and a committed
+  user turn retires its head. A submission waits for the daemon's outcome
+  before it joins that list, so a refusal takes its echo with it, and a
+  snapshot, an adoption, an attach or `/clear` empties the list with the
+  transcript it was drawn over.
 - **Paste**: small pastes retain the ordinary editor path. A paste estimated
   at 400 tokens or spanning eight lines becomes a compact attachment in the
   input row; the full bytes are appended to the editable instruction only
   when the prompt is sent. A single pasted local path becomes an image
   attachment only when it is a regular PNG/JPEG/GIF/WebP file no larger than
   20 MiB; one prompt retains at most four images and 20 MiB of raw image data
-  in aggregate. The chip shows a terminal-sanitized filename, MIME, and size.
+  in aggregate. The chip shows a terminal-sanitized filename, MIME, and size,
+  on its own row above the editor: beside the editor it took its width from
+  that summary and left the editor a column or two, so the row costs one line
+  of prompt height and the editor keeps the full interior width.
   Unsupported files and multi-token paths stay text, while read errors preserve
   the editor and show a local error. The backend enables bracketed-paste mode
   so a real terminal paste arrives as one event. Backspace on an empty editor
@@ -359,7 +373,7 @@ that tree separately from the self-contained server.
 - **Live intent stays visible.** The composer title derives liveness from the
   active strand's operation phase and refines `assistant` with its latest
   stream kind. Before text arrives it says `thinking`; once text arrives it
-  says `responding`. The same title states whether Enter steers or queues. Its
+  says `responding`. The same title states whether Enter queues or steers. Its
   low-motion glyph advances at the active or quiet poll cadence without holding
   the whole terminal loop at the active cadence.
 - **Unchanged frames preserve identity.** Visible mutations advance one scalar
@@ -431,9 +445,11 @@ that tree separately from the self-contained server.
   durable large user turn stays previewed until detail mode asks for it.
 - **Image turns never become live-operation steering.** The client submits one
   non-empty text block first, when present, then image blocks in drop order.
-  It refuses locally while the active strand is live and preserves the editor
-  and attachments. Only the file bytes and magic-derived MIME reach the wire;
-  local paths remain presentation state.
+  `prompt_content` is the only frame that carries an image, so a slash command
+  is refused before the editor is cleared and both the instruction and the
+  attachments survive. Liveness is not a local question: the daemon queues a
+  prompt aimed at a busy strand. Only the file bytes and magic-derived MIME
+  reach the wire; local paths remain presentation state.
 - **Overlays own focus.** While a selector or inspector is open, ordinary
   prompt editing is inert. Each modal explicitly paints the background of all
   its styled spans so transcript attributes cannot bleed into the overlay.

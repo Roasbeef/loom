@@ -33,6 +33,7 @@ import tui/model_selector
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/selection
+import tui/session_channel
 import tui/sessions
 import tui/text_hygiene
 import tui/theme
@@ -860,8 +861,307 @@ pub fn transcript_scroll_clamps_at_the_oldest_viewport_test() {
 
 pub fn streaming_output_preserves_the_scrollback_anchor_test() {
   assert tui.anchored_scroll_offset(0, 20, 23) == 0
+    as "a reader at the tail keeps following it"
   assert tui.anchored_scroll_offset(8, 20, 23) == 11
-  assert tui.anchored_scroll_offset(2, 20, 17) == 0
+    as "rows arriving below the reader move the tail-relative offset"
+}
+
+/// Rows leaving the bottom do not move a reader who is up in history.
+///
+/// A stream generation is cleared whole when its entry settles, so the shrink
+/// is several rows at once rather than one. Following it down would walk the
+/// reader towards the live tail, and from a shallow offset would land them on
+/// it; the second case is the one that made scrollback unusable during a
+/// running turn.
+pub fn shrinking_the_live_tail_holds_the_scrollback_anchor_test() {
+  assert tui.anchored_scroll_offset(8, 20, 17) == 8
+    as "a deep offset is unmoved by rows retiring below it"
+  assert tui.anchored_scroll_offset(2, 20, 17) == 2
+    as "a shallow offset is held rather than snapped to the live tail"
+}
+
+/// Enter on a running strand sends a prompt, and tab is what steers.
+///
+/// The two are told apart by the notice each path sets, which is also the
+/// label the operator reads in the footer. Steering is deliberately not
+/// echoed: it is folded into the run that is already on screen, so it comes
+/// back as part of that answer rather than as a turn of its own.
+pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
+  let live = live_model("look at this too")
+
+  let queued = tui.update(backend.KeyPress("enter"), live)
+  assert string.contains(queued.notice, "prompt sent")
+    as "enter sends a prompt, which the daemon holds until the run settles"
+  assert queued.queued == [tui.HeldPrompt("look at this too")]
+    as "the operator's line is echoed the moment it is submitted"
+
+  let steered =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(..live, submission_mode: tui.SteerNow),
+    )
+  assert string.contains(steered.notice, "steered")
+    as "tab mode folds the draft into the run that is already going"
+  assert steered.queued == [tui.Interjection]
+    as "a steer draws nothing but is still owed an entry of its own"
+}
+
+/// The echo stands in for the turn until that turn's own entry arrives.
+///
+/// Both halves matter. An echo that never retired would sit under the
+/// transcript beside the committed copy of itself; one retired by any entry
+/// at all would disappear while the daemon was still holding the prompt.
+pub fn a_queued_echo_is_retired_by_the_turn_it_stands_for_test() {
+  let submitted =
+    tui.update(backend.KeyPress("enter"), live_model("look at this too"))
+
+  let after_assistant =
+    tui.accept_connection_message(
+      submitted,
+      connection.Incoming(gateway.assistant_entry("main", "still working", 4)),
+    )
+  assert after_assistant.queued == [tui.HeldPrompt("look at this too")]
+    as "the run's own output does not retire a prompt the daemon still holds"
+
+  let after_user =
+    tui.accept_connection_message(
+      after_assistant,
+      connection.Incoming(gateway.user_entry("main", "look at this too", 5)),
+    )
+  assert after_user.queued == []
+    as "the committed user turn replaces the echo that stood in for it"
+}
+
+/// This terminal's own steer does not retire the prompt it queued behind.
+///
+/// Both entries arrive as an ordinary user turn on the active strand, so
+/// nothing in the entry itself says which is which. The steer commits during
+/// the run and the held prompt is drained only once that run has settled, and
+/// the interjection recorded at submission is what carries that order across
+/// to the retirement rule. Without it the operator queues a prompt, steers the
+/// running turn, and watches their queued line vanish while the daemon is
+/// still holding it.
+pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
+  let live = live_model("look at this too")
+  let submitted = tui.update(backend.KeyPress("enter"), live)
+  let steered =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(
+        ..submitted,
+        submission_mode: tui.SteerNow,
+        input: text_area.state_from_string("actually try the other file"),
+      ),
+    )
+  assert steered.queued
+    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    as "premise: the steer commits before the prompt the daemon still holds"
+
+  let after_steer_entry =
+    tui.accept_connection_message(
+      steered,
+      connection.Incoming(gateway.user_entry(
+        "main",
+        "actually try the other file",
+        5,
+      )),
+    )
+  assert after_steer_entry.queued == [tui.HeldPrompt("look at this too")]
+    as "the steer's own entry retires the steer, not the prompt behind it"
+
+  let after_prompt_entry =
+    tui.accept_connection_message(
+      after_steer_entry,
+      connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
+    )
+  assert after_prompt_entry.queued == []
+    as "the drained prompt's entry then retires the echo standing for it"
+}
+
+/// An abort cancels this terminal's queued steer, so its echo record goes too.
+///
+/// Abort's contract is asymmetric, and the asymmetry is the whole test: the
+/// run's still-queued steer and follow-up items are drained without ever
+/// committing, while a held prompt lives in the gateway rather than the run
+/// and drains once the strand goes idle. An interjection left in the queue
+/// therefore waits for an entry that will never arrive, and absorbs the
+/// drained prompt's entry instead — leaving the prompt's echo on screen for
+/// the rest of the session.
+pub fn an_abort_retires_the_steer_it_cancelled_test() {
+  let submitted =
+    tui.update(backend.KeyPress("enter"), live_model("look at this too"))
+  let steered =
+    tui.update(
+      backend.KeyPress("enter"),
+      tui.Model(
+        ..submitted,
+        submission_mode: tui.SteerNow,
+        input: text_area.state_from_string("actually try the other file"),
+      ),
+    )
+  assert steered.queued
+    == [tui.Interjection, tui.HeldPrompt("look at this too")]
+    as "premise: the steer is recorded ahead of the prompt still being held"
+
+  let aborted =
+    tui.apply_channel_update(
+      steered,
+      session_channel.Acknowledged("abort", "accepted"),
+    )
+  assert aborted.queued == [tui.HeldPrompt("look at this too")]
+    as "the aborted steer commits no entry, so its record goes with the run"
+
+  let drained =
+    tui.accept_connection_message(
+      aborted,
+      connection.Incoming(gateway.user_entry("main", "look at this too", 6)),
+    )
+  assert drained.queued == []
+    as "the drained prompt's own entry then retires the echo standing for it"
+}
+
+/// A snapshot rebuilds the transcript, so the echoes drawn over it go too.
+///
+/// The gateway's hold queue outlives a client disconnect and drains on its
+/// own, so a terminal that reconnects gets the committed entry in the
+/// snapshot. An echo carried across the rebuild would sit under the entry it
+/// stood for as a second copy of the same line, which is the duplicate the
+/// retirement rule exists to avoid.
+pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
+  let stale =
+    tui.Model(
+      ..live_model(""),
+      queued: [tui.HeldPrompt("look at this too")],
+      awaiting_outcome: Some(tui.HeldPrompt("and one more thing")),
+    )
+  let synchronized =
+    tui.accept_connection_message(
+      stale,
+      connection.Incoming(gateway.full_snapshot("demo")),
+    )
+  assert synchronized.queued == []
+    as "the server's own account of the strand replaces the local one"
+  assert synchronized.awaiting_outcome == None
+    as "including the submission that was still waiting on the old socket"
+}
+
+/// A refused prompt takes its echo with it instead of leaving it on screen.
+///
+/// The daemon holds four prompts per strand and answers the fifth with
+/// `code_conflict`. That prompt commits no entry, so nothing later would ever
+/// retire an echo drawn for it, and before this it sat under the transcript
+/// for the rest of the session claiming to be queued. The refusal is the
+/// reply to the submission still awaiting an outcome, because the
+/// conversation channel carries one mutation at a time.
+pub fn a_refused_prompt_retires_its_own_echo_test() {
+  let submitted =
+    tui.Model(
+      ..live_model(""),
+      awaiting_outcome: Some(tui.HeldPrompt("a fifth one")),
+    )
+  let refused =
+    tui.accept_connection_message(
+      submitted,
+      connection.Incoming(gateway.server_error(
+        "conflict",
+        "the strand is busy and its queue is full",
+      )),
+    )
+  assert refused.awaiting_outcome == None
+    as "a refusal retires the submission it refused"
+  assert refused.queued == []
+    as "and the refused prompt never joins the queue it was refused from"
+}
+
+/// The echo is drawn under the live tail, where the operator is looking.
+///
+/// Position is the whole point of it: local notices are written above the
+/// durable history, so an echo placed there would be off the top of the
+/// screen in any session long enough for the wait to matter. The check is
+/// that the queued line renders below an answer that is already on screen.
+pub fn a_queued_echo_renders_below_the_live_transcript_test() {
+  let inbox = connection.new_inbox()
+  let steps =
+    list.flatten([
+      [
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.full_snapshot("demo")),
+        ),
+        virtual_backend.Deliver(
+          connection.Incoming(
+            gateway.strands_snapshot([
+              #("main", "main", "assistant"),
+            ]),
+          ),
+        ),
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.assistant_entry(
+            "main",
+            "earlier answer",
+            3,
+          )),
+        ),
+      ],
+      "and one more thing"
+        |> string.to_graphemes
+        |> list.map(fn(character) {
+          virtual_backend.Input(backend.KeyPress(character))
+        }),
+      [virtual_backend.Input(backend.KeyPress("enter"))],
+    ])
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 20),
+      steps,
+      inbox,
+    )
+  let assert Ok(run) =
+    tui.run_script(tui.Model(..quiet_model(inbox), peer: tui.Replaying), script)
+    as "the scripted backend cannot refuse to start"
+  let assert Ok(last) = list.last(run.frames)
+    as "every run draws at least its initial frame"
+
+  assert run.final.queued == [tui.HeldPrompt("and one more thing")]
+    as "premise: the submission produced an echo to look for"
+  let rows = string.split(frame.buffer_to_text(last), "\n")
+  let assert Ok(answer_row) = row_containing(rows, "earlier answer")
+    as "premise: the answer already on screen is visible"
+  let assert Ok(echo_row) = row_containing(rows, "and one more thing")
+    as "the echoed line is on screen the moment it is submitted"
+  let assert Ok(marker_row) = row_containing(rows, "queued ·")
+    as "the echo says what it is waiting for"
+
+  assert echo_row > answer_row
+    as "the echo is drawn under the transcript, not above the history"
+  assert marker_row > echo_row
+    as "the queued marker trails the lines it describes"
+}
+
+// The index of the first row containing `needle`, which is what an ordering
+// check between two rendered lines compares.
+fn row_containing(rows: List(String), needle: String) -> Result(Int, Nil) {
+  rows
+  |> list.index_map(fn(row, index) { #(row, index) })
+  |> list.find_map(fn(pair) {
+    let #(row, index) = pair
+    case string.contains(row, needle) {
+      True -> Ok(index)
+      False -> Error(Nil)
+    }
+  })
+}
+
+// One attached-looking client whose active strand is mid-answer, with a
+// draft in the editor. `Replaying` performs the whole local half of a
+// submission and writes to no socket, which is the half these checks read.
+fn live_model(draft: String) -> tui.Model {
+  tui.Model(
+    ..quiet_model(connection.new_inbox()),
+    peer: tui.Replaying,
+    active_strand: "main",
+    strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
+    input: text_area.state_from_string(draft),
+  )
 }
 
 pub fn prompt_history_restores_the_unsent_draft_test() {
@@ -1072,9 +1372,29 @@ pub fn image_attachment_summary_sanitizes_the_filename_test() {
     == Some("red.png next · image/png · 1 B")
 }
 
-pub fn image_attachment_layout_measures_terminal_cells_test() {
-  assert tui.attachment_width("界.png", 20) == 9
-  assert tui.attachment_width("界.png", 8) == 6
+/// An attached image must not cost the editor its width.
+///
+/// The chip row is taken off the top of the prompt interior, so the editor
+/// keeps every column it had and loses one row. Both halves are asserted:
+/// a layout that gave the editor the full rectangle would pass a width
+/// check alone while drawing the chip over the first line of the prompt.
+pub fn attachment_chips_stack_above_a_full_width_editor_test() {
+  let area = geometry.rect_new(1, 10, 80, 4)
+
+  let #(no_chips, whole_area) = tui.input_layout(area, [])
+  assert no_chips == geometry.rect_zero()
+    as "an unattached prompt draws no chip row"
+  assert whole_area == area
+    as "an unattached prompt gives the editor the whole interior"
+
+  let image = test_image("screenshot.png", 1000)
+  let #(chips, editor) =
+    tui.input_layout(area, [composer.ImageAttachment(image)])
+
+  assert chips == geometry.rect_new(1, 10, 80, 1)
+    as "the chip row is one row at the top of the interior"
+  assert editor == geometry.rect_new(1, 11, 80, 3)
+    as "the editor keeps the full width and gives up one row"
 }
 
 pub fn image_attachments_have_count_and_aggregate_byte_limits_test() {
@@ -1152,9 +1472,34 @@ fn test_image(filename: String, byte_size: Int) -> image_drop.Image {
   )
 }
 
-pub fn image_submission_is_refused_while_the_strand_is_live_test() {
-  assert tui.image_prompt_allowed(False)
-  assert !tui.image_prompt_allowed(True)
+/// An image prompt goes out while the strand is running.
+///
+/// The client used to refuse one, because `prompt` on a busy strand was a
+/// conflict. The daemon now holds it and drains it when the run settles, so
+/// the refusal only cost the operator their attachment. `Replaying` is the
+/// peer here because it performs the whole local half of a submission and
+/// writes nothing to a socket, which is exactly the half under test.
+pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
+  let live =
+    tui.Model(
+      ..quiet_model(connection.new_inbox()),
+      peer: tui.Replaying,
+      active_strand: "main",
+      strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
+      attachments: [composer.ImageAttachment(test_image("shot.png", 12))],
+      input: text_area.state_from_string("what is wrong with this screen"),
+    )
+
+  let submitted = tui.update(backend.KeyPress("enter"), live)
+
+  assert submitted.submitting == Some("main")
+    as "the image prompt was submitted rather than refused"
+  assert submitted.attachments == []
+    as "a submitted image prompt clears the composer"
+  assert !list.any(submitted.transcript, fn(line) {
+    line.speaker == tui.Failure
+  })
+    as "no local refusal was written"
 }
 
 pub fn code_mode_program_renders_as_gleam_test() {

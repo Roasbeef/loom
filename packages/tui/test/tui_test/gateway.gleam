@@ -151,6 +151,14 @@ pub fn stream_delta(strand: String, kind: String, text: String) -> String {
   ])
 }
 
+/// A structured refusal, which is what a command gets instead of an outcome.
+pub fn server_error(code: String, message: String) -> String {
+  event("error", [
+    #("code", json.String(code)),
+    #("message", json.String(message)),
+  ])
+}
+
 /// One usage report, which is also what settles a generation's rate.
 pub fn usage(strand: String, input: Int, output: Int, cost: Float) -> String {
   let reported =
