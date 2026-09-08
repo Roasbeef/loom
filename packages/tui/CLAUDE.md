@@ -575,6 +575,24 @@ that tree separately from the self-contained server.
   operation the cut says is running, falls back to the snapshot's
   discontinuous `stream_preview` when nothing has been pushed, and keeps
   neither once the strand has no live operation.
+- **A live stream is bounded, and its text is owned.** `Stream` carries the
+  bytes its fragments weigh, and past twice `tui.live_stream_limit` — 24 KiB,
+  the same clip the snapshot preview takes — the fragments collapse into one
+  holding the newest limit's worth. The headroom is what makes the collapse
+  amortised: coming back to exactly the limit would put the next token over it
+  again and charge the copy per token. Every fragment is rebuilt on the way in
+  rather than kept as it arrived, because a delta's `text` is a slice of the
+  whole received frame and keeping the slice keeps the frame.
+
+  Both halves are load-bearing and both were measured. Pushed delivery makes
+  one frame per provider token, and before this the region grew without limit:
+  each paint reflowed the whole accumulated answer, so the drain rate fell as
+  the turn ran on, the socket stopped being drained, and the mailbox — every
+  message a whole frame — became the leak. Two terminals were resident at
+  32 GB and 26 GB beside daemons at 3.5 GB and 1.6 GB. `stream_bounds_test` is
+  that measurement kept as a bound: over 40,000 deltas the model holds flat at
+  a few hundred KB and drains above 3,500 deltas a second, against growth in
+  every one of memory, pinned bytes and pinned binary count before.
 - **Attachment identity is not a transient notice.** The committed cut supplies
   the visible author name, role and presence count alongside configuration.
   Model-list replies and other notices cannot replace that identity. A pending

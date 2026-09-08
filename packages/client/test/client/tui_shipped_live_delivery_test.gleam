@@ -492,7 +492,7 @@ fn sample_waiting(
 fn stream_note(sample: tui_driver.Sample) -> String {
   let streams =
     list.map(sample.model.streams, fn(stream) {
-      let tui.Stream(strand:, kind:, fragments:, operation:) = stream
+      let tui.Stream(strand:, kind:, fragments:, operation:, ..) = stream
       strand
       <> "/"
       <> kind
