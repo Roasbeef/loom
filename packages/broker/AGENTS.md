@@ -19,8 +19,14 @@ protocol (spec Part 1.4). WP-G.
   events, and `CallExited(result)` versus `CallFailed(failure)`.
 - `broker/policy.SandboxPolicy` — `SandboxPolicyV1` as a typed value:
   writable/readable/protected roots, `NetworkPolicy`, `Limits`,
-  `env_allow`, `Scratch`. `compose` implements session base ⊕ tool
-  requirements ⊕ escalation grants; `narrow_unenforceable` fails closed.
+  `env_allow`, `Scratch`, and `mounts`. `compose` implements session base ⊕
+  tool requirements ⊕ escalation grants; `narrow_unenforceable` fails
+  closed.
+- `broker/policy.{Mount, MountAccess, MountRequirement}` — one explicit
+  bind of a host path into the jail, at policy version 2
+  (`protocol-change/004`). `MountRequired` asks the helper to refuse an
+  execution whose source path is missing rather than run a jail the caller
+  believes has it.
 - `broker/token.{Token, Vault, Binding}` — 32 random bytes bound to
   `{op_id, step_id, policy, deadline}`, checked in constant time.
 - `broker/budget.{Budget, Ledger}` — pure pooled accounting, one ledger per
@@ -437,6 +443,36 @@ protocol (spec Part 1.4). WP-G.
   compose prefix-aware (`/work` covers `/work/sub`); env allowlists
   intersect as exact strings; proxy-vs-proxy meets intersect allowlists and
   always keep the base's harness-owned proxy address.
+- **Mounts intersect by exact path, and no grant adds one.** A mount is one
+  bind rather than a subtree, so composition matches paths exactly and never
+  by prefix; an entry survives only when both sides name it, at the weaker
+  of the two accesses and the stronger of the two requirements. There is no
+  `GrantMount`, so `wanted_grants` returns nothing for a `NarrowedMount` and
+  the list it returns can be shorter than the list it was given. That is the
+  point: a grant reaches the approval path, where #243 has not settled which
+  principal a prompt goes to under a shared daemon, and a session's
+  filesystem reach is decided before it starts. `protocol-change/004` has
+  the argument.
+- **A mount overlapping a protected entry is refused, and so is a repeated
+  or uncanonical mount path.** `validate` runs on the *composed* policy, so
+  it is the one place that sees a base carrying a mount and a requirement
+  carrying a protected entry over the same region. Both directions of the
+  overlap are refused (`MountOverlapsProtected`), because neither platform
+  can carry out both: on Linux the mount lands on the read-only tmpfs the
+  mask installed and bubblewrap exits 1 saying only `Read-only file
+  system`, and on Darwin the trailing deny wins, so the same document
+  meant different things on the two platforms. `DuplicateMount`,
+  `MountPathTrailingSlash` and `MountPathParentSegment` refuse the three
+  spellings of one region named twice; `meet_mounts` finds a path's entry
+  exactly because of them, and the Go emitters carry no tie-break. The
+  helper's decoder makes the same refusals at the wire
+  (`policy.checkMounts`).
+- **The policy wire is version 2 on both sides.** The `mounts` field could
+  not be added compatibly, because both decoders refuse unknown keys and
+  refuse any `v` but their own, so the two halves of `protocol-change/004`
+  had to move together: a v2 harness against a v1 helper fails at the
+  handshake with `policy: unknown keys [mounts]`. Both halves have landed
+  and the three `sandbox_policy_*` fixtures decode on both sides.
 - **Escalation approval is bounded and single-shot.** Approval accepts only
   grants drawn from the denial's wanted diff; exactly one re-execution runs
   under the widened policy and a second consume is refused. Widening the

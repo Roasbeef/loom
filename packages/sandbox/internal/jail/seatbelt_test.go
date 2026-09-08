@@ -1,6 +1,7 @@
 package jail
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -78,5 +79,63 @@ func TestSeatbeltPlanIsDeterministic(t *testing.T) {
 	if first.Profile != second.Profile || first.Digest != second.Digest ||
 		strings.Join(first.Definitions, "\n") != strings.Join(second.Definitions, "\n") {
 		t.Fatalf("equivalent policies generated different plans:\n%+v\n%+v", first, second)
+	}
+}
+
+// Darwin has no mount namespace, so an explicit mount is an allow rule
+// over the subpath. What matters is where it lands: before the
+// subtractive rules, so a protected path stays unreachable whatever the
+// mount list says. That is the opposite of the bwrap argv, where an
+// explicit mount is emitted after the masks and wins.
+func TestSeatbeltPlanEmitsMountsBeforeTheDenies(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work"},
+		Protected:     []string{"/work/.env"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Mounts: []policy.Mount{
+			{Path: "/srv/cap", Access: policy.MountReadOnly, Required: true},
+			{Path: "/srv/out", Access: policy.MountReadWrite, Required: true},
+		},
+	}
+	plan := SeatbeltPlanFor(pol, "/private/tmp/scratch")
+	if plan.BindRO != 1 || plan.BindRW != 1 {
+		t.Fatalf("mount counts = ro %d, rw %d, want 1 and 1", plan.BindRO, plan.BindRW)
+	}
+
+	var roKey, rwKey string
+	for _, definition := range plan.Definitions {
+		switch {
+		case strings.HasSuffix(definition, "=/srv/cap"):
+			roKey = strings.SplitN(definition, "=", 2)[0]
+		case strings.HasSuffix(definition, "=/srv/out"):
+			rwKey = strings.SplitN(definition, "=", 2)[0]
+		}
+	}
+	if roKey == "" || rwKey == "" {
+		t.Fatalf("both mounts must be parameters, got %v", plan.Definitions)
+	}
+
+	read := fmt.Sprintf("(allow file-read* (subpath (param %q)))", roKey)
+	write := fmt.Sprintf("(allow file-write* (subpath (param %q)))", rwKey)
+	if !strings.Contains(plan.Profile, read) {
+		t.Fatalf("profile lacks the read-only mount rule:\n%s", plan.Profile)
+	}
+	if !strings.Contains(plan.Profile, write) {
+		t.Fatalf("profile lacks the read-write mount rule:\n%s", plan.Profile)
+	}
+	// A read-only mount gets no write rule of its own.
+	if strings.Contains(plan.Profile,
+		fmt.Sprintf("(allow file-write* (subpath (param %q)))", roKey)) {
+		t.Fatalf("a read-only mount must not grant writes:\n%s", plan.Profile)
+	}
+
+	deny := strings.Index(plan.Profile, "(deny file-read* (literal")
+	if deny < 0 {
+		t.Fatalf("no protected deny rule in the profile:\n%s", plan.Profile)
+	}
+	if strings.Index(plan.Profile, write) > deny {
+		t.Fatalf("a mount rule follows the denies and can reopen a "+
+			"protected path:\n%s", plan.Profile)
 	}
 }

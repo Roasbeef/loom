@@ -3,12 +3,24 @@
 //// The wire shape is frozen in the implementation spec, Part 1.4:
 ////
 //// ```
-//// { v:1, writable_roots:[path], readable_roots:[path], protected:[path],
+//// { v:2, writable_roots:[path], readable_roots:[path], protected:[path],
 ////   network: {mode:"off"} | {mode:"proxy", allow:[host_glob], proxy:addr}
 ////           | {mode:"full"},
 ////   limits: {cpu_s, wall_s, mem_bytes, pids, fsize_bytes, output_bytes},
-////   env_allow:[name], scratch:"tmpfs"|path }
+////   env_allow:[name], scratch:"tmpfs"|path,
+////   mounts:[{path, access:"ro"|"rw", required:bool}] }
 //// ```
+////
+//// ## `mounts` and version 2
+////
+//// Version 2 adds `mounts`, the explicit-bind vocabulary of
+//// `protocol-change/004`. Under the helper's present base view — the whole
+//// host bound read-only — an explicit mount changes nothing a payload can
+//// open; the field exists so that a minimal-root base view has something
+//// to refuse against instead of breaking code mode in silence. Both
+//// decoders refuse unknown keys, so the field could not be added without
+//// moving the version, and there is no v1 compatibility path here: a v1
+//// document is rejected exactly as a v3 one would be.
 ////
 //// This module mirrors that vocabulary field for field, encodes it via
 //// `core/msgpack` in a canonical byte form the Go helper's strict decoder
@@ -42,7 +54,13 @@ import gleam/string
 
 /// The only policy version this broker speaks. A different `v` on the
 /// wire is corruption, never tolerated drift (frozen-interface rule).
-pub const version = 1
+///
+/// Version 2 is `protocol-change/004`'s `mounts` field. Version 1 is not
+/// accepted alongside it: an absent `mounts` key would have to mean the
+/// empty list, and "the sender said nothing" is not the same claim as
+/// "the sender said no mounts" on a wire whose whole purpose is to state
+/// filesystem reach explicitly.
+pub const version = 2
 
 /// The network policy lattice, ordered `Off < Proxy < Full` for
 /// composition purposes.
@@ -121,6 +139,46 @@ pub type Scratch {
   ScratchPath(path: String)
 }
 
+/// Whether an explicit mount is bound read-only or read-write.
+pub type MountAccess {
+  /// Bound read-only. The weaker of the two, and so the meet.
+  MountReadOnly
+
+  /// Bound read-write.
+  MountReadWrite
+}
+
+/// What the helper does when a mount's source path does not exist on the
+/// host.
+pub type MountRequirement {
+  /// Refuse the execution. Chosen when a missing source would otherwise
+  /// produce a jail the caller believes has the path, which fails later
+  /// and further from the cause.
+  MountRequired
+
+  /// Skip the mount and run anyway.
+  MountOptional
+}
+
+/// One explicit bind of a host path into the jail, applied after the
+/// protected masks and after the scratch mount so it is not shadowed
+/// (`protocol-change/004`).
+///
+/// Invariant, checked by `validate` and by the total decoder: `path` is
+/// absolute. Unlike `writable_roots` and `readable_roots`, a mount names
+/// one exact path rather than a subtree, so composition matches paths
+/// exactly and never by prefix.
+pub type Mount {
+  Mount(
+    /// The host path to bind. Invariant: absolute.
+    path: String,
+    /// Read-only or read-write.
+    access: MountAccess,
+    /// What a missing source means.
+    requirement: MountRequirement,
+  )
+}
+
 /// A validated SandboxPolicyV1. Invariants (checked by `validate` and by
 /// the total decoder): all paths absolute, all limits non-negative.
 pub type SandboxPolicy {
@@ -141,6 +199,9 @@ pub type SandboxPolicy {
     env_allow: List(String),
     /// The scratch area.
     scratch: Scratch,
+    /// Explicit binds of host paths into the jail. Invariant: absolute
+    /// paths.
+    mounts: List(Mount),
   )
 }
 
@@ -160,6 +221,34 @@ pub type PolicyError {
   /// (which is right to bind exactly what the policy says; see 4b4983d
   /// and packages/sandbox/CLAUDE.md's Landlock layering note).
   ScratchIsRoot
+
+  /// A mount and a protected entry name overlapping regions, in either
+  /// direction. Neither platform can honour both: on Linux a mount under
+  /// a protected directory is bound onto the read-only tmpfs the mask
+  /// installed and bubblewrap exits 1 with a bare "Read-only file
+  /// system", while a mount covering a protected file re-exposes it; on
+  /// Darwin the trailing denies win and the mount does nothing. Refusing
+  /// the pair here is what keeps the two platforms saying the same thing
+  /// about the same policy.
+  MountOverlapsProtected(mount: String, protected: String)
+
+  /// Two mounts name the same path. Composition takes a mount's access
+  /// from the entry it finds for that path, and the emitters bind a
+  /// region once, so a repeated path has no single answer to what the
+  /// jail should do with it.
+  DuplicateMount(path: String)
+
+  /// A mount path ends in a slash. Neither side canonicalizes a mount
+  /// path, so "/a/" and "/a" would be two entries here and one region in
+  /// the helper, which is the duplicate above wearing a different
+  /// spelling.
+  MountPathTrailingSlash(path: String)
+
+  /// A mount path contains a ".." segment. The path is compared by
+  /// component against protected entries and roots before anything
+  /// resolves it, so a ".." would let a mount claim one region and bind
+  /// another.
+  MountPathParentSegment(path: String)
 }
 
 /// One explicit widening of a policy, granted by an approval. Grants are
@@ -206,6 +295,11 @@ pub type Narrowing {
 
   /// The requested scratch choice was replaced by tmpfs.
   NarrowedScratch(wanted: Scratch)
+
+  /// A requested mount is not carried by the composed policy, either
+  /// because the base does not name that path at all or because the base
+  /// binds it read-only and the requirement asked for read-write.
+  NarrowedMount(wanted: Mount)
 }
 
 /// A restrictive default: nothing readable or writable beyond the given
@@ -234,13 +328,23 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
     ),
     env_allow: ["PATH", "HOME", "LANG", "TERM"],
     scratch: ScratchTmpfs,
+    mounts: [],
   )
 }
 
 /// Checks the invariants the wire shape demands: absolute paths
-/// everywhere, non-negative limits, and a scratch that is not the
-/// literal host root (`ScratchIsRoot` — issue #59; see the module doc's
-/// layering note in `packages/sandbox/CLAUDE.md`).
+/// everywhere, non-negative limits, a scratch that is not the literal
+/// host root (`ScratchIsRoot` — issue #59; see the module doc's layering
+/// note in `packages/sandbox/CLAUDE.md`), and a mount list that names
+/// each region once, canonically, and never a region a protected entry
+/// also names.
+///
+/// The mount checks are here rather than in the emitters because the
+/// broker validates the *composed* policy before dispatch. A base
+/// carrying a mount and a tool requirement carrying a protected entry
+/// over the same region each validate on their own and contradict each
+/// other only once composed, so this is the one place that sees the
+/// contradiction at all.
 ///
 /// ## Examples
 ///
@@ -259,6 +363,7 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
         ScratchTmpfs -> []
         ScratchPath(path:) -> [path]
       },
+      list.map(policy.mounts, fn(mount) { mount.path }),
     ])
   use _ <- result.try(
     list.try_each(paths, fn(path) {
@@ -268,6 +373,12 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
       }
     }),
   )
+  use _ <- result.try(refuse_uncanonical_mounts(policy.mounts))
+  use _ <- result.try(refuse_duplicate_mounts(policy.mounts))
+  use _ <- result.try(refuse_mounts_over_protected(
+    policy.mounts,
+    policy.protected,
+  ))
   list.try_each(limit_fields(), fn(field) {
     let value = limit_get(policy.limits, field)
     case value < 0 {
@@ -291,6 +402,70 @@ fn refuse_scratch_root(scratch: Scratch) -> Result(Nil, PolicyError) {
   }
 }
 
+// A mount path is compared by component against protected entries and
+// against other mounts, and nothing on either side of the wire resolves
+// it first. So the two spellings a comparison cannot see through are
+// refused rather than normalized: normalizing here would leave the Go
+// helper free to disagree, and the helper's own decoder makes the same
+// two refusals for that reason.
+fn refuse_uncanonical_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
+  list.try_each(mounts, fn(mount) {
+    use _ <- result.try(
+      case mount.path != "/" && string.ends_with(mount.path, "/") {
+        True -> Error(MountPathTrailingSlash(path: mount.path))
+        False -> Ok(Nil)
+      },
+    )
+    case list.contains(string.split(mount.path, "/"), "..") {
+      True -> Error(MountPathParentSegment(path: mount.path))
+      False -> Ok(Nil)
+    }
+  })
+}
+
+// One path, one mount. `meet_mounts` reads a path's access out of the
+// first entry that carries it and the helper's emitters bind a region
+// once, so a repeated path is a policy with two answers and no rule for
+// picking between them. Refusing the pair is what makes both readings
+// unnecessary. Mount lists are a handful of entries, so the quadratic
+// scan is the whole cost.
+fn refuse_duplicate_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
+  case mounts {
+    [] -> Ok(Nil)
+    [mount, ..rest] ->
+      case list.any(rest, fn(other) { other.path == mount.path }) {
+        True -> Error(DuplicateMount(path: mount.path))
+        False -> refuse_duplicate_mounts(rest)
+      }
+  }
+}
+
+// A mount and a protected entry over the same region are a policy the
+// jail cannot carry out, in both directions and on both platforms. The
+// mount under the protected entry is bound onto the read-only tmpfs the
+// mask installed, and bubblewrap exits 1 saying only "Read-only file
+// system" (issue #60); the mount over the protected entry re-exposes it
+// on Linux and is overridden by the trailing deny on Darwin, so the two
+// platforms enforce different policies from the same document. Refusing
+// the pair is why neither emitter has to decide which one wins.
+fn refuse_mounts_over_protected(
+  mounts: List(Mount),
+  protected: List(String),
+) -> Result(Nil, PolicyError) {
+  list.try_each(mounts, fn(mount) {
+    list.try_each(protected, fn(entry) {
+      case
+        covers(root: entry, path: mount.path)
+        || covers(root: mount.path, path: entry)
+      {
+        True ->
+          Error(MountOverlapsProtected(mount: mount.path, protected: entry))
+        False -> Ok(Nil)
+      }
+    })
+  })
+}
+
 // --- composition --------------------------------------------------------
 
 /// Composes a session base policy with a tool's requirements and any
@@ -299,8 +474,9 @@ fn refuse_scratch_root(scratch: Scratch) -> Result(Nil, PolicyError) {
 /// Most-restrictive-wins everywhere except grants: the result is the
 /// meet of base and requirements (root coverage intersected, network
 /// lattice meet, per-field limit minimum with `0` as unlimited,
-/// environment intersection, protected paths unioned, differing scratch
-/// collapsing to tmpfs), then each grant explicitly widens it. The
+/// environment intersection, protected paths unioned, mounts intersected
+/// by path, differing scratch collapsing to tmpfs), then each grant
+/// explicitly widens it. The
 /// returned narrowings report every requirement the final policy does
 /// not satisfy — an empty list means the tool got everything it asked
 /// for.
@@ -325,6 +501,14 @@ pub fn compose(
 /// Converts narrowings into the grants that would satisfy them — the
 /// "policy diff wanted" attached to an escalation.
 ///
+/// A `NarrowedMount` yields no grant, so the list this returns can be
+/// shorter than the list it is given. That is deliberate rather than an
+/// omission: `protocol-change/004` declines to introduce a `GrantMount`
+/// because a grant reaches the approval path, and #243 has not settled
+/// which principal a prompt goes to under a shared daemon. A mount the
+/// session base does not carry is an in-band refusal, and the reach a
+/// session has is decided before it starts.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -333,15 +517,16 @@ pub fn compose(
 /// ```
 ///
 pub fn wanted_grants(narrowings: List(Narrowing)) -> List(Grant) {
-  list.map(narrowings, fn(narrowing) {
+  list.filter_map(narrowings, fn(narrowing) {
     case narrowing {
-      NarrowedWritableRoot(path:) -> GrantWritableRoot(path:)
-      NarrowedReadableRoot(path:) -> GrantReadableRoot(path:)
-      NarrowedNetwork(wanted:, granted: _) -> GrantNetwork(network: wanted)
-      NarrowedEnv(name:) -> GrantEnv(name:)
+      NarrowedWritableRoot(path:) -> Ok(GrantWritableRoot(path:))
+      NarrowedReadableRoot(path:) -> Ok(GrantReadableRoot(path:))
+      NarrowedNetwork(wanted:, granted: _) -> Ok(GrantNetwork(network: wanted))
+      NarrowedEnv(name:) -> Ok(GrantEnv(name:))
       NarrowedLimit(field:, wanted:, granted: _) ->
-        GrantLimit(field:, value: wanted)
-      NarrowedScratch(wanted:) -> GrantScratch(scratch: wanted)
+        Ok(GrantLimit(field:, value: wanted))
+      NarrowedScratch(wanted:) -> Ok(GrantScratch(scratch: wanted))
+      NarrowedMount(wanted: _) -> Error(Nil)
     }
   })
 }
@@ -388,7 +573,63 @@ fn meet(base: SandboxPolicy, requirements: SandboxPolicy) -> SandboxPolicy {
       True -> base.scratch
       False -> ScratchTmpfs
     },
+    mounts: meet_mounts(base.mounts, requirements.mounts),
   )
+}
+
+// The mount lattice, one path at a time.
+//
+// A mount survives only when both sides name the same path, which makes
+// this an intersection rather than a union and is what stops a tool from
+// binding a host path the session base never granted. Where both sides
+// name it, `access` takes the weaker of the two, since read-only is less
+// than read-write, and `requirement` takes the stronger, since
+// `MountRequired` is a refusal rather than a privilege and a side that
+// asks to fail closed on a missing source must not lose that by composing
+// with one that does not.
+//
+// Both choices are commutative, associative and idempotent, so composition
+// over mounts is a lattice meet in the same sense as the network and limit
+// fields, and the order two policies are composed in cannot change the
+// result. The requirements side supplies the order of the surviving list,
+// which keeps the encoding deterministic.
+//
+// Taking the first entry the base carries for a path is exact rather than
+// arbitrary because `validate` refuses a repeated mount path: there is at
+// most one entry to find.
+fn meet_mounts(base: List(Mount), requested: List(Mount)) -> List(Mount) {
+  list.filter_map(requested, fn(want) {
+    case list.find(base, fn(have) { have.path == want.path }) {
+      Ok(have) ->
+        Ok(Mount(
+          path: want.path,
+          access: meet_access(have.access, want.access),
+          requirement: join_requirement(have.requirement, want.requirement),
+        ))
+      Error(Nil) -> Error(Nil)
+    }
+  })
+}
+
+fn meet_access(left: MountAccess, right: MountAccess) -> MountAccess {
+  case left, right {
+    MountReadWrite, MountReadWrite -> MountReadWrite
+    MountReadWrite, MountReadOnly -> MountReadOnly
+    MountReadOnly, MountReadWrite -> MountReadOnly
+    MountReadOnly, MountReadOnly -> MountReadOnly
+  }
+}
+
+fn join_requirement(
+  left: MountRequirement,
+  right: MountRequirement,
+) -> MountRequirement {
+  case left, right {
+    MountRequired, MountRequired -> MountRequired
+    MountRequired, MountOptional -> MountRequired
+    MountOptional, MountRequired -> MountRequired
+    MountOptional, MountOptional -> MountOptional
+  }
 }
 
 // Requested roots the base actually covers. Coverage is prefix-aware:
@@ -566,7 +807,29 @@ fn shortfall(
     True -> []
     False -> [NarrowedScratch(wanted: requirements.scratch)]
   }
-  list.flatten([writable, readable, network, env, limits, scratch])
+  let mounts =
+    requirements.mounts
+    |> list.filter(fn(want) { !mount_satisfied(want, final.mounts) })
+    |> list.map(fn(want) { NarrowedMount(wanted: want) })
+  list.flatten([writable, readable, network, env, limits, scratch, mounts])
+}
+
+// Whether the composed policy carries a mount that gives the requirement
+// everything it asked for. The path must match exactly, because a mount is
+// one bind rather than a subtree, and a read-write request is unsatisfied
+// by a read-only bind. The requirement field is not compared: composition
+// only ever strengthens it, so it can never be the reason a request falls
+// short.
+fn mount_satisfied(want: Mount, final: List(Mount)) -> Bool {
+  list.any(final, fn(have) {
+    have.path == want.path
+    && case want.access, have.access {
+      MountReadWrite, MountReadOnly -> False
+      MountReadWrite, MountReadWrite -> True
+      MountReadOnly, MountReadOnly -> True
+      MountReadOnly, MountReadWrite -> True
+    }
+  })
 }
 
 // Whether `wanted` allows strictly more than `granted` on the network
@@ -635,11 +898,15 @@ fn intersect(left: List(String), right: List(String)) -> List(String) {
 /// The policy as a msgpack value in the frozen wire vocabulary. Map keys
 /// are emitted in sorted order and `core/msgpack` encodes canonically,
 /// so equal policies always produce identical bytes (golden-pinned in
-/// `protocol/msgpack-fixtures/sandbox_policy_1.bin`).
+/// `protocol/msgpack-fixtures/policy_v2_1.bin`).
 pub fn to_msgpack(policy: SandboxPolicy) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("env_allow"), string_array(policy.env_allow)),
     #(msgpack.StringValue("limits"), limits_to_msgpack(policy.limits)),
+    #(
+      msgpack.StringValue("mounts"),
+      msgpack.ArrayValue(list.map(policy.mounts, mount_to_msgpack)),
+    ),
     #(msgpack.StringValue("network"), network_to_msgpack(policy.network)),
     #(msgpack.StringValue("protected"), string_array(policy.protected)),
     #(
@@ -710,6 +977,7 @@ pub fn from_msgpack(
       "limits",
       "env_allow",
       "scratch",
+      "mounts",
     ],
     "policy",
   ))
@@ -745,6 +1013,8 @@ pub fn from_msgpack(
         scratch_text,
       ))
   })
+  use mounts_value <- result.try(required(entries, "mounts", "policy"))
+  use mounts <- result.try(mounts_from_msgpack(mounts_value))
   Ok(SandboxPolicy(
     writable_roots:,
     readable_roots:,
@@ -753,7 +1023,76 @@ pub fn from_msgpack(
     limits:,
     env_allow:,
     scratch:,
+    mounts:,
   ))
+}
+
+fn mount_to_msgpack(mount: Mount) -> MsgPackValue {
+  msgpack.MapValue([
+    #(
+      msgpack.StringValue("access"),
+      msgpack.StringValue(case mount.access {
+        MountReadOnly -> "ro"
+        MountReadWrite -> "rw"
+      }),
+    ),
+    #(msgpack.StringValue("path"), msgpack.StringValue(mount.path)),
+    #(
+      msgpack.StringValue("required"),
+      msgpack.BoolValue(case mount.requirement {
+        MountRequired -> True
+        MountOptional -> False
+      }),
+    ),
+  ])
+}
+
+// `required` is a bool on the wire, where msgpack has bools and the Go
+// side will have one too. It becomes the two-variant `MountRequirement`
+// here because a `Bool` field would make every reader of a `Mount(...)`
+// literal carry the polarity of the name (house rule R9).
+fn mounts_from_msgpack(
+  value: MsgPackValue,
+) -> Result(List(Mount), CorruptionReport) {
+  case value {
+    msgpack.ArrayValue(items:) -> list.try_map(items, mount_from_msgpack)
+
+    // The Go encoder writes a nil slice as msgpack nil, as it does for
+    // every other list in this shape.
+    msgpack.NilValue -> Ok([])
+    other ->
+      Error(fail("policy.mounts", "an array of mounts", describe_value(other)))
+  }
+}
+
+fn mount_from_msgpack(value: MsgPackValue) -> Result(Mount, CorruptionReport) {
+  use entries <- result.try(as_map(value, "policy.mounts"))
+  use Nil <- result.try(reject_unknown_keys(
+    entries,
+    ["path", "access", "required"],
+    "policy.mounts",
+  ))
+  use path <- result.try(required_string(entries, "path", "policy.mounts"))
+  use Nil <- result.try(case string.starts_with(path, "/") {
+    True -> Ok(Nil)
+    False -> Error(fail("policy.mounts.path", "an absolute path", path))
+  })
+  use access_text <- result.try(required_string(
+    entries,
+    "access",
+    "policy.mounts",
+  ))
+  use access <- result.try(case access_text {
+    "ro" -> Ok(MountReadOnly)
+    "rw" -> Ok(MountReadWrite)
+    _ -> Error(fail("policy.mounts.access", "\"ro\" or \"rw\"", access_text))
+  })
+  use required <- result.try(required_bool(entries, "required", "policy.mounts"))
+  let requirement = case required {
+    True -> MountRequired
+    False -> MountOptional
+  }
+  Ok(Mount(path:, access:, requirement:))
 }
 
 fn network_to_msgpack(network: NetworkPolicy) -> MsgPackValue {
@@ -958,6 +1297,18 @@ fn required_string(
     msgpack.StringValue(text) -> Ok(text)
     other ->
       Error(fail(subject <> "." <> key, "a string", describe_value(other)))
+  }
+}
+
+fn required_bool(
+  entries: List(#(MsgPackValue, MsgPackValue)),
+  key: String,
+  subject: String,
+) -> Result(Bool, CorruptionReport) {
+  use value <- result.try(required(entries, key, subject))
+  case value {
+    msgpack.BoolValue(flag) -> Ok(flag)
+    other -> Error(fail(subject <> "." <> key, "a bool", describe_value(other)))
   }
 }
 

@@ -14,7 +14,7 @@ import (
 // mutated per-test to build the adversarial corpus.
 func validMap() map[string]any {
 	return map[string]any{
-		"v":              1,
+		"v":              2,
 		"writable_roots": []any{"/work"},
 		"readable_roots": []any{"/usr", "/lib"},
 		"protected":      []any{"/work/.git", "/work/.env"},
@@ -29,6 +29,10 @@ func validMap() map[string]any {
 		},
 		"env_allow": []any{"PATH", "HOME"},
 		"scratch":   "tmpfs",
+		"mounts": []any{
+			map[string]any{"path": "/work/.cap/s", "access": "ro", "required": true},
+			map[string]any{"path": "/scratch", "access": "rw", "required": false},
+		},
 	}
 }
 
@@ -57,6 +61,10 @@ func TestDecodeValid(t *testing.T) {
 		},
 		EnvAllow: []string{"PATH", "HOME"},
 		Scratch:  "tmpfs",
+		Mounts: []Mount{
+			{Path: "/work/.cap/s", Access: MountReadOnly, Required: true},
+			{Path: "/scratch", Access: MountReadWrite, Required: false},
+		},
 	}
 	if !reflect.DeepEqual(p, want) {
 		t.Fatalf("decoded policy mismatch:\n got %#v\nwant %#v", p, want)
@@ -115,12 +123,14 @@ func TestDecodeAdversarial(t *testing.T) {
 		{"not a map", mustPack(t, []any{1, 2, 3}), "expected map"},
 		{"scalar", mustPack(t, 42), "expected map"},
 		{"version 0", mustPack(t, set("v", 0)), "unsupported version"},
-		{"version 2", mustPack(t, set("v", 2)), "unsupported version"},
-		{"version string", mustPack(t, set("v", "1")), "v:"},
+		{"version 1", mustPack(t, set("v", 1)), "unsupported version"},
+		{"version 3", mustPack(t, set("v", 3)), "unsupported version"},
+		{"version string", mustPack(t, set("v", "2")), "v:"},
 		{"missing v", mustPack(t, del("v")), "missing required key"},
 		{"missing limits", mustPack(t, del("limits")), "missing required key"},
 		{"missing scratch", mustPack(t, del("scratch")), "missing required key"},
 		{"missing network", mustPack(t, del("network")), "missing required key"},
+		{"missing mounts", mustPack(t, del("mounts")), "missing required key"},
 		{"unknown top key", mustPack(t, set("extra", true)), "unknown keys"},
 		{"writable wrong type", mustPack(t, set("writable_roots", "/work")), "expected array"},
 		{"writable elem wrong type", mustPack(t, set("writable_roots", []any{7})), "expected string"},
@@ -148,6 +158,72 @@ func TestDecodeAdversarial(t *testing.T) {
 		}(), "expected integer"},
 		{"scratch empty", mustPack(t, set("scratch", "")), "scratch"},
 		{"scratch relative", mustPack(t, set("scratch", "scratch")), "neither"},
+		{"mounts wrong type", mustPack(t, set("mounts", "/work")), "mounts: expected array"},
+		{"mount not a map", mustPack(t, set("mounts", []any{"/work"})), "expected map"},
+		{"mount unknown key", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "access": "ro", "required": true, "kind": "dir"},
+		})), "unknown keys"},
+		{"mount missing path", mustPack(t, set("mounts", []any{
+			map[string]any{"access": "ro", "required": true},
+		})), "missing required key"},
+		{"mount missing access", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "required": true},
+		})), "missing required key"},
+		{"mount missing required", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "access": "ro"},
+		})), "missing required key"},
+		{"mount relative path", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "work", "access": "ro", "required": true},
+		})), "not absolute"},
+		{"mount empty path", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "", "access": "ro", "required": true},
+		})), "not absolute"},
+		{"mount path wrong type", mustPack(t, set("mounts", []any{
+			map[string]any{"path": 7, "access": "ro", "required": true},
+		})), "expected string"},
+		{"mount unknown access", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "access": "rx", "required": true},
+		})), "neither"},
+		{"mount required not bool", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "access": "ro", "required": 1},
+		})), "expected bool"},
+		// The overlap refusals. A mount under a protected entry is bound
+		// onto the read-only tmpfs the mask installed and bubblewrap
+		// exits 1 saying only "Read-only file system"; a mount over one
+		// re-exposes it on Linux while Darwin's trailing deny keeps it
+		// shut, so the same document would mean two different things.
+		// Refusing both directions here is what keeps the platforms
+		// agreeing, and it is the same refusal `broker/policy.validate`
+		// makes on the composed policy.
+		{"mount under a protected entry", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work/.git/cap/s", "access": "ro",
+				"required": true},
+		})), "overlaps protected path"},
+		{"mount over a protected entry", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "access": "rw",
+				"required": true},
+		})), "overlaps protected path"},
+		{"mount at a protected entry", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work/.env", "access": "ro",
+				"required": true},
+		})), "overlaps protected path"},
+
+		// One region, one entry, one spelling. Neither side of the wire
+		// canonicalizes a mount path, so a repeated path and the two
+		// spellings that hide a repeat are all refused rather than
+		// resolved by a tie-break the two emitters would have to agree
+		// on.
+		{"duplicate mount path", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/srv/a", "access": "rw", "required": true},
+			map[string]any{"path": "/srv/a", "access": "ro", "required": true},
+		})), "named twice"},
+		{"mount path trailing slash", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/srv/a/", "access": "ro", "required": true},
+		})), "ends in a slash"},
+		{"mount path parent segment", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/srv/a/../b", "access": "ro",
+				"required": true},
+		})), "segment"},
 		{"trailing bytes", append(mustPack(t, validMap()), 0xc0), "trailing"},
 		{"random junk", []byte{0xde, 0xad, 0xbe, 0xef, 0x01, 0x02}, ""},
 	}
@@ -195,5 +271,46 @@ func TestGoldenFixtures(t *testing.T) {
 	}
 	if found == 0 {
 		t.Skip("fixture directory present but no sandbox_policy fixtures yet")
+	}
+}
+
+// TestEncodeDecodeNoMounts pins the empty-mount-list roundtrip. A nil
+// slice is the common case and used to be the one shape the helper could
+// emit but not read back.
+func TestEncodeDecodeNoMounts(t *testing.T) {
+	m := validMap()
+	m["mounts"] = []any{}
+	p1, err := Decode(mustPack(t, m))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(p1.Mounts) != 0 {
+		t.Fatalf("expected no mounts, got %#v", p1.Mounts)
+	}
+	raw, err := Encode(p1)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	p2, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("re-Decode: %v", err)
+	}
+	if !reflect.DeepEqual(p1, p2) {
+		t.Fatalf("roundtrip mismatch:\n got %#v\nwant %#v", p2, p1)
+	}
+}
+
+// TestDecodeNilMounts accepts msgpack nil for the list, which is what a
+// nil slice encodes to on either side of the wire. The broker's decoder
+// makes the same allowance.
+func TestDecodeNilMounts(t *testing.T) {
+	m := validMap()
+	m["mounts"] = nil
+	p, err := Decode(mustPack(t, m))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(p.Mounts) != 0 {
+		t.Fatalf("expected no mounts, got %#v", p.Mounts)
 	}
 }

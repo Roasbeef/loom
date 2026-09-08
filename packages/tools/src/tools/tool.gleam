@@ -1159,6 +1159,17 @@ fn policy_error_text(error: policy.PolicyError) -> String {
     // the jail, and the reason is Landlock's rather than bubblewrap's.
     policy.ScratchIsRoot ->
       "scratch names the host root, which Landlock cannot narrow"
+
+    policy.MountOverlapsProtected(mount:, protected:) ->
+      "mount " <> mount <> " overlaps protected path " <> protected
+
+    policy.DuplicateMount(path:) -> "mount " <> path <> " is named twice"
+
+    policy.MountPathTrailingSlash(path:) ->
+      "mount path " <> path <> " ends in a slash"
+
+    policy.MountPathParentSegment(path:) ->
+      "mount path " <> path <> " contains a \"..\" segment"
   }
 }
 

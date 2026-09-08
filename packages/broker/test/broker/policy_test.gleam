@@ -26,7 +26,35 @@ fn proxy_policy() -> policy.SandboxPolicy {
     ),
     env_allow: ["PATH", "HOME"],
     scratch: policy.ScratchPath(path: "/work/.scratch"),
+    mounts: [],
   )
+}
+
+fn mounted_policy() -> policy.SandboxPolicy {
+  policy.SandboxPolicy(..base(), mounts: [
+    policy.Mount(
+      path: "/run/loom/cap.sock",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    ),
+    policy.Mount(
+      path: "/work/.blobs",
+      access: policy.MountReadWrite,
+      requirement: policy.MountOptional,
+    ),
+  ])
+}
+
+fn mount_entry(
+  path: String,
+  access: String,
+  required: Bool,
+) -> msgpack.MsgPackValue {
+  msgpack.MapValue([
+    #(msgpack.StringValue("access"), msgpack.StringValue(access)),
+    #(msgpack.StringValue("path"), msgpack.StringValue(path)),
+    #(msgpack.StringValue("required"), msgpack.BoolValue(required)),
+  ])
 }
 
 // --- wire codec ---------------------------------------------------------
@@ -58,9 +86,15 @@ pub fn roundtrip_empty_lists_test() {
       ),
       env_allow: [],
       scratch: policy.ScratchTmpfs,
+      mounts: [],
     )
   let assert Ok(bytes) = policy.encode(empty)
   assert policy.decode(bytes) == Ok(empty)
+}
+
+pub fn roundtrip_mounts_test() {
+  let assert Ok(bytes) = policy.encode(mounted_policy())
+  assert policy.decode(bytes) == Ok(mounted_policy())
 }
 
 // The cross-language golden fixture (ADR-003 convention): first run
@@ -90,6 +124,22 @@ pub fn golden_sandbox_policy_off_fixture_test() {
     Ok(stored) -> {
       assert stored == bytes
       assert policy.decode(stored) == Ok(base())
+    }
+    Error(simplifile.Enoent) -> {
+      let assert Ok(Nil) = simplifile.write_bits(path, bytes)
+      Nil
+    }
+    Error(_) -> panic as "fixture directory unreadable"
+  }
+}
+
+pub fn golden_sandbox_policy_mounts_fixture_test() {
+  let path = "../../protocol/msgpack-fixtures/sandbox_policy_3_mounts.bin"
+  let assert Ok(bytes) = policy.encode(mounted_policy())
+  case simplifile.read_bits(path) {
+    Ok(stored) -> {
+      assert stored == bytes
+      assert policy.decode(stored) == Ok(mounted_policy())
     }
     Error(simplifile.Enoent) -> {
       let assert Ok(Nil) = simplifile.write_bits(path, bytes)
@@ -150,8 +200,62 @@ pub fn decode_rejects_adversarial_test() {
     #("missing network", without_key("network")),
     #("missing limits", without_key("limits")),
     #("missing scratch", without_key("scratch")),
-    #("wrong version", with_entry("v", msgpack.IntValue(2))),
-    #("v as string", with_entry("v", msgpack.StringValue("1"))),
+    #("v1, the version before mounts", with_entry("v", msgpack.IntValue(1))),
+    #("wrong version", with_entry("v", msgpack.IntValue(3))),
+    #("v as string", with_entry("v", msgpack.StringValue("2"))),
+    #("missing mounts", without_key("mounts")),
+    #(
+      "mount with a relative path",
+      with_entry("mounts", msgpack.ArrayValue([mount_entry("s", "ro", True)])),
+    ),
+    #(
+      "mount with an empty path",
+      with_entry("mounts", msgpack.ArrayValue([mount_entry("", "ro", True)])),
+    ),
+    #(
+      "mount with an unknown access",
+      with_entry("mounts", msgpack.ArrayValue([mount_entry("/s", "wr", True)])),
+    ),
+    #(
+      "mount with an unknown key",
+      with_entry(
+        "mounts",
+        msgpack.ArrayValue([
+          msgpack.MapValue([
+            #(msgpack.StringValue("access"), msgpack.StringValue("ro")),
+            #(msgpack.StringValue("kind"), msgpack.StringValue("socket")),
+            #(msgpack.StringValue("path"), msgpack.StringValue("/s")),
+            #(msgpack.StringValue("required"), msgpack.BoolValue(True)),
+          ]),
+        ]),
+      ),
+    ),
+    #(
+      "mount missing required",
+      with_entry(
+        "mounts",
+        msgpack.ArrayValue([
+          msgpack.MapValue([
+            #(msgpack.StringValue("access"), msgpack.StringValue("ro")),
+            #(msgpack.StringValue("path"), msgpack.StringValue("/s")),
+          ]),
+        ]),
+      ),
+    ),
+    #(
+      "mount required as a string",
+      with_entry(
+        "mounts",
+        msgpack.ArrayValue([
+          msgpack.MapValue([
+            #(msgpack.StringValue("access"), msgpack.StringValue("ro")),
+            #(msgpack.StringValue("path"), msgpack.StringValue("/s")),
+            #(msgpack.StringValue("required"), msgpack.StringValue("yes")),
+          ]),
+        ]),
+      ),
+    ),
+    #("mounts as a map", with_entry("mounts", msgpack.MapValue([]))),
     #("unknown key", with_entry("sneaky", msgpack.BoolValue(True))),
     #(
       "relative writable root",
@@ -233,6 +337,12 @@ pub fn decode_rejects_adversarial_test() {
   })
 }
 
+pub fn decode_accepts_nil_mounts_test() {
+  let bytes = with_entry("mounts", msgpack.NilValue)
+  let assert Ok(decoded) = policy.decode(bytes)
+  assert decoded.mounts == []
+}
+
 pub fn decode_accepts_nil_arrays_test() {
   // The Go encoder writes nil slices as msgpack nil; our decoder maps
   // them to empty lists.
@@ -277,6 +387,120 @@ pub fn validate_rejects_scratch_of_root_test() {
 // path and stays accepted — only the literal root is refused.
 pub fn validate_accepts_scratch_under_root_test() {
   let ok = policy.SandboxPolicy(..base(), scratch: policy.ScratchPath("/x"))
+  assert policy.validate(ok) == Ok(Nil)
+}
+
+// A mount under a protected entry cannot be carried out at all: on Linux
+// the mask installs a read-only tmpfs over the region and the bind onto
+// it makes bubblewrap exit 1 saying only "Read-only file system", the
+// anonymous failure of issue #60. Refusing the pair here means neither
+// emitter has to decide what to do with it.
+pub fn validate_rejects_a_mount_under_a_protected_entry_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), protected: ["/work/.git"], mounts: [
+      policy.Mount(
+        path: "/work/.git/cap/s",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountOverlapsProtected(
+      mount: "/work/.git/cap/s",
+      protected: "/work/.git",
+    ))
+}
+
+// The other direction is where the two platforms disagreed. A mount
+// covering a protected file is emitted after the mask on Linux and
+// re-exposes it, while Darwin's trailing deny keeps it shut, so the same
+// document enforced two different policies. Refusing it is what makes the
+// argv order safe to state as a property.
+pub fn validate_rejects_a_mount_covering_a_protected_entry_test() {
+  let bad =
+    policy.SandboxPolicy(
+      ..base(),
+      protected: ["/home/o/.loom/owner.token"],
+      mounts: [
+        policy.Mount(
+          path: "/home/o/.loom",
+          access: policy.MountReadWrite,
+          requirement: policy.MountRequired,
+        ),
+      ],
+    )
+  assert policy.validate(bad)
+    == Error(policy.MountOverlapsProtected(
+      mount: "/home/o/.loom",
+      protected: "/home/o/.loom/owner.token",
+    ))
+}
+
+// One region, one entry. `meet_mounts` reads a path's access out of the
+// entry it finds for that path, so a repeated path is a policy with two
+// answers; refusing it is what makes the single lookup exact.
+pub fn validate_rejects_a_duplicate_mount_path_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/srv/a",
+        access: policy.MountReadWrite,
+        requirement: policy.MountRequired,
+      ),
+      policy.Mount(
+        path: "/srv/a",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad) == Error(policy.DuplicateMount(path: "/srv/a"))
+}
+
+// The duplicate wearing a different spelling. Nothing on either side of
+// the wire canonicalizes a mount path, so "/srv/a/" and "/srv/a" would
+// compose as two entries here and bind one region in the helper.
+pub fn validate_rejects_a_trailing_slash_in_a_mount_path_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/srv/a/",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountPathTrailingSlash(path: "/srv/a/"))
+}
+
+// A ".." segment is the same hazard against the protected check rather
+// than against another mount: the comparison is by component and nothing
+// resolves the path first, so the entry would claim one region and bind
+// another.
+pub fn validate_rejects_a_parent_segment_in_a_mount_path_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/srv/a/../b",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountPathParentSegment(path: "/srv/a/../b"))
+}
+
+// A mount beside a protected entry, sharing only a textual prefix, is
+// not an overlap. The check asks the same component-wise question
+// `policy.covers` asks everywhere else.
+pub fn validate_accepts_a_mount_beside_a_protected_entry_test() {
+  let ok =
+    policy.SandboxPolicy(..base(), protected: ["/work/.git"], mounts: [
+      policy.Mount(
+        path: "/work/.gitx",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
   assert policy.validate(ok) == Ok(Nil)
 }
 
@@ -581,4 +805,192 @@ pub fn limit_field_name_is_the_wire_spelling_test() {
   assert policy.limit_field_name(policy.Pids) == "pids"
   assert policy.limit_field_name(policy.FsizeBytes) == "fsize_bytes"
   assert policy.limit_field_name(policy.OutputBytes) == "output_bytes"
+}
+
+// --- the mount lattice ------------------------------------------------------
+//
+// Composition over `mounts` is a meet on access and a join on requirement,
+// intersected by path. The three algebraic laws below are what make
+// "most-restrictive-wins" a claim about the value rather than about the
+// order the broker happened to compose in, so they are checked
+// exhaustively over a small alphabet rather than on a couple of examples.
+
+// Every mount over two paths, both accesses and both requirements: the
+// alphabet the exhaustive laws below range over.
+fn mount_alphabet() -> List(policy.Mount) {
+  let paths = ["/a", "/b"]
+  let accesses = [policy.MountReadOnly, policy.MountReadWrite]
+  let requirements = [policy.MountRequired, policy.MountOptional]
+  list.flat_map(paths, fn(path) {
+    list.flat_map(accesses, fn(access) {
+      list.map(requirements, fn(requirement) {
+        policy.Mount(path:, access:, requirement:)
+      })
+    })
+  })
+}
+
+// Every mount list of length zero or one over that alphabet, plus the two
+// two-element lists that name both paths. Longer lists add no case: the
+// meet works one path at a time, so two paths already exercise every
+// interaction between entries.
+//
+// A pair naming one path twice is excluded because `validate` refuses it
+// (`validate_rejects_a_duplicate_mount_path_test`), so it is not a list
+// the composition laws are claimed about. The exclusion is a validity
+// condition rather than a gap in the alphabet.
+fn mount_lists() -> List(List(policy.Mount)) {
+  let singles = list.map(mount_alphabet(), fn(mount) { [mount] })
+  let pairs =
+    list.flat_map(mount_alphabet(), fn(left) {
+      mount_alphabet()
+      |> list.filter(fn(right) { right.path != left.path })
+      |> list.map(fn(right) { [left, right] })
+    })
+  list.flatten([[[]], singles, pairs])
+}
+
+fn with_mounts(mounts: List(policy.Mount)) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(..base(), mounts:)
+}
+
+// Composition sorts nothing, so two runs that agree as sets can disagree
+// as lists. The laws are about which mounts survive and at what access, so
+// they compare by membership.
+fn same_mounts(left: List(policy.Mount), right: List(policy.Mount)) -> Bool {
+  list.length(left) == list.length(right)
+  && list.all(left, fn(mount) { list.contains(right, mount) })
+}
+
+fn composed_mounts(
+  base_mounts: List(policy.Mount),
+  requested: List(policy.Mount),
+) -> List(policy.Mount) {
+  let #(composed, _) =
+    policy.compose(
+      base: with_mounts(base_mounts),
+      requirements: with_mounts(requested),
+      grants: [],
+    )
+  composed.mounts
+}
+
+pub fn mount_composition_is_commutative_test() {
+  list.each(mount_lists(), fn(left) {
+    list.each(mount_lists(), fn(right) {
+      assert same_mounts(
+        composed_mounts(left, right),
+        composed_mounts(right, left),
+      )
+    })
+  })
+}
+
+pub fn mount_composition_is_associative_test() {
+  list.each(mount_lists(), fn(a) {
+    list.each(mount_lists(), fn(b) {
+      list.each(mount_lists(), fn(c) {
+        let left = composed_mounts(composed_mounts(a, b), c)
+        let right = composed_mounts(a, composed_mounts(b, c))
+        assert same_mounts(left, right)
+      })
+    })
+  })
+}
+
+pub fn mount_composition_is_idempotent_test() {
+  list.each(mount_lists(), fn(mounts) {
+    assert same_mounts(composed_mounts(mounts, mounts), mounts)
+  })
+}
+
+// Absorption in the form that matters here: the workspace default carries
+// no mounts, so composing against it can only ever produce none. A tool
+// cannot introduce a bind the session base never granted, which is the
+// property that lets `protocol-change/004` do without a `GrantMount`.
+pub fn workspace_default_absorbs_every_requested_mount_test() {
+  assert policy.workspace_default("/work").mounts == []
+  list.each(mount_lists(), fn(mounts) {
+    assert composed_mounts([], mounts) == []
+    assert composed_mounts(mounts, []) == []
+  })
+}
+
+pub fn a_mount_the_base_lacks_is_a_narrowing_with_no_grant_test() {
+  let wanted =
+    policy.Mount(
+      path: "/run/loom/cap.sock",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  let #(composed, narrowings) =
+    policy.compose(
+      base: base(),
+      requirements: with_mounts([wanted]),
+      grants: [],
+    )
+  assert composed.mounts == []
+  assert narrowings == [policy.NarrowedMount(wanted:)]
+
+  // No `GrantMount` exists, so the escalation carries nothing that would
+  // widen this. The refusal is in-band and final for the session.
+  assert policy.wanted_grants(narrowings) == []
+}
+
+pub fn a_read_write_request_is_not_satisfied_by_a_read_only_base_test() {
+  let base_mount =
+    policy.Mount(
+      path: "/work/.blobs",
+      access: policy.MountReadOnly,
+      requirement: policy.MountOptional,
+    )
+  let wanted = policy.Mount(..base_mount, access: policy.MountReadWrite)
+  let #(composed, narrowings) =
+    policy.compose(
+      base: with_mounts([base_mount]),
+      requirements: with_mounts([wanted]),
+      grants: [],
+    )
+  assert composed.mounts == [base_mount]
+  assert narrowings == [policy.NarrowedMount(wanted:)]
+}
+
+// A required mount survives composition with an optional one, because
+// `MountRequired` asks the helper to fail closed on a missing source and
+// that is not a privilege composition may drop.
+pub fn a_required_mount_survives_an_optional_one_test() {
+  let path = "/run/loom/cap.sock"
+  let required =
+    policy.Mount(
+      path:,
+      access: policy.MountReadWrite,
+      requirement: policy.MountRequired,
+    )
+  let optional = policy.Mount(..required, requirement: policy.MountOptional)
+  assert composed_mounts([required], [optional])
+    == [policy.Mount(..optional, requirement: policy.MountRequired)]
+}
+
+pub fn validate_rejects_a_relative_mount_test() {
+  let bad =
+    with_mounts([
+      policy.Mount(
+        path: "work/.blobs",
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+    ])
+  assert policy.validate(bad) == Error(policy.RelativePath("work/.blobs"))
+}
+
+pub fn validate_rejects_an_empty_mount_path_test() {
+  let bad =
+    with_mounts([
+      policy.Mount(
+        path: "",
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+    ])
+  assert policy.validate(bad) == Error(policy.RelativePath(""))
 }

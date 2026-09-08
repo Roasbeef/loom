@@ -86,8 +86,15 @@ type SeatbeltPlan struct {
 	Definitions []string
 	Writable    int
 	Protected   int
-	Scratch     string
-	Digest      string
+	// BindRO and BindRW count the policy's explicit `mounts` entries the
+	// profile emitted a rule for. Seatbelt has no mount namespace, so a
+	// mount is a read (and, for "rw", a write) allow over the subpath
+	// rather than a bind; the counts let the broker check the profile
+	// against the mount list it sent.
+	BindRO  int
+	BindRW  int
+	Scratch string
+	Digest  string
 }
 
 // Args wraps command in the system sandbox-exec binary.
@@ -105,8 +112,9 @@ func (p SeatbeltPlan) Args(command []string) []string {
 func (p SeatbeltPlan) Enforcement(network policy.NetworkMode) []string {
 	out := []string{
 		"seatbelt",
-		fmt.Sprintf("seatbelt-fs:rw=%d,mask=%d,scratch=%s,plan=%s",
-			p.Writable, p.Protected, p.Scratch, p.Digest),
+		fmt.Sprintf(
+			"seatbelt-fs:rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,plan=%s",
+			p.Writable, p.Protected, p.BindRO, p.BindRW, p.Scratch, p.Digest),
 	}
 	if BlocksDirectNetwork(network) {
 		out = append(out, "seatbelt-net")
@@ -135,7 +143,8 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	writable = uniqueSorted(writable)
 
 	protected := protectedSeatbeltPaths(pol.Protected)
-	definitions := make([]string, 0, len(writable)+len(protected))
+	mounts := seatbeltMounts(pol.Mounts)
+	definitions := make([]string, 0, len(writable)+len(protected)+len(mounts))
 	sections := []string{seatbeltBaseProfile}
 	for i, path := range writable {
 		key := fmt.Sprintf("WRITABLE_ROOT_%d", i)
@@ -145,6 +154,38 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	}
 	if pol.Network.Mode == policy.NetworkFull {
 		sections = append(sections, seatbeltFullNetworkProfile)
+	}
+
+	// The explicit mounts of protocol-change/004. Darwin has no mount
+	// namespace, so the nearest thing to a bind is an allow rule over the
+	// subpath: read for "ro", read and write for "rw". They are emitted
+	// before the subtractive rules below, not after, because on Darwin
+	// the last matching rule wins and the protected denies have to stay
+	// final, which is what ADR-006 records: a protected path is
+	// unreachable on Darwin whatever else the profile says. The two
+	// platforms order a mount against the masks in opposite directions
+	// and still enforce the same policy, because a mount overlapping a
+	// protected entry is refused when the policy is decoded and no
+	// profile built here can contain that pair.
+	//
+	// The read rule adds no access today: the base profile still carries
+	// an unconditional `(allow file-read*)`, so every host path is
+	// readable on Darwin whatever the mount list says. It is emitted
+	// anyway, because it is the statement the read allowlist will
+	// narrow against once that unconditional grant is replaced.
+	bindRO, bindRW := 0, 0
+	for i, m := range mounts {
+		key := fmt.Sprintf("MOUNT_%d", i)
+		definitions = append(definitions, key+"="+m.path)
+		sections = append(sections, fmt.Sprintf(
+			"(allow file-read* (subpath (param %q)))", key))
+		if m.access == policy.MountReadWrite {
+			sections = append(sections, fmt.Sprintf(
+				"(allow file-write* (subpath (param %q)))", key))
+			bindRW++
+			continue
+		}
+		bindRO++
 	}
 
 	// Subtractive rules are last. No later broad allow may reopen a protected
@@ -181,9 +222,37 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 		Definitions: definitions,
 		Writable:    len(writable),
 		Protected:   len(protected),
+		BindRO:      bindRO,
+		BindRW:      bindRW,
 		Scratch:     scratch,
 		Digest:      digest,
 	}
+}
+
+// seatbeltMount is one explicit mount reduced to what the profile needs:
+// the normalized path and the access. The requirement is not here,
+// because whether a missing source refuses the execution is decided
+// before the platform split (MissingRequiredMounts) and an optional
+// absent path simply produces no rule.
+type seatbeltMount struct {
+	path   string
+	access policy.MountAccess
+}
+
+// seatbeltMounts normalizes the mount list and orders it by path, so the
+// profile and its digest do not depend on the order the sender happened
+// to write. There is no tie to resolve: the decoder refuses a repeated
+// mount path before the policy reaches either platform.
+func seatbeltMounts(mounts []policy.Mount) []seatbeltMount {
+	out := make([]seatbeltMount, 0, len(mounts))
+	for _, m := range mounts {
+		out = append(out, seatbeltMount{
+			path:   normalizeSeatbeltPath(m.Path),
+			access: m.Access,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
+	return out
 }
 
 func normalizedSeatbeltPaths(paths []string) []string {

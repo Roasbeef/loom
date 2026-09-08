@@ -173,15 +173,17 @@ func TestMissingFd3IsFatal(t *testing.T) {
 	}
 }
 
-// Version-0 policies must be refused even when structurally plausible.
+// A policy of a version this helper does not implement must be refused
+// even when every other field is well formed. The map below is complete
+// for version 2, `mounts` included, so the version is the only thing left
+// for the decoder to object to.
 func TestWrongVersionFd3IsFatal(t *testing.T) {
-	// An otherwise-valid policy map, except v=2.
 	bad, err := framing.MarshalBody(map[string]any{
-		"v": 2, "writable_roots": []any{}, "readable_roots": []any{},
+		"v": 3, "writable_roots": []any{}, "readable_roots": []any{},
 		"protected": []any{}, "network": map[string]any{"mode": "off"},
 		"limits": map[string]any{"cpu_s": 0, "wall_s": 0, "mem_bytes": 0,
 			"pids": 0, "fsize_bytes": 0, "output_bytes": 0},
-		"env_allow": []any{}, "scratch": "tmpfs",
+		"env_allow": []any{}, "scratch": "tmpfs", "mounts": []any{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -192,10 +194,10 @@ func TestWrongVersionFd3IsFatal(t *testing.T) {
 	select {
 	case err := <-waitErr:
 		if err == nil {
-			t.Fatal("binary accepted a v=2 policy")
+			t.Fatal("binary accepted a v=3 policy")
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("binary did not exit on a v=2 policy")
+		t.Fatal("binary did not exit on a v=3 policy")
 	}
 }
 

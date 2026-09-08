@@ -1,7 +1,7 @@
 # protocol-change/004 — an explicit `mounts` vocabulary for SandboxPolicy
 
-**Status**: PROPOSED 2026-08-25 · **Affects**: Part 1.4 `SandboxPolicyV1` ·
-**Raised by**: WP-J (J3c, the code-mode launcher) · **Implemented**: no
+**Status**: ACCEPTED 2026-09-08 · **Affects**: Part 1.4 `SandboxPolicyV1` ·
+**Raised by**: WP-J (J3c, the code-mode launcher) · **Implemented**: yes
 
 ## Problem
 
@@ -49,11 +49,10 @@ only non-`AF_UNIX` socket creation.
 ## Proposal
 
 Add one field to the policy — a list of explicit binds, applied after the
-protected masks so an explicit mount is not silently shadowed:
+scratch mount so an explicit mount is not silently shadowed by it:
 
 ```
-mounts: [ { path: str, access: "ro"|"rw", kind: "file"|"dir"|"socket",
-            required: bool } ]
+mounts: [ { path: str, access: "ro"|"rw", required: bool } ]
 ```
 
 ```gleam
@@ -62,46 +61,97 @@ pub type MountAccess {
   MountReadWrite
 }
 
-pub type MountKind {
-  MountFile
-  MountDirectory
-  /// An AF_UNIX socket the jail must be able to connect to. Named
-  /// separately from `MountFile` because connect(2) needs write
-  /// permission on the inode, which is a different question from whether
-  /// the mount is read-only.
-  MountSocket
+pub type MountRequirement {
+  /// The execution is refused when the source path does not exist.
+  MountRequired
+  /// A missing source path is skipped rather than refused.
+  MountOptional
 }
 
 pub type Mount {
-  Mount(path: String, access: MountAccess, kind: MountKind, required: Bool)
+  Mount(path: String, access: MountAccess, requirement: MountRequirement)
 }
 ```
 
 - **Helper**: each mount becomes a `--ro-bind`/`--bind` emitted *after* the
   protected masks and after the scratch mount, so an explicit mount wins
-  over a shadow. A `required: True` mount whose source does not exist
-  refuses the execution rather than running a jail the caller believes has
-  it. `MountSocket` is bound read-only today; if a kernel is found where a
-  read-only bind refuses `connect(2)`, only this one case changes.
-- **Composition**: mounts are widening, so they follow the existing rule
-  for widening — a tool's requirements may only *request* a mount the
-  session base already carries, and anything else is a `Narrowing`
-  convertible to a `GrantMount`. A tool cannot mount arbitrary host paths.
+  over the scratch tmpfs that would otherwise shadow it. It never wins over
+  a protected mask, because there is no such pair to resolve: a mount whose
+  path covers a `protected` entry, or is covered by one, is refused at
+  validation on both sides of the wire — `broker/policy.validate` on the
+  composed policy, and the helper's own decoder on the bytes. Neither
+  platform can honour that pair. On Linux the mask installs a read-only
+  tmpfs over the region and the later bind onto it makes bubblewrap exit 1
+  saying only `Read-only file system`; on Darwin the trailing denies win
+  and the mount does nothing. Refusing it is what lets the two platforms
+  order a mount against the masks in opposite directions and still enforce
+  the same policy. For the same reason a mount path may not be repeated,
+  end in a slash, or carry a `..` segment: neither side canonicalizes a
+  mount path, so all three are one region named twice and neither emitter
+  should have to invent a tie-break. A `MountRequired` mount whose source
+  does not exist refuses the execution rather than running a jail the
+  caller believes has it.
+- **Composition**: mounts compose as the meet, like every other field. A
+  mount survives composition only when both sides carry it, at the weaker
+  of the two accesses and the stronger of the two requirements. A tool
+  requesting a mount the session base does not carry is a `Narrowing` and
+  an in-band refusal.
 - **Prerequisite, not the change itself**: this vocabulary is what a
   minimal-root base view would need before it could replace `--ro-bind /
-  /`. That is a separate, larger proposal; this one only makes the two
-  requirements statable.
+  /`. That is a separate, larger proposal, `protocol-change/020`; this one
+  only makes the requirements statable.
+
+### No `kind`, and no `GrantMount`
+
+The original draft carried `kind: "file"|"dir"|"socket"` and answered
+composition with a new `GrantMount`. Both are dropped.
+
+`kind` is documentation pretending to be data. The draft itself recorded
+that a socket is bound read-only exactly as a file is; bwrap's `--ro-bind`
+does not consult the inode type, and the helper already stats every mount
+source for its own refusals (`MissingMountSources`,
+`packages/sandbox/internal/jail/mounts.go`). Three values that emit
+identical argv are three values a reader must reconcile against the code.
+
+`GrantMount` is dropped because a grant reaches the escalation path, and
+#243 has not yet settled which principal an approval prompt goes to under a
+shared daemon. Mounts do not need it: they compose as the meet like every
+other field, so a tool asking for a mount the base does not carry produces
+a `Narrowing` and an in-band refusal, exactly as `codemode/launch` refuses
+today. Out-of-workspace access is decided before the session starts, by the
+derived rule over manifest path dependencies or by an operator's
+configuration line. #242 therefore touches nothing #243 has yet to settle.
+
+`required` stays a bool on the wire, where msgpack has bools and the Go
+side has one too. In Gleam it is the two-variant `MountRequirement`,
+because lint R9 rejects a naked `Bool` in a record field: `Mount(path,
+access, True)` names nothing at the call site.
 
 ## Impact
 
-`broker/policy` (type, encoder, decoder, `compose`, `narrow_unenforceable`),
-the Go `internal/policy` decoder and `jail.BwrapArgs`, the golden fixtures
-under `protocol/msgpack-fixtures/`, and the spec's Part 1.4 text. No durable
-format impact — policy is never persisted.
+`broker/policy` (type, encoder, decoder, `compose`, `validate`,
+`wanted_grants`), the Go `internal/policy` decoder and `jail.BwrapArgs`, the
+golden fixtures under `protocol/msgpack-fixtures/`, and the spec's Part 1.4
+text. No durable format impact — policy is never persisted.
 
 Because the field is additive, a v1 decoder on either side would reject it
 (both decoders are strict and refuse unknown keys, correctly), so this is a
-policy version bump rather than a compatible extension.
+policy version bump rather than a compatible extension. **The field lands as
+policy version `v: 2`.** The two decoders are equally strict in the other
+direction as well: a v2 harness and a v1 helper do not interoperate at all,
+so the Gleam and Go halves landed together in one pull request rather than
+two. Splitting them was considered and abandoned once measured: the
+intermediate tree is not coherent, because the helper decodes the policy out
+of `exec_start` strictly and refuses it with `policy: unknown keys [mounts]`,
+which fails every test that spawns the real helper. The three
+`sandbox_policy_*` fixtures move to v2 with the field.
+
+Two files in this directory are numbered 019
+(`019-session-display-names.md` and `019-sessions-delete.md`). Both are
+merged, so renumbering one would break inbound links for no benefit. The
+collision is recorded here rather than repaired. The minimal-root base view
+is `protocol-change/020-minimal-jail-root.md`, which is the next free
+number.
 
 ## Interim behaviour (what J3c does instead)
 
@@ -112,3 +162,12 @@ additionally refuses the two cases the vocabulary cannot express at all — a
 path under a `protected` entry, and a path under the scratch tmpfs mount —
 rather than discovering them as a satellite that never connects. The module
 doc records why that is sufficient today and what it depends on.
+
+## Decision
+
+**Accepted.** The alternative — leaving the two requirements as
+`readable_roots` entries and letting the minimal-root change discover them —
+was considered and dismissed: under `--ro-bind / /` a missing dependency has
+no symptom at all, so it would be found by a satellite that never connects,
+on the branch that is already the largest in the wave. The vocabulary lands
+first precisely so that the narrowing has something to refuse against.

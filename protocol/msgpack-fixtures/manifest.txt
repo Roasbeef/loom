@@ -49,22 +49,32 @@ packages/broker/test/broker/{policy,framing}_test.gleam. The Go helper's
 policy suite (packages/sandbox/internal/policy) strictly decodes every
 sandbox_policy* file.
 
+All three sandbox_policy fixtures are version 2: protocol-change/004
+added `mounts`, and neither decoder accepts a version but its own, so
+there is no v1 fixture left to keep. Both decoders read them.
+
 sandbox_policy_1.bin: SandboxPolicyV1, network proxy mode.
-  { v:1, writable_roots:["/work","/work/.cache"],
+  { v:2, writable_roots:["/work","/work/.cache"],
     readable_roots:["/work","/usr/lib"],
     protected:["/work/.git","/work/.env"],
     network:{mode:"proxy", allow:["registry.npmjs.org","*.github.com"],
              proxy:"127.0.0.1:3128"},
     limits:{cpu_s:60, wall_s:120, mem_bytes:536870912, pids:128,
             fsize_bytes:1048576, output_bytes:65536},
-    env_allow:["PATH","HOME"], scratch:"/work/.scratch" }
+    env_allow:["PATH","HOME"], scratch:"/work/.scratch", mounts:[] }
   Map keys sorted; limits keys sorted; network keys sorted.
 sandbox_policy_2_network_off.bin: SandboxPolicyV1, network off (the
   broker/policy.workspace_default("/work") value: writable/readable
   ["/work"], protected [], limits {cpu_s:300, wall_s:600,
   mem_bytes:2147483648, pids:512, fsize_bytes:1073741824,
   output_bytes:4194304}, env_allow ["PATH","HOME","LANG","TERM"],
-  scratch "tmpfs").
+  scratch "tmpfs", mounts []).
+sandbox_policy_3_mounts.bin: the same workspace_default("/work") value
+  with two explicit mounts, which is the only fixture that exercises the
+  `mounts` encoding at all: a read-only required bind of
+  "/run/loom/cap.sock" and a read-write optional bind of "/work/.blobs".
+  Mount map keys sorted access, path, required; the list keeps the order
+  the policy names.
 frame_hello_1.bin: a Part 1.4 frame payload (msgpack map, no length
   prefix): {v:1, id:1, kind:"hello",
   body:{proto:1, peer:"broker", features:[]}}. Envelope keys in spec

@@ -831,6 +831,7 @@ fn network_off_policy() -> policy.SandboxPolicy {
     ),
     env_allow: ["PATH"],
     scratch: policy.ScratchTmpfs,
+    mounts: [],
   )
 }
 
