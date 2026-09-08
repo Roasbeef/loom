@@ -368,7 +368,8 @@ second. `make soak-daemon-sim` runs the long one, and is bounded by
 `SOAK_DAEMON_BUDGET_SECONDS` (default 120) rather than by a seed count: a
 daemon seed's cost depends on the machine's file system and on whether the
 schedule drew a kill, so a count buys an unpredictable amount of lane time.
-Each chunk prints how many seeds it drew and where the next chunk starts.
+The whole budget is spent in one run, which prints how many seeds it drew
+and where a reader resuming the range by hand should start.
 
 ## What this does not cover
 

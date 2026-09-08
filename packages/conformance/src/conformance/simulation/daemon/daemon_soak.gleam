@@ -25,6 +25,7 @@ import conformance/simulation/daemon/daemon_runner
 import conformance/simulation/runner
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 
 /// How many times a failed seed is re-run before the report calls it
 /// reproducible. Three, matching the session runner, so the two soaks'
@@ -56,9 +57,10 @@ pub type Outcome {
     /// this, because the count depends on how fast the machine was.
     next: Int,
     /// The failing seed's report, if the run reached one. The loop stops at
-    /// the first failure: a daemon failure is expensive to reproduce and
-    /// nothing later in the range is worth more than the one in hand.
-    failures: List(String),
+    /// the first failure, so there is at most one: a daemon failure is
+    /// expensive to reproduce and nothing later in the range is worth more
+    /// than the one in hand.
+    failure: Option(String),
   )
 }
 
@@ -98,13 +100,14 @@ pub fn soak(
 /// The summary line one budgeted run prints.
 ///
 /// It is one line, prefixed the way `make soak`'s own progress lines are, so
-/// the skip census and the signoff lane read this run the same way they read
-/// the session soak.
+/// a reader skimming a lane log finds it where the session soak's lines are.
+/// The next seed is on it so that somebody resuming the range by hand knows
+/// where to start; nothing parses it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // daemon_soak.describe(daemon_soak.Outcome(4, 5, []), from: 1)
+/// // daemon_soak.describe(daemon_soak.Outcome(4, 5, None), from: 1)
 /// ```
 pub fn describe(outcome: Outcome, from from: Int) -> String {
   "==> daemon soak ran "
@@ -120,14 +123,18 @@ pub fn describe(outcome: Outcome, from from: Int) -> String {
 // is measured against.
 fn draw(seed: Int, from: Int, deadline: Int, now: fn() -> Int) -> Outcome {
   case now() >= deadline {
-    True -> Outcome(seeds: seed - from, next: seed, failures: [])
+    True -> Outcome(seeds: seed - from, next: seed, failure: None)
     False -> {
       let failures = list.filter_map(runners(), fn(one) { attempt(one, seed) })
 
       case failures {
         [] -> draw(seed + 1, from, deadline, now)
-        lines ->
-          Outcome(seeds: seed + 1 - from, next: seed + 1, failures: lines)
+
+        // Only the first report is kept. A seed's runners are independent,
+        // but the range stops here either way, and a second report from the
+        // same seed says nothing the first does not about where to look.
+        [report, ..] ->
+          Outcome(seeds: seed + 1 - from, next: seed + 1, failure: Some(report))
       }
     }
   }
