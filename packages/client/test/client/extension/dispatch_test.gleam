@@ -809,7 +809,7 @@ fn extension_router(
         broker: broker_actor,
         clock: clock.fixed(at: 1000),
         workspace: "/work",
-        toolchain: codemode.Toolchain(
+        toolchain: codemode.toolchain(
           gleam_path: "/opt/gleam/bin/gleam",
           erl_path: "/opt/erlang/bin/erl",
           seed_root: "/opt/loom/seed",

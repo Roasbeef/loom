@@ -430,6 +430,7 @@ fn start_host(
       broker: config.host.broker,
       clock: config.host.clock,
       erl_path: config.host.erl_path,
+      host_mounts: config.host.host_mounts,
       demand: at.demand,
       accept_timeout_ms: config.host.accept_timeout_ms,
     )),

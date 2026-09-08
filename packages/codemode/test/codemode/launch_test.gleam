@@ -88,6 +88,7 @@ fn config(broker_actor: broker.Broker) -> launch.LaunchConfig {
     broker: broker_actor,
     clock: clock.fixed(at: t),
     erl_path: "/usr/bin/erl",
+    host_mounts: [],
     demand: exec.BestEffort,
     accept_timeout_ms: 3000,
   )
@@ -189,7 +190,7 @@ pub fn node_requirements_turn_the_network_off_test() {
         network: policy.NetworkFull,
       ),
     )
-  let requirements = launch.node_requirements(open, t)
+  let requirements = launch.node_requirements(open, host_mounts: [], now_ms: t)
   assert requirements.network == policy.NetworkOff
   // Composition takes the meet, so a network-off requirement against a
   // network-full base really is off.
@@ -205,19 +206,97 @@ pub fn node_requirements_bound_the_wall_by_the_deadline_test() {
   // 30 seconds left of the pooled deadline, against a base that would
   // allow 600: the node's own wall limit is the tighter one, so the jail
   // kills it even if the host's timer never fires.
-  let requirements = launch.node_requirements(spec(dir, wire), t)
+  let requirements =
+    launch.node_requirements(spec(dir, wire), host_mounts: [], now_ms: t)
   assert requirements.limits.wall_s == 30
 }
 
 pub fn node_requirements_name_the_socket_and_token_directories_test() {
   let dir = "/work/x"
   let wire = process.new_subject()
-  let requirements = launch.node_requirements(spec(dir, wire), t)
+  let requirements =
+    launch.node_requirements(spec(dir, wire), host_mounts: [], now_ms: t)
   assert list.contains(requirements.readable_roots, dir <> "/sock")
   assert list.contains(requirements.readable_roots, dir <> "/token")
   assert list.contains(requirements.readable_roots, dir <> "/ebin")
   assert list.contains(requirements.env_allow, launch.sock_env)
   assert list.contains(requirements.env_allow, launch.token_env)
+}
+
+pub fn node_requirements_state_the_host_mounts_verbatim_test() {
+  // The host holds the toolchain's regions, and the node asks for exactly
+  // those. Anything added or dropped here is a mount the session base does
+  // not carry, and composition would refuse the launch for it.
+  let dir = "/work/x"
+  let wire = process.new_subject()
+  let wanted = [
+    policy.Mount(
+      path: "/usr/lib/erlang",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    ),
+    policy.Mount(
+      path: "/opt/seed",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    ),
+  ]
+  let requirements =
+    launch.node_requirements(spec(dir, wire), host_mounts: wanted, now_ms: t)
+  assert requirements.mounts == wanted
+}
+
+pub fn node_requirements_ask_for_no_mount_of_their_own_test() {
+  // The socket, the token and the artifact directory are per-execution
+  // paths, so no session base built before them could name the same
+  // entries. They stay readable roots; the mount that covers them is the
+  // workspace one the base derives.
+  let dir = "/work/x"
+  let wire = process.new_subject()
+  let requirements =
+    launch.node_requirements(spec(dir, wire), host_mounts: [], now_ms: t)
+  assert requirements.mounts == []
+}
+
+pub fn a_base_carrying_the_host_mounts_composes_to_them_test() {
+  let dir = "/work/x"
+  let wire = process.new_subject()
+  let wanted = [
+    policy.Mount(
+      path: "/usr/lib/erlang",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    ),
+  ]
+  let open = spec(dir, wire)
+  let base = policy.SandboxPolicy(..open.base_policy, mounts: wanted)
+  let requirements =
+    launch.node_requirements(
+      satellite.LaunchSpec(..open, base_policy: base),
+      host_mounts: wanted,
+      now_ms: t,
+    )
+  let #(effective, narrowings) =
+    policy.compose(base:, requirements:, grants: [])
+  assert narrowings == []
+  assert effective.mounts == wanted
+}
+
+pub fn a_base_without_the_host_mounts_narrows_by_name_test() {
+  let dir = "/work/x"
+  let wire = process.new_subject()
+  let open = spec(dir, wire)
+  let wanted =
+    policy.Mount(
+      path: "/usr/lib/erlang",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  let requirements =
+    launch.node_requirements(open, host_mounts: [wanted], now_ms: t)
+  let #(_effective, narrowings) =
+    policy.compose(base: open.base_policy, requirements:, grants: [])
+  assert narrowings == [policy.NarrowedMount(wanted:)]
 }
 
 // --- reachability the policy vocabulary cannot state ----------------------

@@ -202,6 +202,7 @@ import codemode/vet/policy as vet_policy
 import codemode/workspace
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import filepath
 import gleam/bit_array
 import gleam/bool
 import gleam/erlang/process.{type Subject}
@@ -250,6 +251,16 @@ pub type Config {
     erl_path: String,
     /// A `PATH` for the hermetic build, covering both executables.
     toolchain_path: String,
+    /// The filesystem regions a jailed satellite must have inside its
+    /// jail, stated as explicit mounts: the two toolchain prefixes and
+    /// the build seed (`toolchain_mounts`).
+    ///
+    /// Held here rather than re-derived at each launch because two
+    /// readers need the same value — the launcher, which puts it in the
+    /// node's requirements, and `client/serve`, which puts it in the
+    /// session base. Composition takes the meet by path, so the two
+    /// lists agreeing is what keeps a launch from narrowing.
+    host_mounts: List(policy.Mount),
     /// Which of the two seams this host's `code_mode` serves. It decides
     /// the vetting allowlist *and* the capability router together; see
     /// the module doc for why that is one field.
@@ -754,6 +765,7 @@ pub fn default_config(
     gleam_path: toolchain.gleam_path,
     erl_path: toolchain.erl_path,
     toolchain_path: toolchain_path(toolchain),
+    host_mounts: toolchain_mounts(toolchain),
     surface: Workspace,
     blob_root: workspace <> "/" <> blob_directory,
     scratch: scratch.none(),
@@ -776,9 +788,29 @@ pub fn default_config(
   )
 }
 
-/// The located toolchain a code-mode execution needs on this host.
+/// The located toolchain a code-mode execution needs on this host: the two
+/// executables, the prepared build seed, and the install prefix each
+/// executable belongs to.
+///
+/// The prefixes are here because a binary is not a toolchain. `erl` is a
+/// launcher that resolves an ERTS `ROOTDIR` and loads an install tree of
+/// `.beam` files, and `gleam` on a Homebrew host is a symlink into a
+/// versioned cellar directory. Both worked only because the jail's base
+/// view is the whole host bound read-only, so nobody ever had to say which
+/// region the toolchain occupies. `protocol-change/020` replaces that base
+/// view, and `codemode/launch.node_requirements` states these prefixes as
+/// explicit mounts so a base that does not carry them refuses the launch by
+/// name instead of producing an `erl` that cannot boot.
 pub type Toolchain {
-  Toolchain(gleam_path: String, erl_path: String, seed_root: String)
+  Toolchain(
+    gleam_path: String,
+    erl_path: String,
+    seed_root: String,
+    /// The install prefix holding `gleam_path`. See `install_prefix`.
+    gleam_prefix: String,
+    /// The install prefix holding `erl_path` and the ERTS tree it loads.
+    erl_prefix: String,
+  )
 }
 
 /// The capability names the shipped *default* router services — the ones
@@ -841,7 +873,192 @@ pub fn discover(seed_root: String) -> Result(Toolchain, String) {
     seed.verify(seed_root, compile.default_dependencies())
     |> result.map_error(seed_remedy),
   )
-  Ok(Toolchain(gleam_path:, erl_path:, seed_root:))
+  let located = toolchain(gleam_path:, erl_path:, seed_root:)
+  use _layout <- result.try(erts_layout(located.erl_prefix, erl_path))
+  Ok(located)
+}
+
+/// A `Toolchain` from the three paths, with each executable's install
+/// prefix derived by `install_prefix`.
+///
+/// Separate from `discover` because it is pure: the derivation is a
+/// function of the path text, and only the ERTS layout check `discover`
+/// runs afterwards touches the filesystem. That split is what lets a test
+/// state a host layout as three strings.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.toolchain(
+///   gleam_path: "/opt/homebrew/bin/gleam",
+///   erl_path: "/usr/bin/erl",
+///   seed_root: "/opt/seed",
+/// ).erl_prefix == "/usr"
+/// ```
+///
+pub fn toolchain(
+  gleam_path gleam_path: String,
+  erl_path erl_path: String,
+  seed_root seed_root: String,
+) -> Toolchain {
+  Toolchain(
+    gleam_path:,
+    erl_path:,
+    seed_root:,
+    gleam_prefix: install_prefix(gleam_path),
+    erl_prefix: install_prefix(erl_path),
+  )
+}
+
+/// The install prefix an executable belongs to: the parent of its `bin`
+/// directory, and the parent of that again when the `bin` sits inside an
+/// `erts-<version>` directory.
+///
+/// Three shapes, all measured rather than assumed. A distribution package
+/// puts `erl` at `/usr/bin/erl` and its install tree at `/usr/lib/erlang`,
+/// so the prefix is `/usr`. An OTP install rooted at `/usr/lib/erlang`
+/// puts it at `/usr/lib/erlang/bin/erl`, so the prefix is
+/// `/usr/lib/erlang`. A loom release ships `<root>/erts-<vsn>/bin/erl`
+/// beside `<root>/lib`, and the emulator needs the whole root, so an
+/// `erts-` component is climbed past. An executable not under a `bin`
+/// directory at all keeps its containing directory, which is the most this
+/// can say about a layout it does not recognize.
+///
+/// **The symlink is deliberately not followed**, and that is the one
+/// surprising choice. Homebrew's `/opt/homebrew/bin/gleam` points at
+/// `../Cellar/gleam/1.18.1/bin/gleam`, so resolving it would name the
+/// cellar directory and leave the `bin` entry the `PATH` actually uses
+/// outside the mount. The unresolved prefix contains both the symlink and
+/// its target, because the link is relative and stays inside the prefix.
+/// Following it would also cost an `@external`: nothing in `simplifile`
+/// reads a link target, and `simplifile.resolve` is `filename:absname`,
+/// which resolves `..` and not symlinks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.install_prefix("/usr/bin/erl") == "/usr"
+/// ```
+///
+/// ```gleam
+/// assert codemode.install_prefix("/opt/loom/erts-17.0.5/bin/erl")
+///   == "/opt/loom"
+/// ```
+///
+pub fn install_prefix(binary: String) -> String {
+  let directory = filepath.directory_name(canonical(binary))
+  case filepath.base_name(directory) {
+    "bin" -> climb_erts(filepath.directory_name(directory))
+    _other -> directory
+  }
+}
+
+// An ERTS directory is not a prefix: the emulator inside it reads `lib`
+// and `releases` from the root beside it, so a mount of `erts-<vsn>`
+// alone would give the jail an `erl` that cannot boot.
+fn climb_erts(prefix: String) -> String {
+  case string.starts_with(filepath.base_name(prefix), "erts-") {
+    True -> filepath.directory_name(prefix)
+    False -> prefix
+  }
+}
+
+// Whether the derived prefix really holds an ERTS install tree, checked
+// in both of the layouts that exist in the wild: `<prefix>/lib/erlang`,
+// which is what a Debian or Ubuntu package and a Homebrew prefix have,
+// and an `erts-<version>` directory directly under the prefix, which is
+// what an OTP install root and a loom release have.
+//
+// The derivation above is a heuristic over a path, so this is what keeps
+// it honest. A prefix that holds neither is a boot-time refusal naming
+// both the binary and the prefix, because the alternative is a jail that
+// mounts the wrong region and an `erl` that dies inside it with no
+// sentence anybody can act on.
+fn erts_layout(prefix: String, erl_path: String) -> Result(Nil, String) {
+  let packaged = simplifile.is_directory(prefix <> "/lib/erlang")
+  let rooted =
+    simplifile.read_directory(prefix)
+    |> result.map(fn(entries) {
+      list.any(entries, fn(entry) { string.starts_with(entry, "erts-") })
+    })
+  case packaged, rooted {
+    Ok(True), _ | _, Ok(True) -> Ok(Nil)
+    _packaged, _rooted ->
+      Error(
+        "erl was found at "
+        <> erl_path
+        <> ", but its install prefix "
+        <> prefix
+        <> " holds neither lib/erlang nor an erts-<version> directory, so "
+        <> "the jail cannot be told which region the emulator needs. Put "
+        <> "`erl` on PATH from an ordinary OTP install, or run the "
+        <> "`bin/loomd` of a release built with the code-mode bundle. No "
+        <> "code_mode tool is registered.",
+      )
+  }
+}
+
+/// The filesystem regions a jailed satellite needs to exist inside its
+/// jail: the two toolchain prefixes and the build seed, read-only.
+///
+/// All three are `MountRequired`, because the prefix derivation is a
+/// heuristic (`install_prefix`) and a wrong one must refuse the dispatch
+/// naming the path rather than produce a node that fails to boot. They are
+/// read-only because nothing a satellite does writes to a toolchain: the
+/// hermetic build has already run by then, and it runs in its own jail.
+///
+/// The socket, the token and the artifact's `.beam` directory are
+/// deliberately not here, and `codemode/launch.node_requirements` says
+/// why: they are per-execution paths, so no session base could carry the
+/// same entries, and composition takes the meet by path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.toolchain_mounts(toolchain) |> list.map(fn(m) { m.path })
+/// //   == ["/opt/homebrew", "/opt/homebrew", "/opt/loom/share/codemode-seed"]
+/// ```
+///
+pub fn toolchain_mounts(toolchain: Toolchain) -> List(policy.Mount) {
+  let wanted =
+    [toolchain.erl_prefix, toolchain.gleam_prefix, toolchain.seed_root]
+    |> list.unique
+  wanted
+  |> list.filter(fn(path) { !covered_by_another(path, wanted) })
+  |> list.map(canonical)
+  |> list.map(fn(path) {
+    policy.Mount(
+      path:,
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  })
+}
+
+// A mount inside another mount of the same list is the same region named
+// twice: on a release the seed sits under the install root, and on a
+// Homebrew host both executables share one prefix. The inner entry is
+// dropped rather than kept, because the two would be nested binds whose
+// order the emitters would have to agree on for no gain in what the jail
+// can reach. Paths are already unique here, so a path never eliminates
+// itself.
+// A mount path is taken as written on both sides of the wire: neither
+// `broker/policy.validate` nor the helper's decoder resolves one, and
+// both refuse a `..` segment rather than invent a tie-break for two names
+// of one region. Paths reach here from a `--codemode-seed` flag and from
+// wherever `erl` was found, so the resolution happens once, here.
+// `filepath.expand` is textual and resolves no symlink, which is what
+// `install_prefix` wants: it fails only on a path that climbs above the
+// root, and such a path is left as it was so that validation refuses it
+// by name.
+fn canonical(path: String) -> String {
+  result.unwrap(filepath.expand(path), path)
+}
+
+fn covered_by_another(path: String, mounts: List(String)) -> Bool {
+  list.any(mounts, fn(other) {
+    other != path && policy.covers(root: other, path:)
+  })
 }
 
 /// One executable of the code-mode toolchain: the copy shipped beside
@@ -1111,6 +1328,7 @@ fn execute_after_vetting(
               widened_by: approved_grants(request),
             ),
             config.clock,
+            host_mounts: config.host_mounts,
             reporting: shortfalls,
             until: deadline_ms,
           ),
@@ -1208,6 +1426,7 @@ fn approved_grants(request: codemode_tool.Request) -> List(Grant) {
 fn watching(
   exec: pipeline.ExecConfig,
   session_clock: Clock,
+  host_mounts host_mounts: List(policy.Mount),
   reporting shortfalls: Subject(codemode_tool.PolicyRefusal),
   until deadline_ms: Int,
 ) -> pipeline.ExecConfig {
@@ -1216,6 +1435,7 @@ fn watching(
     launch: watched_launcher(
       exec.launch,
       session_clock,
+      host_mounts,
       shortfalls,
       deadline_ms,
     ),
@@ -1239,6 +1459,7 @@ fn watching(
 fn watched_launcher(
   launcher: satellite.Launcher,
   session_clock: Clock,
+  host_mounts: List(policy.Mount),
   shortfalls: Subject(codemode_tool.PolicyRefusal),
   deadline_ms: Int,
 ) -> satellite.Launcher {
@@ -1252,7 +1473,7 @@ fn watched_launcher(
         // be a catch-all whatever it is called, and a third kind of
         // refusal added later would start being reported here with
         // nobody having decided that it should be.
-        case launch_refusal(spec, now, reason, deadline_ms) {
+        case launch_refusal(spec, host_mounts, now, reason, deadline_ms) {
           codemode_tool.NothingRefused -> Nil
           codemode_tool.RunRefused(..) as refused ->
             process.send(shortfalls, refused)
@@ -1295,6 +1516,7 @@ fn watched_launcher(
 ///
 pub fn launch_refusal(
   spec: satellite.LaunchSpec,
+  host_mounts: List(policy.Mount),
   now_ms: Int,
   reason: String,
   deadline_ms: Int,
@@ -1302,7 +1524,7 @@ pub fn launch_refusal(
   let #(_effective, narrowings) =
     policy.compose(
       base: spec.base_policy,
-      requirements: launch.node_requirements(spec, now_ms),
+      requirements: launch.node_requirements(spec, host_mounts:, now_ms:),
       grants: identity.grants(spec.identity),
     )
   case narrowings {
@@ -1660,6 +1882,7 @@ pub fn exec_config(
       broker: config.broker,
       clock: config.clock,
       erl_path: config.erl_path,
+      host_mounts: config.host_mounts,
       demand: request.demand,
       accept_timeout_ms: config.accept_timeout_ms,
     )),

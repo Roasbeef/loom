@@ -38,33 +38,60 @@
 //// only to *enrich* the reason on a close the reader already observed,
 //// never to announce one.
 ////
-//// # What `SandboxPolicyV1` can and cannot say about reachability
+//// # What the policy states about reachability, and what it still assumes
 ////
-//// The node needs two host paths inside the jail: the cap socket, which it
-//// must `connect(2)`, and the token file, which it must read. The frozen
-//// policy vocabulary (spec Part 1.4) has no "bind this path" verb, so this
-//// module expresses both as `readable_roots` entries and *checks* the
-//// composed policy actually covers them. What makes that sufficient today
-//// is the helper's base view — bwrap ro-binds the whole host filesystem
-//// read-only — plus three kernel facts: `sb_permission` exempts sockets
-//// from `EROFS`, so `connect(2)` on a read-only mount succeeds; Landlock's
-//// filesystem rights do not govern connecting to an existing socket; and
-//// the network-off seccomp filter denies only non-`AF_UNIX` socket
-//// creation.
+//// A node needs four regions inside its jail: the cap socket, which it
+//// must `connect(2)`; the token file, which it must read; the `.beam`
+//// directory the hermetic build wrote; and the toolchain the emulator
+//// itself comes from, which is an ERTS install tree and not just the
+//// `erl` binary. The last of those used to be stated nowhere at all.
 ////
-//// Two things the policy type genuinely cannot express, and which this
-//// module therefore refuses rather than discovers at runtime: a cap socket
-//// or token under a `protected` path (bwrap shadows it with a read-only
-//// tmpfs) and, when scratch is a tmpfs, one under `/tmp` (the helper mounts
-//// the scratch tmpfs there, hiding whatever the host had). Both make the
-//// path unreachable inside the jail while looking perfectly fine outside
-//// it. See `protocol-change/004-sandbox-policy-explicit-mounts.md` for the
-//// vocabulary that would state this positively instead.
+//// **The toolchain and the build seed are explicit mounts**
+//// (`protocol-change/004`). `node_requirements` puts the list the host
+//// derived from its located toolchain into the policy's `mounts` field,
+//// each entry read-only and `MountRequired`, and `client/serve` puts the
+//// same list into the session base. Mounts compose as the meet by path, so
+//// a base that does not carry one produces a `NarrowedMount` and this
+//// module refuses the launch naming the path. That refusal is the point:
+//// the prefix is derived by a heuristic over where `erl` was found
+//// (`client/codemode.install_prefix`), and a wrong prefix must be a
+//// sentence an operator can act on rather than a node that boots into a
+//// jail with no ERTS tree.
+////
+//// **The socket, the token and `beam_dir` are readable roots**, and are
+//// checked against the composed policy by `path_reachable`. They are not
+//// mounts because they are per-execution paths: a session base is built
+//// before any of them exists, so it could not carry the same entries, and
+//// a requirement the base cannot match refuses every launch. Under
+//// `protocol-change/020` the region that covers them is the workspace
+//// mount the base derives from the admission record, which is a statement
+//// the base makes rather than one this module can.
+////
+//// **What is still assumed is the system view.** Until 020 lands the
+//// helper binds the whole host filesystem read-only, so `/usr`, `/lib`,
+//// `/etc` and the shell are reachable without anybody naming them, and
+//// three kernel facts make the socket work: `sb_permission` exempts
+//// sockets from `EROFS`, so `connect(2)` on a read-only mount succeeds;
+//// Landlock's filesystem rights do not govern connecting to an existing
+//// socket; and the network-off seccomp filter denies only non-`AF_UNIX`
+//// socket creation. When 020 replaces that base view, the system roots
+//// become a per-OS constant in the helper and nothing in this module
+//// changes.
+////
+//// Two things no vocabulary makes reachable, which this module therefore
+//// refuses rather than discovers at runtime: a cap socket or token under a
+//// `protected` path (bwrap shadows it with a read-only tmpfs) and, when
+//// scratch is a tmpfs, one under `/tmp` (the helper mounts the scratch
+//// tmpfs there, hiding whatever the host had). Both make the path
+//// unreachable inside the jail while looking perfectly fine outside it. A
+//// mount cannot rescue either: `broker/policy.validate` refuses a mount
+//// that overlaps a `protected` entry, because the two platforms would
+//// order the pair in opposite directions.
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
 import broker/exec.{type EnforcementDemand}
-import broker/policy.{type Grant, type Narrowing, type SandboxPolicy}
+import broker/policy.{type Grant, type Mount, type Narrowing, type SandboxPolicy}
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
 import codemode/identity
@@ -154,6 +181,11 @@ pub type LaunchConfig {
     clock: Clock,
     /// Absolute path to the `erl` executable.
     erl_path: String,
+    /// The host-derived regions a node must have inside its jail: the
+    /// toolchain install prefixes and the build seed, stated as explicit
+    /// mounts. The host holds this list because only the host knows where
+    /// it found a toolchain; see `node_requirements`.
+    host_mounts: List(Mount),
     /// Enforcement strictness demanded of the jailed node.
     demand: EnforcementDemand,
     /// How long to wait for the satellite to connect back.
@@ -176,7 +208,8 @@ fn launch(
 ) -> Result(CapConnection, String) {
   use _ <- result.try(check_budget(identity.pooled_budget(spec.identity)))
   let #(now, _clock) = clock.read(config.clock)
-  let requirements = node_requirements(spec, now)
+  let requirements =
+    node_requirements(spec, host_mounts: config.host_mounts, now_ms: now)
   use effective <- result.try(composed_policy(
     spec.base_policy,
     requirements,
@@ -930,15 +963,35 @@ pub fn node_env(spec: LaunchSpec) -> List(#(String, String)) {
   ]
 }
 
-/// What the jailed node requires of the session base: the socket, token,
-/// and `.beam` directories readable, the network off, the two cap handles
-/// in the environment allowlist, and a wall limit no longer than what is
-/// left of the pooled deadline.
+/// What the jailed node requires of the session base: the toolchain and
+/// the build seed mounted read-only, the socket, token and `.beam`
+/// directories readable, the network off, the two cap handles in the
+/// environment allowlist, and a wall limit no longer than what is left of
+/// the pooled deadline.
 ///
 /// Nothing here widens the base — composition takes the meet — so a base
 /// that cannot cover one of these produces a narrowing, which the launch
 /// reports as an in-band refusal.
-pub fn node_requirements(spec: LaunchSpec, now_ms: Int) -> SandboxPolicy {
+///
+/// `host_mounts` is an argument rather than a field of the spec because
+/// only the host knows where it found a toolchain, and because the *same*
+/// list has to reach the session base: a mount survives the meet only when
+/// both sides carry it, so a base built from a different list would strip
+/// the toolchain out of the policy the node runs under.
+///
+/// **Why the socket, the token and `beam_dir` are still roots and not
+/// mounts.** All three are per-execution paths: the socket and token live
+/// under an execution directory this launch just made, and `beam_dir` is
+/// where the hermetic build put its output. A session base is built once,
+/// before any of them exist, so it cannot name them; requiring them as
+/// mounts would narrow every launch. Under `protocol-change/020` they are
+/// covered by the workspace mount the base derives from the admission
+/// record, which is a statement the base makes and this function does not.
+pub fn node_requirements(
+  spec: LaunchSpec,
+  host_mounts host_mounts: List(Mount),
+  now_ms now_ms: Int,
+) -> SandboxPolicy {
   let wanted = [
     directory_of(spec.cap_socket_path),
     directory_of(spec.token_path),
@@ -948,6 +1001,7 @@ pub fn node_requirements(spec: LaunchSpec, now_ms: Int) -> SandboxPolicy {
   policy.SandboxPolicy(
     ..base,
     readable_roots: list.unique(list.append(base.readable_roots, wanted)),
+    mounts: host_mounts,
     network: policy.NetworkOff,
     limits: policy.Limits(
       ..base.limits,
@@ -1219,6 +1273,7 @@ fn narrowing_text(narrowing: Narrowing) -> String {
     // reaches an operator reading a refusal and the path is the part
     // they would act on. There is no grant that adds a mount, so this
     // narrowing is the end of the matter for the session.
-    policy.NarrowedMount(wanted:) -> "mount " <> wanted.path
+    policy.NarrowedMount(wanted:) ->
+      "mount " <> wanted.path <> ", which the session base does not carry"
   }
 }

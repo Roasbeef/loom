@@ -1494,6 +1494,7 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
 // `code_mode` line to reason from.
 fn code_mode_seam(
   settings: Settings,
+  discovered: Result(codemode_wiring.Toolchain, String),
   logger: Logger,
   broker_actor: Broker,
   clock: Clock,
@@ -1503,7 +1504,7 @@ fn code_mode_seam(
   jobs_door: jobseam.Door,
   owner: Option(custody.Owner),
 ) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
-  case codemode_wiring.discover(settings.codemode_seed) {
+  case discovered {
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
         field.text(key: "reason", value: reason),
@@ -2199,12 +2200,22 @@ fn assemble_in(
   // `protecting_memory`.
   use memory_store <- result.try(beside_session(settings, memory.memory_file))
   use memory_digest <- result.try(beside_session(settings, memory.digest_file))
+
+  // The toolchain is located here rather than inside `code_mode_seam`,
+  // which is where it is reported, because the session base has to carry
+  // the toolchain's mounts and the base is built now. Discovery is a
+  // filesystem probe over the settings alone, so hoisting it costs
+  // nothing and buys the one ordering that matters: a base built before
+  // the toolchain is known could not name it, and a launch requiring a
+  // mount the base does not carry is refused by the meet.
+  let toolchain = codemode_wiring.discover(settings.codemode_seed)
   let base_policy =
     protecting_index(settings.base_policy, index_path)
     |> protecting_memory(memory_store, memory_digest)
     |> allowing_tool_tmpdir
     |> under_tools_config(settings.tools)
     |> widening_linked_worktree(settings.workspace)
+    |> admitting_codemode(toolchain)
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
@@ -2408,6 +2419,7 @@ fn assemble_in(
   // view of it.
   use #(code_mode_host, mcp_layer) <- result.try(code_mode_seam(
     settings,
+    toolchain,
     logger,
     broker_actor,
     clock,
@@ -3506,6 +3518,47 @@ pub fn widening_linked_worktree(
       policy.SandboxPolicy(
         ..base,
         writable_roots: list.unique(list.append(base.writable_roots, outside)),
+      )
+  }
+}
+
+/// The base policy with the code-mode toolchain admitted as explicit
+/// mounts: the `erl` install prefix, the `gleam` prefix, and the prepared
+/// build seed, each read-only and required.
+///
+/// This is the base half of one statement whose other half is
+/// `codemode/launch.node_requirements`. Mounts compose as the meet by
+/// path, so a mount survives into the policy a satellite runs under only
+/// when both sides carry it: the base says what code mode may reach, the
+/// launcher says what it needs, and a launcher asking for anything else is
+/// refused in band naming the path. Both halves read the same
+/// `codemode.toolchain_mounts` value, so there is nothing for them to
+/// drift apart on.
+///
+/// A host with no toolchain is left exactly as it was. It registers no
+/// `code_mode` tool, so no satellite will ever be launched on it, and a
+/// mount nothing needs is a region granted for nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.admitting_codemode(base, Error("no gleam on PATH")) == base
+/// ```
+///
+@internal
+pub fn admitting_codemode(
+  base: policy.SandboxPolicy,
+  discovered: Result(codemode_wiring.Toolchain, String),
+) -> policy.SandboxPolicy {
+  case discovered {
+    Error(_reason) -> base
+    Ok(toolchain) ->
+      policy.SandboxPolicy(
+        ..base,
+        mounts: list.append(
+          base.mounts,
+          codemode_wiring.toolchain_mounts(toolchain),
+        ),
       )
   }
 }

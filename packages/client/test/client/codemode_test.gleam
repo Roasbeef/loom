@@ -84,7 +84,7 @@ fn config_for(broker_actor: broker.Broker) -> codemode.Config {
     broker: broker_actor,
     clock: clock.fixed(at: 1000),
     workspace: "/work",
-    toolchain: codemode.Toolchain(
+    toolchain: codemode.toolchain(
       gleam_path: "/opt/gleam/bin/gleam",
       erl_path: "/usr/lib/erlang/bin/erl",
       seed_root: "/opt/loom/codemode-seed",
@@ -1297,6 +1297,7 @@ pub fn a_base_that_hosts_a_node_refuses_nothing_test() {
   // whenever the launcher failed, whatever the reason.
   assert codemode.launch_refusal(
       a_launch_spec(hosting_base(), []),
+      [],
       1000,
       "the launcher fell over for some other reason",
       9000,
@@ -1308,6 +1309,7 @@ pub fn a_narrowed_base_reports_the_diff_that_would_open_it_test() {
   let assert codemode_tool.RunRefused(denial:, deadline_ms:) =
     codemode.launch_refusal(
       a_launch_spec(without_the_cap_socket(), []),
+      [],
       1000,
       "the session base cannot host a satellite node: environment variable "
         <> launch.sock_env,
@@ -1337,6 +1339,7 @@ pub fn a_grant_that_closes_the_shortfall_reports_nothing_test() {
       a_launch_spec(without_the_cap_socket(), [
         policy.GrantEnv(name: launch.sock_env),
       ]),
+      [],
       1000,
       "unused",
       9000,
@@ -1375,4 +1378,100 @@ pub fn an_execution_that_never_reached_a_launch_refuses_nothing_test() {
     as "an absent seed must fail the build"
   assert execution.refusal == codemode_tool.NothingRefused
   broker.stop(broker_actor)
+}
+
+// --- the toolchain's install prefixes (#242) --------------------------------
+
+// A binary is not a toolchain: `erl` loads an ERTS install tree beside it,
+// and a Homebrew `gleam` is a symlink into a versioned cellar directory.
+// `install_prefix` is what names the region a jail has to carry, and it is
+// a heuristic over path text, so the layouts it has to get right are
+// written down here rather than left to the one host a developer is on.
+
+pub fn a_packaged_erl_takes_the_prefix_above_bin_test() {
+  // Debian and Ubuntu: /usr/bin/erl with the install tree at
+  // /usr/lib/erlang.
+  assert codemode.install_prefix("/usr/bin/erl") == "/usr"
+}
+
+pub fn an_otp_install_root_is_its_own_prefix_test() {
+  // The other layout: the install root itself holds bin/ beside erts-*.
+  assert codemode.install_prefix("/usr/lib/erlang/bin/erl") == "/usr/lib/erlang"
+}
+
+pub fn a_release_erl_climbs_past_its_erts_directory_test() {
+  // A loom release ships <root>/erts-<vsn>/bin/erl and the emulator reads
+  // lib/ and releases/ from <root>, so the erts directory alone would be a
+  // jail with an erl that cannot boot.
+  assert codemode.install_prefix("/opt/loom/erts-17.0.5/bin/erl") == "/opt/loom"
+}
+
+pub fn a_symlinked_gleam_keeps_the_prefix_holding_both_ends_test() {
+  // /opt/homebrew/bin/gleam points at ../Cellar/gleam/1.18.1/bin/gleam.
+  // The prefix is the directory holding the link *and* its target, which
+  // is why the link is not resolved: naming the cellar would leave the bin
+  // entry PATH uses outside the mount.
+  assert codemode.install_prefix("/opt/homebrew/bin/gleam") == "/opt/homebrew"
+}
+
+pub fn a_binary_outside_a_bin_directory_keeps_its_own_directory_test() {
+  // Nothing more can be said about a layout this does not recognize, and
+  // the ERTS check in `discover` is what refuses it if it is wrong.
+  assert codemode.install_prefix("/home/o/toolchains/erl")
+    == "/home/o/toolchains"
+}
+
+pub fn the_toolchain_mounts_are_read_only_and_required_test() {
+  let found =
+    codemode.toolchain(
+      gleam_path: "/opt/homebrew/bin/gleam",
+      erl_path: "/usr/bin/erl",
+      seed_root: "/opt/loom/share/codemode-seed",
+    )
+  assert codemode.toolchain_mounts(found)
+    == [
+      policy.Mount(
+        path: "/usr",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+      policy.Mount(
+        path: "/opt/homebrew",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+      policy.Mount(
+        path: "/opt/loom/share/codemode-seed",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ]
+}
+
+pub fn one_prefix_holding_both_executables_is_mounted_once_test() {
+  // A duplicate mount is a policy `validate` refuses, so the shared-prefix
+  // host — every Homebrew host — must not produce one, and a seed inside
+  // that prefix is the same region named twice.
+  let found =
+    codemode.toolchain(
+      gleam_path: "/opt/homebrew/bin/gleam",
+      erl_path: "/opt/homebrew/bin/erl",
+      seed_root: "/opt/homebrew/share/codemode-seed",
+    )
+  assert list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path })
+    == ["/opt/homebrew"]
+}
+
+pub fn a_mount_path_is_canonical_before_it_reaches_a_policy_test() {
+  // `--codemode-seed ../build/seed` is an ordinary thing to write, and
+  // both sides of the wire refuse a `..` segment rather than resolve one,
+  // so the resolution happens where the mount is built.
+  let found =
+    codemode.toolchain(
+      gleam_path: "/opt/homebrew/bin/gleam",
+      erl_path: "/usr/bin/erl",
+      seed_root: "/srv/loom/packages/client/../../build/seed",
+    )
+  assert list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path })
+    == ["/usr", "/opt/homebrew", "/srv/loom/build/seed"]
 }

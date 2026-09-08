@@ -276,6 +276,7 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
       broker: live.broker,
       clock: rig.wall_clock(),
       erl_path: prerequisites.erl_path,
+      host_mounts: [],
       demand: exec.BestEffort,
       accept_timeout_ms: 30_000,
     )),

@@ -492,7 +492,8 @@ catalogue without opening runtimes. Explicit admission invokes
   or a descendant" says so at its own door. `is_subagent` is not a
   substitute: it says a name was minted by *an* Agency, not by whom, and
   a sibling's name is shaped exactly like a child's.
-- `client/codemode.{Config, Toolchain, seam, discover, default_config,
+- `client/codemode.{Config, Toolchain, seam, discover, toolchain,
+  install_prefix, toolchain_mounts, default_config,
   execute, exec_config, build_config, exec_root, execution_policy,
   translate, pooled_budget}` — code mode: `tools/codemode`'s seam
   implemented over the real pipeline, the other package this one exists
@@ -1481,6 +1482,19 @@ catalogue without opening runtimes. Explicit admission invokes
   `serve.start_build_plane` therefore takes a `state_root` argument, and
   `client/extension/cli` derives it as the parent of the extensions root,
   which is the inverse of `record.root_for`.
+- `client/serve.admitting_codemode(base, discovered)` — the base half of
+  the code-mode mount plan. The toolchain is located *before* the base
+  policy is built (the discovery call moved up out of `code_mode_seam`,
+  which now only reports it) because the base has to carry what a
+  satellite requires: mounts compose as the meet by path, so a base built
+  without them would refuse every code-mode launch. Both halves read
+  `client/codemode.toolchain_mounts`, so they cannot drift. A host with no
+  toolchain is left unchanged, because it registers no `code_mode` tool
+  and will launch no satellite. A toolchain prefix overlapping a
+  `protected` entry — a seed unpacked inside the daemon's state root, say
+  — is refused at boot by `base_policy_fault` naming both paths, which is
+  the same treatment `broker/policy.validate` gives every mount-over-mask
+  pair.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a
@@ -2448,7 +2462,8 @@ build plane masks them where the jail can build the mask.
   could mint the grants #24 taught it to spend. `execute` now wraps the
   pipeline's launcher, re-asks the launch's own composition question
   (`launch.node_requirements` ⊕ the base ⊕ the identity's grants, so
-  there is nothing to drift), and reports the shortfall outward as
+  there is nothing to drift; the same `Config.host_mounts` reaches both
+  sides), and reports the shortfall outward as
   `tools/codemode.RunRefused`; `wiring.tool_context` supplies the raise
   seam that turns it into a durable record, and the tool shell
   re-executes once on an approval. Three clearance points, one raise: the

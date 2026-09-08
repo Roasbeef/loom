@@ -598,7 +598,7 @@ fn config_over(root: String) -> codemode.Config {
     broker: broker_actor,
     clock: clock.fixed(at: 1000),
     workspace: root,
-    toolchain: codemode.Toolchain(
+    toolchain: codemode.toolchain(
       gleam_path: "/opt/gleam/bin/gleam",
       erl_path: "/usr/lib/erlang/bin/erl",
       seed_root: "/opt/loom/codemode-seed",

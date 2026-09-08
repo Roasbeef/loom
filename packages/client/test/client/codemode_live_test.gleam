@@ -120,6 +120,14 @@ fn run_live(ready: Ready) -> Nil {
   let text = rendered_text(outcome)
   // What the jailed `/bin/echo` printed, through the cap channel, the
   // broker's policy check, a second jail, and out as a tool result.
+  io.println_error(
+    "DEBUGLIVE: "
+    <> string.inspect(rig.base_policy.mounts)
+    <> " validate="
+    <> string.inspect(policy.validate(rig.base_policy))
+    <> " "
+    <> text,
+  )
   assert !outcome.is_error
   assert string.contains(text, echoed <> " exit=0")
   // The result is a whole tool result, not a string: the content address
@@ -1626,7 +1634,19 @@ fn rig_protecting(
   let workspace = workspace_in(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
     as "the live rig must have a workspace"
-  let base = policy.SandboxPolicy(..base_policy(root), protected:)
+  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
+    as "the toolchain must be located"
+
+  // The base carries the toolchain's mounts for the reason a real
+  // session's does (`client/serve.admitting_codemode`): the satellite
+  // launch requires them, composition takes the meet by path, and a base
+  // without them refuses every run.
+  let base =
+    policy.SandboxPolicy(
+      ..base_policy(root),
+      protected:,
+      mounts: codemode.toolchain_mounts(toolchain),
+    )
   let assert Ok(pool) =
     exec.start_pool(size: 3, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
@@ -1651,8 +1671,6 @@ fn rig_protecting(
       ),
     )
     as "the broker must start"
-  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
-    as "the toolchain must be located"
   Rig(
     root:,
     workspace:,

@@ -106,14 +106,22 @@ pub fn the_build_clearance_is_never_widened_test() {
 pub fn the_node_clearance_carries_the_approved_grants_test() {
   let spec = launch_spec("/work", widened_identity())
   let call =
-    launch.node_call(launch_config(), spec, launch.node_requirements(spec, t))
+    launch.node_call(
+      launch_config(),
+      spec,
+      launch.node_requirements(spec, host_mounts: [], now_ms: t),
+    )
   assert call.grants == approved()
 }
 
 pub fn an_unapproved_node_clearance_carries_none_test() {
   let spec = launch_spec("/work", plain_identity())
   let call =
-    launch.node_call(launch_config(), spec, launch.node_requirements(spec, t))
+    launch.node_call(
+      launch_config(),
+      spec,
+      launch.node_requirements(spec, host_mounts: [], now_ms: t),
+    )
   assert call.grants == []
 }
 
@@ -299,6 +307,7 @@ fn launch_config() -> launch.LaunchConfig {
     broker: started_broker(),
     clock: clock.fixed(at: t),
     erl_path: "/usr/bin/erl",
+    host_mounts: [],
     demand: exec.BestEffort,
     accept_timeout_ms: 1000,
   )
