@@ -43,7 +43,8 @@
 #                            this because those jobs are separate machines.
 #   mid                      check.sh runtime storage session events.
 #   conformance              check.sh conformance, the 200-seed soak, then
-#                            the wall-clock-budgeted daemon simulation soak.
+#                            the wall-clock-budgeted daemon simulation soak,
+#                            in one invocation each.
 #                            The soak rebuilds packages/conformance once a
 #                            chunk, so it stays behind the conformance
 #                            suite in one lane rather than beside it.
@@ -170,13 +171,16 @@ lane_client() {
 }
 lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
 # The daemon simulation's soak follows the session one in this lane, and is
-# budgeted rather than counted: it draws seeds until its seconds are spent.
+# budgeted rather than counted: it draws seeds until its seconds are spent,
+# in a single invocation whose eunit deadline is derived from the budget.
 # Sixty is what fits. The lanes run in parallel, so the gate's wall time is
-# the slowest lane's, and that is the client lane at about 440 seconds; the
-# conformance lane is about 220. Sixty seconds leaves the conformance lane
-# at roughly 280, still short of the client lane, so the gate costs nothing
-# it did not cost before. A budget past 200 would make this lane the
-# critical path and slow the gate for everyone.
+# the slowest lane's, and on the estimates below that is the client lane.
+# Read `build/signoff/<lane>.log` for what the lanes actually cost on this
+# machine; the figures here are estimates from a developer run, roughly 440
+# seconds for the client lane against 220 for conformance. Sixty seconds
+# leaves conformance near 280, still short of the client lane, so the gate
+# costs what it cost before. A budget past 200 would make this lane the
+# critical path.
 lane_conformance() {
 	$retry bash scripts/check.sh conformance &&
 		$retry make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}" &&
