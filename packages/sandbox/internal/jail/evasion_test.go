@@ -68,13 +68,29 @@ func TestCancelReachesAPayloadThatLeftTheProcessGroup(t *testing.T) {
 // `unshare -U -p -f` and no privilege at all, and so be skipped by name.
 // The supervisor and bwrap's init are known by construction; nothing
 // else inherits their exemption.
+//
+// The handler is installed with perl rather than a shell trap, and the
+// reason is a property of the evasion tool rather than of the jail.
+// util-linux before 2.38 ignores SIGINT and SIGTERM in `unshare --fork`
+// so that the waiting parent survives them, and sets the disposition
+// before it forks, so every process under the fake init inherits
+// SIG_IGN for TERM. POSIX then forbids a non-interactive shell from
+// trapping a signal that was ignored on entry, which made the payload
+// unreachable by TERM for a reason that had nothing to do with the
+// selection under test: the targeting picked it correctly and the
+// grace still expired into SIGKILL. sigaction has no such rule, so a
+// handler installed by perl overrides the inherited SIG_IGN and the
+// test observes what it means to: whether the TERM rung addressed a
+// payload that gave itself a namespace init's shape.
 func TestCancelReachesAPayloadClaimingToBeANamespaceInit(t *testing.T) {
 	requireBwrap(t)
 	unshare := requireTool(t, "unshare")
+	perl := requireTool(t, "perl")
 	c := newCollector()
 	ex := start(t, testPolicy(t), []string{
-		unshare, "-U", "-p", "-f", "/bin/sh", "-c",
-		`trap 'echo INNER-HANDLER; exit 7' TERM; echo ready; sleep 30 & wait`,
+		unshare, "-U", "-p", "-f", perl, "-e",
+		`$SIG{TERM} = sub { print "INNER-HANDLER\n"; exit 7 };` +
+			` $| = 1; print "ready\n"; sleep 30;`,
 	}, c.sink)
 	_ = ex.WriteStdin(nil, true)
 	waitFor(t, 10*time.Second, func() bool { return strings.Contains(c.out(), "ready") })
@@ -83,6 +99,17 @@ func TestCancelReachesAPayloadClaimingToBeANamespaceInit(t *testing.T) {
 	if !strings.Contains(c.out(), "INNER-HANDLER") {
 		t.Fatalf("a payload that made itself look like a namespace init was "+
 			"excluded by name and never asked to stop: out %q, %+v", c.out(), res)
+	}
+
+	// The status is the other half of the claim. A whole-group TERM
+	// would also reach this payload, since it never left the group, but
+	// it kills the supervisor first and the collapsing namespace
+	// destroys whatever status the handler chose. Seeing 7 is what
+	// distinguishes a TERM addressed to the payload from one sprayed at
+	// the group that happened to include it.
+	if res.Code != 7 {
+		t.Fatalf("exit = %d, want 7 (the status the payload's own TERM "+
+			"handler chose): %+v", res.Code, res)
 	}
 }
 
