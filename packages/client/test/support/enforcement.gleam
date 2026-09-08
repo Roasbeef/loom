@@ -134,9 +134,13 @@ fn verdict(
 
 fn classify(outcome: exec.ExecEvent, label: String) -> Enforcement {
   case outcome {
-    exec.Failed(exec.DegradedHelper(_))
-    | exec.Failed(exec.DegradedExecution(_)) -> {
-      io.println_error("SKIP " <> label <> ": " <> unavailable_reason)
+    exec.Failed(exec.DegradedHelper(features:)) -> {
+      decline(label, "helper hello: " <> string.join(features, " "))
+      EnforcementAbsent
+    }
+
+    exec.Failed(exec.DegradedExecution(result:)) -> {
+      decline(label, execution_report(result))
       EnforcementAbsent
     }
 
@@ -154,6 +158,36 @@ fn classify(outcome: exec.ExecEvent, label: String) -> Enforcement {
     exec.Output(..) ->
       panic as "the silent enforcement prerequisite produced unexpected output"
   }
+}
+
+// The skip line and the reason are two lines rather than one because the
+// census in `.github/declared-skips` matches the first of them literally.
+// A reason appended to that line would have to be part of the declared
+// string, so every new way to degrade would edit the census; on its own
+// line it can say whatever the helper said.
+fn decline(label: String, detail: String) -> Nil {
+  io.println_error("SKIP " <> label <> ": " <> unavailable_reason)
+  io.println_error("  " <> label <> " degraded: " <> detail)
+}
+
+// The enforcement report is what the reader has to act on. Each entry is
+// either a layer tag that was applied or a `skip:` entry carrying the
+// helper's own sentence about why that layer is missing, so the list is
+// printed verbatim rather than summarised.
+fn execution_report(result: exec.ExecResult) -> String {
+  let layers = case result.enforcement {
+    [] -> "(no layers reported)"
+    entries -> string.join(entries, ", ")
+  }
+  "exit "
+  <> int.to_string(result.code)
+  <> ", degraded flag "
+  <> case result.degraded {
+    True -> "set"
+    False -> "clear"
+  }
+  <> ", enforcement: "
+  <> layers
 }
 
 // Output is not completion, even for a silent requested command: the launch
