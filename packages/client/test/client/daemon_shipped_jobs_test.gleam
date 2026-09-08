@@ -90,6 +90,7 @@ import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/selection
 import tui/session_channel
+import tui/workspace
 import weft
 import weft/actor
 import weft/poll
@@ -1068,7 +1069,14 @@ fn attach(
   let assert Ok(host) =
     selection.host(connected.control, connected.address, connected.owner)
     as "the owner has an authenticated selector"
-  let assert Ok(created) = selection.create(host, key, workspace, config)
+  let assert Ok(created) =
+    selection.create_named(
+      host,
+      key,
+      workspace,
+      workspace.session_name(workspace.Context(workspace, None)),
+      config,
+    )
     as "the session is explicitly created"
   bind(connected, created.expected.session)
 }

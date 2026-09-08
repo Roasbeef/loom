@@ -34,12 +34,53 @@ fn envelope(
   )
 }
 
+pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("workspace", json.String("/workspace")),
+    #("name", json.String("name")),
+  ]
+  assert protocol.decode(
+      envelope(1, "sessions.create", [
+        #("configuration", json.String("")),
+        ..fields
+      ]),
+    )
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/workspace",
+        "name",
+        "",
+        domain.WorkspacePrivate,
+      ),
+    ))
+  let assert Error(_) = protocol.decode(envelope(1, "sessions.create", fields))
+    as "configuration remains a required field even when empty"
+  list.each(
+    [json.Null, json.Int(1), json.String(string.repeat("x", 4097))],
+    fn(value) {
+      let assert Error(_) =
+        protocol.decode(
+          envelope(1, "sessions.create", [#("configuration", value), ..fields]),
+        )
+        as "configuration still requires bounded text"
+    },
+  )
+}
+
 pub fn every_control_command_has_one_typed_decode_test() {
   let id = session_id()
   let session = #("session_id", json.String(id))
   let epoch = #("epoch", json.String("epoch"))
   let workspace = #("workspace", json.String("/workspace"))
   let cases = [
+    #(
+      "sessions.rename",
+      [session, epoch, #("name", json.String("review auth"))],
+      protocol.RenameSession(id, "review auth", "epoch"),
+    ),
     #(
       "sessions.invite",
       [

@@ -8,11 +8,13 @@ import etui/buffer
 import etui/geometry.{type Rect}
 import etui/keys
 import etui/span
+import etui/text
 import etui/widgets/block
 import etui/widgets/paragraph
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import tui/daemon/protocol
 import tui/text_hygiene
 import tui/theme
@@ -116,7 +118,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
 pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   let area =
     geometry.centered_rect(
-      int.max(1, int.min(96, screen.size.width - 4)),
+      int.max(1, int.min(144, screen.size.width - 4)),
       int.max(1, int.min(22, screen.size.height - 4)),
       screen,
     )
@@ -136,46 +138,65 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     )
     |> block.with_padding(1, 1, 1, 1)
   let inside = block.inner(area, frame)
-  let count = int.max(1, inside.size.height - 3)
+  let count = int.max(1, { inside.size.height - 3 } / 2)
   let start = int.max(0, state.selected - count + 1)
   let rows =
     state.page.sessions
     |> list.drop(start)
     |> list.take(count)
     |> list.index_map(fn(row, offset) {
-      let marker = case start + offset == state.selected {
-        True -> "▸ "
-        False -> "  "
+      let #(marker, selected_style) = case start + offset == state.selected {
+        True -> #("▸ ", theme.overlay_signal())
+        False -> #("  ", theme.overlay_plain())
       }
       let current = case row.session_id == state.current {
-        True -> " ● "
-        False -> " "
+        True -> "● "
+        False -> "  "
       }
-      let line =
-        marker
-        <> row.name
-        <> current
-        <> "["
-        <> lifecycle(row.status)
-        <> "] "
-        <> row.workspace
-        <> " · "
-        <> row.session_id
-      span.line_new([
-        span.span_styled(
-          text_hygiene.fit_tail(
-            text_hygiene.single_line(line),
-            inside.size.width,
+
+      // Reserve the markers before sizing fields. Two fixed lines keep a long
+      // workspace from erasing the name, lifecycle or navigation indicator.
+      let width = int.max(0, inside.size.width - 4)
+      let status =
+        text.truncate(
+          " [" <> lifecycle(row.status) <> "]",
+          int.max(0, width - 8),
+          "…",
+        )
+      let name =
+        text.truncate(
+          text_hygiene.single_line(row.name),
+          width - text.cell_width(status),
+          "…",
+        )
+      let identity =
+        text.truncate(" · " <> short_identity(row.session_id), width, "…")
+      let workspace =
+        fit_workspace(row.workspace, width - text.cell_width(identity))
+      [
+        span.line_new([
+          span.span_styled(marker, selected_style),
+          span.span_styled(current, theme.overlay_current()),
+          span.span_styled(name <> status, selected_style),
+        ]),
+        span.line_new([
+          span.span_styled(
+            "    " <> workspace <> identity,
+            theme.overlay_quiet(),
           ),
-          theme.overlay_plain(),
-        ),
-      ])
+        ]),
+      ]
     })
+    |> list.flatten
   let rows = case rows {
     [] -> [
       span.line_new([
         span.span_styled(
-          "No saved sessions. Press n to create one explicitly.",
+          text.truncate(
+            "No saved sessions. Press n to create one explicitly.",
+            inside.size.width,
+            "…",
+          ),
           theme.overlay_quiet(),
         ),
       ]),
@@ -185,7 +206,11 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   let help =
     span.line_new([
       span.span_styled(
-        "↑↓ select · Enter open · n new · → next page · ← first · Esc close",
+        text.truncate(
+          "↑↓ select · Enter open · n new · → next page · ← first · Esc close",
+          inside.size.width,
+          "…",
+        ),
         theme.overlay_quiet(),
       ),
     ])
@@ -196,6 +221,22 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     inside,
     list.append(rows, [span.line_new([]), help]),
   )
+}
+
+// The timestamp fields distinguish catalogue UUIDs whose random suffix is
+// shared by the same generator. Keep both fields rather than just the tail.
+fn short_identity(identity: String) -> String {
+  string.slice(identity, 0, 13)
+}
+
+// Path tails distinguish worktrees. Reverse only for cell-aware truncation;
+// markers and the compact identity are separate spans and cannot be clipped.
+fn fit_workspace(workspace: String, width: Int) -> String {
+  workspace
+  |> text_hygiene.single_line
+  |> string.reverse
+  |> text.truncate(width, "…")
+  |> string.reverse
 }
 
 fn lifecycle(status) {

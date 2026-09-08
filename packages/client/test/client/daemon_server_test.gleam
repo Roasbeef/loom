@@ -369,6 +369,14 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
 }
 
 pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
+  creation_default_operation_and_stop_roundtrip("/loom.toml")
+}
+
+pub fn inherited_configuration_creation_default_and_stop_roundtrip_test() {
+  creation_default_operation_and_stop_roundtrip("")
+}
+
+fn creation_default_operation_and_stop_roundtrip(configuration: String) {
   fixture(fn(_, ready, port, credential) {
     assert simplifile.write(ready.state_root <> "/loom.toml", "") == Ok(Nil)
     let #(socket, _) = connect(port, credential, "/v2/control")
@@ -378,12 +386,25 @@ pub fn explicit_creation_default_operation_and_stop_roundtrip_test() {
         #("request_key", json.String("wire-create")),
         #("workspace", json.String(ready.state_root)),
         #("name", json.String("Wire session")),
-        #("configuration", json.String(ready.state_root <> "/loom.toml")),
+        #(
+          "configuration",
+          json.String(case configuration {
+            "" -> ""
+            suffix -> ready.state_root <> suffix
+          }),
+        ),
       ])
     let created = send(socket, 1, "sessions.create", creation, within_ms: 1000)
     assert field(created, "event") == json.String("sessions.create")
     let assert json.String(id) = field(field(created, "body"), "session_id")
       as "creation exposes its reserved canonical identity"
+    let assert Ok(saved) = manager.get(ready.registry, id)
+      as "the creation reply follows durable registration"
+    assert saved.registration.configuration
+      == case configuration {
+        "" -> ""
+        suffix -> ready.state_root <> suffix
+      }
     let retried = send(socket, 2, "sessions.create", creation, within_ms: 1000)
     assert field(field(retried, "body"), "session_id") == json.String(id)
     let selected =

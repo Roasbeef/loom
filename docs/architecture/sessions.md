@@ -15,6 +15,14 @@ records the alternatives and detailed failure analysis.
 
 ### Durable domain metadata
 
+Session display names are catalogue metadata. New local sessions use the cached
+workspace basename and Git branch; `/rename <name>` saves an owner-authorized
+override and refreshes the selector. The override and pagination revision commit
+together. Catalogue version 2 migrates existing registrations without changing
+their original creation names, so retrying a creation key still compares the
+same request. Renaming neither opens nor restarts the conversation. See
+[protocol-change/019](../../protocol-change/019-session-display-names.md).
+
 The catalogue also stores each session's domain mapping. `workspace_private`
 preserves the owner's canonical workspace aggregate; `session_only` assigns
 fresh memory and index paths for that session. The record captures the selected

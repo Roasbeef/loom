@@ -11,6 +11,15 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- `command.Rename` sends control `RenameSession` for the attached identity.
+  The existing `CatalogueRequest` worker sends the mutation once, then reloads
+  the first page and opens the selector with the current ID highlighted. The
+  owner and epoch checks remain server-side; a lost reply is not retried.
+  `workspace.session_name` uses cached workspace/branch context for new names,
+  normalizes terminal text, and preserves graphemes within 256 UTF-8 bytes.
+  [Protocol 019](../../protocol-change/019-session-display-names.md) describes
+  the durable rename contract.
+
 - `tui.Model` is the immutable presentation state. Durable entries,
   transient stream fragments, local notices, overlays, and scroll position
   remain distinct so a settled entry cannot duplicate its streamed answer.

@@ -18,6 +18,7 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
+import storage/catalogue_names_schema
 import storage/sql
 import storage/sql_schema
 import storage/sqlite_policy
@@ -131,9 +132,16 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
   case found, version {
-    1_281_253_197, 1 -> {
+    1_281_253_197, 2 -> {
       use _revision <- result.try(revision(Catalogue(connection)))
       Ok(Nil)
+    }
+    1_281_253_197, 1 -> {
+      use _revision <- result.try(revision(Catalogue(connection)))
+      transaction(connection, fn() {
+        use Nil <- result.try(execute(connection, catalogue_names_schema.schema))
+        execute(connection, "PRAGMA user_version=2")
+      })
     }
     0, 0 -> {
       use tables <- result.try(number(connection, "PRAGMA schema_version"))
@@ -141,13 +149,17 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
         0 ->
           transaction(connection, fn() {
             use Nil <- result.try(execute(connection, sql_schema.schema))
+            use Nil <- result.try(execute(
+              connection,
+              catalogue_names_schema.schema,
+            ))
             use Nil <- result.try(statement(
               Catalogue(connection),
               sql.initialize_catalogue_revision(),
             ))
             execute(
               connection,
-              "PRAGMA application_id=1281253197; PRAGMA user_version=1",
+              "PRAGMA application_id=1281253197; PRAGMA user_version=2",
             )
           })
         _ -> Error(Unsupported)
@@ -281,9 +293,61 @@ pub fn confirm(
 pub fn get(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
   use found <- result.try(find(catalogue, id, "", ""))
   case found {
-    [record] -> Ok(record)
+    [record] -> display_record(catalogue, record)
     [] -> Error(Missing)
     [_, _, ..] -> Error(Invalid("duplicate session identity"))
+  }
+}
+
+/// Saves a display override without changing the original creation request.
+///
+/// The label and revision commit atomically. An unchanged label writes nothing.
+/// The daemon manager supplies owner authorization before entering this DAL.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.rename(store, session_id, "review auth")
+/// ```
+pub fn rename(
+  catalogue: Catalogue,
+  id: String,
+  name: String,
+) -> Result(Registration, Error) {
+  use Nil <- result.try(case name != "" && string.byte_size(name) <= 256 {
+    True -> Ok(Nil)
+    False -> Error(Invalid("display name needs 1 to 256 bytes"))
+  })
+  transaction(catalogue.connection, fn() {
+    use record <- result.try(get(catalogue, id))
+    case record.name == name {
+      True -> Ok(record)
+      False -> {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.set_registration_display_name(id, name),
+        ))
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.increment_catalogue_revision(),
+        ))
+        Ok(Registration(..record, name:))
+      }
+    }
+  })
+}
+
+// Display reads layer mutable labels over immutable creation metadata. This
+// helper must not enter find/by_request_key, which prove retry equality.
+fn display_record(catalogue: Catalogue, record: Registration) {
+  use names <- result.try(query(
+    catalogue,
+    sql.registration_display_name(record.id),
+  ))
+  case names {
+    [] -> Ok(record)
+    [name] -> Ok(Registration(..record, name: name.name))
+    [_, _, ..] -> Error(Invalid("duplicate session display name"))
   }
 }
 

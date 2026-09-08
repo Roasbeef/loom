@@ -36,6 +36,58 @@ fn registration(seed: Int) -> catalogue.Registration {
   )
 }
 
+pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record = saved(store, 889)
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(member) = access.credential_digest(string.repeat("b", 64))
+    as "member digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+    as "owner exists"
+  let assert Ok(_) = access.create_member(store, "member", "Member", member)
+    as "member exists"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  assert manager.rename(registry, owner, "stale", record.id, "changed")
+    == Error(manager.AdminStaleEpoch)
+  assert manager.rename(registry, member, "daemon-test", record.id, "changed")
+    == Error(manager.AdminForbidden)
+  let assert Ok(view) =
+    manager.rename(registry, owner, "daemon-test", record.id, "changed")
+    as "owner renames without opening"
+  assert view.registration.name == "changed"
+  assert view.status == manager.Saved
+  let assert Ok(#(_, page)) = manager.page(registry, after: "") as "page loads"
+  assert list.map(page, fn(view) { view.registration.name }) == ["changed"]
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, record.id)
+    as "open still addresses same identity"
+  await_status(registry, record.id, manager.Resident(operation))
+  let assert Ok(opened) = manager.get(registry, record.id)
+    as "resident metadata loads"
+  assert opened.registration.name == "changed"
+  let assert Ok(retried) =
+    manager.create_scoped(
+      registry,
+      manager.Creation(
+        record.request_key,
+        record.workspace,
+        record.name,
+        record.configuration,
+      ),
+      directory: "/unused-creation-retry",
+      generator: ids.generator(clock.fixed(at: 1), seed: 1),
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+    as "retry accepts the immutable original name after a display rename"
+  assert retried.registration.name == "changed"
+  assert retried.registration.id == record.id
+  assert retried.status == manager.Resident(operation)
+  assert catalogue.by_request_key(store, record.request_key) == Ok(record)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 fn saved(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
   let record = raw_saved(store, seed)
   let selected =

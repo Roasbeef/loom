@@ -327,6 +327,13 @@ type DomainSlot {
 }
 
 type Message(instance) {
+  Rename(
+    access.Digest,
+    String,
+    String,
+    String,
+    Subject(Result(View, AdminError)),
+  )
   DomainSourceIds(String, String, Subject(Result(List(String), String)))
   DomainSourcePaths(List(String), Subject(Result(List(distill.Source), String)))
   FrameAuthority(
@@ -487,6 +494,34 @@ pub fn administer(
     caller,
     epoch,
     action,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Renames metadata after reauthenticating owner and epoch in one dispatch.
+///
+/// This does not acquire a conversation or alter a resident runtime. The
+/// catalogue retains the original creation name for request-key equality.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.rename(registry, owner_digest, epoch, id, "review auth")
+/// ```
+@internal
+pub fn rename(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  id: String,
+  name: String,
+) -> Result(View, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: Rename(
+    caller,
+    epoch,
+    id,
+    name,
     _,
   ))
   |> result.unwrap(Error(AdminUnavailable))
@@ -1079,6 +1114,18 @@ fn handle(
       )
       sm.keep(book)
     }
+    Rename(caller, epoch, id, name, reply) -> {
+      let outcome = {
+        use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+        use record <- result.map(
+          catalogue.rename(book.catalogue, id, name)
+          |> result.map_error(AdminMetadata),
+        )
+        View(record, status(book, record))
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
     Isolate(caller, epoch, id, state_root, reply) -> {
       process.send(
         reply,
@@ -1485,7 +1532,18 @@ fn create_session(
             False, True -> #(book, Error(Capacity))
             False, False -> prepare_slot(book, record)
           }
-          #(book, result.map(outcome, fn(status) { View(record, status) }))
+
+          // Admission compares immutable creation metadata, but the response
+          // displays the current name even when this was an old key's retry.
+          let viewed = {
+            use status <- result.try(outcome)
+            use displayed <- result.map(
+              catalogue.get(book.catalogue, record.id)
+              |> result.map_error(Catalogue),
+            )
+            View(displayed, status)
+          }
+          #(book, viewed)
         }
       }
     }

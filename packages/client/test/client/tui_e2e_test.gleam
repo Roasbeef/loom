@@ -471,11 +471,18 @@ fn drive(ready: Ready) -> Nil {
   assert hub.attached(booted.instance.gateway) == 1
     as "exactly one client is attached"
 
-  // 4. The snapshot painted. This text is created only after the bounded
-  //    initial capture ends, so it is protocol traffic on screen rather than an
-  //    echo of a flag the client was given.
+  // 4. The snapshot painted. The attachment banner is built from the presence
+  //    cut, so it exists only after the bounded initial capture ends: it is
+  //    protocol traffic on screen rather than an echo of a flag the client was
+  //    given. A lone owner drops the redundant name and role from the banner,
+  //    which is why the identity itself is not what this waits on.
   let _painted =
-    must_show(term, "Owner · owner", 15_000, "the snapshot never painted")
+    must_show(
+      term,
+      "Attached · 1 present",
+      15_000,
+      "the snapshot never painted",
+    )
 
   // 5. A turn, typed. The marker can only come back if the words
   //    reached the provider request, so this one assertion covers the

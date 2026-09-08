@@ -436,6 +436,43 @@ pub fn is_executable_file(path: String) -> Bool {
   }
 }
 
+/// What a path names, for a caller that needs a regular file and nothing else.
+pub type PathKind {
+  /// The path resolves to a regular file.
+  RegularFile
+
+  /// The path resolves to something else: a directory, a device, a socket.
+  OtherEntry
+
+  /// The path resolves to nothing, a dangling symbolic link included.
+  NoEntry
+}
+
+/// Classifies a path as a regular file, another kind of entry, or nothing.
+///
+/// The link is followed, so a dangling symbolic link answers `NoEntry` rather
+/// than the `path_exists` answer that a link is an entry. Callers that must
+/// read a file want the three cases distinguished in one stat: a missing path
+/// and a directory are different operator mistakes and deserve different
+/// wording.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bootstrap.path_kind(path)
+/// ```
+pub fn path_kind(path: String) -> PathKind {
+  case simplifile.file_info(path) {
+    Ok(info) ->
+      case simplifile.file_info_type(info) {
+        simplifile.File -> RegularFile
+        simplifile.Directory | simplifile.Symlink | simplifile.Other ->
+          OtherEntry
+      }
+    Error(_) -> NoEntry
+  }
+}
+
 /// Reserves and releases one IPv4 loopback port.
 ///
 /// Uses OTP `gen_tcp:listen/2` with port zero. The returned port is a hint;

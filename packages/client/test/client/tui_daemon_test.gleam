@@ -41,7 +41,10 @@ fn retired_control_model(control, port) {
   tui.Model(
     ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
     daemon_host: Some(host),
-    local_options: Some(bootstrap.Options("/work", "", "", "", "/config")),
+    // Creation now canonicalizes explicit configuration before it retains the
+    // durable key. The package manifest is a real, stable file; this controlled
+    // peer never parses it, but the local boundary can prove the path exists.
+    local_options: Some(bootstrap.Options("/work", "", "", "", "gleam.toml")),
     overlay: tui.DaemonSelector(session_selector.new(
       protocol.Page(1, [], None),
       "",

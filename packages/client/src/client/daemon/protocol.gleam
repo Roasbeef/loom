@@ -22,6 +22,9 @@ pub const max_bytes = 65_536
 
 /// Decoded requests carry no client-supplied principal or database path.
 pub type Command {
+  /// Changes only display metadata under owner authority in this daemon epoch.
+  RenameSession(session_id: String, name: String, epoch: String)
+
   /// Prospectively isolates a stopped session after explicit transcript consent.
   IsolateSession(session_id: String, epoch: String)
 
@@ -166,6 +169,12 @@ fn decode_fields(
   use body <- result.try(required(fields, "body"))
   use fields <- result.try(object(body))
   case name {
+    "sessions.rename" -> {
+      use id <- result.try(session_id(fields))
+      use name <- result.try(text_field(fields, "name", 256))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      RenameSession(id, name, epoch)
+    }
     "sessions.isolate" -> {
       use id <- result.try(session_id(fields))
       use transcript <- result.try(text_field(fields, "transcript", 32))
@@ -228,7 +237,7 @@ fn decode_fields(
       use key <- result.try(text_field(fields, "request_key", 256))
       use workspace <- result.try(text_field(fields, "workspace", 4096))
       use name <- result.try(text_field(fields, "name", 256))
-      use configuration <- result.try(text_field(fields, "configuration", 4096))
+      use configuration <- result.try(configuration_field(fields))
       use scope <- result.map(domain_scope(fields))
       CreateSession(key, workspace, name, configuration, scope)
     }
@@ -299,6 +308,17 @@ fn text_field(
       }
     }
     _other -> Error("expected nonempty text field")
+  }
+}
+
+// An empty registration selects the daemon's runtime defaults. Keep this
+// exception on the configuration field, not on identities or display names.
+fn configuration_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(String, String) {
+  case list.key_find(fields, "configuration") {
+    Ok(json.String("")) -> Ok("")
+    Ok(_) | Error(Nil) -> text_field(fields, "configuration", 4096)
   }
 }
 

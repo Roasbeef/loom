@@ -34,6 +34,10 @@ import tui/virtual_backend
 import tui/workspace
 
 fn metadata() {
+  metadata_with_peers([])
+}
+
+fn metadata_with_peers(peers) {
   json.to_string(
     json.Object([
       #("cells", json.Array([])),
@@ -59,7 +63,7 @@ fn metadata() {
           #("origin", json.Null),
         ]),
       ),
-      #("peers", json.Array([])),
+      #("peers", json.Array(peers)),
     ]),
   )
 }
@@ -78,8 +82,11 @@ fn frame(id, event, body) {
 }
 
 fn events(number, session) {
+  events_with_identity(number, session, metadata(), "Alice", "operator")
+}
+
+fn events_with_identity(number, session, data, name, role) {
   let id = attempt.Id(number)
-  let data = metadata()
   [
     attempt.Started(id, snapshot.Expected(session, "epoch", "incarnation")),
     attempt.Issued(id, attempt.Request(1, "subscribe", attempt.NoSelection)),
@@ -98,10 +105,10 @@ fn events(number, session) {
             "origin",
             json.Object([
               #("principal", json.String("alice")),
-              #("name", json.String("Alice")),
+              #("name", json.String(name)),
             ]),
           ),
-          #("role", json.String("operator")),
+          #("role", json.String(role)),
           #("next_seq", json.Int(10)),
           #("oldest_seq", json.Null),
           #("window", json.String("recent")),
@@ -162,6 +169,54 @@ fn run(state, events) {
   list.try_fold(events, #(state, []), fn(acc, event) {
     use #(state, changes) <- result.map(attempt_replay.apply(acc.0, event))
     #(state, list.append(acc.1, changes))
+  })
+}
+
+pub fn owner_banner_tracks_solo_and_multiplayer_presence_test() {
+  let peer = fn(connection) {
+    json.Object([
+      #("connection_id", json.String(connection)),
+      #(
+        "origin",
+        json.Object([
+          #("principal", json.String("alice")),
+          #("name", json.String("Owner")),
+        ]),
+      ),
+      #("role", json.String("owner")),
+    ])
+  }
+  let run = fn(peers) {
+    replay_run(
+      list.append(
+        events_with_identity(
+          1,
+          "A",
+          metadata_with_peers(peers),
+          "Owner",
+          "owner",
+        ),
+        [attempt.Adopted(attempt.Id(1))],
+      ),
+    )
+  }
+
+  // These cuts go through the real credited channel and adoption reducer,
+  // rather than constructing the banner or its presence predicate in a test.
+  let solo = run([peer("connection")])
+  assert solo.final.replay_error == None
+  assert solo.final.notice == "1 present"
+  assert list.any(solo.final.transcript, fn(line) {
+    line.text == "Attached · 1 present"
+  })
+  assert !list.any(solo.final.transcript, fn(line) {
+    string.contains(line.text, "Owner")
+  })
+  let multiplayer = run([peer("connection"), peer("other-tab")])
+  assert multiplayer.final.replay_error == None
+  assert multiplayer.final.notice == "Owner · owner · 2 present"
+  assert list.any(multiplayer.final.transcript, fn(line) {
+    line.text == "Attached as: Owner · owner · 2 present"
   })
 }
 

@@ -161,23 +161,27 @@ fn open_selected(host: Host, selected: protocol.Session) {
   target(host, selected.session_id, selected.workspace, None, status)
 }
 
-/// Creates once under a retained durable key, then observes its incarnation.
+/// Creates with a name derived from the terminal's cached workspace context.
+///
+/// Naming is metadata supplied with the original admission, not a later
+/// rename or an inference request. A lost reply retains the same creation key.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create(host, retained_key, workspace, config)
+/// // selection.create_named(host, key, project.path, workspace.session_name(project), config)
 /// ```
-pub fn create(
+pub fn create_named(
   host: Host,
   key: String,
   workspace: String,
+  name: String,
   configuration: String,
 ) -> Result(attachment.Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
-      protocol.CreateSession(key, workspace, "New session", configuration),
+      protocol.CreateSession(key, workspace, name, configuration),
       10_000,
     )
     |> result.map_error(failure),
