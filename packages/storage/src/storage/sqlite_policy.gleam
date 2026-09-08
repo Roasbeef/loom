@@ -124,15 +124,33 @@ pub fn configure_database(
     Delete -> "DELETE"
   }
 
-  // The pragma answers with the mode the database ended up in, which is not
-  // always the one asked for: a temporary or in-memory database keeps its own
-  // journal and declines the change by returning that row rather than by
-  // failing. An exec discards rows, so it answers Ok to a change that happened
-  // and to one that did not. The property at stake is the one this module's doc
-  // advertises — readers alongside one writer — which a database left in
-  // rollback-journal mode does not have.
-  use reported <- result.try(sqlight.query(
+  // The change and the read-back are two statements on purpose, and the
+  // split is what keeps this total under contention. Changing the journal
+  // mode is the one statement here that takes a database-wide lock, so it
+  // is the one that returns SQLITE_BUSY when another connection is opening
+  // the same file. On the prepared-statement path the binding hands that
+  // back as the atom `'$busy'`, for which it has no clause, and the caller
+  // dies of a `case_clause` instead of receiving an error — which is
+  // exactly what eight racing creators produced on a loaded machine.
+  // `sqlight.exec` runs the statement through `sqlite3_exec`, which reports
+  // the busy result as an ordinary error, so a contended open refuses
+  // instead of crashing.
+  use Nil <- result.try(sqlight.exec(
     "PRAGMA journal_mode = " <> journal,
+    on: connection,
+  ))
+
+  // Reading the mode back is what makes success mean the database is in the
+  // requested mode rather than that the statement ran. A temporary or
+  // in-memory database keeps its own journal and declines the change by
+  // reporting the mode it kept, and an exec discards rows, so the exec
+  // above answers Ok to a change that happened and to one that did not. The
+  // property at stake is the one this module's doc advertises — readers
+  // alongside one writer — which a database left in rollback-journal mode
+  // does not have. This second statement only reads the mode already
+  // settled by the first, so it takes no lock of its own.
+  use reported <- result.try(sqlight.query(
+    "PRAGMA journal_mode",
     on: connection,
     with: [],
     expecting: decode.at([0], decode.string),

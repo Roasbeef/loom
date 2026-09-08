@@ -16,9 +16,11 @@ import broker/policy
 import broker/support/shell
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import simplifile
 
@@ -39,27 +41,60 @@ fn helper_config_here() -> Result(exec.SpawnConfig, String) {
       let work_dir = here <> "/build/integration"
       let helper_path = work_dir <> "/loom-exec"
       let assert Ok(Nil) = simplifile.create_directory_all(work_dir <> "/work")
+
+      // Every test in this suite calls this function, so under a parallel
+      // run several `go build` invocations are live at once. They cannot
+      // share an output path: the linker writes the file in place, and a
+      // sibling test that is spawning the helper at that moment executes
+      // either a half-written binary or one whose text segment is being
+      // rewritten under it. That is what four of the suite's tests reported
+      // as `HandshakeFailed` on the first run of a freshly built checkout.
+      //
+      // Each build therefore writes its own file and renames it into place.
+      // A rename replaces the directory entry in one step and leaves the
+      // old inode intact for whoever is still running it, so no spawn ever
+      // sees a partial helper and no link ever truncates a live one. The
+      // builds themselves stay cheap: Go caches the compile and only the
+      // link is repeated.
+      let staged =
+        helper_path <> "-staged-" <> int.to_string(int.random(1_000_000_000))
       let output =
         shell.os_cmd(
           "cd ../sandbox && go build -o '"
-          <> helper_path
+          <> staged
           <> "' ./cmd/loom-exec && echo LOOM_BUILD_OK",
         )
-      case string.contains(output, "LOOM_BUILD_OK") {
+      use Nil <- try(case string.contains(output, "LOOM_BUILD_OK") {
+        True -> Ok(Nil)
         False -> Error("go build failed: " <> output)
-        True ->
-          Ok(exec.SpawnConfig(
-            helper_path:,
-            shell_path: "/bin/sh",
-            base_policy: base_policy(work_dir),
-            helper_args: [],
-            tmp_dir: work_dir <> "/tmp",
-            handshake_timeout_ms: 5000,
-            cancel_grace_ms: 3000,
-            heartbeat_interval_ms: 0,
-          ))
-      }
+      })
+      use Nil <- try(
+        simplifile.rename(at: staged, to: helper_path)
+        |> result.replace_error("the built helper could not be sworn in"),
+      )
+      Ok(exec.SpawnConfig(
+        helper_path:,
+        shell_path: "/bin/sh",
+        base_policy: base_policy(work_dir),
+        helper_args: [],
+        tmp_dir: work_dir <> "/tmp",
+        handshake_timeout_ms: 5000,
+        cancel_grace_ms: 3000,
+        heartbeat_interval_ms: 0,
+      ))
     }
+  }
+}
+
+// Chains the two ways preparing a helper can fail into one reason string,
+// since neither side of the pair is a `Result` of the same error type.
+fn try(
+  outcome: Result(a, String),
+  next: fn(a) -> Result(b, String),
+) -> Result(b, String) {
+  case outcome {
+    Ok(value) -> next(value)
+    Error(reason) -> Error(reason)
   }
 }
 

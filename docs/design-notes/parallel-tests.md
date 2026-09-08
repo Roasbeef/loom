@@ -195,6 +195,7 @@ a dependency the comment there calls intentionally confined. Four tests in
 `production_fast_terminal_preserves_normal_drain_reason_test`.
 
 **Measured afterwards, and the profile is not what they collide on.**
+*(Declared, and the whole module now runs outside the parallel group.)*
 Two of those tests replace httpc processes on purpose, because surviving
 that replacement is the property they exist to state:
 `restart_httpc_manager` and `restart_httpc_handler_supervisor` in
@@ -352,12 +353,17 @@ order of what it buys:
    in tests, or they stay sequential permanently.~~ They stay sequential,
    which given the slot's security purpose was always the honest answer; the
    same declaration is how they say so.
-3. `provider`'s four `http_test` cases need to stay sequential. Two of them
+3. ~~`provider`'s four `http_test` cases need to stay sequential. Two of them
    kill node-wide OTP processes as the property under test, and no profile
    arrangement makes that private; the declaration is where they say so.
-   `broker` needed no such thing.
+   `broker` needed no such thing.~~ **Done** — `provider@http_test` is in
+   the declaration.
 4. ~~The four in-test deadlines need to stop being wall-clock
    assumptions.~~ Done.
+5. ~~The five failures left after the four above: `codemode`'s end-to-end
+   generator, `storage`'s racing creators, `session`'s WAL retirement,
+   `client`'s shipped recovery fixtures, and `broker`'s real-helper
+   builds.~~ **Done** — the section below says what each turned out to be.
 
 ---
 
@@ -395,12 +401,11 @@ sometimes under load is a fixture with a wall-clock assumption in it, and
 parking it in the declaration would hide that bug and buy nothing.
 
 With the declaration in place `cap` passes at N=4 where 11 of its 65 tests
-used to fail. Items (3) and (4) are unaffected: they are fixtures to fix, not
-resources to declare.
+used to fail. `provider@http_test` was added to it afterwards, for the
+node-wide `httpc_handler_sup` its two restart tests kill on purpose.
 
 `scripts/signoff.sh` reads `SIGNOFF_PARALLEL` and exports it as
-`LOOM_TEST_PARALLEL` for every lane. It defaults to 1 until (3) and (4)
-land.
+`LOOM_TEST_PARALLEL` for every lane.
 
 ### Measured with the declaration in place
 
@@ -459,3 +464,164 @@ six), and
 (one run at N=16). Each is a single occurrence in three or six runs, and none
 was diagnosed here. They belong with item (4) rather than with the
 declaration.
+
+---
+
+## The last five, and what they turned out to be
+
+Every failure named above is now closed. None of them needed a longer clock
+and only one needed a declaration; three were resources shared between
+concurrent tests and two were assertions about a machine with nothing else
+running on it. Each diagnosis below was read out of a reproduction that
+printed what the test actually saw, not inferred from the failure text.
+
+### `provider@http_test` — declared
+
+The only one of the five that is a declaration. Two of its tests kill
+`httpc_manager` and `httpc_handler_sup` on purpose, because surviving that
+replacement is the property they state, and `httpc_handler_sup` is registered
+once per node. The section above has the argument; the line lives in
+`scripts/serial-tests`.
+
+### `storage@sqlite_test` — a product crash the test existed to forbid
+
+The monitor added to this fixture turned "a racer never replied" into "a
+racer exited, and here is why", and the why was
+`case_clause('$busy')` raised inside `esqlite3:fetchall/1` — reached from
+`sqlight.query`, from `sqlite_policy.configure_database`, from
+`sqlite.set_wal_journal`. That is exactly the death the test's own comment
+says the M3-05 fix forbids, and it was reachable because the journal-mode
+switch was the one pragma not following the rule `sqlite.gleam` writes down
+two functions earlier: contended statements go through `sqlight.exec`, which
+reports SQLITE_BUSY as an error, and never through the prepared-statement
+path, which hands it back as an atom the binding cannot match.
+
+The change is in the product, because no edit to the test could have avoided
+it. `configure_database` now makes the change with `exec` and reads the
+resulting mode back with a separate `PRAGMA journal_mode`, which takes no
+lock of its own. A contended open refuses with `OpenFailed` instead of
+crashing, and success still means the database is in the mode that was asked
+for.
+
+### `session@rewrite_test` — a premise inherited from a race
+
+The test asserted that a clean close leaves the `-wal` sibling on disk with
+its committed frames, then proved the rewrite retires those frames before
+swearing in the copy. The file is there only because nothing looked later
+than the assertion did: `session.close` returns once the actor has released
+the lease, the connection underneath closes on its own schedule, and
+SQLite's last-connection close checkpoints the WAL and unlinks it. At N=16
+the close won six runs in thirty and the assertion read `enoent`.
+
+The fixture now captures the database, the `-wal` and the `-shm` while the
+writer still holds them and writes all three back afterwards, which is byte
+for byte the state a writer that vanished without checkpointing leaves. All
+three are needed: frames restored over a database the close had already
+checkpointed carry a salt the header no longer matches, and SQLite answers
+that with a disk I/O error rather than by replaying anything.
+
+### `codemode@e2e_test` — a build that recompiled a dependency sometimes
+
+Not a collision between concurrent rigs, which is what the rig names
+suggested. The test builds one program twice over the same build root and
+compares the two manifest hashes, and under load they differed in seven runs
+of ten. Printing the two flattened directories file by file named the
+difference immediately, and it was the same three files every time —
+`gleam@json.beam`, `gleam_json_ffi.beam` and `gleam_json.app`, the whole of
+one seeded dependency.
+
+Copying a tree does not carry modification times over, so every file in a
+cloned seed arrives stamped with the moment it was written, and Gleam decides
+whether a seeded package is current by comparing its sources against its
+artifacts. One walk of `build/` wrote both in whatever order the filesystem
+returned them, and a package whose sources landed last read as stale and was
+recompiled — producing a beam that does not match the seeded one byte for
+byte. `clone_seed` now copies `build/packages` and then `build/dev`, so the
+artifacts are never older than the sources they were built from. Ten runs of
+ten agree afterwards.
+
+### `client`'s shipped recovery — a slow reply read as a wrong one
+
+`await_resident`, `await_saved` and `await_retired` poll the shipped daemon
+for fifteen seconds, and each individual read carries a two-second deadline.
+Any unrecognized reply ended the poll, and `Error(TimedOut)` was one of
+those, so a daemon that had just recovered a whole VM and took longer than
+two seconds to answer a status read failed the test with most of the outer
+budget unspent. A read that ran out of time is not an answer about the row,
+so it is now a reason to ask again. The fifteen seconds are unchanged and
+still fail a genuine hang.
+
+### `broker@integration_test` — one output path, several linkers
+
+Every test in the suite calls `helper_config`, and each call ran `go build -o
+build/integration/loom-exec`. Sequentially they never overlap; at N=8 they
+do, and the linker writes that path in place, so a sibling test spawning the
+helper executes a half-written binary. Four tests reported that as
+`HandshakeFailed` on the first run of a freshly built checkout, and the same
+package then passed ten runs of ten once the binary was already linked and
+the window had closed. Each build now writes its own file and renames it over
+the shared path, which replaces the directory entry in one step and leaves
+the previous inode intact for anything still executing it.
+
+### Two that never reproduced
+
+`host@bootstrap_test:a_log_tail_cut_inside_a_codepoint_still_reports_test`
+failed once at N=16 in the earlier census and has not failed since: sixty
+runs at N=16 on a laptop and six on the 32-core box, all green. Its three
+scratch roots already carry a random component, and the mtime guard in
+`host_bootstrap_ffi:current_log_tail/3` has a full second of slack in the
+direction load pushes it, so no mechanism was found to fix.
+
+`client@serve_test`'s two lifecycle tests failed once each and have not
+reproduced in twelve `client` runs at N=8 and three at N=16 across both
+machines. The module is already declared serial, so it runs alone after the
+parallel group; what it does *not* get is a quiet machine, because the
+group's jailed helpers and shipped daemons are still exiting when it starts.
+The only wall-clock assumptions in the two tests that failed are
+`complete_instance_turn`'s one-second helper checkout and its five-second
+turn, and they are absent from the tests beside them that never failed. That
+is a hypothesis, not a diagnosis, and nothing was changed on the strength of
+it.
+
+---
+
+## Every package, three runs, N=8
+
+The gate this work exists for. Same 32-core Linux box, `LOOM_TEST_PARALLEL=8`
+for every package in the runner's list, three consecutive passes over all
+twenty, with `LOOM_BOOTSTRAP_E2E_SERVER` and `LOOM_TEST_PROVIDER_KEY`
+exported so the shipped fixtures ran, under a delegated cgroup scope so the
+jail's memory and pid ceilings are the real ones. Seconds are wall clock
+around `bash scripts/test.sh <package>` and include the compile.
+
+| package | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| host | 0 pass | 1 pass | 1 pass |
+| core | 1 pass | 1 pass | 0 pass |
+| storage | 3 pass | 3 pass | 3 pass |
+| session | 0 pass | 0 pass | 1 pass |
+| machine | 1 pass | 1 pass | 1 pass |
+| prompt | 0 pass | 0 pass | 0 pass |
+| telemetry | 1 pass | 1 pass | 1 pass |
+| runtime | 12 pass | 12 pass | 11 pass |
+| provider | 4 pass | 5 pass | 5 pass |
+| broker | 4 pass | 3 pass | 4 pass |
+| mcp | 1 pass | 1 pass | 1 pass |
+| tools | 1 pass | 1 pass | 0 pass |
+| cap | 2 pass | 2 pass | 2 pass |
+| ext | 1 pass | 1 pass | 1 pass |
+| codemode | 10 pass | 9 pass | 10 pass |
+| events | 2 pass | 3 pass | 2 pass |
+| client | 221 pass | 220 pass | 220 pass |
+| conformance | 9 pass | 10 pass | 9 pass |
+| tui | 11 pass | 9 pass | 10 pass |
+| lint | 0 pass | 1 pass | 1 pass |
+
+Sixty cells, sixty passes. The whole list takes about 290 seconds a pass,
+and `client` is 220 of them.
+
+The run before these three found one failure — `broker@integration_test`,
+four tests, on the first pass over a checkout whose helper had not been
+linked yet — which is the collision the section above describes and the
+last thing that needed fixing. It has not recurred in the thirteen `broker`
+runs since.
