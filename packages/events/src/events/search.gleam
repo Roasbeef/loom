@@ -283,6 +283,14 @@ pub fn open(path: String) -> Result(Search, SearchError) {
 /// An owned caller retains this handle before beginning initialization and
 /// propagates close failure instead of treating it as confirmed retirement.
 ///
+/// The path is refused here rather than by SQLite when it is one SQLite would
+/// fail to open. The index is the database in this tree most likely to be
+/// pointed at a path that is not there: it is a projection beside a session
+/// file, it is safe to delete, and an operator repairing a corrupt index does
+/// exactly that. A failed `sqlite3_open` corrupts every other connection in
+/// the emulator through the binding's double close, which
+/// `storage/sqlite_policy` documents, so the refusal has to come first.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -290,6 +298,10 @@ pub fn open(path: String) -> Result(Search, SearchError) {
 /// ```
 @internal
 pub fn acquire(path: String) -> Result(Search, SearchError) {
+  use Nil <- result.try(
+    sqlite_policy.refusing_unopenable_path(path)
+    |> result.map_error(fn(reason) { IndexFault(message: reason) }),
+  )
   sqlight.open(path)
   |> result.map(Search)
   |> result.map_error(index_fault)

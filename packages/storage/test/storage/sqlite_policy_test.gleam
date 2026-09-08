@@ -3,6 +3,8 @@
 
 import gleam/dynamic/decode
 import gleam/option.{Some}
+import gleam/string
+import simplifile
 import sqlight
 import storage/sqlite_policy as policy
 import support/fixtures
@@ -102,4 +104,34 @@ pub fn invalid_options_fail_before_any_pragma_changes_test() {
     as "invalid cache setting refuses the whole configuration"
   assert number(connection, "PRAGMA busy_timeout") == defaults.busy_timeout_ms
   assert sqlight.close(connection) == Ok(Nil)
+}
+
+// The refusal exists because a failed `sqlite3_open` corrupts every other
+// connection in the emulator, not because opening a directory is untidy, so
+// what these cases pin is that the refusal happens before SQLite sees the
+// path at all.
+pub fn a_directory_is_refused_before_the_open_test() {
+  let scratch = fixtures.scratch("sqlite-policy-unopenable")
+  let occupied = scratch <> "/loom-search.db"
+  let assert Ok(Nil) = simplifile.create_directory_all(occupied)
+    as "the obstruction must exist before the path is judged"
+  let assert Error(reason) = policy.refusing_unopenable_path(occupied)
+    as "a directory in the database's place is refused"
+  assert string.contains(reason, occupied)
+}
+
+pub fn a_missing_parent_directory_is_refused_before_the_open_test() {
+  let assert Error(reason) =
+    policy.refusing_unopenable_path("/nonexistent/loom-policy/index.db")
+    as "a database under a directory that is not there is refused"
+  assert string.contains(reason, "/nonexistent/loom-policy")
+}
+
+// A first open creates its database, and the whole durability plane relies on
+// that, so a missing file under a directory that exists must stay allowed.
+pub fn a_missing_file_under_a_real_directory_is_allowed_test() {
+  let scratch = fixtures.scratch("sqlite-policy-first-open")
+  assert policy.refusing_unopenable_path(scratch <> "/fresh.db") == Ok(Nil)
+  assert policy.refusing_unopenable_path(":memory:") == Ok(Nil)
+  assert policy.refusing_unopenable_path("") == Ok(Nil)
 }
