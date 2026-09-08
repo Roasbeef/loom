@@ -31,6 +31,7 @@ import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
 import client/scratch
+import client/serve
 import core/clock
 import core/ids
 import core/json
@@ -1629,16 +1630,21 @@ fn rig_protecting(
   let assert Ok(toolchain) = codemode.discover(ready.seed_root)
     as "the toolchain must be located"
 
-  // The base carries the toolchain's mounts for the reason a real
-  // session's does (`client/serve.admitting_codemode`): the satellite
-  // launch requires them, composition takes the meet by path, and a base
-  // without them refuses every run.
+  // The base is assembled the way a real session's is, and for the same
+  // reasons. It carries the toolchain's mounts because the satellite
+  // launch requires them and composition takes the meet by path
+  // (`client/serve.admitting_codemode`); it carries the per-user set
+  // because that is what a host with a toolchain under `$HOME` needs; and
+  // it merges by path last, because two steps naming one region produce a
+  // policy `broker/policy.validate` refuses.
   let base =
     policy.SandboxPolicy(
       ..base_policy(root),
       protected:,
       mounts: codemode.toolchain_mounts(toolchain),
     )
+    |> serve.admitting_user_toolchains(serve.home_directory())
+    |> serve.merging_mounts
   let assert Ok(pool) =
     exec.start_pool(size: 3, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
@@ -1684,15 +1690,19 @@ fn stop_rig(rig: Rig) -> Nil {
 }
 
 // The session base a live code-mode execution runs under: its own root
-// writable, the filesystem readable (the toolchain and the BEAM live
-// outside it), network off. Deliberately *without* the two cap-channel
-// env names: `client/codemode.execution_policy` is what adds them, and a
-// base that already carried them would hide whether it does.
+// writable and readable, network off, and every region outside it stated
+// as a mount by the caller. It used to grant `readable_roots: ["/"]`,
+// under which a missing or duplicated mount changed nothing about what
+// the jail could reach, so this suite could not have caught either.
+//
+// Deliberately *without* the two cap-channel env names:
+// `client/codemode.execution_policy` is what adds them, and a base that
+// already carried them would hide whether it does.
 fn base_policy(root: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..policy.workspace_default(root),
     writable_roots: [root],
-    readable_roots: ["/"],
+    readable_roots: [root],
     env_allow: ["PATH"],
   )
 }
