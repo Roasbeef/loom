@@ -44,8 +44,13 @@ import client/daemon/domain as domain_service
 import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
+import conformance/simulation/daemon/daemon_fault.{
+  type Step, AfterCustodyPublish, AfterDomainBind, AfterReservation,
+}
 import conformance/simulation/vclock.{type Clockwork}
+import core/clock
 import core/ids
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/result
@@ -62,9 +67,16 @@ pub type Instance =
   String
 
 /// How long a lease taken by a simulated builder runs before it expires.
-/// Nothing in this harness advances the logical clock, so the lease is held
-/// for the life of the run and this bound is never reached.
+/// Nothing inside one incarnation advances the logical clock, so a lease is
+/// held for the life of that incarnation and this bound is never reached
+/// while the daemon is alive.
 const lease_ttl_ms = 60_000
+
+/// How far logical time moves between incarnations. It is longer than a lease
+/// so the previous incarnation's lease is expired rather than merely stale,
+/// which is what lets a restarted builder steal it with a bumped fence
+/// instead of refusing its own reservation.
+const lease_step_ms = 60_001
 
 /// How long the harness waits for the root to reach `Serving`, and for a
 /// created session to become resident. Both are real milliseconds spent
@@ -82,6 +94,45 @@ pub opaque type Harness {
     root: root.Root(Instance),
     ready: root.Ready(Instance),
     clock: Clockwork,
+  )
+}
+
+/// Where a simulated builder stops and waits to be killed.
+///
+/// A fault schedule cannot reach inside `manager` to suspend it, and adding a
+/// seam there for a test would put a pause in production code. The assembly
+/// callbacks are already caller-supplied, so the harness parks in its own
+/// callback instead: the run learns the step was reached, and the daemon dies
+/// with exactly that much committed.
+pub type Arrest {
+  /// No callback pauses; every builder runs to completion.
+  Unimpeded
+
+  /// The builder reaching `step` reports on `arrived` and then blocks until
+  /// the daemon is killed. `coordinate` is the workspace for
+  /// `AfterReservation`, which is reached inside the domain build and sees no
+  /// request key, and the request key for the two later steps.
+  ParkAt(step: Step, coordinate: String, arrived: Subject(Nil))
+}
+
+/// Everything one daemon incarnation is started from.
+///
+/// `incarnation` counts restarts over the same `state_root`, and its only
+/// effect is on the clock the conversation's writer lease is read against: a
+/// killed daemon leaves an unexpired lease in the file it was writing, held
+/// by an owner that no longer exists, and a restart that read the same instant
+/// would refuse its own reservation with `LeaseHeld` forever. Logical time
+/// therefore advances by one lease lifetime per incarnation, which is the only
+/// place a crash makes stale-lease recovery observable. The identity generator
+/// keeps reading the unadvanced clock, so a restart does not shift the
+/// timestamps a later creation mints.
+pub type Boot {
+  Boot(
+    state_root: String,
+    clock: Clockwork,
+    capacity: Int,
+    incarnation: Int,
+    arrest: Arrest,
   )
 }
 
@@ -125,21 +176,21 @@ pub type Snapshot {
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(daemon) = harness.start("build/test_db/sim-1", clock, 4)
+/// // let assert Ok(daemon) = harness.start(harness.Boot(root, clock, 4, 0, harness.Unimpeded))
 /// ```
-pub fn start(
-  state_root state_root: String,
-  clock clock: Clockwork,
-  capacity capacity: Int,
-) -> Result(Harness, String) {
+pub fn start(boot: Boot) -> Result(Harness, String) {
+  let Boot(state_root:, clock: clockwork, capacity:, incarnation:, arrest:) =
+    boot
   let config =
     root.Config(state_root:, owner_display_name: "simulation-owner", capacity:)
-  use started <- result.try(root.start(config, assembly(clock)))
+  let lease_clock =
+    clock.fixed(vclock.now(clockwork) + incarnation * lease_step_ms)
+  use started <- result.try(root.start(config, assembly(lease_clock, arrest)))
 
   // Readiness is a query, not a command: a root that refuses still owns
   // whatever it acquired, so the handle is discarded only by `stop`.
   case root.ready(started, within: settle_ms) {
-    Ok(ready) -> Ok(Harness(root: started, ready:, clock:))
+    Ok(ready) -> Ok(Harness(root: started, ready:, clock: clockwork))
     Error(reason) -> {
       let _ = root.shutdown(started, within: settle_ms)
       Error(reason)
@@ -156,6 +207,34 @@ pub fn start(
 /// ```
 pub fn stop(harness: Harness) -> Result(Nil, String) {
   root.shutdown(harness.root, within: settle_ms)
+}
+
+/// Kills the daemon root untrappably and waits for it to be gone.
+///
+/// This is the whole daemon, not the registry alone. The root answers a dead
+/// registry by blocking recovery rather than restarting it in place, so the
+/// only durable shape a crash takes here is the root going away and a later
+/// `start` over the same state root rebuilding from what was committed. The
+/// root is unlinked from its caller, so the run driver survives the kill and
+/// can perform that restart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.kill(daemon)
+/// ```
+pub fn kill(harness: Harness) -> Result(Nil, String) {
+  let pid = root.pid(harness.root)
+  let monitor = process.monitor(pid)
+  process.kill(pid)
+  case
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.selector_receive(settle_ms)
+  {
+    Ok(Nil) -> Ok(Nil)
+    Error(Nil) -> Error("the daemon root outlived an untrappable kill")
+  }
 }
 
 /// Reserves and initializes a session under `key`, then waits for the
@@ -179,18 +258,61 @@ pub fn create(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
+  use record <- result.try(reserve(harness, key:, workspace:, name:, seed:))
+  use Nil <- result.map(await_resident(harness, record.id))
+  record
+}
+
+/// Reserves and starts a creation without waiting for the registry to publish
+/// it.
+///
+/// A run whose schedule parks this creation's builder must not wait for a
+/// residency that will never arrive, and it still needs the durable
+/// reservation the call committed before the builder started. That is the only
+/// difference from `create`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.reserve(daemon, key: "alpha", workspace: "/sim/ws-a", name: "Alpha", seed: 7)
+/// ```
+pub fn reserve(
+  harness: Harness,
+  key key: String,
+  workspace workspace: String,
+  name name: String,
+  seed seed: Int,
+) -> Result(catalogue.Registration, String) {
   let request = manager.Creation(key, workspace, name, "")
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
-  let outcome =
-    manager.create(
-      harness.ready.registry,
-      request,
-      directory: harness.ready.sessions_directory,
-      generator:,
-    )
-  use view <- result.try(result.map_error(outcome, describe))
-  use Nil <- result.map(await_resident(harness, view.registration.id))
-  view.registration
+  manager.create(
+    harness.ready.registry,
+    request,
+    directory: harness.ready.sessions_directory,
+    generator:,
+  )
+  |> result.map_error(describe)
+  |> result.map(fn(view: manager.View) { view.registration })
+}
+
+/// Asks the registry to admit an explicit open and reports its own answer,
+/// refusal included.
+///
+/// `open` renders a refusal as text, which is what a passing caller wants.
+/// A check that has to distinguish "the registry refused an unconfirmed
+/// reservation" from "the registry admitted one" needs the refusal itself, so
+/// it reads this instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.admission(daemon, id)
+/// ```
+pub fn admission(
+  harness: Harness,
+  id id: String,
+) -> Result(manager.Status, manager.Error) {
+  manager.open(harness.ready.registry, id)
 }
 
 /// Requests an explicit open of an already initialized session and reports
@@ -259,6 +381,18 @@ pub fn snapshot(harness: Harness) -> Result(Snapshot, String) {
 /// ```
 pub fn state_root(harness: Harness) -> String {
   harness.ready.state_root
+}
+
+/// The directory every conversation database this daemon creates lives in.
+/// A check for a file with no confirmed row behind it enumerates this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.sessions_directory(daemon)
+/// ```
+pub fn sessions_directory(harness: Harness) -> String {
+  harness.ready.sessions_directory
 }
 
 // Creation returns as soon as a builder owns the operation, so the durable
@@ -331,10 +465,19 @@ fn describe(error: manager.Error) -> String {
 // the registry may confirm the reservation. That order is the invariant a
 // creation-key claim rests on, so a harness that skipped it would confirm
 // rows no production path could have produced.
-fn assembly(clock: Clockwork) -> manager.Assembly(Instance) {
+fn assembly(
+  lease_clock: clock.Clock,
+  arrest: Arrest,
+) -> manager.Assembly(Instance) {
   manager.Assembly(
-    domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-    build: fn(record, _, _, owner) { initialize(record, owner, clock) },
+    domain_build: fn(selected: domain.Domain, _, _) {
+      park(arrest, AfterReservation, selected.workspace)
+      Ok(domain_service.inert())
+    },
+    build: fn(record: catalogue.Registration, _, _, owner) {
+      park(arrest, AfterDomainBind, record.request_key)
+      initialize(record, owner, lease_clock, arrest)
+    },
     fatal: fn(_) { [] },
   )
 }
@@ -342,14 +485,15 @@ fn assembly(clock: Clockwork) -> manager.Assembly(Instance) {
 fn initialize(
   record: catalogue.Registration,
   owner: custody.Owner,
-  clock: Clockwork,
+  lease_clock: clock.Clock,
+  arrest: Arrest,
 ) -> Result(Instance, String) {
   let assert Ok(#(opened, retire, transfer)) =
     session.open_sqlite_custody(
       path: record.path,
       owner: "simulation-writer-" <> record.id,
       lease_ttl_ms:,
-      clock: vclock.clock(clock),
+      clock: lease_clock,
     )
     as "one simulated builder acquires the real writer lease"
 
@@ -363,11 +507,34 @@ fn initialize(
     as "the simulated builder publishes its storage retirement"
   let assert Ok(_) = transfer()
     as "published custody owns storage independently of its builder"
+
+  // The interesting crash point: a database file exists, a live lease is
+  // recorded in it, and the reservation it belongs to is still unconfirmed.
+  park(arrest, AfterCustodyPublish, record.request_key)
   let assert Ok(id) = ids.parse_session_id(record.id)
     as "the catalogue reservation supplies a canonical identity"
   let assert Ok(_) = session.ensure_reserved_id(opened, id)
     as "the conversation persists that identity before confirmation"
   Ok(record.id)
+}
+
+// A parked builder never returns. It announces that its step was reached and
+// then waits out the deadline, so the run kills the daemon under it and the
+// blocked receive dies with the tree. The deadline is a backstop for a
+// schedule whose kill never arrives, which would otherwise hang the suite.
+fn park(arrest: Arrest, step: Step, coordinate: String) -> Nil {
+  case arrest {
+    Unimpeded -> Nil
+    ParkAt(step: on, coordinate: at, arrived:) ->
+      case on == step && at == coordinate {
+        False -> Nil
+        True -> {
+          process.send(arrived, Nil)
+          let _ = process.receive(process.new_subject(), settle_ms)
+          Nil
+        }
+      }
+  }
 }
 
 /// Renders a row as one line, for a failure that has to say which of two
