@@ -46,14 +46,32 @@ them from their own test mains.
   domain row's memory and search databases never exist under this harness.
   Its operations are keyed by creation request key and canonical
   session id; a `Row` has the run's temporary state root substituted out of
-  every path so two runs under two directories are comparable.
-- `conformance/simulation/daemon/daemon_runner.{run, observe, Verdict}` —
-  one hand-written multi-session script, no faults and no generator, run
-  twice from two fresh state roots and compared. This is the fault-free
-  baseline the faulted daemon scripts are measured against. It carries its
-  own `Verdict` rather than widening the session runner's, whose `Report`
-  is shaped for one conversation, and reuses `runner.Failure` so the named
-  checks print the same way.
+  every path so two runs under two directories are comparable. `Boot` is
+  what one incarnation is started from, `Arrest` is where a simulated
+  builder parks so the run can kill the daemon at a named creation step,
+  `kill` is the untrappable kill of the root, the registry and the parked
+  builder, and `resume` is the start a faulted run restarts through.
+- `conformance/simulation/daemon/daemon_fault.{Fault, Schedule, Step}` —
+  the daemon-level taxonomy, mirroring `simulation/fault`'s shape. One
+  fault, `KillDaemonAt(key, workspace, step)`, and four steps named by what
+  is already committed when the daemon dies: `AfterReservation`,
+  `AfterDomainBind`, `AfterCustodyPublish`, `AfterConfirm`. A kill is the
+  whole daemon and a restart over the same state root, never a registry
+  restarted in place, because the root answers a dead registry by blocking
+  recovery.
+- `conformance/simulation/daemon/daemon_script.{Script, Creation}` — the
+  semantic half: one or two workspaces, one to three creation keys, and the
+  keys retried afterwards, with at least one reuse in every script. Drawn
+  from its own split stream so adding a draw here does not shift the
+  schedules.
+- `conformance/simulation/daemon/daemon_runner.{run, plan, observe, describe,
+  Verdict}` — the seed's script run fault-free and then run again under the
+  seed's schedule, with the two compared. It carries its own `Verdict`
+  rather than widening the session runner's, whose `Report` is shaped for
+  one conversation, and reuses `runner.Failure` so the named checks print
+  the same way. Its checks are `creation/one-identity-per-key`,
+  `creation/no-orphan-file`, `publication/before-execute` and
+  `replay/equal-catalogue-rows`.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -78,7 +96,9 @@ them from their own test mains.
 
 ## Relationships
 
-- **Depends on**: every Gleam package it tests — `core`, `storage`,
+- **Depends on**: `simplifile` (the daemon simulation's `creation/no-orphan-file`
+  check enumerates the sessions directory from `src`, so it is a real
+  dependency rather than a dev one), plus every Gleam package it tests — `core`, `storage`,
   `session`, `machine`, `runtime`, `provider`, `broker`, `tools`, and
   `client` (whose promoted `client/wiring` the wiring and e2e suites
   prove) — plus `gleam_erlang`, `gleam_otp`, and `weft` (the one-task
@@ -321,6 +341,40 @@ them from their own test mains.
 - **The deframer must be total** and is property-checked as such: chunking
   is irrelevant, damage is reported rather than silently survived, and
   truncation carries the partial bytes for a rest that never comes.
+- **A daemon fault kills the root, and the run restarts over the same state
+  root.** The root answers a killed registry by blocking recovery rather than
+  restarting it in place, so a registry replaced under a live root is a state
+  production never reaches and a check written against it would be checking
+  the harness. `harness.Boot` therefore takes the state root from its caller
+  so the next start rebuilds from what was committed.
+- **A kill takes down three processes, not one.** The registry traps exits so
+  that it can answer its owner's departure in order, and a builder parked in
+  the harness's assembly callback watches the registry through a monitor it
+  cannot read while it is blocked. Killing `root.pid` alone therefore leaves
+  the catalogue connection and a conversation's writer lease held by
+  survivors, and the next start would overlap a live predecessor.
+  `harness.kill` kills the root, the registry and the parked builder
+  `park` reported, waiting for each monitor. It is still not a drain: the
+  launch lock is released by the operating system after the root's port
+  closes, which is why a restart goes through `harness.resume` and its
+  bounded retry rather than a single `start`.
+- **Logical time advances by one lease lifetime per incarnation, and
+  nowhere else.** A killed daemon leaves an unexpired writer lease in the
+  conversation file it was building, held by an owner that no longer exists.
+  A restart reading the same instant would refuse its own reservation with
+  `LeaseHeld` for as long as the run lasts. `harness.Boot.incarnation`
+  moves the clock the writer lease is read against, and only that clock: the
+  identity generator keeps reading the unadvanced logical clock, so a
+  restart does not shift the timestamps a later creation mints and the two
+  runs of a seed stay comparable. The advance is kept even though no lease
+  holder survives the kill, because a lease is time-based: a restart inside
+  the TTL is refused however dead the owner is, and that case belongs to
+  `client`'s `daemon_shipped_identity_recovery_test`.
+- **Domain services are never opened under the daemon harness.** A domain
+  row names a memory database and a search index, and neither file exists in
+  a simulated run, so `creation/no-orphan-file` counts conversation
+  databases and nothing else.
+
 - **`let assert` is permitted in this package's `src`**, unlike everywhere
   else (spec §0.2). A suite or runner whose fixture will not construct has
   nothing to say; the module docs state the exemption where it is used.
