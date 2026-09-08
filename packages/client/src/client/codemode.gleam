@@ -810,7 +810,33 @@ pub type Toolchain {
     gleam_prefix: String,
     /// The install prefix holding `erl_path` and the ERTS tree it loads.
     erl_prefix: String,
+    /// Whether `gleam_path` is a symlink, which decides whether the
+    /// prefix is mounted alongside the binary's own directory. See
+    /// `GleamBinary` and `toolchain_mounts`.
+    gleam_binary: GleamBinary,
   )
+}
+
+/// What `gleam_path` is on this host, which is the question
+/// `toolchain_mounts` needs answered before it can name a region.
+///
+/// A prefix is the wrong region for `gleam`: a developer install puts the
+/// binary in `~/.cargo/bin` or `~/.local/bin`, and mounting the prefix
+/// read-only would put `~/.cargo/credentials.toml` inside every jailed
+/// build. The binary's own directory is what the jail actually needs.
+/// That is only true when the binary is really there, though, and on a
+/// Homebrew host `/opt/homebrew/bin/gleam` is a link into a versioned
+/// cellar directory outside its own `bin`. Nothing in `simplifile` reads
+/// a link target and `read_link` would cost an `@external`, so the
+/// symlink case falls back to the prefix, which contains both ends of a
+/// relative link.
+pub type GleamBinary {
+  /// An ordinary file. Only its containing directory is mounted.
+  GleamPlainFile
+
+  /// A symlink. The install prefix is mounted as well, because the
+  /// target cannot be resolved without reading the link.
+  GleamSymlink
 }
 
 /// The capability names the shipped *default* router services — the ones
@@ -880,7 +906,11 @@ pub fn discover(seed_root: String) -> Result(Toolchain, String) {
     seed.verify(seed_root, compile.default_dependencies())
     |> result.map_error(seed_remedy),
   )
-  let located = toolchain(gleam_path:, erl_path:, seed_root:)
+  let located =
+    Toolchain(
+      ..toolchain(gleam_path:, erl_path:, seed_root:),
+      gleam_binary: gleam_binary_kind(gleam_path),
+    )
   use _layout <- result.try(erts_layout(located.erl_prefix, erl_path))
   Ok(located)
 }
@@ -914,7 +944,32 @@ pub fn toolchain(
     seed_root:,
     gleam_prefix: install_prefix(gleam_path),
     erl_prefix: install_prefix(erl_path),
+    // Whether the binary is a link is a filesystem fact, and this
+    // function asks the filesystem nothing. `discover` measures it and
+    // replaces this; a caller assembling a host layout out of three
+    // strings is describing an ordinary install.
+    gleam_binary: GleamPlainFile,
   )
+}
+
+/// What `gleam_path` is on this host, measured once at discovery.
+///
+/// A path that cannot be stat'd reads as a plain file: the mount is
+/// `MountRequired`, so a `gleam` that is not there refuses the dispatch
+/// naming the directory, which is the sentence an operator can act on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert codemode.gleam_binary_kind("/nowhere/gleam")
+///   == codemode.GleamPlainFile
+/// ```
+///
+pub fn gleam_binary_kind(gleam_path: String) -> GleamBinary {
+  case simplifile.is_symlink(gleam_path) {
+    Ok(True) -> GleamSymlink
+    Ok(False) | Error(_unreadable) -> GleamPlainFile
+  }
 }
 
 /// The install prefix an executable belongs to: the parent of its `bin`
@@ -1006,7 +1061,8 @@ fn erts_layout(prefix: String, erl_path: String) -> Result(Nil, String) {
 }
 
 /// The filesystem regions a jailed satellite needs to exist inside its
-/// jail: the two toolchain prefixes and the build seed, read-only.
+/// jail: the ERTS install prefix, the directory holding `gleam`, and the
+/// build seed, read-only.
 ///
 /// All three are `MountRequired`, because the prefix derivation is a
 /// heuristic (`install_prefix`) and a wrong one must refuse the dispatch
@@ -1035,8 +1091,20 @@ fn erts_layout(prefix: String, erl_path: String) -> Result(Nil, String) {
 /// ```
 ///
 pub fn toolchain_mounts(toolchain: Toolchain) -> List(policy.Mount) {
+  // The `gleam` region is the binary's own directory, not the prefix
+  // above it: a prefix of `~/.cargo` or `~/.local` would put the
+  // credentials and state beside the binary inside every jailed build.
+  // The prefix comes back only for a symlink, whose target this cannot
+  // read (`GleamBinary`).
+  let gleam_regions = case toolchain.gleam_binary {
+    GleamPlainFile -> [filepath.directory_name(canonical(toolchain.gleam_path))]
+    GleamSymlink -> [
+      filepath.directory_name(canonical(toolchain.gleam_path)),
+      toolchain.gleam_prefix,
+    ]
+  }
   let wanted =
-    [toolchain.erl_prefix, toolchain.gleam_prefix, toolchain.seed_root]
+    [toolchain.erl_prefix, toolchain.seed_root, ..gleam_regions]
     |> list.unique
   wanted
   |> list.filter(fn(path) { !covered_by_another(path, wanted) })
@@ -2580,8 +2648,12 @@ pub fn build_config(
     gleam_path: config.gleam_path,
     base_policy: execution_policy(request.base_policy),
     // The Gleam and Erlang toolchains live outside the workspace; the
-    // build root is the only thing it may write.
-    toolchain_roots: ["/"],
+    // build root is the only thing it may write. The roots are the
+    // session base's own rather than `["/"]`, because under
+    // `protocol-change/020` the base names the regions a build may read
+    // and a requirement naming a wider one would be refused by the meet
+    // instead of reaching anything.
+    toolchain_roots: request.base_policy.readable_roots,
     demand: request.demand,
     env: [#("PATH", config.toolchain_path)],
     dependencies: compile.default_dependencies(),

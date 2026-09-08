@@ -275,8 +275,9 @@ session and sends it many invocations.
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
   own `{op_id, step_id}`. Its `host_mounts` field carries the filesystem
-  regions only the host knows about — the toolchain prefixes and the build
-  seed — into `node_requirements`.
+  regions only the host knows about — the ERTS install prefix, the
+  directory holding `gleam`, and the build seed — into
+  `node_requirements`.
 - `codemode/satellite.{Run, RunError, Outcome, SatelliteConfig,
   LaunchSpec, CapConnection, Launcher, WireIn, CapRouter, CapRequest,
   CapPlan, CapDenial}` — the in-harness host: the broker end of the cap
@@ -690,9 +691,21 @@ session and sends it many invocations.
   helper's base view ro-binds the whole host filesystem, so an
   unprotected host path is still readable from inside the jail
   (`protocol-change/004-sandbox-policy-explicit-mounts.md`).
+- **The `gleam` mount is a directory, not a prefix**
+  (`protocol-change/020`). A developer install puts the binary in
+  `~/.cargo/bin` or `~/.local/bin`, and mounting the prefix would put
+  the credentials and state beside it into every jailed build. `erl`
+  keeps its prefix, because an ERTS `ROOTDIR` really is the tree the
+  emulator loads. The exception is a symlinked `gleam`, which
+  `client/codemode.GleamBinary` records at discovery: nothing in
+  `simplifile` reads a link target, so the prefix that contains both
+  ends of a relative link comes back alongside the directory. An asdf
+  shim, whose target is a script elsewhere entirely, is a known gap
+  until the standard library grows a `read_link`.
 - **Reachability is stated where it can be, checked where it cannot.**
-  `node_requirements` takes a `host_mounts` list — the toolchain install
-  prefixes and the build seed the host located — and puts it in the
+  `node_requirements` takes a `host_mounts` list — the ERTS install
+  prefix, the directory `gleam` sits in, and the build seed the host
+  located — and puts it in the
   policy's `mounts` field, read-only and `MountRequired`
   (`protocol-change/004`). `client/serve.admitting_codemode` puts the same
   list in the session base, and mounts compose as the meet by path, so a
