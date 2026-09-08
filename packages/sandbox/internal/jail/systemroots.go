@@ -36,8 +36,18 @@ package jail
 //     `ld.so.conf` and `nsswitch.conf` to the TLS trust store.
 //   - `/opt` is where hand-installed and vendor toolchains land.
 //   - `/var/lib` holds package-manager-installed data a toolchain reads,
-//     while the rest of `/var` (`/var/tmp` above all) is a writable
-//     region shared across the account and stays out.
+//     and on openSUSE it holds the TLS trust store itself: `/etc/ssl/certs`
+//     is a symlink into `/var/lib/ca-certificates`, so without this entry
+//     an HTTPS client there fails to verify any certificate. The rest of
+//     `/var` (`/var/tmp` above all) is a writable region shared across the
+//     account and stays out.
+//   - `/run/systemd/resolve`, `/run/resolvconf` and `/run/NetworkManager`
+//     are where the three common resolver managers keep the real
+//     `resolv.conf`. On such a host `/etc/resolv.conf` is a symlink into
+//     one of them, and a jail that binds `/etc` without the target has a
+//     dangling link and resolves no name at all. Which of the three a
+//     host uses is its own business, so all three are bound tolerantly
+//     and the absent ones cost nothing.
 //   - `/run/current-system` and `/nix/store` are NixOS: the profile that
 //     `/usr/bin/env` and every `/etc` symlink resolve into, and the store
 //     every binary's interpreter and libraries live in. Without them a
@@ -52,6 +62,9 @@ var SystemRoots = []string{
 	"/etc",
 	"/opt",
 	"/var/lib",
+	"/run/systemd/resolve",
+	"/run/resolvconf",
+	"/run/NetworkManager",
 	"/run/current-system",
 	"/nix/store",
 }
