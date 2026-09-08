@@ -392,7 +392,7 @@ but the operator-delegation problem — the part that produced #52 — goes
 away entirely.
 
 **4. `Proxy(allowlist)` finally gets somewhere to live.**
-`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:440`)
+`narrow_unenforceable` (`packages/broker/src/broker/policy.gleam:547`)
 has exactly one rule today: `NetworkProxy` becomes `NetworkOff`, because
 the egress proxy sidecar does not exist and a proxy-mode jail would
 otherwise run with unrestricted direct egress. Spec Part 5 track 10
