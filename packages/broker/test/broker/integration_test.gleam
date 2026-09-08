@@ -303,14 +303,30 @@ fn collect_exit(
   }
 }
 
-// The temp policy file must be unlinked once the helper says hello —
-// prove the tmp dir is empty after a successful spawn.
+// The temp policy file must be unlinked once the helper says hello.
+//
+// The proof is that the spawn's tmp directory holds nothing afterwards,
+// which is only a statement about this spawn's own file if no other
+// helper writes there. Every other test in the suite spawns through the
+// shared `tmp_dir`, so this one is given a directory of its own and
+// starts by emptying it: the listing then names this spawn's policy file
+// or nothing at all, whatever else the suite is doing at the same time.
 pub fn real_helper_policy_file_unlinked_test() {
-  use _helper <- with_real_helper("real_helper_policy_file_unlinked")
-  let assert Ok(here) = simplifile.current_directory()
-  let assert Ok(entries) =
-    simplifile.read_directory(here <> "/build/integration/tmp")
-  assert entries == []
+  case helper_config() {
+    Error(reason) ->
+      io.println_error("SKIP real_helper_policy_file_unlinked: " <> reason)
+    Ok(shared) -> {
+      let tmp_dir = shared.tmp_dir <> "-policy-unlink"
+      let _ = simplifile.delete(tmp_dir)
+      let assert Ok(Nil) = simplifile.create_directory_all(tmp_dir)
+      let config = exec.SpawnConfig(..shared, tmp_dir:)
+      let assert Ok(helper) = exec.spawn_helper(config)
+        as "the helper must spawn from its own tmp directory"
+      let assert Ok(entries) = simplifile.read_directory(tmp_dir)
+      exec.shutdown(helper)
+      assert entries == []
+    }
+  }
 }
 
 // `helper_args` must actually reach the helper's command line, through

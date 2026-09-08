@@ -7,6 +7,17 @@
          egress_start/0, egress_start_tls12/0, egress_stop/1,
          egress_foreign_root/0]).
 
+%% Both certificate chains are generated when this module loads rather
+%% than on first use. A lazy `persistent_term:get/put` pair is a
+%% check-then-write with no atomicity: two tests reaching it at once each
+%% generate a chain, and the second `put` replaces a root that a listener
+%% started under the first is still presenting. The pinned root then
+%% belongs to one chain and the server certificate to another, which the
+%% client reports as `unknown_ca` against whichever origin lost the race.
+%% `on_load` is the write-once the cache always meant: the runtime
+%% completes it before any process can call an exported function here.
+-on_load(generate_chains/0).
+
 -include_lib("public_key/include/public_key.hrl").
 
 %% os:find_executable/1 — PATH lookup for feature detection.
@@ -67,27 +78,22 @@ egress_stop(Pid) ->
 %% The root of an unrelated chain: pinning it must make every connection
 %% to the test server fail verification.
 egress_foreign_root() ->
-    Key = {?MODULE, egress_foreign_root},
-    case persistent_term:get(Key, undefined) of
-        undefined ->
-            #{cert := Der} = public_key:pkix_test_root_cert(
-                               "loom egress foreign root", egress_key_opts()),
-            persistent_term:put(Key, Der),
-            Der;
-        Der ->
-            Der
-    end.
+    persistent_term:get({?MODULE, egress_foreign_root}).
 
 egress_chain() ->
-    Key = {?MODULE, egress_chain},
-    case persistent_term:get(Key, undefined) of
-        undefined ->
-            Chain = egress_generate_chain(),
-            persistent_term:put(Key, Chain),
-            Chain;
-        Chain ->
-            Chain
-    end.
+    persistent_term:get({?MODULE, egress_chain}).
+
+%% Runs once, in the loader's own process, before this module is callable.
+%% Key generation and certificate signing need crypto, which `public_key`
+%% does not start for us.
+generate_chains() ->
+    {ok, _} = application:ensure_all_started(crypto),
+    #{cert := ForeignDer} =
+        public_key:pkix_test_root_cert("loom egress foreign root",
+                                       egress_key_opts()),
+    persistent_term:put({?MODULE, egress_foreign_root}, ForeignDer),
+    persistent_term:put({?MODULE, egress_chain}, egress_generate_chain()),
+    ok.
 
 %% The peer certificate names localhost in a subjectAltName, because the
 %% default the generator would supply is this machine's own hostname and
