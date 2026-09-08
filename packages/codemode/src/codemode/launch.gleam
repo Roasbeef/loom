@@ -1214,5 +1214,11 @@ fn narrowing_text(narrowing: Narrowing) -> String {
       <> int.to_string(granted)
       <> ")"
     policy.NarrowedScratch(wanted: _) -> "scratch area"
+
+    // Named by path rather than by the whole mount, because this text
+    // reaches an operator reading a refusal and the path is the part
+    // they would act on. There is no grant that adds a mount, so this
+    // narrowing is the end of the matter for the session.
+    policy.NarrowedMount(wanted:) -> "mount " <> wanted.path
   }
 }
