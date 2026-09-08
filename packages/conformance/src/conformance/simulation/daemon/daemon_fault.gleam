@@ -26,6 +26,7 @@
 
 import conformance/simulation/random.{type Rng}
 import gleam/list
+import gleam/option.{type Option}
 import gleam/string
 
 /// One durable step of a single creation, named by what is already committed
@@ -37,8 +38,14 @@ pub type Step {
   /// must resume rather than re-mint.
   AfterReservation
 
-  /// The domain is published and the builder owns assembly, so the slot has
-  /// moved to `Building`. Still no conversation database.
+  /// The same committed state as `AfterReservation`: the registration and the
+  /// domain mapping commit in one transaction, so no kill can land between
+  /// them, and there is still no conversation database. What differs is which
+  /// callback the builder is parked in. `AfterReservation` stops inside the
+  /// domain build, before the slot has left `Awaiting`; this stops inside
+  /// assembly, with the domain published and the slot moved to `Building`. The
+  /// two are one durable state reached along two paths, and a retry has to
+  /// resume it from either.
   AfterDomainBind
 
   /// The builder holds the conversation's writer lease and has published its
@@ -77,6 +84,24 @@ pub type Schedule {
 /// ```
 pub fn none() -> Schedule {
   Schedule(faults: [])
+}
+
+/// The one fault a schedule carries, if it carries any.
+///
+/// `Schedule` holds a list because the session taxonomy it mirrors does, and
+/// because a schedule with two kills is the shape a future generator would
+/// draw. This generator draws at most one, so a runner asking what to inject
+/// is asking a two-answer question, and this is the total reading of the list
+/// that answers it. A driver that matched on the list itself would carry an
+/// arm for a state nothing produces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert daemon_fault.scheduled(daemon_fault.none()) == option.None
+/// ```
+pub fn scheduled(schedule: Schedule) -> Option(Fault) {
+  list.first(schedule.faults) |> option.from_result
 }
 
 /// A one-line rendering, printed with a failing seed.

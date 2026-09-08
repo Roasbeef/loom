@@ -40,8 +40,8 @@
 import broker/token
 import client/daemon/manager
 import conformance/simulation/daemon/daemon_fault.{
-  type Schedule, type Step, AfterConfirm, AfterCustodyPublish, AfterDomainBind,
-  AfterReservation, KillDaemonAt,
+  type Fault, type Schedule, type Step, AfterConfirm, AfterCustodyPublish,
+  AfterDomainBind, AfterReservation, KillDaemonAt,
 }
 import conformance/simulation/daemon/daemon_script.{type Creation, type Script}
 import conformance/simulation/daemon/harness.{type Harness, type Snapshot}
@@ -201,11 +201,17 @@ fn drive(
   schedule: Schedule,
 ) -> Result(Report, Failure) {
   let arrived = process.new_subject()
-  use daemon <- result.try(boot(state_root, clock, 0, arrest(schedule, arrived)))
-  case schedule.faults {
-    [] -> finish(daemon, complete(daemon, script, []))
+  let scheduled = daemon_fault.scheduled(schedule)
+  use daemon <- result.try(boot(
+    state_root,
+    clock,
+    0,
+    arrest(scheduled, arrived),
+  ))
+  case scheduled {
+    None -> finish(daemon, complete(daemon, script, []))
 
-    [KillDaemonAt(key:, workspace: _, step:)] ->
+    Some(KillDaemonAt(key:, workspace: _, step:)) ->
       case interrupt(daemon, script, key, step, arrived) {
         Error(failure) -> finish(daemon, Error(failure))
         Ok(observed) -> {
@@ -217,16 +223,6 @@ fn drive(
           finish(restarted, carried)
         }
       }
-
-    [_, _, ..] ->
-      finish(
-        daemon,
-        Error(Failure(
-          "schedule/one-kill",
-          "a daemon schedule carries at most one kill, and this one carries "
-            <> int.to_string(list.length(schedule.faults)),
-        )),
-      )
   }
 }
 
@@ -286,9 +282,10 @@ fn finish(
 // The arrest the schedule arms before the daemon starts. `AfterConfirm` needs
 // none: the run drives to residency on its own and kills a daemon that is
 // doing nothing, which is exactly what that step means.
-fn arrest(schedule: Schedule, arrived: Subject(Pid)) -> harness.Arrest {
-  case schedule.faults {
-    [KillDaemonAt(key:, workspace:, step:)] ->
+fn arrest(scheduled: Option(Fault), arrived: Subject(Pid)) -> harness.Arrest {
+  case scheduled {
+    None -> harness.Unimpeded
+    Some(KillDaemonAt(key:, workspace:, step:)) ->
       case step {
         AfterConfirm -> harness.Unimpeded
         AfterReservation ->
@@ -296,7 +293,6 @@ fn arrest(schedule: Schedule, arrived: Subject(Pid)) -> harness.Arrest {
         AfterDomainBind | AfterCustodyPublish ->
           harness.ParkAt(step:, coordinate: key, arrived:)
       }
-    [] | [_, _, ..] -> harness.Unimpeded
   }
 }
 
