@@ -400,45 +400,39 @@ the rule about what may *not* be built.
 ## What is not built
 
 The architecture above is described as designed; this is where it and the
-tree part company. Each line names the issue that tracks it.
+tree still part company. Each line names the open issue that tracks it.
+Anything with a closed issue or a per-merge verification record is not
+listed here: `docs/next.md` carries the current state of the work and its
+verification, and the `phase:` labels carry the plan.
 
-- **Two capability families still reach no effect.** The router now
-  services `proc.run` through the jailed executor, `fs.read`, `fs.list`,
-  `fs.write` and `fs.edit` and the `kv.*` trio through
-  `codemode/workspace`, `report.emit` through `codemode/artifact`, and
-  `mcp.<server>` through `client/mcp` (#16). What is left is
-  `net.request`, gated on the egress story below, and the four `lsp.*`
-  names, gated on the long-lived stdio client (#25); both refuse in band.
-  `cap/git` needs no arm of its own, because every function in it builds a
-  `cap/proc` command, and `cap/task` and `cap/actor` run inside the
-  satellite and compose whatever the router does service.
-- **`Proxy(allowlist)` egress fails closed rather than enforcing.** The
-  egress proxy sidecar was never built; the broker narrows proxy mode to
-  network-off and reports the narrowing.
-- **Landlock is enforced in CI and skipped almost everywhere else.** The
-  `jail (linux)` job applies it at ABI 7 (#62); a development container
-  without a Landlock-capable kernel still answers `ENOSYS` and the
-  self-test reports the layer SKIPPED, which is not a pass.
+- **The `lsp.*` capability family reaches no effect**, and **`lsp_*` and
+  `dap_*` tools do not exist** (#25, #26). Every other capability family
+  is served: `proc.run` through the jailed executor, `fs.*` and `kv.*`
+  through `codemode/workspace`, `report.emit` through `codemode/artifact`,
+  `mcp.<server>` through `client/mcp`, and `net.request` for an installed
+  extension through `client/extension/seam` under the policy its manifest
+  declared. The four `lsp.*` names are gated on the long-lived stdio
+  client and refuse in band. The tool set a model sees today is the five
+  core tools (bash and the hash-anchored read, write, edit and grep), the
+  six `agent_*` tools, `code_mode`, `history_search`, `remember`, the three
+  `schedule_*` tools, `context_remaining`, and the three `job_*` tools;
+  any MCP servers the catalogue names are reached through `code_mode`.
+- **`Proxy(allowlist)` is not enforced as a mode.** The broker narrows it
+  to network-off and reports the narrowing. This is a decision rather than
+  a gap: ADR-007 replaced the egress proxy sidecar with `broker/egress`,
+  which performs outbound HTTP in the harness under a policy the caller
+  cannot widen, so the jail's network namespace stays empty.
 - **There is no jail on Windows.** The helper refuses to serve there
   without `--allow-unenforced`.
-- **`lsp_*` and `dap_*` do not exist** (#25, #26). They are what is left
-  of M5: role routing, triggered-rule injection and hindsight memory all
-  landed. The tool set a model sees today is bash, hash-anchored
-  read/write/edit, grep, the `agent_*` family, `history_search`,
-  `remember`, the `schedule_*` family, and `code_mode`, through which any
-  MCP servers the catalogue names are reached. Memory's distillation
-  pipeline is built but has no release entry point, so only a source
-  checkout runs it (#149).
-- **MCP is code-mode only** (#106), and **an MCP server process is not
-  jailed**. Configured servers are brought up concurrently at boot and
-  each becomes a generated module behind `code_mode`; there is no generic
-  tool dispatcher, by design. The server itself is an ordinary child
-  process on the host: `packages/mcp/src/mcp/transport.gleam` says in its
-  own module doc that an unjailed spawn there is the production primitive
-  and not the final security posture, and whether such a process should be
-  jailed at all is an open decision rather than a deferred implementation
-  (#109). Its credential, named by `api_key_env`, is in that unjailed
-  process's environment.
+- **An MCP server process is not jailed** (#109). MCP is code-mode only
+  by design (#106): configured servers come up concurrently at boot and
+  each becomes a generated module behind `code_mode`, with no generic
+  tool dispatcher. The server itself is an ordinary child process on the
+  host; `packages/mcp/src/mcp/transport.gleam` says in its own module doc
+  that an unjailed spawn there is the production primitive and not the
+  final security posture, and whether such a process should be jailed at
+  all is an open decision. Its credential, named by `api_key_env`, is in
+  that unjailed process's environment.
 - **Self-improvement is operator-driven only.** An operator installs an
   extension with `loom ext` and it runs jailed, and the model can call
   it. Not built: the agent-authored on-ramp (no skill store, no
@@ -447,9 +441,9 @@ tree part company. Each line names the issue that tracks it.
 - **The chaos runner is unbuilt.** `make soak` is the deterministic seed
   soak; random process kills under load are not tested.
 - **Distribution is single-platform and unpublished.** `make dist` builds
-  server and client tarballs for the host it runs on. The daemon candidate
-  has local macOS arm64 packaging evidence; its Linux acceptance remains
-  pending. See `docs/next.md` for the current verification record.
+  server and client tarballs for the host it runs on, and no release has
+  been published. Both platforms have local packaging and gate evidence;
+  `docs/next.md` has the verification record.
 
 ## Running Loom
 
