@@ -187,31 +187,44 @@ manager process with one connection pool per VM.
 `provider` uses httpc's **default** profile and, at
 `packages/provider/src/provider_ffi.erl:383`, reads the global
 `httpc_manager__handler_db` ETS table to find the handler for a request —
-a dependency the comment there calls intentionally confined. Concurrent
-tests put several in-flight requests on that one profile, and the
-handler-identification logic answers about the wrong one:
+a dependency the comment there calls intentionally confined. Four tests in
+`packages/provider/test/provider/http_test.gleam` fail under the flag:
+`production_handler_capture_ignores_busy_unrelated_handler_test`,
+`production_cancel_never_follows_a_redirect_to_hanging_peer_test`,
+`production_cancel_survives_httpc_manager_restart_test` and
+`production_fast_terminal_preserves_normal_drain_reason_test`.
 
-- `production_handler_capture_ignores_busy_unrelated_handler_test` fails at
-  N=4, 8 and 16 — the most direct statement of the collision, since "an
-  unrelated busy handler" is precisely what a concurrent test now supplies.
-- `production_cancel_never_follows_a_redirect_to_hanging_peer_test` (N=4,
-  `packages/provider/test/provider/http_test.gleam:370`),
-  `production_cancel_survives_httpc_manager_restart_test` (N=8) and
-  `production_fast_terminal_preserves_normal_drain_reason_test` (N=16) join
-  it, one per setting. All four live in
-  `packages/provider/test/provider/http_test.gleam`.
+**Measured afterwards, and the profile is not what they collide on.**
+Two of those tests replace httpc processes on purpose, because surviving
+that replacement is the property they exist to state:
+`restart_httpc_manager` and `restart_httpc_handler_supervisor` in
+`packages/provider/test/provider_http_test_ffi.erl` each `exit(Pid, kill)`
+a registered OTP process. Disabling only those two makes the package pass
+at N=8, three runs out of three; the other two tests are casualties rather
+than participants, and they fail with `http transport failed` because their
+own handler was killed under them.
 
-`broker` owns a private profile (`?EGRESS_PROFILE`,
-`packages/broker/src/broker_ffi.erl:268`) rather than the default one, but
-it is still one profile shared by every concurrent egress request in the VM:
+That rules out both candidate fixes. `httpc_handler_sup` is registered once
+per **node**, not per profile — `httpc_sup:init/1` starts one beside the
+profile supervisor, and `httpc_manager:do_start_handler/2` calls
+`whereis(httpc_handler_sup)` whatever profile the request belongs to — so
+killing it kills every httpc handler in the VM no matter whose profile they
+serve. A private profile in the product's own path (the shape
+`broker_ffi` already uses) would not change that, and neither would a
+profile per test. These four must run serially.
 
-- `broker@egress_test:injects_a_credential_only_for_the_origin_it_is_bound_to_test`
-  (N=8 and N=16, `packages/broker/test/broker/egress_test.gleam:405`) fails
-  with `failed_connect` against the second of its two TLS origins.
-
-**Follow-up, not fixed.** The profile is shared because production shares
-it. A test-local fix would mean a profile per test, which is a fixture
-restructure rather than a mechanical edit.
+`broker`'s
+`injects_a_credential_only_for_the_origin_it_is_bound_to_test`
+(`packages/broker/test/broker/egress_test.gleam:405`) is **fixed**, and it
+was never about the profile either. Its `failed_connect` carries a
+`tls_alert` of `unknown_ca`: the two TLS origins were presenting
+certificates from two different chains. `broker_test_ffi:egress_chain/0`
+memoized the generated chain with a `persistent_term:get` followed by a
+`put`, which is a check-then-write with no atomicity, so two tests reaching
+it together each generated a chain and the later `put` replaced a root a
+live listener was still serving. Generating both chains from `-on_load`
+makes the cache write-once, which is what it always meant, and the package
+now passes at N=8 and N=16.
 
 ### One scratch directory asserted to be empty
 
@@ -224,10 +237,10 @@ same directory. Sequentially each file is gone before the next test starts;
 in parallel a sibling's live file is sitting there and the assertion sees a
 non-empty listing.
 
-**Follow-up, not fixed.** The assertion is about a directory, so the fix is
-to give each helper its own tmp root through `with_real_helper` — a change
-to the fixture rather than to this test, which puts it outside what this
-work touches.
+**Fixed.** The test now spawns its helper with a `tmp_dir` of its own,
+emptied first, so the listing afterwards describes this spawn's policy file
+and nothing else. Nothing about `with_real_helper` or the rest of the suite
+had to move.
 
 ### A scratch root named by a millisecond reading — *fixed*
 
@@ -277,9 +290,23 @@ assumption, and none of them is mechanical.
   touches it, so no collided resource was identified; recorded here as an
   observation rather than a diagnosis.
 
-**All follow-ups.** Each would need either a longer deadline, a retry, or a
-sleep, and adding any of those to buy a green parallel run would be paying
-for the flag with a weaker test.
+**All four fixed, and none of them by a longer clock.** Each turned out to
+be waiting on the wrong thing:
+
+- The eight racers are now monitored, so a racer that crashes instead of
+  answering is an event the collector receives rather than a reply that
+  fails to arrive. The loop ends when the last racer has spoken.
+- `Saved` really does not imply the capacity slot is free — release
+  follows the owner's retirement — so the retry now polls `manager.create`
+  and treats a capacity refusal as "not yet" rather than as the answer.
+- `history_test`'s `await_gone` gave up after a fixed 200 milliseconds and
+  continued **as if** the name were free. Under load the previous holder
+  was still registered, the restart's work went back to it, and the
+  repaired index read as still unopenable. It now waits for the
+  deregistration itself.
+- The approval fixture's waits were already on events; only their bounds
+  were assertions about a quiet machine. One named bound, generous enough
+  for any round trip the fixture performs, replaces the one-second ones.
 
 ### Not a parallelism failure
 
@@ -325,9 +352,12 @@ order of what it buys:
    in tests, or they stay sequential permanently.~~ They stay sequential,
    which given the slot's security purpose was always the honest answer; the
    same declaration is how they say so.
-3. `provider` and `broker` need a private `httpc` profile per test rather
-   than per VM.
-4. The four in-test deadlines need to stop being wall-clock assumptions.
+3. `provider`'s four `http_test` cases need to stay sequential. Two of them
+   kill node-wide OTP processes as the property under test, and no profile
+   arrangement makes that private; the declaration is where they say so.
+   `broker` needed no such thing.
+4. ~~The four in-test deadlines need to stop being wall-clock
+   assumptions.~~ Done.
 
 ---
 
