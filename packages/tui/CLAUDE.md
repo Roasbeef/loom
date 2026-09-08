@@ -26,8 +26,8 @@ that tree separately from the self-contained server.
   Wrapped durable rows are cached by strand, width, and detail mode; pending
   records extend that cache without reparsing older markdown.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
-  `Invalid` — and two that are not terminal applications at all, `Forward`
-  and `Replay`.
+  `Invalid` — and three that are not terminal applications at all,
+  `Forward`, `Replay` and `Sessions`.
   `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. The daemon is located by
@@ -37,7 +37,12 @@ that tree separately from the self-contained server.
   the child's own status. `Replay` is the same shape for a different
   reason: `loom replay <path>` drives a recording through the virtual
   backend and prints frames, so it installs no terminal state and opens no
-  socket either.
+  socket either. `Sessions` is `loom sessions list` and `loom sessions rm
+  <id>`: it reaches the control endpoint as the owner over the same
+  bootstrap ladder the picker uses, prints one line per row or one line of
+  outcome, and exits with a status. `rm` asks at the terminal before it
+  sends and refuses outright when standard input is not a terminal, unless
+  `--yes` was given.
 - `tui.Peer` says where this client's commands go, and replaces the
   optional socket the model used to carry. An absent socket meant two
   opposite things — a `--demo` `Preview`, which answers a submitted prompt
@@ -127,6 +132,16 @@ that tree separately from the self-contained server.
   `/sessions` does not scan workspace launch records. `tui/daemon/selection`
   resolves the selected row and canonical workspace, attaches directly when
   resident, or explicitly opens and observes the returned operation.
+  `session_selector.Prompt` is the picker's other state: `d` opens a
+  `ConfirmingDelete` for the highlighted identity, and only `y` answers it,
+  so no single keystroke can destroy a conversation. The answer names the
+  identity the question was asked about rather than whatever is highlighted
+  when it arrives. `tui.ControlRequest` is the one job slot the picker's
+  paging and its deletes share — the picker can do one or the other, never
+  both — and `session_selector.without` drops the row on the daemon's
+  confirmation rather than re-listing, which would move every other row
+  under the cursor. A refusal reaches the footer as an error and the page is
+  left alone.
 - `tui/attachment.Status` owns one provisional replacement. A deadline-bounded
   Weft task publishes its socket to terminal-owned subjects. The terminal
   validates the initial cut, acknowledges it, observes task completion and

@@ -28,7 +28,7 @@ pub opaque type Message {
   Play(events: List(backend.InputEvent), reply: Subject(Sample))
   Inbound(message: connection.Message)
   Candidate(message: attachment.Event)
-  Catalogue(message: tui.CatalogueEvent)
+  Catalogue(message: tui.ControlEvent)
   Stop
 }
 
@@ -86,7 +86,7 @@ pub fn start_recorded(
       |> tui.with_recording(path)
 
     // Refuse a failed handshake instead of exercising preview-mode echoes.
-    case attachment.busy(model.candidate), model.peer, model.catalogue_request {
+    case attachment.busy(model.candidate), model.peer, model.control_request {
       True, _, _ | False, tui.Attached(_), _ | _, _, Some(_) ->
         actor.initialised(Driver(model, subject))
         |> actor.selecting(selector(Driver(model, subject)))
@@ -148,7 +148,7 @@ fn handle(driver: Driver, message: Message) -> actor.Next(Driver, Message) {
       continue(Driver(..driver, model: run.final))
     }
     Catalogue(message) -> {
-      let run = run(tui.accept_catalogue_event(model, message), [])
+      let run = run(tui.accept_control_event(model, message), [])
       continue(Driver(..driver, model: run.final))
     }
 
@@ -172,11 +172,11 @@ fn selector(driver: Driver) {
     |> fn(selector) {
       attachment.select(driver.model.candidate, selector, Candidate)
     }
-  case driver.model.catalogue_request {
+  case driver.model.control_request {
     None -> selector
     Some(run) ->
       process.select_map(selector, run.replies, fn(reply) {
-        Catalogue(tui.CatalogueEvent(run.replies, reply))
+        Catalogue(tui.ControlEvent(run.replies, reply))
       })
   }
 }

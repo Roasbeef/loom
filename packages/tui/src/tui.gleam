@@ -188,6 +188,28 @@ type Launch {
   // A recording's own first `resize` also supersedes `--width`/`--height`,
   // which therefore only size the frames before it.
   Replay(path: String, frames: FrameSelection, size: backend.TerminalSize)
+
+  // `loom sessions …` installs no terminal state either. It reaches the
+  // control endpoint as the owner over the same bootstrap ladder the picker
+  // uses, prints one line per row or one line of outcome, and exits with a
+  // status. Listing and deleting are the two things the picker could do that
+  // a person with no terminal open still needs.
+  Sessions(options: bootstrap.Options, command: SessionsCommand)
+}
+
+// The two catalogue verbs the launcher owns. `rm` carries its consent so the
+// parser settles the question and the runner never re-derives it from flags.
+type SessionsCommand {
+  ListRegistrations
+  RemoveRegistration(session_id: String, consent: Consent)
+}
+
+// Whether the person has already agreed to lose a conversation. `--yes` is
+// the whole of the second variant; without it the runner asks, and refuses
+// when there is no terminal to ask.
+type Consent {
+  AskAtTerminal
+  GivenOnCommandLine
 }
 
 // Which of a replay's frames to print. A recording produces one frame per
@@ -304,22 +326,36 @@ pub type Interrupt {
   Interrupt(strand: String, pending: Option(String))
 }
 
-/// One relayed page job, selected by the terminal and its actor-backed driver.
+/// What a finished picker control job produced.
+///
+/// The picker can page or delete, never both at once, so the two share one
+/// job slot and are told apart here rather than by a second set of fields
+/// that could both be occupied.
 @internal
-pub type CatalogueRequest {
-  CatalogueRequest(
+pub type ControlOutcome {
+  /// One authorized page and the identity to highlight in it.
+  PageLoaded(page: control_protocol.Page, selected: String)
+
+  /// The daemon removed this registration and its database.
+  SessionDeleted(session_id: String)
+}
+
+/// One relayed control job, selected by the terminal and its actor-backed driver.
+@internal
+pub type ControlRequest {
+  ControlRequest(
     cancel: weft.Cancel,
-    replies: Subject(weft.Pulled(#(control_protocol.Page, String), String)),
-    result: Option(Result(#(control_protocol.Page, String), String)),
+    replies: Subject(weft.Pulled(ControlOutcome, String)),
+    result: Option(Result(ControlOutcome, String)),
   )
 }
 
-/// An already selected metadata job message retains its original source tag.
+/// An already selected control job message retains its original source tag.
 @internal
-pub type CatalogueEvent {
-  CatalogueEvent(
-    source: Subject(weft.Pulled(#(control_protocol.Page, String), String)),
-    reply: weft.Pulled(#(control_protocol.Page, String), String),
+pub type ControlEvent {
+  ControlEvent(
+    source: Subject(weft.Pulled(ControlOutcome, String)),
+    reply: weft.Pulled(ControlOutcome, String),
   )
 }
 
@@ -430,7 +466,7 @@ pub type Model {
     /// Terminal-owned daemon control, independent of the selected session.
     daemon_host: Option(daemon_selection.Host),
     /// One bounded metadata page request; no catalogue accumulation.
-    catalogue_request: Option(CatalogueRequest),
+    control_request: Option(ControlRequest),
     /// Retained after an uncertain create so another key cannot duplicate it.
     creation_key: Option(String),
     /// Current pending requests and at most sixteen bounded resolved summaries.
@@ -584,7 +620,7 @@ pub fn main() {
   // `replay` has its own parser and no recorder to open.
   let raw = argv.load().arguments
   let #(record, arguments) = case raw {
-    ["ext", ..] | ["replay", ..] -> #("", raw)
+    ["ext", ..] | ["replay", ..] | ["sessions", ..] -> #("", raw)
     _other -> take_flag(raw, "--record")
   }
   let launch = parse_launch(arguments)
@@ -593,6 +629,7 @@ pub fn main() {
     // process is a pipe for the duration and then it is gone.
     Forward(arguments:) -> forward(arguments)
     Replay(path:, frames:, size:) -> replay(path, frames, size)
+    Sessions(options:, command:) -> run_sessions(options, command)
     Demo | Local(..) | Remote(..) | Invalid(..) -> interactive(launch, record)
   }
 }
@@ -739,7 +776,7 @@ pub fn new_model_with_clock(
     last_capture: session_channel.Requested,
     notices: 0,
     daemon_host: None,
-    catalogue_request: None,
+    control_request: None,
     creation_key: None,
     approvals: [],
     inspecting_approval: None,
@@ -795,7 +832,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // recorded.
   let launched = case launch {
     // Unreachable: `main` answers these before it builds a model.
-    Forward(..) | Replay(..) | Demo -> base
+    Forward(..) | Replay(..) | Sessions(..) | Demo -> base
     Local(options, selected) -> {
       // The footer names the workspace the session was launched for, which
       // is only the current directory when no `--workspace` was given; a
@@ -930,6 +967,7 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["--demo"] -> Demo
     ["ext", ..rest] -> Forward(arguments: rest)
     ["replay", ..rest] -> parse_replay(rest)
+    ["sessions", ..rest] -> parse_sessions(rest)
     _ ->
       case flag_value(arguments, "--addr"), flag_value(arguments, "--session") {
         Ok(address), Ok(session) ->
@@ -944,6 +982,183 @@ fn parse_launch(arguments: List(String)) -> Launch {
             Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
           }
       }
+  }
+}
+
+// `--yes` and the verb are read before the shared local options, because
+// `parse_local_options` refuses a flag it does not own and both of these are
+// the sessions parser's.
+fn parse_sessions(arguments: List(String)) -> Launch {
+  let #(consent, rest) = case take_switch(arguments, "--yes") {
+    #(True, remaining) -> #(GivenOnCommandLine, remaining)
+    #(False, remaining) -> #(AskAtTerminal, remaining)
+  }
+  case rest {
+    ["list", ..flags] -> sessions_launch(flags, ListRegistrations)
+    ["rm", id, ..flags] ->
+      sessions_launch(flags, RemoveRegistration(id, consent))
+    ["rm"] -> Invalid("sessions rm needs a session id\n" <> sessions_usage())
+    _unknown -> Invalid(sessions_usage())
+  }
+}
+
+fn sessions_launch(flags: List(String), command: SessionsCommand) -> Launch {
+  case parse_local_options(flags, default_bootstrap_options()) {
+    Ok(options) -> Sessions(options:, command:)
+    Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
+  }
+}
+
+// Removes one valueless flag, answering whether it was present and what is
+// left. `take_flag` cannot serve here: it consumes the following word, and
+// `--yes` is followed by the verb.
+fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
+  case arguments {
+    [] -> #(False, [])
+    [name, ..rest] ->
+      case name == flag {
+        True -> #(True, rest)
+        False -> {
+          let #(found, remaining) = take_switch(rest, flag)
+          #(found, [name, ..remaining])
+        }
+      }
+  }
+}
+
+fn sessions_usage() -> String {
+  "usage: loom sessions list [--state-dir <path>] [--server <path>]\n"
+  <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
+  <> "  rm asks for confirmation unless --yes is given, and refuses a\n"
+  <> "  session the daemon still holds open; stop it first"
+}
+
+// One catalogue action over a control connection this process owns for the
+// length of the command. Nothing is retained: the connection closes before
+// the exit status is chosen, so a refusal and a success leave the daemon in
+// the same state as far as this launcher is concerned.
+fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
+  case sessions_host(options) {
+    Error(reason) -> sessions_failed(reason)
+    Ok(#(control, host)) -> {
+      let outcome = case command {
+        ListRegistrations -> list_registrations(host)
+        RemoveRegistration(session_id:, consent:) ->
+          remove_registration(host, session_id, consent)
+      }
+      daemon.close(control)
+      case outcome {
+        Ok(report) -> io.println(report)
+        Error(reason) -> sessions_failed(reason)
+      }
+    }
+  }
+}
+
+fn sessions_failed(reason: String) -> Nil {
+  io.println_error("loom sessions: " <> reason)
+  ffi_terminal.halt(1)
+  Nil
+}
+
+// The picker's own ladder: resolve or start the shared daemon, read the
+// owner credential from the state root, and authenticate one control socket.
+fn sessions_host(options: bootstrap.Options) {
+  use connected <- result.try(bootstrap.resolve_daemon(
+    options,
+    process.self(),
+    90_000,
+  ))
+  use address <- result.try(endpoint.address(connected.record))
+  use bytes <- result.try(host_bootstrap.read_private_bounded(
+    connected.paths.token,
+    65,
+  ))
+  use token <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error("invalid owner credential encoding"),
+  )
+  use host <- result.map(daemon_selection.host(
+    connected.control,
+    address,
+    string.trim(token),
+  ))
+  #(connected.control, host)
+}
+
+fn list_registrations(host: daemon_selection.Host) -> Result(String, String) {
+  use rows <- result.map(registration_rows(host, "", [], 100))
+  case rows {
+    [] -> "no sessions"
+    rows -> string.join(list.map(rows, registration_line), "\n")
+  }
+}
+
+// Pagination is followed to its end so the listing is the whole catalogue
+// rather than its first hundred rows. The page budget is what stops a daemon
+// answering with a cursor that never advances from looping here forever.
+fn registration_rows(
+  host: daemon_selection.Host,
+  after: String,
+  accumulated: List(control_protocol.Session),
+  remaining: Int,
+) -> Result(List(control_protocol.Session), String) {
+  case remaining > 0 {
+    False -> Error("session listing did not terminate")
+    True -> {
+      use page <- result.try(daemon_selection.list(host, after))
+      let rows = list.append(accumulated, page.sessions)
+      case page.after {
+        None -> Ok(rows)
+        Some(next) -> registration_rows(host, next, rows, remaining - 1)
+      }
+    }
+  }
+}
+
+fn registration_line(row: control_protocol.Session) -> String {
+  row.session_id
+  <> "  "
+  <> registration_state(row.status)
+  <> "  "
+  <> row.workspace
+  <> "  "
+  <> text_hygiene.single_line(row.name)
+}
+
+fn registration_state(status: control_protocol.Lifecycle) -> String {
+  case status {
+    control_protocol.Saved -> "saved"
+    control_protocol.Reserved -> "reserved"
+    control_protocol.Opening(_) -> "opening"
+    control_protocol.Resident(_) -> "resident"
+    control_protocol.Stopping(_) -> "stopping"
+    control_protocol.RecoveryBlocked -> "blocked"
+  }
+}
+
+fn remove_registration(
+  host: daemon_selection.Host,
+  session_id: String,
+  consent: Consent,
+) -> Result(String, String) {
+  use Nil <- result.try(case consent {
+    GivenOnCommandLine -> Ok(Nil)
+    AskAtTerminal -> asked(session_id)
+  })
+  use deleted <- result.map(daemon_selection.delete(host, session_id))
+  "deleted " <> deleted
+}
+
+// Anything but an explicit yes cancels, including an empty line, so the
+// default of a mistyped answer is to keep the conversation.
+fn asked(session_id: String) -> Result(Nil, String) {
+  use reply <- result.try(ffi_terminal.read_console_reply(
+    "delete " <> session_id <> " and its conversation database? [y/N] ",
+  ))
+  case string.lowercase(string.trim(reply)) {
+    "y" | "yes" -> Ok(Nil)
+    _refused -> Error("cancelled; nothing was deleted")
   }
 }
 
@@ -1306,7 +1521,7 @@ fn load_catalogue_after(
   revision: Option(Int),
   rename: Option(control_protocol.Command),
 ) -> Model {
-  case model.catalogue_request, model.daemon_host {
+  case model.control_request, model.daemon_host {
     Some(_), _ -> append_error(model, "a catalogue page is already loading")
     None, None -> append_error(model, "daemon control is disconnected")
     None, Some(host) -> {
@@ -1345,6 +1560,7 @@ fn load_catalogue_after(
               control_protocol.StatusReply(_)
               | control_protocol.SessionReply(_)
               | control_protocol.LifecycleReply(_)
+              | control_protocol.DeletedReply(_)
               | control_protocol.ShutdownReply ->
                 Error("catalogue returned an unexpected control reply")
             })
@@ -1352,7 +1568,7 @@ fn load_catalogue_after(
               "" -> default_selection(host, workspace)
               id -> id
             }
-            Ok(#(page, selected))
+            Ok(PageLoaded(page, selected))
           },
         ])
         |> weft.deadline(12_000)
@@ -1360,8 +1576,40 @@ fn load_catalogue_after(
         |> weft.start_relayed(replies)
       Model(
         ..model,
-        catalogue_request: Some(CatalogueRequest(cancel, replies, None)),
+        control_request: Some(ControlRequest(cancel, replies, None)),
         notice: "loading authorized session metadata",
+      )
+    }
+  }
+}
+
+// Deletion shares the picker's one control job slot with paging, so a delete
+// while a page is in flight is refused rather than queued behind it. The
+// identity is bound outside the closure for the same reason the page job
+// binds its two scalars: weft copies the fun's environment, and a reference
+// to a model field would copy the whole presentation state with it.
+fn begin_delete(model: Model, session: String) -> Model {
+  case model.control_request, model.daemon_host {
+    Some(_), _ -> append_error(model, "a catalogue request is already running")
+    None, None -> append_error(model, "daemon control is disconnected")
+    None, Some(host) -> {
+      let cancel = weft.cancel_signal()
+      let replies = process.new_subject()
+      let _relay =
+        weft.new([
+          fn() {
+            use host <- daemon_selection.with_live_control(host)
+            use id <- result.map(daemon_selection.delete(host, session))
+            SessionDeleted(id)
+          },
+        ])
+        |> weft.deadline(12_000)
+        |> weft.cancel_with(cancel)
+        |> weft.start_relayed(replies)
+      Model(
+        ..model,
+        control_request: Some(ControlRequest(cancel, replies, None)),
+        notice: "deleting session " <> session,
       )
     }
   }
@@ -1380,28 +1628,28 @@ fn default_selection(host, workspace) {
   }
 }
 
-fn drain_catalogue(model: Model) -> Model {
-  case model.catalogue_request {
+fn drain_control(model: Model) -> Model {
+  case model.control_request {
     None -> model
     Some(run) ->
       case process.receive(run.replies, 0) {
         Error(Nil) -> model
         Ok(reply) ->
-          accept_catalogue_event(model, CatalogueEvent(run.replies, reply))
+          accept_control_event(model, ControlEvent(run.replies, reply))
       }
   }
 }
 
-/// Applies a selected page job response before later terminal messages.
+/// Applies a selected control job response before later terminal messages.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.accept_catalogue_event(model, event)
+/// // tui.accept_control_event(model, event)
 /// ```
 @internal
-pub fn accept_catalogue_event(model: Model, event: CatalogueEvent) -> Model {
-  case model.catalogue_request {
+pub fn accept_control_event(model: Model, event: ControlEvent) -> Model {
+  case model.control_request {
     None -> model
     Some(run) if run.replies != event.source -> model
     Some(run) ->
@@ -1410,26 +1658,23 @@ pub fn accept_catalogue_event(model: Model, event: CatalogueEvent) -> Model {
         weft.PulledOutcome(weft.Completed(value:, ..)) ->
           Model(
             ..model,
-            catalogue_request: Some(
-              CatalogueRequest(..run, result: Some(Ok(value))),
+            control_request: Some(
+              ControlRequest(..run, result: Some(Ok(value))),
             ),
           )
         weft.PulledOutcome(weft.Failed(error:, ..)) ->
           Model(
             ..model,
-            catalogue_request: Some(
-              CatalogueRequest(..run, result: Some(Error(error))),
+            control_request: Some(
+              ControlRequest(..run, result: Some(Error(error))),
             ),
           )
         weft.PulledOutcome(weft.Crashed(reason:, ..))
         | weft.PulledOutcome(weft.DrainProofLost(reason:, ..)) ->
           Model(
             ..model,
-            catalogue_request: Some(
-              CatalogueRequest(
-                ..run,
-                result: Some(Error(string.inspect(reason))),
-              ),
+            control_request: Some(
+              ControlRequest(..run, result: Some(Error(string.inspect(reason)))),
             ),
           )
         weft.PulledOutcome(weft.Abandoned(..))
@@ -1437,35 +1682,54 @@ pub fn accept_catalogue_event(model: Model, event: CatalogueEvent) -> Model {
         | weft.PulledOutcome(weft.CancellationUnconfirmed(..)) ->
           Model(
             ..model,
-            catalogue_request: Some(
-              CatalogueRequest(
+            control_request: Some(
+              ControlRequest(
                 ..run,
-                result: Some(Error("catalogue request did not complete")),
+                result: Some(Error("control request did not complete")),
               ),
             ),
           )
         weft.RunLost(reason) ->
           append_error(
-            Model(..model, catalogue_request: None),
+            Model(..model, control_request: None),
             string.inspect(reason),
           )
         weft.AllDelivered ->
-          finish_catalogue(Model(..model, catalogue_request: None), run.result)
+          finish_control(Model(..model, control_request: None), run.result)
       }
   }
 }
 
-fn finish_catalogue(model, result) {
+fn finish_control(model: Model, result) {
   case result {
-    Some(Ok(#(page, selected))) ->
+    Some(Ok(PageLoaded(page, selected))) ->
       Model(
         ..model,
         overlay: DaemonSelector(session_selector.new(page, selected)),
-        notice: "Enter opens the highlighted session · n creates a new session",
+        notice: "Enter opens the highlighted session · n creates · d deletes",
+      )
+      |> invalidate_frame
+
+    // The row is dropped from the page already on screen rather than by
+    // re-listing: the reply proves this identity is gone, and a fresh page
+    // would move every other row under the operator's cursor.
+    Some(Ok(SessionDeleted(id))) ->
+      Model(
+        ..model,
+        overlay: case model.overlay {
+          DaemonSelector(selector) ->
+            DaemonSelector(session_selector.without(selector, id))
+          NoOverlay
+          | ModelSelector(_)
+          | AgentInspector(_)
+          | ApprovalInspector(_)
+          | SessionSelector(_) -> model.overlay
+        },
+        notice: "deleted session " <> id,
       )
       |> invalidate_frame
     Some(Error(reason)) -> append_error(model, reason)
-    None -> append_error(model, "catalogue job ended without a page")
+    None -> append_error(model, "control job ended without an outcome")
   }
 }
 
@@ -2679,8 +2943,7 @@ fn frame_boundary(event: backend.InputEvent) -> FrameBoundary {
 // cadence but does not by itself force the fast polling regime forever.
 fn update_tick(model: Model) -> Model {
   let animated = advance_activity_indicator(drain_replay(model))
-  let switched =
-    drain_candidate(drain_catalogue(drain_session_switch(animated)))
+  let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let drained = drain_connection(switched, 64)
   let drained = tick_channel(drained)
   let quiet_for_ms =
@@ -4987,6 +5250,7 @@ fn update_daemon_selector(
       Model(..model, overlay: NoOverlay, notice: "session selection cancelled")
     session_selector.Choose(row) -> begin_open(model, row.session_id)
     session_selector.NewSession -> create_session(model)
+    session_selector.Delete(session_id) -> begin_delete(model, session_id)
     session_selector.NextPage(after, revision) ->
       load_catalogue(model, after, Some(revision))
     session_selector.FirstPage -> load_catalogue(model, "", None)
@@ -6504,7 +6768,7 @@ fn after_close(peer: Peer) -> Peer {
 fn quit(model: Model) -> Model {
   sessions.cancel(model.session_switch)
   attachment.cancel(model.candidate)
-  case model.catalogue_request {
+  case model.control_request {
     None -> Nil
     Some(run) -> weft.cancel(run.cancel)
   }

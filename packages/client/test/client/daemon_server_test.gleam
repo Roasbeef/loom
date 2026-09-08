@@ -15,6 +15,7 @@ import gleam/bytes_tree
 import gleam/erlang/process
 import gleam/http/response
 import gleam/list
+import gleam/result
 import gleam/string
 import host/bootstrap
 import mist
@@ -521,5 +522,203 @@ pub fn control_rejects_v1_and_oversized_frame_header_test() {
     assert ffi_ws.tcp_receive(socket, 4, 1000) == Ok(<<0x88, 2, 1009:16>>)
     let _ = ffi_ws.tcp_close(socket)
     Nil
+  })
+}
+
+pub fn owner_deletes_only_a_stopped_session_and_unlinks_its_files_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(ready.state_root <> "/loom.toml", "") == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let created =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        json.Object([
+          #("request_key", json.String("wire-delete")),
+          #("workspace", json.String(ready.state_root)),
+          #("name", json.String("Doomed session")),
+          #("configuration", json.String(ready.state_root <> "/loom.toml")),
+        ]),
+        within_ms: 1000,
+      )
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "creation exposes its reserved canonical identity"
+
+    // The database path is read from the registration rather than rebuilt
+    // here, so the test unlinks whatever the daemon actually registered.
+    let assert Ok(view) = manager.get(ready.registry, id)
+      as "the new registration is readable"
+    let path = view.registration.path
+
+    // The fixture's assembly is inert, so it registers a path without ever
+    // creating a file there. The database family is written by hand so this
+    // test is about what delete unlinks rather than what assembly wrote.
+    assert simplifile.write(to: path, contents: "conversation") == Ok(Nil)
+    assert simplifile.write(to: path <> "-wal", contents: "wal") == Ok(Nil)
+    assert simplifile.write(to: path <> "-shm", contents: "shm") == Ok(Nil)
+
+    // A live reservation must refuse deletion outright. Waiting for the
+    // assembly to publish is what makes this the busy case rather than a
+    // race against a session that has not started yet.
+    let assert poll.Answered(Nil) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, id) {
+          Ok(manager.View(status: manager.Resident(_), ..)) -> poll.Done(Nil)
+          Ok(_) -> poll.Retry
+          Error(error) -> poll.Fail(error)
+        }
+      })
+      as "explicit creation completes its controlled assembly"
+    let refused =
+      send(
+        socket,
+        2,
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(refused, "body"), "code") == json.String("busy")
+    assert simplifile.is_file(path) == Ok(True)
+
+    let _stopped =
+      send(
+        socket,
+        3,
+        "sessions.stop",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    let assert poll.Answered(Nil) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, id) {
+          Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
+          Ok(_) -> poll.Retry
+          Error(error) -> poll.Fail(error)
+        }
+      })
+      as "ordered stop returns metadata to saved"
+
+    let deleted =
+      send(
+        socket,
+        4,
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(deleted, "event") == json.String("sessions.delete")
+    assert field(field(deleted, "body"), "session_id") == json.String(id)
+
+    // The registration, the listing row and the whole database family go
+    // together; a surviving sidecar would be adopted by a later session
+    // that reused the identity.
+    assert manager.get(ready.registry, id)
+      == Error(manager.Catalogue(catalogue.Missing))
+    assert simplifile.is_file(path) == Ok(False)
+    assert simplifile.is_file(path <> "-wal") == Ok(False)
+    assert simplifile.is_file(path <> "-shm") == Ok(False)
+    let listing =
+      send(
+        socket,
+        5,
+        "sessions.list",
+        json.Object([#("after", json.String(""))]),
+        within_ms: 1000,
+      )
+    assert field(field(listing, "body"), "sessions") == json.Array([])
+
+    let missing =
+      send(
+        socket,
+        6,
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(missing, "body"), "code") == json.String("not_found")
+
+    let stale =
+      send(
+        socket,
+        7,
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("epoch", json.String("previous-epoch")),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(stale, "body"), "code") == json.String("stale_epoch")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_member_cannot_delete_a_session_it_can_read_test() {
+  fixture(fn(_, ready, port, _) {
+    let credential = "member-delete-token"
+    let assert Ok(digest) =
+      credential
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the same durable catalogue"
+    let assert Ok(member) =
+      access.create_member(store, "delete-member", "Member", digest)
+      as "member has no implicit session grants"
+    let assert Ok(visible) =
+      manager.create(
+        ready.registry,
+        manager.Creation("member-visible", ready.state_root, "Visible", ""),
+        directory: ready.sessions_directory,
+        generator: ids.generator(clock.fixed(0), 200),
+      )
+      as "owner reserves one visible session"
+    assert access.grant(
+        store,
+        member.id,
+        visible.registration.id,
+        access.Observer,
+      )
+      == Ok(Nil)
+
+    // Membership is enough to read this row and not enough to remove it:
+    // deletion is the owner's, because the files belong to the state root.
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let denied =
+      send(
+        socket,
+        1,
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(visible.registration.id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(field(denied, "body"), "code") == json.String("forbidden")
+    assert manager.get(ready.registry, visible.registration.id)
+      |> result.is_ok
+    let _ = ffi_ws.tcp_close(socket)
+    assert catalogue.close(store) == Ok(Nil)
   })
 }

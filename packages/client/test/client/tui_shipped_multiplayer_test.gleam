@@ -1099,7 +1099,7 @@ fn highlight_target(
     tui_v2_test.await(alice.data, fn(sample) {
       case sample.model.overlay {
         tui.DaemonSelector(selector) ->
-          sample.model.catalogue_request == None
+          sample.model.control_request == None
           && list.any(selector.page.sessions, fn(row) {
             row.session_id == target
           })

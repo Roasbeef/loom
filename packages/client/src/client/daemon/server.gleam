@@ -424,7 +424,8 @@ fn control(
             | protocol.RevokeCredentials(..)
             | protocol.CreateSession(..)
             | protocol.OpenSession(..)
-            | protocol.StopSession(..) -> KeepServing
+            | protocol.StopSession(..)
+            | protocol.DeleteSession(..) -> KeepServing
           }
           #(protocol.event(Some(request.id), event, body), after)
         }
@@ -457,6 +458,7 @@ fn control_use(command: protocol.Command) {
     | protocol.CreateSession(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
+    | protocol.DeleteSession(..)
     | protocol.Shutdown(_) -> root.ControlMutation
   }
 }
@@ -677,6 +679,29 @@ fn dispatch(
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
     }
+    protocol.DeleteSession(id, supplied) -> {
+      // Owner, epoch and the busy check are all re-decided inside the
+      // registry's own dispatch; the check here would only widen the window
+      // between deciding and removing.
+      use registration <- result.try(
+        manager.delete_session(
+          state.registry,
+          digest,
+          supplied,
+          id,
+          state.sessions_directory,
+        )
+        |> result.map_error(admin_error_code),
+      )
+      Ok(#(
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(registration.id)),
+          #("workspace", json.String(registration.workspace)),
+          #("name", json.String(registration.name)),
+        ]),
+      ))
+    }
     protocol.GetOperation(id, operation, supplied) -> {
       use Nil <- result.try(epoch(state, supplied))
       use _ <- result.try(authorized(state, digest, id))
@@ -742,6 +767,8 @@ fn admin_error_code(error) {
     manager.AdminForbidden -> "forbidden"
     manager.AdminStaleEpoch -> "stale_epoch"
     manager.AdminUnavailable -> "unavailable"
+    manager.AdminForeignPath -> "unavailable"
+    manager.AdminBusy -> "busy"
     manager.AdminMetadata(error) -> error_code(manager.Catalogue(error))
   }
 }

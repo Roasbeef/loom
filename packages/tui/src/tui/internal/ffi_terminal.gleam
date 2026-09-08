@@ -1,12 +1,13 @@
-//// The three operating-system actions that belong to the terminal itself.
+//// The four operating-system actions that belong to the terminal itself.
 ////
 //// Everything else the launcher needs from the operating system — private
 //// files, locks, process identity and launch, clocks, digests — is shared
 //// with the daemon and lives in `host/bootstrap`. What is left here is what
 //// only a program that owns a terminal wants: silencing the logger that would
 //// otherwise write over the alternate screen, running a child whose output
-//// *is* this program's output, and exiting the VM with that child's status.
-//// None of the three has an expression in `gleam_stdlib`, `gleam_erlang`,
+//// *is* this program's output, asking the person in front of it a question,
+//// and exiting the VM with that child's status.
+//// None of the four has an expression in `gleam_stdlib`, `gleam_erlang`,
 //// `gleam_otp` or weft, which is why they are `@external` at all.
 
 /// Stops every OTP logger handler from writing to the terminal.
@@ -31,6 +32,20 @@ pub fn run_forwarding(
   executable: String,
   arguments: List(String),
 ) -> Result(Int, String)
+
+/// Asks the person at the terminal one question and returns their reply.
+///
+/// Uses OTP `io:getopts/1` and `io:get_line/1`. A caller whose standard input
+/// is not a terminal is refused rather than blocked, so `loom sessions rm`
+/// inside a pipeline fails asking for `--yes` instead of waiting on input that
+/// will never arrive. The terminal question is asked through the documented
+/// `{terminal, boolean()}` option of `io:getopts(standard_io)` rather than
+/// `prim_tty:isatty/1`, which is a kernel internal with no compatibility
+/// promise. Neither half has an expression in `gleam_stdlib`, `gleam_erlang`
+/// or `gleam_otp`: none of them reads a line from the console at all, which
+/// is what makes this external a last resort rather than a convenience.
+@external(erlang, "tui_ffi", "read_console_reply")
+pub fn read_console_reply(prompt: String) -> Result(String, String)
 
 /// Exits the VM with a status.
 ///

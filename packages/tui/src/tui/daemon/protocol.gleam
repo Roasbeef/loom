@@ -99,6 +99,12 @@ pub type Command {
     session_id: String,
   )
 
+  /// Removes a stopped registration and its conversation database.
+  DeleteSession(
+    /// Saved registration selected explicitly for removal.
+    session_id: String,
+  )
+
   /// Observes an operation only in the epoch where it was obtained.
   GetOperation(
     /// The authorized session whose lifecycle is being observed.
@@ -235,6 +241,12 @@ pub type Reply {
     status: Lifecycle,
   )
 
+  /// The registration named here no longer exists.
+  DeletedReply(
+    /// The identity that was removed, echoed for the caller's own listing.
+    session_id: String,
+  )
+
   /// The daemon accepted its drain request.
   ShutdownReply
 }
@@ -286,6 +298,7 @@ pub fn name(command: Command) -> String {
     CreateSession(..) -> "sessions.create"
     OpenSession(..) -> "sessions.open"
     StopSession(..) -> "sessions.stop"
+    DeleteSession(..) -> "sessions.delete"
     GetOperation(..) -> "operations.get"
     Shutdown -> "daemon.shutdown"
   }
@@ -310,6 +323,7 @@ pub fn mutates(command: Command) -> Bool {
     | CreateSession(..)
     | OpenSession(..)
     | StopSession(..)
+    | DeleteSession(..)
     | Shutdown -> True
   }
 }
@@ -392,7 +406,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       })
       [#("configuration", json.String(configuration)), ..fields]
     }
-    OpenSession(id) | StopSession(id) -> {
+    OpenSession(id) | StopSession(id) | DeleteSession(id) -> {
       use fields <- result.map(identity_fields(id))
       [#("epoch", json.String(epoch_value)), ..fields]
     }
@@ -495,6 +509,7 @@ fn decode_reply(event: String, body: json.JsonValue) {
     | "operations.get" -> result.map(session(body), SessionReply)
     "sessions.open" | "sessions.stop" ->
       result.map(lifecycle(body), LifecycleReply)
+    "sessions.delete" -> result.map(deletion(body), DeletedReply)
     "daemon.shutdown" ->
       case field(body, "state") {
         Ok(json.String("draining")) -> Ok(ShutdownReply)
@@ -563,6 +578,12 @@ fn session(body: json.JsonValue) {
   use status <- result.try(field(body, "status"))
   use status <- result.map(lifecycle(status))
   Session(id, workspace, name, created, status)
+}
+
+fn deletion(body: json.JsonValue) {
+  use id <- result.try(text_at(body, "session_id", 64))
+  use Nil <- result.map(valid_id(id))
+  id
 }
 
 fn lifecycle(body: json.JsonValue) {

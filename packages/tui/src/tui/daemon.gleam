@@ -376,6 +376,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     protocol.SessionsReply(_), _
     | protocol.SessionReply(_), _
     | protocol.LifecycleReply(_), _
+    | protocol.DeletedReply(_), _
     | protocol.ShutdownReply, _
     -> True
   }

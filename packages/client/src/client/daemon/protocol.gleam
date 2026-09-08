@@ -84,6 +84,9 @@ pub type Command {
   /// Requests ordered cleanup without deleting the conversation.
   StopSession(session_id: String, epoch: String)
 
+  /// Removes a stopped registration and its conversation database.
+  DeleteSession(session_id: String, epoch: String)
+
   /// Observes only the named operation, never a replacement incarnation.
   GetOperation(session_id: String, operation: String, epoch: String)
 
@@ -250,6 +253,11 @@ fn decode_fields(
       use id <- result.try(session_id(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       StopSession(id, epoch)
+    }
+    "sessions.delete" -> {
+      use id <- result.try(session_id(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      DeleteSession(id, epoch)
     }
     "operations.get" -> {
       use id <- result.try(session_id(fields))
