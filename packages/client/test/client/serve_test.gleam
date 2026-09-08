@@ -1883,6 +1883,155 @@ pub fn a_configured_mount_over_a_mask_refuses_the_boot_test() {
   assert string.contains(reason, "/state/secrets")
 }
 
+// --- merging the assembled mounts ------------------------------------------
+
+// Two derivations can land on the same directory without either being
+// wrong, and `broker/policy.validate` refuses a repeated path. These
+// tests hold the merge against the two host layouts that actually
+// collided: a Linux box where `gleam` sits in `~/.local/bin`, and a
+// Homebrew Mac where it is a link under `/opt/homebrew`.
+
+pub fn a_toolchain_directory_the_user_set_also_names_merges_test() {
+  // The Linux shape. `admitting_codemode` names `~/.local/bin` because
+  // that is where `gleam` is; the per-user set names it because it is
+  // one of the directories a version manager puts on `PATH`.
+  let home = scratch_root("linux-home")
+  make(home <> "/.local/bin")
+  let base =
+    serve.base_policy("/work")
+    |> serve.admitting_user_toolchains(Some(home))
+    |> serve.admitting_codemode(
+      Ok(codemode.toolchain(
+        gleam_path: home <> "/.local/bin/gleam",
+        erl_path: "/usr/lib/erlang/bin/erl",
+        seed_root: "/opt/loom/share/codemode-seed",
+      )),
+    )
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "the two derivations must collide before the merge"
+  assert string.contains(reason, home <> "/.local/bin")
+
+  let merged = serve.merging_mounts(base)
+  assert policy.validate(merged) == Ok(Nil)
+  assert list.count(mount_paths(merged), fn(path) {
+      path == home <> "/.local/bin"
+    })
+    == 1
+
+  // The toolchain's entry is `MountRequired`, so the surviving one is
+  // too: a step that asks to fail closed on a missing source must not
+  // lose that by sharing a path with the user set.
+  let assert Ok(mount) =
+    list.find(merged.mounts, fn(mount) { mount.path == home <> "/.local/bin" })
+    as "the merged entry must be there"
+  assert mount.requirement == policy.MountRequired
+  assert mount.access == policy.MountReadOnly
+}
+
+pub fn the_homebrew_prefix_collides_with_the_shared_set_and_merges_test() {
+  // The Homebrew shape. `gleam` is a link, so `toolchain_mounts` emits
+  // the prefix beside the binary's directory, and the prefix is exactly
+  // what `shared_toolchain_readable` names.
+  let toolchain =
+    codemode.Toolchain(
+      gleam_path: "/opt/homebrew/bin/gleam",
+      erl_path: "/opt/homebrew/bin/erl",
+      seed_root: "/opt/loom/share/codemode-seed",
+      gleam_prefix: "/opt/homebrew",
+      erl_prefix: "/opt/homebrew",
+      gleam_binary: codemode.GleamSymlink,
+    )
+  let shared =
+    policy.Mount(
+      path: "/opt/homebrew",
+      access: policy.MountReadOnly,
+      requirement: policy.MountOptional,
+    )
+  let base =
+    policy.SandboxPolicy(..serve.base_policy("/work"), mounts: [shared])
+    |> serve.admitting_codemode(Ok(toolchain))
+  let assert Error(_reason) = serve.base_policy_fault(base)
+    as "the prefix must collide before the merge"
+
+  let merged = serve.merging_mounts(base)
+  assert policy.validate(merged) == Ok(Nil)
+  assert mount_paths(merged)
+    == ["/opt/homebrew", "/opt/loom/share/codemode-seed"]
+}
+
+pub fn a_read_write_twin_at_a_toolchain_path_stays_read_only_test() {
+  // Every toolchain region is read-only, so a read-write entry at
+  // exactly a toolchain path would widen the toolchain. A directory a
+  // build genuinely writes is named under the region instead.
+  let base =
+    policy.SandboxPolicy(..policy.workspace_default("/work"), mounts: [
+      policy.Mount(
+        path: "/opt/tools",
+        access: policy.MountReadWrite,
+        requirement: policy.MountOptional,
+      ),
+      policy.Mount(
+        path: "/opt/tools",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  let merged = serve.merging_mounts(base)
+  assert merged.mounts
+    == [
+      policy.Mount(
+        path: "/opt/tools",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ]
+}
+
+pub fn a_mount_inside_another_mount_is_not_a_duplicate_test() {
+  // Nesting is two binds with different access on purpose. Collapsing
+  // the child into its parent would give the wider access to the
+  // narrower region.
+  let base =
+    policy.SandboxPolicy(..policy.workspace_default("/work"), mounts: [
+      policy.Mount(
+        path: "/h/.cargo/bin",
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+      policy.Mount(
+        path: "/h/.cargo",
+        access: policy.MountReadWrite,
+        requirement: policy.MountOptional,
+      ),
+    ])
+  assert serve.merging_mounts(base).mounts == base.mounts
+}
+
+pub fn a_full_user_set_beside_a_toolchain_validates_test() {
+  // The whole assembly on a host that has every directory the user set
+  // names and a `gleam` in one of them, which is the boot that failed.
+  let home = scratch_root("full-home")
+  list.each(
+    list.append(serve.user_toolchain_readable, serve.user_toolchain_writable),
+    fn(entry) { make(home <> "/" <> entry) },
+  )
+  let assert Ok(Nil) =
+    simplifile.write(to: home <> "/.local/bin/gleam", contents: "")
+    as "the fixture binary must be writable"
+  let base =
+    serve.base_policy("/work")
+    |> serve.admitting_user_toolchains(Some(home))
+    |> serve.admitting_codemode(
+      Ok(codemode.toolchain(
+        gleam_path: home <> "/.local/bin/gleam",
+        erl_path: "/usr/lib/erlang/bin/erl",
+        seed_root: "/opt/loom/share/codemode-seed",
+      )),
+    )
+    |> serve.merging_mounts
+  assert serve.base_policy_fault(base) == Ok(Nil)
+}
+
 pub fn the_workspace_table_parses_both_array_forms_test() {
   let assert Ok(inline) =
     catalog.parse_workspace(

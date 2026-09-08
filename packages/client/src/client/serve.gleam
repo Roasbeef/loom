@@ -526,6 +526,7 @@ pub fn start_build_plane(
     build_plane_policy(writable, state_root)
     |> admitting_user_toolchains(home_directory())
     |> admitting_codemode(Ok(toolchain))
+    |> merging_mounts
 
   // The same refusal the boot makes, in the same place in the order: a
   // base policy the sandbox cannot enforce is a failure now, not a
@@ -2240,6 +2241,7 @@ fn assemble_in(
     |> widening_path_dependencies(settings.workspace)
     |> admitting_user_toolchains(settings.home)
     |> admitting_codemode(toolchain)
+    |> merging_mounts
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
@@ -3930,6 +3932,89 @@ pub fn admitting_config_mounts(
       }),
     ),
   )
+}
+
+/// Collapse the assembled mount list so that each host path appears once.
+///
+/// Every `admitting_*` and `widening_*` step names the regions its own
+/// question is about, and two of them can land on the same directory
+/// without either being wrong. `admitting_codemode` emits the directory
+/// holding `gleam`, which on a Homebrew host resolves to the `/opt/homebrew`
+/// prefix the shared toolchain set also names, and on a Linux host to
+/// `~/.local/bin`, which the per-user set names too. `broker/policy.validate`
+/// refuses a repeated path, so before this step the collision was a boot
+/// failure on ordinary developer machines rather than a misconfiguration.
+///
+/// Merging here is what keeps the assembled base inside the wire-level
+/// invariant; `validate` keeps refusing duplicates, because a policy that
+/// reaches the helper with two answers for one region has no rule for
+/// picking between them.
+///
+/// The two fields merge in opposite directions, and both directions are
+/// the safe one. `requirement` takes `MountRequired` whenever either entry
+/// carries it, because a step that asks to fail closed on a missing source
+/// must not lose that by sharing a path with one that does not. `access`
+/// takes `MountReadOnly` whenever either entry carries it: every toolchain
+/// region is read-only, so a read-write entry from the user set at exactly
+/// a toolchain path would widen the toolchain, which nothing asked for. A
+/// build that genuinely needs to write there names a directory of its own
+/// under the region instead.
+///
+/// Nesting is not a duplicate and is left alone. `.cargo/bin` beside
+/// `.cargo/registry` is two binds with different access on purpose, and
+/// collapsing a child into its parent would give the wider access to the
+/// narrower region.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.merging_mounts(base).mounts |> list.map(fn(m) { m.path })
+/// //   == ["/opt/homebrew"]
+/// ```
+///
+@internal
+pub fn merging_mounts(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(..base, mounts: merged_mounts(base.mounts))
+}
+
+// The first entry for a path keeps its position, so the order the
+// assembly chain produced survives the merge and the encoding stays
+// deterministic. A base carries a handful of mounts, so the quadratic
+// scan costs nothing worth avoiding.
+fn merged_mounts(mounts: List(policy.Mount)) -> List(policy.Mount) {
+  mounts
+  |> list.fold([], fn(kept: List(policy.Mount), mount) {
+    case list.any(kept, fn(other) { other.path == mount.path }) {
+      True ->
+        list.map(kept, fn(other) {
+          case other.path == mount.path {
+            True -> merged_mount(other, mount)
+            False -> other
+          }
+        })
+      False -> [mount, ..kept]
+    }
+  })
+  |> list.reverse
+}
+
+// Two entries for one region become the entry neither step would object
+// to: read-only if either side is read-only, required if either side is
+// required.
+fn merged_mount(kept: policy.Mount, later: policy.Mount) -> policy.Mount {
+  let access = case kept.access, later.access {
+    policy.MountReadWrite, policy.MountReadWrite -> policy.MountReadWrite
+    policy.MountReadWrite, policy.MountReadOnly -> policy.MountReadOnly
+    policy.MountReadOnly, policy.MountReadWrite -> policy.MountReadOnly
+    policy.MountReadOnly, policy.MountReadOnly -> policy.MountReadOnly
+  }
+  let requirement = case kept.requirement, later.requirement {
+    policy.MountRequired, policy.MountRequired -> policy.MountRequired
+    policy.MountRequired, policy.MountOptional -> policy.MountRequired
+    policy.MountOptional, policy.MountRequired -> policy.MountRequired
+    policy.MountOptional, policy.MountOptional -> policy.MountOptional
+  }
+  policy.Mount(path: kept.path, access:, requirement:)
 }
 
 /// The directories a linked worktree's git metadata lives in, outside
