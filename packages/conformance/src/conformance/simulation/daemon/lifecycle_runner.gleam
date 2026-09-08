@@ -331,15 +331,22 @@ fn saved_only(check: String, rows: List(harness.Row)) -> Result(Nil, Failure) {
 // `lifecycle/no-resend`: the ambiguous request is not re-issued, and it cannot
 // settle against the daemon that replaced the one that accepted it.
 //
-// Two separate things, and both are needed. The first is that nothing is
-// running: the session's live status is `Saved`, so no operation was started
-// on the owner's behalf to finish what the previous lifetime began. The second
-// is why a late answer cannot arrive after the fact. Every lifetime mints a
-// fresh epoch, and the authority boundary checks the epoch before it looks at
-// anything else, so a caller still holding the previous lifetime's coordinates
-// is refused `StaleEpoch` rather than resolved. That refusal is what makes the
-// absence of a resend a property of the daemon rather than of the script's
-// timing.
+// Two separate things, and only the second holds for both requests. That
+// nothing is running is read from the session's live status, and a status of
+// `Saved` only discriminates under `PendingOpen`: an interrupted open that was
+// re-driven would leave the session `Opening` or `Resident`, which the status
+// names. An interrupted stop is not observable that way, because a stop that
+// was re-driven and a stop that was dropped both leave the session `Saved` with
+// no slot, so the status check would accept the resend it is meant to catch.
+// `PendingStop` is therefore held to `lifecycle/reopen-policy` and to the
+// convergence comparison instead, which is where a re-driven stop would show
+// up as a moved row.
+//
+// The second thing holds under both. Every lifetime mints a fresh epoch, and
+// the authority boundary checks the epoch before it looks at anything else, so
+// a caller still holding the previous lifetime's coordinates is refused
+// `StaleEpoch` rather than resolved. That refusal is what makes the absence of
+// a resend a property of the daemon rather than of the script's timing.
 fn no_resend(
   daemon: Harness,
   record: catalogue.Registration,
@@ -347,26 +354,9 @@ fn no_resend(
   pending: Pending,
 ) -> Result(Nil, Failure) {
   let check = "lifecycle/no-resend"
-  use status <- result.try(
-    harness.status(daemon, record.id)
-    |> result.map_error(fn(reason) { Failure(check, reason) }),
-  )
-  use Nil <- result.try(case status {
-    manager.Saved -> Ok(Nil)
-    manager.Reserved
-    | manager.Opening(_)
-    | manager.Stopping(_)
-    | manager.Resident(_)
-    | manager.RecoveryBlocked(_) ->
-      Error(Failure(
-        check,
-        record.id
-          <> " came back as "
-          <> string.inspect(status)
-          <> " after a "
-          <> describe_pending(pending)
-          <> " was left in flight, so the request was resumed rather than dropped",
-      ))
+  use Nil <- result.try(case pending {
+    PendingStop -> Ok(Nil)
+    PendingOpen -> nothing_reopened(daemon, record)
   })
   use owner <- result.try(
     harness.owner_digest(daemon)
@@ -392,10 +382,33 @@ fn no_resend(
   }
 }
 
-fn describe_pending(pending: Pending) -> String {
-  case pending {
-    PendingOpen -> "pending open"
-    PendingStop -> "pending stop"
+// The half of `lifecycle/no-resend` that only an interrupted open can be held
+// to. The session was saved when the open was accepted, so anything but
+// `Saved` here is an operation the restarted daemon started on the owner's
+// behalf to finish what the dead lifetime began.
+fn nothing_reopened(
+  daemon: Harness,
+  record: catalogue.Registration,
+) -> Result(Nil, Failure) {
+  let check = "lifecycle/no-resend"
+  use status <- result.try(
+    harness.status(daemon, record.id)
+    |> result.map_error(fn(reason) { Failure(check, reason) }),
+  )
+  case status {
+    manager.Saved -> Ok(Nil)
+    manager.Reserved
+    | manager.Opening(_)
+    | manager.Stopping(_)
+    | manager.Resident(_)
+    | manager.RecoveryBlocked(_) ->
+      Error(Failure(
+        check,
+        record.id
+          <> " came back as "
+          <> string.inspect(status)
+          <> " after a pending open was left in flight, so the request was resumed rather than dropped",
+      ))
   }
 }
 
