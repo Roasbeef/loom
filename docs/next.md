@@ -626,7 +626,10 @@ reach the satellite *incidentally*, through the helper's `--ro-bind / /` base
 view. Until a policy can say what must be reachable, nothing can tighten that
 base view without breaking code mode silently instead of refusing, and a
 per-session view is exactly a tightening of it. 004's own Problem section
-argues this from the other direction.
+argues this from the other direction. The narrowing itself is proposed in
+[`protocol-change/020`](../protocol-change/020-minimal-jail-root.md), which
+enumerates the minimal root, the zero-config user toolchain set, and the
+self-test probe that proves it.
 
 Exit: `SandboxPolicyV1` can name a mount explicitly, `codemode/launch` says
 what it needs rather than checking that an accident covers it, the base view
