@@ -18,7 +18,6 @@
 //// with no reuse would still be a valid multi-session script, and it would
 //// check nothing this layer exists for.
 
-import conformance/simulation/daemon/daemon_fault.{type Schedule, KillDaemonAt}
 import conformance/simulation/random.{type Rng}
 import gleam/int
 import gleam/list
@@ -113,27 +112,22 @@ pub fn coordinates(script: Script) -> List(#(String, String)) {
   list.map(script.creations, fn(one: Creation) { #(one.key, one.workspace) })
 }
 
-/// The keys a run retries after its last creation: the script's own retries,
-/// plus the key the schedule killed.
+/// The keys a run retries after its last creation.
 ///
-/// A killed creation leaves a reservation nobody resumes, and a reservation
-/// nobody resumes stays `Reserved` while the fault-free run's row is `Saved`.
-/// Resuming it is recovery rather than a change of script, which is why it is
-/// computed here from both halves and then performed identically by both runs
-/// of the seed.
+/// This is the script's own retry list and nothing else. A killed creation
+/// needs no entry of its own: the run performs every creation the script
+/// names on the restarted daemon, and the one the kill interrupted is among
+/// them, so its reservation is resumed there rather than left `Reserved`
+/// while the fault-free run's row reads `Saved`. Adding the killed key here
+/// as well would only retry it a second time.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // daemon_script.retries(script, schedule)
+/// // daemon_script.retries(script)
 /// ```
-pub fn retries(script: Script, schedule: Schedule) -> List(String) {
-  let killed =
-    list.map(schedule.faults, fn(fault) {
-      let KillDaemonAt(key:, ..) = fault
-      key
-    })
-  list.append(script.retries, killed) |> list.unique
+pub fn retries(script: Script) -> List(String) {
+  script.retries
 }
 
 /// A one-line rendering, printed with a failing seed.

@@ -203,7 +203,7 @@ fn drive(
   let arrived = process.new_subject()
   use daemon <- result.try(boot(state_root, clock, 0, arrest(schedule, arrived)))
   case schedule.faults {
-    [] -> finish(daemon, complete(daemon, script, schedule, []))
+    [] -> finish(daemon, complete(daemon, script, []))
 
     [KillDaemonAt(key:, workspace: _, step:)] ->
       case interrupt(daemon, script, key, step, arrived) {
@@ -212,7 +212,7 @@ fn drive(
           use restarted <- result.try(resumed(state_root, clock))
           let carried = {
             use Nil <- result.try(recovered(restarted, key, step))
-            complete(restarted, script, schedule, observed)
+            complete(restarted, script, observed)
           }
           finish(restarted, carried)
         }
@@ -466,7 +466,6 @@ fn recovered(daemon: Harness, key: String, step: Step) -> Result(Nil, Failure) {
 fn complete(
   daemon: Harness,
   script: Script,
-  schedule: Schedule,
   observed: List(#(String, Identity)),
 ) -> Result(Report, Failure) {
   use observed <- result.try(
@@ -480,18 +479,14 @@ fn complete(
   // never be consulted, because the key already names a durable reservation,
   // and a registry that minted on every call would answer with a second id.
   use observed <- result.try(
-    list.try_fold(
-      daemon_script.retries(script, schedule),
-      observed,
-      fn(seen, key) {
-        let assert Ok(one) =
-          list.find(script.creations, fn(one: Creation) { one.key == key })
-          as "a retry names a key the script creates"
-        let retry = daemon_script.Creation(..one, seed: one.seed + 9973)
-        use record <- result.map(created(daemon, retry, seen))
-        [#(key, identity(record)), ..seen]
-      },
-    ),
+    list.try_fold(daemon_script.retries(script), observed, fn(seen, key) {
+      let assert Ok(one) =
+        list.find(script.creations, fn(one: Creation) { one.key == key })
+        as "a retry names a key the script creates"
+      let retry = daemon_script.Creation(..one, seed: one.seed + 9973)
+      use record <- result.map(created(daemon, retry, seen))
+      [#(key, identity(record)), ..seen]
+    }),
   )
   use Nil <- result.try(one_identity_per_key(observed))
   use snapshot <- result.try(
