@@ -266,47 +266,7 @@ soak-daemon: sandbox ## Run the bounded real-daemon lifecycle soak fixture
 
 .PHONY: e2e-client-bootstrap
 e2e-client-bootstrap: binaries server-shipment ## Start, detach, and reuse the real local server through the native TUI bootstrap
-	@cd packages/tui && \
-		LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		bash ../../scripts/test.sh tui --match bootstrap_real_server_lifecycle_test && \
-		env 'BASH_FUNC_read%%=() { return 0; }' \
-		bash ../../scripts/test.sh tui --match paused_server_dies_with_launcher_before_release_test && \
-		env 'BASH_FUNC_cat%%=() { return 0; }' \
-		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test && \
-		env 'BASH_FUNC_read%%=() { return 1; }' \
-		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test && \
-		hostile_bin="$$(/usr/bin/mktemp -d "$${TMPDIR:-/tmp}/loom-lock-path.XXXXXX")" && \
-		trap 'rm -rf "$$hostile_bin"' 0 1 2 15 && \
-		printf '%s\n' '#!/bin/sh' 'exit 0' > "$$hostile_bin/cat" && \
-		chmod 0755 "$$hostile_bin/cat" && \
-		PATH="$$hostile_bin:$$PATH" \
-		bash ../../scripts/test.sh tui --match launch_lock_is_single_winner_test
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
-		bash scripts/test.sh client --match client@tui_shipped_multiplayer_test:
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
-		bash scripts/test.sh client --match client@tui_shipped_live_delivery_test:
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
-		bash scripts/test.sh client --match client@daemon_shipped_stop_test:
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-180}" \
-		bash scripts/test.sh client --match client@daemon_shipped_schedule_test:
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-900}" \
-		bash scripts/test.sh client --match client@daemon_shipped_jobs_test:
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-150}" \
-		bash scripts/test.sh client --match client@daemon_shipped_recovery_test:
-	@LOOM_BOOTSTRAP_E2E_SERVER="$(abspath bin/loomd)" \
-		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-270}" \
-		bash scripts/test.sh client --match client@daemon_shipped_identity_recovery_test:
+	@bash scripts/e2e_client_bootstrap.sh
 
 .PHONY: conformance
 conformance: ## Run the shared suites (storage conformance + wiring + e2e)
@@ -319,6 +279,20 @@ codemode-seed: ## Prepare the offline package cache code-mode builds clone
 .PHONY: e2e-codemode
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
 	@bash scripts/test.sh codemode
+
+# ------------------------------------------------------------- the signoff
+# The merge gate on a developer's own machines instead of hosted runners:
+# every lane is a CI job's exact command, run in parallel on one checkout,
+# and the verdict lands as a `signoff/<platform>` commit status that the
+# main ruleset requires. scripts/signoff.sh says what runs and why.
+
+.PHONY: signoff
+signoff: ## Run this platform's gate in parallel and post signoff/<platform> (SIGNOFF_ARGS=--dry-run)
+	@bash scripts/signoff.sh $(SIGNOFF_ARGS)
+
+.PHONY: signoff-remote
+signoff-remote: ## Run the gate for HEAD on LOOM_SIGNOFF_HOST over ssh and post its signoff
+	@bash scripts/signoff_remote.sh $(SIGNOFF_ARGS)
 
 # ------------------------------------------------------------ the simulator
 

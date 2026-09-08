@@ -604,7 +604,7 @@ which is the real ceiling on how wide a parallel tool batch runs.
 
 ## Working on Loom
 
-You need Gleam 1.18 or newer, Erlang/OTP 29 or newer, and Go 1.24 or
+You need Gleam 1.18 or newer, Erlang/OTP 29 or newer, and Go 1.26 or
 newer for the sandbox helper; `make release` additionally needs `rebar3`,
 `strip` and a prepared build seed. The packages are monorepo-internal and
 built where they sit; the one library dependency Loom owns, weft, lives in

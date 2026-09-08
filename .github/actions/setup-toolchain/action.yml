@@ -20,9 +20,11 @@
 #   rebar3   3.27.0     the development environment's rebar3; needed
 #                       because `esqlite` (under `sqlight`, ADR-002) is a
 #                       rebar3 package with a C NIF.
-#   go       1.24.7     the development environment's Go; above the 1.24.0
-#                       floor in packages/sandbox/go.mod, the tree's only Go
-#                       package.
+#   go       1.26.3     the development environment's Go. The `toolchain`
+#                       line in packages/sandbox/go.mod, the tree's only Go
+#                       package, pins the same version, so a developer's
+#                       older `go` fetches it rather than building with
+#                       whatever is installed.
 #
 # Bumping a version is a deliberate, reviewed edit to this file, and it
 # changes every job at once. That is the point.
