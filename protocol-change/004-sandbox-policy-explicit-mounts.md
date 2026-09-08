@@ -49,7 +49,7 @@ only non-`AF_UNIX` socket creation.
 ## Proposal
 
 Add one field to the policy — a list of explicit binds, applied after the
-protected masks so an explicit mount is not silently shadowed:
+scratch mount so an explicit mount is not silently shadowed by it:
 
 ```
 mounts: [ { path: str, access: "ro"|"rw", required: bool } ]
@@ -75,9 +75,22 @@ pub type Mount {
 
 - **Helper**: each mount becomes a `--ro-bind`/`--bind` emitted *after* the
   protected masks and after the scratch mount, so an explicit mount wins
-  over a shadow. A `MountRequired` mount whose source does not exist
-  refuses the execution rather than running a jail the caller believes has
-  it.
+  over the scratch tmpfs that would otherwise shadow it. It never wins over
+  a protected mask, because there is no such pair to resolve: a mount whose
+  path covers a `protected` entry, or is covered by one, is refused at
+  validation on both sides of the wire — `broker/policy.validate` on the
+  composed policy, and the helper's own decoder on the bytes. Neither
+  platform can honour that pair. On Linux the mask installs a read-only
+  tmpfs over the region and the later bind onto it makes bubblewrap exit 1
+  saying only `Read-only file system`; on Darwin the trailing denies win
+  and the mount does nothing. Refusing it is what lets the two platforms
+  order a mount against the masks in opposite directions and still enforce
+  the same policy. For the same reason a mount path may not be repeated,
+  end in a slash, or carry a `..` segment: neither side canonicalizes a
+  mount path, so all three are one region named twice and neither emitter
+  should have to invent a tie-break. A `MountRequired` mount whose source
+  does not exist refuses the execution rather than running a jail the
+  caller believes has it.
 - **Composition**: mounts compose as the meet, like every other field. A
   mount survives composition only when both sides carry it, at the weaker
   of the two accesses and the stronger of the two requirements. A tool

@@ -286,7 +286,7 @@ func TestResolveProtectedRewritesASymlinkToItsTarget(t *testing.T) {
 func TestAuditMountsCountsExplicitMounts(t *testing.T) {
 	pol, kinds := protectedPolicy()
 	pol.Mounts = []policy.Mount{
-		{Path: "/work/.env/cap/s", Access: policy.MountReadOnly, Required: true},
+		{Path: "/srv/cap/s", Access: policy.MountReadOnly, Required: true},
 		{Path: "/srv/out", Access: policy.MountReadWrite, Required: true},
 	}
 	got := AuditMounts(pol, MountPlan(pol, kinds))
@@ -297,30 +297,6 @@ func TestAuditMountsCountsExplicitMounts(t *testing.T) {
 		if !strings.Contains(got.Applied, want) {
 			t.Fatalf("applied entry %q lacks %q", got.Applied, want)
 		}
-	}
-}
-
-// A read-only mount that the plan leaves writable is the one widening a
-// mount can produce, and it takes a policy naming the same region twice
-// to get there. The audit names it rather than counting it.
-func TestAuditMountsCatchesAReadOnlyMountLeftWritable(t *testing.T) {
-	pol, kinds := protectedPolicy()
-	pol.Mounts = []policy.Mount{
-		{Path: "/srv/data/inner", Access: policy.MountReadOnly, Required: true},
-	}
-	plan := append(MountPlan(pol, kinds), MountOp{
-		Class: ClassMountReadWrite, Path: "/srv/data",
-		Argv: []string{"--bind", "/srv/data", "/srv/data"},
-	})
-	got := AuditMounts(pol, plan)
-	if len(got.Skipped) != 1 {
-		t.Fatalf("skips = %v, want exactly the widened mount", got.Skipped)
-	}
-	if !strings.Contains(got.Skipped[0], "/srv/data/inner") {
-		t.Fatalf("the skip must name the mount: %q", got.Skipped[0])
-	}
-	if !strings.Contains(got.Applied, "bind_ro=0") {
-		t.Fatalf("a widened mount must not be counted: %q", got.Applied)
 	}
 }
 

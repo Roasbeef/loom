@@ -772,14 +772,17 @@ func TestJailedProtectedFileIsUnreadable(t *testing.T) {
 }
 
 // Rule 1a. The policy's explicit mounts are the one thing emitted after
-// the masks, because the cap socket and the cap token have to be visible
-// inside the jail even where a protected mask or the scratch tmpfs would
-// shadow them. This pins the whole argv rather than a relation, because
-// the ordering is the property protocol-change/004 states.
+// the masks, because the cap socket has to be visible inside the jail
+// even where the scratch tmpfs would shadow it. Neither mount here
+// overlaps a protected entry, and neither could: the decoder refuses that
+// pair on both sides of the wire, so the only shadow left for a mount to
+// win over is the scratch tmpfs. This pins the whole argv rather than a
+// relation, because the ordering is the property protocol-change/004
+// states.
 func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
 	p := basePol()
 	p.Mounts = []policy.Mount{
-		{Path: "/work/.git/cap/s", Access: policy.MountReadOnly, Required: true},
+		{Path: "/srv/cap/s", Access: policy.MountReadOnly, Required: true},
 		{Path: "/tmp/cap", Access: policy.MountReadWrite, Required: false},
 	}
 	kinds := map[string]PathKind{"/work/.git": PathDir, "/work/.env": PathFile}
@@ -800,8 +803,8 @@ func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
 		"--proc", "/proc",
 		"--ro-bind", MaskSource, "/work/.env",
 		"--tmpfs", "/work/.git", "--remount-ro", "/work/.git",
+		"--ro-bind", "/srv/cap/s", "/srv/cap/s",
 		"--bind-try", "/tmp/cap", "/tmp/cap",
-		"--ro-bind", "/work/.git/cap/s", "/work/.git/cap/s",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("bwrap argv mismatch:\n got  %q\nwant %q", got, want)
@@ -853,26 +856,5 @@ func TestBwrapArgsMountsAreParentBeforeChild(t *testing.T) {
 	want := []string{"/srv", "/srv/a", "/srv/a/b"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("mount order %q, want %q", paths, want)
-	}
-}
-
-// A policy that names one path both read-only and read-write is
-// contradicting itself. The plan emits the region once, and takes the
-// narrower reading.
-func TestBwrapArgsMountTieResolvesReadOnly(t *testing.T) {
-	p := basePol()
-	p.Protected = nil
-	p.Mounts = []policy.Mount{
-		{Path: "/srv/data", Access: policy.MountReadWrite, Required: true},
-		{Path: "/srv/data/", Access: policy.MountReadOnly, Required: true},
-	}
-	var ops []MountOp
-	for _, op := range MountPlan(p, nil) {
-		if op.Class == ClassMountReadOnly || op.Class == ClassMountReadWrite {
-			ops = append(ops, op)
-		}
-	}
-	if len(ops) != 1 || ops[0].Class != ClassMountReadOnly {
-		t.Fatalf("expected one read-only mount, got %+v", ops)
 	}
 }

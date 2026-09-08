@@ -139,21 +139,3 @@ func TestSeatbeltPlanEmitsMountsBeforeTheDenies(t *testing.T) {
 			"protected path:\n%s", plan.Profile)
 	}
 }
-
-// A policy naming one path with both accesses is contradicting itself.
-// The profile emits one rule for the region and takes the narrower
-// reading, matching what the bwrap plan does with the same policy.
-func TestSeatbeltPlanMountTieResolvesReadOnly(t *testing.T) {
-	pol := policy.Policy{
-		Network: policy.Network{Mode: policy.NetworkOff},
-		Scratch: "tmpfs",
-		Mounts: []policy.Mount{
-			{Path: "/srv/data", Access: policy.MountReadWrite, Required: true},
-			{Path: "/srv/data/", Access: policy.MountReadOnly, Required: true},
-		},
-	}
-	plan := SeatbeltPlanFor(pol, "")
-	if plan.BindRO != 1 || plan.BindRW != 0 {
-		t.Fatalf("mount counts = ro %d, rw %d, want 1 and 0", plan.BindRO, plan.BindRW)
-	}
-}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -308,7 +309,66 @@ func fromMap(m map[string]any) (Policy, error) {
 			}
 		}
 	}
+	if err := checkMounts(p); err != nil {
+		return Policy{}, err
+	}
 	return p, nil
+}
+
+// checkMounts refuses the two mount shapes no jail can carry out, on the
+// same terms as the broker's own `policy.validate`. Both sides make the
+// refusal because both sides would otherwise have to cope with the
+// result, and the coping is what disagreed: bubblewrap applies argv in
+// order and Seatbelt takes the last matching rule, so the same document
+// meant different things on the two platforms.
+//
+// The paths are compared by component and nothing here resolves them
+// first, so the spellings a component comparison cannot see through are
+// refused too. That keeps this check and the broker's identical without
+// either side canonicalizing.
+func checkMounts(p Policy) error {
+	seen := make(map[string]bool, len(p.Mounts))
+	for _, m := range p.Mounts {
+		if len(m.Path) > 1 && strings.HasSuffix(m.Path, "/") {
+			return fmt.Errorf("policy: mounts: path %q ends in a slash",
+				m.Path)
+		}
+		for _, segment := range strings.Split(m.Path, "/") {
+			if segment == ".." {
+				return fmt.Errorf(
+					"policy: mounts: path %q contains a %q segment",
+					m.Path, "..")
+			}
+		}
+		if seen[m.Path] {
+			return fmt.Errorf("policy: mounts: path %q is named twice",
+				m.Path)
+		}
+		seen[m.Path] = true
+
+		// A mount under a protected entry is bound onto the read-only
+		// tmpfs the mask installed and bubblewrap exits 1 saying only
+		// "Read-only file system"; a mount over one re-exposes it here
+		// and is overridden by the trailing deny on Darwin. Both
+		// directions are the same contradiction, so both are refused.
+		for _, prot := range p.Protected {
+			if covers(prot, m.Path) || covers(m.Path, prot) {
+				return fmt.Errorf(
+					"policy: mounts: path %q overlaps protected path %q",
+					m.Path, prot)
+			}
+		}
+	}
+	return nil
+}
+
+// covers reports whether root is path itself or a path-component prefix
+// of it, with "/" covering everything. It is the same predicate the
+// broker's `policy.covers` applies to the same question, and it is
+// byte-exact for the same reason: the kernel that enforces the boundary
+// does not case fold either.
+func covers(root, path string) bool {
+	return root == "/" || root == path || strings.HasPrefix(path, root+"/")
 }
 
 // mountsFrom decodes the `mounts` array. It is as strict as every other

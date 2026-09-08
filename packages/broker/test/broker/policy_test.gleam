@@ -390,6 +390,120 @@ pub fn validate_accepts_scratch_under_root_test() {
   assert policy.validate(ok) == Ok(Nil)
 }
 
+// A mount under a protected entry cannot be carried out at all: on Linux
+// the mask installs a read-only tmpfs over the region and the bind onto
+// it makes bubblewrap exit 1 saying only "Read-only file system", the
+// anonymous failure of issue #60. Refusing the pair here means neither
+// emitter has to decide what to do with it.
+pub fn validate_rejects_a_mount_under_a_protected_entry_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), protected: ["/work/.git"], mounts: [
+      policy.Mount(
+        path: "/work/.git/cap/s",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountOverlapsProtected(
+      mount: "/work/.git/cap/s",
+      protected: "/work/.git",
+    ))
+}
+
+// The other direction is where the two platforms disagreed. A mount
+// covering a protected file is emitted after the mask on Linux and
+// re-exposes it, while Darwin's trailing deny keeps it shut, so the same
+// document enforced two different policies. Refusing it is what makes the
+// argv order safe to state as a property.
+pub fn validate_rejects_a_mount_covering_a_protected_entry_test() {
+  let bad =
+    policy.SandboxPolicy(
+      ..base(),
+      protected: ["/home/o/.loom/owner.token"],
+      mounts: [
+        policy.Mount(
+          path: "/home/o/.loom",
+          access: policy.MountReadWrite,
+          requirement: policy.MountRequired,
+        ),
+      ],
+    )
+  assert policy.validate(bad)
+    == Error(policy.MountOverlapsProtected(
+      mount: "/home/o/.loom",
+      protected: "/home/o/.loom/owner.token",
+    ))
+}
+
+// One region, one entry. `meet_mounts` reads a path's access out of the
+// entry it finds for that path, so a repeated path is a policy with two
+// answers; refusing it is what makes the single lookup exact.
+pub fn validate_rejects_a_duplicate_mount_path_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/srv/a",
+        access: policy.MountReadWrite,
+        requirement: policy.MountRequired,
+      ),
+      policy.Mount(
+        path: "/srv/a",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad) == Error(policy.DuplicateMount(path: "/srv/a"))
+}
+
+// The duplicate wearing a different spelling. Nothing on either side of
+// the wire canonicalizes a mount path, so "/srv/a/" and "/srv/a" would
+// compose as two entries here and bind one region in the helper.
+pub fn validate_rejects_a_trailing_slash_in_a_mount_path_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/srv/a/",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountPathTrailingSlash(path: "/srv/a/"))
+}
+
+// A ".." segment is the same hazard against the protected check rather
+// than against another mount: the comparison is by component and nothing
+// resolves the path first, so the entry would claim one region and bind
+// another.
+pub fn validate_rejects_a_parent_segment_in_a_mount_path_test() {
+  let bad =
+    policy.SandboxPolicy(..base(), mounts: [
+      policy.Mount(
+        path: "/srv/a/../b",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(bad)
+    == Error(policy.MountPathParentSegment(path: "/srv/a/../b"))
+}
+
+// A mount beside a protected entry, sharing only a textual prefix, is
+// not an overlap. The check asks the same component-wise question
+// `policy.covers` asks everywhere else.
+pub fn validate_accepts_a_mount_beside_a_protected_entry_test() {
+  let ok =
+    policy.SandboxPolicy(..base(), protected: ["/work/.git"], mounts: [
+      policy.Mount(
+        path: "/work/.gitx",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
+    ])
+  assert policy.validate(ok) == Ok(Nil)
+}
+
 // --- phase-1 unenforceable narrowing ------------------------------------
 
 pub fn narrow_unenforceable_downgrades_proxy_test() {
@@ -720,6 +834,11 @@ fn mount_alphabet() -> List(policy.Mount) {
 // two-element lists that name both paths. Longer lists add no case: the
 // meet works one path at a time, so two paths already exercise every
 // interaction between entries.
+//
+// A pair naming one path twice is excluded because `validate` refuses it
+// (`validate_rejects_a_duplicate_mount_path_test`), so it is not a list
+// the composition laws are claimed about. The exclusion is a validity
+// condition rather than a gap in the alphabet.
 fn mount_lists() -> List(List(policy.Mount)) {
   let singles = list.map(mount_alphabet(), fn(mount) { [mount] })
   let pairs =

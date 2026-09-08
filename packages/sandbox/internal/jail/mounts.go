@@ -174,19 +174,17 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 
 	// The explicit mounts. A mount the plan leaves at a weaker access
 	// than asked is narrower, not wider, so it is counted out without a
-	// skip, exactly as a writable root that did not survive is. Only a
-	// read-only mount that came out writable is a widening, and the one
-	// way that happens is a policy that names the same region twice.
+	// skip, exactly as a writable root that did not survive is. There is
+	// no widening to report at all: the only way a read-only mount came
+	// out writable was a policy naming the same region twice or naming a
+	// region a protected entry also names, and the decoder on both sides
+	// of the wire now refuses both.
 	bindRO, bindRW := 0, 0
 	for _, m := range p.Mounts {
-		v := effective(plan, m.Path)
-		switch {
-		case m.Access == policy.MountReadOnly && v.writable():
-			rep.Skipped = append(rep.Skipped, widened(
-				"read-only mount", m.Path, "is writable", v))
-		case v.op.Class == ClassMountReadOnly:
+		switch effective(plan, m.Path).op.Class {
+		case ClassMountReadOnly:
 			bindRO++
-		case v.op.Class == ClassMountReadWrite:
+		case ClassMountReadWrite:
 			bindRW++
 		}
 	}

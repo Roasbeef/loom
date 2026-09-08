@@ -433,17 +433,26 @@ only Go module.
     read-only; a writable root under the scratch mount survives it.
   - **The policy's explicit `mounts` come after even the masks.** That is
     the one exception to the first rule, and `protocol-change/004` states
-    it as the property rather than as a detail: the cap socket and the cap
-    token have to be visible inside the jail even where a protected mask or
-    the scratch tmpfs would shadow them. It does not weaken `protected` by
-    accident, because composition has already intersected the mount list
-    against the session base, and a policy that names one path in both
-    lists gets a `skip:mounts:` from the audit rather than silence.
+    it as the property rather than as a detail: the cap socket has to be
+    visible inside the jail even where the scratch tmpfs would shadow it.
+    The shadow a mount wins over is the scratch tmpfs, and never a
+    protected mask: a mount overlapping a protected entry in either
+    direction is refused when the policy is decoded, by
+    `policy.checkMounts` here and by `broker/policy.validate` on the
+    composed policy, so no plan built here contains that pair.
     `required` reaches the argv as the absence of bwrap's `-try` suffix.
     On Darwin the ordering is the other way round — a mount is an allow
     rule over the subpath emitted *before* the trailing denies — because
     Seatbelt takes the last matching rule and ADR-006 requires a protected
-    path to stay unreachable whatever else the profile says.
+    path to stay unreachable whatever else the profile says. The two
+    orderings enforce the same policy precisely because the overlap that
+    would tell them apart cannot reach either emitter.
+  - **A mount names one region, once, canonically.** The decoder refuses a
+    repeated mount path, a path ending in a slash, and a path with a `..`
+    segment. Neither side of the wire canonicalizes a mount path, so those
+    are three spellings of the same defect, and refusing them is why
+    neither emitter carries a tie-break and why the audit has no widened
+    mount to report.
   Masks are deliberately exempt from the second rule against grants:
   `protected` is the policy's only subtractive verb, so no grant at any
   depth carves a hole in one. Where two entries name the *same* path the

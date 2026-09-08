@@ -453,6 +453,20 @@ protocol (spec Part 1.4). WP-G.
   principal a prompt goes to under a shared daemon, and a session's
   filesystem reach is decided before it starts. `protocol-change/004` has
   the argument.
+- **A mount overlapping a protected entry is refused, and so is a repeated
+  or uncanonical mount path.** `validate` runs on the *composed* policy, so
+  it is the one place that sees a base carrying a mount and a requirement
+  carrying a protected entry over the same region. Both directions of the
+  overlap are refused (`MountOverlapsProtected`), because neither platform
+  can carry out both: on Linux the mount lands on the read-only tmpfs the
+  mask installed and bubblewrap exits 1 saying only `Read-only file
+  system`, and on Darwin the trailing deny wins, so the same document
+  meant different things on the two platforms. `DuplicateMount`,
+  `MountPathTrailingSlash` and `MountPathParentSegment` refuse the three
+  spellings of one region named twice; `meet_mounts` finds a path's entry
+  exactly because of them, and the Go emitters carry no tie-break. The
+  helper's decoder makes the same refusals at the wire
+  (`policy.checkMounts`).
 - **The policy wire is version 2 on both sides.** The `mounts` field could
   not be added compatibly, because both decoders refuse unknown keys and
   refuse any `v` but their own, so the two halves of `protocol-change/004`

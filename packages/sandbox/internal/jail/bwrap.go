@@ -98,16 +98,14 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 //
 // **Rule 1a: the policy's explicit mounts come after even the masks.**
 // `mounts` (protocol-change/004) is the one verb whose whole purpose is
-// to survive a shadow: the cap socket and the cap token have to be
-// visible inside the jail even when they sit under a protected entry or
-// under the scratch tmpfs, and argv order is the only thing that decides
-// that. So an explicit mount is emitted last, and 004 states that
-// ordering as the property rather than as an implementation detail. It
-// does not weaken `protected` by accident, because a mount reaches the
-// helper only after composition has intersected it against the session
-// base: a tool cannot ask for a mount the base does not already carry.
-// A policy that names the same path in both lists is contradicting
-// itself, and the audit says so with a skip rather than staying quiet.
+// to survive a shadow: the cap socket has to be visible inside the jail
+// even where the scratch tmpfs covers it, and argv order is the only
+// thing that decides that. So an explicit mount is emitted last, and 004
+// states that ordering as the property rather than as an implementation
+// detail. The shadow it wins over is the scratch tmpfs, and never a
+// protected mask: a mount overlapping a protected entry in either
+// direction is refused when the policy is decoded, on both sides of the
+// wire, so no plan reaching here contains that pair.
 //
 // **Rule 2: inside a phase, the most specific region wins.** Ops are
 // sorted by path, which for absolute paths puts a parent before every
@@ -210,8 +208,6 @@ const (
 	// read-write, emitted after the masks so it is not shadowed.
 	ClassMountReadWrite
 	// ClassMountReadOnly is an explicit `mounts` entry bound read-only.
-	// It outranks the read-write class at an identical path so a policy
-	// naming one path twice resolves to the narrower of the two.
 	ClassMountReadOnly
 )
 
@@ -329,21 +325,13 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
 		plan = append(plan, maskOp(prot, kindOf(prot)))
 	}
 
-	// Two explicit mounts at one path resolve by class rather than
-	// being emitted twice, exactly as two grants do.
-	explicit := make(map[string]MountOp)
+	// Each explicit mount is emitted once, with no tie to break: the
+	// decoder refuses a repeated mount path, and refuses the two
+	// spellings ("/a/", "..") that would make one region look like two.
 	for _, m := range p.Mounts {
-		op := mountOp(m)
-		if op.Path == "" {
-			continue
+		if op := mountOp(m); op.Path != "" {
+			plan = append(plan, op)
 		}
-		if prev, seen := explicit[op.Path]; seen && prev.Class >= op.Class {
-			continue
-		}
-		explicit[op.Path] = op
-	}
-	for _, op := range explicit {
-		plan = append(plan, op)
 	}
 
 	// Rule 1, rule 1a, then rule 2: grants, masks, explicit mounts, and

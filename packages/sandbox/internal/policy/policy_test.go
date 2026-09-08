@@ -187,6 +187,43 @@ func TestDecodeAdversarial(t *testing.T) {
 		{"mount required not bool", mustPack(t, set("mounts", []any{
 			map[string]any{"path": "/work", "access": "ro", "required": 1},
 		})), "expected bool"},
+		// The overlap refusals. A mount under a protected entry is bound
+		// onto the read-only tmpfs the mask installed and bubblewrap
+		// exits 1 saying only "Read-only file system"; a mount over one
+		// re-exposes it on Linux while Darwin's trailing deny keeps it
+		// shut, so the same document would mean two different things.
+		// Refusing both directions here is what keeps the platforms
+		// agreeing, and it is the same refusal `broker/policy.validate`
+		// makes on the composed policy.
+		{"mount under a protected entry", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work/.git/cap/s", "access": "ro",
+				"required": true},
+		})), "overlaps protected path"},
+		{"mount over a protected entry", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work", "access": "rw",
+				"required": true},
+		})), "overlaps protected path"},
+		{"mount at a protected entry", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/work/.env", "access": "ro",
+				"required": true},
+		})), "overlaps protected path"},
+
+		// One region, one entry, one spelling. Neither side of the wire
+		// canonicalizes a mount path, so a repeated path and the two
+		// spellings that hide a repeat are all refused rather than
+		// resolved by a tie-break the two emitters would have to agree
+		// on.
+		{"duplicate mount path", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/srv/a", "access": "rw", "required": true},
+			map[string]any{"path": "/srv/a", "access": "ro", "required": true},
+		})), "named twice"},
+		{"mount path trailing slash", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/srv/a/", "access": "ro", "required": true},
+		})), "ends in a slash"},
+		{"mount path parent segment", mustPack(t, set("mounts", []any{
+			map[string]any{"path": "/srv/a/../b", "access": "ro",
+				"required": true},
+		})), "segment"},
 		{"trailing bytes", append(mustPack(t, validMap()), 0xc0), "trailing"},
 		{"random junk", []byte{0xde, 0xad, 0xbe, 0xef, 0x01, 0x02}, ""},
 	}

@@ -221,6 +221,34 @@ pub type PolicyError {
   /// (which is right to bind exactly what the policy says; see 4b4983d
   /// and packages/sandbox/CLAUDE.md's Landlock layering note).
   ScratchIsRoot
+
+  /// A mount and a protected entry name overlapping regions, in either
+  /// direction. Neither platform can honour both: on Linux a mount under
+  /// a protected directory is bound onto the read-only tmpfs the mask
+  /// installed and bubblewrap exits 1 with a bare "Read-only file
+  /// system", while a mount covering a protected file re-exposes it; on
+  /// Darwin the trailing denies win and the mount does nothing. Refusing
+  /// the pair here is what keeps the two platforms saying the same thing
+  /// about the same policy.
+  MountOverlapsProtected(mount: String, protected: String)
+
+  /// Two mounts name the same path. Composition takes a mount's access
+  /// from the entry it finds for that path, and the emitters bind a
+  /// region once, so a repeated path has no single answer to what the
+  /// jail should do with it.
+  DuplicateMount(path: String)
+
+  /// A mount path ends in a slash. Neither side canonicalizes a mount
+  /// path, so "/a/" and "/a" would be two entries here and one region in
+  /// the helper, which is the duplicate above wearing a different
+  /// spelling.
+  MountPathTrailingSlash(path: String)
+
+  /// A mount path contains a ".." segment. The path is compared by
+  /// component against protected entries and roots before anything
+  /// resolves it, so a ".." would let a mount claim one region and bind
+  /// another.
+  MountPathParentSegment(path: String)
 }
 
 /// One explicit widening of a policy, granted by an approval. Grants are
@@ -305,9 +333,18 @@ pub fn workspace_default(workspace: String) -> SandboxPolicy {
 }
 
 /// Checks the invariants the wire shape demands: absolute paths
-/// everywhere, non-negative limits, and a scratch that is not the
-/// literal host root (`ScratchIsRoot` — issue #59; see the module doc's
-/// layering note in `packages/sandbox/CLAUDE.md`).
+/// everywhere, non-negative limits, a scratch that is not the literal
+/// host root (`ScratchIsRoot` — issue #59; see the module doc's layering
+/// note in `packages/sandbox/CLAUDE.md`), and a mount list that names
+/// each region once, canonically, and never a region a protected entry
+/// also names.
+///
+/// The mount checks are here rather than in the emitters because the
+/// broker validates the *composed* policy before dispatch. A base
+/// carrying a mount and a tool requirement carrying a protected entry
+/// over the same region each validate on their own and contradict each
+/// other only once composed, so this is the one place that sees the
+/// contradiction at all.
 ///
 /// ## Examples
 ///
@@ -336,6 +373,12 @@ pub fn validate(policy: SandboxPolicy) -> Result(Nil, PolicyError) {
       }
     }),
   )
+  use _ <- result.try(refuse_uncanonical_mounts(policy.mounts))
+  use _ <- result.try(refuse_duplicate_mounts(policy.mounts))
+  use _ <- result.try(refuse_mounts_over_protected(
+    policy.mounts,
+    policy.protected,
+  ))
   list.try_each(limit_fields(), fn(field) {
     let value = limit_get(policy.limits, field)
     case value < 0 {
@@ -357,6 +400,70 @@ fn refuse_scratch_root(scratch: Scratch) -> Result(Nil, PolicyError) {
     ScratchPath(path: "/") -> Error(ScratchIsRoot)
     ScratchPath(_) | ScratchTmpfs -> Ok(Nil)
   }
+}
+
+// A mount path is compared by component against protected entries and
+// against other mounts, and nothing on either side of the wire resolves
+// it first. So the two spellings a comparison cannot see through are
+// refused rather than normalized: normalizing here would leave the Go
+// helper free to disagree, and the helper's own decoder makes the same
+// two refusals for that reason.
+fn refuse_uncanonical_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
+  list.try_each(mounts, fn(mount) {
+    use _ <- result.try(
+      case mount.path != "/" && string.ends_with(mount.path, "/") {
+        True -> Error(MountPathTrailingSlash(path: mount.path))
+        False -> Ok(Nil)
+      },
+    )
+    case list.contains(string.split(mount.path, "/"), "..") {
+      True -> Error(MountPathParentSegment(path: mount.path))
+      False -> Ok(Nil)
+    }
+  })
+}
+
+// One path, one mount. `meet_mounts` reads a path's access out of the
+// first entry that carries it and the helper's emitters bind a region
+// once, so a repeated path is a policy with two answers and no rule for
+// picking between them. Refusing the pair is what makes both readings
+// unnecessary. Mount lists are a handful of entries, so the quadratic
+// scan is the whole cost.
+fn refuse_duplicate_mounts(mounts: List(Mount)) -> Result(Nil, PolicyError) {
+  case mounts {
+    [] -> Ok(Nil)
+    [mount, ..rest] ->
+      case list.any(rest, fn(other) { other.path == mount.path }) {
+        True -> Error(DuplicateMount(path: mount.path))
+        False -> refuse_duplicate_mounts(rest)
+      }
+  }
+}
+
+// A mount and a protected entry over the same region are a policy the
+// jail cannot carry out, in both directions and on both platforms. The
+// mount under the protected entry is bound onto the read-only tmpfs the
+// mask installed, and bubblewrap exits 1 saying only "Read-only file
+// system" (issue #60); the mount over the protected entry re-exposes it
+// on Linux and is overridden by the trailing deny on Darwin, so the two
+// platforms enforce different policies from the same document. Refusing
+// the pair is why neither emitter has to decide which one wins.
+fn refuse_mounts_over_protected(
+  mounts: List(Mount),
+  protected: List(String),
+) -> Result(Nil, PolicyError) {
+  list.try_each(mounts, fn(mount) {
+    list.try_each(protected, fn(entry) {
+      case
+        covers(root: entry, path: mount.path)
+        || covers(root: mount.path, path: entry)
+      {
+        True ->
+          Error(MountOverlapsProtected(mount: mount.path, protected: entry))
+        False -> Ok(Nil)
+      }
+    })
+  })
 }
 
 // --- composition --------------------------------------------------------
@@ -486,6 +593,10 @@ fn meet(base: SandboxPolicy, requirements: SandboxPolicy) -> SandboxPolicy {
 // fields, and the order two policies are composed in cannot change the
 // result. The requirements side supplies the order of the surviving list,
 // which keeps the encoding deterministic.
+//
+// Taking the first entry the base carries for a path is exact rather than
+// arbitrary because `validate` refuses a repeated mount path: there is at
+// most one entry to find.
 fn meet_mounts(base: List(Mount), requested: List(Mount)) -> List(Mount) {
   list.filter_map(requested, fn(want) {
     case list.find(base, fn(have) { have.path == want.path }) {

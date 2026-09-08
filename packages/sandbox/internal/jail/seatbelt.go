@@ -161,11 +161,12 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	// subpath: read for "ro", read and write for "rw". They are emitted
 	// before the subtractive rules below, not after, because on Darwin
 	// the last matching rule wins and the protected denies have to stay
-	// final. That is the opposite of bwrap's argv, where an explicit
-	// mount is emitted after the masks so it wins; the two platforms
-	// disagree here and ADR-006 already records that a protected path is
-	// unreachable on Darwin whatever else the profile says. A policy that
-	// names one path in both lists gets the narrower reading here.
+	// final, which is what ADR-006 records: a protected path is
+	// unreachable on Darwin whatever else the profile says. The two
+	// platforms order a mount against the masks in opposite directions
+	// and still enforce the same policy, because a mount overlapping a
+	// protected entry is refused when the policy is decoded and no
+	// profile built here can contain that pair.
 	//
 	// The read rule adds no access today: the base profile still carries
 	// an unconditional `(allow file-read*)`, so every host path is
@@ -238,29 +239,19 @@ type seatbeltMount struct {
 	access policy.MountAccess
 }
 
-// seatbeltMounts normalizes the mount list and resolves a path named
-// twice to the narrower access, so a self-contradicting policy gets the
-// read-only reading rather than whichever entry came last.
+// seatbeltMounts normalizes the mount list and orders it by path, so the
+// profile and its digest do not depend on the order the sender happened
+// to write. There is no tie to resolve: the decoder refuses a repeated
+// mount path before the policy reaches either platform.
 func seatbeltMounts(mounts []policy.Mount) []seatbeltMount {
-	access := make(map[string]policy.MountAccess, len(mounts))
-	paths := make([]string, 0, len(mounts))
+	out := make([]seatbeltMount, 0, len(mounts))
 	for _, m := range mounts {
-		path := normalizeSeatbeltPath(m.Path)
-		if prev, seen := access[path]; seen {
-			if prev == policy.MountReadOnly {
-				continue
-			}
-			access[path] = m.Access
-			continue
-		}
-		access[path] = m.Access
-		paths = append(paths, path)
+		out = append(out, seatbeltMount{
+			path:   normalizeSeatbeltPath(m.Path),
+			access: m.Access,
+		})
 	}
-	sort.Strings(paths)
-	out := make([]seatbeltMount, 0, len(paths))
-	for _, path := range paths {
-		out = append(out, seatbeltMount{path: path, access: access[path]})
-	}
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out
 }
 

@@ -4534,6 +4534,33 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
       "scratch names the host root `/`. Landlock has no deny rules, so a "
       <> "host-path scratch of `/` grants read-write over the whole "
       <> "filesystem at that layer whatever the mount layer does"
+    policy.MountOverlapsProtected(mount:, protected:) ->
+      "the mount `"
+      <> mount
+      <> "` overlaps the protected entry `"
+      <> protected
+      <> "`. No jail can carry out both: on Linux the mask and the bind "
+      <> "fight over the same region and bubblewrap exits with a bare "
+      <> "`Read-only file system`, and on Darwin the deny wins and the "
+      <> "mount does nothing. Move the mount outside the protected "
+      <> "region, or stop protecting it"
+    policy.DuplicateMount(path:) ->
+      "the mount path `"
+      <> path
+      <> "` appears twice, and the two entries have no agreed access. "
+      <> "State the region once, at the access it should have"
+    policy.MountPathTrailingSlash(path:) ->
+      "the mount path `"
+      <> path
+      <> "` ends in a slash. Nothing on either side of the wire "
+      <> "canonicalizes a mount path, so this would be a second name for "
+      <> "a region already named without it"
+    policy.MountPathParentSegment(path:) ->
+      "the mount path `"
+      <> path
+      <> "` contains a `..` segment. Mount paths are compared by "
+      <> "component against protected entries and roots before anything "
+      <> "resolves them, so this would claim one region and bind another"
   }
 }
 
