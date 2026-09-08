@@ -128,6 +128,12 @@ func (v view) describe() string {
 	if !v.present {
 		return "no mount operation at all"
 	}
+
+	// The root entry has no argv of its own; bwrap's new root is the
+	// tmpfs, and naming it is more use to a reader than empty backticks.
+	if len(v.op.Argv) == 0 {
+		return "the jail's own root tmpfs"
+	}
 	return "`" + strings.Join(v.op.Argv, " ") + "`"
 }
 

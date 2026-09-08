@@ -196,7 +196,20 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind, helper string) []stri
 	for _, op := range MountPlan(p, kinds, helper) {
 		args = append(args, op.Argv...)
 	}
-	return args
+
+	// The root is remounted read-only last, after every operation in the
+	// plan. bwrap gives the jail a fresh tmpfs as its new root and never
+	// remounts it, so a region no grant covers used to be a writable,
+	// unbounded directory inside the jail: a payload could fill memory by
+	// writing to `/anything`, and could create paths the policy never
+	// granted. The remount is outside the plan on purpose. Mountpoints
+	// have to be creatable while bwrap is still assembling the jail, and
+	// `effective` and `UnmountableProtected` both read the plan as the
+	// setup-time state, so folding this into the plan would make them
+	// refuse policies bwrap realises without complaint. bwrap remounts a
+	// single mount rather than the tree beneath it, so the writable roots
+	// and the scratch tmpfs are unaffected.
+	return append(args, "--remount-ro", "/")
 }
 
 // MountClass says what a mount operation does to the region it names.
@@ -297,8 +310,13 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind, helper string) []Moun
 	// named by the policy. A `readable_roots` entry of "/" outranks the
 	// tmpfs at the same region and restores the whole-host view, which is
 	// what an older harness still sends; see PlanIsMinimal.
-	grant(MountOp{Class: ClassRootTmpfs, Path: "/",
-		Argv: []string{"--tmpfs", "/"}})
+	// The root entry carries no argv. bwrap's new root is already a fresh
+	// tmpfs, so `--tmpfs /` would mount a second, unbounded one over it
+	// and change nothing else. The entry stays in the plan because the
+	// plan is what the audit replays: `effective(plan, "/")` returning
+	// this class is how the audit knows the jail was built on the minimal
+	// base view rather than on a bind of the host.
+	grant(MountOp{Class: ClassRootTmpfs, Path: "/"})
 	for _, sys := range SystemRoots {
 		grant(readableRootOp(sys))
 	}

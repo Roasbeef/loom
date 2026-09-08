@@ -31,8 +31,11 @@ func basePol() policy.Policy {
 // Read top to bottom, the argv is the precedence model: every grant,
 // then every mask, each phase parent-before-child.
 //
-//	--ro-bind / /                   the base view, and the least
-//	                                specific readable grant there is
+//	--ro-bind-try /usr … etc        the base view: a tolerant read-only
+//	                                bind of each system root. The root
+//	                                itself renders nothing, because
+//	                                bwrap's new root is already an empty
+//	                                tmpfs
 //	--ro-bind-try /opt/tools …      a readable root nested inside it.
 //	                                "-try": readable_roots may legitimately
 //	                                be absent on a given host (#60), unlike
@@ -58,6 +61,13 @@ func basePol() policy.Policy {
 //	                                of /work that contains it, which is
 //	                                what the mask phase exists for
 //
+// The last two arguments are not part of the plan. `--remount-ro /`
+// turns the root tmpfs read-only once every mountpoint under it has been
+// created, so a region no grant covers is not a writable, unbounded
+// directory inside the jail. bwrap remounts the one mount rather than
+// the tree beneath it, so the writable roots and the scratch tmpfs above
+// keep their access.
+//
 // Two differences from the argv this pinned before the precedence model
 // landed, both deliberate. `--tmpfs /tmp` moved from last into the
 // grant phase, because last is exactly where it could undo a mask. And
@@ -79,7 +89,6 @@ func TestBwrapArgsGolden(t *testing.T) {
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
 		"--unshare-net",
-		"--tmpfs", "/",
 		"--ro-bind-try", "/bin", "/bin",
 		"--ro-bind-try", "/etc", "/etc",
 		"--ro-bind-try", "/lib", "/lib",
@@ -98,6 +107,7 @@ func TestBwrapArgsGolden(t *testing.T) {
 		"--proc", "/proc",
 		"--ro-bind", MaskSource, "/work/.env",
 		"--tmpfs", "/work/.git", "--remount-ro", "/work/.git",
+		"--remount-ro", "/",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("bwrap argv mismatch:\n got  %q\nwant %q", got, want)
@@ -240,8 +250,15 @@ func TestBwrapArgsMinimalBaseView(t *testing.T) {
 	p := basePol()
 	p.ReadableRoots = nil
 	got := BwrapArgs(p, nil, "")
-	if !containsSeq(got, []string{"--tmpfs", "/"}) {
-		t.Fatalf("base view is not an empty tmpfs at the root: %q", got)
+
+	// The root carries no argv of its own: bwrap's new root is already a
+	// fresh tmpfs. What the plan says is that no grant replaced it, and
+	// what the argv says is that it ends up read-only.
+	if effective(MountPlan(p, nil, ""), "/").op.Class != ClassRootTmpfs {
+		t.Fatalf("base view is not the jail's own root tmpfs: %q", got)
+	}
+	if !reflect.DeepEqual(got[len(got)-2:], []string{"--remount-ro", "/"}) {
+		t.Fatalf("the root is left writable: %q", got)
 	}
 	if containsSeq(got, []string{"--ro-bind", "/", "/"}) {
 		t.Fatalf("the whole host is still bound over the tmpfs: %q", got)
@@ -441,7 +458,11 @@ func TestBwrapArgsNothingFollowsTheMasks(t *testing.T) {
 	for _, op := range plan {
 		want = append(want, op.Argv...)
 	}
+	// The rendered plan is followed by the read-only remount of the root
+	// and nothing else, which is not a mount operation and cannot widen
+	// anything; see BwrapArgs.
 	got := BwrapArgs(p, kinds, "")
+	got = got[:len(got)-2]
 	if !reflect.DeepEqual(got[len(got)-len(want):], want) {
 		t.Fatalf("argv does not end in the rendered plan:\n got  %q\nwant %q", got, want)
 	}
@@ -944,7 +965,6 @@ func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
 		"--unshare-net",
-		"--tmpfs", "/",
 		"--ro-bind-try", "/bin", "/bin",
 		"--ro-bind-try", "/etc", "/etc",
 		"--ro-bind-try", "/lib", "/lib",
@@ -965,6 +985,7 @@ func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
 		"--tmpfs", "/work/.git", "--remount-ro", "/work/.git",
 		"--ro-bind", "/srv/cap/s", "/srv/cap/s",
 		"--bind-try", "/tmp/cap", "/tmp/cap",
+		"--remount-ro", "/",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("bwrap argv mismatch:\n got  %q\nwant %q", got, want)
