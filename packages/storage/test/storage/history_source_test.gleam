@@ -119,6 +119,23 @@ pub fn history_source_rewrite_and_missing_source_test() {
   })
 }
 
+/// A source registered earlier and since removed is refused before SQLite is
+/// asked to open it. The refusal is not tidiness: `mode=ro` fails such an open
+/// with `SQLITE_CANTOPEN`, and the binding then closes the connection twice, so
+/// the cost lands on whichever other connection in this emulator is handed the
+/// freed block. Naming the path in the refusal is what distinguishes the guard
+/// from the SQLite error it replaces.
+pub fn a_removed_source_is_refused_before_the_open_test() {
+  fixture("removed", fn(path, _db, _id) {
+    let removed = path <> ".removed"
+    let assert Error(reason) = source.acquire(removed)
+      as "a source that is not there is refused before the open"
+    assert string.contains(reason, removed)
+    assert string.contains(reason, "read-only")
+    assert simplifile.is_file(removed) == Ok(False)
+  })
+}
+
 fn fixture(lane, run) {
   let assert Ok(here) = simplifile.current_directory() as "test cwd resolves"
   let directory = here <> "/build/test_db/history-source-" <> lane

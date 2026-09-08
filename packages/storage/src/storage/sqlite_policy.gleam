@@ -240,6 +240,37 @@ pub fn refusing_unopenable_path(path: String) -> Result(Nil, String) {
   }
 }
 
+/// Refuses a path a read-only open would fail on, before the open is
+/// attempted.
+///
+/// This is `refusing_unopenable_path` plus the refusal a read-only open adds:
+/// the file has to be there. `mode=ro` never creates the database, so a source
+/// that was registered and has since been deleted or moved fails
+/// `sqlite3_open` with `SQLITE_CANTOPEN`, and on a shared daemon that failure
+/// corrupts whichever other connection is handed the freed block. Callers that
+/// open a registered session file read-only use this rather than the
+/// create-permitting rule.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite_policy.refusing_unreadable_path("/data/session.db") == Ok(Nil)
+/// ```
+pub fn refusing_unreadable_path(path: String) -> Result(Nil, String) {
+  use Nil <- result.try(refusing_unopenable_path(path))
+
+  // The directory case is already refused above with a message that names the
+  // obstruction, so what is left to decide here is presence.
+  case simplifile.is_file(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error("no file at " <> path <> " to open read-only")
+
+    // A path that cannot be inspected is not a path that can be shown to be
+    // absent, so the open decides, as it does for the shared rule above.
+    Error(_) -> Ok(Nil)
+  }
+}
+
 // The directory a file path lives in, or `None` for a bare name, which lives
 // in the working directory and so has no parent to check.
 fn parent_directory(path: String) -> Option(String) {

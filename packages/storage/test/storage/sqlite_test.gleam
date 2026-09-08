@@ -490,3 +490,23 @@ pub fn exact_read_preserves_writer_and_validates_source_test() {
     as "a missing source is an explicit failure"
   assert simplifile.is_file(absent) == Ok(False)
 }
+
+/// The path an exact read receives came from the search index's registry, and
+/// a session file recorded there may since have been deleted or moved. SQLite
+/// fails that read-only open with `SQLITE_CANTOPEN` and the binding then closes
+/// the connection twice, so on a daemon serving several sessions from one
+/// emulator the cost lands on whichever other connection is handed the freed
+/// block. The refusal has to arrive before the open, and it names the path so
+/// that it is distinguishable from SQLite's own error.
+pub fn a_removed_registered_source_is_refused_before_the_open_test() {
+  let #(session, _) =
+    ids.mint_session(ids.generator(clock.fixed(at: 1), seed: 21))
+  let #(first, _) = fixtures.message_entry(fixtures.new_ctx(), None, "unread")
+  let registered = fresh_path("exact-read-removed")
+  let assert Error(storage.BackendFault(reason)) =
+    sqlite.read_entry(path: registered, session:, entry: first.id)
+    as "a registered source that is no longer there is refused"
+  assert string.contains(reason, registered)
+  assert string.contains(reason, "read-only")
+  assert simplifile.is_file(registered) == Ok(False)
+}

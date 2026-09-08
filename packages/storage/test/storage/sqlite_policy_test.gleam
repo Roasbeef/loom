@@ -135,3 +135,14 @@ pub fn a_missing_file_under_a_real_directory_is_allowed_test() {
   assert policy.refusing_unopenable_path(":memory:") == Ok(Nil)
   assert policy.refusing_unopenable_path("") == Ok(Nil)
 }
+
+// A read-only open cannot create the database, so a registered source that has
+// since been deleted is a refusal rather than a fresh file.
+pub fn a_missing_file_is_refused_for_a_read_only_open_test() {
+  let scratch = fixtures.scratch("sqlite-policy-read-only")
+  let absent = scratch <> "/removed.db"
+  assert policy.refusing_unopenable_path(absent) == Ok(Nil)
+  let assert Error(reason) = policy.refusing_unreadable_path(absent)
+    as "a read-only open of a file that is not there is refused"
+  assert string.contains(reason, absent)
+}

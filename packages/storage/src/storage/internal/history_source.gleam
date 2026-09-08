@@ -47,6 +47,14 @@ pub type Cut {
 
 /// Opens without creating a missing source or applying schema changes.
 ///
+/// The path is judged before the URI is built, because `mode=ro` will not
+/// create the file and a source registered earlier may since have been deleted
+/// or moved. SQLite answers that open with `SQLITE_CANTOPEN`, and the binding
+/// then closes the connection twice, freeing memory that whichever other
+/// connection is handed the block will fail on. The guard reads the decoded
+/// path: the URI is not a filesystem path and `sqlite_policy` declines to
+/// reason about one.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -54,6 +62,8 @@ pub type Cut {
 /// ```
 @internal
 pub fn acquire(path: String) -> Result(Source, String) {
+  use Nil <- result.try(sqlite_policy.refusing_unreadable_path(path))
+
   let encoded =
     path
     |> string.split("/")
