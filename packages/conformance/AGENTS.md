@@ -41,7 +41,10 @@ them from their own test mains.
   listener only when a caller asks it to, creation takes its id generator
   from the caller, and assembly is a record of caller-supplied callbacks,
   so no seam had to be added to `client/daemon/root` to construct one from
-  a test. Its operations are keyed by creation request key and canonical
+  a test. What runs for real is the catalogue writer and the conversation's
+  writer lease; the runtime and the domain services are not opened, so a
+  domain row's memory and search databases never exist under this harness.
+  Its operations are keyed by creation request key and canonical
   session id; a `Row` has the run's temporary state root substituted out of
   every path so two runs under two directories are comparable.
 - `conformance/simulation/daemon/daemon_runner.{run, observe, Verdict}` —

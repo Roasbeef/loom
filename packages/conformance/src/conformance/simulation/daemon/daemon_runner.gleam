@@ -111,8 +111,15 @@ pub fn observe(seed: Int) -> Result(Report, Failure) {
     Error(reason) -> Error(Failure("harness/start", reason))
     Ok(daemon) -> {
       let observed = script(daemon, seed)
-      let _ = harness.stop(daemon)
-      observed
+
+      // A daemon that will not retire is a finding, not a footnote: a
+      // leaked launch lock or a root blocked in recovery is exactly what a
+      // faulted run is looking for, so a stop failure fails a run that
+      // otherwise passed rather than being discarded.
+      case harness.stop(daemon), observed {
+        Error(reason), Ok(_) -> Error(Failure("harness/stop", reason))
+        _stopped, observed -> observed
+      }
     }
   }
   vclock.stop(clock)
@@ -185,7 +192,16 @@ fn readable(
     harness.open(daemon, record.id)
     |> result.map_error(fn(reason) { Failure(check, reason) }),
   )
-  case row.workspace == workspace && row.state == "Saved" {
+
+  // The creation time is pinned to the logical origin outright rather
+  // than left to the cross-run comparison: two runs a few milliseconds
+  // apart would only catch a real-time read that happened to straddle a
+  // millisecond, and a coarser read would usually pass.
+  case
+    row.workspace == workspace
+    && row.state == "Saved"
+    && row.created_at == origin_ms
+  {
     False ->
       Error(Failure(
         check,
@@ -194,7 +210,8 @@ fn readable(
           <> harness.describe_row(row)
           <> ", expecting workspace "
           <> workspace
-          <> " and a confirmed row",
+          <> ", a confirmed row, and created_at at the logical origin "
+          <> int.to_string(origin_ms),
       ))
     True -> resident(check, record.id, status)
   }

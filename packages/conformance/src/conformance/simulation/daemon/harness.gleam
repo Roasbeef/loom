@@ -1,6 +1,13 @@
 //// A daemon assembled for simulation: the real root, the real registry, the
 //// real catalogue, and no listener.
 ////
+//// A fault that kills the daemon is a root restart over the same state
+//// root, never a registry restart in place: the root answers a killed
+//// registry by blocking recovery, so the durable shape (the persisted
+//// reservation rebuilt by the next `start`) is the only one a faulted run
+//// can take, and the harness accepts a caller-supplied `state_root` for
+//// exactly that reason.
+////
 //// The session runner drives one conversation tree. The claims the daemon
 //// owns are about several sessions at once: a creation key that must mint
 //// one identity however often it is retried, a workspace whose domain record
