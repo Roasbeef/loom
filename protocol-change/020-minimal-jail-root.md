@@ -4,7 +4,7 @@
 Part 1 interface; the wire vocabulary this needs is
 [`protocol-change/004`](004-sandbox-policy-explicit-mounts.md)) ·
 **Raised by**: issue #242 (per-session filesystem confinement) ·
-**Implemented**: helper yes, harness pending
+**Implemented**: yes, helper and harness
 
 ## Problem
 
@@ -215,6 +215,34 @@ right behaviour for a cache root the account does not have.
 Two files in this directory are numbered 019
 (`019-session-display-names.md` and `019-sessions-delete.md`). Both are merged,
 so the collision is recorded rather than repaired; 020 is the next free number.
+
+## What the harness half actually shipped
+
+Three places where the implementation says something this document did not,
+each following 020's own membership rule rather than its list.
+
+`~/go/pkg` is **read-write**, not read-only. The list above puts `go` and
+`go/pkg` among the mounted roots and does not name `go/pkg` in the cache
+subset, but `go mod download` writes `~/go/pkg/mod` on the first build of
+any module. The membership test 020 states — a directory an ordinary build
+or install writes is read-write — puts it there, so `go/bin` is read-only
+and `go/pkg` is read-write, as two siblings.
+
+`/usr/local` is **not** in the harness's account-wide set. It is already a
+system root the helper binds on Darwin, and on Linux `/usr` covers it, so
+naming it again would be a second answer to the same region. `/opt/homebrew`,
+`/home/linuxbrew/.linuxbrew` and `/nix/store` are what no system-root
+constant names, and those are what the harness admits.
+
+The **asdf shim is still a gap**. `client/codemode.GleamBinary` records
+whether the resolved `gleam` is a symlink, and a symlink keeps its install
+prefix mounted alongside the binary's directory so the Homebrew cellar case
+works. A shim is not a symlink: it is a script that execs a program
+somewhere else entirely, and resolving it needs to read the script or the
+link, neither of which the harness can do without an `@external`. Such a
+host gets a `MountRequired` refusal naming the directory, which is a
+sentence an operator can act on, and the remedy is an explicit `[workspace]
+mounts` line until the standard library grows a `read_link`.
 
 ## Decision
 
