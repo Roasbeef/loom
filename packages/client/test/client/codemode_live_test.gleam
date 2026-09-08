@@ -120,14 +120,6 @@ fn run_live(ready: Ready) -> Nil {
   let text = rendered_text(outcome)
   // What the jailed `/bin/echo` printed, through the cap channel, the
   // broker's policy check, a second jail, and out as a tool result.
-  io.println_error(
-    "DEBUGLIVE: "
-    <> string.inspect(rig.base_policy.mounts)
-    <> " validate="
-    <> string.inspect(policy.validate(rig.base_policy))
-    <> " "
-    <> text,
-  )
   assert !outcome.is_error
   assert string.contains(text, echoed <> " exit=0")
   // The result is a whole tool result, not a string: the content address

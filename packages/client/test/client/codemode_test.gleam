@@ -564,6 +564,17 @@ pub fn a_host_without_a_seed_says_why_test() {
   assert reason != ""
 }
 
+pub fn the_seed_is_verified_at_the_path_it_will_be_mounted_at_test() {
+  // The seed reaches `discover` from a `--codemode-seed` flag and is read
+  // twice: `seed.verify` stats it and `toolchain_mounts` binds it. A path
+  // with a `..` segment verified as written and mounted expanded would be
+  // two different directories, so the expansion happens once, at the top
+  // of `discover`, and the refusal names the expanded path.
+  let assert Error(reason) = codemode.discover("/nonexistent/loom/../loom-seed")
+    as "an absent seed must refuse"
+  assert !string.contains(reason, "loom/..")
+}
+
 pub fn the_seam_publishes_the_policy_the_program_is_judged_against_test() {
   // The tool's description states the allowlist and the serviced
   // capabilities; reading them off the seam is what keeps that sentence

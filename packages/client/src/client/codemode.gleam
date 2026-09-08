@@ -856,6 +856,13 @@ pub const serviced_caps = ["proc.run"]
 /// ```
 ///
 pub fn discover(seed_root: String) -> Result(Toolchain, String) {
+  // The seed is expanded once, before anything reads it, so that the path
+  // `seed.verify` stats and the path `toolchain_mounts` binds into the
+  // jail are the same string. A `--codemode-seed /x/link/../seed` verified
+  // as written and mounted as expanded would pass the boot check and then
+  // mount a directory that need not exist.
+  let seed_root = canonical(seed_root)
+
   use gleam_path <- result.try(locate(
     "gleam",
     beside: install.gleam_compiler(),
@@ -1011,6 +1018,14 @@ fn erts_layout(prefix: String, erl_path: String) -> Result(Nil, String) {
 /// deliberately not here, and `codemode/launch.node_requirements` says
 /// why: they are per-execution paths, so no session base could carry the
 /// same entries, and composition takes the meet by path.
+///
+/// One list serves two different jails today. The build jail needs
+/// `gleam_prefix`, because it is what runs the compiler; the node needs
+/// `erl_prefix` and the seed, and never runs `gleam`. Both get all three
+/// because the base view is the whole host, so a region granted to a jail
+/// that does not use it costs nothing beyond the grant. Under
+/// `protocol-change/020` the base view is a minimal root and the two lists
+/// separate, at which point the node's mounts drop `gleam_prefix`.
 ///
 /// ## Examples
 ///
