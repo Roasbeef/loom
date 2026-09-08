@@ -107,6 +107,14 @@ WP-K.
 
 ## Invariants
 
+- **The index open refuses a path SQLite would fail on.** `search.acquire`
+  calls `storage/sqlite_policy.refusing_unopenable_path` before
+  `sqlight.open`, because a failed open frees a block through the binding's
+  double close and corrupts whichever connection is handed it next; `packages/storage/CLAUDE.md`
+  has the mechanism. The index is the database most exposed to it, since it is
+  a deletable projection beside a session file and repairing it means removing
+  it.
+
 - **Events are hints; pulls are truth.** An event never carries content
   and is never applied as data — it only prompts a catch-up pull from the
   durable store. Drop any subset of events and every read model still

@@ -181,6 +181,30 @@ by WP-C-full.
 
 ## Invariants
 
+- **A failed `sqlite3_open` is a node-wide fault, not a local one.**
+  `esqlite3_nif:open/1` closes the connection SQLite hands back on an open
+  failure and then releases the NIF resource without clearing the pointer, so
+  the resource destructor closes it a second time. The second close frees
+  memory SQLite may since have given to a live connection, whose next
+  statement then answers `SQLITE_MISUSE`; the corruption lands on whichever
+  connection is handed the freed block. Every caller that opens a database
+  at a host-supplied path therefore goes through
+  `sqlite_policy.refusing_unopenable_path` first, which refuses a directory in
+  the database's place and a missing parent directory. A missing file stays
+  allowed, because a first open creating its database is what the plane relies
+  on. A read-only open adds that refusal and uses
+  `sqlite_policy.refusing_unreadable_path`: `mode=ro` never creates the file,
+  so a registered session file that has since been deleted or moved is a
+  `SQLITE_CANTOPEN` and therefore node-wide damage. `history_source.acquire`
+  and `sqlite.read_entry` judge the decoded path before building their `file:`
+  URI, which the shared rule declines to reason about. This is a third defect
+  in the binding, distinct from the two ADR-002 and issue #247 already record
+  (private query statements retained on close, and the untotal `'$busy'`
+  atom), and it is present on upstream master; the upstream fix is one line,
+  setting `conn->db = NULL` after the close on the open-failure path in
+  `esqlite3_nif.c`. Issue #247 owns the decision to fork the dependency or
+  retire it.
+
 - **Stable identity is not a credential.** Principal IDs and current display
   names are stored independently of active/revoked credential digests. Plaintext
   bearer tokens never enter access SQL. The caller must supply SHA-256 hashes

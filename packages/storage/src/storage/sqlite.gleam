@@ -953,6 +953,15 @@ pub fn identity(
 /// cannot pair another session's identity with this session's payload.
 /// Read-only mode also prevents creating a missing source database.
 ///
+/// That is why the path is judged before the URI is built. The caller reaches
+/// here with a path the search index registered earlier, which may since have
+/// been deleted or moved; SQLite refuses such a read-only open with
+/// `SQLITE_CANTOPEN`, and the binding then closes the connection twice, freeing
+/// memory that whichever other connection is handed the block will fail on. On
+/// a daemon serving several sessions from one emulator that failure is not
+/// confined to this caller. The guard reads the decoded path, since the URI is
+/// not a filesystem path.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -963,6 +972,11 @@ pub fn read_entry(
   session session: ids.SessionId,
   entry entry: EntryId,
 ) -> Result(Entry, StorageError) {
+  use Nil <- result.try(
+    sqlite_policy.refusing_unreadable_path(path)
+    |> result.map_error(BackendFault),
+  )
+
   let encoded_path =
     path
     |> string.split("/")

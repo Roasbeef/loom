@@ -289,7 +289,8 @@ assumption, and none of them is mechanical.
   of six runs). The restart over the repaired file reports the index still
   unopenable. Its scratch path is unique to the test and no other test
   touches it, so no collided resource was identified; recorded here as an
-  observation rather than a diagnosis.
+  observation rather than a diagnosis. **The resource was found later; see
+  "The emulator's own SQLite state" below.**
 
 **All four fixed, and none of them by a longer clock.** Each turned out to
 be waiting on the wrong thing:
@@ -308,6 +309,51 @@ be waiting on the wrong thing:
 - The approval fixture's waits were already on events; only their bounds
   were assertions about a quiet machine. One named bound, generous enough
   for any round trip the fixture performs, replaces the one-second ones.
+
+### The emulator's own SQLite state
+
+`history_test` kept failing after the `await_gone` fix above, about one run
+in three at N=8 on the Linux gate, usually
+`an_unopenable_index_starts_and_repairs_in_band_test` and sometimes
+`a_fresh_index_opens_test` or `memory_lifecycle_test`'s two-boot case. The
+collided resource is not a path, a name or a counter. It is SQLite's own
+state inside the emulator.
+
+`esqlite3_nif:open/1` leaks the handle it has just closed when
+`sqlite3_open` fails: it calls `sqlite3_close_v2` on the connection and then
+releases the NIF resource without clearing the pointer, so the resource
+destructor closes the same connection a second time. The second close frees
+memory SQLite may since have handed to a live connection, and that
+connection's next statement answers `SQLITE_MISUSE` from a header check on
+memory it no longer owns. Instrumenting the holder's open printed exactly
+that: `IndexFault("bad parameter or other API misuse")`, while a probe of
+the same path in the same test succeeded a moment later.
+
+Two cases in `history_test` make `sqlite3_open` fail on purpose — a probe
+under a directory that is not there, and the directory obstructing the index
+file — and both are in the parallel group beside the module's other index
+opens. Sequentially the corruption has nothing live to land on, which is why
+this never appeared without the flag.
+
+**Fixed** by refusing the path before the open.
+`storage/sqlite_policy.refusing_unopenable_path` names the two deterministic
+refusals a repository produces, a directory in the database's place and a
+missing parent, and `events/search.acquire` asks before it opens. A missing
+file stays allowed, since a first open creating its database is what the
+durability plane relies on. Twenty consecutive `client` runs at N=8 on the
+gate box afterwards, against three failures in eight immediately before.
+
+The two production read-only opens, `storage/internal/history_source.acquire`
+and `storage/sqlite.read_entry`, take the stricter
+`refusing_unreadable_path`, since `mode=ro` never creates the file and a
+registered session file that has since been deleted or moved is the same
+`SQLITE_CANTOPEN`; both judge the decoded path before building their `file:`
+URI. This is a third defect in the binding, distinct from the two ADR-002 and
+issue #247 already record (private query statements retained on close, and
+the untotal `'$busy'` atom), and it is present on upstream master; the
+upstream fix is one line, setting `conn->db = NULL` after the close on the
+open-failure path in `esqlite3_nif.c`, and issue #247 owns the decision to
+fork the dependency or retire it.
 
 ### Not a parallelism failure
 

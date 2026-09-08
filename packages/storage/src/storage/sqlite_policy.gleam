@@ -9,12 +9,28 @@
 //// Options are trusted host configuration, never model or wire SQL. Extend the
 //// typed record when another PRAGMA is needed rather than accepting arbitrary
 //// statement strings. Every command uses the binding's busy-total exec path.
+////
+//// `refusing_unopenable_path` is the other shared rule here, and it is about
+//// the binding rather than about performance. `esqlite3_nif:open/1` leaks the
+//// handle it has just closed when `sqlite3_open` fails: it calls
+//// `sqlite3_close_v2` on the connection and then releases the NIF resource
+//// without clearing the pointer, so the resource destructor closes the same
+//// connection a second time. The second close frees memory SQLite may have
+//// handed to another connection in the same emulator, and that connection's
+//// next statement answers `SQLITE_MISUSE` from a header check on memory it no
+//// longer owns. The damage is node-wide and lands on whichever connection is
+//// handed the freed block, so a caller that hands SQLite a path it cannot open
+//// corrupts unrelated work. Refusing such a path before the open is what keeps
+//// that unreachable.
 
+import gleam/bool
 import gleam/dynamic/decode
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import simplifile
 import sqlight
 
 /// Enforcement of schema-declared foreign-key relationships.
@@ -181,6 +197,99 @@ fn confirm(requested: String, reported: String) -> Result(Nil, sqlight.Error) {
         <> " and remains in "
         <> reported,
       ))
+  }
+}
+
+/// Refuses a path `sqlite3_open` would fail on, before the open is attempted.
+///
+/// A failed open corrupts the emulator's SQLite state through the binding's
+/// double close (see this module's documentation), so every caller that opens
+/// a database file at a host-supplied path goes through here first. The two
+/// deterministic refusals are the ones a repository actually produces: the
+/// path names a directory, or its parent directory is not there. A missing
+/// file is not one of them, because `sqlight.open` creating the database is
+/// what a first open relies on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite_policy.refusing_unopenable_path("/data/loom-search.db") == Ok(Nil)
+/// ```
+pub fn refusing_unopenable_path(path: String) -> Result(Nil, String) {
+  // SQLite reads the first two as requests for a private database rather than
+  // as paths, and neither reaches the filesystem, so neither can fail the
+  // open. The third is a `file:` URI, whose parent directory is the literal
+  // `file:` and would be refused here; a caller that builds a URI guards the
+  // decoded path it built the URI from instead.
+  use <- bool.guard(
+    when: path == ":memory:" || path == "" || string.starts_with(path, "file:"),
+    return: Ok(Nil),
+  )
+
+  use Nil <- result.try(case simplifile.is_directory(path) {
+    Ok(True) -> Error("a directory sits at " <> path)
+    Ok(False) -> Ok(Nil)
+
+    // A path that cannot be inspected is not a path that can be shown to be
+    // unopenable, so the open decides. That is the pre-existing behaviour,
+    // and it is reached only for permission and I/O faults on the parent.
+    Error(_) -> Ok(Nil)
+  })
+  case parent_directory(path) {
+    None -> Ok(Nil)
+    Some(parent) ->
+      case simplifile.is_directory(parent) {
+        Ok(True) -> Ok(Nil)
+        Ok(False) -> Error("no directory at " <> parent <> " to hold " <> path)
+        Error(_) -> Ok(Nil)
+      }
+  }
+}
+
+/// Refuses a path a read-only open would fail on, before the open is
+/// attempted.
+///
+/// This is `refusing_unopenable_path` plus the refusal a read-only open adds:
+/// the file has to be there. `mode=ro` never creates the database, so a source
+/// that was registered and has since been deleted or moved fails
+/// `sqlite3_open` with `SQLITE_CANTOPEN`, and on a shared daemon that failure
+/// corrupts whichever other connection is handed the freed block. Callers that
+/// open a registered session file read-only use this rather than the
+/// create-permitting rule.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite_policy.refusing_unreadable_path("/data/session.db") == Ok(Nil)
+/// ```
+pub fn refusing_unreadable_path(path: String) -> Result(Nil, String) {
+  use Nil <- result.try(refusing_unopenable_path(path))
+
+  // The directory case is already refused above with a message that names the
+  // obstruction, so what is left to decide here is presence.
+  case simplifile.is_file(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) -> Error("no file at " <> path <> " to open read-only")
+
+    // A path that cannot be inspected is not a path that can be shown to be
+    // absent, so the open decides, as it does for the shared rule above.
+    Error(_) -> Ok(Nil)
+  }
+}
+
+// The directory a file path lives in, or `None` for a bare name, which lives
+// in the working directory and so has no parent to check.
+fn parent_directory(path: String) -> Option(String) {
+  case string.split(path, "/") {
+    [] | [_] -> None
+
+    // A leading separator leaves an empty first segment, and the parent of
+    // `/loom.db` is the root directory rather than the empty string.
+    segments ->
+      case string.join(list.take(segments, list.length(segments) - 1), "/") {
+        "" -> Some("/")
+        parent -> Some(parent)
+      }
   }
 }
 

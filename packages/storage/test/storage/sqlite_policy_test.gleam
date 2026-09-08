@@ -3,6 +3,8 @@
 
 import gleam/dynamic/decode
 import gleam/option.{Some}
+import gleam/string
+import simplifile
 import sqlight
 import storage/sqlite_policy as policy
 import support/fixtures
@@ -102,4 +104,56 @@ pub fn invalid_options_fail_before_any_pragma_changes_test() {
     as "invalid cache setting refuses the whole configuration"
   assert number(connection, "PRAGMA busy_timeout") == defaults.busy_timeout_ms
   assert sqlight.close(connection) == Ok(Nil)
+}
+
+// The refusal exists because a failed `sqlite3_open` frees a block that
+// corrupts whichever connection is handed it next, not because opening a
+// directory is untidy, so what these cases pin is that the refusal happens
+// before SQLite sees the path at all.
+pub fn a_directory_is_refused_before_the_open_test() {
+  let scratch = fixtures.scratch("sqlite-policy-unopenable")
+  let occupied = scratch <> "/loom-search.db"
+  let assert Ok(Nil) = simplifile.create_directory_all(occupied)
+    as "the obstruction must exist before the path is judged"
+  let assert Error(reason) = policy.refusing_unopenable_path(occupied)
+    as "a directory in the database's place is refused"
+  assert string.contains(reason, occupied)
+}
+
+pub fn a_missing_parent_directory_is_refused_before_the_open_test() {
+  let assert Error(reason) =
+    policy.refusing_unopenable_path("/nonexistent/loom-policy/index.db")
+    as "a database under a directory that is not there is refused"
+  assert string.contains(reason, "/nonexistent/loom-policy")
+}
+
+// A first open creates its database, and the whole durability plane relies on
+// that, so a missing file under a directory that exists must stay allowed.
+pub fn a_missing_file_under_a_real_directory_is_allowed_test() {
+  let scratch = fixtures.scratch("sqlite-policy-first-open")
+  assert policy.refusing_unopenable_path(scratch <> "/fresh.db") == Ok(Nil)
+  assert policy.refusing_unopenable_path(":memory:") == Ok(Nil)
+  assert policy.refusing_unopenable_path("") == Ok(Nil)
+}
+
+// A `file:` URI is not a filesystem path, and its parent directory is the
+// literal `file:`, so judging one here would refuse every URI open. The
+// callers that build URIs judge the decoded path they built the URI from, so
+// the rule has to pass a URI through rather than guess at its meaning.
+pub fn a_file_uri_is_not_judged_as_a_path_test() {
+  assert policy.refusing_unopenable_path(
+      "file:/nonexistent/loom-policy/index.db?mode=ro",
+    )
+    == Ok(Nil)
+}
+
+// A read-only open cannot create the database, so a registered source that has
+// since been deleted is a refusal rather than a fresh file.
+pub fn a_missing_file_is_refused_for_a_read_only_open_test() {
+  let scratch = fixtures.scratch("sqlite-policy-read-only")
+  let absent = scratch <> "/removed.db"
+  assert policy.refusing_unopenable_path(absent) == Ok(Nil)
+  let assert Error(reason) = policy.refusing_unreadable_path(absent)
+    as "a read-only open of a file that is not there is refused"
+  assert string.contains(reason, absent)
 }
