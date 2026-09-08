@@ -171,7 +171,7 @@ fn setup() -> Setup {
     interactive: fn() { False },
     shape: fn(config) { config },
     plane: True,
-    base: policy.workspace_default,
+    base: narrower_than_bash,
     seam_step_ms: 10,
     code_mode: None,
   )
@@ -363,11 +363,25 @@ fn with_arguments(
   )
 }
 
+// A base narrower than `bash` asks for, which is what makes every
+// escalation in this file happen at all.
+//
+// The dimension is the environment. It used to be the readable roots:
+// `bash` asked for `["/"]` and a workspace-only base could not cover it.
+// Under `protocol-change/020` the shell asks for the base's own readable
+// reach instead, because the base is what names the regions a minimal
+// jail root contains, so a root is no longer a thing the two can
+// disagree about. `PATH` still is: the call passes it and a base that
+// does not allow the name narrows it away.
+fn narrower_than_bash(workspace: String) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(..policy.workspace_default(workspace), env_allow: [])
+}
+
 // A base whose wall-clock limit is under anything `bash` will ask for,
 // so composition narrows a *model-supplied* number and the wanted diff
 // carries it.
 fn narrow_wall(workspace: String) -> policy.SandboxPolicy {
-  let base = policy.workspace_default(workspace)
+  let base = narrower_than_bash(workspace)
   policy.SandboxPolicy(..base, limits: policy.Limits(..base.limits, wall_s: 10))
 }
 
@@ -470,7 +484,7 @@ pub fn a_runs_grants_reach_policy_composition_test() {
   assert string.contains(bare, "policy refused")
   let widened =
     effects.ToolRun(..bash_run("call_2"), grants: [
-      grants.encode(policy.GrantReadableRoot(path: "/")),
+      grants.encode(policy.GrantEnv(name: "PATH")),
     ])
   let text = result_text(wiring.run_tool(harness.config, widened))
   assert string.contains(text, "no sandbox helper")

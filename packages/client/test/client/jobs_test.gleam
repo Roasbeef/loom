@@ -509,6 +509,25 @@ fn start_harness_on(clock: Clock) -> Harness {
   Harness(name:, fake:, spill:, runtime:, operation: an_op(), pid: started.pid)
 }
 
+// The same harness over a session base a test chooses, for the questions
+// about what the job's own requirements carry out of that base. The
+// broker is still the scripted one, so the composition under test is the
+// one the test performs rather than one a helper pool hid.
+fn start_harness_over(base: policy.SandboxPolicy) -> Harness {
+  let clock = counting_clock(1_756_000_000_000, 1)
+  let runtime = open_runtime(clock)
+  let fake = start_fake_broker()
+  let spill = start_fake_spill()
+  let name = addresses.new()
+  let assert Ok(started) =
+    jobs.start(
+      name,
+      wiring(runtime, spill, clock, clear_seam(fake), 5000, base),
+    )
+    as "the jobs actor must start"
+  Harness(name:, fake:, spill:, runtime:, operation: an_op(), pid: started.pid)
+}
+
 // The wiring every test but the policy pair uses: the scripted broker,
 // and the restrictive workspace default as the session base.
 fn fake_wiring(
@@ -954,6 +973,48 @@ pub fn a_job_clears_under_its_own_ledger_identity_test() {
   assert spec.budget.deadline_ms == started.deadline_ms
   assert spec.argv == ["bash", "-lc", "tail -f build.log"]
   assert spec.response == broker.RefuseNarrowed
+}
+
+pub fn a_jobs_spec_carries_the_bases_reach_test() {
+  // `bash.requirements` names the workspace and nothing outside it, so a
+  // job that asked only for those would compose to a jail with no
+  // toolchain bound and no root outside the workspace readable. Under
+  // `protocol-change/020` the session base is the only statement of what
+  // a jail may reach, and mounts compose by exact path, so the spec has
+  // to name the base's own mounts and readable roots for the meet to
+  // leave them standing.
+  let toolchain =
+    policy.Mount(
+      path: "/opt/toolchain",
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  let base =
+    policy.SandboxPolicy(
+      ..policy.workspace_default("/workspace"),
+      readable_roots: ["/opt/toolchain", "/usr/lib"],
+      mounts: [toolchain],
+    )
+  let harness = start_harness_over(base)
+  let _started = start_job(harness, "main", "gleam build")
+  let assert [spec] = specs(harness) as "exactly one clearance"
+
+  assert spec.requirements.mounts == [toolchain]
+  assert list.contains(spec.requirements.readable_roots, "/opt/toolchain")
+  assert list.contains(spec.requirements.readable_roots, "/usr/lib")
+
+  // The composition is what the helper actually receives, and a mount the
+  // requirements failed to name would come back as a `NarrowedMount`
+  // rather than as a missing bind nobody reported.
+  let #(composed, narrowings) = policy.compose(base, spec.requirements, [])
+  assert composed.mounts == [toolchain]
+  assert list.contains(composed.readable_roots, "/opt/toolchain")
+  assert !list.any(narrowings, fn(narrowing) {
+    case narrowing {
+      policy.NarrowedMount(wanted: _) -> True
+      _other -> False
+    }
+  })
 }
 
 pub fn the_fifth_job_on_one_strand_is_refused_test() {

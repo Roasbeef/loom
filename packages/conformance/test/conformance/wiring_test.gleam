@@ -159,12 +159,7 @@ fn config(base_policy: policy.SandboxPolicy) -> wiring.Config {
 }
 
 fn wide_config() -> wiring.Config {
-  let workspace = workspace()
-  config(
-    policy.SandboxPolicy(..policy.workspace_default(workspace), readable_roots: [
-      "/",
-    ]),
-  )
+  config(policy.workspace_default(workspace()))
 }
 
 fn configuration_for(
@@ -587,11 +582,23 @@ pub fn run_tool_unknown_name_is_in_band_error_test() {
 }
 
 pub fn run_tool_policy_refusal_carries_wanted_grants_test() {
-  // The base policy only covers the workspace, but bash requires the
-  // whole filesystem readable: composition narrows, the broker refuses,
-  // and the refusal surfaces as an is_error result whose details carry
-  // the exact wanted grants (the escalation seam).
-  let narrow = config(policy.workspace_default(workspace()))
+  // The base policy allows no environment names, but the bash call
+  // passes `PATH`: composition narrows, the broker refuses, and the
+  // refusal surfaces as an is_error result whose details carry the exact
+  // wanted grants (the escalation seam).
+  //
+  // The narrowed dimension used to be the readable roots, since `bash`
+  // asked for `["/"]` against a workspace-only base. Under
+  // `protocol-change/020` the shell asks for the base's own readable
+  // reach, because the base is what names the regions a minimal jail
+  // root contains, so the two can no longer disagree about a root.
+  let narrow =
+    config(
+      policy.SandboxPolicy(
+        ..policy.workspace_default(workspace()),
+        env_allow: [],
+      ),
+    )
   let run =
     effects.ToolRun(
       operation: op_id(),
@@ -614,8 +621,8 @@ pub fn run_tool_policy_refusal_carries_wanted_grants_test() {
   assert string.contains(text, "policy refused")
   let assert Ok(json.Array(wanted)) = json_field(details, "wanted")
   assert list.any(wanted, fn(grant) {
-    json_field(grant, "grant") == Ok(json.String("readable_root"))
-    && json_field(grant, "path") == Ok(json.String("/"))
+    json_field(grant, "grant") == Ok(json.String("env"))
+    && json_field(grant, "name") == Ok(json.String("PATH"))
   })
 }
 

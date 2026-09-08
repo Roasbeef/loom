@@ -1545,6 +1545,14 @@ fn call_spec(wiring: Wiring, record: JobRecord, now: Int) -> CallSpec {
   // The shell asks for every root the session base already grants, the
   // workspace alone being too narrow for a linked git worktree; the meet
   // means asking for the base's own roots can never widen past it.
+  //
+  // The readable roots and the mounts are asked for on the same argument
+  // as the writable ones, and a detached job needs them for the same
+  // reason a foreground shell does (`tools/bash.call_spec`). Under
+  // `protocol-change/020` the session base states which regions outside
+  // the workspace a jail may reach, and `bash.requirements` names none of
+  // them; mounts compose by exact path, so a job that asked for none
+  // would run with no toolchain bound at all.
   let requirements =
     policy.SandboxPolicy(
       ..base_requirements,
@@ -1552,6 +1560,11 @@ fn call_spec(wiring: Wiring, record: JobRecord, now: Int) -> CallSpec {
         base_requirements.writable_roots,
         wiring.base_policy.writable_roots,
       )),
+      readable_roots: list.unique(list.append(
+        base_requirements.readable_roots,
+        wiring.base_policy.readable_roots,
+      )),
+      mounts: wiring.base_policy.mounts,
       env_allow: list.map(wiring.env, fn(pair) { pair.0 }),
       limits: policy.Limits(..base_requirements.limits, wall_s:),
     )

@@ -18,6 +18,7 @@ import codemode/launch
 import codemode/seed
 import core/clock.{type Clock}
 import filepath
+import gleam/list
 import gleam/option
 import gleam/string
 import simplifile
@@ -104,7 +105,7 @@ pub fn start(
   let assert Ok(Nil) = simplifile.create_directory_all(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(build_root)
   let assert Ok(Nil) = simplifile.create_directory_all(helper_tmp)
-  let base_policy = base_policy(root)
+  let base_policy = base_policy(root, prerequisites)
   let assert Ok(pool) =
     exec.start_pool(size: pool_size, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
@@ -142,14 +143,32 @@ pub fn start(
 }
 
 /// The session base a code-mode execution runs under: its own root
-/// writable, the filesystem readable (the toolchain and the BEAM live
-/// outside it), the network off, and the two cap-channel handles on the
-/// environment allowlist — without which the helper would construct a
-/// child environment the boot runtime cannot find its socket in.
-pub fn base_policy(root: String) -> SandboxPolicy {
+/// writable and readable, the toolchain named as explicit mounts, the
+/// network off, and the two cap-channel handles on the environment
+/// allowlist — without which the helper would construct a child
+/// environment the boot runtime cannot find its socket in.
+///
+/// This used to grant `readable_roots: ["/"]`, which meant the end-to-end
+/// suite ran under a base no daemon has produced since
+/// `protocol-change/020`. Every region outside the root reached the jail
+/// whether or not anything stated it, so the suite could not fail on a
+/// missing or duplicated mount, and it did not fail on the duplicate that
+/// broke every real session start. The base is now assembled the way
+/// `client/serve` assembles a session's: the workspace, plus the
+/// toolchain regions from `toolchain_mounts`, merged by path.
+///
+/// The per-user toolchain set `client/serve.admitting_user_toolchains`
+/// adds is deliberately not reproduced here. It is a constant belonging to
+/// that module, a copy of it in this rig would drift from the original,
+/// and nothing in this suite needs it: the jail is given no `HOME`, and
+/// the compiler and the BEAM it runs are the ones `prerequisites` located.
+pub fn base_policy(
+  root: String,
+  prerequisites: Prerequisites,
+) -> SandboxPolicy {
   policy.SandboxPolicy(
     writable_roots: [root],
-    readable_roots: ["/"],
+    readable_roots: [root],
     protected: [],
     network: policy.NetworkOff,
     limits: policy.Limits(
@@ -162,8 +181,79 @@ pub fn base_policy(root: String) -> SandboxPolicy {
     ),
     env_allow: ["PATH", launch.sock_env, launch.token_env],
     scratch: policy.ScratchTmpfs,
-    mounts: [],
+    mounts: toolchain_mounts(prerequisites),
   )
+}
+
+/// The toolchain regions a jailed build and a jailed node have to reach:
+/// the ERTS install prefix, the directory holding `gleam`, and the build
+/// seed, each read-only and `MountRequired`.
+///
+/// This is the rig's own copy of what `client/codemode.toolchain_mounts`
+/// derives for a session, and it exists because `codemode` does not depend
+/// on `client`. The derivations it mirrors are the two that matter for a
+/// mount plan. The `erl` prefix climbs out of `bin` and out of an
+/// `erts-<version>` directory, because the emulator reads `lib` and
+/// `releases` from the root beside it and a mount of `erts-<version>`
+/// alone yields an `erl` that cannot boot. The `gleam` region is the
+/// binary's own directory rather than the prefix above it, so a `gleam`
+/// installed under `~/.local/bin` does not bring the rest of that
+/// directory's contents into the jail.
+///
+/// A region nested inside another of the same list is dropped. On a
+/// release the seed sits under the install root and on a Homebrew host
+/// both binaries share one prefix, and two nested binds would be one
+/// region named twice, which `broker/policy.validate` refuses.
+pub fn toolchain_mounts(prerequisites: Prerequisites) -> List(policy.Mount) {
+  let wanted =
+    [
+      erl_prefix(prerequisites.erl_path),
+      filepath.directory_name(expand(prerequisites.gleam_path)),
+      expand(prerequisites.seed_root),
+    ]
+    |> list.unique
+  wanted
+  |> list.filter(fn(path) {
+    !list.any(wanted, fn(other) {
+      other != path && policy.covers(root: other, path:)
+    })
+  })
+  |> list.map(fn(path) {
+    policy.Mount(
+      path:,
+      access: policy.MountReadOnly,
+      requirement: policy.MountRequired,
+    )
+  })
+}
+
+// The install prefix `erl` boots from, which is the directory above its
+// `bin` and, for an OTP install root, the directory above the
+// `erts-<version>` under that.
+fn erl_prefix(erl_path: String) -> String {
+  let directory = filepath.directory_name(expand(erl_path))
+  case filepath.base_name(directory) {
+    "bin" -> {
+      let prefix = filepath.directory_name(directory)
+      case string.starts_with(filepath.base_name(prefix), "erts-") {
+        True -> filepath.directory_name(prefix)
+        False -> prefix
+      }
+    }
+    _other -> directory
+  }
+}
+
+// A mount path is taken as written on both sides of the wire, and
+// `validate` refuses a `..` segment rather than pick between two names
+// for one region, so the resolution happens here. `filepath.expand` is
+// textual and resolves no symlink, which is what the prefix derivation
+// wants.
+fn expand(path: String) -> String {
+  case filepath.expand(path) {
+    Ok(expanded) -> expanded
+    Error(Nil) -> path
+  }
 }
 
 /// Stops the broker and the pool.

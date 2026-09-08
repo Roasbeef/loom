@@ -53,6 +53,9 @@
 //// env = ["GH_TOKEN"]                 # host env var *names*
 //// [tools.set]
 //// GH_CONFIG_DIR = "/home/me/.config/gh"
+////
+//// [workspace]                        # optional; see `parse_workspace`
+//// mounts = [{ path = "/srv/data", access = "ro" }]
 //// ```
 ////
 //// The `[[rule]]` tables are the triggered project rules and are parsed
@@ -83,6 +86,7 @@
 //// as a spec gap), and Baseten's OpenAI-compatible endpoints need only
 //// the bearer key this format already carries.
 
+import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -292,7 +296,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
-      "tools", "jobs", "secrets",
+      "tools", "jobs", "secrets", "workspace",
     ],
     "the top level",
   ))
@@ -885,6 +889,162 @@ fn positive_int(
 ///
 pub fn default_tools() -> ToolsConfig {
   ToolsConfig(network: ToolNetworkOff, env: [], set: [], path: [])
+}
+
+/// One `[workspace] mounts` entry: a host region an operator states the
+/// session's jails may reach, and whether they may write it.
+///
+/// This is the escape hatch of `protocol-change/020`, not the default
+/// path. The regions an ordinary build needs are derived — the toolchain
+/// from discovery, the sibling checkouts from `gleam.toml` path
+/// dependencies, the per-user caches from a fixed well-known set — and
+/// only what no manifest describes is written here.
+pub type WorkspaceMount {
+  WorkspaceMount(
+    /// The absolute host path to bind.
+    path: String,
+    /// Read-only or read-write, from the entry's `access` word.
+    access: MountAccess,
+  )
+}
+
+/// The `[workspace]` table: the operator-stated mounts and nothing else
+/// yet.
+pub type WorkspaceConfig {
+  WorkspaceConfig(mounts: List(WorkspaceMount))
+}
+
+/// The `[workspace]` table a file that omits it means: no mounts beyond
+/// what the harness derives.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.default_workspace().mounts == []
+/// ```
+///
+pub fn default_workspace() -> WorkspaceConfig {
+  WorkspaceConfig(mounts: [])
+}
+
+/// Parses the optional `[workspace]` table out of the same `loom.toml`
+/// the catalogue comes from.
+///
+/// ```toml
+/// [workspace]
+/// mounts = [
+///   { path = "/srv/datasets", access = "ro" },
+///   { path = "/var/cache/shared", access = "rw" },
+/// ]
+/// ```
+///
+/// Strict for the reason `parse_tools` is: every line here widens what a
+/// jailed shell can reach, so a relative path, an unrecognised access
+/// word, an unknown key and a repeated path are each a worded `Error`
+/// the boot halts on rather than a line that silently grants something
+/// other than what it says. A path that overlaps a masked region is a
+/// refusal too, but it is made later and by `broker/policy.validate`,
+/// which is the one place that sees the composed policy and can name
+/// both halves of the contradiction.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_workspace("") == Ok(catalog.default_workspace())
+/// ```
+///
+pub fn parse_workspace(text: String) -> Result(WorkspaceConfig, String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(describe_parse_error),
+  )
+  case dict.get(document, "workspace") {
+    Error(Nil) -> Ok(default_workspace())
+    Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) ->
+      workspace_table(fields)
+    Ok(_other) -> Error("workspace must be a [workspace] table")
+  }
+}
+
+fn workspace_table(
+  fields: Dict(String, tom.Toml),
+) -> Result(WorkspaceConfig, String) {
+  use Nil <- result.try(known_keys(dict.keys(fields), ["mounts"], "[workspace]"))
+  use items <- result.try(case dict.get(fields, "mounts") {
+    Ok(tom.Array(items)) -> Ok(items)
+
+    // `[[workspace.mounts]]` states the same list one table per entry,
+    // which is the form an operator writing more than a line or two
+    // reaches for. It arrives already split into tables, so it is
+    // rewrapped rather than parsed a second way.
+    Ok(tom.ArrayOfTables(tables)) -> Ok(list.map(tables, tom.InlineTable))
+    Ok(_other) -> Error(mounts_shape)
+    Error(Nil) -> Ok([])
+  })
+  use mounts <- result.try(list.try_map(items, workspace_mount))
+
+  // A repeated path is two answers to "may this region be written", and
+  // `broker/policy.validate` refuses a duplicate mount anyway. Refusing
+  // it here names the file the operator would edit.
+  use Nil <- result.try(
+    list.try_fold(mounts, [], fn(seen, mount) {
+      case list.contains(seen, mount.path) {
+        True ->
+          Error("workspace.mounts names " <> mount.path <> " more than once")
+        False -> Ok([mount.path, ..seen])
+      }
+    })
+    |> result.replace(Nil),
+  )
+  Ok(WorkspaceConfig(mounts:))
+}
+
+const mounts_shape = "workspace.mounts must be an array of { path = \"/abs\", access = \"ro\"|\"rw\" } tables"
+
+fn workspace_mount(item: tom.Toml) -> Result(WorkspaceMount, String) {
+  case item {
+    tom.Table(fields) | tom.InlineTable(fields) -> {
+      use Nil <- result.try(known_keys(
+        dict.keys(fields),
+        ["path", "access"],
+        "a workspace.mounts entry",
+      ))
+      use path <- result.try(required_string(
+        fields,
+        "a workspace.mounts entry",
+        "path",
+      ))
+
+      // A mount path is compared by component and never resolved, on
+      // either side of the wire, so a relative one would be judged
+      // against nothing and bind nothing.
+      use Nil <- result.try(case string.starts_with(path, "/") {
+        True -> Ok(Nil)
+        False -> Error("workspace.mounts path " <> path <> " must be absolute")
+      })
+      use access <- result.try(required_string(
+        fields,
+        "a workspace.mounts entry",
+        "access",
+      ))
+      use access <- result.try(parse_mount_access(access))
+      Ok(WorkspaceMount(path:, access:))
+    }
+    _other -> Error(mounts_shape)
+  }
+}
+
+fn parse_mount_access(word: String) -> Result(MountAccess, String) {
+  case word {
+    "ro" -> Ok(MountReadOnly)
+    "rw" -> Ok(MountReadWrite)
+    other ->
+      Error(
+        "workspace.mounts access must be \"ro\" or \"rw\", got \""
+        <> other
+        <> "\"",
+      )
+  }
 }
 
 /// Parses the optional `[tools]` table out of the same `loom.toml` the

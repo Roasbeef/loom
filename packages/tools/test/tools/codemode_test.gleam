@@ -879,11 +879,14 @@ pub fn the_description_states_the_real_allowlist_test() {
   assert string.contains(described, "report.Outcome")
 }
 
-pub fn the_requirements_ask_for_the_workspace_and_the_toolchain_test() {
+pub fn the_requirements_ask_for_the_workspace_and_nothing_else_test() {
   let wanted = codemode.requirements("/work")
   assert wanted.writable_roots == ["/work"]
-  // The Gleam and Erlang toolchains live outside the workspace.
-  assert wanted.readable_roots == ["/"]
+
+  // The Gleam and Erlang toolchains live outside the workspace, and this
+  // tool does not name them: the pipeline's own clearances do, against a
+  // session base that carries the regions as mounts.
+  assert wanted.readable_roots == []
   assert wanted.network == policy.NetworkOff
 }
 

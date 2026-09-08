@@ -1447,16 +1447,69 @@ pub fn the_toolchain_mounts_are_read_only_and_required_test() {
         requirement: policy.MountRequired,
       ),
       policy.Mount(
-        path: "/opt/homebrew",
-        access: policy.MountReadOnly,
-        requirement: policy.MountRequired,
-      ),
-      policy.Mount(
         path: "/opt/loom/share/codemode-seed",
         access: policy.MountReadOnly,
         requirement: policy.MountRequired,
       ),
+      policy.Mount(
+        path: "/opt/homebrew/bin",
+        access: policy.MountReadOnly,
+        requirement: policy.MountRequired,
+      ),
     ]
+}
+
+pub fn a_plain_gleam_binary_mounts_only_its_own_directory_test() {
+  // The prefix of a developer install is `~/.cargo` or `~/.local`, whose
+  // other subdirectories hold credentials and state. Only the directory
+  // the binary is actually in belongs in a jail.
+  let found =
+    codemode.toolchain(
+      gleam_path: "/home/o/.cargo/bin/gleam",
+      erl_path: "/usr/bin/erl",
+      seed_root: "/opt/seed",
+    )
+  assert list.contains(
+    list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path }),
+    "/home/o/.cargo/bin",
+  )
+  assert !list.contains(
+    list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path }),
+    "/home/o/.cargo",
+  )
+}
+
+pub fn a_symlinked_gleam_binary_keeps_its_prefix_test() {
+  // A Homebrew `bin/gleam` points into a versioned cellar directory
+  // outside its own `bin`, and nothing here can read a link target, so
+  // the prefix that contains both ends comes back.
+  let found =
+    codemode.Toolchain(
+      ..codemode.toolchain(
+        gleam_path: "/opt/homebrew/bin/gleam",
+        erl_path: "/usr/bin/erl",
+        seed_root: "/opt/seed",
+      ),
+      gleam_binary: codemode.GleamSymlink,
+    )
+  assert list.contains(
+    list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path }),
+    "/opt/homebrew",
+  )
+
+  // The binary's own directory is inside the prefix, so the nested entry
+  // is dropped rather than bound twice.
+  assert !list.contains(
+    list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path }),
+    "/opt/homebrew/bin",
+  )
+}
+
+pub fn a_missing_gleam_binary_reads_as_a_plain_file_test() {
+  // The mount is `MountRequired`, so a `gleam` that is not there refuses
+  // the dispatch naming the directory rather than being guessed at here.
+  assert codemode.gleam_binary_kind("/nowhere/at/all/gleam")
+    == codemode.GleamPlainFile
 }
 
 pub fn one_prefix_holding_both_executables_is_mounted_once_test() {
@@ -1484,5 +1537,5 @@ pub fn a_mount_path_is_canonical_before_it_reaches_a_policy_test() {
       seed_root: "/srv/loom/packages/client/../../build/seed",
     )
   assert list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path })
-    == ["/usr", "/opt/homebrew", "/srv/loom/build/seed"]
+    == ["/usr", "/srv/loom/build/seed", "/opt/homebrew/bin"]
 }

@@ -814,9 +814,16 @@ fn joined(names: List(String)) -> String {
 }
 
 /// What a code-mode execution needs of the session base: the workspace
-/// writable (the hermetic build root and the cap-channel handles live
-/// under it) and the whole filesystem readable, since the Gleam and Erlang
-/// toolchains the build and the node need are outside it.
+/// writable, since the hermetic build root and the cap-channel handles
+/// live under it.
+///
+/// The toolchain the build and the node need is outside the workspace and
+/// is deliberately not stated here. This value states no readable reach
+/// at all, because under `protocol-change/020` the regions a jail may
+/// read are named by the session base and asked for by the pipeline's own
+/// clearances (`codemode/build.build_requirements`,
+/// `codemode/launch.node_requirements`). A `["/"]` here would name a root
+/// no base carries, and it would be a claim this tool never uses.
 ///
 /// Declarative only. This tool clears nothing through `Ctx.clear_call`:
 /// the build and the node are cleared inside the pipeline, each against
@@ -831,7 +838,7 @@ fn joined(names: List(String)) -> String {
 ///
 pub fn requirements(workspace: String) -> SandboxPolicy {
   let base = policy.workspace_default(workspace)
-  policy.SandboxPolicy(..base, readable_roots: ["/"], env_allow: [])
+  policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
 fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {

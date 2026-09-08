@@ -25,10 +25,13 @@
 //// The third posture arrived with issue #242. The extensions root is
 //// `<state_root>/extensions` by default, so an install's build runs one
 //// directory below the daemon's owner token, catalogue and session
-//// databases — under `readable_roots: ["/"]`, on a jail whose base view
-//// is the whole host. Those entries are masked when they exist and
-//// filtered when they do not, which is the same buildability question
-//// the blob store failed, answered the other way round.
+//// databases. Those entries are masked when they exist and filtered when
+//// they do not, which is the same buildability question the blob store
+//// failed, answered the other way round. The mask is load-bearing even
+//// now that the base view is a minimal root: the state root sits one
+//// directory above the extensions root the build writes, so an
+//// unmasked entry would be reachable through the writable region
+//// itself.
 ////
 //// Pure: no helper, no kernel, no bwrap. The real jailed run lives in
 //// `client/extension_test`.
@@ -92,9 +95,9 @@ pub fn the_build_plane_masks_the_daemon_state_root_test() {
   })
 
   // Without this the install's jailed build reads the owner token by
-  // absolute path: the build plane grants `readable_roots: ["/"]` and
-  // the jail's base view is the whole host, so a mask is the only thing
-  // in the way.
+  // absolute path. The state root is one directory above the extensions
+  // root the build writes under, so narrowing the base view does not put
+  // it out of reach and the mask is the only thing in the way.
   let masks = serve.build_plane_policy(root, state_root).protected
   list.each(established, fn(path) {
     assert list.contains(masks, path)

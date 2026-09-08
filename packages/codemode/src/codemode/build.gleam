@@ -123,8 +123,10 @@ pub type BuildConfig {
     /// The session base policy. The builder adds its harness-owned `TMPDIR`
     /// name to the derived call base; callers need not authorize it.
     base_policy: SandboxPolicy,
-    /// Roots the build may read: the Gleam and Erlang toolchains. Usually
-    /// `["/"]`, which the session base must then also cover.
+    /// Roots the build may read: the Gleam and Erlang toolchains.
+    /// Usually the session base's own `readable_roots`, since the base
+    /// is what names the toolchain regions and a requirement the base
+    /// does not cover is a narrowing rather than a grant.
     toolchain_roots: List(String),
     /// Enforcement strictness demanded of the jailed build.
     demand: EnforcementDemand,
