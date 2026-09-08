@@ -17,6 +17,11 @@
 #
 # HEAD must already be on that remote, in whatever ref: the box fetches
 # by SHA, and `gh signoff` will refuse to sign a commit no remote holds.
+#
+# SIGNOFF_PARALLEL travels with the run. It is the one knob signoff.sh
+# reads from the environment, and a sequential run is how a failure is
+# told apart from a concurrency effect, so leaving it behind on this side
+# of the ssh session would make that distinction unavailable remotely.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -41,7 +46,7 @@ if [ ! -d "$dir/.git" ]; then git clone --quiet "$origin" "$dir"; fi
 cd "$dir"
 git fetch --quiet origin "$sha"
 git checkout --quiet --detach "$sha"
-exec scripts/signoff.sh --commit "$sha" $*
+exec env ${SIGNOFF_PARALLEL:+SIGNOFF_PARALLEL="$SIGNOFF_PARALLEL"} scripts/signoff.sh --commit "$sha" $*
 EOF
 )
 exec ssh "$host" "bash -lc $(printf '%q' "$remote")"
