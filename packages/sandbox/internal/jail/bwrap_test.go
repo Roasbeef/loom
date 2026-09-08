@@ -285,11 +285,96 @@ func TestBwrapArgsReadableRootOfSlashRestoresTheHostView(t *testing.T) {
 // re-executed inside the jail, and a minimal base view that does not
 // carry it produces a jail that cannot start.
 func TestBwrapArgsBindsTheHelperBinary(t *testing.T) {
-	got := BwrapArgs(basePol(), nil, "/opt/loom/bin/loom-exec")
-	want := []string{"--ro-bind-try", "/opt/loom/bin/loom-exec",
-		"/opt/loom/bin/loom-exec"}
+	got := BwrapArgs(basePol(), nil, "/srv/loom/bin/loom-exec")
+	want := []string{"--ro-bind-try", "/srv/loom/bin/loom-exec",
+		"/srv/loom/bin/loom-exec"}
 	if !containsSeq(got, want) {
 		t.Fatalf("the helper binary is not in the jail's view: %q", got)
+	}
+}
+
+// A helper the jail's view already carries gets no operation of its own.
+// The grant is a read-only bind of the file onto itself, which is a
+// mountpoint the payload cannot then replace, and a daemon running from
+// the checkout it is working on has its helper inside the workspace: the
+// unconditional grant made `go build -o bin/loom-exec` fail with EBUSY
+// inside the jail. See helperCovered.
+func TestBwrapArgsSkipsAHelperTheViewAlreadyCarries(t *testing.T) {
+	covering := map[string]func(*policy.Policy){
+		"writable root": func(p *policy.Policy) {
+			p.WritableRoots = []string{"/work"}
+		},
+		"readable root": func(p *policy.Policy) {
+			p.ReadableRoots = []string{"/work"}
+		},
+		"explicit mount": func(p *policy.Policy) {
+			p.Mounts = []policy.Mount{{
+				Path: "/work", Access: policy.MountReadOnly, Required: true,
+			}}
+		},
+		"whole-host readable root": func(p *policy.Policy) {
+			p.ReadableRoots = []string{"/"}
+		},
+	}
+	const helper = "/work/bin/loom-exec"
+	for name, cover := range covering {
+		t.Run(name, func(t *testing.T) {
+			p := basePol()
+			p.WritableRoots = nil
+			p.ReadableRoots = nil
+			p.Protected = nil
+			cover(&p)
+			for _, op := range MountPlan(p, nil, helper) {
+				if op.Path == helper {
+					t.Fatalf("the helper got an operation of its own "+
+						"though the %s already carries it: %q", name, op.Argv)
+				}
+			}
+		})
+	}
+}
+
+// The same for the base view's own system directories, which is where an
+// installed release puts the helper.
+func TestBwrapArgsSkipsAHelperUnderASystemRoot(t *testing.T) {
+	const helper = "/usr/local/lib/loom/loom-exec"
+	for _, op := range MountPlan(basePol(), nil, helper) {
+		if op.Path == helper {
+			t.Fatalf("the helper under /usr got an operation of its own: %q",
+				op.Argv)
+		}
+	}
+}
+
+// A helper nothing else covers still gets its grant: that is the case the
+// grant exists for.
+func TestBwrapArgsGrantsAHelperOutsideTheView(t *testing.T) {
+	const helper = "/srv/loom/bin/loom-exec"
+	var seen bool
+	for _, op := range MountPlan(basePol(), nil, helper) {
+		if op.Path == helper {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("a helper outside every granted region was not bound, so " +
+			"the jail has nothing to exec as stage 2")
+	}
+}
+
+// A protected entry covering the helper is refused rather than planned:
+// the mask would remove the binary the jail exists to exec, and bwrap
+// reports that as an anonymous `execvp failed`.
+func TestHelperUnderProtected(t *testing.T) {
+	got := HelperUnderProtected([]string{"/work/.git", "/srv/loom"},
+		"/srv/loom/bin/loom-exec")
+	if got != "/srv/loom" {
+		t.Fatalf("the protected entry masking the helper was not named: %q",
+			got)
+	}
+	if got := HelperUnderProtected([]string{"/work/.git"},
+		"/srv/loom/bin/loom-exec"); got != "" {
+		t.Fatalf("a helper no protected entry covers was refused: %q", got)
 	}
 }
 

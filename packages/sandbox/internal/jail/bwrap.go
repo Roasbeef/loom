@@ -306,11 +306,15 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind, helper string) []Moun
 	// The helper's own binary. Stage 2 is this executable re-executed
 	// inside the jail, so a base view that does not contain it is a jail
 	// that cannot start at all: bwrap reports `execvp failed` for a path
-	// the payload never chose. It is not a policy path — the sender does
-	// not know where the helper was installed, and the release layout
-	// puts it wherever the operator unpacked it — so the helper supplies
-	// it from what it knows about itself.
-	grant(readableRootOp(helper))
+	// the payload never chose. It is not a policy path, since the sender
+	// does not know where the helper was installed and the release layout
+	// puts it wherever the operator unpacked it, so the helper supplies
+	// it from what it knows about itself. The grant is skipped when some
+	// other region already carries it; see helperCovered for why an
+	// unconditional grant breaks a daemon running from its own checkout.
+	if !helperCovered(p, helper) {
+		grant(readableRootOp(helper))
+	}
 	for _, r := range p.ReadableRoots {
 		grant(readableRootOp(r))
 	}
@@ -385,6 +389,62 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind, helper string) []Moun
 		return plan[i].Class < plan[j].Class
 	})
 	return plan
+}
+
+// helperCovered reports whether the jail's view already carries the
+// helper binary without a grant naming the file itself.
+//
+// The grant is not merely redundant when some enclosing region already
+// supplies it. It binds the helper file read-only onto itself, and a
+// read-only bind of a file is a mountpoint: the file can no longer be
+// replaced, removed or truncated from inside the jail, whatever the
+// region containing it allows. A daemon running from the checkout it is
+// working on hits exactly that, because `os.Executable()` is
+// `bin/loom-exec` under the workspace and the workspace is a writable
+// root, so `go build -o bin/loom-exec` fails with EBUSY and `git
+// checkout` and `make clean` fail with it too. Skipping the grant costs
+// nothing: the enclosing region is what makes the helper reachable, and
+// it was already emitted.
+//
+// A helper under a protected entry is a third case and is not decided
+// here. The mask would remove the binary from a jail that has to exec
+// it, and the resulting failure is bwrap's anonymous `execvp failed`, so
+// run.go refuses the execution naming the path before any argv is built;
+// see HelperUnderProtected.
+func helperCovered(p policy.Policy, helper string) bool {
+	h := region(helper)
+	if h == "" {
+		return true
+	}
+	regions := append([]string{}, SystemRoots...)
+	regions = append(regions, sortedPaths(p.ReadableRoots)...)
+	regions = append(regions, sortedPaths(p.WritableRoots)...)
+	for _, m := range p.Mounts {
+		regions = append(regions, region(m.Path))
+	}
+	return coveredBy(regions, h)
+}
+
+// HelperUnderProtected names the protected entry that would mask the
+// helper binary, or "" when none does. Stage 2 is the helper re-executed
+// inside the jail, so a mask covering it produces a jail that cannot
+// start, and bwrap's report for that is `execvp failed` naming a path the
+// payload never chose. The caller refuses the execution instead, naming
+// the entry that caused it.
+//
+// The protected paths must already be resolved through their symlinks,
+// which is the same input MountPlan is given; see resolveProtected.
+func HelperUnderProtected(protected []string, helper string) string {
+	h := region(helper)
+	if h == "" {
+		return ""
+	}
+	for _, prot := range sortedPaths(protected) {
+		if coveredBy([]string{prot}, h) {
+			return prot
+		}
+	}
+	return ""
 }
 
 // readableRootOp binds one of the policy's own readable_roots read-only,

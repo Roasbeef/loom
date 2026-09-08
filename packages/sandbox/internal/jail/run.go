@@ -268,6 +268,23 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		jailed := req.Policy
 		jailed.Protected = resolveProtected(req.Policy.Protected)
 		kinds := statKinds(jailed.Protected)
+
+		// A protected entry covering the helper binary masks the very
+		// executable stage 2 is, so bwrap builds the namespace and then
+		// fails with an anonymous `execvp failed` for a path the payload
+		// never chose. The policy is refused here instead, naming the
+		// entry; see HelperUnderProtected.
+		if prot := HelperUnderProtected(jailed.Protected, selfExe); prot != "" {
+			policyR.Close()
+			reportR.Close()
+			reportW.Close()
+			return nil, fmt.Errorf("jail: protected path %s covers the "+
+				"helper binary %s, and the jail runs that binary as its "+
+				"own stage 2, so the mask would leave nothing to exec; "+
+				"remove the entry from protected or install the helper "+
+				"outside it", prot, selfExe)
+		}
+
 		plan := MountPlan(jailed, kinds, selfExe)
 
 		// A PathMissing protected path bwrap cannot actually mask —
