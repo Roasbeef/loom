@@ -271,6 +271,24 @@ honest message and to split by concern rather than by agent.
   messages in this history explain what was believed, what measurement
   changed it, and what was therefore *not* built.
 
+### Sign off locally instead of waiting on the hosted gate
+
+The `main` ruleset requires a `signoff/linux` commit status, posted by
+`gh signoff`, and the hosted workflow keeps running as the record. The
+status attests that a named person ran the gate, nothing more, so it is
+only ever posted by `scripts/signoff.sh`: every CI command as parallel
+lanes on one checkout, a verdict, and then the status. Never type
+`gh signoff` by hand; treat that the way you would treat a forced push.
+
+`make signoff` runs this platform's lane here. `LOOM_SIGNOFF_HOST=<ssh
+alias> make signoff-remote` runs the same gate for HEAD on a Linux box,
+in a checkout the script owns, and the host is named only in that
+variable and your ssh config, never in the tree. Push first: the box
+fetches by SHA and `gh signoff` refuses a commit no remote holds. Add
+`SIGNOFF_ARGS=--dry-run` to run the lanes and post nothing. Per-lane
+logs land under `build/signoff/`; the lane table at the end says which
+to read.
+
 ### Watch for the push race
 
 An agent can commit between your verification and your push. `git push` sends
