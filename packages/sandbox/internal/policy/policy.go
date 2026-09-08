@@ -20,7 +20,14 @@ import (
 // Version is the only policy version this helper understands. A policy
 // with any other "v" is rejected outright; shape changes require a new
 // version, not silent tolerance (frozen-interface rule, spec §0.3).
-const Version = 1
+//
+// Version 2 is protocol-change/004's `mounts` field. Version 1 is not
+// accepted alongside it: an absent `mounts` key would have to mean "no
+// explicit mounts", which is the same reading as an empty list, and the
+// helper would have no way to tell a v1 sender from a v2 sender that
+// asked for nothing. The broker refuses every version but its own for
+// the same reason, so the two halves move together or not at all.
+const Version = 2
 
 // NetworkMode enumerates the network policy modes of SandboxPolicyV1.
 type NetworkMode string
@@ -52,6 +59,41 @@ type Network struct {
 	Proxy string
 }
 
+// MountAccess is how an explicit mount binds its path into the jail.
+type MountAccess string
+
+const (
+	// MountReadOnly binds the path read-only (`--ro-bind`).
+	MountReadOnly MountAccess = "ro"
+	// MountReadWrite binds the path read-write (`--bind`).
+	MountReadWrite MountAccess = "rw"
+)
+
+// Mount is one explicit bind of a host path into the jail, the
+// vocabulary protocol-change/004 added at policy version 2.
+//
+// A mount is emitted after the protected masks and after the scratch
+// mount, so a path the policy names here is visible in the jail even
+// where a mask or the scratch tmpfs would otherwise shadow it. The cap
+// socket and the cap token are the two paths that need that, and under
+// the present base view (the whole host bound read-only) they are the
+// only reason the field exists.
+type Mount struct {
+	// Path is the host path, bound at the same location inside the
+	// jail. Invariant, checked on decode: absolute.
+	Path string
+	// Access is "ro" or "rw".
+	Access MountAccess
+	// Required refuses the execution when the source path does not
+	// exist on this host, rather than running a jail the caller
+	// believes carries it. An optional mount is skipped instead.
+	//
+	// This stays a bool because the wire has bools and Go has one; the
+	// two-variant type the Gleam side carries is a house rule about
+	// record fields there (lint R9), not a property of the format.
+	Required bool
+}
+
 // Limits are resource ceilings. Zero means "no limit of this kind": the
 // broker expresses "unlimited" as 0 rather than omitting the key, because
 // every key of the frozen map is required.
@@ -74,6 +116,10 @@ type Policy struct {
 	EnvAllow      []string
 	// Scratch is either the literal "tmpfs" or an absolute path.
 	Scratch string
+	// Mounts are the explicit binds, in the order the sender wrote
+	// them. Ordering inside the jail is decided by the mount plan, not
+	// by this list.
+	Mounts []Mount
 }
 
 // ScratchIsTmpfs reports whether the scratch area is a fresh tmpfs
@@ -81,7 +127,7 @@ type Policy struct {
 func (p *Policy) ScratchIsTmpfs() bool { return p.Scratch == "tmpfs" }
 
 // Decode parses a SandboxPolicyV1 msgpack map. It rejects: a version
-// other than 1, missing keys, unknown keys, wrong types, an unknown
+// other than Version, missing keys, unknown keys, wrong types, an unknown
 // network mode, and trailing bytes after the map. Unknown keys are an
 // error rather than ignored because a field we do not understand could be
 // a restriction we would silently fail to enforce.
@@ -143,12 +189,30 @@ func Encode(p Policy) ([]byte, error) {
 		},
 		"env_allow": p.EnvAllow,
 		"scratch":   p.Scratch,
+		"mounts":    encodeMounts(p.Mounts),
 	}
 	enc.SetSortMapKeys(true) // deterministic bytes for golden tests
 	if err := enc.Encode(m); err != nil {
 		return nil, fmt.Errorf("policy: encode: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// encodeMounts renders the mount list as the wire's array of maps. A nil
+// slice becomes an empty array rather than msgpack nil, because the
+// helper's own encoder feeds the stage-2 pipe and an empty mount list is
+// the common case; leaving it nil would make the helper emit a document
+// its own decoder only tolerates by special case.
+func encodeMounts(mounts []Mount) []any {
+	out := make([]any, 0, len(mounts))
+	for _, m := range mounts {
+		out = append(out, map[string]any{
+			"path":     m.Path,
+			"access":   string(m.Access),
+			"required": m.Required,
+		})
+	}
+	return out
 }
 
 func encodeNetwork(n Network) map[string]any {
@@ -177,7 +241,7 @@ func fromMap(m map[string]any) (Policy, error) {
 	known := map[string]bool{
 		"v": true, "writable_roots": true, "readable_roots": true,
 		"protected": true, "network": true, "limits": true,
-		"env_allow": true, "scratch": true,
+		"env_allow": true, "scratch": true, "mounts": true,
 	}
 	var unknown []string
 	for k := range m {
@@ -233,6 +297,9 @@ func fromMap(m map[string]any) (Policy, error) {
 		return Policy{}, fmt.Errorf("policy: scratch %q is neither \"tmpfs\" nor absolute", scratch)
 	}
 	p.Scratch = scratch
+	if p.Mounts, err = mountsFrom(m["mounts"]); err != nil {
+		return Policy{}, err
+	}
 
 	for _, group := range [][]string{p.WritableRoots, p.ReadableRoots, p.Protected} {
 		for _, path := range group {
@@ -242,6 +309,79 @@ func fromMap(m map[string]any) (Policy, error) {
 		}
 	}
 	return p, nil
+}
+
+// mountsFrom decodes the `mounts` array. It is as strict as every other
+// field here and as strict as the broker's own decoder: an unknown key,
+// a relative path, an access that is neither "ro" nor "rw", or a
+// `required` that is not a bool is an error rather than a guess, because
+// a mount the helper misreads is a host path bound into the jail on
+// terms nobody chose.
+func mountsFrom(v any) ([]Mount, error) {
+	// A nil slice on either side of the wire encodes as msgpack nil.
+	// The broker's decoder tolerates it for the same reason, so the two
+	// agree on what "no explicit mounts" looks like.
+	if v == nil {
+		return nil, nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("policy: mounts: expected array, got %T", v)
+	}
+	out := make([]Mount, 0, len(arr))
+	for i, e := range arr {
+		mount, err := mountFrom(e)
+		if err != nil {
+			return nil, fmt.Errorf("policy: mounts[%d]: %w", i, err)
+		}
+		out = append(out, mount)
+	}
+	return out, nil
+}
+
+func mountFrom(v any) (Mount, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return Mount{}, fmt.Errorf("expected map, got %T", v)
+	}
+	known := map[string]bool{"path": true, "access": true, "required": true}
+	var unknown []string
+	for k := range m {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return Mount{}, fmt.Errorf("unknown keys %v", unknown)
+	}
+	for k := range known {
+		if _, present := m[k]; !present {
+			return Mount{}, fmt.Errorf("missing required key %q", k)
+		}
+	}
+
+	path, err := asString(m["path"])
+	if err != nil {
+		return Mount{}, fmt.Errorf("path: %w", err)
+	}
+	if len(path) == 0 || path[0] != '/' {
+		return Mount{}, fmt.Errorf("path %q is not absolute", path)
+	}
+	access, err := asString(m["access"])
+	if err != nil {
+		return Mount{}, fmt.Errorf("access: %w", err)
+	}
+	switch MountAccess(access) {
+	case MountReadOnly, MountReadWrite:
+	default:
+		return Mount{}, fmt.Errorf("access %q is neither \"ro\" nor \"rw\"", access)
+	}
+	required, ok := m["required"].(bool)
+	if !ok {
+		return Mount{}, fmt.Errorf("required: expected bool, got %T", m["required"])
+	}
+	return Mount{Path: path, Access: MountAccess(access), Required: required}, nil
 }
 
 func networkFrom(v any) (Network, error) {
