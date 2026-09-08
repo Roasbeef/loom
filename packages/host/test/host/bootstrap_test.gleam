@@ -10,9 +10,18 @@ import host/bootstrap
 import simplifile
 
 fn root() -> String {
+  // Three tests below call this, and each of them deletes the whole root when
+  // it finishes. A millisecond reading alone is not enough to keep them apart:
+  // two calls that land in the same millisecond name the same directory, and
+  // then one test's cleanup removes the other's fixture mid-assertion. The
+  // random component makes the name unique per call, so the tests stay
+  // independent whatever order or concurrency the runner chooses.
   let assert Ok(path) =
     bootstrap.absolute_path(
-      "build/host-test-é-" <> int.to_string(bootstrap.system_time_ms()),
+      "build/host-test-é-"
+      <> int.to_string(bootstrap.system_time_ms())
+      <> "-"
+      <> int.to_string(int.random(1_000_000_000)),
     )
     as "the host fixture has an absolute path"
   path

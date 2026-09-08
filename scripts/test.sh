@@ -16,7 +16,37 @@ if [ "$#" -ne 0 ]; then
   fi
   match="$2"
 fi
+
+# LOOM_TEST_PARALLEL asks EUnit to run tests concurrently, up to this many at
+# a time, on the one emulator the runner already starts. Unset, empty, or 1
+# leaves the run exactly as it was: the same sequential order and the same
+# output. Anything else must be a positive integer, because a typo that
+# silently fell back to sequential would make a timing measurement claim a
+# speedup it never had.
+#
+# The concurrency is not per module. EUnit propagates an inparallel group's
+# ordering down the whole subtree beneath it, so wrapping the module list
+# makes every individual test in the package eligible to run beside every
+# other one, including two tests inside the same module. A suite whose tests
+# share a fixture between themselves is therefore just as exposed as two
+# suites that share one.
+#
+# The variable is opt-in rather than a default because EUnit gives concurrent
+# test representations no isolation whatsoever. They share one node, so they
+# share every registered process name, every listening port, every scratch
+# path derived from a clock reading, every environment variable, and the
+# package's single started application. A module is safe to run beside its
+# siblings only if everything it touches outside its own process is named
+# uniquely per run; anything reaching the outside world under a shared name
+# will collide, and the collision usually reads as an unrelated failure.
+parallel="${LOOM_TEST_PARALLEL:-1}"
+if ! [[ "$parallel" =~ ^[1-9][0-9]*$ ]]; then
+  echo "LOOM_TEST_PARALLEL must be a positive integer, got: $parallel" >&2
+  exit 2
+fi
+
 export LOOM_TEST_PACKAGE="$package" LOOM_TEST_MATCH="$match"
+export LOOM_TEST_PARALLEL="$parallel"
 cd "$root/packages/$package"
 # The runner's own body is wrapped for two reasons. A raise inside it — the
 # --match path's `{module, M} = code:ensure_loaded(M)` is the reachable one —
@@ -54,9 +84,21 @@ python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- 
           end, M:module_info(exports))
         end, Modules)
       end,
+
+      %% A parallel run wraps the whole module list in one inparallel group.
+      %% EUnit pushes that ordering down into every nested item, so the limit
+      %% counts individual tests rather than modules and no module is
+      %% internally sequential. Only the unfiltered path is wrapped: --match
+      %% already names individual tests, and reordering those would change
+      %% what a focused debugging run means.
+      Parallel = list_to_integer(os:getenv(\"LOOM_TEST_PARALLEL\", \"1\")),
+      Grouped = case {Pattern, Parallel} of
+        {\"\", N} when N > 1 -> [{inparallel, N, Tests}];
+        _ -> Tests
+      end,
       case Tests of
         [] -> io:format(standard_error, \"No tests matched ~tp~n\", [Pattern]), Halt(2);
-        _ -> case eunit:test(Tests, [verbose, {scale_timeouts, 10}]) of
+        _ -> case eunit:test(Grouped, [verbose, {scale_timeouts, 10}]) of
           ok -> Halt(0);
           error -> Halt(1)
         end
