@@ -17,7 +17,7 @@
 # variance — goes away. Everything here is the exact command a CI job
 # runs; only the scheduling differs.
 #
-# What runs. One serial preparation, then seven lanes:
+# What runs. One serial preparation, then six lanes:
 #
 #   prep                     `make codemode-seed build binaries
 #                            server-shipment`. Serial on purpose: it is the
@@ -29,7 +29,18 @@
 #                            client lane and the bootstrap fixtures both
 #                            build packages/client — cannot compile the
 #                            same module at once.
-#   client                   scripts/check.sh client — the long pole.
+#   client                   scripts/check.sh client tui, then
+#                            scripts/e2e_client_bootstrap.sh: the native
+#                            TUI bootstrap and the shipped-daemon fixtures.
+#                            The long pole, and sequential on purpose: the
+#                            bootstrap fixtures run tui's launch-lock tests
+#                            and drive the client package's shipped
+#                            fixtures a second time, and both name their
+#                            scratch roots by the millisecond. Two lanes
+#                            running them at once collided on the first
+#                            warm run — a lock reported busy by the other
+#                            lane's copy of the same test. CI never meets
+#                            this because those jobs are separate machines.
 #   mid                      check.sh runtime storage session events.
 #   conformance              check.sh conformance, then the 200-seed soak.
 #                            The soak rebuilds packages/conformance once a
@@ -43,8 +54,6 @@
 #                            .github/enforcement-expectations — the same
 #                            file, so this box must enforce every layer
 #                            the hosted jail job enforces.
-#   bootstrap                scripts/e2e_client_bootstrap.sh: the native
-#                            TUI bootstrap and the shipped-daemon fixtures.
 #
 # `make e2e` and `make e2e-codemode` are not lanes because they are the
 # conformance and codemode package suites by another name; with a
@@ -143,7 +152,10 @@ if ! $retry make codemode-seed build binaries server-shipment 2>&1 | tee "$logs/
 	verdict=1
 fi
 
-lane_client() { $retry bash scripts/check.sh client; }
+lane_client() {
+	$retry bash scripts/check.sh client tui &&
+		$retry bash scripts/e2e_client_bootstrap.sh
+}
 lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
 lane_conformance() {
 	$retry bash scripts/check.sh conformance &&
@@ -151,7 +163,7 @@ lane_conformance() {
 }
 lane_fast() {
 	$retry bash scripts/check.sh host core machine prompt telemetry provider \
-		broker mcp tools cap ext codemode tui lint sandbox
+		broker mcp tools cap ext codemode lint sandbox
 }
 lane_static() {
 	python3 scripts/with_timeout.py 20 -- \
@@ -163,9 +175,8 @@ lane_enforcement() {
 	.github/scripts/enforcement_report.sh "$logs/selftest.log" \
 		.github/enforcement-expectations "$context (self-test)"
 }
-lane_bootstrap() { $retry bash scripts/e2e_client_bootstrap.sh; }
 
-lanes=(client mid conformance fast static enforcement bootstrap)
+lanes=(client mid conformance fast static enforcement)
 pids=()
 lane_logs=()
 if [ -z "${verdict:-}" ]; then
