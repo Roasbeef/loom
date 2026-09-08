@@ -25,3 +25,10 @@ pub fn unique_integer() -> Int
 /// opt-in and an environment variable is how it is opted into.
 @external(erlang, "conformance_test_ffi", "get_env")
 pub fn get_env(name: String) -> Result(String, Nil)
+
+/// Milliseconds from an arbitrary origin, never decreasing. Uses
+/// `erlang:monotonic_time/1`; the daemon soak spends a wall-clock
+/// budget rather than a seed count, and no pure function can report
+/// how much of it is left.
+@external(erlang, "conformance_test_ffi", "monotonic_ms")
+pub fn monotonic_ms() -> Int
