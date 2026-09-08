@@ -1826,10 +1826,15 @@ fn refusal_outcome(refusal: broker.Refusal) -> CapOutcome {
   case refusal {
     broker.PolicyRefused(denial:) ->
       framing.CapErr(code: "policy", message: denial.reason)
-    broker.InvalidPolicy(error: _) ->
+
+    // The rule that failed travels with the refusal. A program that is
+    // told only that its policy was invalid has nothing to act on, and
+    // neither does the operator reading its output; the validator's own
+    // error names the path and the rule.
+    broker.InvalidPolicy(error:) ->
       framing.CapErr(
         code: "invalid_policy",
-        message: "the composed policy is invalid",
+        message: "the composed policy is invalid: " <> string.inspect(error),
       )
     broker.BudgetRefused(refusal: budget_refusal) ->
       framing.CapErr(code: "budget", message: budget_text(budget_refusal))
