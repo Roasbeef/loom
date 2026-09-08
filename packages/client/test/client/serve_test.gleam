@@ -1566,3 +1566,120 @@ pub fn a_boot_with_full_network_configured_comes_up_test() {
     as "the server must boot with network egress configured"
   serve.shutdown(booted)
 }
+
+// --- the code-mode mount plan (#242) ---------------------------------------
+
+// The two halves of one statement: the session base says what code mode
+// may reach, `codemode/launch.node_requirements` says what a satellite
+// needs, and composition takes the meet by path. These tests hold the two
+// against each other, because a drift between them is not a compile
+// error — it is a session in which every code-mode execution is refused.
+
+fn a_toolchain() -> codemode.Toolchain {
+  codemode.toolchain(
+    gleam_path: "/opt/homebrew/bin/gleam",
+    erl_path: "/usr/lib/erlang/bin/erl",
+    seed_root: "/opt/loom/share/codemode-seed",
+  )
+}
+
+pub fn the_base_admits_the_toolchain_as_mounts_test() {
+  let admitted =
+    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
+  assert list.map(admitted.mounts, fn(mount) { mount.path })
+    == ["/usr/lib/erlang", "/opt/homebrew", "/opt/loom/share/codemode-seed"]
+}
+
+pub fn a_host_without_a_toolchain_admits_nothing_test() {
+  // A host that registers no `code_mode` tool launches no satellite, so a
+  // mount for it would be a region granted for nothing.
+  let base = serve.base_policy("/work")
+  assert serve.admitting_codemode(base, Error("no gleam on PATH")) == base
+}
+
+pub fn the_admitted_base_is_one_the_sandbox_can_enforce_test() {
+  // `validate` refuses a mount that overlaps a `protected` entry, and the
+  // session base protects the workspace's blob store. The toolchain lives
+  // outside every workspace, so the two never meet; a policy that put
+  // them in one region would fail the boot rather than this test, which is
+  // why the check is worth stating here where the shape is visible.
+  let admitted =
+    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
+  assert serve.base_policy_fault(admitted) == Ok(Nil)
+}
+
+pub fn the_base_and_the_node_compose_without_narrowing_test() {
+  // The property the whole item rests on: the base carries exactly what
+  // the launcher requires, so the meet is the requirements and no mount is
+  // lost on the way into the jail.
+  let mounts = codemode.toolchain_mounts(a_toolchain())
+  let base =
+    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
+  let requirements = policy.SandboxPolicy(..base, mounts:)
+  let #(effective, narrowings) =
+    policy.compose(base:, requirements:, grants: [])
+  assert narrowings == []
+  assert effective.mounts == mounts
+}
+
+pub fn a_base_missing_a_toolchain_mount_refuses_the_node_test() {
+  // The refusal an operator has to be able to act on. Without it a
+  // narrowed base would produce a satellite that boots into a jail with no
+  // ERTS tree and dies with nothing to read.
+  let mounts = codemode.toolchain_mounts(a_toolchain())
+  let base = serve.base_policy("/work")
+  let requirements = policy.SandboxPolicy(..base, mounts:)
+  let #(_effective, narrowings) =
+    policy.compose(base:, requirements:, grants: [])
+  assert list.length(narrowings) == 3
+}
+
+pub fn the_state_root_masks_do_not_meet_the_toolchain_mounts_test() {
+  // The one shape that could refuse a boot: `validate` rejects a mount
+  // overlapping a `protected` entry, and `resolve_managed` adds the
+  // daemon's state-root masks to every session's base. They cannot
+  // overlap, because every mask is a named path *under* the state root
+  // and the toolchain lives in an install prefix, but the check is cheap
+  // and the failure would be a daemon that refuses every session.
+  let admitted =
+    serve.base_policy("/work")
+    |> serve.protecting_state_root("/home/o/.loom")
+    |> serve.admitting_codemode(Ok(a_toolchain()))
+  assert serve.base_policy_fault(admitted) == Ok(Nil)
+}
+
+pub fn a_hook_runs_under_the_assembled_session_base_test() {
+  // The drift this holds shut: hooks fire on the harness's own timeline,
+  // so their coordinates are built once at assembly rather than borrowed
+  // from a run. Built from the settings' own policy they would carry
+  // neither the toolchain mounts an extension node requires nor the
+  // index, memory and worktree masks the session runs under, and every
+  // hook-fired launch would meet three required mounts against an empty
+  // base list and be refused.
+  let settings = settings_under("hook-base")
+  let assembled =
+    settings.base_policy
+    |> serve.protecting_index(settings.workspace <> "/.loom/index.sqlite")
+    |> serve.admitting_codemode(Ok(a_toolchain()))
+  assert assembled != settings.base_policy
+  let at =
+    serve.hook_coordinates(settings, assembled, 7, clock.fixed(at: 0), [])
+  assert at.base_policy == assembled
+}
+
+pub fn a_toolchain_inside_the_state_root_refuses_the_boot_test() {
+  // And the pathological arrangement is refused by name rather than
+  // enforced differently on the two platforms: a seed unpacked inside the
+  // daemon's own sessions directory is a mount over a mask.
+  let inside =
+    codemode.toolchain(
+      gleam_path: "/opt/homebrew/bin/gleam",
+      erl_path: "/usr/bin/erl",
+      seed_root: "/home/o/.loom/sessions/seed",
+    )
+  let admitted =
+    serve.base_policy("/work")
+    |> serve.protecting_state_root("/home/o/.loom")
+    |> serve.admitting_codemode(Ok(inside))
+  assert serve.base_policy_fault(admitted) != Ok(Nil)
+}

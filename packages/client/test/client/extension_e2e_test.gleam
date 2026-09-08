@@ -261,7 +261,7 @@ fn drive(ready: Ready) -> Nil {
       })
       let #(now, _clock) = clock.read(wall_clock())
       assert !list.contains(
-        launch.node_requirements(spec, now).env_allow,
+        launch.node_requirements(spec, host_mounts: [], now_ms: now).env_allow,
         extensions.fetcher_env,
       )
 
@@ -1262,7 +1262,15 @@ fn install_fixture(ready: Ready, host: String) -> Result(Installed, String) {
               toolchain: plane.toolchain,
             ),
             workspace:,
-            base_policy: plane.base_policy,
+            // The session base a booting server would hand a satellite,
+            // toolchain mounts and all: the launch requires them and
+            // composition takes the meet, so a base without them refuses
+            // every extension node. `client/serve.admitting_codemode` is
+            // the same call the boot makes.
+            base_policy: serve.admitting_codemode(
+              plane.base_policy,
+              Ok(plane.toolchain),
+            ),
             plane:,
             live_root:,
           ))

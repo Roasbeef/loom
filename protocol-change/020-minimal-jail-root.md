@@ -57,6 +57,24 @@ parent of its `bin/`. `go` is mounted the same way when present. That derivation
 is a heuristic, so each toolchain mount is `MountRequired`: a wrong prefix
 refuses the dispatch by name instead of producing an `erl` that fails to boot.
 
+Three host layouts a minimal root has to handle explicitly, found while
+reviewing the explicit-mount work. A version manager puts a shim on `PATH`:
+`~/.asdf/shims/gleam` is a script that execs `~/.asdf/bin/asdf`, which lives
+outside the prefix derived from the shim. A distribution or a hand-rolled
+install puts a symlink there: `/usr/local/bin/gleam -> /home/x/src/gleam/build/gleam`,
+whose real binary is outside `/usr/local`. Nix puts `erl` in a wrapper tree:
+`code:root_dir()` is `.../lib/erlang`, and the `erl` script under it has a
+shebang and a libc that are outside that root. Each of the three has to be
+either resolved or refused by name; none is answered by taking the parent of
+`bin/`.
+
+A prefix is also the wrong region for `gleam`. A developer install puts the
+binary in `~/.cargo/bin` or `~/.local/bin`, and mounting the prefix read-only
+would expose `~/.cargo/credentials.toml` and `~/.local/state` to every jailed
+build. 020 should therefore mount the binary's own directory for `gleam`, not
+its install prefix; `erl` keeps the prefix, because an ERTS `ROOTDIR` really is
+the tree it loads.
+
 **The seed root**, read-only: `Toolchain.seed_root`, located by
 `--codemode-seed` or beside a release at `install.seed()`
 (`packages/client/src/client/install.gleam:164`).

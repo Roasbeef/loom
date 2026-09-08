@@ -1626,7 +1626,19 @@ fn rig_protecting(
   let workspace = workspace_in(root)
   let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/tmp")
     as "the live rig must have a workspace"
-  let base = policy.SandboxPolicy(..base_policy(root), protected:)
+  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
+    as "the toolchain must be located"
+
+  // The base carries the toolchain's mounts for the reason a real
+  // session's does (`client/serve.admitting_codemode`): the satellite
+  // launch requires them, composition takes the meet by path, and a base
+  // without them refuses every run.
+  let base =
+    policy.SandboxPolicy(
+      ..base_policy(root),
+      protected:,
+      mounts: codemode.toolchain_mounts(toolchain),
+    )
   let assert Ok(pool) =
     exec.start_pool(size: 3, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(
@@ -1651,8 +1663,6 @@ fn rig_protecting(
       ),
     )
     as "the broker must start"
-  let assert Ok(toolchain) = codemode.discover(ready.seed_root)
-    as "the toolchain must be located"
   Rig(
     root:,
     workspace:,

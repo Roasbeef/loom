@@ -274,7 +274,9 @@ session and sends it many invocations.
   budget or grants.
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
-  own `{op_id, step_id}`.
+  own `{op_id, step_id}`. Its `host_mounts` field carries the filesystem
+  regions only the host knows about — the toolchain prefixes and the build
+  seed — into `node_requirements`.
 - `codemode/satellite.{Run, RunError, Outcome, SatelliteConfig,
   LaunchSpec, CapConnection, Launcher, WireIn, CapRouter, CapRequest,
   CapPlan, CapDenial}` — the in-harness host: the broker end of the cap
@@ -688,11 +690,20 @@ session and sends it many invocations.
   helper's base view ro-binds the whole host filesystem, so an
   unprotected host path is still readable from inside the jail
   (`protocol-change/004-sandbox-policy-explicit-mounts.md`).
-- **Reachability is checked, not assumed.** `SandboxPolicyV1` has no
-  "bind this path" verb, so the launcher expresses the socket and token as
-  readable roots *and* refuses the two cases the vocabulary cannot state:
-  a path under a `protected` entry, and a path under the scratch tmpfs
-  mount. See `protocol-change/004-sandbox-policy-explicit-mounts.md`.
+- **Reachability is stated where it can be, checked where it cannot.**
+  `node_requirements` takes a `host_mounts` list — the toolchain install
+  prefixes and the build seed the host located — and puts it in the
+  policy's `mounts` field, read-only and `MountRequired`
+  (`protocol-change/004`). `client/serve.admitting_codemode` puts the same
+  list in the session base, and mounts compose as the meet by path, so a
+  base that does not carry one refuses the launch naming the path rather
+  than booting an `erl` with no ERTS tree. The socket, the token and
+  `beam_dir` stay readable roots and are checked by `path_reachable`:
+  they are per-execution paths, so no session base built before them could
+  carry matching entries, and requiring them as mounts would narrow every
+  launch. The launcher still refuses the two cases no vocabulary makes
+  reachable: a path under a `protected` entry, and a path under the
+  scratch tmpfs mount.
 - **The orchestration router builds no clearance.** Every plan it returns
   is `ServedHere`, so the `CallSpec` boundary `codemode/identity`'s module
   doc names — a public record an injected router could fill with invented

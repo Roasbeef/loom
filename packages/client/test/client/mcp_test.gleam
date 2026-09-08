@@ -704,7 +704,7 @@ fn host(broker_actor: broker.Broker, layer: mcp.Layer) -> codemode.Config {
     broker: broker_actor,
     clock: clock.fixed(at: t),
     workspace: "/work",
-    toolchain: codemode.Toolchain(
+    toolchain: codemode.toolchain(
       gleam_path: "/opt/gleam/bin/gleam",
       erl_path: "/usr/lib/erlang/bin/erl",
       seed_root: "/opt/loom/codemode-seed",
