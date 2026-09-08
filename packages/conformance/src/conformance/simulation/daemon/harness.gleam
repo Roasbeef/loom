@@ -50,6 +50,7 @@ import conformance/simulation/daemon/daemon_fault.{
 import conformance/simulation/vclock.{type Clockwork}
 import core/clock
 import core/ids
+import gleam/bit_array
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -57,8 +58,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session/session
+import storage/access
 import storage/catalogue
 import storage/domain
+import tools/blob
 import weft/poll
 
 /// The instance a simulated assembly publishes. The registry only stores it
@@ -636,4 +639,111 @@ pub fn describe_row(row: Row) -> String {
     ],
     "|",
   )
+}
+
+/// The registry this daemon publishes, for a check that drives the manager's
+/// own admission and administration surface rather than the harness's
+/// convenience wrappers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.session_authority(harness.registry(daemon), digest, id)
+/// ```
+pub fn registry(harness: Harness) -> manager.Manager(Instance) {
+  harness.ready.registry
+}
+
+/// The random identity of this daemon lifetime. Every authority question the
+/// manager answers is fenced on it, and a restart mints a new one, so a check
+/// that reuses a previous lifetime's epoch is asking about a daemon that no
+/// longer exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.epoch(daemon)
+/// ```
+pub fn epoch(harness: Harness) -> String {
+  harness.ready.epoch
+}
+
+/// The digest of the durable owner credential, which is what every
+/// administration is authorized against.
+///
+/// The credential itself leaves the root through one door only, and this is
+/// the only reason the harness opens it: an invitation and a revocation are
+/// owner-only mutations, so a revocation check cannot be written without it.
+///
+/// The digest is the lowercase hex SHA-256 of the credential, which is what
+/// the root itself stored when it bootstrapped the owner. The hash comes from
+/// `tools/blob`, whose content address is that same construction behind a
+/// prefix, because the daemon's own hashing lives in `host` and this package
+/// does not depend on it. A harness that hashed differently would authenticate
+/// as nobody and every administration would refuse.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(owner) = harness.owner_digest(daemon)
+/// ```
+pub fn owner_digest(harness: Harness) -> Result(access.Digest, String) {
+  use credential <- result.try(root.listener_credential(harness.root))
+  let hashed =
+    string.drop_start(blob.ref_for(bit_array.from_string(credential)), 7)
+  access.credential_digest(hashed)
+  |> result.replace_error("the durable owner credential is not a digest")
+}
+
+/// Reserves and initializes a session whose aggregate is scoped to itself,
+/// then waits for the registry to publish it.
+///
+/// A workspace-private session refuses invitation outright, because sharing a
+/// workspace aggregate needs an explicit stopped isolation first. A check
+/// about the admission boundary is not a check about that refusal, so it
+/// creates its session already isolated and reaches the boundary directly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.create_isolated(daemon, "shared", "/sim/ws-a", "Shared", seed: 3)
+/// ```
+pub fn create_isolated(
+  harness: Harness,
+  key key: String,
+  workspace workspace: String,
+  name name: String,
+  seed seed: Int,
+) -> Result(catalogue.Registration, String) {
+  let request = manager.Creation(key, workspace, name, "")
+  let generator = ids.generator(vclock.clock(harness.clock), seed:)
+  let outcome =
+    manager.create_scoped(
+      harness.ready.registry,
+      request,
+      directory: harness.ready.sessions_directory,
+      generator:,
+      scope: domain.SessionOnly,
+      configuration: "",
+    )
+  use view <- result.try(result.map_error(outcome, describe))
+  use Nil <- result.map(await_resident(harness, view.registration.id))
+  view.registration
+}
+
+/// Reads one session's live lifecycle status without waiting for it to
+/// settle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.status(daemon, id)
+/// ```
+pub fn status(
+  harness: Harness,
+  id id: String,
+) -> Result(manager.Status, String) {
+  manager.get(harness.ready.registry, id)
+  |> result.map(fn(view: manager.View) { view.status })
+  |> result.map_error(describe)
 }
