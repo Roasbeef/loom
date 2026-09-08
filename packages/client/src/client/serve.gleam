@@ -72,6 +72,7 @@ import core/clock.{type Clock}
 import core/ids
 import filepath
 import gleam/bit_array
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
@@ -105,6 +106,7 @@ import storage/domain
 import storage/sqlite
 import telemetry/field
 import telemetry/log.{type Logger}
+import tom
 import tools/agent.{type Agency}
 import tools/history as history_tool
 import tools/remember
@@ -510,7 +512,20 @@ pub fn start_build_plane(
   // build plane's own rather than a session's for the reason
   // `build_plane_policy` gives: an install has no blob store to mask,
   // and it does have the daemon's credentials one directory up.
-  let base = build_plane_policy(writable, state_root)
+
+  // Discovery runs before the base is built, not after the plane is
+  // started, because the base has to carry the toolchain's mounts: under
+  // `protocol-change/020` a compile that reaches a region the base does
+  // not name is refused by the meet. Asking first also means a host
+  // without a toolchain never spawns a pool it would immediately tear
+  // down.
+  use toolchain <- result.try(
+    codemode_wiring.discover(seed_root(seed, workspace)),
+  )
+  let base =
+    build_plane_policy(writable, state_root)
+    |> admitting_user_toolchains(home_directory())
+    |> admitting_codemode(Ok(toolchain))
 
   // The same refusal the boot makes, in the same place in the order: a
   // base policy the sandbox cannot enforce is a failure now, not a
@@ -523,18 +538,7 @@ pub fn start_build_plane(
     size: exec.min_pool_size,
     clock:,
   ))
-  case codemode_wiring.discover(seed_root(seed, workspace)) {
-    Ok(toolchain) ->
-      Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
-
-    // A toolchain this host does not have is not a reason to leave a
-    // pool of jails running: tear the plane down before saying so.
-    Error(reason) -> {
-      broker.stop(broker_actor)
-      exec.stop_pool(pool)
-      Error(reason)
-    }
-  }
+  Ok(BuildPlane(broker: broker_actor, pool:, toolchain:, base_policy: base))
 }
 
 /// The `PATH` a build plane's jailed compiler runs with: exactly the two
@@ -676,7 +680,17 @@ pub fn build_domain(
     path -> Some(path)
   }
   use
-    #(catalogue, _rules, _schedules, _policy, _jobs, options, _tools, entries)
+    #(
+      catalogue,
+      _rules,
+      _schedules,
+      _policy,
+      _jobs,
+      options,
+      _tools,
+      entries,
+      _workspace,
+    )
   <- result.try(load_config(configuration))
 
   // The `[secrets]` table resolved before the gateway that will spend
@@ -874,6 +888,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       memory,
       tools,
       secret_entries,
+      workspace_config,
     )
   <- result.try(load_config(flags.config))
 
@@ -913,7 +928,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     token_path: option.unwrap(flags.token_file, session_path <> ".token"),
     workspace:,
     domain_paths: None,
-    base_policy: base_policy(workspace),
+    base_policy: admitting_config_mounts(
+      base_policy(workspace),
+      workspace_config.mounts,
+    ),
     helper_path:,
     helper_pool_size:,
     session_id: session_id_of(session_path),
@@ -1086,23 +1104,23 @@ fn load_config(
     distillpass.Options,
     catalog.ToolsConfig,
     List(secrets.Entry),
+    catalog.WorkspaceConfig,
   ),
   String,
 ) {
   case flag {
     None ->
-      Ok(
-        #(
-          env_catalog(),
-          [],
-          [],
-          schedule.default_policy,
-          jobs.default_policy,
-          distillpass.default_options(),
-          catalog.default_tools(),
-          [],
-        ),
-      )
+      Ok(#(
+        env_catalog(),
+        [],
+        [],
+        schedule.default_policy,
+        jobs.default_policy,
+        distillpass.default_options(),
+        catalog.default_tools(),
+        [],
+        catalog.default_workspace(),
+      ))
     Some(path) -> {
       use text <- result.try(
         simplifile.read(path)
@@ -1136,6 +1154,9 @@ fn load_config(
       use secret_entries <- result.try(
         secrets.parse(text) |> result.map_error(named),
       )
+      use workspace_config <- result.try(
+        catalog.parse_workspace(text) |> result.map_error(named),
+      )
       Ok(#(
         catalogue,
         rule_list,
@@ -1145,6 +1166,7 @@ fn load_config(
         memory,
         tools,
         secret_entries,
+        workspace_config,
       ))
     }
   }
@@ -2215,6 +2237,8 @@ fn assemble_in(
     |> allowing_tool_tmpdir
     |> under_tools_config(settings.tools)
     |> widening_linked_worktree(settings.workspace)
+    |> widening_path_dependencies(settings.workspace)
+    |> admitting_user_toolchains(settings.home)
     |> admitting_codemode(toolchain)
 
   // Before a directory is made, a lease is taken or a helper is spawned:
@@ -3580,6 +3604,334 @@ pub fn admitting_codemode(
   }
 }
 
+/// The per-user toolchain and cache directories a jail may reach, bound
+/// when they exist and simply absent when they do not.
+///
+/// Baseline behaviour must work with no configuration edits: a new user
+/// gets what any other coding agent gives by default, and does not edit
+/// a file to run an ordinary build. Under a minimal jail root that means
+/// a fixed, well-known set, because a denylist cannot be finished and an
+/// empty allowlist refuses every build. Every entry is `MountOptional`,
+/// so an account without `~/.rustup` is not a boot failure and not a
+/// refusal; it is a mount that was never emitted.
+///
+/// **The split between read-only and read-write is the operator's rule
+/// applied to each directory**: a directory an ordinary build or install
+/// writes is read-write, and one it only reads is not. A Go build writes
+/// `~/.cache/go-build` and `~/go/pkg/mod`, cargo writes
+/// `~/.cargo/registry`, npm writes `~/.npm`, gleam and rebar write under
+/// `~/.cache` and `~/.hex`. Bound read-only, each of those is a build
+/// that fails inside the jail for a reason the model cannot act on.
+/// `protocol-change/020` states the cost that buys: a hostile payload
+/// can poison a cache another session later reads. That is a real attack
+/// and it is not closed here — it is closed by a per-session overlay or
+/// by the caches moving under the workspace, and it is worth its own
+/// issue rather than a knob nobody sets.
+///
+/// The nesting is deliberate in one place. `.cargo` holds both the shims
+/// a build reads and the registry it writes, so it is named as two
+/// sibling entries, `.cargo/bin` and `.cargo/registry`, rather than as a
+/// parent and a child. `~/go` and `~/.local` are split the same way. A
+/// parent and child pair would be two binds whose order the emitters
+/// would have to agree on, and the wider access would silently win.
+///
+/// A directory a `protected` entry already masks is dropped rather than
+/// mounted. The two contradict each other — `broker/policy.validate`
+/// refuses the pair, and it is right to — and between a mask over the
+/// daemon's own credentials and a cache an operator put underneath one,
+/// the mask is the half worth keeping. A build that needed that cache
+/// fails saying so; a mask that lost is a credential a session can read.
+///
+/// `None` for the home directory yields no user set at all, never a
+/// refusal: an account with no `HOME` is one this function knows nothing
+/// about, which is exactly the empty answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.admitting_user_toolchains(base, None) == base
+/// ```
+///
+@internal
+pub fn admitting_user_toolchains(
+  base: policy.SandboxPolicy,
+  home: Option(String),
+) -> policy.SandboxPolicy {
+  let under_home = case home {
+    None -> []
+    Some(home) -> {
+      let readable =
+        list.map(user_toolchain_readable, fn(name) {
+          #(home <> "/" <> name, policy.MountReadOnly)
+        })
+      let writable =
+        list.map(user_toolchain_writable, fn(name) {
+          #(home <> "/" <> name, policy.MountReadWrite)
+        })
+      list.append(readable, writable)
+    }
+  }
+  let shared =
+    list.map(shared_toolchain_readable, fn(path) {
+      #(path, policy.MountReadOnly)
+    })
+  let wanted =
+    list.append(under_home, shared)
+    |> list.filter(fn(entry) { simplifile.is_directory(entry.0) == Ok(True) })
+    |> list.filter(fn(entry) { !masked(entry.0, base.protected) })
+    |> list.filter(fn(entry) {
+      !list.any(base.mounts, fn(mount) { mount.path == entry.0 })
+    })
+  policy.SandboxPolicy(
+    ..base,
+    mounts: list.append(
+      base.mounts,
+      list.map(wanted, fn(entry) {
+        policy.Mount(
+          path: entry.0,
+          access: entry.1,
+          requirement: policy.MountOptional,
+        )
+      }),
+    ),
+  )
+}
+
+/// The directories under `$HOME` that hold an installed toolchain or the
+/// shims a version manager puts on `PATH`, mounted read-only. See
+/// `admitting_user_toolchains` for the membership rule.
+pub const user_toolchain_readable = [
+  ".cargo/bin", ".rustup", "go/bin", ".nvm", ".asdf", ".pyenv", ".rbenv",
+  ".opam", ".ghcup", ".sdkman", ".nix-profile", ".local/bin",
+]
+
+/// The directories under `$HOME` an ordinary build or install writes,
+/// mounted read-write. See `admitting_user_toolchains` for the
+/// membership rule and for what the write grant costs.
+pub const user_toolchain_writable = [
+  ".cache", ".cargo/registry", ".npm", ".pnpm", ".yarn", ".hex", ".mix", ".m2",
+  ".gradle", ".gem", ".stack", ".cabal", ".deno", ".bun", ".local/share",
+  "go/pkg",
+]
+
+/// The account-wide toolchain roots that are not under `$HOME`, mounted
+/// read-only.
+///
+/// `/usr/local` is not here: it is a system root on both platforms the
+/// helper binds itself, and on Linux `/usr` covers it. What is here is
+/// what no system-root constant names — the two Homebrew prefixes that
+/// are not `/usr/local`, and the Nix store a `~/.nix-profile` link
+/// points into.
+pub const shared_toolchain_readable = [
+  "/opt/homebrew", "/home/linuxbrew/.linuxbrew", "/nix/store",
+]
+
+// A region a mask already covers, in either direction: the mask over the
+// region and the region over the mask are both the contradiction
+// `broker/policy.validate` refuses.
+fn masked(path: String, protected: List(String)) -> Bool {
+  list.any(protected, fn(entry) {
+    policy.covers(root: entry, path:) || policy.covers(root: path, path: entry)
+  })
+}
+
+/// The operator's home directory as the harness reads it, or `None` when
+/// `HOME` is unset.
+///
+/// One reader, because `admitting_user_toolchains` is called from a
+/// session boot that has a `Settings` and from a build plane that does
+/// not, and two environment reads would be two answers to the same
+/// question.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.home_directory() == Some("/home/o")
+/// ```
+///
+pub fn home_directory() -> Option(String) {
+  option.from_result(env_text("HOME"))
+}
+
+/// The base policy widened for the sibling checkouts this workspace's
+/// own manifests name: every `path = "..."` dependency in a `gleam.toml`
+/// that resolves outside the workspace, read-only.
+///
+/// Derived, not configured, and for the reason
+/// `widening_linked_worktree` is: the fact is already written down in a
+/// file the workspace owns, so asking an operator to write it a second
+/// time in `loom.toml` would be asking them to keep two copies in step.
+/// A `path = "../weft"` line is the same shape as a linked worktree's
+/// git directory and is handled the same way — read the manifest,
+/// canonicalize, mount.
+///
+/// Read-only, and `MountOptional`. A path dependency whose directory is
+/// missing is a build the compiler refuses on its own terms with a
+/// better sentence than a jail could produce, and read-write would hand
+/// a session write access to a checkout the operator did not open it on.
+/// Read-write to a sibling comes only from an explicit `[workspace]
+/// mounts` line.
+///
+/// Every failure reads as "nothing to widen": an unreadable manifest, a
+/// document that does not parse, a `path` that is not a string. The
+/// monorepo case is covered by reading `packages/*/gleam.toml` as well,
+/// because loom's own layout puts the manifests there and a dependency
+/// on a sibling checkout is written in one of them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // With /work/gleam.toml naming `weft = { path = "../weft" }`:
+/// // serve.widening_path_dependencies(base, "/work").mounts
+/// //   |> list.map(fn(m) { m.path }) == ["/weft"]
+/// ```
+///
+@internal
+pub fn widening_path_dependencies(
+  base: policy.SandboxPolicy,
+  workspace: String,
+) -> policy.SandboxPolicy {
+  let wanted =
+    path_dependencies(workspace)
+    |> list.filter(fn(path) { !policy.covers(root: workspace, path:) })
+    |> list.filter(fn(path) { !masked(path, base.protected) })
+    |> list.filter(fn(path) {
+      !list.any(base.mounts, fn(mount) { mount.path == path })
+    })
+    |> list.unique
+  policy.SandboxPolicy(
+    ..base,
+    mounts: list.append(
+      base.mounts,
+      list.map(wanted, fn(path) {
+        policy.Mount(
+          path:,
+          access: policy.MountReadOnly,
+          requirement: policy.MountOptional,
+        )
+      }),
+    ),
+  )
+}
+
+/// Every `path = "..."` dependency this workspace's manifests name, made
+/// absolute against the manifest that stated it.
+///
+/// The manifests are the workspace's own `gleam.toml` and one per
+/// `packages/<name>` directory, which is the monorepo layout loom itself
+/// has. Deeper nesting is deliberately not walked: a recursive scan of a
+/// workspace is unbounded work at every session boot, and a checkout
+/// that keeps its packages somewhere else states the sibling in
+/// `[workspace] mounts` instead.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.path_dependencies("/not/a/gleam/project") == []
+/// ```
+///
+@internal
+pub fn path_dependencies(workspace: String) -> List(String) {
+  let manifests = [
+    workspace <> "/gleam.toml",
+    ..list.map(package_directories(workspace), fn(directory) {
+      directory <> "/gleam.toml"
+    })
+  ]
+  list.flat_map(manifests, manifest_paths)
+}
+
+// The `packages/<name>` directories of a monorepo checkout, or nothing.
+fn package_directories(workspace: String) -> List(String) {
+  let root = workspace <> "/packages"
+  simplifile.read_directory(root)
+  |> result.unwrap([])
+  |> list.map(fn(entry) { root <> "/" <> entry })
+  |> list.filter(fn(path) { simplifile.is_directory(path) == Ok(True) })
+}
+
+// The path dependencies of one manifest, absolute. Relative paths
+// resolve against the manifest's own directory, which is how the Gleam
+// compiler reads them.
+fn manifest_paths(manifest: String) -> List(String) {
+  let directory = filepath.directory_name(manifest)
+  let parsed = {
+    use text <- result.try(result.replace_error(simplifile.read(manifest), Nil))
+    use document <- result.try(result.replace_error(tom.parse(text), Nil))
+    Ok(
+      list.flat_map(["dependencies", "dev-dependencies"], fn(table) {
+        dependency_paths(document, table)
+      }),
+    )
+  }
+  result.unwrap(parsed, [])
+  |> list.filter_map(fn(path) { absolute_path(path, against: directory) })
+}
+
+// The `path` value of every dependency in one table. A dependency stated
+// as a bare version string carries no path and contributes nothing.
+fn dependency_paths(
+  document: Dict(String, tom.Toml),
+  table: String,
+) -> List(String) {
+  case dict.get(document, table) {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
+      dict.values(entries)
+      |> list.filter_map(fn(entry) {
+        case entry {
+          tom.Table(fields) | tom.InlineTable(fields) ->
+            case dict.get(fields, "path") {
+              Ok(tom.String(path)) -> Ok(path)
+              Ok(_other) | Error(Nil) -> Error(Nil)
+            }
+          _other -> Error(Nil)
+        }
+      })
+    Ok(_other) | Error(Nil) -> []
+  }
+}
+
+/// The base policy with an operator's `[workspace] mounts` entries
+/// admitted, each `MountRequired` at the access the line states.
+///
+/// Required rather than optional, because this is the one list nothing
+/// derives: an operator who writes a path down has said the session
+/// needs it, and a typo that silently mounted nothing would surface as a
+/// build failing for an unrelated-looking reason. A missing source
+/// refuses the execution naming the path instead.
+///
+/// An entry that overlaps a mask is not filtered out the way a derived
+/// one is. It is left in, so that `base_policy_fault` refuses the boot
+/// naming both the mount and the masked region: a derived entry is a
+/// convenience the harness can drop silently, and a written one is a
+/// statement the operator has to be told the server will not honour.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.admitting_config_mounts(base, []) == base
+/// ```
+///
+@internal
+pub fn admitting_config_mounts(
+  base: policy.SandboxPolicy,
+  configured: List(catalog.WorkspaceMount),
+) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base,
+    mounts: list.append(
+      base.mounts,
+      list.map(configured, fn(entry) {
+        policy.Mount(
+          path: entry.path,
+          access: entry.access,
+          requirement: policy.MountRequired,
+        )
+      }),
+    ),
+  )
+}
+
 /// The directories a linked worktree's git metadata lives in, outside
 /// the workspace: the worktree's own git directory first, then the main
 /// repository's `.git` its `commondir` names. Empty for a primary
@@ -4410,11 +4762,22 @@ pub fn degraded(pool: Pool) -> Bool {
 /// the agent could only discover by writing a broken command.
 pub const shell_path = "/bin/sh"
 
-/// The default session base policy: workspace writable, the whole
-/// filesystem readable (interpreters live outside the workspace —
-/// spec-gaps WP-I item 3), network off. Escalations widen it per
-/// approval. This is what `main` puts in `Settings.base_policy`; a host
-/// that supplies its own may serve a narrower one.
+/// The default session base policy: workspace writable and readable,
+/// network off. Escalations widen it per approval. This is what `main`
+/// puts in `Settings.base_policy`; a host that supplies its own may
+/// serve a narrower one.
+///
+/// The whole host used to be readable here (`readable_roots: ["/"]`),
+/// which named what the helper's base view already was rather than what
+/// a session needs. `protocol-change/020` replaces that base view with a
+/// minimal root, so every region outside the workspace is now stated:
+/// the system roots by the helper, the toolchain by
+/// `admitting_codemode`, the per-user toolchain and cache directories by
+/// `admitting_user_toolchains`, the sibling checkouts a manifest names
+/// by `widening_path_dependencies`, and anything left over by an
+/// operator's `[workspace] mounts` line. What is not stated is not
+/// reachable, which is the point: `protected` masking is a denylist and
+/// cannot cover a dotfile nobody thought of.
 ///
 /// ## Examples
 ///
@@ -4425,7 +4788,6 @@ pub const shell_path = "/bin/sh"
 pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..policy.workspace_default(workspace),
-    readable_roots: ["/"],
     // The blob store is content-addressed, and an address is only worth
     // something if nothing can be reached under it but the content it
     // names — which a jailed `proc.run` inside the writable workspace
@@ -4438,9 +4800,10 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 }
 
 /// The base policy an install's build plane runs under: the staging root
-/// writable, the whole filesystem readable so the toolchain is reachable,
-/// network off, and the daemon's state root masked where the jail can
-/// build the mask.
+/// writable, network off, and the daemon's state root masked where the
+/// jail can build the mask. The toolchain reaches it as explicit mounts,
+/// which `start_build_plane` admits once discovery has said where the
+/// toolchain is.
 ///
 /// Separate from `base_policy` because the blob mask is the one thing a
 /// build plane must not inherit. A session's blob store exists — `boot`
@@ -4459,8 +4822,8 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
 ///
 /// The state root is the other half of that lesson applied the other
 /// way. A build step is a jailed compile of code an operator fetched
-/// from somewhere, running under `readable_roots: ["/"]` on a host whose
-/// base view is the whole filesystem, so without a mask it can read
+/// from somewhere, and the state root sits one directory above the
+/// extensions root it writes, so without a mask it can read
 /// `<state_root>/owner.token` exactly as a session's jail once could.
 /// Every entry goes in conditionally rather than unconditionally,
 /// because the extensions root is `<state_root>/extensions` by default
@@ -4479,10 +4842,7 @@ pub fn build_plane_policy(
   writable: String,
   state_root: String,
 ) -> policy.SandboxPolicy {
-  let base =
-    policy.SandboxPolicy(..policy.workspace_default(writable), readable_roots: [
-      "/",
-    ])
+  let base = policy.workspace_default(writable)
   protecting(
     base,
     always: [],

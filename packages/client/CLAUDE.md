@@ -1472,8 +1472,11 @@ catalogue without opening runtimes. Explicit admission invokes
   extension install's jailed build runs under, and the second place the
   state root has to be masked. The extensions root is
   `<state_root>/extensions` by default, so the build runs one directory
-  below `owner.token` with `readable_roots: ["/"]` on a jail whose base
-  view is the whole host. Every state-root entry goes in **conditionally**
+  below `owner.token`. It grants no readable root beyond the staging
+  directory: `start_build_plane` discovers the toolchain *before* it
+  builds this base, then admits the toolchain mounts and the per-user
+  toolchain set onto it, so a compile reaches what it needs by name
+  rather than by inheriting the host. Every state-root entry goes in **conditionally**
   here, `established_masks` included, because an install may be the first
   thing that ever runs on a host and a mask over a path a daemon has not
   yet written, under a parent the narrowed build may not write, is the
@@ -1495,6 +1498,22 @@ catalogue without opening runtimes. Explicit admission invokes
   — is refused at boot by `base_policy_fault` naming both paths, which is
   the same treatment `broker/policy.validate` gives every mount-over-mask
   pair.
+- `client/serve.{admitting_user_toolchains, widening_path_dependencies,
+  admitting_config_mounts}` — the rest of `protocol-change/020`'s base.
+  The session base no longer grants `readable_roots: ["/"]`, so every
+  region outside the workspace is stated: the fixed per-user toolchain
+  and cache set under `$HOME` (`user_toolchain_readable` read-only,
+  `user_toolchain_writable` read-write, all `MountOptional`, absent
+  directories simply omitted), the account-wide roots in
+  `shared_toolchain_readable`, the sibling checkouts a `gleam.toml`
+  `path =` dependency names, and an operator's `[workspace] mounts`
+  line. The write grant on the cache subset is the operator's rule:
+  zero configuration must run an ordinary build, and a Go, cargo, npm
+  or rebar build writes its cache. What that costs — one session can
+  poison a cache another later reads — is stated in 020 and closed
+  later, not here. A *derived* entry overlapping a mask is dropped
+  silently, because the mask is the half worth keeping; a *configured*
+  one is left in, so `base_policy_fault` refuses the boot naming both.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a

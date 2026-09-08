@@ -1587,7 +1587,7 @@ pub fn the_base_admits_the_toolchain_as_mounts_test() {
   let admitted =
     serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
   assert list.map(admitted.mounts, fn(mount) { mount.path })
-    == ["/usr/lib/erlang", "/opt/homebrew", "/opt/loom/share/codemode-seed"]
+    == ["/usr/lib/erlang", "/opt/loom/share/codemode-seed", "/opt/homebrew/bin"]
 }
 
 pub fn a_host_without_a_toolchain_admits_nothing_test() {
@@ -1682,4 +1682,247 @@ pub fn a_toolchain_inside_the_state_root_refuses_the_boot_test() {
     |> serve.protecting_state_root("/home/o/.loom")
     |> serve.admitting_codemode(Ok(inside))
   assert serve.base_policy_fault(admitted) != Ok(Nil)
+}
+
+// --- the minimal jail root (protocol-change/020) ---------------------------
+
+// The base view is no longer the whole host, so every region a session
+// may reach is stated. These tests hold the three derivations against
+// what they claim: the per-user toolchain set, the sibling checkouts a
+// manifest names, and the operator's own `[workspace] mounts` line.
+
+fn scratch_root(name: String) -> String {
+  let assert Ok(cwd) = simplifile.current_directory()
+    as "the test needs an absolute working directory"
+  let root = cwd <> "/build/dev/minimal-root/" <> name
+  let _stale = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+    as "the scratch root must be creatable"
+  root
+}
+
+fn make(path: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+    as "the fixture directory must be creatable"
+  Nil
+}
+
+fn mount_paths(base: policy.SandboxPolicy) -> List(String) {
+  list.map(base.mounts, fn(mount) { mount.path })
+}
+
+fn access_of(base: policy.SandboxPolicy, path: String) -> Result(_, Nil) {
+  list.find(base.mounts, fn(mount) { mount.path == path })
+  |> result.map(fn(mount) { mount.access })
+}
+
+pub fn the_user_toolchain_set_carries_only_what_exists_test() {
+  let home = scratch_root("home")
+  make(home <> "/.cargo/bin")
+  make(home <> "/.cargo/registry")
+  make(home <> "/.cache")
+  make(home <> "/.local/bin")
+  let base =
+    serve.admitting_user_toolchains(
+      policy.workspace_default("/work"),
+      Some(home),
+    )
+  let paths = mount_paths(base)
+
+  // Present directories are carried at the access the rule assigns:
+  // what a build reads is read-only, what it writes is read-write.
+  assert list.contains(paths, home <> "/.cargo/bin")
+  assert access_of(base, home <> "/.cargo/bin") == Ok(policy.MountReadOnly)
+  assert access_of(base, home <> "/.cargo/registry")
+    == Ok(policy.MountReadWrite)
+  assert access_of(base, home <> "/.cache") == Ok(policy.MountReadWrite)
+  assert access_of(base, home <> "/.local/bin") == Ok(policy.MountReadOnly)
+
+  // An absent directory is not a refusal and not an empty mount; it is
+  // simply not there.
+  assert !list.contains(paths, home <> "/.rustup")
+  assert !list.contains(paths, home <> "/.pyenv")
+
+  // Every user entry is optional, because an account that lacks one must
+  // not fail a dispatch over it.
+  assert list.all(base.mounts, fn(mount) {
+    mount.requirement == policy.MountOptional
+  })
+}
+
+pub fn the_cargo_split_is_two_siblings_and_never_a_nesting_test() {
+  // `.cargo` holds both the shims a build reads and the registry it
+  // writes. Named as a parent and a child they would be two binds whose
+  // order the emitters would have to agree on, and the wider access
+  // would win by accident.
+  assert !list.contains(serve.user_toolchain_readable, ".cargo")
+  assert !list.contains(serve.user_toolchain_writable, ".cargo")
+  assert list.contains(serve.user_toolchain_readable, ".cargo/bin")
+  assert list.contains(serve.user_toolchain_writable, ".cargo/registry")
+
+  // The same holds for every other pair: no entry may cover another.
+  let all =
+    list.append(serve.user_toolchain_readable, serve.user_toolchain_writable)
+  assert list.all(all, fn(entry) {
+    list.all(all, fn(other) {
+      entry == other
+      || !policy.covers(root: "/h/" <> other, path: "/h/" <> entry)
+    })
+  })
+}
+
+pub fn a_home_the_host_does_not_have_yields_no_user_set_test() {
+  // An account with no `HOME` is one this knows nothing about, which is
+  // the empty answer rather than a refusal. The account-wide roots are
+  // not derived from `HOME`, so whichever of them this host has is
+  // admitted either way; nothing under a home directory is.
+  let base = policy.workspace_default("/work")
+  let admitted = serve.admitting_user_toolchains(base, None)
+  assert list.all(mount_paths(admitted), fn(path) {
+    list.contains(serve.shared_toolchain_readable, path)
+  })
+}
+
+pub fn a_user_directory_under_a_mask_is_dropped_test() {
+  // The mask is the half worth keeping: a cache an operator put under
+  // the daemon's state root is a build that fails saying so, while a
+  // mask that lost is a credential a session can read. `validate`
+  // refuses the pair, so one of the two has to go before it sees them.
+  let home = scratch_root("masked-home")
+  make(home <> "/.cache")
+  let base =
+    policy.SandboxPolicy(..policy.workspace_default("/work"), protected: [
+      home <> "/.cache",
+    ])
+  let admitted = serve.admitting_user_toolchains(base, Some(home))
+  assert !list.contains(mount_paths(admitted), home <> "/.cache")
+  assert policy.validate(admitted) == Ok(Nil)
+}
+
+pub fn a_sibling_path_dependency_is_mounted_read_only_test() {
+  let root = scratch_root("siblings")
+  let workspace = root <> "/checkout"
+  make(workspace)
+  make(root <> "/weft")
+  let assert Ok(Nil) =
+    simplifile.write(
+      to: workspace <> "/gleam.toml",
+      contents: "name = \"loom\"\n\n[dependencies]\nweft = { path = \"../weft\" }\ngleam_stdlib = \">= 0.60.0\"\n",
+    )
+    as "the manifest must be writable"
+  let base =
+    serve.widening_path_dependencies(
+      policy.workspace_default(workspace),
+      workspace,
+    )
+  assert mount_paths(base) == [root <> "/weft"]
+  assert access_of(base, root <> "/weft") == Ok(policy.MountReadOnly)
+  assert list.all(base.mounts, fn(mount) {
+    mount.requirement == policy.MountOptional
+  })
+}
+
+pub fn a_path_dependency_inside_the_workspace_is_not_mounted_test() {
+  // The workspace is already the one region every session reaches, so a
+  // manifest naming a sibling package of its own says nothing new.
+  let root = scratch_root("intra")
+  let workspace = root <> "/checkout"
+  make(workspace <> "/packages/core")
+  let assert Ok(Nil) =
+    simplifile.write(
+      to: workspace <> "/packages/core/gleam.toml",
+      contents: "name = \"core\"\n\n[dev-dependencies]\nsibling = { path = \"../machine\" }\n",
+    )
+    as "the manifest must be writable"
+  let base =
+    serve.widening_path_dependencies(
+      policy.workspace_default(workspace),
+      workspace,
+    )
+  assert base.mounts == []
+}
+
+pub fn a_workspace_with_no_manifest_widens_nothing_test() {
+  let root = scratch_root("bare")
+  assert serve.path_dependencies(root) == []
+}
+
+pub fn configured_mounts_are_required_at_the_access_stated_test() {
+  let base =
+    serve.admitting_config_mounts(policy.workspace_default("/work"), [
+      catalog.WorkspaceMount(path: "/srv/data", access: policy.MountReadOnly),
+      catalog.WorkspaceMount(path: "/var/shared", access: policy.MountReadWrite),
+    ])
+  assert mount_paths(base) == ["/srv/data", "/var/shared"]
+  assert access_of(base, "/var/shared") == Ok(policy.MountReadWrite)
+
+  // Required, because nothing derives this list: a path an operator
+  // wrote down is one the session was told it needs.
+  assert list.all(base.mounts, fn(mount) {
+    mount.requirement == policy.MountRequired
+  })
+  assert serve.base_policy_fault(base) == Ok(Nil)
+}
+
+pub fn a_configured_mount_over_a_mask_refuses_the_boot_test() {
+  // Unlike a derived entry, a written one is not dropped: the operator
+  // has to be told the server will not honour the line, and the refusal
+  // names both halves.
+  let base =
+    policy.SandboxPolicy(..policy.workspace_default("/work"), protected: [
+      "/state/secrets",
+    ])
+    |> serve.admitting_config_mounts([
+      catalog.WorkspaceMount(
+        path: "/state/secrets",
+        access: policy.MountReadOnly,
+      ),
+    ])
+  let assert Error(reason) = serve.base_policy_fault(base)
+    as "a mount over a mask must refuse the boot"
+  assert string.contains(reason, "/state/secrets")
+}
+
+pub fn the_workspace_table_parses_both_array_forms_test() {
+  let assert Ok(inline) =
+    catalog.parse_workspace(
+      "[workspace]\nmounts = [{ path = \"/srv/a\", access = \"ro\" }]\n",
+    )
+    as "an inline mounts array must parse"
+  assert inline.mounts
+    == [catalog.WorkspaceMount(path: "/srv/a", access: policy.MountReadOnly)]
+
+  let assert Ok(tables) =
+    catalog.parse_workspace(
+      "[[workspace.mounts]]\npath = \"/srv/b\"\naccess = \"rw\"\n",
+    )
+    as "an array of tables must parse the same way"
+  assert tables.mounts
+    == [catalog.WorkspaceMount(path: "/srv/b", access: policy.MountReadWrite)]
+}
+
+pub fn a_workspace_mount_line_that_says_nothing_usable_is_refused_test() {
+  let relative =
+    catalog.parse_workspace(
+      "[workspace]\nmounts = [{ path = \"srv/a\", access = \"ro\" }]\n",
+    )
+  assert result.is_error(relative)
+
+  let word =
+    catalog.parse_workspace(
+      "[workspace]\nmounts = [{ path = \"/srv/a\", access = \"read\" }]\n",
+    )
+  assert result.is_error(word)
+
+  let repeated =
+    catalog.parse_workspace(
+      "[workspace]\nmounts = [{ path = \"/srv/a\", access = \"ro\" }, { path = \"/srv/a\", access = \"rw\" }]\n",
+    )
+  assert result.is_error(repeated)
+
+  let unknown =
+    catalog.parse_workspace(
+      "[workspace]\nmounts = [{ path = \"/srv/a\", access = \"ro\", mode = \"x\" }]\n",
+    )
+  assert result.is_error(unknown)
 }
