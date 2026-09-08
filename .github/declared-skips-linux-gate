@@ -22,6 +22,7 @@ declared|linux|SKIP daemon state-root masking: platform enforcement unavailable|
 # jailed `bash` call and asserts the secret did not come back. Without a
 # helper that enforces a policy the reads succeed, which measures the absence
 # of a jail rather than the masking, so the fixture declines. The macOS gate
-# runs it against a real Seatbelt profile, and the delegated jail job's Linux
-# run is the one that answers the bwrap half.
-declared|linux|SKIP shipped confinement: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate runs the jailed readings for real, and a jail-job run under bubblewrap answers the Linux half.
+# runs it against a real Seatbelt profile. No hosted Linux job runs it under
+# bubblewrap; the local Linux sign-off gate, which has a delegated cgroup
+# base, is where the bwrap half is exercised.
+declared|linux|SKIP shipped confinement: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate runs the jailed readings for real, and the local Linux sign-off gate runs the bwrap half.

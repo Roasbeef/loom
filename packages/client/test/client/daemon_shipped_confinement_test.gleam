@@ -90,9 +90,13 @@ const owned_file = "owned.txt"
 ///
 /// `scripts/test.sh client --match daemon_shipped_confinement`.
 pub fn daemon_shipped_confinement_test_() -> EunitTest {
-  // The runner scales this EUnit timeout by ten. The 60-second body and its
-  // independent native cleanup stay inside the resulting 90 seconds.
-  Timeout(9, fn() {
+  // The runner scales this EUnit timeout by ten. The 90-second body and its
+  // independent native cleanup stay inside the resulting 120 seconds, and
+  // the bootstrap script's 150-second entry sits above both. The body
+  // allows the shipped daemon 40 seconds to boot, so a shorter budget
+  // left a slow Linux box under 20 seconds for two creations and four
+  // turns.
+  Timeout(12, fn() {
     case prerequisites() {
       None -> Nil
       Some(server) -> fixture(server)
@@ -134,7 +138,7 @@ fn fixture(server: String) -> Nil {
         Ok(Nil)
       },
     ])
-    |> weft.deadline(60_000)
+    |> weft.deadline(90_000)
     |> weft.start
 
   // Native cleanup runs outside the body's deadline and before the outcome
@@ -169,14 +173,13 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
   // already under `state/sessions/` when A's jailed tool reaches for it.
   let targets =
     targets_of(paths, create(connected, "confinement-b", workspaces.b, config))
-  let secret = witnessed_token(paths)
   let #(Nil, report) =
     provider.with_server(script(targets, workspaces.marker), fn(url) {
       drive(connected, directory, workspaces.a, url)
     })
   let assert Ok(requests) = report
     as "only the eight scripted provider requests occur"
-  assert_evidence(requests, secret, workspaces.marker)
+  assert_evidence(requests, connected.owner, workspaces.marker)
   daemon.close(connected.control)
 }
 
@@ -223,8 +226,8 @@ fn targets_of(paths: endpoint.Paths, session: String) -> Targets {
       session: paths.root <> "/sessions/" <> session <> ".db",
     )
   present(targets.owner_token)
-  present(targets.catalogue)
-  present(targets.session)
+  database(targets.catalogue)
+  database(targets.session)
   targets
 }
 
@@ -234,14 +237,15 @@ fn present(path: String) -> Nil {
   Nil
 }
 
-// Read from outside the jail, which is the only place it can be read. This
-// is the value the negative asserts did not come back out of one.
-fn witnessed_token(paths: endpoint.Paths) -> String {
-  let assert Ok(secret) = simplifile.read(paths.token)
-    as "the fixture owner reads its private credential from the host"
-  let secret = string.trim(secret)
-  assert secret != "" as "the owner credential is not empty"
-  secret
+// The two databases are witnessed by their header from outside the jail,
+// not merely by existing. The negatives assert that header did not reach
+// the model, and a file that carried no header on the host, say a
+// database still empty before its first checkpoint, would satisfy them
+// without the jail doing anything.
+fn database(path: String) -> Nil {
+  let assert Ok(<<"SQLite format 3":utf8, _:bits>>) = simplifile.read_bits(path)
+    as { "no SQLite header on host: " <> path }
+  Nil
 }
 
 // --- what the model is scripted to do ---------------------------------------
