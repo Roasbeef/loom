@@ -221,10 +221,19 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 	// host. The counts cannot: both views produce the same numbers for
 	// the same policy, and the difference between them is everything the
 	// policy did *not* name.
+	//
+	// The answer is read off the plan rather than off `readable_roots`,
+	// because the plan is what bwrap was handed. Asking the policy again
+	// would be a second implementation of the tie between the root tmpfs
+	// and a grant at "/", and the report would keep saying `minimal` if
+	// the two ever disagreed.
+	base := "host-view"
+	if effective(plan, RootRegion).op.Class == ClassRootTmpfs {
+		base = "minimal"
+	}
 	rep.Applied = fmt.Sprintf(
 		"mounts:ro=%d,rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,base=%s,plan=%s",
-		ro, rw, mask, bindRO, bindRW, scratch,
-		BaseViewName(p.ReadableRoots), planDigest(plan))
+		ro, rw, mask, bindRO, bindRW, scratch, base, planDigest(plan))
 	return rep
 }
 

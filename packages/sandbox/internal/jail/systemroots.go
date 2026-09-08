@@ -88,8 +88,10 @@ var SystemRoots = []string{
 //     minimal `--dev`, so the write side stays denied by the profile's
 //     deny-default and the `/dev/null` write rule remains the one
 //     exception.
-//   - `/opt/homebrew` and `/usr/local` are the two Homebrew prefixes,
-//     which is where an operator's `erl` and `gleam` usually live.
+//   - `/opt/homebrew` is the Apple-silicon Homebrew prefix, which is where
+//     an operator's `erl` and `gleam` usually live. The Intel prefix,
+//     `/usr/local`, needs no entry of its own: `/usr` above already
+//     covers it.
 //
 // `/Users` is absent for the same reason `/home` is absent on Linux.
 var DarwinSystemRoots = []string{
@@ -103,7 +105,6 @@ var DarwinSystemRoots = []string{
 	"/private/var/select",
 	"/dev",
 	"/opt/homebrew",
-	"/usr/local",
 }
 
 // RootRegion is the region a whole-host grant names. A policy carrying it
@@ -128,7 +129,9 @@ func PlanIsMinimal(readableRoots []string) bool {
 }
 
 // BaseViewName renders PlanIsMinimal for the enforcement report's
-// `base=` field.
+// `base=` field. It answers from the policy, which is what the Seatbelt
+// backend has; the Linux audit reads the same question off the mount
+// plan it actually handed bwrap. See AuditMounts.
 func BaseViewName(readableRoots []string) string {
 	if PlanIsMinimal(readableRoots) {
 		return "minimal"

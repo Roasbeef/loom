@@ -222,6 +222,18 @@ func runShell(feat jail.Features, selfExe string, pol policy.Policy, script stri
 	return res, out.String(), nil
 }
 
+// probeWriteOutside claims that a write to a host path outside every
+// writable root does not reach the host, and it says nothing about which
+// layer refuses it. Under the minimal base view the usual answer is that
+// the path is not in the jail at all, so the shell reports ENOENT rather
+// than EROFS; under a policy that grants the region read-only it is
+// EROFS, and on a degraded host with Landlock alone it is EACCES. All
+// three are the same claim, which is why the probe reads the marker and
+// then stats the victim on the host instead of matching an errno.
+//
+// The control in the same script is what keeps the claim honest: a jail
+// that refuses every write would pass the first half for a reason that
+// has nothing to do with confinement.
 func probeWriteOutside(feat jail.Features, selfExe string) probeResult {
 	if !feat.HasFilesystemJail() && feat.LandlockABI == 0 {
 		return probeResult{outcome: skipped,

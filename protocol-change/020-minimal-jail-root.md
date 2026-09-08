@@ -179,11 +179,17 @@ with a filed issue and an addendum inside ADR-006. It is never deleted.
 
 The narrowing lands **all at once, behind no feature negotiation**. A helper
 feature flag read in `hello` was considered and rejected: the harness and the
-helper ship from one tree, the policy version bump to `v: 2` already makes an
-older helper refuse the frame rather than widen silently, and a negotiated
-flag would add a second widening path that nothing exercises. A helper without
-the narrowing cannot decode a v2 policy at all, which is the degraded report
-the flag was meant to provide.
+helper ship from one tree, and a negotiated flag would add a second widening
+path that nothing exercises.
+
+What landed carries no policy version bump either. The compatibility tie is in
+the mount plan instead: a `readable_roots` entry of `/` outranks the empty root
+tmpfs at the same region and binds the host back over it, so a harness that has
+not yet dropped that entry gets the view it had before this change. The two are
+not the same jail and the enforcement report does not let them be read as one —
+`base=` in the `mounts:` entry says `minimal` or `host-view`, derived on Linux
+from the plan bwrap was handed and on macOS from the policy the profile was
+built from.
 
 Before the default flips: `make e2e-codemode` green against a real toolchain
 and a real satellite, `make selftest` reporting the new probe enforced on

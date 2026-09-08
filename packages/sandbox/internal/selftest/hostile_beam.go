@@ -62,15 +62,15 @@ import (
 //
 // # What it does not claim
 //
-// Not "reaches nothing on the filesystem". The helper's base view
-// ro-binds the whole host filesystem and Landlock grants RODirs("/"), so
-// an unprotected host path is *readable* from inside the jail today;
-// `readable_roots` does not narrow reads, only `protected` removes them.
-// That gap is written up in
-// protocol-change/004-sandbox-policy-explicit-mounts.md and is not this
-// probe's to close. What is claimed, and observed, is that the adversary
-// cannot write outside the writable roots, cannot see a protected path,
-// and cannot reach the network.
+// Not "reaches nothing on the filesystem". Since protocol-change/020 the
+// base view carries the system directories rather than the whole host,
+// so `/usr`, `/etc` and their neighbours are readable from inside the
+// jail, and both of this probe's policies additionally name the
+// adversary's own module directory as a readable root so the node can
+// boot at all. Whether the *rest* of the host is out of reach is
+// probeOutsideMountPlan's claim, not this one. What is claimed here, and
+// observed, is that the adversary cannot write outside the writable
+// roots, cannot see a protected path, and cannot reach the network.
 
 //go:embed loom_hostile.erl
 var hostileSource []byte
