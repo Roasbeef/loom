@@ -1,6 +1,7 @@
 # Design note: running the test suite in parallel
 
-Status: **measured, opt-in, not defaulted.** `scripts/test.sh` now accepts
+Status: **measured, opt-in, not defaulted; a declared sequential group
+now exists** (see the last section). `scripts/test.sh` now accepts
 `LOOM_TEST_PARALLEL=<N>`. Unset or `1` is the behaviour the runner has always
 had. Set to anything larger, the runner wraps its test list in an EUnit
 `inparallel` group and up to N tests run at once on the one emulator it
@@ -317,17 +318,56 @@ that still improves at N=16 is `client`, which cannot use the flag at all.
 **What would have to change before a default could flip on.** In rough
 order of what it buys:
 
-1. The three `atom_count` tests need a scope narrower than the node, or an
-   escape hatch that keeps them sequential inside an otherwise parallel run.
-   EUnit has `inorder` for exactly this, so a per-module opt-out is the
-   cheapest shape.
-2. `cap` and `ext` need the capability channel to be reachable per-process
-   in tests, or they stay sequential permanently. Given the slot's security
-   purpose, staying sequential is the honest answer.
+1. ~~The three `atom_count` tests need a scope narrower than the node, or an
+   escape hatch that keeps them sequential inside an otherwise parallel
+   run.~~ **Done** — see the declaration below.
+2. ~~`cap` and `ext` need the capability channel to be reachable per-process
+   in tests, or they stay sequential permanently.~~ They stay sequential,
+   which given the slot's security purpose was always the honest answer; the
+   same declaration is how they say so.
 3. `provider` and `broker` need a private `httpc` profile per test rather
    than per VM.
 4. The four in-test deadlines need to stop being wall-clock assumptions.
 
-Only after (1) and (4) would a per-package default be worth encoding in the
-Makefile, and it would then have to live beside the package rather than as
-one number for the tree, because the safe N is not the same everywhere.
+---
+
+## The declared sequential group
+
+Items (1) and (2) are both a module that cannot share the emulator with
+anything, so both are answered by one mechanism. `scripts/serial-tests`
+declares such modules, one per line, as `package|module|reason`, and
+`scripts/test.sh` reads it whenever `LOOM_TEST_PARALLEL` is greater than 1.
+
+The runner then hands EUnit
+
+```erlang
+[{inorder, [{inparallel, N, Others}, {inorder, Serial}]}]
+```
+
+rather than one `inparallel` group. The enclosing `inorder` is the part that
+matters. A declared module is not merely internally sequential; it must not
+overlap the parallel group **at all**, because what it reads is global to the
+node. A test asserting `atom_count` does not move cannot run beside a test
+that loads a module for the first time, and a test installing a capability
+channel into `persistent_term` cannot run beside another that installs one,
+whatever group either is in. `inorder` runs its members in sequence and waits
+for each, so the parallel group completes before the first serial module
+starts, and the serial modules then run one at a time. Putting the serial
+group first would work equally well; after is chosen so the long parallel
+stretch begins immediately and the short tail is what the run ends on.
+
+A declared module that does not exist in its package fails the run. The
+reason on each line names a resource, and a reason attached to a module that
+has been renamed away is a claim no reader can check, so the list cannot rot
+quietly. The reason is also the admission criterion: a module belongs there
+only when the global resource can be named. A test that merely fails
+sometimes under load is a fixture with a wall-clock assumption in it, and
+parking it in the declaration would hide that bug and buy nothing.
+
+With the declaration in place `cap` passes at N=4 where 11 of its 65 tests
+used to fail. Items (3) and (4) are unaffected: they are fixtures to fix, not
+resources to declare.
+
+`scripts/signoff.sh` reads `SIGNOFF_PARALLEL` and exports it as
+`LOOM_TEST_PARALLEL` for every lane. It defaults to 1 until (3) and (4)
+land.

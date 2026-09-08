@@ -4,8 +4,9 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 package="${1:?usage: scripts/test.sh package [--match module-or-function]}"
 shift
-case "$package" in
-  host|core|storage|session|machine|prompt|telemetry|runtime|provider|broker|mcp|tools|cap|ext|codemode|events|client|conformance|tui|lint) ;;
+known="host core storage session machine prompt telemetry runtime provider broker mcp tools cap ext codemode events client conformance tui lint"
+case " $known " in
+  *" $package "*) ;;
   *) echo "unknown test package: $package" >&2; exit 2 ;;
 esac
 match=""
@@ -45,8 +46,39 @@ if ! [[ "$parallel" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+# Some modules cannot share the emulator with anything, because what they
+# assert about is global to the node rather than to the test. Those are
+# declared in scripts/serial-tests with the resource named, and the runner
+# reads the declaration here rather than carrying a list in its own source:
+# the file is what a reviewer reads when asking why a module is exempt.
+#
+# The whole file is validated on every run, not just this package's lines,
+# so a malformed entry is found by the first package that runs rather than
+# by the one it belongs to. Whether the declared modules actually exist is
+# checked in the emulator below, where the discovered module list lives.
+serial_file="$root/scripts/serial-tests"
+serial=""
+if [ "$parallel" -gt 1 ] && [ -z "$match" ]; then
+  serial="$(awk -F'|' -v want="$package" -v known=" $known " '
+    /^[[:space:]]*(#|$)/ { next }
+    NF != 3 || $1 == "" || $2 == "" || $3 == "" {
+      printf "scripts/serial-tests:%d: expected <package>|<module>|<reason>\n", NR > "/dev/stderr"
+      bad = 1
+      next
+    }
+    index(known, " " $1 " ") == 0 {
+      printf "scripts/serial-tests:%d: unknown package %s\n", NR, $1 > "/dev/stderr"
+      bad = 1
+      next
+    }
+    $1 == want { print $2 }
+    END { if (bad) exit 2 }
+  ' "$serial_file")" || exit 2
+fi
+
 export LOOM_TEST_PACKAGE="$package" LOOM_TEST_MATCH="$match"
 export LOOM_TEST_PARALLEL="$parallel"
+export LOOM_TEST_SERIAL="$serial"
 cd "$root/packages/$package"
 # The runner's own body is wrapped for two reasons. A raise inside it — the
 # --match path's `{module, M} = code:ensure_loaded(M)` is the reachable one —
@@ -85,15 +117,41 @@ python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-1200}" -- 
         end, Modules)
       end,
 
-      %% A parallel run wraps the whole module list in one inparallel group.
-      %% EUnit pushes that ordering down into every nested item, so the limit
-      %% counts individual tests rather than modules and no module is
-      %% internally sequential. Only the unfiltered path is wrapped: --match
-      %% already names individual tests, and reordering those would change
-      %% what a focused debugging run means.
+      %% A parallel run splits the module list into two groups. EUnit pushes
+      %% the inparallel ordering down into every nested item, so the
+      %% limit counts individual tests rather than modules and no module is
+      %% internally sequential; that is what makes the split necessary, since
+      %% a module cannot opt itself out from inside. Only the unfiltered path
+      %% is grouped: --match already names individual tests, and reordering
+      %% those would change what a focused debugging run means.
+      %%
+      %% The declared modules must not merely be internally sequential, they
+      %% must not overlap the parallel group at all. Each of them reads a
+      %% resource global to the emulator — the atom counter, the
+      %% persistent_term slot holding the capability channel — so any
+      %% concurrent test that allocates an atom or installs a channel
+      %% changes the answer, whether or not the two share a group. The enclosing {inorder, ...}
+      %% is what enforces that: EUnit runs its members in order and waits for
+      %% each, so the parallel group finishes before the serial one begins,
+      %% and the serial ones then run one at a time.
+      %%
+      %% A declared module that no longer exists fails the run. Each
+      %% declaration carries a written reason naming a resource, and a
+      %% reason attached to a module that has been renamed or deleted is a
+      %% claim nobody can check.
       Parallel = list_to_integer(os:getenv(\"LOOM_TEST_PARALLEL\", \"1\")),
+      Serial = [list_to_atom(S) || S <- string:lexemes(os:getenv(\"LOOM_TEST_SERIAL\", \"\"), \" \n\")],
+      case Serial -- Modules of
+        [] -> ok;
+        Stale ->
+          io:format(standard_error,
+            \"scripts/serial-tests declares modules absent from ~s: ~p~n\",
+            [os:getenv(\"LOOM_TEST_PACKAGE\"), Stale]),
+          Halt(2)
+      end,
       Grouped = case {Pattern, Parallel} of
-        {\"\", N} when N > 1 -> [{inparallel, N, Tests}];
+        {\"\", N} when N > 1 ->
+          [{inorder, [{inparallel, N, Tests -- Serial}, {inorder, Serial}]}];
         _ -> Tests
       end,
       case Tests of

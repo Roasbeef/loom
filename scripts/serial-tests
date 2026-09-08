@@ -1,0 +1,50 @@
+# Test modules that must not run beside anything else in their package.
+#
+# `scripts/test.sh` with LOOM_TEST_PARALLEL greater than 1 runs a package's
+# modules concurrently on one emulator. EUnit gives concurrent tests no
+# isolation: they share the node, so they share every VM-global resource.
+# A module listed here is pulled out of the parallel group and run after it,
+# alone, because something it reads or writes is global to the emulator and
+# a concurrent sibling would change the answer.
+#
+# Format, one module per line:
+#
+#   <package>|<module>|<why this module cannot share the VM>
+#
+# The module is the EUnit module atom, which is the test file's path under
+# `test/` with `/` replaced by `@` — `test/cap/mcp_test.gleam` is
+# `cap@mcp_test`. Blank lines and lines starting with `#` are ignored.
+#
+# Rules the runner enforces:
+#
+#   - a declared module that does not exist in its package fails the run,
+#     so a rename or a deletion cannot leave a stale line behind;
+#   - an unknown package name, a missing reason, or a malformed line fails
+#     the run.
+#
+# The reason is the point of the file. A module belongs here only when the
+# resource it collides on can be named — an emulator-wide counter, a
+# `persistent_term` slot, a singleton process. A test that merely fails
+# sometimes under load does not belong here: that is a fixture with a
+# wall-clock assumption in it, and parking it here would hide the bug and
+# spend the parallel speedup on nothing.
+
+# --- the VM-global atom counter --------------------------------------------
+# `erlang:system_info(atom_count)` counts atoms for the whole node. These
+# modules assert the count does not move across a measured window, which any
+# concurrent test loading a module for the first time falsifies.
+runtime|runtime@service_lifetime_test|asserts erlang:system_info(atom_count) is unchanged across a session lifecycle; the counter is node-wide
+runtime|runtime@registry_test|asserts erlang:system_info(atom_count) is unchanged across strand address allocation and factory replacement; the counter is node-wide
+client|client@serve_test|asserts erlang:system_info(atom_count) is unchanged across repeated instance assembly; the counter is node-wide
+
+# --- the capability channel's persistent_term slot -------------------------
+# `packages/cap/src/cap/internal/dispatch.gleam:16` installs the capability
+# channel into one VM-global `persistent_term` slot, and `reset()` clears it.
+# That single slot is deliberate — it is what stops a surviving process from
+# picking up the next execution's token — so two tests installing a fake
+# channel at once each see the other's, or none.
+cap|cap_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|cap@mcp_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|runtime_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+cap|strand_test|depends on the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_term slot for every serving test
