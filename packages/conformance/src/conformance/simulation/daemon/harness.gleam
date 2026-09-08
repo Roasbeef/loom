@@ -238,15 +238,23 @@ pub fn stop(harness: Harness) -> Result(Nil, String) {
 /// root is unlinked from its caller, so the run driver survives all of this
 /// and can perform that restart.
 ///
-/// Killing the root alone is not that shape, which is why three processes die
-/// rather than one. The registry traps exits so that it can answer its owner's
-/// departure in order, so a brutal kill of the root leaves it running, still
-/// holding the catalogue connection. A parked builder watches the registry
-/// through a monitor rather than a link and cannot read that monitor while it
-/// is blocked, so it outlives both, still holding a conversation's writer
-/// lease. A real crash leaves none of the three alive, and a `start` that
-/// overlapped a live predecessor would be measuring the harness rather than
-/// the daemon.
+/// Killing the root is enough to take the registry down: the lifetime scope
+/// is linked to the root, so the root's death cancels the scope, and the
+/// registry it owns dies with it. What that cascade does not give is a moment
+/// at which the caller knows it has finished, and it does not reach a builder
+/// parked in an assembly callback, which is linked to nothing the cascade
+/// travels along. This therefore kills the registry and the parked builder by
+/// name as well, and waits for a monitor on each. Killing a process the
+/// cascade has already taken down costs nothing, because a monitor on a dead
+/// pid delivers DOWN immediately, so the order the three die in carries no
+/// meaning and the harness does not depend on the cascade's timing. A `start`
+/// that overlapped a live predecessor would be measuring the harness rather
+/// than the daemon.
+///
+/// What the session tree does in response is asynchronous and unordered
+/// against the restart: it retires the dead lease in its own time. The
+/// restart does not wait for that, which is why `Boot.incarnation` moves the
+/// lease clock past the dead lease instead.
 ///
 /// Waiting for the monitors says the processes are gone, not that everything
 /// they held has been released. The launch lock in particular is released by

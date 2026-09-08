@@ -198,11 +198,11 @@ them from their own test mains.
   turn on, which settles the scenario's only race — was the steer
   durable before the checkpoint that drains it — without touching
   anything under test.
-- **A daemon crash is a root restart over the same state root.** The
-  lifecycle scripts kill the lifetime owner *and* the registry, in that
-  order, because the registry traps exits: killing the root alone leaves it
-  running with the catalogue connection open and a session's writer lease
-  still held, which is not what a crashed daemon leaves behind. The next
+- **A daemon crash is a root restart over the same state root.** Killing the
+  root takes the registry with it, because the lifetime scope is linked to the
+  root and the registry is owned by that scope. The lifecycle scripts kill the
+  registry by name as well, so that they have a monitor to wait on for each
+  process rather than a cascade whose completion nothing reports. The next
   daemon takes the same state root and has to poll for it, since the launch
   lock is released by the operating system and is not ordered against the
   monitor that reported the death.
@@ -385,17 +385,19 @@ them from their own test mains.
   production never reaches and a check written against it would be checking
   the harness. `harness.Boot` therefore takes the state root from its caller
   so the next start rebuilds from what was committed.
-- **A kill takes down three processes, not one.** The registry traps exits so
-  that it can answer its owner's departure in order, and a builder parked in
-  the harness's assembly callback watches the registry through a monitor it
-  cannot read while it is blocked. Killing `root.pid` alone therefore leaves
-  the catalogue connection and a conversation's writer lease held by
-  survivors, and the next start would overlap a live predecessor.
-  `harness.kill` kills the root, the registry and the parked builder
-  `park` reported, waiting for each monitor. It is still not a drain: the
-  launch lock is released by the operating system after the root's port
-  closes, which is why a restart goes through `harness.resume` and its
-  bounded retry rather than a single `start`.
+- **A kill names three processes, and waits on each.** The root's death
+  cascades through the lifetime scope to the registry, but nothing reports
+  when that cascade has finished, and it does not reach a builder parked in
+  the harness's assembly callback, which the scope holds no link to.
+  `harness.kill` therefore kills the root, the registry and the parked builder
+  `park` reported, and waits for a monitor on each; a kill of a process the
+  cascade already took down delivers DOWN immediately, so the extra kills are
+  free and the order carries no meaning. It is still not a drain: the launch
+  lock is released by the operating system after the root's port closes, which
+  is why a restart goes through `harness.resume` and its bounded retry rather
+  than a single `start`. The dead lease is retired by the session tree
+  asynchronously, unordered against the restart, which is why the restart
+  moves the lease clock instead of waiting.
 - **Logical time advances by one lease lifetime per incarnation, and
   nowhere else.** A killed daemon leaves an unexpired writer lease in the
   conversation file it was building, held by an owner that no longer exists.
