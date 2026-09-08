@@ -244,6 +244,14 @@ fn await_resident(control, id) {
           status: protocol.Opening(_),
           ..,
         ))) -> poll.Retry
+        // A read that ran out of its own budget is not an answer about
+        // the row; it says the daemon has not replied yet. Under a loaded
+        // scheduler a shipped daemon really does take longer than two
+        // seconds to answer a status read, and treating that as the answer
+        // ended the poll with `Error(TimedOut)` while the outer fifteen
+        // seconds still had most of their budget left.
+        Error(daemon.TimedOut) -> poll.Retry
+
         other -> poll.Fail(string.inspect(other))
       }
     })
@@ -260,6 +268,14 @@ fn await_saved(control, id) {
           status: protocol.Stopping(_),
           ..,
         ))) -> poll.Retry
+        // A read that ran out of its own budget is not an answer about
+        // the row; it says the daemon has not replied yet. Under a loaded
+        // scheduler a shipped daemon really does take longer than two
+        // seconds to answer a status read, and treating that as the answer
+        // ended the poll with `Error(TimedOut)` while the outer fifteen
+        // seconds still had most of their budget left.
+        Error(daemon.TimedOut) -> poll.Retry
+
         other -> poll.Fail(string.inspect(other))
       }
     })
