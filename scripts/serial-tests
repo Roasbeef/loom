@@ -48,3 +48,14 @@ cap|cap@mcp_test|installs and resets the capability channel in cap/internal/disp
 cap|runtime_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|strand_test|depends on the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_term slot for every serving test
+
+# --- the node-wide httpc supervisor ----------------------------------------
+# `restart_httpc_manager` and `restart_httpc_handler_supervisor` in
+# `packages/provider/test/provider_http_test_ffi.erl` each `exit(Pid, kill)` a
+# registered OTP process, because surviving that replacement is the property
+# those tests state. `httpc_handler_sup` is registered once per node rather
+# than once per profile — `httpc_sup:init/1` starts one beside the profile
+# supervisor and `httpc_manager:do_start_handler/2` looks it up by name — so
+# the kill takes every httpc handler in the emulator with it, whichever
+# profile they serve. No profile arrangement makes that private.
+provider|provider@http_test|kills the node-wide httpc_manager and httpc_handler_sup as the property under test, which severs every other httpc request in the emulator
