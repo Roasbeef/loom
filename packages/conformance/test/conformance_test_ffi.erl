@@ -4,8 +4,7 @@
 %% test/support/internal/ffi_shell.gleam.
 -module(conformance_test_ffi).
 
--export([find_executable/1, os_cmd/1, unique_integer/0, get_env/1,
-         monotonic_ms/0]).
+-export([find_executable/1, os_cmd/1, unique_integer/0, get_env/1]).
 
 %% os:find_executable/1 — PATH lookup for feature detection.
 find_executable(Name) ->
@@ -32,9 +31,3 @@ get_env(Name) ->
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
-
-%% erlang:monotonic_time/1 — the daemon soak is bounded by wall clock
-%% rather than by a seed count, and a budget must be measured against a
-%% reading that cannot go backwards under a clock adjustment.
-monotonic_ms() ->
-    erlang:monotonic_time(millisecond).

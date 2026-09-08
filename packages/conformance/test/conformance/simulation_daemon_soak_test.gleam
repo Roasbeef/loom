@@ -20,6 +20,7 @@ import gleam/io
 import gleam/result
 import gleam/string
 import support/internal/ffi_shell
+import weft/poll
 
 /// Draws daemon seeds until the budget is spent, prints how many fit, and
 /// fails on the first seed that failed.
@@ -36,11 +37,15 @@ pub fn daemon_soak_test() {
 
 fn run(seconds: Int) -> Nil {
   let from = env_int("LOOM_DAEMON_SOAK_FROM", 1)
+  // The clock is `weft/poll`'s, whose `now` is `erlang:monotonic_time` in
+  // milliseconds. A budget must be measured against a reading that cannot go
+  // backwards under a clock adjustment, and taking weft's is what keeps this
+  // package free of an external of its own.
   let outcome =
     daemon_soak.soak(
       from:,
       budget_ms: seconds * 1000,
-      now: ffi_shell.monotonic_ms,
+      now: poll.monotonic().now,
     )
 
   // The count and the next seed are printed whatever the verdict, because
