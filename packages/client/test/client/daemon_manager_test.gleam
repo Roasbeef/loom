@@ -574,13 +574,33 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
   assert manager.open(registry, reserved.id) == Error(manager.NotInitialized)
   assert process.receive(builds, 0) == Error(Nil)
 
-  let assert Ok(manager.View(retried, manager.Opening(next))) =
-    manager.create(
-      registry,
-      request,
-      directory: "/private/sessions",
-      generator: ids.generator(clock.fixed(at: 1_800_000_000_000), seed: 414),
-    )
+  // Reaching `Saved` says the stopped session's record is durable. It does
+  // not say the capacity slot that session held has been handed back: the
+  // slot is released when its owner retires, which is a later event, and
+  // an uncontended scheduler simply closed the gap before the next line
+  // ran. So the retry waits on the slot rather than assuming it: a
+  // capacity refusal is retried and the first answer that is not one is
+  // the reservation this test is about.
+  let outcome =
+    poll.until(within: 30_000, every: 1, attempt: fn() {
+      case
+        manager.create(
+          registry,
+          request,
+          directory: "/private/sessions",
+          generator: ids.generator(
+            clock.fixed(at: 1_800_000_000_000),
+            seed: 414,
+          ),
+        )
+      {
+        Error(manager.Capacity) -> poll.Retry
+        answer -> poll.Done(answer)
+      }
+    })
+
+  let assert poll.Answered(Ok(manager.View(retried, manager.Opening(next)))) =
+    outcome
     as "explicit create retry initializes the same reservation"
   assert retried == reserved
   await_status(registry, reserved.id, manager.Resident(next))

@@ -334,6 +334,42 @@ type Racer {
   RacerCorrupt
 }
 
+// Waits for one outcome per racer, ending the moment the last of them has
+// answered. A racer's own exit is selected alongside its reply: an abnormal
+// exit is the crash this test forbids, and a normal one is the already-sent
+// reply's process retiring, which carries no outcome of its own and is
+// simply dropped.
+fn collect_racers(
+  results: process.Subject(Racer),
+  monitors: List(process.Monitor),
+  seen: List(Racer),
+) -> List(Racer) {
+  case list.length(seen) == list.length(monitors) {
+    True -> seen
+    False -> {
+      let selector =
+        list.fold(monitors, process.new_selector(), fn(selector, monitor) {
+          process.select_specific_monitor(selector, monitor, fn(down) {
+            Error(down.reason)
+          })
+        })
+        |> process.select_map(results, Ok)
+
+      let assert Ok(event) = process.selector_receive(selector, 600_000)
+        as "a racer must either answer or exit within the outer bound"
+
+      case event {
+        Ok(outcome) -> collect_racers(results, monitors, [outcome, ..seen])
+        Error(process.Normal) -> collect_racers(results, monitors, seen)
+        Error(reason) ->
+          panic as {
+            "a racer crashed instead of answering: " <> string.inspect(reason)
+          }
+      }
+    }
+  }
+}
+
 // M3-05: N processes racing to create the same fresh session file must
 // yield exactly one catalog row, and every racer must get an in-band
 // answer — before the fix, unserialized creators inserted several catalog
@@ -343,35 +379,46 @@ pub fn racing_creates_write_one_catalog_row_test() {
   let path = fresh_path("create_race")
   let results = process.new_subject()
   let racers = [1, 2, 3, 4, 5, 6, 7, 8]
-  list.each(racers, fn(n) {
-    process.spawn_unlinked(fn() {
-      let opened =
-        sqlite.open(
-          sqlite.config(path:, owner: "racer-" <> int.to_string(n)),
-          clock.stepping(from: 10_000, by: 1),
-        )
-      let outcome = case opened {
-        Ok(store) -> {
-          let _ = storage.close(store)
-          RacerOpened
-        }
-        // Losing the lease race or timing out on the write lock are the
-        // in-band answers contention is allowed to produce.
-        Error(sqlite.LeaseHeld(..)) | Error(sqlite.OpenFailed(..)) ->
-          RacerRefused
-        Error(sqlite.CorruptSession(..))
-        | Error(sqlite.UnsupportedVersion(..)) -> RacerCorrupt
-      }
-      process.send(results, outcome)
+  // Each racer is monitored from the moment it is spawned, so a crash is
+  // an event this test can wait for rather than a reply that never comes.
+  let monitors =
+    list.map(racers, fn(n) {
+      let racer =
+        process.spawn_unlinked(fn() {
+          let opened =
+            sqlite.open(
+              sqlite.config(path:, owner: "racer-" <> int.to_string(n)),
+              clock.stepping(from: 10_000, by: 1),
+            )
+          let outcome = case opened {
+            Ok(store) -> {
+              let _ = storage.close(store)
+              RacerOpened
+            }
+            // Losing the lease race or timing out on the write lock are the
+            // in-band answers contention is allowed to produce.
+            Error(sqlite.LeaseHeld(..)) | Error(sqlite.OpenFailed(..)) ->
+              RacerRefused
+            Error(sqlite.CorruptSession(..))
+            | Error(sqlite.UnsupportedVersion(..)) -> RacerCorrupt
+          }
+          process.send(results, outcome)
+        })
+
+      process.monitor(racer)
     })
-  })
+
   // Every racer must reply — a missing reply means one crashed rather
   // than returning an `OpenError`.
-  let outcomes =
-    list.map(racers, fn(_) {
-      let assert Ok(outcome) = process.receive(results, 10_000)
-      outcome
-    })
+  //
+  // The wait is on the racers themselves, not on a clock. A monitor for
+  // each one turns "crashed instead of answering" into a message rather
+  // than into the absence of one, so the loop below ends as soon as the
+  // last racer has spoken however long the contended file kept it. The
+  // ten-minute bound is only there so a genuine hang fails the suite
+  // instead of stalling it; the previous fixed ten seconds was an
+  // assertion about scheduler load, and it failed under it.
+  let outcomes = collect_racers(results, monitors, [])
   assert !list.any(outcomes, fn(outcome) { outcome == RacerCorrupt })
   assert list.any(outcomes, fn(outcome) { outcome == RacerOpened })
 
