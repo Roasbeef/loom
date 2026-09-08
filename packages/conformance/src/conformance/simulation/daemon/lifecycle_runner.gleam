@@ -513,14 +513,6 @@ fn revocation_body(
   )
   use member <- result.try(member_digest(seed))
   use Nil <- result.try(invite(daemon, owner, member, record.id))
-
-  // The grant is read twice before anything is revoked. The registry
-  // remembers a resolved grant for the lifetime of the session's slot, so a
-  // check that only ever asked once would never exercise the remembered
-  // answer, and the mutation that keeps a remembered grant alive across an
-  // administration would pass.
-  use Nil <- result.try(admitted(daemon, record.id, incarnation, member))
-  use Nil <- result.try(admitted(daemon, record.id, incarnation, member))
   use Nil <- result.try(case fault {
     FaultFree -> fault_free_command(daemon, record.id, incarnation, member)
     KillDaemonWithPending(..) | RevokeAt(..) ->
@@ -529,15 +521,26 @@ fn revocation_body(
   snapshot(daemon)
 }
 
-// With nothing revoked, both halves of the queued command are admitted. This
-// is the "before it, its admissions succeed" half of the claim, and it is
-// what makes the refusal under the fault mean something.
+// With nothing revoked, the principal is admitted throughout. This is the
+// "before it, its admissions succeed" half of the claim, and it is what makes
+// the refusal under the fault mean something.
+//
+// The first pair is the same warm-up the `BetweenAdmissionAndDelivery` arm
+// runs, so that the two schedules differ only in the revocation itself. It is
+// a pair rather than a single call because the registry remembers a resolved
+// grant for the lifetime of the session's slot: a check that only ever asked
+// once would never read the remembered answer, and a mutation that kept a
+// remembered grant alive across an administration would pass unnoticed. The
+// second pair is the command's own two authority answers, at admission and at
+// delivery.
 fn fault_free_command(
   daemon: Harness,
   id: String,
   incarnation: String,
   member: access.Digest,
 ) -> Result(Nil, Failure) {
+  use Nil <- result.try(admitted(daemon, id, incarnation, member))
+  use Nil <- result.try(admitted(daemon, id, incarnation, member))
   use Nil <- result.try(admitted(daemon, id, incarnation, member))
   admitted(daemon, id, incarnation, member)
 }
@@ -547,12 +550,17 @@ fn fault_free_command(
 // had in flight.
 //
 // The two coordinates are the two places a revocation can land relative to a
-// command. `BeforeAdmission` refuses the command outright, so nothing is ever
-// queued. `BetweenAdmissionAndDelivery` is the one that matters: the command
-// was admitted under a grant that was live at the time, and the delivery
-// check must still refuse, so what the principal queued is never delivered.
-// Both then check that the principal stays refused, which is the silence the
-// name is about.
+// command, and they are two different schedules rather than one schedule run
+// twice. `BeforeAdmission` revokes before the boundary has answered anything
+// at all, so the command is refused outright and nothing is ever queued.
+// `BetweenAdmissionAndDelivery` first admits the principal, which both fills
+// the registry's remembered grant and gets the command through admission, and
+// only then revokes: the command was admitted under a grant that was live at
+// the time, and the delivery check must still refuse, so what the principal
+// queued is never delivered. That difference is what makes a memo the
+// administration fails to clear observable under one coordinate and not the
+// other. Both then check that the principal stays refused, which is the
+// silence the name is about.
 fn revoked_command(
   daemon: Harness,
   owner: access.Digest,
@@ -563,7 +571,11 @@ fn revoked_command(
 ) -> Result(Nil, Failure) {
   use Nil <- result.try(case at {
     BeforeAdmission -> Ok(Nil)
-    BetweenAdmissionAndDelivery -> admitted(daemon, id, incarnation, member)
+    BetweenAdmissionAndDelivery -> {
+      use Nil <- result.try(admitted(daemon, id, incarnation, member))
+      use Nil <- result.try(admitted(daemon, id, incarnation, member))
+      admitted(daemon, id, incarnation, member)
+    }
   })
   use Nil <- result.try(revoke(daemon, owner))
   use Nil <- result.try(refused(daemon, id, incarnation, member))
