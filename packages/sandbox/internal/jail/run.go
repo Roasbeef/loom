@@ -245,6 +245,22 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 			_ = os.RemoveAll(scratchDir)
 		}
 	}()
+	// A required mount whose source is absent refuses the execution
+	// before any jail is built, on every platform. The sender asked for
+	// that path specifically — the cap socket is the motivating case —
+	// and a jail that quietly lacks it fails later as a satellite that
+	// never connects, which is the anonymous failure protocol-change/004
+	// exists to prevent. See MissingRequiredMounts.
+	if bad := MissingRequiredMounts(req.Policy); len(bad) > 0 {
+		policyR.Close()
+		reportR.Close()
+		reportW.Close()
+		return nil, fmt.Errorf("jail: the policy requires %s to be "+
+			"mounted into the jail, and the source does not exist on "+
+			"this host; create the path or mark the mount optional",
+			strings.Join(bad, ", "))
+	}
+
 	switch {
 	case feat.Platform.GOOS == "linux" && feat.BwrapPath != "":
 		// The mount plan is built from a policy whose protected paths

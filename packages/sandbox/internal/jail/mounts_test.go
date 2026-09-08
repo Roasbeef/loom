@@ -279,3 +279,87 @@ func TestResolveProtectedRewritesASymlinkToItsTarget(t *testing.T) {
 		t.Fatalf("resolveProtected[1] = %q, want %q", got[1], missing)
 	}
 }
+
+// The explicit mounts have to reach the enforcement report, or the
+// broker has no way to check the mount list it sent against what the
+// helper actually planned.
+func TestAuditMountsCountsExplicitMounts(t *testing.T) {
+	pol, kinds := protectedPolicy()
+	pol.Mounts = []policy.Mount{
+		{Path: "/work/.env/cap/s", Access: policy.MountReadOnly, Required: true},
+		{Path: "/srv/out", Access: policy.MountReadWrite, Required: true},
+	}
+	got := AuditMounts(pol, MountPlan(pol, kinds))
+	if len(got.Skipped) != 0 {
+		t.Fatalf("a well-ordered plan narrows every path; skips: %v", got.Skipped)
+	}
+	for _, want := range []string{"bind_ro=1", "bind_rw=1"} {
+		if !strings.Contains(got.Applied, want) {
+			t.Fatalf("applied entry %q lacks %q", got.Applied, want)
+		}
+	}
+}
+
+// A read-only mount that the plan leaves writable is the one widening a
+// mount can produce, and it takes a policy naming the same region twice
+// to get there. The audit names it rather than counting it.
+func TestAuditMountsCatchesAReadOnlyMountLeftWritable(t *testing.T) {
+	pol, kinds := protectedPolicy()
+	pol.Mounts = []policy.Mount{
+		{Path: "/srv/data/inner", Access: policy.MountReadOnly, Required: true},
+	}
+	plan := append(MountPlan(pol, kinds), MountOp{
+		Class: ClassMountReadWrite, Path: "/srv/data",
+		Argv: []string{"--bind", "/srv/data", "/srv/data"},
+	})
+	got := AuditMounts(pol, plan)
+	if len(got.Skipped) != 1 {
+		t.Fatalf("skips = %v, want exactly the widened mount", got.Skipped)
+	}
+	if !strings.Contains(got.Skipped[0], "/srv/data/inner") {
+		t.Fatalf("the skip must name the mount: %q", got.Skipped[0])
+	}
+	if !strings.Contains(got.Applied, "bind_ro=0") {
+		t.Fatalf("a widened mount must not be counted: %q", got.Applied)
+	}
+}
+
+// A required mount whose source is absent refuses the execution before
+// any jail starts. The entry names the path and the list, on the same
+// terms as MissingMountSources.
+func TestMissingRequiredMountsFlagsAnAbsentSource(t *testing.T) {
+	dir := t.TempDir()
+	absent := filepath.Join(dir, "no-socket-here")
+	pol := policy.Policy{
+		Network: policy.Network{Mode: policy.NetworkOff},
+		Scratch: "tmpfs",
+		Mounts: []policy.Mount{
+			{Path: dir, Access: policy.MountReadOnly, Required: true},
+			{Path: absent, Access: policy.MountReadOnly, Required: true},
+		},
+	}
+	bad := MissingRequiredMounts(pol)
+	if len(bad) != 1 {
+		t.Fatalf("MissingRequiredMounts = %v, want exactly the absent mount", bad)
+	}
+	if !strings.Contains(bad[0], absent) || !strings.Contains(bad[0], "mounts") {
+		t.Fatalf("the entry must name the path and the list: %q", bad[0])
+	}
+}
+
+// The other half of `required`: an optional mount whose source is absent
+// is skipped rather than refused, which is what the "-try" argv form
+// does inside bwrap.
+func TestMissingRequiredMountsIgnoresOptionalMounts(t *testing.T) {
+	dir := t.TempDir()
+	pol := policy.Policy{
+		Network: policy.Network{Mode: policy.NetworkOff},
+		Scratch: "tmpfs",
+		Mounts: []policy.Mount{
+			{Path: filepath.Join(dir, "absent"), Access: policy.MountReadOnly},
+		},
+	}
+	if bad := MissingRequiredMounts(pol); len(bad) != 0 {
+		t.Fatalf("an optional mount must not refuse the execution: %v", bad)
+	}
+}

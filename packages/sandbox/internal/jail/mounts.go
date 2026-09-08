@@ -23,7 +23,12 @@ package jail
 // after replaying the whole ordered plan, is the one the policy asked
 // for**:
 //
-//	mounts:ro=2,rw=1,mask=3,scratch=tmpfs,plan=1f4a09c8b2d3e6f7
+//	mounts:ro=2,rw=1,mask=3,bind_ro=1,bind_rw=0,scratch=tmpfs,plan=1f4a09c8b2d3e6f7
+//
+// `bind_ro` and `bind_rw` are the same measurement for the policy's
+// explicit `mounts` entries: how many of them the replayed plan leaves
+// bound at the access they asked for. The broker holds the mount list it
+// sent, so a shortfall is checkable against it.
 //
 // A mask that a later `--bind /work /work` defeats drops `mask` below
 // the number of protected paths and emits `skip:mounts: …` naming the
@@ -94,7 +99,7 @@ type view struct {
 // writable reports whether the region the view describes permits writes.
 func (v view) writable() bool {
 	switch v.op.Class {
-	case ClassWritable, ClassScratchTmpfs:
+	case ClassWritable, ClassScratchTmpfs, ClassMountReadWrite:
 		return true
 	}
 	return false
@@ -167,6 +172,25 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 		}
 	}
 
+	// The explicit mounts. A mount the plan leaves at a weaker access
+	// than asked is narrower, not wider, so it is counted out without a
+	// skip, exactly as a writable root that did not survive is. Only a
+	// read-only mount that came out writable is a widening, and the one
+	// way that happens is a policy that names the same region twice.
+	bindRO, bindRW := 0, 0
+	for _, m := range p.Mounts {
+		v := effective(plan, m.Path)
+		switch {
+		case m.Access == policy.MountReadOnly && v.writable():
+			rep.Skipped = append(rep.Skipped, widened(
+				"read-only mount", m.Path, "is writable", v))
+		case v.op.Class == ClassMountReadOnly:
+			bindRO++
+		case v.op.Class == ClassMountReadWrite:
+			bindRW++
+		}
+	}
+
 	scratch := "bind"
 	if p.ScratchIsTmpfs() {
 		scratch = "tmpfs"
@@ -177,8 +201,9 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 		}
 	}
 
-	rep.Applied = fmt.Sprintf("mounts:ro=%d,rw=%d,mask=%d,scratch=%s,plan=%s",
-		ro, rw, mask, scratch, planDigest(plan))
+	rep.Applied = fmt.Sprintf(
+		"mounts:ro=%d,rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,plan=%s",
+		ro, rw, mask, bindRO, bindRW, scratch, planDigest(plan))
 	return rep
 }
 
@@ -264,6 +289,42 @@ func MissingMountSources(p policy.Policy) []string {
 		check("scratch", p.Scratch)
 	}
 
+	return bad
+}
+
+// MissingRequiredMounts names every `mounts` entry marked required whose
+// source is not on this host. A required mount is the sender saying the
+// execution is pointless without that path — the cap socket is the
+// motivating case — so the helper refuses before any jail starts rather
+// than running one the caller believes carries it.
+//
+// This is the platform-independent half of the mount checks: unlike
+// MissingMountSources, which diagnoses a bwrap argv that would fail
+// anonymously, the required-mount refusal is a property of the policy and
+// holds on Darwin, where there is no bind mount at all. An optional
+// mount whose source is absent is skipped in silence, which is what
+// bwrap's "-try" forms do and what the Seatbelt profile does by emitting
+// no rule for it.
+//
+// Any stat failure counts, not just ENOENT, for the same reason
+// MissingMountSources counts them: a source the helper cannot stat is one
+// no jail can bind either, and the entry carries the kernel's own reason
+// so the two are told apart.
+func MissingRequiredMounts(p policy.Policy) []string {
+	var bad []string
+	for _, m := range p.Mounts {
+		if !m.Required {
+			continue
+		}
+		src := region(m.Path)
+		if src == "" {
+			continue
+		}
+		if _, err := os.Stat(src); err != nil {
+			bad = append(bad, fmt.Sprintf("mounts: %s (%s)", src,
+				statReason(err)))
+		}
+	}
 	return bad
 }
 

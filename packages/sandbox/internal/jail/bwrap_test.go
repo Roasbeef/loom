@@ -263,6 +263,9 @@ func TestBwrapArgsDeterministic(t *testing.T) {
 // straight through it — it could be spelled `--tmpfs`, and the
 // protected-file mask is itself spelled `--ro-bind`. Classifying the op
 // is what makes the check hold for mount forms nobody has written yet.
+// The one exception is rule 1a, the policy's explicit `mounts`, which are
+// emitted after the masks on purpose; this policy carries none, and
+// TestBwrapArgsExplicitMountsFollowTheMasks pins that ordering instead.
 func TestBwrapArgsNothingFollowsTheMasks(t *testing.T) {
 	p := basePol()
 	p.ReadableRoots = []string{"/", "/opt/tools"}
@@ -765,5 +768,111 @@ func TestJailedProtectedFileIsUnreadable(t *testing.T) {
 	got, err := os.ReadFile(secret)
 	if err != nil || string(got) != original {
 		t.Fatalf("the host file was altered through the jail: %q, %v", got, err)
+	}
+}
+
+// Rule 1a. The policy's explicit mounts are the one thing emitted after
+// the masks, because the cap socket and the cap token have to be visible
+// inside the jail even where a protected mask or the scratch tmpfs would
+// shadow them. This pins the whole argv rather than a relation, because
+// the ordering is the property protocol-change/004 states.
+func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
+	p := basePol()
+	p.Mounts = []policy.Mount{
+		{Path: "/work/.git/cap/s", Access: policy.MountReadOnly, Required: true},
+		{Path: "/tmp/cap", Access: policy.MountReadWrite, Required: false},
+	}
+	kinds := map[string]PathKind{"/work/.git": PathDir, "/work/.env": PathFile}
+	got := BwrapArgs(p, kinds)
+	want := []string{
+		"--die-with-parent",
+		"--unshare-pid",
+		"--unshare-ipc",
+		"--unshare-uts",
+		"--unshare-user-try",
+		"--unshare-cgroup-try",
+		"--unshare-net",
+		"--ro-bind", "/", "/",
+		"--ro-bind-try", "/opt/tools", "/opt/tools",
+		"--tmpfs", "/tmp",
+		"--bind", "/work", "/work",
+		"--dev", "/dev",
+		"--proc", "/proc",
+		"--ro-bind", MaskSource, "/work/.env",
+		"--tmpfs", "/work/.git", "--remount-ro", "/work/.git",
+		"--bind-try", "/tmp/cap", "/tmp/cap",
+		"--ro-bind", "/work/.git/cap/s", "/work/.git/cap/s",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bwrap argv mismatch:\n got  %q\nwant %q", got, want)
+	}
+}
+
+// `required` is the difference between bwrap refusing the jail and
+// skipping the mount, so it must reach the argv and not only the
+// up-front stat in MissingRequiredMounts.
+func TestBwrapArgsOptionalMountUsesTheTryForm(t *testing.T) {
+	p := basePol()
+	p.Protected = nil
+	p.Mounts = []policy.Mount{
+		{Path: "/opt/seed", Access: policy.MountReadOnly, Required: false},
+		{Path: "/opt/toolchain", Access: policy.MountReadOnly, Required: true},
+		{Path: "/var/out", Access: policy.MountReadWrite, Required: true},
+		{Path: "/var/cache", Access: policy.MountReadWrite, Required: false},
+	}
+	got := strings.Join(BwrapArgs(p, nil), " ")
+	for _, want := range []string{
+		"--ro-bind-try /opt/seed /opt/seed",
+		"--ro-bind /opt/toolchain /opt/toolchain",
+		"--bind /var/out /var/out",
+		"--bind-try /var/cache /var/cache",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("argv %q does not contain %q", got, want)
+		}
+	}
+}
+
+// Inside the mount phase rule 2 still holds: a parent is emitted before
+// every descendant of it, so a narrower mount lands on top of the wider
+// one rather than under it.
+func TestBwrapArgsMountsAreParentBeforeChild(t *testing.T) {
+	p := basePol()
+	p.Protected = nil
+	p.Mounts = []policy.Mount{
+		{Path: "/srv/a/b", Access: policy.MountReadOnly, Required: true},
+		{Path: "/srv", Access: policy.MountReadWrite, Required: true},
+		{Path: "/srv/a", Access: policy.MountReadWrite, Required: true},
+	}
+	var paths []string
+	for _, op := range MountPlan(p, nil) {
+		if op.Class == ClassMountReadOnly || op.Class == ClassMountReadWrite {
+			paths = append(paths, op.Path)
+		}
+	}
+	want := []string{"/srv", "/srv/a", "/srv/a/b"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("mount order %q, want %q", paths, want)
+	}
+}
+
+// A policy that names one path both read-only and read-write is
+// contradicting itself. The plan emits the region once, and takes the
+// narrower reading.
+func TestBwrapArgsMountTieResolvesReadOnly(t *testing.T) {
+	p := basePol()
+	p.Protected = nil
+	p.Mounts = []policy.Mount{
+		{Path: "/srv/data", Access: policy.MountReadWrite, Required: true},
+		{Path: "/srv/data/", Access: policy.MountReadOnly, Required: true},
+	}
+	var ops []MountOp
+	for _, op := range MountPlan(p, nil) {
+		if op.Class == ClassMountReadOnly || op.Class == ClassMountReadWrite {
+			ops = append(ops, op)
+		}
+	}
+	if len(ops) != 1 || ops[0].Class != ClassMountReadOnly {
+		t.Fatalf("expected one read-only mount, got %+v", ops)
 	}
 }

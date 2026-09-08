@@ -96,6 +96,19 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 // after the scratch mount, which is a grant and used to be emitted dead
 // last.
 //
+// **Rule 1a: the policy's explicit mounts come after even the masks.**
+// `mounts` (protocol-change/004) is the one verb whose whole purpose is
+// to survive a shadow: the cap socket and the cap token have to be
+// visible inside the jail even when they sit under a protected entry or
+// under the scratch tmpfs, and argv order is the only thing that decides
+// that. So an explicit mount is emitted last, and 004 states that
+// ordering as the property rather than as an implementation detail. It
+// does not weaken `protected` by accident, because a mount reaches the
+// helper only after composition has intersected it against the session
+// base: a tool cannot ask for a mount the base does not already carry.
+// A policy that names the same path in both lists is contradicting
+// itself, and the audit says so with a skip rather than staying quiet.
+//
 // **Rule 2: inside a phase, the most specific region wins.** Ops are
 // sorted by path, which for absolute paths puts a parent before every
 // descendant of it — a descendant carries the parent's path as a prefix
@@ -193,11 +206,46 @@ const (
 	ClassDev
 	// ClassProtected is a protected-path mask.
 	ClassProtected
+	// ClassMountReadWrite is an explicit `mounts` entry bound
+	// read-write, emitted after the masks so it is not shadowed.
+	ClassMountReadWrite
+	// ClassMountReadOnly is an explicit `mounts` entry bound read-only.
+	// It outranks the read-write class at an identical path so a policy
+	// naming one path twice resolves to the narrower of the two.
+	ClassMountReadOnly
 )
 
 // IsMask reports whether operations of this class subtract from the
-// jail's view rather than widen it. Nothing may be emitted after one.
-func (c MountClass) IsMask() bool { return c >= ClassProc }
+// jail's view rather than widen it. The explicit mounts are above the
+// masks in the constant order because they are emitted after them, not
+// because they subtract anything; they widen, which is what makes the
+// audit treat a mount over a protected path as a widening.
+func (c MountClass) IsMask() bool {
+	return c >= ClassProc && c < ClassMountReadWrite
+}
+
+// The three phases of the plan, in argv order: grants, then masks, then
+// the policy's explicit mounts. Ordering between phases is rule 1 and
+// rule 1a; ordering inside a phase is rule 2.
+const (
+	phaseGrant = iota
+	phaseMask
+	phaseExplicit
+)
+
+// phase places a class in the argv order. The constant order alone
+// cannot say this, because the explicit mounts sort above the masks
+// without being masks.
+func (c MountClass) phase() int {
+	switch c {
+	case ClassMountReadWrite, ClassMountReadOnly:
+		return phaseExplicit
+	}
+	if c.IsMask() {
+		return phaseMask
+	}
+	return phaseGrant
+}
 
 // MountOp is one entry of the ordered mount plan: the region it
 // governs, what it does to that region, and the argv fragment that
@@ -281,11 +329,28 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
 		plan = append(plan, maskOp(prot, kindOf(prot)))
 	}
 
-	// Rule 1 then rule 2: masks after grants, and within each phase a
-	// parent before every descendant of it.
+	// Two explicit mounts at one path resolve by class rather than
+	// being emitted twice, exactly as two grants do.
+	explicit := make(map[string]MountOp)
+	for _, m := range p.Mounts {
+		op := mountOp(m)
+		if op.Path == "" {
+			continue
+		}
+		if prev, seen := explicit[op.Path]; seen && prev.Class >= op.Class {
+			continue
+		}
+		explicit[op.Path] = op
+	}
+	for _, op := range explicit {
+		plan = append(plan, op)
+	}
+
+	// Rule 1, rule 1a, then rule 2: grants, masks, explicit mounts, and
+	// within each phase a parent before every descendant of it.
 	sort.SliceStable(plan, func(i, j int) bool {
-		if a, b := plan[i].Class.IsMask(), plan[j].Class.IsMask(); a != b {
-			return b
+		if a, b := plan[i].Class.phase(), plan[j].Class.phase(); a != b {
+			return a < b
 		}
 		if plan[i].Path != plan[j].Path {
 			return plan[i].Path < plan[j].Path
@@ -354,6 +419,27 @@ func readableRootOp(path string) MountOp {
 //     a default protected path, hits exactly this on any policy that
 //     does not also grant write under $HOME, which is the ordinary case,
 //     not an edge one.
+
+// mountOp renders one explicit `mounts` entry.
+//
+// The "-try" form is the difference `required` makes to bwrap itself. An
+// optional mount whose source is absent is skipped and the jail still
+// starts; a required one has no "-try", so even if the up-front stat in
+// MissingRequiredMounts were somehow passed, bwrap refuses rather than
+// running a jail the caller believes carries the path.
+func mountOp(m policy.Mount) MountOp {
+	path := region(m.Path)
+	flag := "--bind"
+	class := ClassMountReadWrite
+	if m.Access == policy.MountReadOnly {
+		flag = "--ro-bind"
+		class = ClassMountReadOnly
+	}
+	if !m.Required {
+		flag += "-try"
+	}
+	return MountOp{Class: class, Path: path, Argv: []string{flag, path, path}}
+}
 
 func writableOp(path string) MountOp {
 	path = region(path)
