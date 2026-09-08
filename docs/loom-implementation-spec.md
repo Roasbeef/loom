@@ -209,12 +209,28 @@ kinds    : hello, exec_start, exec_stdin, exec_out, exec_exit,
 `SandboxPolicyV1` (msgpack map, versioned):
 
 ```
-{ v:1, writable_roots:[path], readable_roots:[path], protected:[path],
+{ v:2, writable_roots:[path], readable_roots:[path], protected:[path],
   network: {mode:"off"} | {mode:"proxy", allow:[host_glob], proxy:addr}
           | {mode:"full"},
   limits: {cpu_s, wall_s, mem_bytes, pids, fsize_bytes, output_bytes},
-  env_allow:[name], scratch:"tmpfs"|path }
+  env_allow:[name], scratch:"tmpfs"|path,
+  mounts:[{path, access:"ro"|"rw", required:bool}] }
 ```
+
+`mounts` is version 2, added by
+[protocol-change/004](../protocol-change/004-sandbox-policy-explicit-mounts.md).
+Each entry is one explicit bind of a host path into the jail, emitted after
+the protected masks and after the scratch mount so that an explicit mount is
+not silently shadowed by either. `required` says what a missing source path
+means: refuse the execution, or skip the mount and run. Both decoders refuse
+unknown keys and refuse any `v` but their own, so version 1 documents are
+rejected rather than read as "no mounts" — a wire whose purpose is to state
+filesystem reach explicitly cannot treat silence as a statement.
+
+Mounts compose as the meet, like every other field: an entry survives only
+when both sides name the same path, at the weaker of the two accesses. There
+is deliberately no grant that adds one, so a tool requesting a mount the
+session base does not carry is refused in band rather than escalated.
 
 ### 1.5 Provider gateway (WP-F)
 
