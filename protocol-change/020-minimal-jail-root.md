@@ -98,8 +98,11 @@ directories the version managers put on `PATH`.
 gleam and rebar write under `~/.cache` and `~/.hex`. Bound read-only, an
 ordinary build fails. The ruling is that the cache subset is granted
 **read-write**: `.cache`, `.cargo/registry`, `.npm`, `.pnpm`, `.yarn`, `.hex`,
-`.mix`, `.m2`, `.gradle`, `.gem`, `.stack`, `.cabal`, `.deno`, `.bun`. The
-remainder (installed toolchains, shims, `/nix/store`) stays read-only.
+`.mix`, `.m2`, `.gradle`, `.gem`, `.stack`, `.cabal`, `.deno`, `.bun`, and
+`.local/share` for the Python tools that install there (uv, pipx, pdm). The
+remainder (installed toolchains, shims, `.local/bin`, `/nix/store`) stays
+read-only. The test for membership is the operator's rule: a directory an
+ordinary build or install writes is read-write, and one it only reads is not.
 
 A per-session overlay over those caches was considered and rejected for now. It
 would make one session's writes invisible to another, which is the stronger
