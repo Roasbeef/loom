@@ -382,3 +382,40 @@ network = "off"
 
 # [tools.set]
 # GH_CONFIG_DIR = "/home/me/.config/gh"
+
+
+# --- credentials the host holds but does not export -------------------------
+#
+# Every credential above is NAMED rather than written down: a model's
+# api_key_env, an MCP server's api_key_env, and each name in [tools] env
+# are all environment variable names. That works only when your shell has
+# already exported the value, and plenty of host credentials never are —
+# `gh` keeps its token in the macOS keychain, `op` and `pass` keep theirs
+# in a vault. Inside the jail none of those is reachable by design.
+#
+# A [secrets] entry says how to OBTAIN a value instead of assuming it is
+# already in the environment. Each key is the variable name the rest of
+# this file already mentions, and `command` is an argv — a list of whole
+# arguments, never a shell line, so nothing in it is split or expanded.
+#
+# The command runs on the host and outside every jail, as you, with the
+# server's own environment: the same trust you already extend to the exec
+# helper. Its stdout less one trailing newline is the value; a command
+# that exits 0 having written nothing has resolved no value, and the name
+# stays unset rather than being bound to the empty string. That value
+# lives in the server's memory only — it is never written to this file, to
+# a session, to a transcript or to a log — and a resolved name takes
+# precedence over an environment variable of the same name.
+#
+# Every entry runs afresh each time a session is created or opened, not
+# once when the server starts. Rotate a token or sign back in and the next
+# session picks it up with no restart; the cost is that each create or
+# open runs the entries one after another, each bounded by ten seconds.
+#
+# A command that fails or overruns that bound is one warning line naming
+# the variable and the exit status, never the output, and it never refuses
+# the session: a missing `gh` login must not stop work that does not need
+# one. The tool or provider that did need it fails in band when it runs.
+#
+# [secrets]
+# GH_TOKEN = { command = ["gh", "auth", "token"] }

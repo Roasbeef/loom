@@ -64,6 +64,7 @@ import client/scheduleadmin
 import client/schedulescan
 import client/scheduleseam
 import client/scratch
+import client/secrets
 import client/server
 import client/system_prompt
 import client/wiring
@@ -177,6 +178,20 @@ pub type Settings {
     gateway: provider_gateway.Gateway,
     /// The model catalogue behind the gateway's registry.
     catalog: catalog.Catalog,
+    /// The one credential seam this session reads every named secret
+    /// through: a model's `api_key_env`, an MCP server's, an
+    /// extension's bound egress secret, and each `[tools] env` name. It
+    /// answers from the resolved `[secrets]` table first and the
+    /// process environment second, so a host that configured no table
+    /// gets exactly the environment store it always had. A field rather
+    /// than a call inside `boot` for the reason `base_policy` is one: a
+    /// test must be able to stand a server up whose credentials are a
+    /// fixture rather than the machine's.
+    secrets: secret.SecretStore,
+    /// The `[secrets]` entries that did not resolve, each with the
+    /// reason. `boot` warns one line per entry; nothing else reads it,
+    /// and no value ever appears in it.
+    secret_failures: List(secrets.Failure),
     /// An explicit `LOOM_SYSTEM_PROMPT` override, which bypasses the
     /// prompt pack entirely. `None` — the ordinary case — leaves `boot`
     /// to use the session's pinned prompt or render the pack.
@@ -655,9 +670,16 @@ pub fn build_domain(
     "" -> None
     path -> Some(path)
   }
-  use #(catalogue, _rules, _schedules, _policy, _jobs, options, _tools) <- result.try(
-    load_config(configuration),
-  )
+  use
+    #(catalogue, _rules, _schedules, _policy, _jobs, options, _tools, entries)
+  <- result.try(load_config(configuration))
+
+  // The `[secrets]` table resolved before the gateway that will spend
+  // what it holds, once per domain assembly rather than once per daemon.
+  // A failed entry is a warned line rather than a refused assembly, for
+  // the reason `client/secrets` gives: a credential this domain's work
+  // may never need must not stop it starting.
+  let secret_store = resolved_secrets(entries, logger)
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
       selected.memory_path,
@@ -673,7 +695,7 @@ pub fn build_domain(
     catalog.gateway(
       catalogue,
       transport: http.httpc_transport(),
-      secrets: secret.env(),
+      secrets: secret_store,
       clock:,
     )
   domain_service.build(
@@ -846,6 +868,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       jobs_policy,
       memory,
       tools,
+      secret_entries,
     )
   <- result.try(load_config(flags.config))
 
@@ -857,6 +880,26 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     |> result.replace_error("the catalogue routes no usable main model"),
   )
   use codemode_seams <- result.try(parse_codemode_seams(flags.codemode_seams))
+
+  // Every `[secrets]` entry run here, because the gateway built a few
+  // lines down closes over the store and every later reader of a
+  // credential name reads the same one. `resolve` has no logger of its
+  // own, so the failures ride along in `Settings` and `boot` warns about
+  // them beside the `[tools] env` names it could not find — one place,
+  // one moment, for both kinds of missing credential.
+  //
+  // This runs on each session create and open, not once per daemon,
+  // because `resolve_managed` reaches it every time. A rotated token is
+  // therefore picked up without restarting the daemon; the cost is that
+  // an open pays for every entry serially, bounded by
+  // `secrets.default_timeout_ms` each.
+  let #(resolved, secret_failures) =
+    secrets.resolve(
+      secret_entries,
+      running: secrets.host_runner(),
+      within: secrets.default_timeout_ms,
+    )
+  let secret_store = secrets.store(resolved, beneath: secret.env())
   let clock = clock.from_function(ffi_os.system_time_ms)
   Ok(Settings(
     session_path:,
@@ -873,10 +916,12 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     gateway: catalog.gateway(
       catalogue,
       transport: http.httpc_transport(),
-      secrets: secret.env(),
+      secrets: secret_store,
       clock:,
     ),
     catalog: catalogue,
+    secrets: secret_store,
+    secret_failures:,
     system: option.from_result(env_text(system_prompt.override_variable)),
     home: option.from_result(env_text("HOME")),
     model: machine_strand.ModelIdentity(
@@ -1035,20 +1080,24 @@ fn load_config(
     jobs.JobsPolicy,
     distillpass.Options,
     catalog.ToolsConfig,
+    List(secrets.Entry),
   ),
   String,
 ) {
   case flag {
     None ->
-      Ok(#(
-        env_catalog(),
-        [],
-        [],
-        schedule.default_policy,
-        jobs.default_policy,
-        distillpass.default_options(),
-        catalog.default_tools(),
-      ))
+      Ok(
+        #(
+          env_catalog(),
+          [],
+          [],
+          schedule.default_policy,
+          jobs.default_policy,
+          distillpass.default_options(),
+          catalog.default_tools(),
+          [],
+        ),
+      )
     Some(path) -> {
       use text <- result.try(
         simplifile.read(path)
@@ -1079,6 +1128,9 @@ fn load_config(
       use tools <- result.try(
         catalog.parse_tools(text) |> result.map_error(named),
       )
+      use secret_entries <- result.try(
+        secrets.parse(text) |> result.map_error(named),
+      )
       Ok(#(
         catalogue,
         rule_list,
@@ -1087,6 +1139,7 @@ fn load_config(
         jobs_policy,
         memory,
         tools,
+        secret_entries,
       ))
     }
   }
@@ -1222,6 +1275,38 @@ pub const default_model = "claude-opus-5"
 // already has, and these values are configuration, not durable state.
 fn env_text(name: String) -> Result(String, Nil) {
   secret.lookup(secret.env(), name)
+}
+
+// The `[secrets]` table run and layered over the process environment, in
+// the one place a domain assembly has a logger to warn with. `resolve`
+// keeps its failures in `Settings` instead, because it has none. Like
+// `resolve`, this runs per assembly rather than per daemon, so the
+// commands are re-run and a rotated credential is picked up.
+fn resolved_secrets(
+  entries: List(secrets.Entry),
+  logger: Logger,
+) -> secret.SecretStore {
+  let #(resolved, failures) =
+    secrets.resolve(
+      entries,
+      running: secrets.host_runner(),
+      within: secrets.default_timeout_ms,
+    )
+  log_secret_failures(failures, logger)
+  secrets.store(resolved, beneath: secret.env())
+}
+
+// One warned line per entry that did not resolve, naming the variable
+// and why. The reason is built from an exit status or the deadline and
+// never from the command's output, so nothing a credential helper
+// printed can reach a log through here.
+fn log_secret_failures(failures: List(secrets.Failure), logger: Logger) -> Nil {
+  list.each(failures, fn(failure) {
+    log.warn(logger, "secrets.unresolved", [
+      field.ident(key: "name", value: failure.name),
+      field.text(key: "reason", value: failure.reason),
+    ])
+  })
 }
 
 fn env_text_or(name: String, fallback: String) -> String {
@@ -1438,6 +1523,7 @@ fn code_mode_seam(
       use layer <- result.try(start_mcp(
         settings.codemode_seams,
         settings.catalog.mcp_servers,
+        settings.secrets,
         logger,
         owner,
       ))
@@ -1536,6 +1622,7 @@ fn extension_registrations(
         extension_contribution(
           root,
           found,
+          settings.secrets,
           logger,
           hosts,
           hooking,
@@ -1550,6 +1637,7 @@ fn extension_registrations(
 fn extension_contribution(
   root: extension_record.Root,
   found: installed.Discovered,
+  store: secret.SecretStore,
   logger: Logger,
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
@@ -1571,6 +1659,7 @@ fn extension_contribution(
         written,
         decoded,
         artifact,
+        store,
         logger,
         hosts,
         hooking,
@@ -1585,6 +1674,7 @@ fn extension_registered(
   written: extension_record.Record,
   decoded: extension_manifest.Manifest,
   artifact: String,
+  store: secret.SecretStore,
   logger: Logger,
   hosts: extension_hosts.Hosts,
   hooking: extension_hooks.Invoker,
@@ -1617,12 +1707,12 @@ fn extension_registered(
           // does not exist until `api.open` has returned the registry
           // being assembled here.
           memory:,
-          // The process environment, the same store `api_key_env`
+          // The session's credential seam, the same store `api_key_env`
           // reads. The value never reaches a `Tool`, a frame or a log:
           // this function is handed to `broker/egress`, which reads it
           // after the origin and method are judged and puts the result
           // straight on the wire.
-          secrets: env_text,
+          secrets: fn(name) { secret.lookup(store, name) },
           // The platform trust store. A pinned root is a test-only
           // shape, and there is no operator surface for one.
           trust: egress.SystemRoots,
@@ -1851,11 +1941,12 @@ fn skipped_mcp(
 fn start_mcp(
   seams: codemode_wiring.Seams,
   servers: List(catalog.McpServer),
+  store: secret.SecretStore,
   logger: Logger,
   owner: Option(custody.Owner),
 ) -> Result(mcp_wiring.Layer, String) {
   case mcp_reachable(seams) {
-    True -> started_mcp(servers, logger, owner)
+    True -> started_mcp(servers, store, logger, owner)
     False -> {
       skipped_mcp(
         servers,
@@ -1870,15 +1961,23 @@ fn start_mcp(
 
 fn started_mcp(
   servers: List(catalog.McpServer),
+  store: secret.SecretStore,
   logger: Logger,
   owner: Option(custody.Owner),
 ) -> Result(mcp_wiring.Layer, String) {
+  // The session's own store, not the process environment: an MCP
+  // server's `api_key_env` names a credential the same way a model's
+  // does, so a `[secrets]` entry has to reach it or the table would
+  // cover some of its readers and not others.
+  let options =
+    mcp_wiring.Options(..mcp_wiring.default_options(), secrets: store)
+
   let prepared = case owner {
-    None -> mcp_wiring.prepare(servers, mcp_wiring.default_options())
+    None -> mcp_wiring.prepare(servers, options)
     Some(owner) ->
       mcp_wiring.prepare_owned(
         servers,
-        mcp_wiring.default_options(),
+        options,
         custodian: custody.owner(owner),
       )
   }
@@ -2323,8 +2422,14 @@ fn assemble_in(
       settings.workspace,
       option.map(code_mode_host, fn(config) { config.toolchain_path }),
       settings.tools,
-      reading: env_text,
+      reading: fn(name) { secret.lookup(settings.secrets, name) },
     )
+
+  // A `[secrets]` entry the host could not run is the same class of
+  // event as a `[tools] env` name the host has not set, so it is
+  // reported the same way and at the same moment: the name and why, and
+  // never the command's output.
+  log_secret_failures(settings.secret_failures, logger)
 
   // A configured name the host has not set is one warned line and not a
   // boot failure: the operator learns it here, and the tool that wanted

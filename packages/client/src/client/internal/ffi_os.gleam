@@ -1,5 +1,5 @@
 //// FFI confinement (spec §0.2): every `@external` the server entry
-//// point needs, in one place. Each declaration names the OTP function
+//// point and its boot-time configuration need, in one place. Each declaration names the OTP function
 //// behind it and why no pure alternative exists. Nothing else in this
 //// package touches foreign code.
 
@@ -25,6 +25,39 @@ pub fn unique_positive_integer() -> Int
 /// resolution is an OS question with no pure answer.
 @external(erlang, "client_ffi", "find_executable")
 pub fn find_executable(name: String) -> Result(String, Nil)
+
+/// Runs one host executable to completion with a deadline, answering its
+/// exit status and everything it wrote to stdout. `client/secrets` is the
+/// only caller: a `[secrets]` entry's `command` is run once at boot, on
+/// the host and outside every jail, and its stdout is the credential.
+///
+/// OTP `erlang:open_port/2` with `spawn_executable`, `{args, _}`,
+/// `exit_status` and `binary`. There is no other non-NIF way to read a
+/// child process's output from the BEAM: `os:cmd/1` runs a *shell string*
+/// rather than an argv, which would make every argument a quoting hazard,
+/// and it offers neither an exit status nor a deadline. `arguments` are
+/// passed as whole arguments, so nothing in them is split or expanded.
+///
+/// The deadline is enforced in the shim because it must cover the whole
+/// run rather than the gap between two chunks of output: on expiry the
+/// child is SIGKILLed, the port is closed and its late messages drained,
+/// so a wedged credential helper cannot leave a port message in the
+/// booting process's mailbox.
+///
+/// stderr is deliberately *not* captured. `open_port` can only merge it
+/// into stdout, and merged output would mean a helper's progress chatter
+/// silently became part of a credential; inherited, it reaches the
+/// daemon's own log, which is where the operator is already reading.
+///
+/// `Error` carries the reason no process ran to completion — a refused
+/// spawn, the deadline, or output that is not UTF-8 and so could never
+/// be a header value. It never carries the child's output.
+@external(erlang, "client_ffi", "run_capture")
+pub fn run_capture(
+  executable: String,
+  arguments: List(String),
+  timeout_ms: Int,
+) -> Result(#(Int, String), String)
 
 /// Blocks the calling process until the OS delivers `SIGTERM`, so the
 /// server can close its runtime (releasing the session lease) before

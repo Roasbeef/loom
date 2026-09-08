@@ -59,6 +59,8 @@ pub fn settings() -> serve.Settings {
       mcp_servers: [],
     )
   serve.Settings(
+    secrets: secret.env(),
+    secret_failures: [],
     session_path: root <> "/session.db",
     domain_paths: option.None,
     bind_host: "invalid",

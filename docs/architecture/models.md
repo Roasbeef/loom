@@ -72,6 +72,29 @@ whose variables are all unset still boots and still serves: every
 request against that entry fails in band as `NoSecret`, carrying the
 provider and the secret's name and nothing else.
 
+**The store behind the name is the operator's choice.** The injected
+secret store is not necessarily the process environment. A `[secrets]`
+table in the same `loom.toml` says how to *obtain* a named value, and
+`client/secrets` lays what it resolves over the environment store: a
+resolved name wins, every other name falls through unchanged, so a
+catalogue with no such table behaves exactly as it always has. One
+source ships, `command`, an argv run on the host and outside every jail,
+with stdout less one trailing newline as the value — the door to `gh auth
+token`, `op read` and `pass`, none of which export anything to a shell. A
+command that exits 0 having written nothing resolves no value; the name
+stays unset and falls through to the environment rather than being bound
+to the empty string. The same store answers an MCP server's
+`api_key_env`, an extension's bound egress secret and each `[tools] env`
+name, so the backend is chosen once rather than per reader.
+
+The entries run where a session's stores are built, so on every session
+create and open rather than once when the daemon starts: a rotated token
+is picked up without a restart, at the price of one serial pass over the
+entries per open. A command that fails or overruns its ten-second bound
+is one `secrets.unresolved` warning naming the variable and its exit
+status; the entry that needed the value fails in band as `NoSecret`,
+exactly as an unset variable does.
+
 **Parsing is total and strict, and strictness is the point.** Any
 malformed document, unknown key, unknown dialect, unknown role name,
 non-positive limit, or chain entry naming a model the `[models]` table

@@ -309,6 +309,23 @@ catalogue without opening runtimes. Explicit admission invokes
   listing and resolves `set_config`'s `model_name` against it; `serve`
   loads it from `--config` or shapes a one-entry catalogue from the
   `LOOM_*` environment.
+- `client/secrets.{Source, Entry, Failure, Capture, Runner, parse,
+  resolve, store, host_runner}` — the `[secrets]` table of the same
+  `loom.toml`: how the daemon *obtains* a named credential the operator's
+  shell never exported. One source today, `Command(argv)`, run on the
+  host and outside every jail with the daemon's own environment, bounded
+  by `default_timeout_ms` (10s), stdout less one trailing newline as the
+  value — and empty stdout is a failure rather than an empty value, so
+  such a name keeps falling through to the environment. The entries run
+  on each session create and open rather than once per daemon, so a
+  rotated token is picked up with no restart, at the price of one serial
+  pass over the entries per open. `store` layers the resolved pairs over a
+  base `provider/secret.SecretStore` — resolved name wins, everything
+  else falls through to the process environment — and that layered store
+  is `Settings.secrets`, the one seam `api_key_env` (models and MCP), an
+  extension's bound egress secret, and `[tools] env` all read. A failed
+  entry is a `secrets.unresolved` warning carrying the name and an exit
+  status, never output and never a refused session.
 - `client/demo.run` — the M3 acceptance flow end to end, executed as a
   test and runnable as `gleam run -m client/demo`.
 - `test/client/tui_e2e_test` + `test/support/terminal` — the real
@@ -2520,10 +2537,22 @@ an install is under the extensions root.
   see about it: a refused server has no module, so a program importing it
   is refused by vetting with no word about why the module is absent. A
   working layer logs `mcp.ready` with each server's name and tool count.
+- **Every credential name resolves through exactly one store.**
+  `Settings.secrets` is the layered `provider/secret.SecretStore` built
+  in `serve.resolve`, once per session assembly rather than once per
+  daemon: the `[secrets]` table's resolved pairs over the process
+  environment. The provider gateway, an MCP server's
+  `api_key_env`, an extension's bound egress secret, and the `reading:`
+  seam `tool_environment` builds a jailed shell's environment from are
+  all handed that same store, so a backend added to `client/secrets`
+  covers all four or none. A resolved value never enters the catalogue, a
+  session, a transcript, a log line or a `Failure`; `[secrets]` does not
+  change what reaches a jail either, because `[tools] env` still passes a
+  *value the operator listed by name* and `env_allow` is still a list of
+  names.
 - **An `api_key_env` is a variable name, and the value is read at spawn
-  and never held.** It is resolved from the harness's own environment
-  through the same `provider/secret` seam every other configured secret
-  goes through, put into the child's environment under the same name, and
+  and never held.** It is resolved through the same `provider/secret`
+  seam every other configured secret goes through, put into the child's environment under the same name, and
   never stored in a record, a log line, or a refusal message. A
   configured variable that is unset refuses that server *before* anything
   is spawned.
