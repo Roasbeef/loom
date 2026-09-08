@@ -67,7 +67,23 @@ only Go module.
   path as their last argument: stage 2 is loom-exec re-executed inside
   the jail, so a base view that does not carry it is a jail that cannot
   start, and where the helper was installed is the helper's knowledge
-  rather than the sender's.
+  rather than the sender's. That grant is emitted only when nothing else
+  covers the helper (`helperCovered`): the bind is a read-only mountpoint
+  over the file, so a helper inside the workspace could not be rebuilt or
+  replaced from inside the jail, which is what a daemon running from its
+  own checkout does every time it runs `go build -o bin/loom-exec`. A
+  helper under a `protected` entry is the case no grant can fix, and
+  `HelperUnderProtected` makes `Start` refuse it by name rather than
+  letting bwrap fail with an anonymous `execvp`. `BwrapArgs` also ends
+  every argv with `--remount-ro /`, after the whole plan and outside it:
+  bwrap's new root is a fresh tmpfs it never remounts, so without this a
+  region no grant covers is a writable, size-unbounded directory inside
+  the jail. It stays outside the plan because mountpoints have to be
+  creatable during setup and because `effective` and
+  `UnmountableProtected` read the plan as the setup-time state. The plan
+  keeps a `ClassRootTmpfs` entry at `/` carrying no argv, and that entry
+  is what the Linux audit reads to decide whether `base=` is `minimal` or
+  `host-view`.
 - `internal/jail.MissingRequiredMounts` — the platform-independent refusal
   for a `required` mount whose source is not on this host. Unlike
   `MissingMountSources`, which diagnoses a bwrap argv that would otherwise
@@ -241,12 +257,16 @@ only Go module.
   directory or granting device ioctls. It never sees `protected` at all;
   that list is bwrap's alone.
   `internal/jail/stage2.go`'s `landlockView` is where the policy becomes
-  that grant set, and it deliberately omits a tmpfs scratch (issue #59):
-  stage 2 has no unforgeable evidence that bwrap replaced `/tmp`, while
-  without bwrap there is no tmpfs to grant write on at all. Omitting the
-  grant keeps degraded execution from silently substituting real host
-  `/tmp`; callers that need temporary writes under Landlock place TMPDIR
-  inside a writable root. `scratch: "/"` is refused even earlier,
+  that grant set, and a tmpfs scratch is granted there only when bwrap
+  actually mounted one (issue #59). Stage 2 cannot see the mount
+  namespace it was placed in, so `Start` states the fact: it passes
+  `jail.ScratchMountedFlag` on the stage-2 command line in the bwrap
+  branch and only for `scratch: tmpfs`, and `landlockView` grants
+  `ScratchMount` only when it arrives. Both halves matter. Without the
+  grant a Landlock host has a scratch directory the payload cannot write
+  to, measured as `touch /tmp/probe` failing in a jail reporting
+  `landlock:abi=1`; with an unconditional grant, degraded execution would
+  silently substitute the account's real `/tmp`. `scratch: "/"` is refused even earlier,
   in `broker/policy.gleam`'s `validate` (`ScratchIsRoot`): a host-path
   scratch of the literal root would otherwise reach `internal/llock` as
   `RWDirs("/")`, and because grants union there is no way for any later
