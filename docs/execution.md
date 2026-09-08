@@ -292,9 +292,10 @@ to read.
 `SIGNOFF_PARALLEL=<N>` exports `LOOM_TEST_PARALLEL` to every lane, so
 each package runs up to N of its tests at once on one emulator; the
 modules that touch a VM-global resource are held back and run alone,
-declared with a reason in `scripts/serial-tests`. It defaults to 1,
-today's sequential run, and stays there until the suites with
-wall-clock assumptions in their fixtures are fixed.
+declared with a reason in `scripts/serial-tests`. It defaults to 8, the
+setting every package passed three runs of three at on a 32-core box;
+`SIGNOFF_PARALLEL=1` reproduces the sequential run when a failure has
+to be told apart from a concurrency effect.
 
 ### Watch for the push race
 
