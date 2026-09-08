@@ -136,6 +136,17 @@ pub fn a_missing_file_under_a_real_directory_is_allowed_test() {
   assert policy.refusing_unopenable_path("") == Ok(Nil)
 }
 
+// A `file:` URI is not a filesystem path, and its parent directory is the
+// literal `file:`, so judging one here would refuse every URI open. The
+// callers that build URIs judge the decoded path they built the URI from, so
+// the rule has to pass a URI through rather than guess at its meaning.
+pub fn a_file_uri_is_not_judged_as_a_path_test() {
+  assert policy.refusing_unopenable_path(
+      "file:/nonexistent/loom-policy/index.db?mode=ro",
+    )
+    == Ok(Nil)
+}
+
 // A read-only open cannot create the database, so a registered source that has
 // since been deleted is a refusal rather than a fresh file.
 pub fn a_missing_file_is_refused_for_a_read_only_open_test() {

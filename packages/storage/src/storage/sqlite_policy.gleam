@@ -216,9 +216,15 @@ fn confirm(requested: String, reported: String) -> Result(Nil, sqlight.Error) {
 /// // sqlite_policy.refusing_unopenable_path("/data/loom-search.db") == Ok(Nil)
 /// ```
 pub fn refusing_unopenable_path(path: String) -> Result(Nil, String) {
-  // SQLite reads these two as requests for a private database rather than as
-  // paths, and neither reaches the filesystem, so neither can fail the open.
-  use <- bool.guard(when: path == ":memory:" || path == "", return: Ok(Nil))
+  // SQLite reads the first two as requests for a private database rather than
+  // as paths, and neither reaches the filesystem, so neither can fail the
+  // open. The third is a `file:` URI, whose parent directory is the literal
+  // `file:` and would be refused here; a caller that builds a URI guards the
+  // decoded path it built the URI from instead.
+  use <- bool.guard(
+    when: path == ":memory:" || path == "" || string.starts_with(path, "file:"),
+    return: Ok(Nil),
+  )
 
   use Nil <- result.try(case simplifile.is_directory(path) {
     Ok(True) -> Error("a directory sits at " <> path)
