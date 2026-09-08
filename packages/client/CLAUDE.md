@@ -439,11 +439,28 @@ catalogue without opening runtimes. Explicit admission invokes
   `docs/next.md` owns that. A third SIGKILLs the VM and proves the sweep
   commits `Lost`, the model's own poll reads it, and the start marker the
   fixture removed stays gone, which only a respawn would undo.
+  `daemon_shipped_confinement_test` is the product-level half of the state-root
+  masking claim the sandbox self-test probe makes at the helper level. Two
+  sessions on one fresh state root: B is created first so its conversation
+  database exists, then A runs four foreground `bash` calls, three of them at
+  the daemon's own `owner.token`, `catalogue.db` and B's database by absolute
+  path, and one that writes a per-run marker inside A's workspace and reads it
+  back. The negatives assert on the secret rather than the error, because a
+  masked path does not refuse the same way twice: a protected file is bound to
+  `/dev/null` on Linux and reads as zero bytes, a protected directory becomes a
+  read-only tmpfs, and Darwin denies all three. So the assertions are that the
+  token's own bytes, read from the host, and the SQLite header never reach the
+  model, and that B's database open failed or produced nothing. Every command
+  ends in an `echo` carrying its own exit status, so a refusal is still a
+  successful tool result the scripted provider's `AwaitToolResult` steps match.
+  A host-side existence check runs before the negatives, so a moved layout
+  fails as "path absent on host" rather than passing vacuously, and the
+  positive fails a jail that runs nothing at all.
 - `test/support/enforcement.{Enforcement, probe, unavailable_reason}` measures
   whether the `loom-exec` beside a shipped server can enforce a policy on this
   host, by running one harmless jailed command under `PlatformEnforcement`. An
-  OS name and the presence of `bwrap` establish nothing. Both shipped fixtures
-  that need real confinement gate on it, each passing its own label so a census
+  OS name and the presence of `bwrap` establish nothing. Every shipped fixture
+  that needs real confinement gates on it, each passing its own label so a census
   learns which declined, while the reason after the colon stays one string with
   one declaration in `.github/declared-skips-linux-gate`. It panics rather than
   skipping on a missing, unstartable or failing helper: that is a broken

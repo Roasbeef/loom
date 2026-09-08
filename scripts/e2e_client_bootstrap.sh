@@ -60,5 +60,6 @@ shipped tui_shipped_live_delivery_test 180 "$fixture_key"
 shipped daemon_shipped_stop_test 180 "$fixture_key"
 shipped daemon_shipped_schedule_test 180 "$fixture_key"
 shipped daemon_shipped_jobs_test 900 "$fixture_key"
+shipped daemon_shipped_confinement_test 150 "$fixture_key"
 shipped daemon_shipped_recovery_test 150
 shipped daemon_shipped_identity_recovery_test 270
