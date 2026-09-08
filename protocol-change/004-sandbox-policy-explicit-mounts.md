@@ -1,8 +1,7 @@
 # protocol-change/004 — an explicit `mounts` vocabulary for SandboxPolicy
 
 **Status**: ACCEPTED 2026-09-08 · **Affects**: Part 1.4 `SandboxPolicyV1` ·
-**Raised by**: WP-J (J3c, the code-mode launcher) · **Implemented**: broker
-yes, helper pending
+**Raised by**: WP-J (J3c, the code-mode launcher) · **Implemented**: yes
 
 ## Problem
 
@@ -126,12 +125,13 @@ Because the field is additive, a v1 decoder on either side would reject it
 (both decoders are strict and refuse unknown keys, correctly), so this is a
 policy version bump rather than a compatible extension. **The field lands as
 policy version `v: 2`.** The two decoders are equally strict in the other
-direction as well: a v2 harness and a v1 helper do not interoperate, so the
-Gleam and Go halves are two pull requests over one version number, and the
-fixture corpus records which half a given file belongs to until the second
-lands. The `sandbox_policy_*` files stay at v1 for as long as the shipped
-helper speaks v1; the v2 corpus is `policy_v2_*`, and the helper pull
-request regenerates the former and folds in the latter.
+direction as well: a v2 harness and a v1 helper do not interoperate at all,
+so the Gleam and Go halves landed together in one pull request rather than
+two. Splitting them was considered and abandoned once measured: the
+intermediate tree is not coherent, because the helper decodes the policy out
+of `exec_start` strictly and refuses it with `policy: unknown keys [mounts]`,
+which fails every test that spawns the real helper. The three
+`sandbox_policy_*` fixtures move to v2 with the field.
 
 Two files in this directory are numbered 019
 (`019-session-display-names.md` and `019-sessions-delete.md`). Both are

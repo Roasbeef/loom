@@ -29,7 +29,13 @@ only Go module.
   server flag is a usage error, never a shrug, because a misspelled
   `--cgroup-base` would silently drop the ceilings it was meant to grant.
 - `internal/policy.Policy` — `SandboxPolicyV1` decoded strictly and
-  totally.
+  totally, at wire version 2.
+- `internal/policy.{Mount, MountAccess}` — the explicit-bind vocabulary of
+  `protocol-change/004`: a host path, `ro` or `rw`, and a `Required` bool
+  that decides whether an absent source refuses the execution or is
+  skipped. `required` is a bool here because the wire has bools; the
+  two-variant type on the Gleam side is a house rule about record fields
+  there, not a property of the format.
 - `internal/framing` — the helper side of the wire: `u32_be length ++
   msgpack(map)`, keys `v`, `id`, `kind`, `body`.
 - `internal/server` — the frame loop: frames in on stdin, frames out on
@@ -43,7 +49,13 @@ only Go module.
   `BwrapArgs` renders; `MountClass` says whether an op widens the jail's
   view or subtracts from it, and settles which of two ops naming the same
   path takes it. Pure, and the thing to read before changing any mount
-  behaviour. `PathKind` and `MaskSource` are its protected-path half.
+  behaviour. `PathKind` and `MaskSource` are its protected-path half, and
+  `ClassMountReadOnly`/`ClassMountReadWrite` are the explicit mounts.
+- `internal/jail.MissingRequiredMounts` — the platform-independent refusal
+  for a `required` mount whose source is not on this host. Unlike
+  `MissingMountSources`, which diagnoses a bwrap argv that would otherwise
+  fail anonymously, this one is a property of the policy and holds on
+  Darwin too, where there is no bind mount at all.
 - `internal/jail.PlatformSupport` (`Platform`, `PlatformFor`, `Refusal`) —
   not a probe of the kernel but a fact about the *build*: whether Loom has
   a jail for the OS it was compiled for. `PlatformFor` is pure and takes
@@ -419,6 +431,19 @@ only Go module.
     which puts a parent before every descendant of it, so the nested op
     lands on top. A readable root inside a writable root comes out
     read-only; a writable root under the scratch mount survives it.
+  - **The policy's explicit `mounts` come after even the masks.** That is
+    the one exception to the first rule, and `protocol-change/004` states
+    it as the property rather than as a detail: the cap socket and the cap
+    token have to be visible inside the jail even where a protected mask or
+    the scratch tmpfs would shadow them. It does not weaken `protected` by
+    accident, because composition has already intersected the mount list
+    against the session base, and a policy that names one path in both
+    lists gets a `skip:mounts:` from the audit rather than silence.
+    `required` reaches the argv as the absence of bwrap's `-try` suffix.
+    On Darwin the ordering is the other way round — a mount is an allow
+    rule over the subpath emitted *before* the trailing denies — because
+    Seatbelt takes the last matching rule and ADR-006 requires a protected
+    path to stay unreachable whatever else the profile says.
   Masks are deliberately exempt from the second rule against grants:
   `protected` is the policy's only subtractive verb, so no grant at any
   depth carves a hole in one. Where two entries name the *same* path the
@@ -496,7 +521,10 @@ only Go module.
   policy's paths were narrowed as asked", which made every finding in the
   mount-precedence family invisible to a full-enforcement demand (#54).
   `jail.AuditMounts` replays the ordered `MountPlan` and emits
-  `mounts:ro=N,rw=M,mask=K,scratch=…,plan=…`. The counts are of the
+  `mounts:ro=N,rw=M,mask=K,bind_ro=P,bind_rw=Q,scratch=…,plan=…`, and the
+  Darwin profile answers with the same two fields inside `seatbelt-fs:`.
+  `bind_ro` and `bind_rw` count the explicit `mounts` entries the plan
+  leaves at the access they asked for. The counts are of the
   policy's own paths whose **effective** view — after the whole ordered
   plan, taking the last operation that covers each path — is the one the
   policy asked for, which is why they catch what a count of requested

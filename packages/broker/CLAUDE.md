@@ -453,13 +453,12 @@ protocol (spec Part 1.4). WP-G.
   principal a prompt goes to under a shared daemon, and a session's
   filesystem reach is decided before it starts. `protocol-change/004` has
   the argument.
-- **The policy wire is version 2, and the Go helper still speaks 1.** The
-  `mounts` field could not be added compatibly, because both decoders refuse
-  unknown keys and refuse any `v` but their own. The Gleam half landed
-  first; until the helper half of `protocol-change/004` lands, every test
-  that spawns the real `bin/loom-exec` fails at the handshake with
-  `policy: unknown keys [mounts]`, and the three `sandbox_policy_*` fixtures
-  decode on the Gleam side only.
+- **The policy wire is version 2 on both sides.** The `mounts` field could
+  not be added compatibly, because both decoders refuse unknown keys and
+  refuse any `v` but their own, so the two halves of `protocol-change/004`
+  had to move together: a v2 harness against a v1 helper fails at the
+  handshake with `policy: unknown keys [mounts]`. Both halves have landed
+  and the three `sandbox_policy_*` fixtures decode on both sides.
 - **Escalation approval is bounded and single-shot.** Approval accepts only
   grants drawn from the denial's wanted diff; exactly one re-execution runs
   under the widened policy and a second consume is refused. Widening the

@@ -51,9 +51,7 @@ sandbox_policy* file.
 
 All three sandbox_policy fixtures are version 2: protocol-change/004
 added `mounts`, and neither decoder accepts a version but its own, so
-there is no v1 fixture left to keep. The Go decoder follows in the
-helper half of that change; until it lands, these files decode on the
-Gleam side only and the Go suite above reports them as failures.
+there is no v1 fixture left to keep. Both decoders read them.
 
 sandbox_policy_1.bin: SandboxPolicyV1, network proxy mode.
   { v:2, writable_roots:["/work","/work/.cache"],
