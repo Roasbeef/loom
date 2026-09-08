@@ -97,7 +97,7 @@ Two pieces of wiring in `client/serve` make the pushes reach the shipped
 binary. It starts one `commit_forwarder` (`client/gateway.gleam:833`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:2624`), so
+`tap_provider(tap_preview_provider(...))` (`client/serve.gleam:2641`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
 answer.
