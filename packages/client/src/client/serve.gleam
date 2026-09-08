@@ -504,8 +504,10 @@ pub fn start_build_plane(
   // parameter until now. The seed ladder looks in the *checkout* a
   // contributor ran `make codemode-seed` in; the jail may write only
   // where the build root is, which for an install is under the
-  // extensions root and nowhere near the checkout.
-  let base = base_policy(writable)
+  // extensions root and nowhere near the checkout. The policy is the
+  // build plane's own rather than a session's for the reason
+  // `build_plane_policy` gives: an install has no blob store to mask.
+  let base = build_plane_policy(writable)
 
   // The same refusal the boot makes, in the same place in the order: a
   // base policy the sandbox cannot enforce is a failure now, not a
@@ -4360,6 +4362,37 @@ pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
     // nothing, and the bridge's `fs.write` is refused there, correctly.
     protected: [workspace <> "/" <> codemode_wiring.blob_directory],
   )
+}
+
+/// The base policy an install's build plane runs under: the staging root
+/// writable, the whole filesystem readable so the toolchain is reachable,
+/// network off, and nothing masked.
+///
+/// Separate from `base_policy` because the blob mask is the one thing a
+/// build plane must not inherit. A session's blob store exists — `boot`
+/// creates it before it spawns a jail — and a session's jails are
+/// writable in the workspace that holds it, so the mask is both
+/// buildable and load-bearing there. An install has no blob store at
+/// all: nothing under the extensions root is content-addressed, no
+/// jailed step here emits a blob, and `codemode/build.build_requirements`
+/// narrows the one writable root down to the build directory. The
+/// inherited entry was therefore a mask over a path that did not exist,
+/// under a parent the composed policy no longer let anyone write, which
+/// is precisely the shape bwrap declines to build — and its refusal took
+/// every jailed compile with it. Not constructing the entry is what
+/// keeps that state out of reach; dropping it later would leave the same
+/// mistake one composition step away.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.build_plane_policy("/ext").protected == []
+/// ```
+///
+pub fn build_plane_policy(writable: String) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(..policy.workspace_default(writable), readable_roots: [
+    "/",
+  ])
 }
 
 /// Why this server will not boot on the base policy it was given, worded
