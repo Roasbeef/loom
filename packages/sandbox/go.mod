@@ -1,6 +1,8 @@
 module github.com/roasbeef/loom/sandbox
 
-go 1.24.0
+go 1.26.0
+
+toolchain go1.26.3
 
 require (
 	github.com/landlock-lsm/go-landlock v0.9.0

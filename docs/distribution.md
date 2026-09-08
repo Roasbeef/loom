@@ -5,7 +5,7 @@ on it, what that costs, and why the sandbox helper ships as a file beside
 the server rather than inside it.
 
 The historical size measurements below were taken on the Linux x86_64 CI runner with Gleam 1.18.1,
-Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.24.7 by running the targets it
+Erlang/OTP 29.0.5 (ERTS 17.0.5), and Go 1.26.3 by running the targets it
 describes. They are not fresh measurements of the single-daemon implementation.
 Current verification and remaining release gates are recorded in [next.md](next.md).
 

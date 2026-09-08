@@ -14,7 +14,7 @@
 set -euo pipefail
 
 [ $# -eq 3 ] || { echo "usage: go-build.sh <module-dir> <package> <output>" >&2; exit 1; }
-command -v go >/dev/null || { echo "go-build.sh: go is not on PATH (need >= 1.24)" >&2; exit 1; }
+command -v go >/dev/null || { echo "go-build.sh: go is not on PATH (need >= 1.26)" >&2; exit 1; }
 
 module="$1"; package="$2"; output="$3"
 case "$output" in /*) ;; *) output="$PWD/$output" ;; esac

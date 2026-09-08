@@ -848,7 +848,7 @@ Milestone acceptance evidence:
 
 Toolchain (installed in-container, not in repo): Gleam 1.18.1
 (`/usr/local/bin/gleam`), Erlang/OTP 28.5 (hex.pm build,
-`/usr/local/otp`), rebar3, Go 1.24. Reference checkouts:
+`/usr/local/otp`), rebar3, Go 1.26. Reference checkouts:
 `/home/user/earendil-works/pi` (harness spec at
 `packages/agent/docs/harness.md` — the fidelity source),
 `/home/user/roasbeef/claude-files` (skills: incremental-commit,

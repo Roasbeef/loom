@@ -236,7 +236,7 @@ env:
   GLEAM_PATCHES: "860f8224ddb7e1ecb7f983fb622ede12466225e5"
   OTP_VERSION: "29.0.5"
   REBAR3_VERSION: "3.27.0"
-  GO_VERSION: "1.24.7"
+  GO_VERSION: "1.26.3"
   # Bump to invalidate every cache at once.
   CACHE_EPOCH: "1"
   # Public dummy credential used only by the local scripted provider fixture.
