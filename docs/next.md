@@ -6,11 +6,12 @@ binary, and the release gates deliberately left open. Rewrite it after the
 next completed body of work. Commit and review history belongs in Git and the
 review records, not in another chronological addition to this file.
 
-Re-baselined on 2026-09-07 against `jobs/abort-step`, which carries `main`
-plus the last of the background-jobs stack. Claims below were checked against
-that tree, exact local command results, or the named hosted run. The daemon
-acceptance material is carried forward from the 2026-09-06 edition and was
-not re-measured; where it names a run, that run is the evidence.
+Re-baselined on 2026-09-08 against `origin/main` at `e167cbdd`, which carries
+the whole per-session confinement wave (#319 through #328). Claims below were
+checked against that tree, exact local command results, a named `signoff/linux`
+run, or the pull request that landed them. The daemon acceptance material is
+carried forward from the 2026-09-06 edition and was not re-measured; where it
+names a run, that run is the evidence.
 
 ## Where the tree is
 
@@ -25,8 +26,9 @@ plane is a separate body of work and it is finished.
 | Contracts and ownership, phases 0 and 1 | Protocols 014–016, reclaimable addresses, parked assembly and retained cleanup failures are implemented. Weft 0.4.4 is pinned. |
 | Lifecycle and routing, phases 2 and 3 | Singleton startup, durable creation keys, bounded admission, lazy catalogue restore, current authority and credited snapshots are implemented. |
 | TUI and domains, phases 4 and 5 | Shared durable state, principal attribution, invitations, revocation, presence and session switching have shipped-binary coverage. Network delivery now pushes: commit notices, presence and attachment leave the hub unsolicited, and concurrent prompts on one strand are queued rather than refused. See "Live delivery" below. |
-| Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof, confinement and the remaining joined observations stay open. |
+| Release acceptance, phase 6 | The closing local client gate passes. The last published platform gate failed; final-dependency resource proof and the remaining joined observations stay open. Filesystem confinement is no longer among them. |
 | Background jobs | Landed. The pure state, the actor, the model-facing surface, the shipped fixture and the step-scoped abort are all in the tree; issue #183 is closed by them. See "Background jobs" below for what each piece is and what proves it. |
+| Per-session filesystem confinement, [#242](https://github.com/Roasbeef/loom/issues/242) | Done. The jail's base view is a minimal root on both platforms, the daemon's secrets are masked as a second layer, eleven self-test probes are required in CI, and a shipped fixture proves it against `bin/loomd`. See "Filesystem confinement" below. |
 
 [PR #239](https://github.com/Roasbeef/loom/pull/239) targets
 `client/daemon-review-fixes` ([#238](https://github.com/Roasbeef/loom/pull/238)),
@@ -61,7 +63,8 @@ of wall clock. The critical path is entirely the client lane: the client
 package suite takes about 390 seconds serially, and the bootstrap fixtures
 run behind it in the same lane. Every other lane finishes inside three
 minutes, the 200-seed soak and the enforcement self-test included; the self
-test reported 9 of 9 layers enforced with no sudo. The macOS lane on the
+test reported 9 of 9 layers enforced with no sudo at the time, and 11 of 11
+today. The macOS lane on the
 developer's Mac ran green in 573 seconds. Hosted CI keeps running as the
 record, but nothing waits on it.
 
@@ -91,6 +94,93 @@ manifest-hash reproducibility assertion; the root is now per-checkout by a
 sixth was a race in the gate itself rather than in the product: tui's
 launch-lock test and the bootstrap fixtures both name scratch roots by the
 millisecond, so they now run in one lane.
+
+### Filesystem confinement
+
+[Issue #242](https://github.com/Roasbeef/loom/issues/242) is done. The previous
+edition listed it as item 1 under "What to do next" and as unbuilt under
+"Deliberately open"; both are stale as of this one. Nine pull requests landed
+between `c71dea4a` and `e167cbdd`:
+[#319](https://github.com/Roasbeef/loom/pull/319),
+[#320](https://github.com/Roasbeef/loom/pull/320),
+[#321](https://github.com/Roasbeef/loom/pull/321),
+[#322](https://github.com/Roasbeef/loom/pull/322),
+[#323](https://github.com/Roasbeef/loom/pull/323),
+[#325](https://github.com/Roasbeef/loom/pull/325),
+[#326](https://github.com/Roasbeef/loom/pull/326),
+[#327](https://github.com/Roasbeef/loom/pull/327) and
+[#328](https://github.com/Roasbeef/loom/pull/328).
+
+**What a session's jail sees on Linux.** The base view was `--ro-bind / /`,
+which made `readable_roots` decorative and put every other workspace, every
+other session's scratch and every credential on the account within a jailed
+payload's reach. #326 replaced it with bubblewrap's own root tmpfs plus a
+tolerant read-only bind of each system root in `SystemRoots`: `/usr`, `/bin`,
+`/sbin`, `/lib*`, `/etc`, `/opt`, `/var/lib`, the resolver runtime directories
+under `/run`, `/run/current-system` and `/nix/store`, each bound only when it
+exists. On top of that come the policy's own readable and writable roots, the
+`protected` masks, the policy's explicit mounts and the scratch tmpfs at
+`/tmp`, in that order, and then `--remount-ro /` last so a payload cannot
+create anything in the root itself. #328 removed the harness's remaining
+`readable_roots: ["/"]`, so the narrowing is live rather than latent. What a
+session's jail does not see is the rest of the account, other workspaces, and
+other sessions' state.
+
+**What it sees on Darwin.** #326 also replaced the Seatbelt profile's
+unconditional `(allow file-read*)` with per-root subpath allows over
+`DarwinSystemRoots` and the policy's own regions, so reads are an allowlist
+there too. #327 added read-metadata on every proper ancestor of every granted
+region, in both the policy's spelling and the symlink-resolved one, emitted
+before the trailing protected denies so a protected ancestor still wins:
+`realpath(3)` reads metadata up the whole path it canonicalizes, and the old
+whole-host view had covered that incidentally.
+
+**The daemon's secrets are the second layer, not the only one.** Every daemon
+session's base policy masks the owner token, the catalogue, the session
+databases, the lock and the invite material through
+`serve.protecting_state_root`, and #319 extended those masks to the extension
+install's build plane. Masking does not depend on where `--state-dir` points,
+so it holds for a state root placed inside a workspace, which omission from a
+minimal root would not. Both layers stay.
+
+**The enforcement evidence.** `loom-exec --self-test` now runs eleven probes,
+each declared `required` in `.github/enforcement-expectations`, which fails the
+job when the run and the file disagree in either direction: `env not in
+allowlist withheld`, `output flood truncated at cap`, `orphaned grandchild
+reaped via pgroup`, `write outside writable_roots denied`, `protected path
+masked from reads and writes`, `daemon state root unreachable from a session
+jail`, `host path outside the mount plan unreadable`, `direct socket denied
+under network off`, `fork bomb capped by pids limit`, `observed setsid escape
+reaped`, and `unvetted beam denied host write, secret, and network`. The two
+that this wave added are the last-named base-view probe and the state-root one,
+and both run an unmasked control first (#320 for the state root, #326 for the
+base view), so a jail that refuses everything cannot be read as a pass.
+
+**The product-level proof** is
+`packages/client/test/client/daemon_shipped_confinement_test.gleam` (#321). It
+boots the shipped daemon on a fresh state root with two workspaces, creates
+session B first so its database exists, then drives session A's jailed `bash`
+tool at the owner token, the catalogue and B's database by absolute path, with
+a positive read of a file the same tool wrote in A's own workspace. It asserts
+on the secret rather than the error, because the platforms refuse differently:
+a masked file on Linux is a `/dev/null` bind that reads as zero bytes, while on
+Darwin the read is denied outright. Both databases are witnessed by their
+SQLite header on the host before the negatives run, so a moved layout fails
+loudly instead of passing for free.
+
+**The zero-config defaults.** A session base is assembled rather than
+configured. `serve.admitting_user_toolchains` binds a fixed set of well-known
+per-user toolchain directories under `$HOME` when present, every entry
+read-only and `MountOptional`; `protocol-change/020` lists them.
+`serve.widening_path_dependencies` derives sibling checkouts from `gleam.toml`
+`path =` dependencies, read-only and filtered to those outside the workspace,
+the way linked worktrees are already derived from `.git`. A `[workspace]
+mounts` line in the launch configuration is the escape hatch for what no
+manifest describes, and it is the only source of write access outside the
+workspace. The read-only ruling has one reason: the jail's `HOME` is
+`<workspace>/.codemode/home`, so cargo, go, npm, hex, gleam and rebar already
+write their caches under the workspace, and a read-write bind of `~/.cache`
+would have helped no build while exposing the operator's account.
 
 ### Corrections to the previous handoff
 
@@ -145,6 +235,41 @@ tool error and only a short assertion error. See the
 
 ### Verified results and their limits
 
+Every pull request in the confinement wave was merged on a green
+`signoff/linux` run of its own head, and each such run includes the self-test
+with its declared expectations. The recorded wall times are 445 seconds for
+#319, 441 for #321, 447 for #322, 443 for #325, 440 for #326 and 451 for #328;
+each PR's status names the exact run. The self-test reported 10 of 10 probes
+enforced before #326 and 11 of 11 after it. On macOS the evidence is local
+rather than hosted: `make check`, `make e2e`, `make e2e-codemode`, the
+bootstrap fixtures and `make selftest` (11 of 11) were run on the developer's
+Mac for #326 through #328.
+
+The gate itself was noisy on 2026-09-08. #327 went red four times before a
+green run: `client@history_test` twice, `daemon_shipped_recovery_test` failing
+`await_resident` with `Error(Disconnected)`, and a conformance soak
+`routing_test` storm retry ladder. A baseline dry run on `origin/main` went red
+once (`serve_test`) and then green, which is what separates gate flakiness from
+the change under test. Client timing was unchanged at roughly 220 seconds
+throughout. All of it is recorded on
+[#324](https://github.com/Roasbeef/loom/issues/324); do not read a single red
+run in this window as a regression without repeating it.
+
+Three things the wave does **not** prove. The minimal root has not been
+exercised against a Nix wrapper tree or an asdf-shim `gleam` layout;
+`protocol-change/020` records both as gaps, and an asdf shim gets a
+`MountRequired` refusal naming the directory rather than a working jail,
+because resolving a shim means reading a script and the harness has no
+`read_link`. The Darwin `realpath` regression that #327 fixed is not
+discriminated by `a_real_jailed_build_installs_test` in
+`packages/client/test/client/extension_test.gleam`, which still fails on macOS
+for reasons the wave did not establish; the discriminator is the Go unit test
+`TestSeatbeltCanonicalizesInsideAGrantedRoot` in
+`packages/sandbox/internal/jail/seatbelt_darwin_test.go`, which fails on the
+head before #327 with the same error the build reported and passes after it.
+And nothing here proves anything about a build cache shared between sessions,
+which is deliberate; see the ruling below.
+
 The subsequent CI-correction gate exited 0 with **1,345 tests in 297.85
 seconds**, with all five shipped fixtures enabled and the complete live-tool
 suffix executed. Its strict census independently passed with only the
@@ -169,6 +294,7 @@ fix; they are the daemon acceptance evidence, not a count of the current tree.
 | `daemon_shipped_stop_test` | A's original provider socket closes, owner control observes Saved, B progresses on its original attachment, and explicit reopen resumes one durable user admission under a new incarnation. |
 | `daemon_shipped_schedule_test` | An overdue configuration added while A is Saved does not run during B's progress. Explicit open fires it once; another reopen preserves the exact fired cell and message records. |
 | `daemon_shipped_jobs_test` | The background-jobs plane end to end. Three scenarios, described under "Background jobs" below. |
+| `daemon_shipped_confinement_test` | A jailed tool in session A obtains neither the owner token, nor the catalogue, nor session B's database, by absolute path, while a positive read of a file it wrote in its own workspace returns the per-run marker with a zero status. Added with #321; not part of the counts above. |
 
 The final stop fixture at `5d1decf2` independently passed in **3.72 seconds**;
 its five held-provider negative controls passed in **0.97 seconds**.
@@ -200,8 +326,9 @@ Concurrent native startup also has the existing bootstrap lifecycle fixture.
 The [six mutation controls](review/single-daemon-mutation-gates.md) remain
 separate evidence. Two owner-authenticated Herdr terminals used the Baseten
 example, painted shared replies and switched/rejoined sessions before verified
-daemon shutdown. That live drive used no tools and proves neither distinct
-principal authority nor filesystem confinement.
+daemon shutdown. That live drive used no tools and proves no distinct
+principal authority; filesystem confinement is proved separately by
+`daemon_shipped_confinement_test` and the self-test probes.
 
 ### Hosted evidence
 
@@ -610,54 +737,15 @@ Preserve the distinction these items draw between a missing implementation,
 an unresolved design and missing evidence. The order below is a
 recommendation, not a dependency chain, except where it says so.
 
-### 1. Take per-session filesystem confinement, #242, starting with `protocol-change/004`
+### 1. Take #85's remaining prerequisites
 
-[Issue #242](https://github.com/Roasbeef/loom/issues/242) is now the largest
-thing between the tree and the release acceptance, and with #240 landed it is
-also the largest remaining hole in what multiplayer actually promises:
-membership decides who may attach, and nothing yet stops a model in one
-session reading the daemon's credentials or another workspace's database.
-
-Start with
-[`protocol-change/004`](../protocol-change/004-sandbox-policy-explicit-mounts.md),
-which is PROPOSED and unimplemented. `SandboxPolicyV1` has no verb for "make
-this path visible in the jail", so code mode's capability socket and token
-reach the satellite *incidentally*, through the helper's `--ro-bind / /` base
-view. Until a policy can say what must be reachable, nothing can tighten that
-base view without breaking code mode silently instead of refusing, and a
-per-session view is exactly a tightening of it. 004's own Problem section
-argues this from the other direction. The narrowing itself is proposed in
-[`protocol-change/020`](../protocol-change/020-minimal-jail-root.md), which
-enumerates the minimal root, the zero-config user toolchain set, and the
-self-test probe that proves it.
-
-Exit: `SandboxPolicyV1` can name a mount explicitly, `codemode/launch` says
-what it needs rather than checking that an accident covers it, the base view
-can be narrowed, and `make selftest` reports the narrowing as an enforced
-layer rather than as prose. Do not retry restricted native implementation
-through another worker or tool.
-
-The design pass (recorded on the issue, 2026-09-08) found the credential
-half already built: every daemon session's base policy masks the state root's
-secrets, and [PR #319](https://github.com/Roasbeef/loom/pull/319) declared
-that as the required self-test probe `daemon state root unreachable from a
-session jail` and extended the masks to the extension install's build plane.
-One residual stays open until the base view is narrowed: the install infers
-the state root as the parent of its extensions root, so a daemon started with
-`--state-dir` elsewhere, or an install run under a different `HOME`, leaves
-the live token unmasked in the build jail. It is operator-only, since no
-tool or session reaches the build plane, and the minimal-root work closes it
-by omission rather than by a second guess at the path.
-
-### 2. Then #85's remaining prerequisites
-
-[Issue #85](https://github.com/Roasbeef/loom/issues/85) shares that first
-prerequisite and lists what else has to be true before a VM driver is honest,
-in its own order: make the enforcement vocabulary driver-scoped or negotiate
-it in `hello` (with #64), then settle the shared-versus-copied workspace
-question, and only then a vsock `Transport` variant. Item 1 above is #85's
-step 1, so taking these next is continuing one line of work rather than
-opening a second.
+[Issue #85](https://github.com/Roasbeef/loom/issues/85)'s first prerequisite
+was per-session confinement, and that is now done, so the rest of its list is
+what stands between the tree and an honest VM driver, in its own order: make
+the enforcement vocabulary driver-scoped or negotiate it in `hello` (with
+[#64](https://github.com/Roasbeef/loom/issues/64)), then settle the
+shared-versus-copied workspace question, and only then a vsock `Transport`
+variant.
 
 The item to resist is writing the transport first. It produces a driver that
 works in a demo and misreports its own enforcement, which is the one failure
@@ -667,7 +755,48 @@ Exit: each prerequisite is settled where it lives — a protocol change, a
 design-note ruling, or an ADR — before any VM transport code exists. `#85` is
 `phase:debt`; nothing in the release acceptance waits on it.
 
-### 3. Close the daemon domain-teardown admission window
+### 2. Write a daemon-level deterministic-simulation script
+
+The multiplayer acceptance drive names convergence properties that no shipped
+fixture reaches, because each is a crash or a race at a point a scripted turn
+cannot stop on. Four are worth a script: a crash between creation and
+publication replayed with the same creation key, a restart with a lifecycle
+request already pending, an approve/deny race that must settle on exactly one
+winner, and a revocation with a command already queued behind it.
+
+Scope it as a multi-session script over the real writer, in the existing
+runner rather than a second one, and leave the enforcement and resource
+observations where they are: those are shipped fixtures against `bin/loomd`
+and a simulation cannot make the kernel claim. Read
+[`docs/architecture/simulation.md`](architecture/simulation.md)'s "What this
+does not cover" first. It is the honest account of what the runner is: message
+interleaving is not controlled, so a seed can interleave differently on two
+runs and both must converge, and `control.attempt` still holds a real
+millisecond budget as a deadlock backstop. A convergence property is exactly
+the shape that survives those limits; a timing property is not.
+
+Exit: each of the four properties is a named scenario with a seed, the runner
+reports a violated one with its `[timing]` and `[verdict]` annotations, and
+the acceptance drive's convergence half cites the script rather than a manual
+drive.
+
+### 3. Fix the history-index flake under the parallel runner
+
+[Issue #324](https://github.com/Roasbeef/loom/issues/324) is
+`client@history_test` failing under `LOOM_TEST_PARALLEL=8` on the local Linux
+gate, a different case each time and clean on every immediate re-run. It cost
+real time in this wave: the 2026-09-08 burst put #327 red four times and #323
+red once, and separating it from the change under test needed a baseline dry
+run on `origin/main`. The issue records the suspects (a shared scratch path
+named by the millisecond, a `persistent_term` slot, an SQLite file left open by
+a sibling) and the two native signal deaths seen alongside it.
+
+Exit: the issue's own acceptance — `history_test` and `memory_lifecycle_test`
+pass twenty consecutive runs under `LOOM_TEST_PARALLEL=8` on the Linux gate, or
+the shared resource is named and the module is in `scripts/serial-tests` with
+that reason.
+
+### 4. Close the daemon domain-teardown admission window
 
 The registry fences a workspace domain when its last dependent retires and
 keeps the fenced slot in its book until the witness exits. Every admission
@@ -682,7 +811,7 @@ Exit: an explicit open naming a domain in `DomainClosing` is admitted once
 the witness exits, without the caller polling a census; the schedule fixture
 drops its second barrier and still passes.
 
-### 4. Take the two jobs-plane cleanups
+### 5. Take the two jobs-plane cleanups
 
 The `jobtools` collapse and the terminal `Held` eviction above. Both are
 contained, both are in one package, and doing them while the plane is fresh
@@ -694,7 +823,7 @@ Exit: `client/jobtools` is gone or is only what `scheduleseam`'s translation
 is; the actor's table has a stated retention rule with a test; `make
 check-client` and `make lint-client` pass.
 
-### 5. Add an explicit memory-off observation
+### 6. Add an explicit memory-off observation
 
 [Issue #245](https://github.com/Roasbeef/loom/issues/245) records the smallest
 daemon follow-up, extending the existing shipped workload after native
@@ -708,7 +837,7 @@ Exit: the workload proves no distillation-start event or persistent output.
 This does not prove that the explicit `remember` capability is unavailable,
 and configuring distillation off alone is not the observation.
 
-### 6. Adopt the SQLite retirement repair
+### 7. Adopt the SQLite retirement repair
 
 Shipping resolves sqlight 1.2.0 and Hex esqlite 0.9.0, not the evaluated fork.
 [Issue #247](https://github.com/Roasbeef/loom/issues/247) owns the release or
@@ -727,10 +856,11 @@ resource/release/platform checks pass on that graph. No cache patch, forced
 collection, parallel package publication or source-built compiler workaround
 is authorized by this handoff.
 
-### 7. Resolve the remaining release evidence
+### 8. Resolve the remaining release evidence
 
 The [acceptance drive](design-notes/single-daemon.md#the-acceptance-drive)
-still requires the joined load/crash observations and application confinement.
+still requires the joined load/crash observations. Its confinement
+requirement is met; see "Filesystem confinement" above.
 Classify hosted latency using unchanged workloads and evidence attributed to
 the exact run. [Issue #241](https://github.com/Roasbeef/loom/issues/241) tracks
 the performance work needed to restore hosted macOS enforcement. Its design
@@ -741,7 +871,7 @@ Exit: each remaining requirement has evidence for the final artifact,
 with explicit platform limitations. Do not repeat already-proven startup,
 invitation and live-tool scenarios as if they were wholly absent.
 
-### 8. Declare the sequential groups the parallel test flag needs
+### 9. Declare the sequential groups the parallel test flag needs
 
 [PR #309](https://github.com/Roasbeef/loom/pull/309) added an opt-in
 `LOOM_TEST_PARALLEL=N` to `scripts/test.sh`, which wraps the runner's test
@@ -770,6 +900,30 @@ Exit: the sequential groups are declared beside the packages they belong to,
 `make signoff` runs the client lane with the flag on, and no test buys its
 green run with a longer sleep.
 
+### 10. Three small follow-ups from the confinement wave
+
+None of these blocks anything and each is a paragraph of work.
+
+- **`scripts/signoff_remote.sh` does not forward `SIGNOFF_PARALLEL`.**
+  `scripts/signoff.sh` exports it as `LOOM_TEST_PARALLEL`, defaulting to 8, but
+  the remote wrapper passes nothing, so `SIGNOFF_PARALLEL=1` on the developer's
+  machine does not reach the box. That mattered during the #324 investigation,
+  where a sequential run was the evidence being sought. It is being fixed;
+  check before redoing it.
+- **The per-session cache overlay is deliberately not built.** It was
+  considered as a way to keep one session's cache writes invisible to another,
+  and `protocol-change/020` settles it by removing the premise: with every
+  per-user entry read-only, there is no write for an overlay to isolate. Reopen
+  it only alongside a decision to grant write access outside the workspace.
+- **The `ext install` state-root residual is closed.** The previous edition
+  recorded that the install infers the state root as the parent of its
+  extensions root, so a daemon started with `--state-dir` elsewhere left the
+  live token unmasked in the build jail. `serve.build_plane_policy` builds on
+  `policy.workspace_default` and never grants `readable_roots: ["/"]`, so under
+  the minimal root a state root the install did not guess is outside the view
+  entirely. It is closed by omission, which is what the wave predicted, and it
+  needs no second guess at the path.
+
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record
@@ -784,6 +938,70 @@ more, so it is posted only from `scripts/signoff.sh`'s verdict; never type
 advisory until its lane has a flake-free record. No machine, hostname or
 address for a signoff runner enters the tree: the host lives in
 `LOOM_SIGNOFF_HOST` and in the developer's ssh config.
+
+**The jail's base view is an allowlist.** `protocol-change/020` replaced
+`--ro-bind / /` with a root tmpfs plus explicit binds, and replaced Seatbelt's
+unconditional `(allow file-read*)` with per-root subpath allows. A denylist
+over a shared account has no closing condition; an allowlist covers what nobody
+thought to name. `/` is remounted read-only last so a payload cannot create
+anything in the root itself.
+
+**A `readable_roots` of `/` still means the host view, and that is the
+compatibility tie.** An older harness sending `["/"]` outranks the tmpfs and
+rebuilds the whole-host view, reported as `base=host-view` in the audit where
+the minimal base reports `base=minimal`. That is why #326 could land before
+#328 with no version bump; `packages/sandbox/CLAUDE.md` states it at the
+mechanism.
+
+**`protocol-change/004` is ACCEPTED with two amendments, made before it
+landed.** `kind` is dropped, because its three values rendered identical argv,
+and `required` is a two-variant `MountRequirement` rather than a naked `Bool`,
+which lint R9 rejects. Editing a PROPOSED, unimplemented proposal is not silent
+drift; the never-edit rule protects accepted decisions. #322 carries both.
+
+**There is no `GrantMount`.** A mount composes as the meet like every other
+policy field, so a tool asking for one the base does not carry produces a
+narrowing and an in-band refusal. Adding a grant would have put mounts on the
+escalation path and tangled #242 with
+[#243](https://github.com/Roasbeef/loom/issues/243)'s open question about which
+principal a shared daemon prompts. #243 stays independent and can be decided
+later without reopening any of this.
+
+**A mount may not overlap a `protected` path, and duplicates are refused at
+validation.** bwrap and Seatbelt resolve an overlap in opposite directions, so
+rather than pick one, `validate` on both sides refuses a mount that covers or
+is covered by a protected path, a duplicate mount path, a trailing slash and a
+`..` segment. Merging happens earlier, at assembly: `serve.merging_mounts`
+collapses mounts that several sources derived to the same exact path, which is
+what a Homebrew or `~/.local/bin` gleam produces. Merge at assembly, refuse at
+validation; #322 and #328 carry the two halves.
+
+**The per-user toolchain set is read-only.** The jail's `HOME` is under the
+workspace, so every build already writes its caches there; a read-write bind of
+`~/.cache` would have helped no zero-configuration build while giving a session
+write access to the operator's account. `~/.local/share` is out of the set
+entirely. Write access outside the workspace comes from a `[workspace] mounts`
+line an operator wrote, and nowhere else. `protocol-change/020` carries it.
+
+**`gleam` is mounted by its binary's directory, `erl` by its install prefix.**
+A cargo-installed `gleam` would otherwise bring `~/.cargo/credentials.toml`
+into every jail, while an ERTS `ROOTDIR` really is the region `erl` needs to
+boot, and discovery prefers the emulator the daemon itself runs on so the
+heuristic is the fallback that does not fire.
+
+**Darwin grants read-metadata on every ancestor of every granted region.**
+`realpath(3)` reads metadata up the whole path it canonicalizes, so a nested
+readable root was granted while the path to it was not. Existence and mode of
+a directory whose name the payload already has is not a secret, and Linux
+exposes the same shape because bwrap creates mountpoint parents in the root
+tmpfs. The grants sit before the trailing denies, so a protected ancestor still
+wins. ADR-006's addendum and #327 record it.
+
+**The helper's own bind is skipped when the view already covers it.** Stage two
+re-executes the helper inside the jail, so its binary is part of the view, but
+binding it unconditionally turned the workspace's `bin/loom-exec` into a
+read-only mountpoint under the dogfooding arrangement. #326 records the
+measurement at the code.
 
 **One daemon, metadata-only restart.** The
 [execution ruling](design-notes/single-daemon.md#execution-ruling) requires
@@ -849,12 +1067,19 @@ uses Weft; Erlang stays limited to necessary host operations.
 
 None of these is unfinished work somebody forgot.
 
-- **Native filesystem confinement, [#242](https://github.com/Roasbeef/loom/issues/242):** excluded PrivateScratch and application
-  filesystem-dispatch work is unresolved. Membership does not prove a model
-  cannot read daemon credentials or another workspace's database. Do not retry
-  restricted native implementation through another worker or tool. This is
-  open in the sense of unbuilt, not undecided: it is item 1 under "What to do
-  next", and `protocol-change/004` is where it starts.
+- **Two host layouts the minimal root does not handle:** an asdf-shim `gleam`
+  gets a `MountRequired` refusal naming the directory rather than a working
+  jail, because resolving a shim means reading a script and the harness has no
+  `read_link`; the remedy is an explicit `[workspace] mounts` line. A Nix
+  wrapper tree, where `code:root_dir()` is `.../lib/erlang` and the `erl`
+  script's shebang and libc live outside it, is recorded the same way. Both are
+  in `protocol-change/020`, and neither has been run.
+- **Running the filesystem tools as a jailed payload** is not #242 and was not
+  taken with it. It is #85's shared-versus-copied workspace question, a much
+  larger change to `tools`. The design pass of 2026-09-08 also found a
+  resolve/open race in `tools/fs.*` while looking at it, a harness-side path
+  check followed by a harness-side open that a symlink swap defeats; that
+  belongs on an issue of its own and has not been filed.
 - **Shipped approval route, [#243](https://github.com/Roasbeef/loom/issues/243):** existing effect tests inject a narrower policy.
   Ordinary Bash allows and clamps to 600 seconds; no shipped configuration
   exposes the needed narrower wall budget. This is a product-policy gap, not
