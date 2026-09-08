@@ -263,15 +263,27 @@ pub fn stop(harness: Harness) -> Result(Nil, String) {
 ///
 /// ## Examples
 ///
+/// A process that is still alive when the backstop expires is reported rather
+/// than passed over, because the run that follows would then be racing a
+/// predecessor and would fail somewhere else with a reason that named nothing.
+///
+/// ## Examples
+///
 /// ```gleam
 /// // harness.kill(daemon, parked: Some(builder))
 /// ```
-pub fn kill(harness: Harness, parked parked: Option(Pid)) -> Nil {
-  destroy(root.pid(harness.root))
-  destroy(manager.pid(harness.ready.registry))
+pub fn kill(
+  harness: Harness,
+  parked parked: Option(Pid),
+) -> Result(Nil, String) {
+  use Nil <- result.try(destroy("the root", root.pid(harness.root)))
+  use Nil <- result.try(destroy(
+    "the registry",
+    manager.pid(harness.ready.registry),
+  ))
   case parked {
-    None -> Nil
-    Some(builder) -> destroy(builder)
+    None -> Ok(Nil)
+    Some(builder) -> destroy("the parked builder", builder)
   }
 }
 
@@ -280,14 +292,17 @@ pub fn kill(harness: Harness, parked parked: Option(Pid)) -> Nil {
 // that has already died delivers DOWN immediately, so a process that the
 // previous kill took down with it costs this nothing and the order the three
 // die in carries no meaning.
-fn destroy(pid: Pid) -> Nil {
+fn destroy(what: String, pid: Pid) -> Result(Nil, String) {
   let monitor = process.monitor(pid)
   process.kill(pid)
-  let _ =
+  let seen =
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(_down) { Nil })
     |> process.selector_receive(settle_ms)
   process.demonitor_process(monitor)
+  result.map_error(seen, fn(_timeout) {
+    what <> " was still alive after it was killed"
+  })
 }
 
 /// Starts a daemon over a state root a killed daemon has not finished letting
@@ -296,7 +311,11 @@ fn destroy(pid: Pid) -> Nil {
 /// A killed root's launch lock is released by the operating system when its
 /// port closes, and that is not ordered against the monitor `kill` waited on.
 /// Starting once would therefore fail on a race that says nothing about the
-/// invariant under test. The retry is bounded by the same deadlock backstop
+/// invariant under test. Every start error is retried, not only the busy lock,
+/// because the refusal a busy state root gives is not distinguishable here
+/// from any other; a start that fails for a real reason is therefore delayed
+/// to the deadline rather than hidden, and the reason it fails with is the one
+/// reported. The retry is bounded by the same deadlock backstop
 /// the rest of the harness uses, and an expiry is reported as the refusal it
 /// ended on rather than swallowed, so a state root that never frees up fails
 /// the run.
@@ -741,6 +760,13 @@ pub fn create_isolated(
 
 /// Reads one session's live lifecycle status without waiting for it to
 /// settle.
+///
+/// This renders a refusal as text, like `open` and unlike `admission`. The
+/// split between the two styles is what the caller does with the answer: a
+/// check that only has to name what went wrong takes the text, and a check
+/// that has to tell one refusal from another takes the domain error. A read
+/// of a status is always the first kind, because a registry that cannot
+/// answer for a session the script created has already failed the run.
 ///
 /// ## Examples
 ///

@@ -324,8 +324,11 @@ fn interrupt(
     arrived,
     observed,
   ))
-  use Nil <- result.map(unpublished(daemon, record, step))
-  harness.kill(daemon, parked:)
+  use Nil <- result.try(unpublished(daemon, record, step))
+  use Nil <- result.map(
+    harness.kill(daemon, parked:)
+    |> result.map_error(fn(reason) { Failure("harness/kill", reason) }),
+  )
   [#(key, identity(record)), ..observed]
 }
 

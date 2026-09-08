@@ -136,8 +136,8 @@ pub fn restart_converges(seed: Int) -> Result(Nil, Failure) {
 pub fn revocation_converges(seed: Int) -> Result(Nil, Failure) {
   let at = lifecycle_faults.coordinate_for(seed)
   let revoke = RevokeAt(principal: member_id, at:)
-  use base <- result.try(revocation_script(seed, FaultFree, at))
-  use faulted <- result.try(revocation_script(seed, revoke, at))
+  use base <- result.try(revocation_script(seed, FaultFree))
+  use faulted <- result.try(revocation_script(seed, revoke))
   compare("revocation/converges-with-baseline", base, faulted)
 }
 
@@ -170,18 +170,14 @@ pub fn restart_script(
 /// ## Examples
 ///
 /// ```gleam
-/// // lifecycle_runner.revocation_script(4471, FaultFree, BeforeAdmission)
+/// // lifecycle_runner.revocation_script(4471, FaultFree)
 /// ```
-pub fn revocation_script(
-  seed: Int,
-  fault: Fault,
-  at: Coordinate,
-) -> Result(Report, Failure) {
+pub fn revocation_script(seed: Int, fault: Fault) -> Result(Report, Failure) {
   let clock = vclock.start(from: origin_ms)
   let path = state_root(seed, "revocation-" <> lifecycle_faults.label(fault))
   let outcome = {
     use daemon <- result.try(started(path, clock))
-    let observed = revocation_body(daemon, seed, fault, at)
+    let observed = revocation_body(daemon, seed, fault)
     retire(daemon, observed)
   }
   vclock.stop(clock)
@@ -233,15 +229,16 @@ fn restart_over(
       let _ = harness.stop(first)
       Error(failure)
     }
-    Ok(#(record, epoch)), KillDaemonWithPending(..) -> {
-      harness.kill(first, parked: None)
-      restarted(path, clock, record, epoch, pending)
-    }
+    Ok(#(record, epoch)), KillDaemonWithPending(..) ->
+      case harness.kill(first, parked: None) {
+        Error(reason) -> Error(Failure("harness/kill", reason))
+        Ok(Nil) -> restarted(path, clock, seed, record, epoch, pending)
+      }
     Ok(#(record, epoch)), FaultFree | Ok(#(record, epoch)), RevokeAt(..) -> {
       let settled = settle(first, record.id, pending)
       case retire(first, settled) {
         Error(failure) -> Error(failure)
-        Ok(Nil) -> restarted(path, clock, record, epoch, pending)
+        Ok(Nil) -> restarted(path, clock, seed, record, epoch, pending)
       }
     }
   }
@@ -252,6 +249,7 @@ fn restart_over(
 fn restarted(
   path: String,
   clock: Clockwork,
+  seed: Int,
   record: catalogue.Registration,
   epoch: String,
   pending: Pending,
@@ -262,7 +260,7 @@ fn restarted(
   )
   let observed = {
     use Nil <- result.try(reopen_policy(second, record))
-    use Nil <- result.try(no_resend(second, record, epoch, pending))
+    use Nil <- result.try(no_resend(second, seed, record, epoch, pending))
     snapshot(second)
   }
   case retire(second, observed) {
@@ -349,6 +347,7 @@ fn saved_only(check: String, rows: List(harness.Row)) -> Result(Nil, Failure) {
 // a resend a property of the daemon rather than of the script's timing.
 fn no_resend(
   daemon: Harness,
+  seed: Int,
   record: catalogue.Registration,
   epoch: String,
   pending: Pending,
@@ -358,17 +357,21 @@ fn no_resend(
     PendingStop -> Ok(Nil)
     PendingOpen -> nothing_reopened(daemon, record)
   })
-  use owner <- result.try(
-    harness.owner_digest(daemon)
-    |> result.map_error(fn(reason) { Failure(check, reason) }),
-  )
+
+  // Any well-formed digest asks the question, because the epoch is checked
+  // before the credential is looked at, and the member digest costs the check
+  // nothing beyond the seed it already has. Naming the owner's digest here
+  // would tie this check to how the harness reconstructs that digest, so a
+  // change to the credential hashing would fail two checks instead of the one
+  // that is about it.
+  use member <- result.try(member_digest(seed))
   let stale =
     manager.frame_authority(
       harness.registry(daemon),
       epoch:,
       id: record.id,
       incarnation: "the-interrupted-operation",
-      digest: owner,
+      digest: member,
     )
   case stale {
     Error(manager.StaleEpoch) -> Ok(Nil)
@@ -503,7 +506,6 @@ fn revocation_body(
   daemon: Harness,
   seed: Int,
   fault: Fault,
-  at: Coordinate,
 ) -> Result(Report, Failure) {
   use record <- result.try(create_shared(daemon, revocation_key, seed))
   use incarnation <- result.try(incarnation_of(daemon, record.id))
@@ -515,8 +517,20 @@ fn revocation_body(
   use Nil <- result.try(invite(daemon, owner, member, record.id))
   use Nil <- result.try(case fault {
     FaultFree -> fault_free_command(daemon, record.id, incarnation, member)
-    KillDaemonWithPending(..) | RevokeAt(..) ->
+    RevokeAt(at:, ..) ->
       revoked_command(daemon, owner, member, record.id, incarnation, at)
+
+    // The restart fault names a lifecycle request rather than a coordinate in
+    // a command, so there is no schedule for this script to run under it.
+    // Reporting that is what keeps the two scripts' faults from being silently
+    // interchangeable.
+    KillDaemonWithPending(..) ->
+      Error(Failure(
+        "revocation/schedule",
+        "the revocation script was handed "
+          <> lifecycle_faults.describe(fault)
+          <> ", which names no revocation coordinate",
+      ))
   })
   snapshot(daemon)
 }
