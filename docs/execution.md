@@ -289,6 +289,13 @@ fetches by SHA and `gh signoff` refuses a commit no remote holds. Add
 logs land under `build/signoff/`; the lane table at the end says which
 to read.
 
+`SIGNOFF_PARALLEL=<N>` exports `LOOM_TEST_PARALLEL` to every lane, so
+each package runs up to N of its tests at once on one emulator; the
+modules that touch a VM-global resource are held back and run alone,
+declared with a reason in `scripts/serial-tests`. It defaults to 1,
+today's sequential run, and stays there until the suites with
+wall-clock assumptions in their fixtures are fixed.
+
 ### Watch for the push race
 
 An agent can commit between your verification and your push. `git push` sends

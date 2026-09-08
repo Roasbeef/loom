@@ -1,6 +1,7 @@
 # Design note: running the test suite in parallel
 
-Status: **measured, opt-in, not defaulted.** `scripts/test.sh` now accepts
+Status: **measured, opt-in, not defaulted; a declared sequential group
+now exists** (see the last section). `scripts/test.sh` now accepts
 `LOOM_TEST_PARALLEL=<N>`. Unset or `1` is the behaviour the runner has always
 had. Set to anything larger, the runner wraps its test list in an EUnit
 `inparallel` group and up to N tests run at once on the one emulator it
@@ -317,17 +318,114 @@ that still improves at N=16 is `client`, which cannot use the flag at all.
 **What would have to change before a default could flip on.** In rough
 order of what it buys:
 
-1. The three `atom_count` tests need a scope narrower than the node, or an
-   escape hatch that keeps them sequential inside an otherwise parallel run.
-   EUnit has `inorder` for exactly this, so a per-module opt-out is the
-   cheapest shape.
-2. `cap` and `ext` need the capability channel to be reachable per-process
-   in tests, or they stay sequential permanently. Given the slot's security
-   purpose, staying sequential is the honest answer.
+1. ~~The three `atom_count` tests need a scope narrower than the node, or an
+   escape hatch that keeps them sequential inside an otherwise parallel
+   run.~~ **Done** — see the declaration below.
+2. ~~`cap` and `ext` need the capability channel to be reachable per-process
+   in tests, or they stay sequential permanently.~~ They stay sequential,
+   which given the slot's security purpose was always the honest answer; the
+   same declaration is how they say so.
 3. `provider` and `broker` need a private `httpc` profile per test rather
    than per VM.
 4. The four in-test deadlines need to stop being wall-clock assumptions.
 
-Only after (1) and (4) would a per-package default be worth encoding in the
-Makefile, and it would then have to live beside the package rather than as
-one number for the tree, because the safe N is not the same everywhere.
+---
+
+## The declared sequential group
+
+Items (1) and (2) are both a module that cannot share the emulator with
+anything, so both are answered by one mechanism. `scripts/serial-tests`
+declares such modules, one per line, as `package|module|reason`, and
+`scripts/test.sh` reads it whenever `LOOM_TEST_PARALLEL` is greater than 1.
+
+The runner then hands EUnit
+
+```erlang
+[{inorder, [{inparallel, N, Others}, {inorder, Serial}]}]
+```
+
+rather than one `inparallel` group. The enclosing `inorder` is the part that
+matters. A declared module is not merely internally sequential; it must not
+overlap the parallel group **at all**, because what it reads is global to the
+node. A test asserting `atom_count` does not move cannot run beside a test
+that loads a module for the first time, and a test installing a capability
+channel into `persistent_term` cannot run beside another that installs one,
+whatever group either is in. `inorder` runs its members in sequence and waits
+for each, so the parallel group completes before the first serial module
+starts, and the serial modules then run one at a time. Putting the serial
+group first would work equally well; after is chosen so the long parallel
+stretch begins immediately and the short tail is what the run ends on.
+
+A declared module that does not exist in its package fails the run. The
+reason on each line names a resource, and a reason attached to a module that
+has been renamed away is a claim no reader can check, so the list cannot rot
+quietly. The reason is also the admission criterion: a module belongs there
+only when the global resource can be named. A test that merely fails
+sometimes under load is a fixture with a wall-clock assumption in it, and
+parking it in the declaration would hide that bug and buy nothing.
+
+With the declaration in place `cap` passes at N=4 where 11 of its 65 tests
+used to fail. Items (3) and (4) are unaffected: they are fixtures to fix, not
+resources to declare.
+
+`scripts/signoff.sh` reads `SIGNOFF_PARALLEL` and exports it as
+`LOOM_TEST_PARALLEL` for every lane. It defaults to 1 until (3) and (4)
+land.
+
+### Measured with the declaration in place
+
+Same 32-core Linux box, same exported fixtures, three runs per cell,
+wall-clock seconds around `bash scripts/test.sh <package>`. The first run of
+a package includes its compile, which is why several N=8 columns lead with a
+much larger number than they end with.
+
+| package | N=8 | N=16 | result |
+|---|---|---|---|
+| host | 0/1/0 | 1/0/1 | one failure at N=16 |
+| core | 0/1/0 | 1/0/1 | pass |
+| storage | 3/3/3 | 11/3/11 | two failures at N=16 |
+| session | 32/1/1 | 1/0/1 | one failure at N=16 |
+| machine | 2/0/1 | 0/1/0 | pass |
+| prompt | 2/1/0 | 1/0/1 | pass |
+| telemetry | 2/1/1 | 1/0/1 | pass |
+| runtime | 44/12/11 | 7/7/8 | pass |
+| provider | 5/5/4 | 2/3/3 | fails every run |
+| broker | 5/3/3 | 2/3/2 | fails every run |
+| mcp | 3/1/1 | 0/1/1 | pass |
+| tools | 3/1/0 | 1/1/0 | pass |
+| cap | 3/2/2 | 2/2/2 | pass |
+| ext | 2/0/1 | 0/1/1 | pass |
+| codemode | 10/10/11 | 9/8/9 | three failures |
+| events | 37/3/2 | 2/3/2 | pass |
+| client | 263/222/221 | 176/181/176 | one failure per setting |
+| conformance | 49/10/10 | 9/10/10 | pass |
+| tui | 16/10/10 | 10/9/10 | pass |
+| lint | 2/1/0 | 1/0/1 | pass |
+
+`runtime`, `cap` and `ext` are the three the declaration was written for, and
+all three now pass at both settings; `cap` previously failed 11 of its 65
+tests from N=4. `client` runs its declared module without the atom failure at
+either setting.
+
+The `client` package was also run once at N=8 under a delegated cgroup base,
+the configuration `scripts/signoff.sh` builds for its lanes: 222 seconds,
+pass.
+
+The remaining failures split into two groups. The fixtures being repaired
+separately — a shared `httpc` profile in `provider` and `broker`, a scratch
+directory asserted empty in `broker@integration_test`, and the wall-clock
+deadlines in `storage@sqlite_test` and `client@daemon_manager_test` — account
+for `provider` and `broker` failing every run and for `storage` at N=16. They
+are deliberately not declared: a wall-clock assumption is a bug in the test,
+and the declaration is for resources, not for flakiness.
+
+Three failures this measurement saw that the earlier census did not:
+`host@bootstrap_test:a_log_tail_cut_inside_a_codepoint_still_reports_test`
+(one run at N=16),
+`session@rewrite_test:sqlite_rewrite_retires_the_source_wal_before_the_copy_test`
+(one run at N=16), `codemode@e2e_test`'s end-to-end generator (three runs of
+six), and
+`client@serve_test:reopened_instance_does_not_revive_an_expired_writer_test`
+(one run at N=16). Each is a single occurrence in three or six runs, and none
+was diagnosed here. They belong with item (4) rather than with the
+declaration.
