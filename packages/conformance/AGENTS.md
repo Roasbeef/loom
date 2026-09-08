@@ -72,6 +72,18 @@ them from their own test mains.
   the same way. Its checks are `creation/one-identity-per-key`,
   `creation/no-orphan-file`, `publication/before-execute` and
   `replay/equal-catalogue-rows`.
+- `conformance/simulation/daemon/lifecycle_faults.{Fault, Pending,
+  Coordinate}` — the daemon-level lifecycle fault taxonomy:
+  `KillDaemonWithPending` names an interrupted `open` or `stop` by the
+  session it addresses, and `RevokeAt` names an owner revocation by where it
+  lands in a command's passage through the authority boundary. Both
+  coordinates are durable, for the reason the keying rule below gives.
+- `conformance/simulation/daemon/lifecycle_runner.{run, restart_converges,
+  revocation_converges, Verdict}` — the two faulted daemon scripts. Each
+  runs fault-free and then under the schedule the seed drew, and the two
+  runs must leave the same catalogue rows at the same revision. Its named
+  checks are `lifecycle/reopen-policy`, `lifecycle/no-resend` and
+  `revocation/silence-after-close`.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -186,6 +198,32 @@ them from their own test mains.
   turn on, which settles the scenario's only race — was the steer
   durable before the checkpoint that drains it — without touching
   anything under test.
+- **A daemon crash is a root restart over the same state root.** The
+  lifecycle scripts kill the lifetime owner *and* the registry, in that
+  order, because the registry traps exits: killing the root alone leaves it
+  running with the catalogue connection open and a session's writer lease
+  still held, which is not what a crashed daemon leaves behind. The next
+  daemon takes the same state root and has to poll for it, since the launch
+  lock is released by the operating system and is not ordered against the
+  monitor that reported the death.
+- **Without a listener, "pending" and "principal" are registry-level
+  terms.** A pending lifecycle request is one `manager.open` or
+  `manager.stop_session` answered with an accepted operation and had not
+  settled; a principal is an invited member with a credential digest and a
+  session grant, and the boundary it crosses is `manager.frame_authority`.
+  A command in flight is the pair of authority answers the transport asks
+  for, once at admission and once at delivery, so a revocation landing
+  between them is expressible here. What is not expressible is the socket:
+  that no frame is written to a closed connection is a gateway claim, and
+  `tui_shipped_multiplayer_test` is what proves it.
+- **The revocation script fills the memo before it revokes.** The registry
+  remembers a resolved grant for the lifetime of a session's slot and drops
+  the whole memo when an administration commits. A check that read the grant
+  only once would never exercise the remembered answer, so a change that let
+  a remembered grant outlive an administration would pass. The script
+  therefore reads the grant twice before the owner revokes, and
+  `revocation/silence-after-close` fails on every pinned seed when the memo
+  drop in the `Administer` arm of `manager.gleam` is removed.
 - **Nothing is keyed by a counter.** A generation request is answered by
   the *phase* of its projected context — how many assistant messages are in
   it, plus a hundred once a summary is — and a tool execution by its
