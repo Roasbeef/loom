@@ -77,6 +77,15 @@
 # enforcement lane then fails honestly, because the expectations file
 # requires the pids probe, rather than the gate quietly proving less.
 #
+# Parallelism inside a package. SIGNOFF_PARALLEL is exported to every
+# lane as LOOM_TEST_PARALLEL, so each package's EUnit run may execute up
+# to that many tests at once (scripts/test.sh, and scripts/serial-tests
+# for the modules held back). It defaults to 1, which is the sequential
+# run this gate has always done, because several suites still carry
+# fixtures that fail under concurrency for reasons unrelated to the
+# VM-global resources the declaration covers. The default flips to 8
+# once the fixture-hygiene branch fixing those lands.
+#
 # Hex. Gleam 1.18.1 as released re-resolves path dependencies through
 # the Hex API on every invocation (issue #248), and seven lanes at once
 # is a burst the per-address rate limit answers with 429 — the first
@@ -142,6 +151,7 @@ mkdir -p "$logs"
 export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
 export LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key"
 export LOOM_DECLARED_SKIPS="$root/.github/declared-skips"
+export LOOM_TEST_PARALLEL="${SIGNOFF_PARALLEL:-1}"
 started=$(date +%s)
 retry=.github/scripts/hex_retry.sh
 
