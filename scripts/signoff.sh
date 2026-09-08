@@ -215,7 +215,7 @@ if [ "$post" = yes ]; then
 		gh signoff --commit "$sha" ${url:+--url "$url"} "$name"
 	else
 		gh signoff fail --commit "$sha" ${url:+--url "$url"} \
-			--description "$(git config user.name): $context red on $(hostname -s)" "$name"
+			--description "$(git config user.name): $context red, $elapsed s, see build/signoff on the runner" "$name"
 	fi
 fi
 exit "$verdict"
