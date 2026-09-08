@@ -49,6 +49,15 @@ import tui/approval
 import weft
 import weft/poll
 
+// Every wait in this fixture already ends on an event the drive produces:
+// a socket reply, a rendered frame, a committed tool result. The number
+// below is only the failsafe on those waits, so it has to be past any
+// round trip this fixture can perform, not just past the ones an idle
+// machine performs. One second was the second kind. With seven other tests
+// running alongside it, a reply arrived later than that and the drive
+// reported neither a completion nor a timeout.
+const reply_wait_ms = 20_000
+
 const marker = "APPROVED-ONCE\n"
 
 const call_id = "approval-native-call"
@@ -236,7 +245,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), directory) {
     )
     as "collaboration explicitly selects an isolated session domain"
   let assert poll.Answered(instance) =
-    poll.until(within: 15_000, every: 5, attempt: fn() {
+    poll.until(within: reply_wait_ms, every: 5, attempt: fn() {
       case manager.resolve(serving.ready.registry, created.registration.id) {
         Ok(instance) -> poll.Done(instance)
         Error(_) -> poll.Retry
@@ -262,9 +271,16 @@ fn socket(port, bearer, session) {
     wire.connect(port, bearer, "/v2/sessions/" <> session <> "/ws")
   assert string.contains(response, "101 Switching Protocols")
   let #(_, transfer) =
-    session_socket_test.begin(socket, session, within_ms: 1000)
+    session_socket_test.begin(socket, session, within_ms: reply_wait_ms)
   let _ =
-    session_socket_test.drain(socket, transfer, 0, [], 32, within_ms: 1000)
+    session_socket_test.drain(
+      socket,
+      transfer,
+      0,
+      [],
+      32,
+      within_ms: reply_wait_ms,
+    )
   socket
 }
 
@@ -339,7 +355,7 @@ fn exercise(
         #("strand", json.String("main")),
         #("text", json.String("Run the fixed approval marker once.")),
       ]),
-      within_ms: 1000,
+      within_ms: reply_wait_ms,
     )
   assert field(admitted, "event") == json.String("mutation_outcome")
   let pending_view =
@@ -369,7 +385,8 @@ fn exercise(
     as "the real captured action, wanted grants and seq are echoed exactly"
   let assert Ok(envelope) = json.parse(encoded) as "approval is total JSON"
   let body = field(envelope, "body")
-  let denied = wire.reply(reader, 101, "approve", body, within_ms: 1000)
+  let denied =
+    wire.reply(reader, 101, "approve", body, within_ms: reply_wait_ms)
   assert field(denied, "event") == json.String("error")
   assert field(field(denied, "body"), "code") == json.String("forbidden")
   assert api.escalation_cell(instance.runtime, pending.id) == Ok(cell)
@@ -380,13 +397,19 @@ fn exercise(
   let answers =
     weft.new([
       fn() {
-        Ok(#("alice", wire.reply(a, 101, "approve", body, within_ms: 1000)))
+        Ok(#(
+          "alice",
+          wire.reply(a, 101, "approve", body, within_ms: reply_wait_ms),
+        ))
       },
       fn() {
-        Ok(#("bob", wire.reply(b, 101, "approve", body, within_ms: 1000)))
+        Ok(#(
+          "bob",
+          wire.reply(b, 101, "approve", body, within_ms: reply_wait_ms),
+        ))
       },
     ])
-    |> weft.deadline(5000)
+    |> weft.deadline(reply_wait_ms)
     |> weft.start
     |> weft.values
   assert list.length(answers) == 2
@@ -404,7 +427,7 @@ fn exercise(
   assert field(field(loser, "body"), "code") == json.String("stale_approval")
     as "the loser names a superseded captured approval sequence"
   let assert poll.Answered(results) =
-    poll.until(within: 10_000, every: 10, attempt: fn() {
+    poll.until(within: reply_wait_ms, every: 10, attempt: fn() {
       case tool_results(instance) {
         [] -> poll.Retry
         results -> poll.Done(results)

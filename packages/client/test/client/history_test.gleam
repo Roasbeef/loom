@@ -25,6 +25,7 @@ import storage/storage.{type Storage}
 import support/addresses
 import tools/fs
 import tools/history as history_tool
+import weft/poll
 import weft/registry as address
 
 pub fn missing_holder_casts_are_no_ops_test() {
@@ -419,21 +420,25 @@ fn an_entry(id: EntryId, parent: Option(EntryId), text: String) -> Entry {
 // supervisor's restart waits for the exit signal, and so must this.
 fn await_gone(name: address.Address(history.Message)) -> Nil {
   history.stop(name)
-  wait_for_unregistered(name, 200)
-}
 
-fn wait_for_unregistered(
-  name: address.Address(history.Message),
-  left: Int,
-) -> Nil {
-  case addresses.owner(name), left <= 0 {
-    Error(Nil), _ -> Nil
-    Ok(_pid), True -> Nil
-    Ok(_pid), False -> {
-      process.sleep(5)
-      wait_for_unregistered(name, left - 5)
-    }
-  }
+  // Every caller restarts a holder under this same name, so the wait has
+  // to end on the deregistration itself. It used to give up after a fixed
+  // 200 milliseconds and carry on regardless, which under a loaded
+  // scheduler left the previous holder still registered: the restart's
+  // work went back to the holder that still had the unopenable index, and
+  // the repair read as never having happened. The bound below is only
+  // there so a holder that never retires fails the suite rather than
+  // stalling it.
+  let outcome =
+    poll.until(within: 30_000, every: 1, attempt: fn() {
+      case addresses.owner(name) {
+        Error(Nil) -> poll.Done(Nil)
+        Ok(_pid) -> poll.Retry
+      }
+    })
+
+  assert outcome == poll.Answered(Nil)
+    as "the previous holder must release its registered name before a restart"
 }
 
 // A fresh index file per lane, so a rerun never inherits the last run's
