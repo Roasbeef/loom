@@ -23,7 +23,7 @@ package jail
 // after replaying the whole ordered plan, is the one the policy asked
 // for**:
 //
-//	mounts:ro=2,rw=1,mask=3,bind_ro=1,bind_rw=0,scratch=tmpfs,plan=1f4a09c8b2d3e6f7
+//	mounts:ro=2,rw=1,mask=3,bind_ro=1,bind_rw=0,scratch=tmpfs,base=minimal,plan=1f4a09c8b2d3e6f7
 //
 // `bind_ro` and `bind_rw` are the same measurement for the policy's
 // explicit `mounts` entries: how many of them the replayed plan leaves
@@ -99,17 +99,27 @@ type view struct {
 // writable reports whether the region the view describes permits writes.
 func (v view) writable() bool {
 	switch v.op.Class {
-	case ClassWritable, ClassScratchTmpfs, ClassMountReadWrite:
+	case ClassWritable, ClassScratchTmpfs, ClassMountReadWrite, ClassRootTmpfs:
 		return true
 	}
 	return false
 }
 
+// The root tmpfs counts as writable here, and that is a statement about
+// the jail rather than about the host. bwrap mounts a tmpfs read-write,
+// so a region the minimal base view leaves uncovered is a writable
+// directory *inside the jail* holding nothing — which is precisely what
+// UnmountableProtected needs to know, because a mask for a path that
+// does not exist yet needs its mount point created, and under the tmpfs
+// bwrap can create it. Reporting it as read-only would make the helper
+// refuse policies bwrap would have realised without complaint.
+
 // masked reports whether the host's contents at the region are hidden —
 // a tmpfs shadow, a fresh procfs, a minimal device tree, a protected
 // path's mask.
 func (v view) masked() bool {
-	return v.op.Class.IsMask() || v.op.Class == ClassScratchTmpfs
+	return v.op.Class.IsMask() || v.op.Class == ClassScratchTmpfs ||
+		v.op.Class == ClassRootTmpfs
 }
 
 // describe renders the operation for a skip reason: the argv fragment
@@ -199,9 +209,16 @@ func AuditMounts(p policy.Policy, plan []MountOp) MountReport {
 		}
 	}
 
+	// `base=` says which of the two base views the plan was built on, so
+	// a reader of the enforcement report can tell a jail whose root is an
+	// empty tmpfs from one whose root is a read-only bind of the whole
+	// host. The counts cannot: both views produce the same numbers for
+	// the same policy, and the difference between them is everything the
+	// policy did *not* name.
 	rep.Applied = fmt.Sprintf(
-		"mounts:ro=%d,rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,plan=%s",
-		ro, rw, mask, bindRO, bindRW, scratch, planDigest(plan))
+		"mounts:ro=%d,rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,base=%s,plan=%s",
+		ro, rw, mask, bindRO, bindRW, scratch,
+		BaseViewName(p.ReadableRoots), planDigest(plan))
 	return rep
 }
 

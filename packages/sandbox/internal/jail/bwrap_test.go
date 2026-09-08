@@ -70,7 +70,7 @@ func TestBwrapArgsGolden(t *testing.T) {
 		"/work/.git": PathDir,
 		"/work/.env": PathFile,
 	}
-	got := BwrapArgs(p, kinds)
+	got := BwrapArgs(p, kinds, "")
 	want := []string{
 		"--die-with-parent",
 		"--unshare-pid",
@@ -79,9 +79,20 @@ func TestBwrapArgsGolden(t *testing.T) {
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
 		"--unshare-net",
-		"--ro-bind", "/", "/",
+		"--tmpfs", "/",
+		"--ro-bind-try", "/bin", "/bin",
+		"--ro-bind-try", "/etc", "/etc",
+		"--ro-bind-try", "/lib", "/lib",
+		"--ro-bind-try", "/lib32", "/lib32",
+		"--ro-bind-try", "/lib64", "/lib64",
+		"--ro-bind-try", "/nix/store", "/nix/store",
+		"--ro-bind-try", "/opt", "/opt",
 		"--ro-bind-try", "/opt/tools", "/opt/tools",
+		"--ro-bind-try", "/run/current-system", "/run/current-system",
+		"--ro-bind-try", "/sbin", "/sbin",
 		"--tmpfs", "/tmp",
+		"--ro-bind-try", "/usr", "/usr",
+		"--ro-bind-try", "/var/lib", "/var/lib",
 		"--bind", "/work", "/work",
 		"--dev", "/dev",
 		"--proc", "/proc",
@@ -105,10 +116,14 @@ func TestBwrapArgsRootReadableDoesNotUnmaskProcOrDev(t *testing.T) {
 	p := basePol()
 	p.ReadableRoots = []string{"/"}
 	p.Protected = nil
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	lastBindOfRoot, procAt, devAt := -1, -1, -1
 	for i := 0; i+2 < len(got); i++ {
-		if (got[i] == "--ro-bind" || got[i] == "--bind") && got[i+1] == "/" && got[i+2] == "/" {
+		// A readable root of "/" renders as the tolerant form, which is
+		// what every entry of readable_roots gets; the base view's own
+		// bind of the host is gone since protocol-change/020.
+		if (got[i] == "--ro-bind" || got[i] == "--ro-bind-try" ||
+			got[i] == "--bind") && got[i+1] == "/" && got[i+2] == "/" {
 			lastBindOfRoot = i
 		}
 	}
@@ -131,7 +146,7 @@ func TestBwrapArgsRootReadableDoesNotUnmaskProcOrDev(t *testing.T) {
 func TestBwrapArgsNetworkFullKeepsNet(t *testing.T) {
 	p := basePol()
 	p.Network = policy.Network{Mode: policy.NetworkFull}
-	for _, a := range BwrapArgs(p, nil) {
+	for _, a := range BwrapArgs(p, nil, "") {
 		if a == "--unshare-net" {
 			t.Fatal("--unshare-net present under network full")
 		}
@@ -149,7 +164,7 @@ func TestBwrapArgsNetworkProxyUnsharesNet(t *testing.T) {
 		Proxy: "127.0.0.1:3128",
 	}
 	found := false
-	for _, a := range BwrapArgs(p, nil) {
+	for _, a := range BwrapArgs(p, nil, "") {
 		if a == "--unshare-net" {
 			found = true
 		}
@@ -177,7 +192,7 @@ func TestBlocksDirectNetwork(t *testing.T) {
 
 func TestBwrapArgsNetworkOffUnsharesNet(t *testing.T) {
 	found := false
-	for _, a := range BwrapArgs(basePol(), nil) {
+	for _, a := range BwrapArgs(basePol(), nil, "") {
 		if a == "--unshare-net" {
 			found = true
 		}
@@ -192,7 +207,7 @@ func TestBwrapArgsNetworkOffUnsharesNet(t *testing.T) {
 func TestBwrapArgsMissingProtectedMasked(t *testing.T) {
 	p := basePol()
 	p.Protected = []string{"/home/user/.ssh"}
-	got := BwrapArgs(p, map[string]PathKind{"/home/user/.ssh": PathMissing})
+	got := BwrapArgs(p, map[string]PathKind{"/home/user/.ssh": PathMissing}, "")
 	if !containsSeq(got, []string{"--tmpfs", "/home/user/.ssh", "--remount-ro", "/home/user/.ssh"}) {
 		t.Fatalf("missing protected path not tmpfs-masked: %q", got)
 	}
@@ -207,7 +222,7 @@ func TestBwrapArgsMissingProtectedMasked(t *testing.T) {
 func TestBwrapArgsReadableRootToleratesAbsence(t *testing.T) {
 	p := basePol()
 	p.ReadableRoots = []string{"/opt/maybe-missing"}
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	if !containsSeq(got, []string{"--ro-bind-try", "/opt/maybe-missing", "/opt/maybe-missing"}) {
 		t.Fatalf("readable root not bound with --ro-bind-try: %q", got)
 	}
@@ -216,23 +231,72 @@ func TestBwrapArgsReadableRootToleratesAbsence(t *testing.T) {
 	}
 }
 
-// The base view is the one readable grant that is never "-try": "/"
-// always exists, and it is the fallback the whole jail's visibility
-// depends on — silently tolerating its absence would hide a much bigger
-// problem than a missing optional root.
-func TestBwrapArgsBaseViewIsNeverTry(t *testing.T) {
+// The minimal base view of protocol-change/020: an empty tmpfs at "/"
+// and a tolerant read-only bind of each system root, and no bind of the
+// host root at all. The tolerance is the point of the "-try" form here —
+// a merged-usr distribution has no real /lib, a non-NixOS host has no
+// /nix/store, and neither absence may refuse a jail.
+func TestBwrapArgsMinimalBaseView(t *testing.T) {
 	p := basePol()
 	p.ReadableRoots = nil
-	got := BwrapArgs(p, nil)
-	if !containsSeq(got, []string{"--ro-bind", "/", "/"}) {
-		t.Fatalf("base view not bound with --ro-bind: %q", got)
+	got := BwrapArgs(p, nil, "")
+	if !containsSeq(got, []string{"--tmpfs", "/"}) {
+		t.Fatalf("base view is not an empty tmpfs at the root: %q", got)
+	}
+	if containsSeq(got, []string{"--ro-bind", "/", "/"}) {
+		t.Fatalf("the whole host is still bound over the tmpfs: %q", got)
+	}
+	for _, root := range SystemRoots {
+		if !containsSeq(got, []string{"--ro-bind-try", root, root}) {
+			t.Fatalf("system root %s missing from the base view: %q", root, got)
+		}
+	}
+	for _, absent := range []string{"/home", "/root", "/var/tmp", "/Users"} {
+		for i := 0; i+2 < len(got); i++ {
+			if got[i+1] == absent {
+				t.Fatalf("%s is in the base view, which defeats the "+
+					"narrowing: %q", absent, got)
+			}
+		}
+	}
+}
+
+// A readable root of "/" is what a harness that has not yet dropped it
+// still sends, and it must reproduce the pre-020 view rather than
+// leaving an empty jail: the bind of the host outranks the tmpfs at the
+// same region, and the audit reports the difference as base=host-view.
+func TestBwrapArgsReadableRootOfSlashRestoresTheHostView(t *testing.T) {
+	p := basePol()
+	p.ReadableRoots = []string{"/"}
+	got := BwrapArgs(p, nil, "")
+	if !containsSeq(got, []string{"--ro-bind-try", "/", "/"}) {
+		t.Fatalf("readable root of \"/\" did not bind the host: %q", got)
+	}
+	if containsSeq(got, []string{"--tmpfs", "/"}) {
+		t.Fatalf("the root tmpfs survived alongside the host bind, so which "+
+			"one applies depends on argv order: %q", got)
+	}
+	if BaseViewName(p.ReadableRoots) != "host-view" {
+		t.Fatalf("the audit calls this base view %q", BaseViewName(p.ReadableRoots))
+	}
+}
+
+// The helper binary is not a policy path: stage 2 is loom-exec
+// re-executed inside the jail, and a minimal base view that does not
+// carry it produces a jail that cannot start.
+func TestBwrapArgsBindsTheHelperBinary(t *testing.T) {
+	got := BwrapArgs(basePol(), nil, "/opt/loom/bin/loom-exec")
+	want := []string{"--ro-bind-try", "/opt/loom/bin/loom-exec",
+		"/opt/loom/bin/loom-exec"}
+	if !containsSeq(got, want) {
+		t.Fatalf("the helper binary is not in the jail's view: %q", got)
 	}
 }
 
 func TestBwrapArgsPathScratch(t *testing.T) {
 	p := basePol()
 	p.Scratch = "/var/scratch"
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	if !containsSeq(got, []string{"--bind", "/var/scratch", "/var/scratch"}) {
 		t.Fatalf("path scratch not bind-mounted rw: %q", got)
 	}
@@ -250,7 +314,7 @@ func TestBwrapArgsDeterministic(t *testing.T) {
 	p1.WritableRoots = []string{"/b", "/a"}
 	p2 := basePol()
 	p2.WritableRoots = []string{"/a", "/b"}
-	if !reflect.DeepEqual(BwrapArgs(p1, nil), BwrapArgs(p2, nil)) {
+	if !reflect.DeepEqual(BwrapArgs(p1, nil, ""), BwrapArgs(p2, nil, "")) {
 		t.Fatal("argv depends on input ordering")
 	}
 }
@@ -272,7 +336,7 @@ func TestBwrapArgsNothingFollowsTheMasks(t *testing.T) {
 	p.WritableRoots = []string{"/", "/work"}
 	p.Scratch = "/var/scratch"
 	kinds := map[string]PathKind{"/work/.git": PathDir, "/work/.env": PathFile}
-	plan := MountPlan(p, kinds)
+	plan := MountPlan(p, kinds, "")
 	seenMask := false
 	for _, op := range plan {
 		if op.Class.IsMask() {
@@ -292,7 +356,7 @@ func TestBwrapArgsNothingFollowsTheMasks(t *testing.T) {
 	for _, op := range plan {
 		want = append(want, op.Argv...)
 	}
-	got := BwrapArgs(p, kinds)
+	got := BwrapArgs(p, kinds, "")
 	if !reflect.DeepEqual(got[len(got)-len(want):], want) {
 		t.Fatalf("argv does not end in the rendered plan:\n got  %q\nwant %q", got, want)
 	}
@@ -308,7 +372,7 @@ func TestBwrapArgsNestedReadableRootStaysReadOnly(t *testing.T) {
 	p.WritableRoots = []string{"/work"}
 	p.ReadableRoots = []string{"/work/vendor"}
 	p.Protected = nil
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	parent := indexOfOp(got, []string{"--bind", "/work", "/work"})
 	child := indexOfOp(got, []string{"--ro-bind-try", "/work/vendor", "/work/vendor"})
 	if parent < 0 || child < 0 {
@@ -328,7 +392,7 @@ func TestBwrapArgsWritableBeatsReadableAtTheSamePath(t *testing.T) {
 	p.ReadableRoots = []string{"/work"}
 	p.WritableRoots = []string{"/work"}
 	p.Protected = nil
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	if indexOfOp(got, []string{"--ro-bind", "/work", "/work"}) >= 0 ||
 		indexOfOp(got, []string{"--ro-bind-try", "/work", "/work"}) >= 0 {
 		t.Fatalf("the losing readable grant is still emitted: %q", got)
@@ -345,7 +409,7 @@ func TestBwrapArgsWritableBeatsReadableAtTheSamePath(t *testing.T) {
 func TestBwrapArgsProtectedUnderScratchTmpfsStaysMasked(t *testing.T) {
 	p := basePol()
 	p.Protected = []string{ScratchMount + "/vault"}
-	got := BwrapArgs(p, map[string]PathKind{ScratchMount + "/vault": PathDir})
+	got := BwrapArgs(p, map[string]PathKind{ScratchMount + "/vault": PathDir}, "")
 	scratch := indexOfOp(got, []string{"--tmpfs", ScratchMount})
 	mask := indexOfOp(got, []string{"--tmpfs", ScratchMount + "/vault"})
 	if scratch < 0 || mask < 0 {
@@ -364,7 +428,7 @@ func TestBwrapArgsProtectedUnderScratchPathStaysMasked(t *testing.T) {
 	p := basePol()
 	p.Scratch = "/var/scratch"
 	p.Protected = []string{"/var/scratch/vault"}
-	got := BwrapArgs(p, map[string]PathKind{"/var/scratch/vault": PathDir})
+	got := BwrapArgs(p, map[string]PathKind{"/var/scratch/vault": PathDir}, "")
 	bind := indexOfOp(got, []string{"--bind", "/var/scratch", "/var/scratch"})
 	mask := indexOfOp(got, []string{"--tmpfs", "/var/scratch/vault"})
 	if bind < 0 || mask < 0 {
@@ -384,7 +448,7 @@ func TestBwrapArgsScratchOfRootDoesNotUnmaskProcOrDev(t *testing.T) {
 	p := basePol()
 	p.Scratch = "/"
 	p.Protected = nil
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	bind := indexOfOp(got, []string{"--bind", "/", "/"})
 	procAt := indexOfOp(got, []string{"--proc", "/proc"})
 	devAt := indexOfOp(got, []string{"--dev", "/dev"})
@@ -405,7 +469,7 @@ func TestBwrapArgsWritableRootSurvivesTheScratchTmpfs(t *testing.T) {
 	p := basePol()
 	p.WritableRoots = []string{ScratchMount + "/build"}
 	p.Protected = nil
-	got := BwrapArgs(p, nil)
+	got := BwrapArgs(p, nil, "")
 	scratch := indexOfOp(got, []string{"--tmpfs", ScratchMount})
 	root := indexOfOp(got, []string{"--bind", ScratchMount + "/build", ScratchMount + "/build"})
 	if scratch < 0 || root < 0 {
@@ -433,7 +497,7 @@ func TestBwrapArgsNestedProtectedPathIsMaskedOnlyOnce(t *testing.T) {
 	for _, op := range MountPlan(p, map[string]PathKind{
 		"/home/u/.ssh":        PathDir,
 		"/home/u/.ssh/id_rsa": PathFile,
-	}) {
+	}, "") {
 		if op.Path == "/home/u/.ssh/id_rsa" {
 			t.Fatalf("a protected path inside a protected path got its own "+
 				"mount %v, which makes bwrap refuse to start", op.Argv)
@@ -450,7 +514,7 @@ func TestBwrapArgsNestedProtectedPathIsMaskedOnlyOnce(t *testing.T) {
 func TestBwrapArgsProtectedFileIsUnreadable(t *testing.T) {
 	p := basePol()
 	p.Protected = []string{"/work/.env"}
-	got := BwrapArgs(p, map[string]PathKind{"/work/.env": PathFile})
+	got := BwrapArgs(p, map[string]PathKind{"/work/.env": PathFile}, "")
 	if indexOfOp(got, []string{"--ro-bind", "/work/.env", "/work/.env"}) >= 0 {
 		t.Fatalf("a protected file is bound onto itself and stays readable: %q", got)
 	}
@@ -467,7 +531,7 @@ func TestBwrapArgsRegionsAreCanonical(t *testing.T) {
 	p.ReadableRoots = []string{"/work/"}
 	p.WritableRoots = []string{"/work"}
 	p.Protected = []string{"/work/.git/"}
-	got := BwrapArgs(p, map[string]PathKind{"/work/.git/": PathDir})
+	got := BwrapArgs(p, map[string]PathKind{"/work/.git/": PathDir}, "")
 	if indexOfOp(got, []string{"--ro-bind-try", "/work/", "/work/"}) >= 0 ||
 		indexOfOp(got, []string{"--ro-bind-try", "/work", "/work"}) >= 0 {
 		t.Fatalf("the losing readable grant survived a trailing slash: %q", got)
@@ -486,7 +550,7 @@ func TestBwrapArgsWritableRootInsideProtectedStaysMasked(t *testing.T) {
 	p := basePol()
 	p.WritableRoots = []string{"/work", "/work/.git/objects"}
 	p.Protected = []string{"/work/.git"}
-	got := BwrapArgs(p, map[string]PathKind{"/work/.git": PathDir})
+	got := BwrapArgs(p, map[string]PathKind{"/work/.git": PathDir}, "")
 	grant := indexOfOp(got, []string{"--bind", "/work/.git/objects", "/work/.git/objects"})
 	mask := indexOfOp(got, []string{"--tmpfs", "/work/.git"})
 	if grant < 0 || mask < 0 {
@@ -561,7 +625,7 @@ func inJail(t *testing.T, p policy.Policy, kinds map[string]PathKind, script str
 		t.Skip("mount precedence is bwrap's to apply; no bwrap on this host")
 	}
 	p.Network = policy.Network{Mode: policy.NetworkFull}
-	argv := append(BwrapArgs(p, kinds), "/bin/sh", "-c", script)
+	argv := append(BwrapArgs(p, kinds, ""), "/bin/sh", "-c", script)
 	out, _ := exec.Command(bwrap, argv...).CombinedOutput()
 	return string(out)
 }
@@ -786,7 +850,7 @@ func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
 		{Path: "/tmp/cap", Access: policy.MountReadWrite, Required: false},
 	}
 	kinds := map[string]PathKind{"/work/.git": PathDir, "/work/.env": PathFile}
-	got := BwrapArgs(p, kinds)
+	got := BwrapArgs(p, kinds, "")
 	want := []string{
 		"--die-with-parent",
 		"--unshare-pid",
@@ -795,9 +859,20 @@ func TestBwrapArgsExplicitMountsFollowTheMasks(t *testing.T) {
 		"--unshare-user-try",
 		"--unshare-cgroup-try",
 		"--unshare-net",
-		"--ro-bind", "/", "/",
+		"--tmpfs", "/",
+		"--ro-bind-try", "/bin", "/bin",
+		"--ro-bind-try", "/etc", "/etc",
+		"--ro-bind-try", "/lib", "/lib",
+		"--ro-bind-try", "/lib32", "/lib32",
+		"--ro-bind-try", "/lib64", "/lib64",
+		"--ro-bind-try", "/nix/store", "/nix/store",
+		"--ro-bind-try", "/opt", "/opt",
 		"--ro-bind-try", "/opt/tools", "/opt/tools",
+		"--ro-bind-try", "/run/current-system", "/run/current-system",
+		"--ro-bind-try", "/sbin", "/sbin",
 		"--tmpfs", "/tmp",
+		"--ro-bind-try", "/usr", "/usr",
+		"--ro-bind-try", "/var/lib", "/var/lib",
 		"--bind", "/work", "/work",
 		"--dev", "/dev",
 		"--proc", "/proc",
@@ -823,7 +898,7 @@ func TestBwrapArgsOptionalMountUsesTheTryForm(t *testing.T) {
 		{Path: "/var/out", Access: policy.MountReadWrite, Required: true},
 		{Path: "/var/cache", Access: policy.MountReadWrite, Required: false},
 	}
-	got := strings.Join(BwrapArgs(p, nil), " ")
+	got := strings.Join(BwrapArgs(p, nil, ""), " ")
 	for _, want := range []string{
 		"--ro-bind-try /opt/seed /opt/seed",
 		"--ro-bind /opt/toolchain /opt/toolchain",
@@ -848,7 +923,7 @@ func TestBwrapArgsMountsAreParentBeforeChild(t *testing.T) {
 		{Path: "/srv/a", Access: policy.MountReadWrite, Required: true},
 	}
 	var paths []string
-	for _, op := range MountPlan(p, nil) {
+	for _, op := range MountPlan(p, nil, "") {
 		if op.Class == ClassMountReadOnly || op.Class == ClassMountReadWrite {
 			paths = append(paths, op.Path)
 		}
@@ -856,5 +931,38 @@ func TestBwrapArgsMountsAreParentBeforeChild(t *testing.T) {
 	want := []string{"/srv", "/srv/a", "/srv/a/b"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("mount order %q, want %q", paths, want)
+	}
+}
+
+// A mount whose destination lies under one of the read-only system
+// binds. bwrap cannot create a mount point inside a read-only bind, so
+// this shape looks like it should need a refusal, and it does not: every
+// operation in the plan binds a path onto itself, so the destination
+// exists inside the system bind whenever the source exists on the host,
+// and the source is what MissingRequiredMounts already checks for a
+// required mount and what the "-try" form tolerates for an optional one.
+// The argv is what states that rule, so it is what this pins: the system
+// bind first, the mount after it.
+func TestBwrapArgsMountUnderASystemRoot(t *testing.T) {
+	p := basePol()
+	p.Mounts = []policy.Mount{
+		{Path: "/usr/lib/erlang", Access: policy.MountReadOnly, Required: true},
+	}
+	got := BwrapArgs(p, nil, "")
+	usrAt, mountAt := -1, -1
+	for i := 0; i+2 < len(got); i++ {
+		if got[i] == "--ro-bind-try" && got[i+1] == "/usr" {
+			usrAt = i
+		}
+		if got[i] == "--ro-bind" && got[i+1] == "/usr/lib/erlang" {
+			mountAt = i
+		}
+	}
+	if usrAt < 0 || mountAt < 0 {
+		t.Fatalf("argv missing the system bind or the mount: %q", got)
+	}
+	if mountAt < usrAt {
+		t.Fatalf("the mount precedes the system bind that would shadow "+
+			"it: %q", got)
 	}
 }
