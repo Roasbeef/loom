@@ -83,7 +83,13 @@ them from their own test mains.
   runs fault-free and then under the schedule the seed drew, and the two
   runs must leave the same catalogue rows at the same revision. Its named
   checks are `lifecycle/reopen-policy`, `lifecycle/no-resend` and
-  `revocation/silence-after-close`.
+  `revocation/silence-after-close`. `lifecycle/no-resend` has two halves and
+  they are not held to the same draws: the stale-epoch half runs under both,
+  and the half that reads the session's status runs only under `PendingOpen`,
+  because a re-driven stop and a dropped stop both leave the session `Saved`
+  with no slot and the status could not tell them apart. `PendingStop` is
+  covered by `lifecycle/reopen-policy` and by the convergence comparison
+  instead.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -216,14 +222,18 @@ them from their own test mains.
   between them is expressible here. What is not expressible is the socket:
   that no frame is written to a closed connection is a gateway claim, and
   `tui_shipped_multiplayer_test` is what proves it.
-- **The revocation script fills the memo before it revokes.** The registry
-  remembers a resolved grant for the lifetime of a session's slot and drops
-  the whole memo when an administration commits. A check that read the grant
-  only once would never exercise the remembered answer, so a change that let
-  a remembered grant outlive an administration would pass. The script
-  therefore reads the grant twice before the owner revokes, and
-  `revocation/silence-after-close` fails on every pinned seed when the memo
-  drop in the `Administer` arm of `manager.gleam` is removed.
+- **The two revocation coordinates are two schedules, and only one of them
+  fills the memo.** The registry remembers a resolved grant for the lifetime
+  of a session's slot and drops the whole memo when an administration commits.
+  `BetweenAdmissionAndDelivery` admits the principal before the owner revokes,
+  which both fills that memo and gets the command through admission;
+  `BeforeAdmission` revokes before the boundary has answered anything at all,
+  so nothing is remembered and nothing is queued. Removing the memo drop in
+  the `Administer` arm of `manager.gleam` therefore fails
+  `revocation/silence-after-close` under the `Between` seeds and passes under
+  the `Before` ones, which is the discrimination the coordinates exist for. A
+  run that made both coordinates admit first would be one schedule counted
+  twice.
 - **Nothing is keyed by a counter.** A generation request is answered by
   the *phase* of its projected context — how many assistant messages are in
   it, plus a hundred once a summary is — and a tool execution by its
