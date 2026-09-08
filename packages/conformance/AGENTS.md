@@ -72,6 +72,24 @@ them from their own test mains.
   the same way. Its checks are `creation/one-identity-per-key`,
   `creation/no-orphan-file`, `publication/before-execute` and
   `replay/equal-catalogue-rows`.
+- `conformance/simulation/daemon/lifecycle_faults.{Fault, Pending,
+  Coordinate}` — the daemon-level lifecycle fault taxonomy:
+  `KillDaemonWithPending` names an interrupted `open` or `stop` by the
+  session it addresses, and `RevokeAt` names an owner revocation by where it
+  lands in a command's passage through the authority boundary. Both
+  coordinates are durable, for the reason the keying rule below gives.
+- `conformance/simulation/daemon/lifecycle_runner.{run, restart_converges,
+  revocation_converges, Verdict}` — the two faulted daemon scripts. Each
+  runs fault-free and then under the schedule the seed drew, and the two
+  runs must leave the same catalogue rows at the same revision. Its named
+  checks are `lifecycle/reopen-policy`, `lifecycle/no-resend` and
+  `revocation/silence-after-close`. `lifecycle/no-resend` has two halves and
+  they are not held to the same draws: the stale-epoch half runs under both,
+  and the half that reads the session's status runs only under `PendingOpen`,
+  because a re-driven stop and a dropped stop both leave the session `Saved`
+  with no slot and the status could not tell them apart. `PendingStop` is
+  covered by `lifecycle/reopen-policy` and by the convergence comparison
+  instead.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -186,6 +204,36 @@ them from their own test mains.
   turn on, which settles the scenario's only race — was the steer
   durable before the checkpoint that drains it — without touching
   anything under test.
+- **A daemon crash is a root restart over the same state root.** Killing the
+  root takes the registry with it, because the lifetime scope is linked to the
+  root and the registry is owned by that scope. The lifecycle scripts kill the
+  registry by name as well, so that they have a monitor to wait on for each
+  process rather than a cascade whose completion nothing reports. The next
+  daemon takes the same state root and has to poll for it, since the launch
+  lock is released by the operating system and is not ordered against the
+  monitor that reported the death.
+- **Without a listener, "pending" and "principal" are registry-level
+  terms.** A pending lifecycle request is one `manager.open` or
+  `manager.stop_session` answered with an accepted operation and had not
+  settled; a principal is an invited member with a credential digest and a
+  session grant, and the boundary it crosses is `manager.frame_authority`.
+  A command in flight is the pair of authority answers the transport asks
+  for, once at admission and once at delivery, so a revocation landing
+  between them is expressible here. What is not expressible is the socket:
+  that no frame is written to a closed connection is a gateway claim, and
+  `tui_shipped_multiplayer_test` is what proves it.
+- **The two revocation coordinates are two schedules, and only one of them
+  fills the memo.** The registry remembers a resolved grant for the lifetime
+  of a session's slot and drops the whole memo when an administration commits.
+  `BetweenAdmissionAndDelivery` admits the principal before the owner revokes,
+  which both fills that memo and gets the command through admission;
+  `BeforeAdmission` revokes before the boundary has answered anything at all,
+  so nothing is remembered and nothing is queued. Removing the memo drop in
+  the `Administer` arm of `manager.gleam` therefore fails
+  `revocation/silence-after-close` under the `Between` seeds and passes under
+  the `Before` ones, which is the discrimination the coordinates exist for. A
+  run that made both coordinates admit first would be one schedule counted
+  twice.
 - **Nothing is keyed by a counter.** A generation request is answered by
   the *phase* of its projected context — how many assistant messages are in
   it, plus a hundred once a summary is — and a tool execution by its
@@ -347,17 +395,19 @@ them from their own test mains.
   production never reaches and a check written against it would be checking
   the harness. `harness.Boot` therefore takes the state root from its caller
   so the next start rebuilds from what was committed.
-- **A kill takes down three processes, not one.** The registry traps exits so
-  that it can answer its owner's departure in order, and a builder parked in
-  the harness's assembly callback watches the registry through a monitor it
-  cannot read while it is blocked. Killing `root.pid` alone therefore leaves
-  the catalogue connection and a conversation's writer lease held by
-  survivors, and the next start would overlap a live predecessor.
-  `harness.kill` kills the root, the registry and the parked builder
-  `park` reported, waiting for each monitor. It is still not a drain: the
-  launch lock is released by the operating system after the root's port
-  closes, which is why a restart goes through `harness.resume` and its
-  bounded retry rather than a single `start`.
+- **A kill names three processes, and waits on each.** The root's death
+  cascades through the lifetime scope to the registry, but nothing reports
+  when that cascade has finished, and it does not reach a builder parked in
+  the harness's assembly callback, which the scope holds no link to.
+  `harness.kill` therefore kills the root, the registry and the parked builder
+  `park` reported, and waits for a monitor on each; a kill of a process the
+  cascade already took down delivers DOWN immediately, so the extra kills are
+  free and the order carries no meaning. It is still not a drain: the launch
+  lock is released by the operating system after the root's port closes, which
+  is why a restart goes through `harness.resume` and its bounded retry rather
+  than a single `start`. The dead lease is retired by the session tree
+  asynchronously, unordered against the restart, which is why the restart
+  moves the lease clock instead of waiting.
 - **Logical time advances by one lease lifetime per incarnation, and
   nowhere else.** A killed daemon leaves an unexpired writer lease in the
   conversation file it was building, held by an owner that no longer exists.
