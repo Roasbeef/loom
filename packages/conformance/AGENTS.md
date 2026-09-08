@@ -49,7 +49,8 @@ them from their own test mains.
   every path so two runs under two directories are comparable. `Boot` is
   what one incarnation is started from, `Arrest` is where a simulated
   builder parks so the run can kill the daemon at a named creation step,
-  and `kill` is the untrappable root kill a faulted run restarts from.
+  `kill` is the untrappable kill of the root, the registry and the parked
+  builder, and `resume` is the start a faulted run restarts through.
 - `conformance/simulation/daemon/daemon_fault.{Fault, Schedule, Step}` —
   the daemon-level taxonomy, mirroring `simulation/fault`'s shape. One
   fault, `KillDaemonAt(key, workspace, step)`, and four steps named by what
@@ -344,9 +345,19 @@ them from their own test mains.
   root.** The root answers a killed registry by blocking recovery rather than
   restarting it in place, so a registry replaced under a live root is a state
   production never reaches and a check written against it would be checking
-  the harness. `harness.kill` is therefore an untrappable kill of
-  `root.pid`, and `harness.Boot` takes the state root from its caller so the
-  next `start` rebuilds from what was committed.
+  the harness. `harness.Boot` therefore takes the state root from its caller
+  so the next start rebuilds from what was committed.
+- **A kill takes down three processes, not one.** The registry traps exits so
+  that it can answer its owner's departure in order, and a builder parked in
+  the harness's assembly callback watches the registry through a monitor it
+  cannot read while it is blocked. Killing `root.pid` alone therefore leaves
+  the catalogue connection and a conversation's writer lease held by
+  survivors, and the next start would overlap a live predecessor.
+  `harness.kill` kills the root, the registry and the parked builder
+  `park` reported, waiting for each monitor. It is still not a drain: the
+  launch lock is released by the operating system after the root's port
+  closes, which is why a restart goes through `harness.resume` and its
+  bounded retry rather than a single `start`.
 - **Logical time advances by one lease lifetime per incarnation, and
   nowhere else.** A killed daemon leaves an unexpired writer lease in the
   conversation file it was building, held by an owner that no longer exists.
@@ -355,7 +366,10 @@ them from their own test mains.
   moves the clock the writer lease is read against, and only that clock: the
   identity generator keeps reading the unadvanced logical clock, so a
   restart does not shift the timestamps a later creation mints and the two
-  runs of a seed stay comparable.
+  runs of a seed stay comparable. The advance is kept even though no lease
+  holder survives the kill, because a lease is time-based: a restart inside
+  the TTL is refused however dead the owner is, and that case belongs to
+  `client`'s `daemon_shipped_identity_recovery_test`.
 - **Domain services are never opened under the daemon harness.** A domain
   row names a memory database and a search index, and neither file exists in
   a simulated run, so `creation/no-orphan-file` counts conversation
