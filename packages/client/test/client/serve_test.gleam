@@ -1590,6 +1590,18 @@ pub fn the_base_admits_the_toolchain_as_mounts_test() {
     == ["/usr/lib/erlang", "/opt/loom/share/codemode-seed", "/opt/homebrew/bin"]
 }
 
+// The build plane admits the toolchain into its own base, and the
+// extension fixtures admit it again on top, which is the shape that
+// refused every extension node with a duplicate seed mount on the first
+// narrowed run. Admitting twice must be admitting once.
+pub fn admitting_the_toolchain_twice_admits_it_once_test() {
+  let once =
+    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
+  let twice = serve.admitting_codemode(once, Ok(a_toolchain()))
+  assert twice == once
+  assert policy.validate(twice) == Ok(Nil)
+}
+
 pub fn a_host_without_a_toolchain_admits_nothing_test() {
   // A host that registers no `code_mode` tool launches no satellite, so a
   // mount for it would be a region granted for nothing.
@@ -1915,12 +1927,12 @@ pub fn a_toolchain_directory_the_user_set_also_names_merges_test() {
         seed_root: "/opt/loom/share/codemode-seed",
       )),
     )
-  let assert Error(reason) = serve.base_policy_fault(base)
-    as "the two derivations must collide before the merge"
-  assert string.contains(reason, home <> "/.local/bin")
-
+  // The collision is unrepresentable: each admitting step merges by
+  // path, so the base validates as assembled and the closing merge is a
+  // no-op on it.
+  assert policy.validate(base) == Ok(Nil)
   let merged = serve.merging_mounts(base)
-  assert policy.validate(merged) == Ok(Nil)
+  assert merged == base
   assert list.count(mount_paths(merged), fn(path) {
       path == home <> "/.local/bin"
     })
@@ -1958,11 +1970,9 @@ pub fn the_homebrew_prefix_collides_with_the_shared_set_and_merges_test() {
   let base =
     policy.SandboxPolicy(..serve.base_policy("/work"), mounts: [shared])
     |> serve.admitting_codemode(Ok(toolchain))
-  let assert Error(_reason) = serve.base_policy_fault(base)
-    as "the prefix must collide before the merge"
-
+  assert policy.validate(base) == Ok(Nil)
   let merged = serve.merging_mounts(base)
-  assert policy.validate(merged) == Ok(Nil)
+  assert merged == base
   assert mount_paths(merged)
     == ["/opt/homebrew", "/opt/loom/share/codemode-seed"]
 }

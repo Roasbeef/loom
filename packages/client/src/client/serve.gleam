@@ -3596,12 +3596,18 @@ pub fn admitting_codemode(
   case discovered {
     Error(_reason) -> base
     Ok(toolchain) ->
+      // Merged rather than appended, so a base that already carries the
+      // toolchain (the build plane admits it itself, and a fixture may
+      // admit it again on top) ends with one entry per path. Applying
+      // this step twice is then the same as applying it once, and the
+      // duplicate-mount refusal in `policy.validate` stays unreachable
+      // from any assembly order.
       policy.SandboxPolicy(
         ..base,
-        mounts: list.append(
+        mounts: merged_mounts(list.append(
           base.mounts,
           codemode_wiring.toolchain_mounts(toolchain),
-        ),
+        )),
       )
   }
 }
@@ -3940,7 +3946,7 @@ pub fn admitting_config_mounts(
 ) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..base,
-    mounts: list.append(
+    mounts: merged_mounts(list.append(
       base.mounts,
       list.map(configured, fn(entry) {
         policy.Mount(
@@ -3949,7 +3955,7 @@ pub fn admitting_config_mounts(
           requirement: policy.MountRequired,
         )
       }),
-    ),
+    )),
   )
 }
 
