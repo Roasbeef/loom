@@ -605,6 +605,18 @@ only Go module.
   `.github/scripts/enforcement_report.sh` fails on by design, so the
   rename and the line in `.github/enforcement-expectations` move
   together.
+- **The state-root probe exercises the daemon's own layout, not a
+  synthetic path.** `probeDaemonStateRoot` builds the masks
+  `client/serve.protecting_state_root` chooses — `owner.token`,
+  `catalogue.db`, `daemon.lock` as files and `sessions/` as a directory —
+  with the state root *outside* every writable root, which is the
+  arrangement a real session gets and the one `probeProtected` does not
+  cover. It asserts on the secret bytes rather than on an error, because
+  the refusal has two shapes: on Linux a masked file reads as zero bytes
+  from the `/dev/null` bind and a masked directory is an empty read-only
+  tmpfs, while on Darwin all of them are denied outright. A probe
+  asserting EPERM would fail against a correct Linux jail. It is
+  `required` on both platforms, since masking is enforced on both.
 - **What the hostile-`.beam` probe claims is narrower than "reaches
   nothing".** The base view is `--ro-bind / /` and Landlock grants
   `RODirs("/")`, so an unprotected host path is *readable* from inside the

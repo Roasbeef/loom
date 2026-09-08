@@ -45,8 +45,16 @@ required|orphaned grandchild reaped via pgroup
 # of a protected directory are unreachable from inside, so the name says
 # what it checks. Renaming a probe changes the probe set, which this
 # checker fails on by design — the rename and this line move together.
+#
+# "daemon state root unreachable from a session jail" proves the same
+# mechanism over the daemon's own layout: the owner token, the catalogue
+# and another session's database, masked outside every writable root, are
+# not obtainable by a jailed payload. Required on both platforms, because
+# masking is enforced on both and by different mechanisms — a /dev/null
+# bind and a read-only tmpfs on Linux, terminal deny rules on Darwin.
 required|write outside writable_roots denied
 required|protected path masked from reads and writes
+required|daemon state root unreachable from a session jail
 required|direct socket denied under network off
 
 # --- Process ceilings.
