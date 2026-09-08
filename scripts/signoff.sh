@@ -42,7 +42,8 @@
 #                            lane's copy of the same test. CI never meets
 #                            this because those jobs are separate machines.
 #   mid                      check.sh runtime storage session events.
-#   conformance              check.sh conformance, then the 200-seed soak.
+#   conformance              check.sh conformance, the 200-seed soak, then
+#                            the wall-clock-budgeted daemon simulation soak.
 #                            The soak rebuilds packages/conformance once a
 #                            chunk, so it stays behind the conformance
 #                            suite in one lane rather than beside it.
@@ -168,9 +169,19 @@ lane_client() {
 		$retry bash scripts/e2e_client_bootstrap.sh
 }
 lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
+# The daemon simulation's soak follows the session one in this lane, and is
+# budgeted rather than counted: it draws seeds until its seconds are spent.
+# Sixty is what fits. The lanes run in parallel, so the gate's wall time is
+# the slowest lane's, and that is the client lane at about 440 seconds; the
+# conformance lane is about 220. Sixty seconds leaves the conformance lane
+# at roughly 280, still short of the client lane, so the gate costs nothing
+# it did not cost before. A budget past 200 would make this lane the
+# critical path and slow the gate for everyone.
 lane_conformance() {
 	$retry bash scripts/check.sh conformance &&
-		$retry make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}"
+		$retry make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}" &&
+		$retry make soak-daemon-sim \
+			SOAK_DAEMON_BUDGET_SECONDS="${SIGNOFF_DAEMON_SOAK_SECONDS:-60}"
 }
 lane_fast() {
 	$retry bash scripts/check.sh host core machine prompt telemetry provider \

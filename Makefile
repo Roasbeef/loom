@@ -318,6 +318,50 @@ soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=
 	done; \
 	echo "soak clean: $(SOAK_SEEDS) seeds from $(SOAK_FROM)"
 
+# The daemon simulation is bounded by wall clock instead of by a seed count.
+# A daemon seed opens a real SQLite catalogue on a real directory and starts
+# two daemons, or three when the schedule draws a kill, so what it costs
+# depends on the machine's file system and on what the schedule drew: a seed
+# count would buy an amount of lane time nobody can predict from the number.
+# The budget says how long to keep drawing, and the run reports how many
+# seeds fit. About fifteen a second was the measurement on a developer
+# machine when this landed.
+#
+# The budget is spent in chunks for the same reason `soak` is: the test
+# framework's per-test timeout is about a minute, and a chunk that outlives
+# it reports a timeout rather than a result. Each chunk prints the seed it
+# stopped at, and the loop starts the next one there, because how far a
+# chunk got is a property of the machine rather than of the range.
+SOAK_DAEMON_BUDGET_SECONDS ?= 120
+SOAK_DAEMON_CHUNK_SECONDS  ?= 30
+SOAK_DAEMON_FROM           ?= 1
+
+.PHONY: soak-daemon-sim
+soak-daemon-sim: ## Wall-clock-budgeted daemon simulation (SOAK_DAEMON_BUDGET_SECONDS=n SOAK_DAEMON_FROM=n)
+	@from=$(SOAK_DAEMON_FROM); left=$(SOAK_DAEMON_BUDGET_SECONDS); total=0; \
+	log=$$(mktemp); \
+	while [ $$left -gt 0 ]; do \
+		n=$$( [ $$left -lt $(SOAK_DAEMON_CHUNK_SECONDS) ] && echo $$left || echo $(SOAK_DAEMON_CHUNK_SECONDS) ); \
+		echo "==> daemon seeds from $$from for $${n}s"; \
+		if LOOM_DAEMON_SOAK_SECONDS=$$n LOOM_DAEMON_SOAK_FROM=$$from \
+			LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-600}" \
+			bash scripts/test.sh conformance \
+			--match conformance@simulation_daemon_soak_test: > $$log 2>&1; then \
+			cat $$log; \
+		else \
+			cat $$log; rm -f $$log; \
+			echo "soak-daemon-sim FAILED in seeds from $$from"; exit 1; \
+		fi; \
+		ran=$$(sed -n 's/^==> daemon soak ran \([0-9]*\) seeds.*/\1/p' $$log | tail -1); \
+		next=$$(sed -n 's/^==> daemon soak ran .*, next \([0-9]*\)$$/\1/p' $$log | tail -1); \
+		if [ -z "$$next" ]; then \
+			rm -f $$log; echo "soak-daemon-sim: the chunk reported no seed count"; exit 1; \
+		fi; \
+		total=$$(( total + ran )); from=$$next; left=$$(( left - n )); \
+	done; \
+	rm -f $$log; \
+	echo "soak-daemon-sim clean: $$total seeds in $(SOAK_DAEMON_BUDGET_SECONDS)s, next $$from"
+
 # ---------------------------------------------------------------- utilities
 
 .PHONY: deps
