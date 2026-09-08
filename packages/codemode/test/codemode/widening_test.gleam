@@ -27,10 +27,9 @@ import core/msgpack
 import gleam/erlang/process
 import gleam/list
 import gleam/string
-import simplifile
 import support/fake_helper
-import support/internal/ffi_peer
 import support/satellite_peer.{type PeerCtx}
+import support/scratch
 
 const t = 1_700_000_000_000
 
@@ -249,20 +248,12 @@ fn program() -> String {
   "import cap/fs\npub fn main() { fs.read(\"x\") }\n"
 }
 
+// A scratch directory for one launch, chosen by `support/scratch`, which
+// owns both reasons the choice is not obvious: the cap socket path must
+// stay inside the kernel's `sun_path` limit, and two checkouts of this
+// repository on one machine must not delete each other's state.
 fn fresh_dir(name: String) -> String {
-  let assert Ok(here) = simplifile.current_directory()
-  let base = case ffi_peer.get_env("LOOM_TEST_SCRATCH") {
-    Ok(scratch) -> scratch
-    Error(Nil) ->
-      case ffi_peer.get_env("HOME") {
-        Ok(home) -> home <> "/.loom-cmtest"
-        Error(Nil) -> here <> "/build/cmtest"
-      }
-  }
-  let dir = base <> "/widen-" <> name
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  dir
+  scratch.fresh("widen-" <> name)
 }
 
 // The session base an approval is asked to widen: everything a satellite
