@@ -25,7 +25,7 @@ func protectedPolicy() (policy.Policy, map[string]PathKind) {
 // invisible, and `bwrap` alone only ever meant "bubblewrap ran".
 func TestAuditMountsReportsWhatTheResolvedPlanAchieved(t *testing.T) {
 	pol, kinds := protectedPolicy()
-	got := AuditMounts(pol, MountPlan(pol, kinds))
+	got := AuditMounts(pol, MountPlan(pol, kinds, ""))
 	if len(got.Skipped) != 0 {
 		t.Fatalf("a well-ordered plan narrows every path; skips: %v", got.Skipped)
 	}
@@ -47,7 +47,7 @@ func TestAuditMountsCatchesADefeatedMask(t *testing.T) {
 	// not produce this today; the audit exists so that if it ever did,
 	// or if bwrap's own precedence changed under it, the report would
 	// say so instead of staying silent.
-	defeated := append(MountPlan(pol, kinds), writableOp("/work"))
+	defeated := append(MountPlan(pol, kinds, ""), writableOp("/work"))
 	got := AuditMounts(pol, defeated)
 	if len(got.Skipped) == 0 {
 		t.Fatalf("a defeated mask produced no skip entry: %+v", got)
@@ -64,7 +64,7 @@ func TestAuditMountsCatchesADefeatedMask(t *testing.T) {
 // class of defect and must be caught the same way.
 func TestAuditMountsCatchesAReadableRootMadeWritable(t *testing.T) {
 	pol, kinds := protectedPolicy()
-	defeated := append(MountPlan(pol, kinds), writableOp("/usr"))
+	defeated := append(MountPlan(pol, kinds, ""), writableOp("/usr"))
 	got := AuditMounts(pol, defeated)
 	if len(got.Skipped) == 0 {
 		t.Fatalf("a readable root turned writable produced no skip: %+v", got)
@@ -85,7 +85,7 @@ func TestAuditMountsAcceptAReadableRootThePolicyAlsoMakesWritable(t *testing.T) 
 		Network:       policy.Network{Mode: policy.NetworkOff},
 		Scratch:       "tmpfs",
 	}
-	got := AuditMounts(pol, MountPlan(pol, nil))
+	got := AuditMounts(pol, MountPlan(pol, nil, ""))
 	if len(got.Skipped) != 0 {
 		t.Fatalf("the policy granted the write itself; skips: %v", got.Skipped)
 	}
@@ -97,10 +97,33 @@ func TestAuditMountsAcceptAReadableRootThePolicyAlsoMakesWritable(t *testing.T) 
 // #60 case 1: a PathMissing protected path whose parent the plan leaves
 // read-only cannot be masked — bwrap needs write access to create the
 // mount point, and refuses the whole jail with a bare `Can't mkdir
-// parents for PATH: Read-only file system` otherwise. `~/.ssh`, a
-// default protected path, hits this on any policy that does not also
-// grant write under $HOME.
+// parents for PATH: Read-only file system` otherwise.
+//
+// The parent has to be inside a system root for that to happen now. The
+// case this test used to name, a protected `~/.ssh` under a host-readable
+// base view, stopped being one when protocol-change/020 made the base an
+// empty tmpfs: bwrap creates a mount point under a tmpfs perfectly well,
+// so the refusal it diagnoses no longer applies there. A protected path
+// under `/usr` still hits it exactly as before.
 func TestUnmountableProtectedFlagsAReadOnlyParent(t *testing.T) {
+	pol := policy.Policy{
+		WritableRoots: []string{"/work"},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+		Protected:     []string{"/usr/share/loom-secrets"},
+	}
+	kinds := map[string]PathKind{"/usr/share/loom-secrets": PathMissing}
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds, ""))
+	if len(bad) != 1 || bad[0] != "/usr/share/loom-secrets" {
+		t.Fatalf("UnmountableProtected = %v, want [/usr/share/loom-secrets]", bad)
+	}
+}
+
+// The other side of that change: a missing protected path in a region
+// the minimal base view leaves as the empty root tmpfs is maskable, so
+// refusing it would refuse a policy bwrap would have realised. `~/.ssh`
+// is the ordinary case, and it is this one.
+func TestUnmountableProtectedAllowsTheRootTmpfs(t *testing.T) {
 	pol := policy.Policy{
 		WritableRoots: []string{"/work"},
 		Network:       policy.Network{Mode: policy.NetworkOff},
@@ -108,9 +131,10 @@ func TestUnmountableProtectedFlagsAReadOnlyParent(t *testing.T) {
 		Protected:     []string{"/home/user/.ssh"},
 	}
 	kinds := map[string]PathKind{"/home/user/.ssh": PathMissing}
-	bad := UnmountableProtected(kinds, MountPlan(pol, kinds))
-	if len(bad) != 1 || bad[0] != "/home/user/.ssh" {
-		t.Fatalf("UnmountableProtected = %v, want [/home/user/.ssh]", bad)
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds, ""))
+	if len(bad) != 0 {
+		t.Fatalf("UnmountableProtected = %v, want none: the root tmpfs "+
+			"covers /home and bwrap can create a mount point in it", bad)
 	}
 }
 
@@ -125,7 +149,7 @@ func TestUnmountableProtectedAllowsAWritableParent(t *testing.T) {
 		Protected:     []string{"/work/.env"},
 	}
 	kinds := map[string]PathKind{"/work/.env": PathMissing}
-	bad := UnmountableProtected(kinds, MountPlan(pol, kinds))
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds, ""))
 	if len(bad) != 0 {
 		t.Fatalf("UnmountableProtected = %v, want none: /work is writable", bad)
 	}
@@ -142,7 +166,7 @@ func TestUnmountableProtectedIgnoresExistingPaths(t *testing.T) {
 		Protected:     []string{"/home/user/.ssh"},
 	}
 	kinds := map[string]PathKind{"/home/user/.ssh": PathDir}
-	bad := UnmountableProtected(kinds, MountPlan(pol, kinds))
+	bad := UnmountableProtected(kinds, MountPlan(pol, kinds, ""))
 	if len(bad) != 0 {
 		t.Fatalf("UnmountableProtected = %v, want none: the path already exists", bad)
 	}
@@ -289,7 +313,7 @@ func TestAuditMountsCountsExplicitMounts(t *testing.T) {
 		{Path: "/srv/cap/s", Access: policy.MountReadOnly, Required: true},
 		{Path: "/srv/out", Access: policy.MountReadWrite, Required: true},
 	}
-	got := AuditMounts(pol, MountPlan(pol, kinds))
+	got := AuditMounts(pol, MountPlan(pol, kinds, ""))
 	if len(got.Skipped) != 0 {
 		t.Fatalf("a well-ordered plan narrows every path; skips: %v", got.Skipped)
 	}

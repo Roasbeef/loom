@@ -62,15 +62,15 @@ import (
 //
 // # What it does not claim
 //
-// Not "reaches nothing on the filesystem". The helper's base view
-// ro-binds the whole host filesystem and Landlock grants RODirs("/"), so
-// an unprotected host path is *readable* from inside the jail today;
-// `readable_roots` does not narrow reads, only `protected` removes them.
-// That gap is written up in
-// protocol-change/004-sandbox-policy-explicit-mounts.md and is not this
-// probe's to close. What is claimed, and observed, is that the adversary
-// cannot write outside the writable roots, cannot see a protected path,
-// and cannot reach the network.
+// Not "reaches nothing on the filesystem". Since protocol-change/020 the
+// base view carries the system directories rather than the whole host,
+// so `/usr`, `/etc` and their neighbours are readable from inside the
+// jail, and both of this probe's policies additionally name the
+// adversary's own module directory as a readable root so the node can
+// boot at all. Whether the *rest* of the host is out of reach is
+// probeOutsideMountPlan's claim, not this one. What is claimed here, and
+// observed, is that the adversary cannot write outside the writable
+// roots, cannot see a protected path, and cannot reach the network.
 
 //go:embed loom_hostile.erl
 var hostileSource []byte
@@ -252,8 +252,71 @@ func buildHostileBeam(erlc, dir string) (string, error) {
 // the adversary to reach for.
 type hostileRig struct {
 	dir, ebin, erl string
-	ln             net.Listener
-	port           int
+	// otp is the installation root the resolved `erl` reports for
+	// itself. Both policies bind it in, because under the minimal base
+	// view nothing else does; see hostilePolicy.
+	otp  string
+	ln   net.Listener
+	port int
+}
+
+// otpPatience bounds the question put to `erl` on the host. Answering it
+// boots a node, which is seconds at worst, and a toolchain that has not
+// answered by then is one the probe reports as unusable rather than one
+// it waits on.
+const otpPatience = 30 * time.Second
+
+// resolveOTP finds the `erl` the probe will run and the installation
+// root that `erl` needs bound into the jail.
+//
+// The resolution is two steps because a toolchain is usually installed
+// once and linked onto PATH from somewhere else: on a host where
+// `~/.local/bin/erl` is a symlink into `~/.local/opt/otp-29.0.5`, the
+// path on PATH says nothing about where the runtime's own files live.
+// EvalSymlinks gives the real executable, and asking that executable for
+// `code:root_dir()` gives the directory tree it will read at boot. The
+// probe execs the resolved path rather than the link, so binding the
+// root alone is enough: the executable is inside it, and no part of the
+// jail's view then depends on the symlink's directory, which is
+// commonly under $HOME and which the probe deliberately does not bind.
+//
+// This is the same statement of the toolchain the harness makes in
+// production, where the OTP root comes from the running VM's own
+// `code:root_dir()`. A probe that instead assumed a system prefix would
+// be measuring a jail nobody ships.
+func resolveOTP(erl string) (string, string, error) {
+	real, err := filepath.EvalSymlinks(erl)
+	if err != nil {
+		return "", "", err
+	}
+	cmd := exec.Command(real, "-noshell", "-eval",
+		"io:put_chars(code:root_dir()), halt().")
+	done := make(chan struct{})
+	var out []byte
+	go func() {
+		out, err = cmd.CombinedOutput()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(otpPatience):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-done
+		return "", "", errors.New("timed out asking " + real +
+			" for its installation root")
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("asking %s for its installation root: "+
+			"%w: %s", real, err, strings.TrimSpace(string(out)))
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" || !filepath.IsAbs(root) {
+		return "", "", errors.New(real + " reported no absolute " +
+			"installation root: " + quote(string(out)))
+	}
+	return real, root, nil
 }
 
 // newHostileRig builds the .beam on the host and opens the control
@@ -267,6 +330,16 @@ func newHostileRig() (*hostileRig, string, error) {
 		return nil, "no Erlang toolchain on this host (erl/erlc), so the " +
 			"adversary's .beam can be neither built nor loaded: nothing " +
 			"was attempted, and nothing was contained", nil
+	}
+
+	// An unusable toolchain is a skip and never a failure: the probe has
+	// nothing to run, so nothing was attempted and nothing was
+	// contained. Degraded means degraded, out loud.
+	erl, otp, err := resolveOTP(erl)
+	if err != nil {
+		return nil, "the Erlang toolchain on this host cannot be located " +
+			"well enough to run inside a jail (" + err.Error() + "), so " +
+			"nothing was attempted, and nothing was contained", nil
 	}
 	dir, err := probeDir()
 	if err != nil {
@@ -300,7 +373,8 @@ func newHostileRig() (*hostileRig, string, error) {
 		return nil, "", errors.New("control listener is not TCP")
 	}
 	go acceptForever(ln)
-	return &hostileRig{dir: dir, ebin: ebin, erl: erl, ln: ln, port: addr.Port}, "", nil
+	return &hostileRig{dir: dir, ebin: ebin, erl: erl, otp: otp, ln: ln,
+		port: addr.Port}, "", nil
 }
 
 func (r *hostileRig) close() {
@@ -361,7 +435,7 @@ func (r *hostileRig) jailed(
 		Argv:   hostileArgv(r.erl, r.ebin, p, r.port),
 		Env:    defaultEnv,
 		Cwd:    "/",
-		Policy: hostilePolicy(p, confined),
+		Policy: hostilePolicy(p, r.ebin, r.otp, confined),
 	}, feat, selfExe, sink)
 	if err != nil {
 		return hostileReport{}, "", err
@@ -387,13 +461,30 @@ func (r *hostileRig) jailed(
 // Even permissive stays inside the rig's scratch directory. "Writable
 // root" here is a temp directory the probe made and deletes; the
 // adversary is being handed its own sandbox back, not the host.
-func hostilePolicy(p hostilePaths, confined bool) policy.Policy {
+func hostilePolicy(p hostilePaths, ebin, otp string, confined bool) policy.Policy {
+	// The adversary's own .beam directory and the OTP installation root
+	// are readable roots in both policies. They are the toolchain the
+	// probe runs rather than an effect it measures, and the minimal base
+	// view of protocol-change/020 carries neither: an OTP installed under
+	// $HOME, which is where a version manager puts it, lies outside every
+	// system root, and a jail that cannot boot the node reports a node
+	// that never booted, which this probe correctly refuses to read as
+	// containment. Granting them in both policies keeps the three
+	// measured reaches — the protected secret, the write outside, the
+	// network — as the only difference between the two runs.
+	//
+	// $HOME itself stays unbound. The probe execs the `erl` it resolved
+	// through its symlinks, so the executable is inside the root named
+	// here and nothing needs the link's own directory.
+	roots := []string{ebin, otp}
 	if !confined {
 		pol := basePolicy(filepath.Dir(p.inside))
+		pol.ReadableRoots = roots
 		pol.Network = policy.Network{Mode: policy.NetworkFull}
 		return pol
 	}
 	pol := basePolicy(p.inside)
+	pol.ReadableRoots = roots
 	pol.Protected = []string{p.vault}
 	return pol
 }

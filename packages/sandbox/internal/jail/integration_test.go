@@ -4,6 +4,7 @@ package jail_test
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,24 +169,25 @@ func TestEnvAllowlistEnforced(t *testing.T) {
 // the policy leaves read-only, must refuse in Loom's own words before
 // bwrap ever runs — not launch a jail that dies with a bare `Can't mkdir
 // parents for PATH: Read-only file system` and exit 1, indistinguishable
-// from the payload's own command failing. `~/.ssh` is exactly this
-// shape: a default protected path whose parent ($HOME) an ordinary
-// policy does not also grant write under.
+// from the payload's own command failing.
+//
+// Which paths have that shape changed with protocol-change/020. The
+// motivating case used to be `~/.ssh` under a whole-host read-only base
+// view; under the minimal root, `/home` is not bound at all, so a
+// missing path there lands in the writable root tmpfs and bwrap creates
+// the mount point without complaint (measured with bubblewrap 0.6.1).
+// What is still unmaskable is a missing path under one of the read-only
+// system binds, so the test names one of those. `TestUnmountableProtec-
+// tedAllowsTheRootTmpfs` pins the other half of the same change.
 func TestStartRefusesAnUnmaskableProtectedPath(t *testing.T) {
 	feat := jail.DetectFeatures()
 	if feat.BwrapPath == "" {
 		t.Skip("this refusal only applies when bwrap builds the mount plan")
 	}
 	pol := testPolicy(t)
-	// Use a host-path scratch so /tmp is not itself a writable tmpfs in
-	// this plan. The missing sibling is then genuinely under the base
-	// read-only view on Linux, where t.TempDir lives beneath /tmp.
-	pol.Scratch = pol.WritableRoots[0]
-	// testPolicy's writable root is a fresh temp dir; "missing" is
-	// guaranteed absent under it, and its parent (the temp dir) is not
-	// itself writable — only the temp dir's *subtree* the writable root
-	// names is.
-	missing := pol.WritableRoots[0] + "-sibling/missing"
+	// Under `/usr`, which SystemRoots binds read-only and no policy here
+	// grants write under, and named so that no host carries it.
+	missing := "/usr/share/loom-absent-protected-probe/missing"
 	pol.Protected = []string{missing}
 	_, err := jail.Start(jail.Request{
 		Argv: []string{"/bin/sh", "-c", "echo unreachable"},
@@ -196,6 +198,36 @@ func TestStartRefusesAnUnmaskableProtectedPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), missing) {
 		t.Fatalf("refusal does not name the path: %v", err)
+	}
+}
+
+// The behaviour the refusal above must not over-reach into: a missing
+// protected path in a region the minimal base view leaves as the empty
+// root tmpfs is one bwrap masks without complaint, so the helper has to
+// start the jail rather than refuse it. `~/.ssh` on a policy granting no
+// write under $HOME is exactly this shape and is the ordinary case, so a
+// pre-check that flagged it would refuse most real policies.
+func TestStartAcceptsAProtectedPathTheRootTmpfsCanMask(t *testing.T) {
+	feat := jail.DetectFeatures()
+	if feat.BwrapPath == "" {
+		t.Skip("this shape only arises when bwrap builds the mount plan")
+	}
+	pol := testPolicy(t)
+	// Under the real $HOME, which no system root binds and no policy here
+	// grants, and named so that no host carries it.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory to place the protected path under: %v", err)
+	}
+	pol.Protected = []string{filepath.Join(home, "loom-absent-protected-probe")}
+	c := newCollector()
+	ex := start(t, pol, []string{"/bin/sh", "-c", "echo masked"}, c.sink)
+	_ = ex.WriteStdin(nil, true)
+	if res := ex.Wait(); res.Code != 0 {
+		t.Fatalf("jail exited %d, want 0: %s", res.Code, c.out())
+	}
+	if !strings.Contains(c.out(), "masked") {
+		t.Fatalf("payload did not run: %q", c.out())
 	}
 }
 

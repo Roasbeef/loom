@@ -128,19 +128,36 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 //
 //   - **Writable beats readable.** `policy.workspace_default` names the
 //     workspace in `readable_roots` *and* in `writable_roots`, so this
-//     tie is load-bearing and must resolve to writable. No narrowing is
-//     lost by that: `readable_roots` does not restrict reads at all,
-//     since the base view is the whole host filesystem read-only, so an
-//     entry that is also writable is redundant rather than a
-//     restriction (protocol-change/004).
+//     tie is load-bearing and must resolve to writable. Nothing is lost
+//     by that: a writable bind grants reads too, so the union of the two
+//     grants is exactly the writable one.
+//   - **A readable root beats the empty root tmpfs at "/".** That tie is
+//     how an older harness keeps working. `readable_roots: ["/"]` binds
+//     the host back over the tmpfs and reproduces the base view this
+//     helper had before protocol-change/020, so a harness that has not
+//     yet dropped that entry is unchanged by the narrowing. The audit
+//     says which of the two views was in effect (`base=` in the
+//     `mounts:` entry) so the enforcement report does not have to be
+//     read as if the two were the same jail.
 //   - **The scratch tmpfs beats a root at exactly ScratchMount.**
 //     Taking the bind instead would drop the scratch area the policy
 //     asked for, and the fresh tmpfs is the narrower of the two anyway
 //     — it carries no host content — so this tie resolves fail-closed.
 //
-// The base view, the entire host filesystem read-only, is simply the
-// least specific readable grant: `/`. It obeys both rules like anything
-// else.
+// The base view is an empty tmpfs at `/` plus a read-only bind of each
+// entry in SystemRoots. Both are ordinary grants at the least specific
+// regions there are, so they obey both rules like anything else: a
+// policy path nested inside `/usr` still lands on top of the system
+// bind, and a mask still comes after all of them.
+//
+// A mount whose destination is under one of those read-only system binds
+// works because every operation here binds a path onto *itself*: bwrap
+// cannot create a mount point under a read-only bind, but it does not
+// have to, since the destination is the source and the source exists
+// whenever the bind can happen at all. A required mount whose source is
+// absent is refused before any argv is built (MissingRequiredMounts),
+// and an optional one renders the `-try` form and is skipped. So there
+// is no third case for the plan to refuse.
 //
 // `kinds` classifies each protected path; callers stat outside this
 // function to keep it pure, and must classify the path's resolved
@@ -154,7 +171,7 @@ const ProxyUnenforcedSkip = "network-proxy: egress sidecar not implemented in ph
 // remounted read-only. A file is shadowed by a read-only bind of
 // MaskSource. Neither can be read through, written through, or created
 // in.
-func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
+func BwrapArgs(p policy.Policy, kinds map[string]PathKind, helper string) []string {
 	args := []string{
 		// Tie the jail's lifetime to the helper: if the helper dies, the
 		// kernel delivers SIGKILL to bwrap and the PID namespace dies
@@ -176,10 +193,23 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 		// fails closed to no direct network (see BlocksDirectNetwork).
 		args = append(args, "--unshare-net")
 	}
-	for _, op := range MountPlan(p, kinds) {
+	for _, op := range MountPlan(p, kinds, helper) {
 		args = append(args, op.Argv...)
 	}
-	return args
+
+	// The root is remounted read-only last, after every operation in the
+	// plan. bwrap gives the jail a fresh tmpfs as its new root and never
+	// remounts it, so a region no grant covers used to be a writable,
+	// unbounded directory inside the jail: a payload could fill memory by
+	// writing to `/anything`, and could create paths the policy never
+	// granted. The remount is outside the plan on purpose. Mountpoints
+	// have to be creatable while bwrap is still assembling the jail, and
+	// `effective` and `UnmountableProtected` both read the plan as the
+	// setup-time state, so folding this into the plan would make them
+	// refuse policies bwrap realises without complaint. bwrap remounts a
+	// single mount rather than the tree beneath it, so the writable roots
+	// and the scratch tmpfs are unaffected.
+	return append(args, "--remount-ro", "/")
 }
 
 // MountClass says what a mount operation does to the region it names.
@@ -190,8 +220,14 @@ func BwrapArgs(p policy.Policy, kinds map[string]PathKind) []string {
 type MountClass int
 
 const (
+	// ClassRootTmpfs is the empty tmpfs the minimal base view mounts at
+	// "/". It is the lowest class on purpose: a policy that names "/" as
+	// a readable root replaces it with a read-only bind of the host, so
+	// a harness that still sends `readable_roots: ["/"]` gets the base
+	// view it had before this change rather than an empty jail.
+	ClassRootTmpfs MountClass = iota
 	// ClassReadable binds a region read-only.
-	ClassReadable MountClass = iota
+	ClassReadable
 	// ClassWritable binds a region read-write. A host-path scratch is
 	// this and nothing more: an ordinary writable bind that happens to
 	// be named by `scratch` rather than by `writable_roots`.
@@ -256,7 +292,7 @@ type MountOp struct {
 // BwrapArgs renders. It is the precedence model in executable form:
 // overlaps between the four path lists are decided here, once, instead
 // of falling out of the order the lists are appended in.
-func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
+func MountPlan(p policy.Policy, kinds map[string]PathKind, helper string) []MountOp {
 	// Grants, keyed by region, so two grants naming the same path
 	// resolve by class instead of being emitted twice and overwritten.
 	grants := make(map[string]MountOp)
@@ -269,9 +305,34 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
 		}
 		grants[op.Path] = op
 	}
-	// The base view: the entire host filesystem, read-only. It is the
-	// least specific readable grant and nothing more.
-	grant(readableOp("/"))
+	// The base view: an empty tmpfs at "/", then the system directories a
+	// command needs to run at all. Everything else the jail can see is
+	// named by the policy. A `readable_roots` entry of "/" outranks the
+	// tmpfs at the same region and restores the whole-host view, which is
+	// what an older harness still sends; see PlanIsMinimal.
+	// The root entry carries no argv. bwrap's new root is already a fresh
+	// tmpfs, so `--tmpfs /` would mount a second, unbounded one over it
+	// and change nothing else. The entry stays in the plan because the
+	// plan is what the audit replays: `effective(plan, "/")` returning
+	// this class is how the audit knows the jail was built on the minimal
+	// base view rather than on a bind of the host.
+	grant(MountOp{Class: ClassRootTmpfs, Path: "/"})
+	for _, sys := range SystemRoots {
+		grant(readableRootOp(sys))
+	}
+
+	// The helper's own binary. Stage 2 is this executable re-executed
+	// inside the jail, so a base view that does not contain it is a jail
+	// that cannot start at all: bwrap reports `execvp failed` for a path
+	// the payload never chose. It is not a policy path, since the sender
+	// does not know where the helper was installed and the release layout
+	// puts it wherever the operator unpacked it, so the helper supplies
+	// it from what it knows about itself. The grant is skipped when some
+	// other region already carries it; see helperCovered for why an
+	// unconditional grant breaks a daemon running from its own checkout.
+	if !helperCovered(p, helper) {
+		grant(readableRootOp(helper))
+	}
 	for _, r := range p.ReadableRoots {
 		grant(readableRootOp(r))
 	}
@@ -348,14 +409,60 @@ func MountPlan(p policy.Policy, kinds map[string]PathKind) []MountOp {
 	return plan
 }
 
-// readableOp binds path read-only, refusing the jail outright if path
-// does not exist. Used only for the base view ("/"), which is exempt
-// from the tolerance question below by construction — the root always
-// exists.
-func readableOp(path string) MountOp {
-	path = region(path)
-	return MountOp{Class: ClassReadable, Path: path,
-		Argv: []string{"--ro-bind", path, path}}
+// helperCovered reports whether the jail's view already carries the
+// helper binary without a grant naming the file itself.
+//
+// The grant is not merely redundant when some enclosing region already
+// supplies it. It binds the helper file read-only onto itself, and a
+// read-only bind of a file is a mountpoint: the file can no longer be
+// replaced, removed or truncated from inside the jail, whatever the
+// region containing it allows. A daemon running from the checkout it is
+// working on hits exactly that, because `os.Executable()` is
+// `bin/loom-exec` under the workspace and the workspace is a writable
+// root, so `go build -o bin/loom-exec` fails with EBUSY and `git
+// checkout` and `make clean` fail with it too. Skipping the grant costs
+// nothing: the enclosing region is what makes the helper reachable, and
+// it was already emitted.
+//
+// A helper under a protected entry is a third case and is not decided
+// here. The mask would remove the binary from a jail that has to exec
+// it, and the resulting failure is bwrap's anonymous `execvp failed`, so
+// run.go refuses the execution naming the path before any argv is built;
+// see HelperUnderProtected.
+func helperCovered(p policy.Policy, helper string) bool {
+	h := region(helper)
+	if h == "" {
+		return true
+	}
+	regions := append([]string{}, SystemRoots...)
+	regions = append(regions, sortedPaths(p.ReadableRoots)...)
+	regions = append(regions, sortedPaths(p.WritableRoots)...)
+	for _, m := range p.Mounts {
+		regions = append(regions, region(m.Path))
+	}
+	return coveredBy(regions, h)
+}
+
+// HelperUnderProtected names the protected entry that would mask the
+// helper binary, or "" when none does. Stage 2 is the helper re-executed
+// inside the jail, so a mask covering it produces a jail that cannot
+// start, and bwrap's report for that is `execvp failed` naming a path the
+// payload never chose. The caller refuses the execution instead, naming
+// the entry that caused it.
+//
+// The protected paths must already be resolved through their symlinks,
+// which is the same input MountPlan is given; see resolveProtected.
+func HelperUnderProtected(protected []string, helper string) string {
+	h := region(helper)
+	if h == "" {
+		return ""
+	}
+	for _, prot := range sortedPaths(protected) {
+		if coveredBy([]string{prot}, h) {
+			return prot
+		}
+	}
+	return ""
 }
 
 // readableRootOp binds one of the policy's own readable_roots read-only,

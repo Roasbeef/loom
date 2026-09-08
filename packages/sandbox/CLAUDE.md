@@ -44,13 +44,46 @@ only Go module.
   execution's description, what the kernel actually offers, the
   enforcement summary stage 2 sends back on fd 4, and the per-stream
   output cap.
+- `internal/jail.{SystemRoots, DarwinSystemRoots, PlanIsMinimal,
+  BaseViewName}` — the base view. The two lists are the read-only system
+  directories a jail is given before the policy says anything, each entry
+  commented with why it is there; `/home`, `/root`, `/Users` and
+  `/var/tmp` are deliberately absent, and the user's home directory
+  reaches a jail only through the workspace, the roots and the mounts.
+  `PlanIsMinimal` answers whether the policy left that base in place: a
+  `readable_roots` entry of `/` binds the host back over it and
+  reproduces the pre-020 view, which is what a harness that has not
+  dropped that entry still sends, and `BaseViewName` renders the answer
+  for the `base=` field of both platforms' audits.
 - `internal/jail.{MountPlan, MountOp, MountClass}` — the mount precedence
   model. `MountPlan` turns a policy into the ordered operations
   `BwrapArgs` renders; `MountClass` says whether an op widens the jail's
   view or subtracts from it, and settles which of two ops naming the same
   path takes it. Pure, and the thing to read before changing any mount
-  behaviour. `PathKind` and `MaskSource` are its protected-path half, and
-  `ClassMountReadOnly`/`ClassMountReadWrite` are the explicit mounts.
+  behaviour. `PathKind` and `MaskSource` are its protected-path half,
+  `ClassMountReadOnly`/`ClassMountReadWrite` are the explicit mounts, and
+  `ClassRootTmpfs` is the empty tmpfs at `/` the minimal base view
+  starts from. `MountPlan` and `BwrapArgs` take the helper's own binary
+  path as their last argument: stage 2 is loom-exec re-executed inside
+  the jail, so a base view that does not carry it is a jail that cannot
+  start, and where the helper was installed is the helper's knowledge
+  rather than the sender's. That grant is emitted only when nothing else
+  covers the helper (`helperCovered`): the bind is a read-only mountpoint
+  over the file, so a helper inside the workspace could not be rebuilt or
+  replaced from inside the jail, which is what a daemon running from its
+  own checkout does every time it runs `go build -o bin/loom-exec`. A
+  helper under a `protected` entry is the case no grant can fix, and
+  `HelperUnderProtected` makes `Start` refuse it by name rather than
+  letting bwrap fail with an anonymous `execvp`. `BwrapArgs` also ends
+  every argv with `--remount-ro /`, after the whole plan and outside it:
+  bwrap's new root is a fresh tmpfs it never remounts, so without this a
+  region no grant covers is a writable, size-unbounded directory inside
+  the jail. It stays outside the plan because mountpoints have to be
+  creatable during setup and because `effective` and
+  `UnmountableProtected` read the plan as the setup-time state. The plan
+  keeps a `ClassRootTmpfs` entry at `/` carrying no argv, and that entry
+  is what the Linux audit reads to decide whether `base=` is `minimal` or
+  `host-view`.
 - `internal/jail.MissingRequiredMounts` — the platform-independent refusal
   for a `required` mount whose source is not on this host. Unlike
   `MissingMountSources`, which diagnoses a bwrap argv that would otherwise
@@ -224,12 +257,16 @@ only Go module.
   directory or granting device ioctls. It never sees `protected` at all;
   that list is bwrap's alone.
   `internal/jail/stage2.go`'s `landlockView` is where the policy becomes
-  that grant set, and it deliberately omits a tmpfs scratch (issue #59):
-  stage 2 has no unforgeable evidence that bwrap replaced `/tmp`, while
-  without bwrap there is no tmpfs to grant write on at all. Omitting the
-  grant keeps degraded execution from silently substituting real host
-  `/tmp`; callers that need temporary writes under Landlock place TMPDIR
-  inside a writable root. `scratch: "/"` is refused even earlier,
+  that grant set, and a tmpfs scratch is granted there only when bwrap
+  actually mounted one (issue #59). Stage 2 cannot see the mount
+  namespace it was placed in, so `Start` states the fact: it passes
+  `jail.ScratchMountedFlag` on the stage-2 command line in the bwrap
+  branch and only for `scratch: tmpfs`, and `landlockView` grants
+  `ScratchMount` only when it arrives. Both halves matter. Without the
+  grant a Landlock host has a scratch directory the payload cannot write
+  to, measured as `touch /tmp/probe` failing in a jail reporting
+  `landlock:abi=1`; with an unconditional grant, degraded execution would
+  silently substitute the account's real `/tmp`. `scratch: "/"` is refused even earlier,
   in `broker/policy.gleam`'s `validate` (`ScratchIsRoot`): a host-path
   scratch of the literal root would otherwise reach `internal/llock` as
   `RWDirs("/")`, and because grants union there is no way for any later
@@ -414,6 +451,31 @@ only Go module.
   15 only unjailed. Callers must read `code`, never `signal`, for "how did
   the payload end" — and `cancelled`, never `code`, for "was it allowed
   to finish".
+- **The base view is an allowlist, and a `readable_roots` entry of `/`
+  turns it back off.** protocol-change/020 replaced `--ro-bind / /` with
+  `--tmpfs /` plus a tolerant read-only bind of each entry in
+  `SystemRoots`, and replaced the Seatbelt profile's unconditional
+  `(allow file-read*)` with per-root subpath allows over
+  `DarwinSystemRoots` and the policy's own regions. What that buys is the
+  shape rather than any single path: `protected` is a denylist and covers
+  what the harness thought to name, while a base view that grants nothing
+  it was not asked for covers what nobody named — another workspace on
+  the account, another session's scratch, `~/.ssh`. The tie at `/` is how
+  an older harness keeps working: a readable root of `/` outranks the
+  tmpfs, rebuilds the whole-host view, and is reported as
+  `base=host-view` in the `mounts:` and `seatbelt-fs:` entries, where the
+  minimal base reports `base=minimal`. The counts alone cannot tell the
+  two apart, because they are identical for the same policy and the
+  difference between the views is everything the policy did not name.
+  Three consequences worth knowing before changing any of it: a mount
+  whose destination is under a read-only system bind needs no refusal,
+  because every operation binds a path onto itself and so the destination
+  exists whenever the source does; a missing protected path under the
+  root tmpfs *is* maskable, since bwrap can create a mount point in a
+  tmpfs, which is why `ClassRootTmpfs` counts as writable in the audit's
+  replay; and the execution now starts in the working directory the
+  request named, because an inherited one outside the view makes every
+  `getcwd(3)` in the payload fail.
 - **Mount precedence is decided, not inherited from argv order.** bwrap
   applies mount operations in argv order, so argv order *is* the
   precedence between overlapping mounts. `jail.BwrapArgs` therefore does
@@ -530,8 +592,10 @@ only Go module.
   policy's paths were narrowed as asked", which made every finding in the
   mount-precedence family invisible to a full-enforcement demand (#54).
   `jail.AuditMounts` replays the ordered `MountPlan` and emits
-  `mounts:ro=N,rw=M,mask=K,bind_ro=P,bind_rw=Q,scratch=…,plan=…`, and the
-  Darwin profile answers with the same two fields inside `seatbelt-fs:`.
+  `mounts:ro=N,rw=M,mask=K,bind_ro=P,bind_rw=Q,scratch=…,base=…,plan=…`,
+  and the Darwin profile answers with the same fields inside
+  `seatbelt-fs:`. `base=` is `minimal` or `host-view`; see the base-view
+  invariant above.
   `bind_ro` and `bind_rw` count the explicit `mounts` entries the plan
   leaves at the access they asked for. The counts are of the
   policy's own paths whose **effective** view — after the whole ordered
@@ -653,16 +717,26 @@ only Go module.
   from the `/dev/null` bind and a masked directory is an empty read-only
   tmpfs, while on Darwin all of them are denied outright. A probe
   asserting EPERM would fail against a correct Linux jail. It is
-  `required` on both platforms, since masking is enforced on both.
-- **What the hostile-`.beam` probe claims is narrower than "reaches
-  nothing".** The base view is `--ro-bind / /` and Landlock grants
-  `RODirs("/")`, so an unprotected host path is *readable* from inside the
-  jail; `readable_roots` does not narrow reads, only `protected` removes
-  them. The observed claim is that an unvetted `.beam` cannot write outside
-  the writable roots (`erofs`), cannot see a protected path, and
-  cannot reach the network (`eperm`, from the seccomp filter, behind an
-  empty network namespace). Closing the gap between those two sentences is
-  `protocol-change/004-sandbox-policy-explicit-mounts.md`, not this probe.
+  `required` on both platforms, since masking is enforced on both. Both
+  of its runs name the state root as a readable root, which is what keeps
+  it a test of the mask: since the base view became minimal, a state root
+  the policy never names is absent whether or not it is masked, and a
+  control relying on the base view would report a broken probe on a
+  correct jail.
+- **What the hostile-`.beam` probe claims, and what the base-view probe
+  claims beside it.** The hostile-`.beam` probe observes that an unvetted
+  `.beam` cannot write outside the writable roots (`erofs`), cannot see a
+  protected path, and cannot reach the network (`eperm`, from the seccomp
+  filter, behind an empty network namespace). It does not observe the
+  base view: its own `.beam` directory is a readable root in both of its
+  policies, because a module the jail cannot load reports a node that
+  never booted, which is a broken probe rather than containment. The
+  base view has its own probe, `host path outside the mount plan
+  unreadable`, and it is the only one here that measures the absence of a
+  grant rather than a subtraction: a host file that no part of the policy
+  names, a sibling of the workspace, is not readable from inside. Its
+  control reads the same file through a readable root first, so a jail
+  that refuses everything cannot pass it.
 - **"Cannot see a protected path" means the contents, and it now holds
   for a file too.** A protected *directory* — and a path that does not
   exist yet, so a protected `~/.ssh` stays uncreatable — is shadowed by

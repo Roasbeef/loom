@@ -15,7 +15,7 @@ func TestSeatbeltPlanIsDenyDefaultAndParameterized(t *testing.T) {
 		Network:       policy.Network{Mode: policy.NetworkOff},
 		Scratch:       "tmpfs",
 	}
-	plan := SeatbeltPlanFor(pol, "/private/var/tmp/loom scratch")
+	plan := SeatbeltPlanFor(pol, "/private/var/tmp/loom scratch", "")
 	if !strings.Contains(plan.Profile, "(deny default)") {
 		t.Fatalf("profile is not deny-default:\n%s", plan.Profile)
 	}
@@ -46,7 +46,7 @@ func TestSeatbeltPlanEmitsSubtractiveRulesLast(t *testing.T) {
 		Network:       policy.Network{Mode: policy.NetworkFull},
 		Scratch:       "/scratch",
 	}
-	plan := SeatbeltPlanFor(pol, "")
+	plan := SeatbeltPlanFor(pol, "", "")
 	lastAllow := strings.LastIndex(plan.Profile, "(allow ")
 	firstDenyAfterBase := strings.Index(plan.Profile[len(seatbeltBaseProfile):], "(deny ")
 	if firstDenyAfterBase < 0 {
@@ -74,8 +74,8 @@ func TestSeatbeltPlanIsDeterministic(t *testing.T) {
 	b := a
 	b.WritableRoots = []string{"/a", "/b"}
 	b.Protected = []string{"/b/z"}
-	first := SeatbeltPlanFor(a, "")
-	second := SeatbeltPlanFor(b, "")
+	first := SeatbeltPlanFor(a, "", "")
+	second := SeatbeltPlanFor(b, "", "")
 	if first.Profile != second.Profile || first.Digest != second.Digest ||
 		strings.Join(first.Definitions, "\n") != strings.Join(second.Definitions, "\n") {
 		t.Fatalf("equivalent policies generated different plans:\n%+v\n%+v", first, second)
@@ -98,7 +98,7 @@ func TestSeatbeltPlanEmitsMountsBeforeTheDenies(t *testing.T) {
 			{Path: "/srv/out", Access: policy.MountReadWrite, Required: true},
 		},
 	}
-	plan := SeatbeltPlanFor(pol, "/private/tmp/scratch")
+	plan := SeatbeltPlanFor(pol, "/private/tmp/scratch", "")
 	if plan.BindRO != 1 || plan.BindRW != 1 {
 		t.Fatalf("mount counts = ro %d, rw %d, want 1 and 1", plan.BindRO, plan.BindRW)
 	}

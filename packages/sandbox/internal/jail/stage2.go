@@ -22,12 +22,24 @@ import (
 type Stage2Config struct {
 	Cwd  string
 	Argv []string
+	// ScratchMounted says that bubblewrap mounted the tmpfs scratch at
+	// ScratchMount for this execution. Landlock is applied from inside
+	// the jail but knows nothing about the mount namespace it runs in,
+	// so this is the one fact stage 2 cannot observe and the supervising
+	// helper has to state: a tmpfs scratch exists only under bwrap, and
+	// in degraded mode the same path is the host's shared /tmp, which no
+	// policy granted.
+	ScratchMounted bool
 }
 
 const (
 	policyFD = 3
 	reportFD = 4
 )
+
+// ScratchMountedFlag is the stage-2 argument the supervising helper adds
+// when bubblewrap mounted the tmpfs scratch. See Stage2Config.
+const ScratchMountedFlag = "--scratch-mounted"
 
 // DarwinLifecycleSkip records the one containment property Seatbelt cannot
 // provide. The profile follows every fork, so a missed descendant remains
@@ -106,7 +118,8 @@ func RunStage2(cfg Stage2Config) error {
 		// Landlock is the second filesystem layer on Linux, and the first in
 		// degraded mode.
 		if abi, reason := llock.ABIVersion(); abi > 0 {
-			if err := llock.Apply(llock.Rules(landlockView(pol))); err != nil {
+			view := landlockView(pol, cfg.ScratchMounted)
+			if err := llock.Apply(llock.Rules(view)); err != nil {
 				return fmt.Errorf("stage2: landlock: %w", err)
 			}
 			rep.Applied = append(rep.Applied, "landlock:abi="+strconv.Itoa(abi))
@@ -226,14 +239,25 @@ func RunStage2(cfg Stage2Config) error {
 // safe in either: it does not widen the rest of the host's /dev tree. /proc
 // deliberately remains read-only because even a private PID mount exposes
 // host-global kernel knobs under /proc/sys.
-func landlockView(pol policy.Policy) llock.PolicyView {
+//
+// The tmpfs form of scratch is granted only when bwrap actually mounted it.
+// Landlock's write rules are the reason this matters at all: the ruleset
+// grants read on "/" and write nowhere else, so without a rule for
+// ScratchMount the scratch area the policy asked for is unwritable, which is
+// what a jail with landlock:abi=1 measured before this argument existed. The
+// grant cannot be unconditional, because in degraded mode nothing is mounted
+// there and the path is the host's shared /tmp.
+func landlockView(pol policy.Policy, scratchMounted bool) llock.PolicyView {
 	view := llock.PolicyView{
 		WritableRoots: pol.WritableRoots,
 		ReadableRoots: pol.ReadableRoots,
 		WritableFiles: []string{"/dev/null"},
 	}
-	if !pol.ScratchIsTmpfs() {
+	switch {
+	case !pol.ScratchIsTmpfs():
 		view.ScratchPath = pol.Scratch
+	case scratchMounted:
+		view.ScratchPath = ScratchMount
 	}
 	return view
 }

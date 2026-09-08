@@ -29,8 +29,29 @@ const seatbeltBaseProfile = `(version 1)
 (allow signal (target same-sandbox))
 (allow process-info* (target same-sandbox))
 
-; The filesystem is host-visible but read-only except for explicit roots.
-(allow file-read*)
+; Reads are an allowlist. The system view below and the policy's own
+; regions are the only readable paths; everything else falls through to
+; the deny-default at the top.
+;
+; The root directory itself is the one entry that has to be here rather
+; than in the system view, and it is a read rather than a metadata read.
+; Measured on macOS 15: with every system subpath allowed but "/" denied,
+; /bin/sh aborts before it prints anything, with no diagnostic at all
+; (exit 134, empty stderr) — path resolution walks the root and the deny
+; ends the process rather than the open. Granting it exposes the names of
+; the top-level directories, which are the same on every macOS install,
+; and nothing under them.
+(allow file-read* (literal "/"))
+;
+; And the three top-level symlinks into /private. Every profile path is
+; normalized to its resolved form (/tmp becomes /private/tmp), but the
+; paths a caller hands the payload are not: argv[0] can perfectly well be
+; a /var/folders/... path, and resolving it reads the /var link itself.
+; A denial there is reported as "execvp() ... Operation not permitted"
+; for a binary the profile does grant, which is measurably confusing.
+; Metadata on three known symlinks is what resolution needs and is all
+; this grants.
+(allow file-read-metadata (literal "/etc") (literal "/tmp") (literal "/var"))
 (allow file-write-data
   (require-all
     (path "/dev/null")
@@ -94,7 +115,12 @@ type SeatbeltPlan struct {
 	BindRO  int
 	BindRW  int
 	Scratch string
-	Digest  string
+
+	// Base is "minimal" or "host-view": which of the two base views the
+	// profile granted reads on. See BaseViewName.
+	Base string
+
+	Digest string
 }
 
 // Args wraps command in the system sandbox-exec binary.
@@ -113,8 +139,10 @@ func (p SeatbeltPlan) Enforcement(network policy.NetworkMode) []string {
 	out := []string{
 		"seatbelt",
 		fmt.Sprintf(
-			"seatbelt-fs:rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,plan=%s",
-			p.Writable, p.Protected, p.BindRO, p.BindRW, p.Scratch, p.Digest),
+			"seatbelt-fs:rw=%d,mask=%d,bind_ro=%d,bind_rw=%d,scratch=%s,"+
+				"base=%s,plan=%s",
+			p.Writable, p.Protected, p.BindRO, p.BindRW, p.Scratch,
+			p.Base, p.Digest),
 	}
 	if BlocksDirectNetwork(network) {
 		out = append(out, "seatbelt-net")
@@ -128,7 +156,7 @@ func (p SeatbeltPlan) Enforcement(network policy.NetworkMode) []string {
 // the private directory is the macOS equivalent rather than a claimed tmpfs.
 // The user's own darwin temp and cache directories are granted alongside the
 // policy's roots, because Apple's toolchain shims write there unasked.
-func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
+func SeatbeltPlanFor(pol policy.Policy, scratchPath, helper string) SeatbeltPlan {
 	writable := normalizedSeatbeltPaths(pol.WritableRoots)
 	if scratchPath != "" {
 		writable = append(writable, normalizeSeatbeltPath(scratchPath))
@@ -145,7 +173,18 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	protected := protectedSeatbeltPaths(pol.Protected)
 	mounts := seatbeltMounts(pol.Mounts)
 	definitions := make([]string, 0, len(writable)+len(protected)+len(mounts))
-	sections := []string{seatbeltBaseProfile}
+	sections := []string{seatbeltBaseProfile, seatbeltSystemView(pol)}
+
+	// A writable root is readable too. Seatbelt's verbs are independent —
+	// `file-write*` does not imply `file-read*` — so a workspace granted
+	// only for writing would be a directory a build could create files in
+	// and never read one back from.
+	for i, path := range readableSeatbeltRoots(pol, writable, helper) {
+		key := fmt.Sprintf("READABLE_ROOT_%d", i)
+		definitions = append(definitions, key+"="+path)
+		sections = append(sections, fmt.Sprintf(
+			"(allow file-read* (subpath (param %q)))", key))
+	}
 	for i, path := range writable {
 		key := fmt.Sprintf("WRITABLE_ROOT_%d", i)
 		definitions = append(definitions, key+"="+path)
@@ -168,11 +207,11 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 	// protected entry is refused when the policy is decoded and no
 	// profile built here can contain that pair.
 	//
-	// The read rule adds no access today: the base profile still carries
-	// an unconditional `(allow file-read*)`, so every host path is
-	// readable on Darwin whatever the mount list says. It is emitted
-	// anyway, because it is the statement the read allowlist will
-	// narrow against once that unconditional grant is replaced.
+	// Since protocol-change/020 the read rule is the access rather than a
+	// statement of intent: the base profile's unconditional
+	// `(allow file-read*)` is gone, so a mount outside the system view
+	// and outside the policy's roots is readable only because of this
+	// rule.
 	bindRO, bindRW := 0, 0
 	for i, m := range mounts {
 		key := fmt.Sprintf("MOUNT_%d", i)
@@ -225,8 +264,61 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath string) SeatbeltPlan {
 		BindRO:      bindRO,
 		BindRW:      bindRW,
 		Scratch:     scratch,
+		Base:        BaseViewName(pol.ReadableRoots),
 		Digest:      digest,
 	}
+}
+
+// seatbeltSystemView renders the read allows for the base system view.
+//
+// The paths are DarwinSystemRoots, a compile-time constant, so they are
+// written into the profile directly rather than passed as `-D`
+// parameters: the rule that model-influenced paths travel as parameters
+// exists because SBPL has no escaping, and a constant carries no model
+// input to escape.
+//
+// A policy naming "/" as a readable root gets the pre-020 view back, the
+// same tie the Linux plan resolves in favour of the whole-host bind, so
+// that a harness which still sends `readable_roots: ["/"]` is unchanged
+// by the narrowing. That case is handled by readableSeatbeltRoots, which
+// emits the subpath allow for "/" itself; this function then adds
+// nothing the broader rule does not already cover, and says so in the
+// profile so the two views are distinguishable by eye as well as by the
+// `base=` field of the enforcement report.
+func seatbeltSystemView(pol policy.Policy) string {
+	var b strings.Builder
+	if !PlanIsMinimal(pol.ReadableRoots) {
+		b.WriteString("; base view: the whole host, from readable_roots \"/\".\n")
+	} else {
+		b.WriteString("; base view: the system directories a command needs to run.\n")
+	}
+	for _, root := range DarwinSystemRoots {
+		fmt.Fprintf(&b, "(allow file-read* (subpath %q))\n", root)
+	}
+	return b.String()
+}
+
+// readableSeatbeltRoots is every region the profile grants reads on
+// besides the system view: the policy's own readable roots, and the
+// writable regions, which are readable because writing to a file one
+// cannot read back is not what any caller means by a writable root.
+//
+// The explicit `mounts` are not here; each already emits its own read
+// rule below, where its access decides whether a write rule joins it.
+func readableSeatbeltRoots(pol policy.Policy, writable []string, helper string) []string {
+	roots := normalizedSeatbeltPaths(pol.ReadableRoots)
+	roots = append(roots, writable...)
+
+	// The helper's own binary, for the reason the Linux plan binds it:
+	// stage 2 is this executable re-executed inside the profile, and a
+	// profile that cannot read it fails with sandbox-exec's own
+	// `execvp() ... Operation not permitted` before the payload exists.
+	// Where the helper was installed is the helper's knowledge, not the
+	// sender's, so it is not a policy path.
+	if helper != "" {
+		roots = append(roots, normalizeSeatbeltPath(helper))
+	}
+	return uniqueSorted(roots)
 }
 
 // seatbeltMount is one explicit mount reduced to what the profile needs:

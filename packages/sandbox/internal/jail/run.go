@@ -232,8 +232,18 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		return nil, fmt.Errorf("jail: report pipe: %w", err)
 	}
 
-	stage2 := []string{selfExe, "--exec", "--cwd", req.Cwd, "--"}
-	stage2 = append(stage2, req.Argv...)
+	// Stage 2 is told whether the tmpfs scratch is really mounted,
+	// because its Landlock rules have to grant write on it and it cannot
+	// see the mount namespace it was placed in. Only the bwrap branch
+	// below mounts one, so every other branch says no.
+	stage2Argv := func(scratchMounted bool) []string {
+		argv := []string{selfExe, "--exec", "--cwd", req.Cwd}
+		if scratchMounted {
+			argv = append(argv, ScratchMountedFlag)
+		}
+		return append(append(argv, "--"), req.Argv...)
+	}
+	stage2 := stage2Argv(false)
 
 	var argv []string
 	var mounts MountReport
@@ -268,7 +278,24 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		jailed := req.Policy
 		jailed.Protected = resolveProtected(req.Policy.Protected)
 		kinds := statKinds(jailed.Protected)
-		plan := MountPlan(jailed, kinds)
+
+		// A protected entry covering the helper binary masks the very
+		// executable stage 2 is, so bwrap builds the namespace and then
+		// fails with an anonymous `execvp failed` for a path the payload
+		// never chose. The policy is refused here instead, naming the
+		// entry; see HelperUnderProtected.
+		if prot := HelperUnderProtected(jailed.Protected, selfExe); prot != "" {
+			policyR.Close()
+			reportR.Close()
+			reportW.Close()
+			return nil, fmt.Errorf("jail: protected path %s covers the "+
+				"helper binary %s, and the jail runs that binary as its "+
+				"own stage 2, so the mask would leave nothing to exec; "+
+				"remove the entry from protected or install the helper "+
+				"outside it", prot, selfExe)
+		}
+
+		plan := MountPlan(jailed, kinds, selfExe)
 
 		// A PathMissing protected path bwrap cannot actually mask —
 		// creating its mount point needs write access to the parent
@@ -314,8 +341,8 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 		// Audited here, reported only if stage 2 later proves the plan
 		// was actually executed. See mounts.go for both halves.
 		mounts = AuditMounts(jailed, plan)
-		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds)...)
-		argv = append(argv, stage2...)
+		argv = append([]string{feat.BwrapPath}, BwrapArgs(jailed, kinds, selfExe)...)
+		argv = append(argv, stage2Argv(jailed.ScratchIsTmpfs())...)
 	case feat.Platform.GOOS == "darwin":
 		if feat.SeatbeltPath != SeatbeltExecutable {
 			policyR.Close()
@@ -340,7 +367,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 				return nil, fmt.Errorf("jail: protect private macOS scratch: %w", err)
 			}
 		}
-		plan := SeatbeltPlanFor(req.Policy, scratchDir)
+		plan := SeatbeltPlanFor(req.Policy, scratchDir, selfExe)
 		argv = plan.Args(stage2)
 		seatbelt = plan.Enforcement(req.Policy.Network.Mode)
 	default:
@@ -398,6 +425,22 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = FilterEnv(env, req.Policy.EnvAllow)
+	// Start in the directory the request named rather than in whatever
+	// the helper's own working directory happens to be. Stage 2 chdirs
+	// there itself, but the outer process is inside the jail already on
+	// Darwin, and an inherited working directory the profile does not
+	// grant makes every `getcwd(3)` in the payload fail: measured as
+	// `shell-init: error retrieving current directory` from /bin/sh, and
+	// as `cannot start loader` from an `erl` whose launcher script cds to
+	// its own directory. Under the old host-readable base view no working
+	// directory could be outside the jail, so this never came up.
+	//
+	// A working directory that is not on this host stays unset, so the
+	// refusal is still stage 2's `chdir` naming the path rather than an
+	// opaque failure to spawn.
+	if fi, err := os.Stat(req.Cwd); err == nil && fi.IsDir() {
+		cmd.Dir = req.Cwd
+	}
 	// New session ⇒ new process group with pgid = child pid, and no
 	// controlling terminal. Everything the jail spawns stays in this
 	// group unless it setsids itself — and bwrap's PID namespace covers
