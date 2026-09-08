@@ -1512,7 +1512,7 @@ catalogue without opening runtimes. Explicit admission invokes
   workspace and never under the operator's account, and a read-write
   bind would only have exposed `~/.cache`. Write access outside the
   workspace comes from `[workspace] mounts` alone. A *derived* entry
-  overlapping a mask is dropped silently,
+  overlapping a mask is dropped with a line on stderr naming it,
   because the mask is the half worth keeping; a *configured* one is
   left in, so `base_policy_fault` refuses the boot naming both.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**

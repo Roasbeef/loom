@@ -947,7 +947,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     secrets: secret_store,
     secret_failures:,
     system: option.from_result(env_text(system_prompt.override_variable)),
-    home: option.from_result(env_text("HOME")),
+    home: home_directory(),
     model: machine_strand.ModelIdentity(
       provider: main_entry.name,
       model_id: main_entry.model_id,
@@ -3667,7 +3667,7 @@ pub fn admitting_user_toolchains(
   let wanted =
     list.append(under_home, shared_toolchain_readable)
     |> list.filter(fn(path) { simplifile.is_directory(path) == Ok(True) })
-    |> list.filter(fn(path) { !masked(path, base.protected) })
+    |> list.filter(fn(path) { !dropped_for_mask(path, base.protected) })
     |> list.filter(fn(path) {
       !list.any(base.mounts, fn(mount) { mount.path == path })
     })
@@ -3733,6 +3733,29 @@ fn masked(path: String, protected: List(String)) -> Bool {
   })
 }
 
+// `masked`, and a line on stderr naming what it cost. A derived mount
+// dropped for a mask is silent otherwise, and the build that then fails
+// inside the jail reports a missing directory rather than the mask that
+// removed it. The default state root is `~/.cache/loom`, which sits under
+// the `.cache` entry of `user_toolchain_readable`, so this is a path an
+// ordinary host takes rather than a corner an operator has to construct.
+//
+// Stderr rather than the `Logger`: both callers are pure derivations in
+// the base-policy pipe and neither is handed a logger, and threading one
+// through two `admitting_*` steps to carry a boot-time note would be a
+// wider change than the note is worth.
+fn dropped_for_mask(path: String, protected: List(String)) -> Bool {
+  case masked(path, protected) {
+    False -> False
+    True -> {
+      io.println_error(
+        "loomd: not mounting " <> path <> "; a protected path covers it",
+      )
+      True
+    }
+  }
+}
+
 /// The operator's home directory as the harness reads it, or `None` when
 /// `HOME` is unset.
 ///
@@ -3792,7 +3815,7 @@ pub fn widening_path_dependencies(
   let wanted =
     path_dependencies(workspace)
     |> list.filter(fn(path) { !policy.covers(root: workspace, path:) })
-    |> list.filter(fn(path) { !masked(path, base.protected) })
+    |> list.filter(fn(path) { !dropped_for_mask(path, base.protected) })
     |> list.filter(fn(path) {
       !list.any(base.mounts, fn(mount) { mount.path == path })
     })
