@@ -181,6 +181,18 @@ by WP-C-full.
 
 ## Invariants
 
+- **A failed `sqlite3_open` is a node-wide fault, not a local one.**
+  `esqlite3_nif:open/1` closes the connection SQLite hands back on an open
+  failure and then releases the NIF resource without clearing the pointer, so
+  the resource destructor closes it a second time. The second close frees
+  memory SQLite may since have given to a live connection, whose next
+  statement then answers `SQLITE_MISUSE`. Every caller that opens a database
+  at a host-supplied path therefore goes through
+  `sqlite_policy.refusing_unopenable_path` first, which refuses a directory in
+  the database's place and a missing parent directory. A missing file stays
+  allowed, because a first open creating its database is what the plane relies
+  on.
+
 - **Stable identity is not a credential.** Principal IDs and current display
   names are stored independently of active/revoked credential digests. Plaintext
   bearer tokens never enter access SQL. The caller must supply SHA-256 hashes
