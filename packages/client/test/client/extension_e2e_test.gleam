@@ -1195,6 +1195,10 @@ fn install_fixture(ready: Ready, host: String) -> Result(Installed, String) {
     seed: Some(ready.seed_root),
     workspace: repository_root(),
     writable: live_root,
+    // A state root outside the writable root which no daemon has ever
+    // written, so nothing here is maskable and the build runs on the
+    // policy the suite expects.
+    state_root: live_root <> "-state",
     tmp_dir: staging,
     // A real wall clock: the broker turns `deadline - now` into a receive
     // timeout, and a fixture clock behind the deadline produces one

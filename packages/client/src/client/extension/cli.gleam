@@ -42,6 +42,7 @@ import codemode/compile
 import codemode/identity
 import core/clock.{type Clock}
 import core/ids
+import filepath
 import gleam/int
 import gleam/io
 import gleam/list
@@ -223,6 +224,18 @@ fn root_of(flags: Flags) -> Result(record.Root, String) {
   }
 }
 
+// The daemon state root whose secrets the install's jailed build must
+// not be able to read. `record.root_for` puts the extensions at
+// `<home>/.loom/extensions` and `client/daemon/main.parse` defaults
+// `--state-dir` to `<home>/.loom`, so the two are one directory apart by
+// construction and the parent of the extensions root names the state
+// root exactly. An operator running the daemon on a `--state-dir`
+// elsewhere gets a mask over a root with nothing in it, which
+// `build_plane_policy` filters away rather than handing the jail.
+fn state_root_of(root: record.Root) -> String {
+  filepath.directory_name(record.path(root))
+}
+
 fn absolute(path: String) -> Result(String, String) {
   case string.starts_with(path, "/") {
     True -> Ok(path)
@@ -263,6 +276,7 @@ fn install_command(arguments: List(String)) -> Result(List(String), String) {
     seed: flags.seed,
     workspace:,
     writable: record.path(root),
+    state_root: state_root_of(root),
     tmp_dir: staging_path(root),
     clock: wall_clock(),
   ))
