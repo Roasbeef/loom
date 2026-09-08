@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -157,6 +158,35 @@ func TestUsableRefusesAPopulatedBase(t *testing.T) {
 	}
 	if !strings.Contains(reason, "no-internal-process") {
 		t.Fatalf("the reason must name the rule that forbids it: %q", reason)
+	}
+}
+
+// One delegated base serves every helper on the host, so several helpers
+// probe it at once whenever a test package boots daemons in parallel.
+// While the probe directory had a fixed name, the second helper's mkdir
+// returned EEXIST and it declared the base undelegated, which surfaced as
+// a `skip:cgroup-v2` entry and a shipped fixture skipped for want of
+// platform enforcement.
+func TestUsableToleratesConcurrentProbes(t *testing.T) {
+	base := fakeBase(t, "cpu memory pids\n", "", "memory pids\n")
+	reasons := make(chan string, 16)
+
+	var start sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < cap(reasons); i++ {
+		go func() {
+			start.Wait()
+			reasons <- usable(base)
+		}()
+	}
+
+	// Releasing them together is what makes the probes overlap; started
+	// one at a time they would never collide even under the old name.
+	start.Done()
+	for i := 0; i < cap(reasons); i++ {
+		if reason := <-reasons; reason != "" {
+			t.Fatalf("a concurrent probe found the base unusable: %s", reason)
+		}
 	}
 }
 

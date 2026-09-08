@@ -266,8 +266,17 @@ func usable(base string) string {
 			"no-internal-process rule forbids enabling controllers for its "+
 			"children", base, n)
 	}
-	probe := filepath.Join(base, "loom-exec-probe")
-	if err := os.Mkdir(probe, 0o755); err != nil {
+	// The probe directory's name is unique per call because the base is
+	// not: every helper started against one delegated base runs this
+	// detection, so several of them can be in this function at the same
+	// moment. Under a fixed name the second one's mkdir failed with
+	// EEXIST and it reported the base as undelegated, losing cgroup-v2
+	// for the rest of its life over another helper's in-flight probe.
+	// Excusing EEXIST instead would be wrong: a directory that is really
+	// there is a leftover worth reporting. A unique name removes the
+	// collision rather than tolerating it.
+	probe, err := os.MkdirTemp(base, "loom-exec-probe-")
+	if err != nil {
 		return fmt.Sprintf("cgroup %s not delegated (mkdir failed: %v)", base, err)
 	}
 	_ = os.Remove(probe)
