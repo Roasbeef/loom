@@ -50,9 +50,10 @@ import conformance/simulation/daemon/daemon_fault.{
 import conformance/simulation/vclock.{type Clockwork}
 import core/clock
 import core/ids
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session/session
@@ -108,11 +109,16 @@ pub type Arrest {
   /// No callback pauses; every builder runs to completion.
   Unimpeded
 
-  /// The builder reaching `step` reports on `arrived` and then blocks until
-  /// the daemon is killed. `coordinate` is the workspace for
+  /// The builder reaching `step` reports its own pid on `arrived` and then
+  /// blocks until it is killed. `coordinate` is the workspace for
   /// `AfterReservation`, which is reached inside the domain build and sees no
   /// request key, and the request key for the two later steps.
-  ParkAt(step: Step, coordinate: String, arrived: Subject(Nil))
+  ///
+  /// The pid is what the report carries because a parked builder has to be
+  /// killed by name. It is neither linked to the registry nor able to notice
+  /// the registry's death while it is blocked, so nothing else in the daemon's
+  /// collapse reaches it.
+  ParkAt(step: Step, coordinate: String, arrived: Subject(Pid))
 }
 
 /// Everything one daemon incarnation is started from.
@@ -126,6 +132,15 @@ pub type Arrest {
 /// place a crash makes stale-lease recovery observable. The identity generator
 /// keeps reading the unadvanced clock, so a restart does not shift the
 /// timestamps a later creation mints.
+///
+/// The advance is deliberate even though `kill` leaves no live lease holder
+/// behind. A writer lease is time-based rather than owner-liveness-based, so a
+/// restart inside the previous lease's TTL is refused with `LeaseHeld` until it
+/// expires however dead the owner is, and whether the dead incarnation's
+/// custody got as far as releasing the lease is a race this scenario must not
+/// depend on. A restart inside the TTL is therefore out of scope here; the
+/// claim about it lives in `daemon_shipped_identity_recovery_test`, which
+/// drives a real daemon over a real lease it does not step past.
 pub type Boot {
   Boot(
     state_root: String,
@@ -209,31 +224,93 @@ pub fn stop(harness: Harness) -> Result(Nil, String) {
   root.shutdown(harness.root, within: settle_ms)
 }
 
-/// Kills the daemon root untrappably and waits for it to be gone.
+/// Kills the daemon untrappably and waits for every process holding its
+/// durable resources to be gone. `parked` is the builder `park` reported, and
+/// is `None` for a schedule that parks nobody.
 ///
-/// This is the whole daemon, not the registry alone. The root answers a dead
-/// registry by blocking recovery rather than restarting it in place, so the
-/// only durable shape a crash takes here is the root going away and a later
-/// `start` over the same state root rebuilding from what was committed. The
-/// root is unlinked from its caller, so the run driver survives the kill and
-/// can perform that restart.
+/// This is the fault, and it is deliberately not a drain. An orderly `stop`
+/// retires the writer lease, closes the catalogue and releases the launch
+/// lock; a crashed daemon does none of those, so what the next `start` over
+/// the same state root finds is the durable shape a crash leaves behind. The
+/// root is unlinked from its caller, so the run driver survives all of this
+/// and can perform that restart.
+///
+/// Killing the root alone is not that shape, which is why three processes die
+/// rather than one. The registry traps exits so that it can answer its owner's
+/// departure in order, so a brutal kill of the root leaves it running, still
+/// holding the catalogue connection. A parked builder watches the registry
+/// through a monitor rather than a link and cannot read that monitor while it
+/// is blocked, so it outlives both, still holding a conversation's writer
+/// lease. A real crash leaves none of the three alive, and a `start` that
+/// overlapped a live predecessor would be measuring the harness rather than
+/// the daemon.
+///
+/// Waiting for the monitors says the processes are gone, not that everything
+/// they held has been released. The launch lock in particular is released by
+/// the operating system when the dead root's port closes, which is not ordered
+/// against the monitor, and that is why a restart goes through `resume`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // harness.kill(daemon)
+/// // harness.kill(daemon, parked: Some(builder))
 /// ```
-pub fn kill(harness: Harness) -> Result(Nil, String) {
-  let pid = root.pid(harness.root)
+pub fn kill(harness: Harness, parked parked: Option(Pid)) -> Nil {
+  destroy(root.pid(harness.root))
+  destroy(manager.pid(harness.ready.registry))
+  case parked {
+    None -> Nil
+    Some(builder) -> destroy(builder)
+  }
+}
+
+// A kill is untrappable, so the monitor's DOWN reports that the process is
+// gone rather than that it chose to acknowledge anything. Monitoring a pid
+// that has already died delivers DOWN immediately, so a process that the
+// previous kill took down with it costs this nothing and the order the three
+// die in carries no meaning.
+fn destroy(pid: Pid) -> Nil {
   let monitor = process.monitor(pid)
   process.kill(pid)
-  case
+  let _ =
     process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(_) { Nil })
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
     |> process.selector_receive(settle_ms)
-  {
-    Ok(Nil) -> Ok(Nil)
-    Error(Nil) -> Error("the daemon root outlived an untrappable kill")
+  process.demonitor_process(monitor)
+}
+
+/// Starts a daemon over a state root a killed daemon has not finished letting
+/// go of, retrying until the launch lock is free.
+///
+/// A killed root's launch lock is released by the operating system when its
+/// port closes, and that is not ordered against the monitor `kill` waited on.
+/// Starting once would therefore fail on a race that says nothing about the
+/// invariant under test. The retry is bounded by the same deadlock backstop
+/// the rest of the harness uses, and an expiry is reported as the refusal it
+/// ended on rather than swallowed, so a state root that never frees up fails
+/// the run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // harness.resume(harness.Boot(root, clock, 4, 1, harness.Unimpeded))
+/// ```
+pub fn resume(boot: Boot) -> Result(Harness, String) {
+  let answer =
+    poll.until(within: settle_ms, every: 5, attempt: fn() {
+      case start(boot) {
+        Ok(daemon) -> poll.Done(daemon)
+        Error(_busy) -> poll.Retry
+      }
+    })
+  case answer {
+    poll.Answered(daemon) -> Ok(daemon)
+    poll.Failed(reason) -> Error(reason)
+
+    // The deadline is a backstop, so the attempt that ran out of time is not
+    // the one whose reason a reader needs. One more start outside the loop
+    // reports what the state root is actually refusing.
+    poll.Expired -> start(boot)
   }
 }
 
@@ -518,10 +595,10 @@ fn initialize(
   Ok(record.id)
 }
 
-// A parked builder never returns. It announces that its step was reached and
-// then waits out the deadline, so the run kills the daemon under it and the
-// blocked receive dies with the tree. The deadline is a backstop for a
-// schedule whose kill never arrives, which would otherwise hang the suite.
+// A parked builder never returns. It announces its own pid, so that the kill
+// can reach a process no link and no readable monitor would take down, and
+// then waits out the deadline. The deadline is a backstop for a schedule whose
+// kill never arrives, which would otherwise hang the suite.
 fn park(arrest: Arrest, step: Step, coordinate: String) -> Nil {
   case arrest {
     Unimpeded -> Nil
@@ -529,7 +606,7 @@ fn park(arrest: Arrest, step: Step, coordinate: String) -> Nil {
       case on == step && at == coordinate {
         False -> Nil
         True -> {
-          process.send(arrived, Nil)
+          process.send(arrived, process.self())
           let _ = process.receive(process.new_subject(), settle_ms)
           Nil
         }

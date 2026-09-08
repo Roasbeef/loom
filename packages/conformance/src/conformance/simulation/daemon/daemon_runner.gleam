@@ -49,10 +49,10 @@ import conformance/simulation/random
 import conformance/simulation/runner.{type Failure, Failure}
 import conformance/simulation/vclock.{type Clockwork}
 import gleam/bit_array
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -209,12 +209,7 @@ fn drive(
       case interrupt(daemon, script, key, step, arrived) {
         Error(failure) -> finish(daemon, Error(failure))
         Ok(observed) -> {
-          use restarted <- result.try(boot(
-            state_root,
-            clock,
-            1,
-            harness.Unimpeded,
-          ))
+          use restarted <- result.try(resumed(state_root, clock))
           let carried = {
             use Nil <- result.try(recovered(restarted, key, step))
             complete(restarted, script, schedule, observed)
@@ -256,6 +251,24 @@ fn boot(
   })
 }
 
+// The second incarnation of a faulted run. It goes through `resume` rather
+// than `start` because the killed root's launch lock is released by the
+// operating system after the process is already gone, so a single start races
+// a lock the crash has not finished dropping. A `resume` that runs out of
+// patience still reports the refusal it ended on, which fails the run.
+fn resumed(state_root: String, clock: Clockwork) -> Result(Harness, Failure) {
+  harness.resume(harness.Boot(
+    state_root:,
+    clock:,
+    capacity:,
+    incarnation: 1,
+    arrest: harness.Unimpeded,
+  ))
+  |> result.map_error(fn(reason) {
+    Failure("harness/start", "incarnation 1: " <> reason)
+  })
+}
+
 // A daemon that will not retire is a finding, not a footnote: a leaked launch
 // lock or a root blocked in recovery is exactly what a faulted run is looking
 // for, so a stop failure fails a run that otherwise passed rather than being
@@ -273,7 +286,7 @@ fn finish(
 // The arrest the schedule arms before the daemon starts. `AfterConfirm` needs
 // none: the run drives to residency on its own and kills a daemon that is
 // doing nothing, which is exactly what that step means.
-fn arrest(schedule: Schedule, arrived: Subject(Nil)) -> harness.Arrest {
+fn arrest(schedule: Schedule, arrived: Subject(Pid)) -> harness.Arrest {
   case schedule.faults {
     [KillDaemonAt(key:, workspace:, step:)] ->
       case step {
@@ -297,7 +310,7 @@ fn interrupt(
   script: Script,
   key: String,
   step: Step,
-  arrived: Subject(Nil),
+  arrived: Subject(Pid),
 ) -> Result(List(#(String, Identity)), Failure) {
   let before =
     list.take_while(script.creations, fn(one: Creation) { one.key != key })
@@ -307,32 +320,39 @@ fn interrupt(
       [#(one.key, identity(record)), ..seen]
     }),
   )
-  use record <- result.try(reach(daemon, script, key, step, arrived, observed))
-  use Nil <- result.try(unpublished(daemon, record, step))
-  use Nil <- result.map(
-    harness.kill(daemon)
-    |> result.map_error(fn(reason) { Failure("harness/kill", reason) }),
-  )
+  use #(record, parked) <- result.try(reach(
+    daemon,
+    script,
+    key,
+    step,
+    arrived,
+    observed,
+  ))
+  use Nil <- result.map(unpublished(daemon, record, step))
+  harness.kill(daemon, parked:)
   [#(key, identity(record)), ..observed]
 }
 
-// Reaching the step. Three of the four are inside a builder that parks and
-// announces itself, so the run reserves without waiting for a residency that
-// will never come. The fourth is after confirmation, which is an ordinary
-// completed creation.
+// Reaching the step, and reporting the builder parked at it so the kill can
+// take that process down too. Three of the four steps are inside a builder
+// that parks and announces itself, so the run reserves without waiting for a
+// residency that will never come. The fourth is after confirmation, which is
+// an ordinary completed creation with nobody parked.
 fn reach(
   daemon: Harness,
   script: Script,
   key: String,
   step: Step,
-  arrived: Subject(Nil),
+  arrived: Subject(Pid),
   observed: List(#(String, Identity)),
-) -> Result(catalogue.Registration, Failure) {
+) -> Result(#(catalogue.Registration, Option(Pid)), Failure) {
   let assert Ok(target) =
     list.find(script.creations, fn(one: Creation) { one.key == key })
     as "a schedule names a key its script creates"
   case step {
-    AfterConfirm -> created(daemon, target, observed)
+    AfterConfirm ->
+      created(daemon, target, observed)
+      |> result.map(fn(record) { #(record, None) })
     AfterReservation | AfterDomainBind | AfterCustodyPublish -> {
       use record <- result.try(
         harness.reserve(
@@ -347,7 +367,7 @@ fn reach(
         }),
       )
       case process.receive(arrived, arrival_ms) {
-        Ok(Nil) -> Ok(record)
+        Ok(builder) -> Ok(#(record, Some(builder)))
         Error(Nil) ->
           Error(Failure(
             "schedule/unreachable",
@@ -490,6 +510,13 @@ fn complete(
 // reserved just as surely as one that answers a second id, which is what
 // makes the refusal a `creation/one-identity-per-key` failure rather than an
 // acceptance failure.
+//
+// The one refusal that would not belong to that claim is a writer lease the
+// previous incarnation left unexpired, and it cannot arrive here. Logical time
+// advances by a full lease lifetime per incarnation, so the restarted builder
+// finds every lease of the dead incarnation expired and steals it with a
+// bumped fence. A restart inside the lease TTL is a different scenario, and
+// `harness.Boot`'s documentation says where it is checked.
 fn created(
   daemon: Harness,
   one: Creation,
