@@ -1502,18 +1502,19 @@ catalogue without opening runtimes. Explicit admission invokes
   admitting_config_mounts}` — the rest of `protocol-change/020`'s base.
   The session base no longer grants `readable_roots: ["/"]`, so every
   region outside the workspace is stated: the fixed per-user toolchain
-  and cache set under `$HOME` (`user_toolchain_readable` read-only,
-  `user_toolchain_writable` read-write, all `MountOptional`, absent
-  directories simply omitted), the account-wide roots in
-  `shared_toolchain_readable`, the sibling checkouts a `gleam.toml`
-  `path =` dependency names, and an operator's `[workspace] mounts`
-  line. The write grant on the cache subset is the operator's rule:
-  zero configuration must run an ordinary build, and a Go, cargo, npm
-  or rebar build writes its cache. What that costs — one session can
-  poison a cache another later reads — is stated in 020 and closed
-  later, not here. A *derived* entry overlapping a mask is dropped
-  silently, because the mask is the half worth keeping; a *configured*
-  one is left in, so `base_policy_fault` refuses the boot naming both.
+  and cache set under `$HOME` (`user_toolchain_readable`, every entry
+  read-only and `MountOptional`, absent directories simply omitted),
+  the account-wide root in `shared_toolchain_readable`, the sibling
+  checkouts a `gleam.toml` `path =` dependency names, and an
+  operator's `[workspace] mounts` line. Read-only costs no build
+  anything: the jail's `HOME` is `tool_home_directory(workspace)`, so
+  cargo, go, npm, hex, gleam and rebar write their caches under the
+  workspace and never under the operator's account, and a read-write
+  bind would only have exposed `~/.cache`. Write access outside the
+  workspace comes from `[workspace] mounts` alone. A *derived* entry
+  overlapping a mask is dropped silently,
+  because the mask is the half worth keeping; a *configured* one is
+  left in, so `base_policy_fault` refuses the boot naming both.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a

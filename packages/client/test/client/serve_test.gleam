@@ -1729,14 +1729,16 @@ pub fn the_user_toolchain_set_carries_only_what_exists_test() {
     )
   let paths = mount_paths(base)
 
-  // Present directories are carried at the access the rule assigns:
-  // what a build reads is read-only, what it writes is read-write.
+  // Present directories are carried, and every one of them read-only.
+  // The jail's `HOME` is under the workspace, so no build writes to the
+  // operator's account and a read-write bind here would only have
+  // exposed `~/.cache` to a session.
   assert list.contains(paths, home <> "/.cargo/bin")
-  assert access_of(base, home <> "/.cargo/bin") == Ok(policy.MountReadOnly)
-  assert access_of(base, home <> "/.cargo/registry")
-    == Ok(policy.MountReadWrite)
-  assert access_of(base, home <> "/.cache") == Ok(policy.MountReadWrite)
-  assert access_of(base, home <> "/.local/bin") == Ok(policy.MountReadOnly)
+  assert list.all(base.mounts, fn(mount) {
+    mount.access == policy.MountReadOnly
+  })
+  assert access_of(base, home <> "/.cargo/registry") == Ok(policy.MountReadOnly)
+  assert access_of(base, home <> "/.cache") == Ok(policy.MountReadOnly)
 
   // An absent directory is not a refusal and not an empty mount; it is
   // simply not there.
@@ -1751,18 +1753,24 @@ pub fn the_user_toolchain_set_carries_only_what_exists_test() {
 }
 
 pub fn the_cargo_split_is_two_siblings_and_never_a_nesting_test() {
-  // `.cargo` holds both the shims a build reads and the registry it
-  // writes. Named as a parent and a child they would be two binds whose
-  // order the emitters would have to agree on, and the wider access
-  // would win by accident.
+  // `.cargo` holds the two directories a build has reason to reach and
+  // others it has none. Naming the parent would bind whatever else an
+  // operator keeps there, so the set names the children.
   assert !list.contains(serve.user_toolchain_readable, ".cargo")
-  assert !list.contains(serve.user_toolchain_writable, ".cargo")
   assert list.contains(serve.user_toolchain_readable, ".cargo/bin")
-  assert list.contains(serve.user_toolchain_writable, ".cargo/registry")
+  assert list.contains(serve.user_toolchain_readable, ".cargo/registry")
 
-  // The same holds for every other pair: no entry may cover another.
-  let all =
-    list.append(serve.user_toolchain_readable, serve.user_toolchain_writable)
+  // `.local/share` holds keyrings and shell history and no toolchain, so
+  // it is not in the set at any access.
+  assert !list.contains(serve.user_toolchain_readable, ".local/share")
+
+  // The shared set names only what the helper's own system roots leave
+  // out. `/opt/homebrew` is in `DarwinSystemRoots` and `/nix/store` in
+  // `SystemRoots`, so naming either here would only make a duplicate.
+  assert serve.shared_toolchain_readable == ["/home/linuxbrew/.linuxbrew"]
+
+  // No entry may cover another, in either set.
+  let all = serve.user_toolchain_readable
   assert list.all(all, fn(entry) {
     list.all(all, fn(other) {
       entry == other
@@ -2011,10 +2019,9 @@ pub fn a_full_user_set_beside_a_toolchain_validates_test() {
   // The whole assembly on a host that has every directory the user set
   // names and a `gleam` in one of them, which is the boot that failed.
   let home = scratch_root("full-home")
-  list.each(
-    list.append(serve.user_toolchain_readable, serve.user_toolchain_writable),
-    fn(entry) { make(home <> "/" <> entry) },
-  )
+  list.each(serve.user_toolchain_readable, fn(entry) {
+    make(home <> "/" <> entry)
+  })
   let assert Ok(Nil) =
     simplifile.write(to: home <> "/.local/bin/gleam", contents: "")
     as "the fixture binary must be writable"

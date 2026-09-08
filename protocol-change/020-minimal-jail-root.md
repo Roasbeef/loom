@@ -104,33 +104,36 @@ Claude Code or Codex give by default; they do not edit a config to run an
 ordinary build. So the narrowing ships with a fixed list of well-known per-user
 toolchain and cache roots, bound when present, `MountOptional`:
 
-`.cargo`, `.rustup`, `go` and `go/pkg`, `.nvm`, `.npm`, `.pnpm`, `.yarn`,
-`.cache` (which covers gleam, hex, pip, go-build and uv), `.hex`, `.mix`,
-`.local/share` and `.local/bin`, `.asdf`, `.pyenv`, `.rbenv`, `.gem`, `.m2`,
+`.cargo/bin` and `.cargo/registry`, `.rustup`, `go/bin` and `go/pkg`, `.nvm`,
+`.npm`, `.pnpm`, `.yarn`, `.cache` (which covers gleam, hex, pip, go-build and
+uv), `.hex`, `.mix`, `.local/bin`, `.asdf`, `.pyenv`, `.rbenv`, `.gem`, `.m2`,
 `.gradle`, `.opam`, `.ghcup`, `.cabal`, `.stack`, `.deno`, `.bun`, `.sdkman`,
-`.nix-profile` with `/nix/store`, the Homebrew prefixes, and the shim
-directories the version managers put on `PATH`.
+and `.nix-profile`. Each is named by the child directories a build has reason
+to reach rather than by the parent, so `.cargo` and `.local` are never bound
+whole.
 
-**Read-only is not enough for some of these.** A Go build writes
-`~/.cache/go-build`, cargo writes `~/.cargo/registry`, npm writes `~/.npm`,
-gleam and rebar write under `~/.cache` and `~/.hex`. Bound read-only, an
-ordinary build fails. The ruling is that the cache subset is granted
-**read-write**: `.cache`, `.cargo/registry`, `.npm`, `.pnpm`, `.yarn`, `.hex`,
-`.mix`, `.m2`, `.gradle`, `.gem`, `.stack`, `.cabal`, `.deno`, `.bun`, and
-`.local/share` for the Python tools that install there (uv, pipx, pdm). The
-remainder (installed toolchains, shims, `.local/bin`, `/nix/store`) stays
-read-only. The test for membership is the operator's rule: a directory an
-ordinary build or install writes is read-write, and one it only reads is not.
+**Every one of them is read-only.** The first draft of this proposal granted a
+cache subset read-write, on the argument that a Go build writes
+`~/.cache/go-build`, cargo writes `~/.cargo/registry`, and gleam and rebar write
+under `~/.cache` and `~/.hex`. That argument does not hold, because none of
+those builds reaches the operator's account at all. The jail's `HOME` is
+`<workspace>/.codemode/home` (`serve.session_environment`, which `parse_tools`
+refuses to let a `[tools]` table override), so every one of those tools writes
+its cache under the workspace. A read-write bind of `~/.cache` would therefore
+have helped no zero-configuration build while giving a session write access to
+the directory where tokens live, and `~/.local/share`, which holds keyrings and
+shell history and no toolchain at all, is dropped from the set entirely. Write
+access to any path outside the workspace comes from a `[workspace] mounts`
+entry an operator wrote, which is the one place the decision is visible.
 
-A per-session overlay over those caches was considered and rejected for now. It
-would make one session's writes invisible to another, which is the stronger
-property, but it costs an overlay per session on Linux, has no Seatbelt
-equivalent on Darwin, and defeats the caches it copies: a cold cargo registry
-per session is minutes of network per build. The cost of the read-write grant
-is stated plainly: a hostile payload can poison a shared build cache, which is
-a real attack and is not closed here. It is closed later by a per-session
-overlay, or by the caches moving under the workspace, and it is worth an issue
-of its own rather than a config knob nobody sets.
+That also settles the per-session overlay, which was considered as a way to keep
+one session's cache writes invisible to another: with no read-write grant there
+is nothing for it to isolate.
+
+The shared set is one entry, `/home/linuxbrew/.linuxbrew`. `/opt/homebrew` is
+already in the helper's `DarwinSystemRoots` and `/nix/store` in its
+`SystemRoots`, so naming either here produced a duplicate mount rather than
+reach.
 
 **Not in the default**, and readable only through a configuration line:
 `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.netrc`, `~/.config` except the named
@@ -221,18 +224,16 @@ so the collision is recorded rather than repaired; 020 is the next free number.
 Three places where the implementation says something this document did not,
 each following 020's own membership rule rather than its list.
 
-`~/go/pkg` is **read-write**, not read-only. The list above puts `go` and
-`go/pkg` among the mounted roots and does not name `go/pkg` in the cache
-subset, but `go mod download` writes `~/go/pkg/mod` on the first build of
-any module. The membership test 020 states — a directory an ordinary build
-or install writes is read-write — puts it there, so `go/bin` is read-only
-and `go/pkg` is read-write, as two siblings.
+`~/go` is named as `go/bin` and `go/pkg`, two siblings rather than one
+parent, because a home directory's `go` also holds `src`, which the set has
+no reason to bind. Both are read-only, like every other entry.
 
-`/usr/local` is **not** in the harness's account-wide set. It is already a
-system root the helper binds on Darwin, and on Linux `/usr` covers it, so
-naming it again would be a second answer to the same region. `/opt/homebrew`,
-`/home/linuxbrew/.linuxbrew` and `/nix/store` are what no system-root
-constant names, and those are what the harness admits.
+The account-wide set is **one path**, `/home/linuxbrew/.linuxbrew`.
+`/usr/local` is a system root the helper binds on Darwin and `/usr` covers it
+on Linux; `/opt/homebrew` is in the helper's `DarwinSystemRoots` and
+`/nix/store` in its `SystemRoots`. Naming any of those here produced a second
+mount for a region the helper already binds, which `merging_mounts` then had
+to collapse.
 
 The **asdf shim is still a gap**. `client/codemode.GleamBinary` records
 whether the resolved `gleam` is a symlink, and a symlink keeps its install

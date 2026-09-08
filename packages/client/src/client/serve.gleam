@@ -3617,25 +3617,24 @@ pub fn admitting_codemode(
 /// so an account without `~/.rustup` is not a boot failure and not a
 /// refusal; it is a mount that was never emitted.
 ///
-/// **The split between read-only and read-write is the operator's rule
-/// applied to each directory**: a directory an ordinary build or install
-/// writes is read-write, and one it only reads is not. A Go build writes
-/// `~/.cache/go-build` and `~/go/pkg/mod`, cargo writes
-/// `~/.cargo/registry`, npm writes `~/.npm`, gleam and rebar write under
-/// `~/.cache` and `~/.hex`. Bound read-only, each of those is a build
-/// that fails inside the jail for a reason the model cannot act on.
-/// `protocol-change/020` states the cost that buys: a hostile payload
-/// can poison a cache another session later reads. That is a real attack
-/// and it is not closed here — it is closed by a per-session overlay or
-/// by the caches moving under the workspace, and it is worth its own
-/// issue rather than a knob nobody sets.
+/// **Every entry is read-only**, and that costs no build anything. The
+/// jail's `HOME` is `tool_home_directory(workspace)`, which `parse_tools`
+/// refuses to let a `[tools]` table override, so a Go build writes
+/// `<workspace>/.codemode/home/.cache/go-build`, cargo writes the
+/// registry under the same home, and npm, hex, gleam and rebar do the
+/// same. None of them ever reaches the operator's account to write.
+/// Binding these directories read-write would therefore have helped no
+/// zero-configuration build while giving a session write access to
+/// `~/.cache`, where tokens live. A build that genuinely has to write
+/// outside the workspace names the directory in `[workspace] mounts`,
+/// where the operator can see the decision.
 ///
-/// The nesting is deliberate in one place. `.cargo` holds both the shims
-/// a build reads and the registry it writes, so it is named as two
-/// sibling entries, `.cargo/bin` and `.cargo/registry`, rather than as a
-/// parent and a child. `~/go` and `~/.local` are split the same way. A
-/// parent and child pair would be two binds whose order the emitters
-/// would have to agree on, and the wider access would silently win.
+/// The nesting is deliberate. `~/.cargo`, `~/go` and `~/.local` each hold
+/// directories a build has reason to read beside directories it has none,
+/// so each is named by its children rather than by the parent:
+/// `.cargo/bin` and `.cargo/registry` rather than `.cargo`, `go/bin` and
+/// `go/pkg` rather than `go`, `.local/bin` rather than `.local`. Naming a
+/// parent binds whatever else an operator keeps under it.
 ///
 /// A directory a `protected` entry already masks is dropped rather than
 /// mounted. The two contradict each other — `broker/policy.validate`
@@ -3662,36 +3661,24 @@ pub fn admitting_user_toolchains(
   let under_home = case home {
     None -> []
     Some(home) -> {
-      let readable =
-        list.map(user_toolchain_readable, fn(name) {
-          #(home <> "/" <> name, policy.MountReadOnly)
-        })
-      let writable =
-        list.map(user_toolchain_writable, fn(name) {
-          #(home <> "/" <> name, policy.MountReadWrite)
-        })
-      list.append(readable, writable)
+      list.map(user_toolchain_readable, fn(name) { home <> "/" <> name })
     }
   }
-  let shared =
-    list.map(shared_toolchain_readable, fn(path) {
-      #(path, policy.MountReadOnly)
-    })
   let wanted =
-    list.append(under_home, shared)
-    |> list.filter(fn(entry) { simplifile.is_directory(entry.0) == Ok(True) })
-    |> list.filter(fn(entry) { !masked(entry.0, base.protected) })
-    |> list.filter(fn(entry) {
-      !list.any(base.mounts, fn(mount) { mount.path == entry.0 })
+    list.append(under_home, shared_toolchain_readable)
+    |> list.filter(fn(path) { simplifile.is_directory(path) == Ok(True) })
+    |> list.filter(fn(path) { !masked(path, base.protected) })
+    |> list.filter(fn(path) {
+      !list.any(base.mounts, fn(mount) { mount.path == path })
     })
   policy.SandboxPolicy(
     ..base,
     mounts: list.append(
       base.mounts,
-      list.map(wanted, fn(entry) {
+      list.map(wanted, fn(path) {
         policy.Mount(
-          path: entry.0,
-          access: entry.1,
+          path:,
+          access: policy.MountReadOnly,
           requirement: policy.MountOptional,
         )
       }),
@@ -3699,34 +3686,43 @@ pub fn admitting_user_toolchains(
   )
 }
 
-/// The directories under `$HOME` that hold an installed toolchain or the
-/// shims a version manager puts on `PATH`, mounted read-only. See
-/// `admitting_user_toolchains` for the membership rule.
+/// The directories under `$HOME` that hold an installed toolchain, the
+/// shims a version manager puts on `PATH`, or a package cache a build
+/// reads from. Every one of them is mounted read-only.
+///
+/// Read-only is not a compromise here, because nothing in a session
+/// writes to these paths anyway. The jail's `HOME` is
+/// `tool_home_directory(workspace)`, so cargo, go, npm, hex, gleam and
+/// rebar put their caches under the workspace and never under the
+/// operator's account. A read-write grant would therefore help no build
+/// while handing a session the operator's `~/.cache` tokens. A build that
+/// genuinely has to write outside the workspace gets that from a
+/// `[workspace] mounts` entry the operator wrote, which is the one place
+/// the decision is visible.
+///
+/// `.local/share` is deliberately absent for the same reason turned
+/// around: keyrings and shell history live there, it is not a toolchain
+/// root, and the Python installers that use it write under the jail's own
+/// `HOME`.
+///
+/// See `admitting_user_toolchains` for the membership rule.
 pub const user_toolchain_readable = [
-  ".cargo/bin", ".rustup", "go/bin", ".nvm", ".asdf", ".pyenv", ".rbenv",
-  ".opam", ".ghcup", ".sdkman", ".nix-profile", ".local/bin",
-]
-
-/// The directories under `$HOME` an ordinary build or install writes,
-/// mounted read-write. See `admitting_user_toolchains` for the
-/// membership rule and for what the write grant costs.
-pub const user_toolchain_writable = [
-  ".cache", ".cargo/registry", ".npm", ".pnpm", ".yarn", ".hex", ".mix", ".m2",
-  ".gradle", ".gem", ".stack", ".cabal", ".deno", ".bun", ".local/share",
-  "go/pkg",
+  ".cargo/bin", ".cargo/registry", ".rustup", "go/bin", "go/pkg", ".nvm",
+  ".asdf", ".pyenv", ".rbenv", ".opam", ".ghcup", ".sdkman", ".nix-profile",
+  ".local/bin", ".cache", ".npm", ".pnpm", ".yarn", ".hex", ".mix", ".m2",
+  ".gradle", ".gem", ".stack", ".cabal", ".deno", ".bun",
 ]
 
 /// The account-wide toolchain roots that are not under `$HOME`, mounted
 /// read-only.
 ///
-/// `/usr/local` is not here: it is a system root on both platforms the
-/// helper binds itself, and on Linux `/usr` covers it. What is here is
-/// what no system-root constant names — the two Homebrew prefixes that
-/// are not `/usr/local`, and the Nix store a `~/.nix-profile` link
-/// points into.
-pub const shared_toolchain_readable = [
-  "/opt/homebrew", "/home/linuxbrew/.linuxbrew", "/nix/store",
-]
+/// Only one entry, because the helper already binds the rest. `/usr/local`
+/// is a system root on both platforms, `/opt/homebrew` and `/nix/store`
+/// are in the helper's `DarwinSystemRoots` and `SystemRoots`, and naming
+/// any of them a second time here only produces a duplicate for
+/// `merging_mounts` to collapse. Linuxbrew's prefix is what no
+/// system-root constant covers.
+pub const shared_toolchain_readable = ["/home/linuxbrew/.linuxbrew"]
 
 // A region a mask already covers, in either direction: the mask over the
 // region and the region over the mask are both the contradiction
