@@ -337,6 +337,39 @@ as a hand-built script-and-schedule pair rather than as a seed, because
 a seed's meaning changes the moment the generator does, and a regression
 test that quietly stops testing the regression is worse than none.
 
+## The daemon script
+
+A second script runs above the session one, over a real daemon root, a real
+registry and a real SQLite catalogue on a temporary state root
+(`conformance/simulation/daemon/`). It draws one or two workspaces, one to
+three creation keys and the retries of those keys, and its faults kill the
+whole daemon at a named creation step and restart it over the same state
+root. What it checks is `creation/one-identity-per-key`,
+`creation/no-orphan-file`, `publication/before-execute` and
+`replay/equal-catalogue-rows`: a creation key reserves one identity however
+the kill lands, a conversation database never exists without a confirmed
+catalogue row naming it, and no durable record predates its instance's
+publication. The lifecycle-restart and revocation scenarios join it as their
+work package lands.
+
+It does not cover kernel enforcement, resource measurement, or the native
+TUI drivers, and it cannot: the first is a claim about what bubblewrap and
+Seatbelt refuse, the second a magnitude under real load that a logical clock
+deliberately does not spend, and the third is two real terminal loops over
+real sockets. Those stay with `loom-exec --self-test`, `make soak-daemon`,
+and `tui_shipped_multiplayer_test`. The two-principal ordering scenario was
+dropped rather than deferred, because there is one gateway actor per
+resident session and the property it would have checked is already
+`gateway_test`'s; the design note's amendments of 2026-09-08 carry the
+argument and the kill model in full.
+
+`make check-conformance` runs a small pinned corpus of daemon seeds, under a
+second. `make soak-daemon-sim` runs the long one, and is bounded by
+`SOAK_DAEMON_BUDGET_SECONDS` (default 120) rather than by a seed count: a
+daemon seed's cost depends on the machine's file system and on whether the
+schedule drew a kill, so a count buys an unpredictable amount of lane time.
+Each chunk prints how many seeds it drew and where the next chunk starts.
+
 ## What this does not cover
 
 **Message interleaving is not controlled.** The runner is deterministic

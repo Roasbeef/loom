@@ -289,6 +289,11 @@ fetches by SHA and `gh signoff` refuses a commit no remote holds. Add
 logs land under `build/signoff/`; the lane table at the end says which
 to read.
 
+The conformance lane also runs `make soak-daemon-sim`, the daemon
+simulation's soak, for `SIGNOFF_DAEMON_SOAK_SECONDS` seconds (default 60);
+it is budgeted in wall clock rather than in seeds because a daemon seed's
+cost varies with the file system and with what its schedule drew.
+
 `SIGNOFF_PARALLEL=<N>` exports `LOOM_TEST_PARALLEL` to every lane, so
 each package runs up to N of its tests at once on one emulator; the
 modules that touch a VM-global resource are held back and run alone,

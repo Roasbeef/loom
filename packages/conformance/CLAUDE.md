@@ -90,6 +90,14 @@ them from their own test mains.
   with no slot and the status could not tell them apart. `PendingStop` is
   covered by `lifecycle/reopen-policy` and by the convergence comparison
   instead.
+- `conformance/simulation/daemon/daemon_soak.{Runner, Outcome, soak,
+  runners, describe}` — the daemon script's long run, bounded by a wall-clock
+  budget rather than by a seed count, because a daemon seed's cost depends on
+  the machine's file system and on whether the schedule drew a kill. It
+  corroborates a failing seed itself, over the session runner's three re-runs
+  and its `describe_corroboration` wording, since `daemon_runner` does not.
+  `runners` holds every daemon scenario, the creation-key runner and the
+  lifecycle runner, and every seed the soak draws runs each entry.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
@@ -168,6 +176,13 @@ them from their own test mains.
 
 ## Invariants
 
+- **A failing seed's report is printed before the panic.** `simulation_test`
+  prints its full report to stderr and then panics with the same text,
+  because eunit truncates a panic message and a gate log that carried only
+  the truncation showed the first check's name with no seed, no reproduction
+  line, and none of the `[timing]` and `[verdict]` evidence the runner paid
+  to collect (issue #335). Any new suite here that fails over a range of
+  seeds owes its log the same thing.
 - **Faults are transparent by definition.** A schedule may crash the tree
   at a commit boundary, kill it mid-effect, restart a single strand
   driver mid-effect (`RestartStrand` — the partial crash the reaper must
@@ -457,4 +472,5 @@ them from their own test mains.
   the M2 integration (`conformance/wiring`, since promoted)".
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
   `make conformance` runs the suites; `make e2e` the jailed acceptance;
-  `make soak` the long simulation run.
+  `make soak` the long session simulation run, and `make soak-daemon-sim`
+  the daemon one.

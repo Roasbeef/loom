@@ -731,7 +731,13 @@ to residency policy, and cleanup evidence before replacement. Drive
 the legacy import path with a live lease, an expired lease, and an
 incompatible database version. Memory off must remain off throughout.
 
-Package tests and `make check` remain required, but these acceptance
+The daemon simulation script
+([simulation.md](../architecture/simulation.md), "The daemon script")
+covers the convergence half of three of these observations and no others:
+that a creation key reserves one identity across a kill and a restart, that
+no conversation database exists without a confirmed catalogue row, and that
+no durable record predates its instance's publication. Package tests and
+`make check` remain required, but these acceptance
 cases need a dedicated multi-session e2e target and soak. Mutation-test
 the publish-before-execute gate, incarnation check, duplicate-open
 reservation, snapshot cut, resource accounting, and drain barrier.
