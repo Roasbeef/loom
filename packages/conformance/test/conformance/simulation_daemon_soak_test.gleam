@@ -7,8 +7,8 @@
 //// default one.
 ////
 //// The budget is wall clock rather than a seed count. A daemon seed opens a
-//// real catalogue and starts two daemons, or three under a kill, so a seed
-//// count buys an amount of lane time nobody can predict from the number.
+//// real catalogue and starts several daemon incarnations, so a seed count
+//// buys an amount of lane time nobody can predict from the number.
 ////
 //// The report goes to stderr, not to stdout: eunit truncates a panic message
 //// and captures a test's stdout, and the point of this suite is that a gate
@@ -24,12 +24,12 @@ import weft/poll
 
 /// What the run may spend after its budget is exhausted, in seconds.
 ///
-/// The loop checks the budget before a seed rather than during one, so the
-/// last seed drawn runs in full. When that seed is the failing one it is
-/// then corroborated: three re-runs, and a run drives up to three daemons
-/// each of which may sit on the 20 s arrival backstop before giving up. The
-/// failing run plus its three re-runs is therefore four executions of up to
-/// 60 s, so 240 s is the worst case and 300 gives it room.
+/// The loop checks the budget between seeds, so one final seed can begin as
+/// the budget expires and then be corroborated three times. Lifecycle runs
+/// contain sequential readiness, settlement and shutdown calls, so this is
+/// an operational diagnostic allowance rather than a derived worst case. If
+/// it expires, eunit reports a timeout and the completed failure report may
+/// be unavailable.
 const corroboration_headroom_seconds = 300
 
 /// gleeunit runs eunit with `ScaleTimeouts(10)`, and that scale multiplies
@@ -61,20 +61,25 @@ pub type EunitTest {
 ///
 /// `make soak-daemon-sim SOAK_DAEMON_BUDGET_SECONDS=30`.
 pub fn daemon_soak_test_() -> EunitTest {
-  let seconds = env_int("LOOM_DAEMON_SOAK_SECONDS", 0)
-  let deadline =
-    { seconds + corroboration_headroom_seconds } / gleeunit_timeout_scale
+  let idle_deadline = corroboration_headroom_seconds / gleeunit_timeout_scale
 
-  Timeout(deadline, fn() {
-    case seconds {
-      0 -> Nil
-      _ -> run(seconds)
+  case positive_environment("LOOM_DAEMON_SOAK_SECONDS") {
+    EnvironmentUnset -> Timeout(idle_deadline, fn() { Nil })
+    EnvironmentValue(seconds) -> {
+      let deadline =
+        { seconds + corroboration_headroom_seconds } / gleeunit_timeout_scale
+      Timeout(deadline, fn() { run(seconds) })
     }
-  })
+    EnvironmentInvalid(reason) ->
+      Timeout(idle_deadline, fn() { panic as reason })
+  }
 }
 
 fn run(seconds: Int) -> Nil {
-  let from = env_int("LOOM_DAEMON_SOAK_FROM", 1)
+  let from =
+    ffi_shell.get_env("LOOM_DAEMON_SOAK_FROM")
+    |> result.try(int.parse)
+    |> result.unwrap(1)
 
   // The clock is `weft/poll`'s, whose `now` is `erlang:monotonic_time` in
   // milliseconds. A budget must be measured against a reading that cannot
@@ -101,8 +106,27 @@ fn run(seconds: Int) -> Nil {
   }
 }
 
-fn env_int(name: String, fallback: Int) -> Int {
-  ffi_shell.get_env(name)
-  |> result.try(int.parse)
-  |> result.unwrap(fallback)
+// An unset value lets the caller choose its default. Any supplied value must
+// be positive so an accidental zero, negative value or typo cannot make the
+// soak silently pass without running a seed.
+type PositiveEnvironment {
+  EnvironmentUnset
+  EnvironmentValue(Int)
+  EnvironmentInvalid(String)
+}
+
+fn positive_environment(name: String) -> PositiveEnvironment {
+  case ffi_shell.get_env(name) {
+    Error(Nil) -> EnvironmentUnset
+    Ok(value) ->
+      case int.parse(value) {
+        Ok(parsed) if parsed > 0 -> EnvironmentValue(parsed)
+        Ok(_parsed) -> EnvironmentInvalid(invalid_positive_integer(name, value))
+        Error(Nil) -> EnvironmentInvalid(invalid_positive_integer(name, value))
+      }
+  }
+}
+
+fn invalid_positive_integer(name: String, value: String) -> String {
+  name <> " must be a positive integer, got " <> value
 }

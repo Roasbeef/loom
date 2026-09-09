@@ -2,26 +2,23 @@
 //// seed count.
 ////
 //// The session soak asks for a number of seeds. A daemon seed opens a real
-//// SQLite catalogue on a real temporary directory and starts two daemons, or
-//// three when the schedule draws a kill, so what a seed costs depends on the
-//// machine's file system and on what the schedule drew. A fixed count
-//// therefore buys an amount of wall clock that varies by more than the lane
-//// can absorb. This module takes the budget instead and reports how many
-//// seeds fit in it: about fifteen a second on a developer machine at the
-//// time of writing, which is a measurement rather than a contract.
+//// SQLite catalogue on a real temporary directory and starts several daemon
+//// incarnations, so what a seed costs depends on the machine's file system
+//// and on what the schedules drew. A fixed count therefore buys an amount of
+//// wall clock that varies by more than the lane can absorb. This module takes
+//// the budget instead and reports how many seeds fit in it.
 ////
 //// The caller supplies the clock. Everything under `src` here stays free of
 //// externals, and the only thing the loop needs from the outside world is a
 //// millisecond reading that never goes backwards; the test module passes one
 //// in.
 ////
-//// The runner list is the seam the rest of the wave appends to. Today it
-//// holds the creation-key runner alone. When the lifecycle and revocation
-//// scenarios land, their entry point joins `runners` and every seed the soak
-//// draws runs both, so the budget covers the whole daemon script rather than
-//// one scenario of it.
+//// The runner list is the seam that holds each daemon scenario. It contains
+//// the creation-key runner and the lifecycle runner, so every seed the soak
+//// draws covers both scenario families within the same budget.
 
 import conformance/simulation/daemon/daemon_runner
+import conformance/simulation/daemon/lifecycle_runner
 import conformance/simulation/runner
 import gleam/int
 import gleam/list
@@ -72,7 +69,10 @@ pub type Outcome {
 /// // list.map(daemon_soak.runners(), fn(one) { one.name })
 /// ```
 pub fn runners() -> List(Runner) {
-  [Runner(name: "creation", run: creation)]
+  [
+    Runner(name: "creation", run: creation),
+    Runner(name: "lifecycle", run: lifecycle),
+  ]
 }
 
 /// Draws seeds from `from` until `budget_ms` of wall clock has passed, or
@@ -125,15 +125,15 @@ fn draw(seed: Int, from: Int, deadline: Int, now: fn() -> Int) -> Outcome {
   case now() >= deadline {
     True -> Outcome(seeds: seed - from, next: seed, failure: None)
     False -> {
-      let failures = list.filter_map(runners(), fn(one) { attempt(one, seed) })
+      let attempted = list.try_each(runners(), fn(one) { attempt(one, seed) })
 
-      case failures {
-        [] -> draw(seed + 1, from, deadline, now)
+      case attempted {
+        Ok(Nil) -> draw(seed + 1, from, deadline, now)
 
-        // Only the first report is kept. A seed's runners are independent,
-        // but the range stops here either way, and a second report from the
-        // same seed says nothing the first does not about where to look.
-        [report, ..] ->
+        // `try_each` stops before running a later scenario once one failed.
+        // The range stops at that report, so the unrun scenario cannot
+        // perform work after the failure the soak will return.
+        Error(report) ->
           Outcome(seeds: seed + 1 - from, next: seed + 1, failure: Some(report))
       }
     }
@@ -143,11 +143,11 @@ fn draw(seed: Int, from: Int, deadline: Int, now: fn() -> Int) -> Outcome {
 // Runs one scenario against one seed, rendering a failure the way the
 // session soak renders one: the check and its detail, then the reproduction
 // line on its own, then what re-running the seed said about it.
-fn attempt(one: Runner, seed: Int) -> Result(String, Nil) {
+fn attempt(one: Runner, seed: Int) -> Result(Nil, String) {
   case one.run(seed) {
-    Ok(Nil) -> Error(Nil)
+    Ok(Nil) -> Ok(Nil)
     Error(report) ->
-      Ok(
+      Error(
         one.name
         <> " seed "
         <> int.to_string(seed)
@@ -204,5 +204,16 @@ fn creation(seed: Int) -> Result(Nil, String) {
         <> "\n    "
         <> reproduce,
       )
+  }
+}
+
+// The lifecycle runner owns the two lifecycle scripts and reports its own
+// verdict. This adapter preserves the soak's common report and corroboration
+// path without widening either runner's verdict type.
+fn lifecycle(seed: Int) -> Result(Nil, String) {
+  case lifecycle_runner.run(seed:) {
+    lifecycle_runner.Passed -> Ok(Nil)
+    lifecycle_runner.Failed(failure:, reproduce:, ..) ->
+      Error(failure.check <> ": " <> failure.detail <> "\n    " <> reproduce)
   }
 }
