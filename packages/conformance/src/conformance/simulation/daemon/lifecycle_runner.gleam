@@ -850,12 +850,10 @@ fn await(
   }
 }
 
-// `Saved` means the session slot retired, but its domain can still be
-// `Closing` until the old owner exits. `ensure_domain` refuses that interval
-// as unavailable, so `Saved` alone cannot establish that a pending open is
-// admissible. This wait is preparation before the accepted operation this
-// script later interrupts. The first harness daemon owns one session and one
-// domain, making empty counters proof that the ordered stop has finished.
+// This restart script begins from a fully retired domain so its only pending
+// work is the lifecycle operation it deliberately interrupts. Saved alone
+// proves only session retirement. The separate domain_runner covers admission
+// while domain cleanup is still pending; no census barrier precedes its open.
 fn await_retirement(daemon: Harness) -> Result(Nil, Failure) {
   let check = "lifecycle/retirement"
   let answer =

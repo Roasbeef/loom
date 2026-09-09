@@ -14,15 +14,17 @@
 //// in.
 ////
 //// The runner list is the seam that holds each daemon scenario. It contains
-//// the creation-key runner and the lifecycle runner, so every seed the soak
-//// draws covers both scenario families within the same budget.
+//// creation-key, lifecycle and domain-retirement runners, so every seed the
+//// soak draws covers all three scenario families within the same budget.
 
 import conformance/simulation/daemon/daemon_runner
+import conformance/simulation/daemon/domain_runner
 import conformance/simulation/daemon/lifecycle_runner
 import conformance/simulation/runner
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 
 /// How many times a failed seed is re-run before the report calls it
 /// reproducible. Three, matching the session runner, so the two soaks'
@@ -72,6 +74,7 @@ pub fn runners() -> List(Runner) {
   [
     Runner(name: "creation", run: creation),
     Runner(name: "lifecycle", run: lifecycle),
+    Runner(name: "domain-retirement", run: domain_retirement),
   ]
 }
 
@@ -216,4 +219,18 @@ fn lifecycle(seed: Int) -> Result(Nil, String) {
     lifecycle_runner.Failed(failure:, reproduce:, ..) ->
       Error(failure.check <> ": " <> failure.detail <> "\n    " <> reproduce)
   }
+}
+
+// Keep the domain scenario on the same budget, failure and corroboration path
+// as creation and lifecycle; a passing corpus alone would not exercise it in CI.
+fn domain_retirement(seed: Int) -> Result(Nil, String) {
+  domain_runner.run(seed:)
+  |> result.map_error(fn(failure) {
+    failure.check
+    <> ": "
+    <> failure.detail
+    <> "\n    domain_runner.run(seed: "
+    <> int.to_string(seed)
+    <> ")"
+  })
 }

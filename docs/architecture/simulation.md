@@ -349,9 +349,19 @@ root. What it checks is `creation/one-identity-per-key`,
 `replay/equal-catalogue-rows`: a creation key reserves one identity however
 the kill lands, a conversation database never exists without a confirmed
 catalogue row naming it, and no durable record predates its instance's
-publication. The soak runs this creation-key scenario and the lifecycle
-runner for every drawn seed; the latter covers both lifecycle restart and
-revocation schedules.
+publication. The soak runs creation-key, lifecycle and domain-retirement
+scenarios for every drawn seed. Lifecycle covers restart and revocation.
+Domain retirement compares an open after complete domain cleanup with an open
+acknowledged while the original cleanup callback is held. The seed varies
+which saved session reopens and how many duplicate opens arrive. Both runs
+must preserve the accepted operation, avoid replacement before cleanup release,
+and converge on the same catalogue rows and revision after retirement.
+
+The domain hold uses the assembly callback boundary and the real custody
+owner. A one-shot claim in the existing simulation control actor selects the
+workspace's first retirement; later cleanup proceeds normally. Failure cleanup
+disarms a hold not yet reached or releases the one already waiting before
+stopping the root. No production pause hook or separate soak loop is added.
 
 It does not cover kernel enforcement, resource measurement, or the native
 TUI drivers, and it cannot: the first is a claim about what bubblewrap and
