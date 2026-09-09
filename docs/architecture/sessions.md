@@ -71,7 +71,12 @@ While daemon admission remains open, an explicit session open can revive a
 quiescing domain before cancellation starts. It resumes maintenance and
 replaces the domain's settle subject. A late reply to the withdrawn fence
 cannot settle a later close, even if the worker decided that reply before
-processing resume. Shutdown and blocked cleanup never permit revival.
+processing resume. Once cancellation has started, an explicit open instead
+reserves a parked session and receives `Opening`. The reservation consumes
+session capacity while the retiring domain continues to consume domain
+capacity. Only the original domain witness's normal exit permits replacement,
+and the accepted session builder starts after replacement services publish.
+Shutdown and blocked cleanup cancel parked waiters and never permit revival.
 
 The control `status` response reports `domain_capacity`, `domain_occupied`, and
 `domain_blocked` separately from session counts. A `Saved` session can therefore

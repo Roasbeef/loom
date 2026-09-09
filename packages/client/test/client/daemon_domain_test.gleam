@@ -193,6 +193,127 @@ pub fn closing_domain_counts_capacity_after_session_slot_retires_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
+// The release subject holds the original domain's cleanup witness. Receiving
+// it proves cancellation has begun, so an open cannot take the idle revival
+// path and accidentally make this regression pass without replacement.
+fn held_domain_registry() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let cleanup = process.new_subject()
+  let builds = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, owner) {
+          let assert Ok(Nil) =
+            custody.publish(owner, custody.Services, fn() {
+              let release = process.new_subject()
+              process.send(cleanup, release)
+              process.receive_forever(release)
+            })
+            as "the original cleanup witness is held"
+          process.send(builds, Nil)
+          Ok(domain_service.inert())
+        },
+        build: fn(record, _, _, _) { Ok(record.id) },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "closing-admission",
+      limit: 2,
+    )
+    as "registry starts"
+  let assert Ok(first) =
+    create(registry, 70, "/workspace", domain.WorkspacePrivate)
+    as "first session is admitted"
+  resident(registry, first.registration.id)
+  let assert Ok(Nil) = process.receive(builds, 2000) as "original domain built"
+  let assert Ok(_) = manager.stop_session(registry, first.registration.id)
+    as "first session stops"
+  saved(registry, first.registration.id)
+  let assert Ok(release) = process.receive(cleanup, 2000)
+    as "original domain cleanup is in progress"
+  #(store, registry, first.registration.id, release, cleanup, builds)
+}
+
+pub fn closing_domain_reserves_open_until_original_witness_retires_test() {
+  let #(store, registry, first, release, cleanup, builds) =
+    held_domain_registry()
+  let assert Ok(manager.Opening(operation)) = manager.open(registry, first)
+    as "open acknowledges a bounded reservation during cleanup"
+  assert manager.open(registry, first) == Ok(manager.Opening(operation))
+  let assert Ok(second) =
+    create(registry, 71, "/workspace", domain.WorkspacePrivate)
+    as "another session may share the pending replacement"
+  assert manager.resolve(registry, first) == Error(manager.Unavailable)
+  assert create(registry, 72, "/workspace", domain.WorkspacePrivate)
+    == Error(manager.Capacity)
+  let assert Ok(manager.Summary(occupied: 2, domain_occupied: 1, ..)) =
+    manager.summary(registry)
+    as "waiters count as sessions, not extra domains"
+  assert process.receive(builds, 0) == Error(Nil)
+
+  // Cancelling one accepted operation must not cancel the other waiter or
+  // permit the stopped builder to run when shared services become available.
+  let assert Ok(_) = manager.stop_session(registry, second.registration.id)
+    as "a parked session remains cancellable"
+  reserved(registry, second.registration.id)
+  process.send(release, Ok(Nil))
+  resident(registry, first)
+  assert manager.open(registry, first) == Ok(manager.Resident(operation))
+  let assert Ok(Nil) = process.receive(builds, 2000) as "one replacement starts"
+  assert process.receive(builds, 0) == Error(Nil)
+  reserved(registry, second.registration.id)
+  let watch = process.monitor(manager.pid(registry))
+  manager.shutdown(registry)
+  let assert Ok(release) = process.receive(cleanup, 2000)
+    as "replacement cleanup starts"
+  process.send(release, Ok(Nil))
+  assert process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down.reason })
+    |> process.selector_receive(2000)
+    == Ok(process.Normal)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn shutdown_cancels_open_parked_behind_domain_cleanup_test() {
+  let #(store, registry, first, release, _, builds) = held_domain_registry()
+  let assert Ok(manager.Opening(_)) = manager.open(registry, first)
+    as "open is accepted before shutdown"
+  let watch = process.monitor(manager.pid(registry))
+  manager.shutdown(registry)
+  assert manager.open(registry, first) == Error(manager.Unavailable)
+  process.send(release, Ok(Nil))
+  assert process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down.reason })
+    |> process.selector_receive(2000)
+    == Ok(process.Normal)
+  assert process.receive(builds, 0) == Error(Nil)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn failed_domain_cleanup_cancels_accepted_open_test() {
+  process.trap_exits(True)
+  let #(store, registry, first, release, _, builds) = held_domain_registry()
+  let assert Ok(manager.Opening(_)) = manager.open(registry, first)
+    as "open is accepted while cleanup outcome is unknown"
+  process.send(release, Error("held cleanup failed"))
+  saved(registry, first)
+  assert manager.open(registry, first) == Error(manager.Unavailable)
+  let assert Ok(manager.Summary(domain_occupied: 1, domain_blocked: 1, ..)) =
+    manager.summary(registry)
+    as "failed custody remains reserved"
+  assert process.receive(builds, 0) == Error(Nil)
+
+  // This resource-free fixture intentionally has no normal drain proof.
+  let watch = process.monitor(manager.pid(registry))
+  process.kill(manager.pid(registry))
+  assert process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down.reason })
+    |> process.selector_receive(2000)
+    == Ok(process.Killed)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
 pub fn cancelled_failed_domain_retires_all_waiting_sessions_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let prepared = process.new_subject()
