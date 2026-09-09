@@ -193,7 +193,7 @@ fn exercise(
   prompt(a_driver, "initialize A")
   let _ = completed(a_driver, ["initialized"], 2)
   stop_driver(a_driver)
-  stop_saved(connected.control, a.expected.session, retained: 1)
+  stop_saved(connected.control, a.expected.session)
 
   // The fixed epoch timestamp is already overdue on every supported test host.
   // Editing only A's file must not start a runtime or mutate its saved store.
@@ -225,7 +225,7 @@ fn exercise(
     as "a fresh native attachment observes the scheduled completion"
   let _ = completed(replacement, ["scheduledanswer", "initialized"], 4)
   stop_driver(replacement)
-  stop_saved(connected.control, a.expected.session, retained: 1)
+  stop_saved(connected.control, a.expected.session)
 
   // Compare immutable records after original retirement, not terminal text
   // alone. The exact-key selection also retains the fired value and sequence.
@@ -265,7 +265,7 @@ fn exercise(
   let final_b = completed(b_driver, ["reopenedpeer", "savedpeer"], 4)
   assert_same_attachment(b_ready, final_b)
   stop_driver(last)
-  stop_saved(connected.control, a.expected.session, retained: 1)
+  stop_saved(connected.control, a.expected.session)
 
   // The second original runtime has retired before the final durable oracle.
   let #(final_cut, final_messages) = observe(database)
@@ -336,20 +336,9 @@ fn observe(path: String) -> #(snapshot.Cut, List(entry.Entry)) {
   )
 }
 
-// Saved is a claim about one session slot, not about the workspace domain that
-// slot depended on. The registry fences that domain when its last dependent
-// retires and keeps the fenced slot in its book until the witness exits, and
-// every admission naming it in that window is refused `unavailable` — the same
-// retention `closing_domain_counts_capacity_after_session_slot_retires_test`
-// pins down against the registry directly. So a stop that another explicit open
-// follows needs the daemon's own domain census as its second barrier, and
-// `retained` is the domains that legitimately outlive this stop: B holds one
-// workspace domain of its own and stays resident across every stop here.
-fn stop_saved(
-  control: daemon.Connection,
-  session: String,
-  retained retained: Int,
-) -> Nil {
+// Saved proves session retirement. A subsequent open owns its own Opening
+// reservation if shared domain cleanup is still pending.
+fn stop_saved(control: daemon.Connection, session: String) -> Nil {
   let assert Ok(protocol.LifecycleReply(protocol.Stopping(_))) =
     daemon.request(control, protocol.StopSession(session), 5000)
     as "the owner receives the exact stop acknowledgement"
@@ -364,20 +353,6 @@ fn stop_saved(
     })
     as "original retirement reaches Saved before offline observation"
 
-  // Reading the census is also what advances it: the registry reclaims drained
-  // domain slots on every message it handles, so the poll that observes the
-  // count is the same traffic that retires the slot being waited on.
-  let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.Status, 2000) {
-        Ok(protocol.StatusReply(summary))
-          if summary.domain_occupied <= retained
-        -> poll.Done(Nil)
-        Ok(_) -> poll.Retry
-        Error(reason) -> poll.Fail(reason)
-      }
-    })
-    as "the retired session's domain is reclaimed before the next admission"
   Nil
 }
 
