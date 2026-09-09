@@ -122,6 +122,19 @@ pub type Arrest {
   /// the registry's death while it is blocked, so nothing else in the daemon's
   /// collapse reaches it.
   ParkAt(step: Step, coordinate: String, arrived: Subject(Pid))
+
+  /// A named workspace publishes real cleanup custody through `cleanup` and
+  /// reports each domain build through `built`. The retirement runner owns
+  /// both callbacks, including their release and finite deadlock backstop.
+  /// Other workspaces and session builders remain unimpeded.
+  HoldDomainRetirement(
+    /// The durable workspace whose domain the schedule holds.
+    workspace: String,
+    /// Cleanup retained by the original domain custody owner.
+    cleanup: fn() -> Result(Nil, String),
+    /// Records a build after its cleanup custody is installed.
+    built: fn() -> Nil,
+  )
 }
 
 /// Everything one daemon incarnation is started from.
@@ -577,7 +590,8 @@ fn assembly(
   arrest: Arrest,
 ) -> manager.Assembly(Instance) {
   manager.Assembly(
-    domain_build: fn(selected: domain.Domain, _, _) {
+    domain_build: fn(selected: domain.Domain, _, owner) {
+      use Nil <- result.try(domain_custody(arrest, selected.workspace, owner))
       park(arrest, AfterReservation, selected.workspace)
       Ok(domain_service.inert())
     },
@@ -587,6 +601,22 @@ fn assembly(
     },
     fatal: fn(_) { [] },
   )
+}
+
+// The retirement schedule uses the existing assembly boundary. Its callback
+// is retained by the real custody owner, so the registry sees genuine closing
+// and normal retirement messages without a pause hook in production code.
+fn domain_custody(arrest: Arrest, workspace: String, owner: custody.Owner) {
+  case arrest {
+    HoldDomainRetirement(workspace: selected, cleanup:, built:)
+      if selected == workspace
+    -> {
+      use Nil <- result.try(custody.publish(owner, custody.Services, cleanup))
+      built()
+      Ok(Nil)
+    }
+    HoldDomainRetirement(..) | Unimpeded | ParkAt(..) -> Ok(Nil)
+  }
 }
 
 fn initialize(
@@ -631,7 +661,7 @@ fn initialize(
 // kill never arrives, which would otherwise hang the suite.
 fn park(arrest: Arrest, step: Step, coordinate: String) -> Nil {
   case arrest {
-    Unimpeded -> Nil
+    Unimpeded | HoldDomainRetirement(..) -> Nil
     ParkAt(step: on, coordinate: at, arrived:) ->
       case on == step && at == coordinate {
         False -> Nil

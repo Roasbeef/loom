@@ -90,14 +90,23 @@ them from their own test mains.
   with no slot and the status could not tell them apart. `PendingStop` is
   covered by `lifecycle/reopen-policy` and by the convergence comparison
   instead.
+- `conformance/simulation/daemon/domain_runner.{run, observe, plan, Script,
+  Schedule}` compares an open after normal domain retirement with an open
+  acknowledged while the original cleanup is held. A seed chooses the saved
+  session and duplicate count. `harness.HoldDomainRetirement` installs cleanup
+  through the real custody owner; the existing simulation control actor owns
+  the one-shot hold and records any build before release. Named checks cover
+  admission, stable operation identity, parked capacity, replacement ordering,
+  complete retirement, and equal catalogue rows and revision. This controls
+  callback release order, not BEAM interleaving or kernel enforcement.
 - `conformance/simulation/daemon/daemon_soak.{Runner, Outcome, soak,
   runners, describe}` — the daemon script's long run, bounded by a wall-clock
   budget rather than by a seed count, because a daemon seed's cost depends on
   the machine's file system and on whether the schedule drew a kill. It
   corroborates a failing seed itself, over the session runner's three re-runs
   and its `describe_corroboration` wording, since `daemon_runner` does not.
-  `runners` holds every daemon scenario, the creation-key runner and the
-  lifecycle runner, and every seed the soak draws runs each entry.
+  `runners` holds the creation-key, lifecycle and domain-retirement scenarios,
+  and every seed the soak draws runs each entry.
 - `conformance/simulation/fault.{Fault, Schedule}` — the taxonomy of things
   a session must survive without anyone noticing.
 - `conformance/simulation/random.Rng` — a splittable SplitMix64; the only
