@@ -5,6 +5,9 @@
 //// monitor, and only then releases its parked builder. Heavy assembly and
 //// cleanup run outside this actor. Concurrent opens for one identity return
 //// the same operation; stopping never frees its slot before confirmed drain.
+//// A fresh session may reserve a parked host while its domain is closing. The
+//// original domain witness must exit normally before replacement can begin;
+//// the accepted session operation remains observable throughout that wait.
 ////
 //// This actor is the custody registry and must not be restarted empty beside
 //// its surviving cleanup scopes. A transitive outer owner may trust this actor's
@@ -304,6 +307,8 @@ type DomainPhase {
 /// registry watches it through, and how many sessions still need it.
 type DomainSlot {
   DomainSlot(
+    /// Immutable paths and scope used when a drained domain is replaced.
+    selected: domain.Domain,
     /// The parked domain builder and its cancellation capability.
     host: host.Host,
     /// This domain incarnation's identity.
@@ -1147,12 +1152,7 @@ fn handle(
       sm.keep(book)
     }
     DomainServices(id, operation, reply) -> {
-      let services = case dict.get(book.domains, id) {
-        Ok(DomainSlot(operation: current, phase: DomainRunning(services), ..))
-          if current == operation
-        -> Ok(services)
-        Ok(_) | Error(Nil) -> Error("domain admission is no longer resident")
-      }
+      let services = services_for_builder(book, id, operation)
       process.send(reply, services)
       sm.keep(book)
     }
@@ -1819,7 +1819,7 @@ fn prepare_slot(
       let #(book, admitted) = ensure_domain(book, selected)
       case admitted {
         Error(error) -> #(book, Error(error))
-        Ok(operation) -> prepare_domain_slot(book, record, selected, operation)
+        Ok(_operation) -> prepare_domain_slot(book, record, selected)
       }
     }
   }
@@ -1831,7 +1831,6 @@ fn prepare_domain_slot(
   book: Book(instance),
   record: catalogue.Registration,
   selected: domain.Domain,
-  domain_operation: String,
 ) -> #(Book(instance), Result(Status, Error)) {
   let results = process.new_subject()
   let faults = process.new_subject()
@@ -1842,8 +1841,8 @@ fn prepare_domain_slot(
       build: fn(owner) {
         use services <- result.try(
           call.try_call(book.commands, waiting: 5000, sending: DomainServices(
-            selected.id,
-            domain_operation,
+            record.id,
+            operation,
             _,
           ))
           |> result.unwrap(Error("domain registry is unavailable")),
@@ -1893,11 +1892,13 @@ fn prepare_domain_slot(
 // stopped, and refusing would make every open in the workspace fail for the
 // length of a maintenance pass, which by default is ten minutes. A fence taken
 // on the way to retirement is not revivable, because the cancellation that
-// follows it has already been decided.
+// follows it has already been decided. Once cancellation has begun, an open
+// instead reserves a parked session for replacement after normal retirement.
 fn ensure_domain(book: Book(instance), selected: domain.Domain) {
   case dict.get(book.domains, selected.id) {
     Ok(DomainSlot(phase: DomainPreparing, operation:, ..))
-    | Ok(DomainSlot(phase: DomainRunning(_), operation:, ..)) -> #(
+    | Ok(DomainSlot(phase: DomainRunning(_), operation:, ..))
+    | Ok(DomainSlot(phase: DomainClosing, operation:, ..)) -> #(
       book,
       Ok(operation),
     )
@@ -1943,7 +1944,6 @@ fn ensure_domain(book: Book(instance), selected: domain.Domain) {
     // whose phase is no longer quiescing, so a revived domain needs no guard
     // against the reply it has already asked for.
     Ok(DomainSlot(phase: DomainQuiescing(Retiring, _), ..))
-    | Ok(DomainSlot(phase: DomainClosing, ..))
     | Ok(DomainSlot(phase: DomainDrained, ..))
     | Ok(DomainSlot(phase: DomainWaitingFailure(_), ..))
     | Ok(DomainSlot(phase: DomainBlocked(_), ..)) -> #(book, Error(Unavailable))
@@ -1997,6 +1997,7 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
         Ok(host) -> {
           let slot =
             DomainSlot(
+              selected,
               host,
               operation,
               DomainPreparing,
@@ -2018,6 +2019,36 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
         }
       }
     }
+  }
+}
+
+// A parked builder belongs to a session operation, not to the domain that
+// happened to be retiring when it was admitted. Only the registry can release
+// that builder, and it does so after the replacement services are published.
+// Checking the session operation prevents an old builder from borrowing the
+// services selected for a later open of the same durable identity.
+fn services_for_builder(book: Book(instance), id: String, operation: String) {
+  use slot <- result.try(
+    dict.get(book.slots, id)
+    |> result.map_error(fn(_) { "session admission is no longer retained" }),
+  )
+  case slot.phase, slot.operation == operation {
+    Building, True -> {
+      use domain <- result.try(
+        dict.get(book.domains, slot.domain_id)
+        |> result.map_error(fn(_) { "domain admission is no longer retained" }),
+      )
+      case domain.phase {
+        DomainRunning(services) -> Ok(services)
+        DomainPreparing
+        | DomainQuiescing(_, _)
+        | DomainClosing
+        | DomainDrained
+        | DomainWaitingFailure(_)
+        | DomainBlocked(_) -> Error("domain admission is no longer resident")
+      }
+    }
+    _, _ -> Error("session admission is no longer building")
   }
 }
 
@@ -2096,6 +2127,10 @@ fn domain_retired(book: Book(instance), id, operation, reason) {
   case dict.get(book.domains, id) {
     Ok(slot) if slot.operation == operation ->
       case reason {
+        process.Normal if slot.phase == DomainClosing -> {
+          process.demonitor_process(slot.watch)
+          replace_drained_domain(book, id, slot)
+        }
         process.Normal -> {
           process.demonitor_process(slot.watch)
           let book =
@@ -2117,6 +2152,44 @@ fn domain_retired(book: Book(instance), id, operation, reason) {
         reason -> domain_failed(book, id, operation, string.inspect(reason))
       }
     Ok(_) | Error(Nil) -> book
+  }
+}
+
+// Normal retirement is the only event that may transfer a domain reservation
+// to a fresh builder. Waiting sessions already consume ordinary capacity and
+// own parked hosts; they have never borrowed the retiring services. Cancelled
+// waiters may still be draining, so only a live waiter justifies replacement.
+fn replace_drained_domain(book: Book(instance), id: String, slot: DomainSlot) {
+  let waiting =
+    list.any(dict.values(book.slots), fn(session) {
+      session.domain_id == id && session.phase == WaitingForDomain
+    })
+  case waiting {
+    False ->
+      Book(
+        ..book,
+        domains: dict.insert(
+          book.domains,
+          id,
+          DomainSlot(..slot, phase: DomainDrained),
+        ),
+      )
+    True -> {
+      let vacant = Book(..book, domains: dict.delete(book.domains, id))
+      let #(replacement, answer) = prepare_shared_domain(vacant, slot.selected)
+      case answer {
+        Ok(_) ->
+          Book(
+            ..replacement,
+            domains: depend(replacement.domains, id, slot.dependents),
+          )
+
+        // Failed preparation retains the original reservation and cancels all
+        // parked sessions through the same path as a domain build failure.
+        Error(reason) ->
+          domain_failed(book, id, slot.operation, string.inspect(reason))
+      }
+    }
   }
 }
 

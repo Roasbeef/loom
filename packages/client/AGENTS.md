@@ -92,8 +92,9 @@ catalogue without opening runtimes. Explicit admission invokes
   The registry's capacity-bounded domain book includes closing and blocked slots;
   waiting sessions consume session slots. `DomainOpened`, `DomainFailed`,
   `DomainRetired`, and `DomainSettled` carry exact domain incarnation identities.
-  A normal `DomainRetired` stops remaining dependents and remains authoritative
-  even if a late builder result or fault arrives.
+  A normal `DomainRetired` remains authoritative even if a late builder result
+  or fault arrives. During ordinary closing it preserves parked waiters for
+  replacement; in other phases it stops remaining dependents.
 - `client/internal/shared_history` prepares a parked original coordinator,
   then owns its search index and at most one read-only history source. Source
   metadata and bounded descriptor/fragment reads advance between actor turns.
@@ -113,7 +114,13 @@ catalogue without opening runtimes. Explicit admission invokes
   `IndexRefused` blames the request.
 - `manager.Summary` reports session occupancy separately from `domain_capacity`,
   `domain_occupied`, and `domain_blocked`. Saved session metadata does not prove
-  domain retirement. After the last clean session retirement, `notify_closed`
+  domain retirement. An open against a normally closing domain reserves a
+  parked session and immediately returns `Opening`; it consumes session
+  capacity while the original domain continues to consume domain capacity.
+  Only the original witness's normal exit permits a replacement domain to
+  start. The session operation selects replacement services after publication;
+  cancelled waiters never start, and cleanup failure cancels all waiters while
+  retaining the domain reservation. After the last clean session retirement, `notify_closed`
   precedes `quiesce` from the same sender; the registry cancels the domain host
   only after current and coalesced maintenance settles. A domain fenced while
   admission is open is revived by the next open in the same domain, taking
