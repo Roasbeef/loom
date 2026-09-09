@@ -438,6 +438,7 @@ fn request(
         manager.stop_session(harness.registry(daemon), id),
       ))
       use Nil <- result.try(await(daemon, id, is_saved))
+      use Nil <- result.try(await_retirement(daemon))
       accepted(check, id, manager.open(harness.registry(daemon), id))
     }
   }
@@ -846,6 +847,33 @@ fn await(
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(Failure(check, reason))
     poll.Expired -> Error(Failure(check, id <> " never settled"))
+  }
+}
+
+// `Saved` means the session slot retired, but its domain can still be
+// `Closing` until the old owner exits. `ensure_domain` refuses that interval
+// as unavailable, so `Saved` alone cannot establish that a pending open is
+// admissible. This wait is preparation before the accepted operation this
+// script later interrupts. The first harness daemon owns one session and one
+// domain, making empty counters proof that the ordered stop has finished.
+fn await_retirement(daemon: Harness) -> Result(Nil, Failure) {
+  let check = "lifecycle/retirement"
+  let answer =
+    poll.until(within: 20_000, every: 1, attempt: fn() {
+      case manager.summary(harness.registry(daemon)) {
+        Error(reason) -> poll.Fail(string.inspect(reason))
+        Ok(summary) ->
+          case summary.occupied == 0 && summary.domain_occupied == 0 {
+            True -> poll.Done(Nil)
+            False -> poll.Retry
+          }
+      }
+    })
+  case answer {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(Failure(check, reason))
+    poll.Expired ->
+      Error(Failure(check, "the prior session or domain did not retire"))
   }
 }
 

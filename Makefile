@@ -318,6 +318,29 @@ soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=
 	done; \
 	echo "soak clean: $(SOAK_SEEDS) seeds from $(SOAK_FROM)"
 
+# The daemon simulation is bounded by wall clock instead of by a seed count.
+# A daemon seed opens a real SQLite catalogue on a real directory and starts
+# several daemon incarnations, so what it costs depends on the machine's file
+# system and on what the schedules drew: a seed count would buy an amount of
+# lane time nobody can predict from the number. The budget says how long to
+# keep drawing, and the run reports how many seeds fit.
+#
+# The whole budget is spent in one invocation. The suite is a generator that
+# asks eunit for a deadline covering the budget and the corroboration tail,
+# so there is no per-test timeout to stay under and no seed range to hand
+# from one invocation to the next. The outer watchdog is set above the same
+# sum, since a run that has to be killed there reports nothing at all.
+SOAK_DAEMON_BUDGET_SECONDS ?= 120
+SOAK_DAEMON_FROM           ?= 1
+
+.PHONY: soak-daemon-sim
+soak-daemon-sim: ## Wall-clock-budgeted daemon simulation (SOAK_DAEMON_BUDGET_SECONDS=n SOAK_DAEMON_FROM=n)
+	@LOOM_DAEMON_SOAK_SECONDS=$(SOAK_DAEMON_BUDGET_SECONDS) \
+		LOOM_DAEMON_SOAK_FROM=$(SOAK_DAEMON_FROM) \
+		LOOM_TEST_TIMEOUT_SECONDS="$${LOOM_TEST_TIMEOUT_SECONDS:-$$(( $(SOAK_DAEMON_BUDGET_SECONDS) + 600 ))}" \
+		bash scripts/test.sh conformance \
+		--match conformance@simulation_daemon_soak_test:
+
 # ---------------------------------------------------------------- utilities
 
 .PHONY: deps

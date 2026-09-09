@@ -22,6 +22,7 @@ import conformance/simulation/runner
 import conformance/simulation/script
 import conformance/simulation/wire
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None}
 import gleam/result
@@ -41,13 +42,38 @@ fn sweep(from: Int) -> Nil {
       case runner.run(seed:) {
         runner.Passed -> Error(Nil)
         runner.Failed(failure:, reproduce:, ..) ->
-          Ok(failure.check <> " — " <> failure.detail <> "\n    " <> reproduce)
+          Ok(
+            "seed "
+            <> int.to_string(seed)
+            <> ": "
+            <> failure.check
+            <> " — "
+            <> failure.detail
+            <> "\n    "
+            <> reproduce,
+          )
       }
     })
+  report("simulation failures", failures)
+}
+
+// Reports a suite's failing seeds and then fails the test.
+//
+// The report goes to stderr before the panic because eunit truncates a panic
+// message: a gate log that carried only the truncated text showed the first
+// check's name with no seed, no reproduction line, and none of the
+// `[timing]` and `[verdict]` evidence the runner paid to collect, which left
+// a red gate unclassifiable from its own log (issue #335). The panic still
+// carries the same text, so a developer reading a terminal sees it twice
+// rather than not at all.
+fn report(what: String, failures: List(String)) -> Nil {
   case failures {
     [] -> Nil
-    lines ->
-      panic as { "simulation failures:\n  " <> string.join(lines, "\n  ") }
+    lines -> {
+      let text = what <> ":\n  " <> string.join(lines, "\n  ")
+      io.println_error(text)
+      panic as text
+    }
   }
 }
 
@@ -472,10 +498,7 @@ pub fn wire_faults_test() {
           )
       }
     })
-  case failures {
-    [] -> Nil
-    lines -> panic as { "wire failures:\n  " <> string.join(lines, "\n  ") }
-  }
+  report("wire failures", failures)
 }
 
 // --- the soak ------------------------------------------------------------
@@ -485,10 +508,7 @@ pub fn soak_test() {
     0 -> Nil
     count -> {
       let from = env_int("LOOM_SOAK_FROM", 1)
-      case runner.soak(from:, count:) {
-        [] -> Nil
-        lines -> panic as { "soak failures:\n  " <> string.join(lines, "\n  ") }
-      }
+      report("soak failures", runner.soak(from:, count:))
     }
   }
 }
