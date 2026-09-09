@@ -320,12 +320,10 @@ soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=
 
 # The daemon simulation is bounded by wall clock instead of by a seed count.
 # A daemon seed opens a real SQLite catalogue on a real directory and starts
-# two daemons, or three when the schedule draws a kill, so what it costs
-# depends on the machine's file system and on what the schedule drew: a seed
-# count would buy an amount of lane time nobody can predict from the number.
-# The budget says how long to keep drawing, and the run reports how many
-# seeds fit. About fifteen a second was the measurement on a developer
-# machine when this landed.
+# several daemon incarnations, so what it costs depends on the machine's file
+# system and on what the schedules drew: a seed count would buy an amount of
+# lane time nobody can predict from the number. The budget says how long to
+# keep drawing, and the run reports how many seeds fit.
 #
 # The whole budget is spent in one invocation. The suite is a generator that
 # asks eunit for a deadline covering the budget and the corroboration tail,

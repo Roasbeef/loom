@@ -173,14 +173,8 @@ lane_mid() { $retry bash scripts/check.sh runtime storage session events; }
 # The daemon simulation's soak follows the session one in this lane, and is
 # budgeted rather than counted: it draws seeds until its seconds are spent,
 # in a single invocation whose eunit deadline is derived from the budget.
-# Sixty is what fits. The lanes run in parallel, so the gate's wall time is
-# the slowest lane's, and on the estimates below that is the client lane.
-# Read `build/signoff/<lane>.log` for what the lanes actually cost on this
-# machine; the figures here are estimates from a developer run, roughly 440
-# seconds for the client lane against 220 for conformance. Sixty seconds
-# leaves conformance near 280, still short of the client lane, so the gate
-# costs what it cost before. A budget past 200 would make this lane the
-# critical path.
+# The default budget is sixty seconds and can be overridden for a longer
+# signoff soak.
 lane_conformance() {
 	$retry bash scripts/check.sh conformance &&
 		$retry make soak SOAK_SEEDS="${SIGNOFF_SOAK_SEEDS:-200}" &&

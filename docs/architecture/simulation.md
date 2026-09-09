@@ -349,8 +349,9 @@ root. What it checks is `creation/one-identity-per-key`,
 `replay/equal-catalogue-rows`: a creation key reserves one identity however
 the kill lands, a conversation database never exists without a confirmed
 catalogue row naming it, and no durable record predates its instance's
-publication. The lifecycle-restart and revocation scenarios join it as their
-work package lands.
+publication. The soak runs this creation-key scenario and the lifecycle
+runner for every drawn seed; the latter covers both lifecycle restart and
+revocation schedules.
 
 It does not cover kernel enforcement, resource measurement, or the native
 TUI drivers, and it cannot: the first is a claim about what bubblewrap and
@@ -363,8 +364,8 @@ resident session and the property it would have checked is already
 `gateway_test`'s; the design note's amendments of 2026-09-08 carry the
 argument and the kill model in full.
 
-`make check-conformance` runs a small pinned corpus of daemon seeds, under a
-second. `make soak-daemon-sim` runs the long one, and is bounded by
+`make check-conformance` runs a small pinned corpus of daemon seeds.
+`make soak-daemon-sim` runs the long one, and is bounded by
 `SOAK_DAEMON_BUDGET_SECONDS` (default 120) rather than by a seed count: a
 daemon seed's cost depends on the machine's file system and on whether the
 schedule drew a kill, so a count buys an unpredictable amount of lane time.
