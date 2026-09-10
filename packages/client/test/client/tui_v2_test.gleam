@@ -158,6 +158,40 @@ pub fn await(driver, predicate) {
   }
 }
 
+/// Checks rendered answers across the fixture's bounded conversation history.
+///
+/// Completion cards can move earlier answers above an 80-by-24 viewport. Read
+/// real PageUp frames, then return to the newest frame before the next action.
+/// The caller first proves exact durable contents and operation completion.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui_v2_test.assert_history_answers(driver, ["first", "second"])
+/// ```
+@internal
+pub fn assert_history_answers(driver, answers: List(String)) -> Nil {
+  let latest = tui_driver.play(driver, [])
+  let frames =
+    int.range(1, 8, [latest.frame], fn(frames, _) {
+      let older = tui_driver.play(driver, [backend.KeyPress("pageup")])
+      [older.frame, ..frames]
+    })
+  assert list.all(answers, fn(answer) {
+    list.any(frames, fn(frame) { string.contains(frame, answer) })
+  })
+    as "every expected answer is rendered in the bounded history traversal"
+
+  // The fixture's next prompt and streaming assertions start at the newest
+  // viewport, just as they did before inspecting the older answer rows.
+  let restored =
+    int.range(1, 8, latest, fn(_, _) {
+      tui_driver.play(driver, [backend.KeyPress("pagedown")])
+    })
+  assert restored.model.scroll_offset == 0
+    as "history inspection returns the terminal to the newest viewport"
+}
+
 fn synchronized(sample: tui_driver.Sample) {
   case sample.model.peer, sample.model.captured {
     tui.Attached(_), Some(_) -> True

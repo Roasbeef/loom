@@ -1427,42 +1427,42 @@ fn captured_turns(
     |> list.map(fn(text) { [message.AssistantText(text, None)] })
   let samples =
     list.map(drivers, fn(driver) {
-      tui_v2_test.await(driver.data, fn(sample) {
-        let users =
-          list.filter_map(sample.model.records, fn(record) {
-            case record.entry {
-              entry.MessageEntry(
-                message: message.UserMessage(content:, origin:, ..),
-                ..,
-              ) ->
-                Ok(#(
-                  content,
-                  option.map(origin, fn(author) { author.principal }),
-                ))
-              _ -> Error(Nil)
-            }
+      let sample =
+        tui_v2_test.await(driver.data, fn(sample) {
+          let users =
+            list.filter_map(sample.model.records, fn(record) {
+              case record.entry {
+                entry.MessageEntry(
+                  message: message.UserMessage(content:, origin:, ..),
+                  ..,
+                ) ->
+                  Ok(#(
+                    content,
+                    option.map(origin, fn(author) { author.principal }),
+                  ))
+                _ -> Error(Nil)
+              }
+            })
+          let replies =
+            list.filter_map(sample.model.records, fn(record) {
+              case record.entry {
+                entry.MessageEntry(
+                  message: message.AssistantMessage(content:, ..),
+                  ..,
+                ) -> Ok(content)
+                _ -> Error(Nil)
+              }
+            })
+          users == expected_users
+          && replies == expected_answers
+          && sample.model.streams == []
+          && sample.model.submitting == None
+          && list.any(sample.model.strands, fn(strand) {
+            strand.id == "main" && strand.live_phase == None
           })
-        let replies =
-          list.filter_map(sample.model.records, fn(record) {
-            case record.entry {
-              entry.MessageEntry(
-                message: message.AssistantMessage(content:, ..),
-                ..,
-              ) -> Ok(content)
-              _ -> Error(Nil)
-            }
-          })
-        users == expected_users
-        && replies == expected_answers
-        && sample.model.streams == []
-        && sample.model.submitting == None
-        && list.any(sample.model.strands, fn(strand) {
-          strand.id == "main" && strand.live_phase == None
         })
-        && list.all(answers, fn(answer) {
-          string.contains(sample.frame, answer)
-        })
-      })
+      tui_v2_test.assert_history_answers(driver.data, answers)
+      sample
     })
   samples
 }
