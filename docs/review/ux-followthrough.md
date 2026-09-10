@@ -65,8 +65,8 @@ The native run found two gaps beyond the earlier independent review. First,
 macOS terminal settings retained `ixon`, with Ctrl+s assigned to output stop.
 The terminal consumed the advertised save shortcut. Disabling flow control only
 in the disposable pane confirmed that the editor then saved successfully. This
-is an outstanding native terminal setup issue in the pinned etui dependency;
-the test-pane adjustment is not a production fix.
+isolated the native terminal setup issue in etui. The fork repair and repeat
+native validation below close that gap.
 
 Second, selecting a file changed its highlight without invalidating the outer
 render cache. The patch could continue showing all files. The earlier test
@@ -102,3 +102,39 @@ including compilation and startup; shipped multiplayer passed in 5.15 seconds.
 The tests ran with `LOOM_BOOTSTRAP_E2E_SERVER` set, rather than taking their
 missing-server skip. This exercises their real server lifecycle on macOS;
 it does not establish the next GitHub run or code-mode bundle acceptance.
+
+
+## Etui flow-control repair
+
+The fork commit `ff80e0e21580a4b0077cc6989b6dc551af320505` clears POSIX `IXON`
+after OTP enters raw mode. It reuses etui's existing controlling-terminal
+`stty` path and retains normal and watchdog `stty sane` restoration. This
+commit directly follows `702a884`; all seven existing frame-diff, polling,
+input-preservation, batching, benchmark, and documentation commits remain.
+Loom's TUI and client declarations and generated manifests now use the new tip.
+The resolver also refreshed the client's stale local-host requirement metadata
+from the host's existing declaration; no other package version changed.
+
+The new real PTY regression starts with software flow control enabled, waits for
+an actual Ctrl+s acknowledgement, requires subsequent output without Ctrl+q,
+and verifies restored canonical mode, echo, `IXON`, and alternate-screen state
+after normal exit, SIGKILL, and SIGINT with `+B`. It fails waiting for Ctrl+s
+against the old fork source and passes with the repair on macOS/OTP29. The fork
+also passed 891 Erlang tests, 844 JavaScript tests, JavaScript smoke, and format
+checks. The new Linux/OTP28 CI probe has not yet been observed running. A single
+independent review of the change and both probes found no actionable issue.
+
+A freshly rebuilt native `bin/loom` then ran in a disposable 160-by-48 tmux
+terminal whose initial settings had `IXON` enabled. Etui disabled it on entry.
+While the local provider held the first operation, the editor saved
+`Native queue draft.\nSaved through native Ctrl+S.` using the advertised key.
+The successor provider request contained those exact multiline bytes. No
+manual terminal adjustment was applied after startup. The disposable client,
+daemon, and provider were stopped after the check.
+
+Loom's updated TUI package gate passed all 312 tests, its native shipment built,
+and the joined queue/worktree/completion fixture passed. The approval/effect
+fixture that failed in Linux CI at the preceding `dadecfce` head also passed in
+a focused local rerun; this does not establish Linux success for the new head.
+[Issue #345](https://github.com/Roasbeef/loom/issues/345) tracks upstreaming all
+eight remaining fork commits and eventually returning Loom to upstream.

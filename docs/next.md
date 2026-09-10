@@ -5,7 +5,8 @@ criteria. Rewrite it after the next body of work. Detailed review and test
 accounts belong in their own documents.
 
 Re-baselined September 10, 2026 against merged PR #343 (`822c5c8b`) and the
-UX implementation at `8eb73e59`. PR #343 is merged and #335 is closed.
+UX implementation and native follow-ups through `dadecfce`, plus the etui
+dependency update described below. PR #343 is merged and #335 is closed.
 The UX work is on `codex/ux-followthrough`; local validation does not establish
 GitHub checks, Linux signoff, review approval, or merge authorization.
 
@@ -66,16 +67,30 @@ A later direct native run exposed a missed worktree patch-cache invalidation.
 Keyboard selection, mouse selection, and delivered observations now invalidate
 that projection, and the cache records its actual board and selection. Native
 160-by-48 and 100-by-30 checks and the strengthened joined fixture passed.
-The same run found that the pinned etui setup leaves terminal flow control
-active on this macOS host, consuming the editor's Ctrl+s shortcut. Disabling
-flow control in the disposable pane confirmed the cause; a production terminal
-setup repair remains outstanding before treating native queue editing as ready.
+The same run found that etui retained terminal flow control on this macOS host,
+consuming the editor's Ctrl+s shortcut. The fork now clears `IXON` after entering
+raw mode, and both Loom pins use `ff80e0e`. It retains all seven commits beneath
+the previous `702a884` pin. The rebuilt native client saved an exact multiline
+queued prompt with Ctrl+s and delivered it to the next provider request, starting
+from an ordinary terminal with flow control enabled. No pane adjustment was
+needed. [Issue #345](https://github.com/Roasbeef/loom/issues/345) tracks upstreaming
+the complete remaining eight-commit fork stack.
 
 The prior head's shipped live-delivery and multiplayer CI fixtures required
 all answers within one viewport. They now inspect real scrolled history while
 retaining the original ordered-record and author assertions. Both opt-in tests
-passed locally against a newly built lean server release; the next GitHub run
-still needs to confirm the Linux and macOS jobs.
+passed locally against a newly built lean server release. GitHub run
+`34530464675` at `dadecfce` then passed both platform bootstrap lanes and the
+macOS gate, but its Linux client job failed one approval/effect display fixture
+(1,530 passed). That fixture passes in a focused local rerun; fresh CI must
+establish the dependency update's status.
+
+The etui update passed all 312 TUI tests, the joined queue/worktree/completion
+fixture, native shipment build, and documentation checks. Its own fork passed
+891 Erlang and 844 JavaScript tests, JavaScript smoke, and the real PTY regression
+for Ctrl+s delivery and normal/SIGKILL/SIGINT terminal restoration. The PTY test
+fails against the old fork source. One independent review found no actionable
+issue in this terminal change.
 
 ## What to do next
 
