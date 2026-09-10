@@ -184,6 +184,7 @@ import storage/access
 import storage/snapshot
 import storage/storage
 import tools/tool.{type Registry}
+import weft
 import weft/actor
 import weft/registry as address
 
@@ -288,6 +289,10 @@ pub type Options {
     /// `client/serve` fills it with `broker.abort`; a host assembled
     /// without an effect plane has nothing to sweep and passes `None`.
     effect_abort: Option(fn(OpId) -> Nil),
+    /// Host-supplied bounded observation capabilities.
+    worktree_diff: Option(fn() -> Result(JsonValue, String)),
+    /// Explicit live job reads, never invoked by ordinary transcript captures.
+    live_jobs: Option(fn(String) -> Result(JsonValue, String)),
   )
 }
 
@@ -312,7 +317,37 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     code_mode_issue: None,
     schedules: None,
     effect_abort: None,
+    worktree_diff: None,
+    live_jobs: None,
   )
+}
+
+/// Supplies the owner-only worktree reader, run outside the gateway actor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_worktree_diff(options, capture)
+/// ```
+pub fn with_worktree_diff(
+  options: Options,
+  capture: fn() -> Result(JsonValue, String),
+) -> Options {
+  Options(..options, worktree_diff: Some(capture))
+}
+
+/// Supplies an explicit bounded live jobs query.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_live_jobs(options, read_jobs)
+/// ```
+pub fn with_live_jobs(
+  options: Options,
+  read_jobs: fn(String) -> Result(JsonValue, String),
+) -> Options {
+  Options(..options, live_jobs: Some(read_jobs))
 }
 
 /// Supplies the model catalogue the hub serves and switches by name.
@@ -407,6 +442,7 @@ pub fn with_effect_abort(options: Options, sweep: fn(OpId) -> Nil) -> Options {
 pub opaque type Message {
   Request(connection: Int, text: String, reply: Subject(Result(String, String)))
   MaintainTransfers
+  WorktreeReported(connection: Int, pulled: weft.Pulled(JsonValue, String))
   LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
   Preview(Int, String, String, String, String, Subject(Result(Nil, String)))
   ReleasePreview(Int, Subject(Nil))
@@ -448,6 +484,8 @@ type Connection {
   Connection(
     /// Encoded frames leave through here; it runs on the hub process.
     sink: fn(String) -> Nil,
+    /// The original socket whose exit cancels admitted observations.
+    consumer: Option(process.Pid),
     /// Whether the `subscribe` handshake has completed.
     subscription: Subscription,
     /// How this connection was admitted, which is the module's trust boundary.
@@ -473,9 +511,28 @@ type LivePreview {
   LivePreview(source: Int, payload: JsonValue)
 }
 
+// A report channel stays selected until Weft has delivered its final word.
+// Detaching suppresses delivery but never frees an occupied execution slot.
+type PendingObservation {
+  PendingObservation(
+    request: Int,
+    reports: Subject(weft.Pulled(JsonValue, String)),
+    phase: ObservationPhase,
+  )
+}
+
+type ObservationPhase {
+  Capturing
+  Reported
+}
+
 type State {
   State(
     subject: Subject(Message),
+    selector: process.Selector(Message),
+    observations: Dict(Int, PendingObservation),
+    worktree_diff: Option(fn() -> Result(JsonValue, String)),
+    live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     delivery: Delivery,
     health: Health,
     next_transfer: Int,
@@ -494,6 +551,8 @@ type State {
     // strand → prompts held for a busy strand, in arrival order at this
     // one actor, which is what makes the order total.
     held: Dict(String, List(Held)),
+    // Monotonic item identity prevents reused client request IDs from aliasing.
+    next_held: Int,
     // entry id (text) → strand attribution cache.
     entry_strand: Dict(String, String),
     // The effect plane's sweep of an aborted operation, when the host
@@ -539,8 +598,14 @@ type Emit {
 /// drops and clears its own local queued state when the socket closes.
 type Held {
   Held(
-    /// The submitting connection's request ID, unique within that connection.
+    /// Server-minted identity, stable for exactly this held item.
+    id: String,
+    /// The client request ID is retained only for its original reply.
     request: Int,
+    /// Stable authenticated identity captured at admission, never display origin.
+    author: InputAuthor,
+    /// Compare-and-replace revision, advanced in this actor with the text.
+    revision: Int,
     /// Steers precede queued turns; arrival order is retained within each kind.
     order: InputOrder,
     /// The message exactly as it was built at submission, carrying the
@@ -555,6 +620,13 @@ type Held {
     /// needs no cleanup when a connection goes away.
     submitter: Int,
   )
+}
+
+// Reconnection preserves principal identity, while trusted fixtures have only
+// their submitting connection to distinguish them from another in-VM caller.
+type InputAuthor {
+  PrincipalAuthor(id: String, kind: access.PrincipalKind)
+  FixtureAuthor(connection: Int)
 }
 
 /// Human input priority belongs to the host queue, outside the operation
@@ -639,6 +711,10 @@ fn start_with_delivery(
     let state =
       State(
         subject:,
+        selector: process.select_monitors(selector, SocketDown),
+        observations: dict.new(),
+        worktree_diff: options.worktree_diff,
+        live_jobs: options.live_jobs,
         delivery:,
         health: Reading,
         next_transfer: 1,
@@ -654,6 +730,7 @@ fn start_with_delivery(
         high_water: 0,
         live: dict.new(),
         held: dict.new(),
+        next_held: 1,
         entry_strand: dict.new(),
         effect_abort: options.effect_abort,
         catalog: options.catalog,
@@ -1103,12 +1180,28 @@ fn send_if_alive(name: address.Address(Message), message: Message) -> Nil {
 
 // --- the hub loop ----------------------------------------------------------
 
+fn continue(state: State) -> actor.Next(State, Message) {
+  let selector =
+    dict.fold(
+      state.observations,
+      state.selector,
+      fn(selector, connection, pending) {
+        process.select_map(selector, pending.reports, fn(pulled) {
+          WorktreeReported(connection, pulled)
+        })
+      },
+    )
+  actor.continue(state) |> actor.with_selector(selector)
+}
+
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    WorktreeReported(connection:, pulled:) ->
+      continue(worktree_reported(state, connection, pulled))
     LeasePreview(pid, expires, reply) ->
-      actor.continue(lease_preview(state, pid, expires, reply))
+      continue(lease_preview(state, pid, expires, reply))
     Preview(source, operation, generation, kind, text, reply) ->
-      actor.continue(record_preview(
+      continue(record_preview(
         state,
         source,
         operation,
@@ -1120,19 +1213,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     ReleasePreview(source, reply) -> {
       let state = forget_preview(state, source)
       process.send(reply, Nil)
-      actor.continue(state)
+      continue(state)
     }
     Request(connection, text, reply) ->
-      actor.continue(request_frame(state, connection, text, reply))
+      continue(request_frame(state, connection, text, reply))
 
     // Idle maintenance owns retention only. Authority is checked at command
     // admission and delivery, where failure must refuse the operation; asking
     // here would let registry latency close an attachment doing no work.
-    MaintainTransfers -> actor.continue(expire_transfers(state))
+    MaintainTransfers -> continue(expire_transfers(state))
     Attach(sink:, reply:) -> {
       let id = state.next_connection
       process.send(reply, id)
-      actor.continue(
+      continue(
         State(
           ..state,
           connections: dict.insert(
@@ -1140,6 +1233,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             id,
             Connection(
               sink:,
+              consumer: None,
               subscription: Unsubscribed,
               authentication: HostFixture,
               origin: None,
@@ -1164,13 +1258,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       case admitted {
         Error(reason) -> {
           process.send(reply, Error(reason))
-          actor.continue(state)
+          continue(state)
         }
         Ok(principal) -> {
           let id = state.next_connection
           let link =
             Connection(
               sink:,
+              consumer: Some(socket),
               subscription: Unsubscribed,
               authentication: Authenticated(
                 binding,
@@ -1193,40 +1288,35 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             reply,
             Ok(ConnectionHandle(state.subject, id, process.self())),
           )
-          actor.continue(state)
+          continue(state)
         }
       }
     }
-    SocketDown(down) -> actor.continue(remove_socket(state, down))
+    SocketDown(down) -> continue(remove_socket(state, down))
     Attached(reply:) -> {
       process.send(reply, dict.size(state.connections))
-      actor.continue(state)
+      continue(state)
     }
-    Detach(connection:) -> actor.continue(remove_connection(state, connection))
+    Detach(connection:) -> continue(remove_connection(state, connection))
     FromClient(connection:, text:) ->
       case state.delivery {
         HostOnly ->
-          actor.continue(dispatch(
-            revalidate(state, connection),
-            connection,
-            text,
-          ))
-        Network -> actor.continue(remove_connection(state, connection))
+          continue(dispatch(revalidate(state, connection), connection, text))
+        Network -> continue(remove_connection(state, connection))
       }
-    CommitHint -> actor.continue(pull_and_broadcast(revalidate_all(state)))
-    BusHint(published: _) ->
-      actor.continue(pull_and_broadcast(revalidate_all(state)))
+    CommitHint -> continue(pull_and_broadcast(revalidate_all(state)))
+    BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
     // as the frame leaves, and a second check on the same evidence in the
     // same turn would only double the registry calls per token per peer.
     ProviderDelta(operation:, generation:, delta:) -> {
       broadcast_delta(state, operation, generation, Some(delta))
-      actor.continue(state)
+      continue(state)
     }
     ProviderEnded(operation:, generation:) -> {
       broadcast_delta(state, operation, generation, None)
-      actor.continue(state)
+      continue(state)
     }
   }
 }
@@ -1355,6 +1445,7 @@ fn network_command(
     | protocol.PromptContent(..)
     | protocol.Steer(..)
     | protocol.FollowUp(..)
+    | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
     | protocol.Deny(..)
@@ -1363,7 +1454,10 @@ fn network_command(
     | protocol.Compact(..)
     | protocol.CreateStrand(..)
     | protocol.ListModels
+    | protocol.WorktreeDiffGet
+    | protocol.LiveJobsGet(..)
     | protocol.NotesGet(..)
+    | protocol.QueuedInputGet(..)
     | protocol.SetConfig(..)
     | protocol.ListSchedules
     | protocol.CancelSchedule(..)
@@ -1512,7 +1606,7 @@ fn captured_transfer(
         api.encode_run_defaults(state.runtime.settings, None),
       ),
       #("peers", json.Array(roster(state))),
-      #("pending_inputs", json.Array(pending_inputs(state))),
+      #("pending_inputs", json.Array(pending_inputs(state, connection))),
       #("tool_availability", case state.registry {
         None -> json.Null
         Some(registry) ->
@@ -1998,7 +2092,10 @@ fn remove_connection(state: State, id: Int) -> State {
     Error(Nil) -> state
     Ok(link) -> {
       case link.authentication {
-        Authenticated(_, _, _, watch) -> process.demonitor_process(watch)
+        Authenticated(_, _, close, watch) -> {
+          close()
+          process.demonitor_process(watch)
+        }
         HostFixture -> Nil
       }
       let state =
@@ -2082,12 +2179,16 @@ fn read_only(command: Command) {
     | protocol.History(..)
     | protocol.EscalationsGet(..)
     | protocol.ListModels
+    | protocol.WorktreeDiffGet
+    | protocol.LiveJobsGet(..)
     | protocol.NotesGet(..)
+    | protocol.QueuedInputGet(..)
     | protocol.ListSchedules -> True
     protocol.Prompt(..)
     | protocol.PromptContent(..)
     | protocol.Steer(..)
     | protocol.FollowUp(..)
+    | protocol.EditQueuedInput(..)
     | protocol.Abort(..)
     | protocol.Approve(..)
     | protocol.Deny(..)
@@ -2719,7 +2820,8 @@ fn broadcast(state: State, emits: List(Emit)) -> Nil {
 // with none answers nothing — a notice, a delta, a roster, a fault — and
 // leaves through `deliver`, which runs the same per-frame `check_binding`
 // the reply path runs and retires the attachment when the answer changed
-// (`protocol-change/018`). There is no third way out.
+// (`protocol-change/018`). The explicitly admitted worktree completion uses
+// `push_worktree` after its pending acknowledgement has spent that capability.
 fn send_to(state: State, connection: Int, envelope: EventEnvelope) -> Nil {
   case dict.get(state.connections, connection) {
     Ok(link) ->
@@ -2966,6 +3068,227 @@ fn dispatch(state: State, connection: Int, text: String) -> State {
   }
 }
 
+// Worktree bytes require the current owner binding, independently of the
+// general read-only command classification. A trusted host fixture is local.
+fn worktree_owner(state: State, connection: Int) -> Bool {
+  case dict.get(state.connections, connection) {
+    Ok(Connection(authentication: HostFixture, ..)) -> True
+    Ok(Connection(authentication: Authenticated(binding, ..), ..)) ->
+      binding.authority == access.Owner
+    Error(Nil) -> False
+  }
+}
+
+fn begin_worktree(state: State, connection: Int, id: Int) -> State {
+  use <- bool.lazy_guard(!worktree_owner(state, connection), fn() {
+    reply_error(
+      state,
+      connection,
+      id,
+      "forbidden",
+      "worktree observation requires the owner",
+    )
+    state
+  })
+  use <- bool.lazy_guard(
+    dict.has_key(state.observations, connection)
+      || dict.size(state.observations) >= 2,
+    fn() {
+      reply_error(
+        state,
+        connection,
+        id,
+        "busy",
+        "worktree observation is already running",
+      )
+      state
+    },
+  )
+  case state.worktree_diff, dict.get(state.connections, connection) {
+    Some(capture), Ok(link) -> {
+      let reports = process.new_subject()
+      let run = weft.new([capture]) |> weft.deadline(14_000)
+      let run = case link.consumer {
+        Some(socket) -> weft.cancel_when_exits(run, socket)
+        None -> run
+      }
+      let _relay = weft.start_relayed(run, to: reports)
+      let pending = PendingObservation(id, reports, Capturing)
+      send_to(
+        state,
+        connection,
+        EventEnvelope(
+          Some(id),
+          None,
+          protocol.SnapshotEvent(
+            protocol.WorktreeDiffSnapshot(
+              json.Object([
+                #("status", json.String("pending")),
+                #("request_id", json.Int(id)),
+              ]),
+            ),
+          ),
+        ),
+      )
+      State(
+        ..state,
+        observations: dict.insert(state.observations, connection, pending),
+      )
+    }
+    None, _ | Some(_), Error(Nil) -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        "unavailable",
+        "worktree observation is unavailable",
+      )
+      state
+    }
+  }
+}
+
+fn worktree_reported(
+  state: State,
+  connection: Int,
+  pulled: weft.Pulled(JsonValue, String),
+) -> State {
+  case dict.get(state.observations, connection) {
+    Error(Nil) -> state
+    Ok(pending) ->
+      case pulled {
+        weft.NotYet -> state
+        weft.PulledOutcome(outcome:) -> {
+          let board = observation_result(pending.request, outcome)
+          let state = push_worktree(state, connection, pending.request, board)
+          State(
+            ..state,
+            observations: dict.insert(
+              state.observations,
+              connection,
+              PendingObservation(..pending, phase: Reported),
+            ),
+          )
+        }
+        weft.AllDelivered | weft.RunLost(..) -> {
+          let state = case pending.phase {
+            Reported -> state
+            Capturing ->
+              push_worktree(
+                state,
+                connection,
+                pending.request,
+                failed_observation(
+                  pending.request,
+                  "observation ended without a result",
+                ),
+              )
+          }
+          State(
+            ..state,
+            observations: dict.delete(state.observations, connection),
+          )
+        }
+      }
+  }
+}
+
+fn observation_result(
+  id: Int,
+  outcome: weft.Outcome(JsonValue, String),
+) -> JsonValue {
+  case outcome {
+    weft.Completed(value: json.Object(fields), ..) ->
+      json.Object([
+        #("status", json.String("ready")),
+        #("request_id", json.Int(id)),
+        ..fields
+      ])
+    weft.Completed(..) -> failed_observation(id, "invalid worktree observation")
+    weft.Failed(error:, ..) -> failed_observation(id, error)
+    weft.Abandoned(..) | weft.NeverStarted(..) ->
+      failed_observation(id, "worktree observation was cancelled or timed out")
+    weft.Crashed(..)
+    | weft.DrainProofLost(..)
+    | weft.CancellationUnconfirmed(..) ->
+      failed_observation(id, "worktree observation failed")
+  }
+}
+
+fn failed_observation(id: Int, message: String) -> JsonValue {
+  json.Object([
+    #("status", json.String("failed")),
+    #("request_id", json.Int(id)),
+    #("code", json.String("unavailable")),
+    #("message", json.String(string.slice(message, 0, 512))),
+  ])
+}
+
+// This completion is a bounded push to exactly the admitting connection. Its
+// board retains request identity; reply_to is absent because the synchronous
+// pending acknowledgement already consumed that request capability.
+// Revalidation precedes serialization and delivery checks again.
+fn push_worktree(
+  state: State,
+  connection: Int,
+  id: Int,
+  board: JsonValue,
+) -> State {
+  let state = revalidate(state, connection)
+  use <- bool.guard(!worktree_owner(state, connection), state)
+  let envelope =
+    EventEnvelope(
+      None,
+      None,
+      protocol.SnapshotEvent(protocol.WorktreeDiffSnapshot(board)),
+    )
+  case dict.get(state.connections, connection), bounded_response(envelope) {
+    Ok(link), Ok(frame) -> deliver(link, frame)
+    Ok(link), Error(_) -> {
+      let fallback =
+        EventEnvelope(
+          None,
+          None,
+          protocol.SnapshotEvent(
+            protocol.WorktreeDiffSnapshot(failed_observation(
+              id,
+              "worktree response exceeds its byte limit",
+            )),
+          ),
+        )
+      deliver(link, protocol.encode_event(fallback))
+    }
+    Error(Nil), _ -> Nil
+  }
+  state
+}
+
+fn read_live_jobs(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+) -> State {
+  let outcome = case state.live_jobs {
+    Some(read) -> read(strand)
+    None -> Error("live jobs are unavailable")
+  }
+  case outcome {
+    Ok(board) ->
+      send_to(
+        state,
+        connection,
+        EventEnvelope(
+          Some(id),
+          None,
+          protocol.SnapshotEvent(protocol.LiveJobsSnapshot(board)),
+        ),
+      )
+    Error(reason) -> reply_error(state, connection, id, "unavailable", reason)
+  }
+  state
+}
+
 fn run_command(
   state: State,
   connection: Int,
@@ -3051,6 +3374,24 @@ fn run_command(
       steer(state, connection, id, strand, text)
     protocol.FollowUp(strand:, text:), Subscribed ->
       follow_up(state, connection, id, strand, text)
+    protocol.WorktreeDiffGet, Subscribed ->
+      begin_worktree(state, connection, id)
+    protocol.LiveJobsGet(strand:), Subscribed ->
+      read_live_jobs(state, connection, id, strand)
+    protocol.QueuedInputGet(strand:, id: input_id), Subscribed ->
+      read_queued_input(state, connection, id, strand, input_id)
+    protocol.EditQueuedInput(strand:, id: input_id, expected_revision:, text:),
+      Subscribed
+    ->
+      edit_queued_input(
+        state,
+        connection,
+        id,
+        strand,
+        input_id,
+        expected_revision,
+        text,
+      )
     protocol.Abort(strand:), Subscribed -> abort(state, connection, id, strand)
     protocol.Approve(escalation_id:, grants:, action:, expected_seq:),
       Subscribed
@@ -3641,6 +3982,7 @@ fn hold_prompt(
   prompt: AgentMessage,
   order: InputOrder,
 ) -> State {
+  use author <- or_reply(input_author(state, connection), state, connection, id)
   let queued = dict.get(state.held, strand) |> result.unwrap([])
   let same_priority = list.filter(queued, fn(item) { item.order == order })
 
@@ -3662,7 +4004,16 @@ fn hold_prompt(
     }
     False -> {
       reply(state, connection, id, mutation_outcome("queued"))
-      let item = Held(prompt:, submitter: connection, request: id, order:)
+      let item =
+        Held(
+          id: int.to_string(connection) <> ":" <> int.to_string(state.next_held),
+          prompt:,
+          submitter: connection,
+          request: id,
+          order:,
+          author:,
+          revision: 0,
+        )
       let queue = case order {
         AfterTurn -> list.append(queued, [item])
         SteerNext -> {
@@ -3671,7 +4022,8 @@ fn hold_prompt(
           list.append(steers, [item, ..turns])
         }
       }
-      let state = put_held(state, strand, queue)
+      let state =
+        put_held(State(..state, next_held: state.next_held + 1), strand, queue)
 
       // Custody transfers to the queue before cancellation is requested.
       // The abort can now settle without losing the message that caused it.
@@ -3702,7 +4054,7 @@ fn put_held(state: State, strand: String, queue: List(Held)) -> State {
 
 // These rows are queue identities, not guessed transcript matches. Two peers
 // may submit identical text; each row retires only when its own item drains.
-fn pending_inputs(state: State) -> List(JsonValue) {
+fn pending_inputs(state: State, connection: Int) -> List(JsonValue) {
   dict.to_list(state.held)
   |> list.flat_map(fn(pair) {
     let #(strand, queued) = pair
@@ -3710,13 +4062,13 @@ fn pending_inputs(state: State) -> List(JsonValue) {
       let text = pending_text(item.prompt)
       let bytes = bit_array.from_string(text)
       json.Object([
-        #(
-          "id",
-          json.String(
-            int.to_string(item.submitter) <> ":" <> int.to_string(item.request),
-          ),
-        ),
+        #("id", json.String(held_id(item))),
         #("strand", json.String(strand)),
+        #("revision", json.Int(item.revision)),
+        #(
+          "editable",
+          json.Bool(input_author(state, connection) == Ok(item.author)),
+        ),
         #(
           "kind",
           json.String(case item.order {
@@ -3735,6 +4087,196 @@ fn pending_inputs(state: State) -> List(JsonValue) {
       ])
     })
   })
+}
+
+// The binding was revalidated at admission. Comparing its stable identity here
+// permits a reconnect by the original author without granting owner override.
+fn input_author(
+  state: State,
+  connection: Int,
+) -> Result(InputAuthor, #(String, String)) {
+  case dict.get(state.connections, connection) {
+    Ok(Connection(authentication: HostFixture, ..)) ->
+      Ok(FixtureAuthor(connection))
+    Ok(Connection(authentication: Authenticated(binding:, ..), ..)) ->
+      case binding.authority {
+        access.Owner | access.Participant(access.Operator) ->
+          Ok(PrincipalAuthor(binding.principal.id, binding.principal.kind))
+        access.Participant(access.Observer) ->
+          Error(#(
+            "forbidden",
+            "only the original mutable principal may edit queued input",
+          ))
+      }
+    Error(Nil) ->
+      Error(#("forbidden", "queued input requires a live attachment"))
+  }
+}
+
+fn held_id(item: Held) -> String {
+  item.id
+}
+
+fn editable_input(
+  state: State,
+  connection: Int,
+  strand: String,
+  input_id: String,
+) -> Result(Held, #(String, String)) {
+  use author <- result.try(input_author(state, connection))
+  use item <- result.try(
+    dict.get(state.held, strand)
+    |> result.unwrap([])
+    |> list.find(fn(item) { held_id(item) == input_id })
+    |> result.replace_error(#(
+      protocol.code_conflict,
+      "input is no longer queued",
+    )),
+  )
+  case item.author == author {
+    True -> Ok(item)
+    False ->
+      Error(#(
+        "forbidden",
+        "only the original principal may edit this queued input",
+      ))
+  }
+}
+
+// Only complete text crosses the editing boundary. Image payloads stay in the
+// queue and their count tells the editor what it will preserve on replacement.
+fn queued_board(
+  strand: String,
+  item: Held,
+) -> Result(JsonValue, #(String, String)) {
+  let #(text, images) = editable_content(item.prompt)
+  let board =
+    json.Object([
+      #("id", json.String(held_id(item))),
+      #("strand", json.String(strand)),
+      #("revision", json.Int(item.revision)),
+      #(
+        "kind",
+        json.String(case item.order {
+          AfterTurn -> "queue"
+          SteerNext -> "steer"
+        }),
+      ),
+      #("text", json.String(text)),
+      #("attachment_count", json.Int(list.length(images))),
+    ])
+  case string.byte_size(protocol.to_wire_text(board)) <= 48_000 {
+    True -> Ok(board)
+    False ->
+      Error(#(
+        "queued_input_too_large",
+        "complete queued text exceeds the editing reply budget",
+      ))
+  }
+}
+
+fn editable_content(prompt: AgentMessage) -> #(String, List(UserBlock)) {
+  case prompt {
+    message.UserMessage(content:, ..) -> {
+      let text =
+        content
+        |> list.filter_map(fn(block) {
+          case block {
+            message.UserText(text:, ..) -> Ok(text)
+            message.UserImage(..) -> Error(Nil)
+          }
+        })
+        |> string.join("\n")
+      let images =
+        list.filter(content, fn(block) {
+          case block {
+            message.UserText(..) -> False
+            message.UserImage(..) -> True
+          }
+        })
+      #(text, images)
+    }
+    message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> #("", [])
+  }
+}
+
+fn read_queued_input(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  input_id: String,
+) -> State {
+  use item <- or_reply(
+    editable_input(state, connection, strand, input_id),
+    state,
+    connection,
+    id,
+  )
+  use board <- or_reply(queued_board(strand, item), state, connection, id)
+  reply(
+    state,
+    connection,
+    id,
+    protocol.SnapshotEvent(protocol.QueuedInputSnapshot(board)),
+  )
+  state
+}
+
+// The queue and revision are replaced in one gateway turn. A prior drain has
+// removed the identity and conflicts; an edit that wins keeps the exact slot.
+fn edit_queued_input(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+  input_id: String,
+  expected_revision: Int,
+  text: String,
+) -> State {
+  use item <- or_reply(
+    editable_input(state, connection, strand, input_id),
+    state,
+    connection,
+    id,
+  )
+  use Nil <- or_reply(
+    case item.revision == expected_revision {
+      True -> Ok(Nil)
+      False -> Error(#(protocol.code_conflict, "queued input revision changed"))
+    },
+    state,
+    connection,
+    id,
+  )
+  let #(_, images) = editable_content(item.prompt)
+
+  // Text blocks are deliberately consolidated. Record update retains the
+  // submitted timestamp and author, and image blocks retain all their fields.
+  let prompt = case item.prompt {
+    message.UserMessage(..) as original ->
+      message.UserMessage(..original, content: [
+        message.UserText(text, None),
+        ..images
+      ])
+    other -> other
+  }
+  let updated = Held(..item, prompt:, revision: item.revision + 1)
+  use _board <- or_reply(queued_board(strand, updated), state, connection, id)
+  let queue =
+    dict.get(state.held, strand)
+    |> result.unwrap([])
+    |> list.map(fn(candidate) {
+      case held_id(candidate) == input_id {
+        True -> updated
+        False -> candidate
+      }
+    })
+  let state = put_held(state, strand, queue)
+  reply(state, connection, id, mutation_outcome("queued"))
+  state
 }
 
 fn pending_text(prompt: AgentMessage) -> String {

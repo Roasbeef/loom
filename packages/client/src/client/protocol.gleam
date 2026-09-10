@@ -128,6 +128,17 @@ pub type Command {
   /// Queue a turn to run after the live operation settles.
   FollowUp(strand: String, text: String)
 
+  /// Reads complete text of one input still held by this principal.
+  QueuedInputGet(strand: String, id: String)
+
+  /// Replaces held text only if the original revision has not changed.
+  EditQueuedInput(
+    strand: String,
+    id: String,
+    expected_revision: Int,
+    text: String,
+  )
+
   /// Cancel the strand's live operation.
   Abort(strand: String)
 
@@ -166,6 +177,12 @@ pub type Command {
 
   /// Reads a bounded, current blackboard view for one strand.
   NotesGet(strand: String)
+
+  /// Captures a bounded owner-only observation of the worktree.
+  WorktreeDiffGet
+
+  /// Reads the bounded live job roster of one strand.
+  LiveJobsGet(strand: String)
 
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
@@ -227,6 +244,15 @@ pub type Snapshot {
 
   /// Current note values and their captured revision, bounded for display.
   NotesSnapshot(board: JsonValue)
+
+  /// Pending, ready, or failed owner-only worktree observation.
+  WorktreeDiffSnapshot(board: JsonValue)
+
+  /// Live job rows captured from the jobs actor.
+  LiveJobsSnapshot(board: JsonValue)
+
+  /// Complete editable text and revision of one transient held input.
+  QueuedInputSnapshot(board: JsonValue)
 
   /// Every schedule the session holds (the reply to both `schedules`
   /// and a successful `schedule_cancel`, so one reply re-renders a
@@ -600,6 +626,19 @@ fn command_body(command: Command) -> #(String, JsonValue) {
     )
     Steer(strand:, text:) -> #("steer", strand_text(strand, text))
     FollowUp(strand:, text:) -> #("follow_up", strand_text(strand, text))
+    QueuedInputGet(strand:, id:) -> #(
+      "queued_input",
+      json.Object([#("strand", json.String(strand)), #("id", json.String(id))]),
+    )
+    EditQueuedInput(strand:, id:, expected_revision:, text:) -> #(
+      "edit_queued_input",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("id", json.String(id)),
+        #("expected_revision", json.Int(expected_revision)),
+        #("text", json.String(text)),
+      ]),
+    )
     Abort(strand:) -> #(
       "abort",
       json.Object([#("strand", json.String(strand))]),
@@ -645,6 +684,11 @@ fn command_body(command: Command) -> #(String, JsonValue) {
     CreateStrand(name:) -> #(
       "create_strand",
       object_of([#("name", option.map(name, json.String))]),
+    )
+    WorktreeDiffGet -> #("worktree_diff", json.Object([]))
+    LiveJobsGet(strand:) -> #(
+      "live_jobs",
+      json.Object([#("strand", json.String(strand))]),
     )
     ListModels -> #("models", json.Object([]))
     NotesGet(strand:) -> #(
@@ -796,6 +840,23 @@ fn decode_command_body(
     }
     "steer" -> decode_strand_text(body, Steer)
     "follow_up" -> decode_strand_text(body, FollowUp)
+    "queued_input" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use id <- result.try(required_string(fields, "id"))
+      Ok(QueuedInputGet(strand:, id:))
+    }
+    "edit_queued_input" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use id <- result.try(required_string(fields, "id"))
+      use expected_revision <- result.try(nonnegative_field(
+        fields,
+        "expected_revision",
+      ))
+      use text <- result.try(required_string(fields, "text"))
+      Ok(EditQueuedInput(strand:, id:, expected_revision:, text:))
+    }
     "abort" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
@@ -856,6 +917,15 @@ fn decode_command_body(
     }
 
     // The body is deliberately empty today; tolerant reading applies.
+    "worktree_diff" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(WorktreeDiffGet)
+    }
+    "live_jobs" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      Ok(LiveJobsGet(strand:))
+    }
     "models" -> Ok(ListModels)
     "notes" -> {
       use fields <- result.try(body_fields(body))
@@ -1071,6 +1141,15 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
     NotesSnapshot(board:) ->
       json.Object([
         #("mode", json.String("notes")),
+        #("board", board),
+      ])
+    WorktreeDiffSnapshot(board:) ->
+      json.Object([#("mode", json.String("worktree_diff")), #("board", board)])
+    LiveJobsSnapshot(board:) ->
+      json.Object([#("mode", json.String("live_jobs")), #("board", board)])
+    QueuedInputSnapshot(board:) ->
+      json.Object([
+        #("mode", json.String("queued_input")),
         #("board", board),
       ])
     SchedulesSnapshot(schedules:) ->
@@ -1550,6 +1629,27 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing notes board"),
       )
       Ok(SnapshotEvent(NotesSnapshot(board:)))
+    }
+    "worktree_diff" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing worktree_diff board"),
+      )
+      Ok(SnapshotEvent(WorktreeDiffSnapshot(board:)))
+    }
+    "live_jobs" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing live_jobs board"),
+      )
+      Ok(SnapshotEvent(LiveJobsSnapshot(board:)))
+    }
+    "queued_input" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing queued input board"),
+      )
+      Ok(SnapshotEvent(QueuedInputSnapshot(board:)))
     }
     "schedules" -> {
       use schedules <- result.try(case list.key_find(fields, "schedules") {

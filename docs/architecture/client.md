@@ -134,12 +134,35 @@ records priority, bounds and operation-specific cancellation.
 
 Live provider text is scoped to a request generation within an operation.
 Terminal markers retire only their own request, and stale cuts cannot erase a
-newer pushed answer. Compact tool groups preserve call identity; `/diff` shows
-captured edits. `/notes` reads current values through `client/notes_view` and
+newer pushed answer. Compact tool groups preserve call identity. `/notes` reads current values through `client/notes_view` and
 validates them in `tui/notes_view`, independently of the conversation transfer.
 The panel names capture and last-write revisions and labels excerpts. See
 [protocol 021](../../protocol-change/021-request-scoped-streams.md) and
 [protocol 023](../../protocol-change/023-current-client-observations.md).
+
+Bare `/queue` fetches complete held input before editing and saves by item ID
+and revision. The gateway checks the original principal and preserves queue
+position, priority, author, timestamp, and images. Conflicts retain the local
+draft; an uncertain save requires an explicit read in the same session, epoch,
+and incarnation. [Protocol 024](../../protocol-change/024-edit-queued-input.md)
+records the editing boundary.
+
+`/diff` requests a bounded Git observation of the attached workspace, with a
+changed-file navigator and the existing wide/narrow layouts. Git runs through
+the session broker under the final policy demoted to reads. A pending reply
+releases the conversation lane while a bounded Weft run finishes; the final
+push identifies the original request in its body. Refresh is explicit and old
+boards remain labelled stale after failure. [Protocol 025](../../protocol-change/025-worktree-observation.md)
+records authority, limits, and the distinction between a filesystem observation
+and an atomic snapshot. Captured edits remain a labelled fallback.
+
+The completion card and `/summary` use captured operation boundaries to
+attribute edits, paired tool results, and actual command exit codes. Missing
+start or ancestry evidence remains unavailable or partial. The live-job roster
+is a separate timestamped query of the existing jobs actor, requested on
+completion or explicit inspection, with current queue counts shown alongside.
+[Protocol 026](../../protocol-change/026-live-jobs-observation.md) records this
+bounded read; ordinary transcript captures do not enumerate historical jobs.
 
 The authoritative composition is
 [`client/daemon/main`](../../packages/client/src/client/daemon/main.gleam),
@@ -1152,6 +1175,8 @@ multiplayer scenario has run against production providers.
 | `client/daemon/server.gleam`, `protocol.gleam`, `session_socket.gleam` | Authenticated v2 control codecs and routes, resident-only attachment, and bounded socket admission. |
 | `client/protocol.gleam` | Total conversation codecs, credited transfer envelopes, and grant vocabulary. |
 | `client/gateway.gleam`, `client/daemon/transfer.gleam` | Original authenticated connection handles, command admission, authorization, and bounded snapshot/reconciliation state. |
+| `client/worktree_diff.gleam` | Bounded Git observations through the attached workspace's existing broker and read-only policy. |
+| `client/jobs.gleam` | Existing job lifecycle owner and explicit, strand-scoped live-job observations. |
 | `client/server.gleam` | The historical v1 transport retained for internal host/test callers, not the default listener. |
 | `client/serve.gleam` | Session assembly, domain resource construction, and independent runtime configuration resolution. |
 | `client/catalog.gleam` | The `loom.toml` model catalogue: strict parser, role chains, the provider-gateway builder, name lookups. |
@@ -1178,6 +1203,9 @@ multiplayer scenario has run against production providers.
 | `packages/tui/src/tui/daemon.gleam`, `attachment.gleam`, `session_channel.gleam` | Catalogue operations, candidate ownership, and credited conversation transfer. |
 | `packages/tui/src/tui/bootstrap.gleam`, `sessions.gleam` | The default bootstrap forwarding seam plus historical local-session helpers retained for internal tests. |
 | `packages/tui/src/tui_ffi.erl` | Terminal-specific OS integration; shared bootstrap primitives live in the host package. |
+| `packages/tui/src/tui/queue_editor.gleam` | Complete queued drafts, revisions, namespace identity, and uncertain-save state. |
+| `packages/tui/src/tui/worktree_view.gleam` | Validated worktree boards, request correlation, file selection, and refresh state. |
+| `packages/tui/src/tui/completion_summary.gleam`, `live_jobs.gleam` | Captured operation evidence and separately timestamped current job rosters. |
 | `packages/tui/src/tui/protocol.gleam` | Total event decoding and outbound command encoding. |
 
 Each unqualified Gleam path is relative to its package's source root —

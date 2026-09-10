@@ -843,16 +843,18 @@ fn captured_turns(
     })
   let expected_answers = list.reverse(answers)
   list.map(drivers, fn(driver) {
-    tui_v2_test.await(driver.data, fn(sample) {
-      user_turns(sample) == expected_users
-      && assistant_texts(sample) == expected_answers
-      && sample.model.streams == []
-      && sample.model.submitting == None
-      && list.any(sample.model.strands, fn(strand) {
-        strand.id == "main" && strand.live_phase == None
+    let sample =
+      tui_v2_test.await(driver.data, fn(sample) {
+        user_turns(sample) == expected_users
+        && assistant_texts(sample) == expected_answers
+        && sample.model.streams == []
+        && sample.model.submitting == None
+        && list.any(sample.model.strands, fn(strand) {
+          strand.id == "main" && strand.live_phase == None
+        })
       })
-      && list.all(answers, fn(answer) { string.contains(sample.frame, answer) })
-    })
+    tui_v2_test.assert_history_answers(driver.data, answers)
+    sample
   })
 }
 

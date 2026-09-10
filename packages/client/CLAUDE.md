@@ -2261,8 +2261,34 @@ build plane masks them where the jail can build the mask.
   Escape leaves both queues intact. Each strand has four normal and four
   steering slots. `queued` acknowledges transient custody, and a gateway
   restart can lose unadmitted input. `pending_inputs` exposes bounded excerpts
-  keyed by connection/request identity, while `input_queue_changed` requests
+  keyed by server-minted monotonic item identity, while `input_queue_changed` requests
   a refresh even when the durable cursor did not move.
+- **Held input edits preserve admission identity.** `QueuedInputGet` returns
+  complete text and revision only to the currently mutable original principal.
+  `EditQueuedInput` compares the held ID and revision in the gateway actor,
+  preserving FIFO position, priority, author, timestamp, and images. Missing or
+  drained input and stale revisions return conflict; no edit creates a prompt.
+  Per-connection `pending_inputs.editable` is derived from authenticated binding,
+  never the display origin. Protocol 024 bounds complete encoded documents to
+  48,000 bytes, refusing oversized text instead of editing an excerpt.
+- **Worktree observations release the command lane.** `WorktreeDiff` is an
+  owner-only read of the attached workspace. `serve` supplies the final policy
+  and existing broker to `client/worktree_diff`; Git runs with read-only
+  filesystem grants and fixed arguments in the sandbox. The gateway admits at
+  most two observations, one per connection. A Weft run retains the original
+  socket cancellation witness and a fourteen-second deadline. Pending is the
+  ordinary reply; ready and failed are pushes without `reply_to`, correlated
+  by `board.request_id`. Delivery revalidates authority. Status paths remain
+  literal identities; at most 24 files and 40,960 encoded board bytes are
+  retained, with omitted files and partial patches explicit. The pinned HEAD
+  and subsequent filesystem reads form an observation, not an atomic snapshot.
+- **Live-job observations use the existing lifecycle owner.** `LiveJobs` asks
+  the session jobs actor for nonterminal records owned by one strand. The actor
+  folds its existing dictionary, retains at most `max_jobs_per_strand` rows,
+  and reports total and omitted counts. Starting, running, and draining jobs
+  retain their actual `started_by` operation, command excerpt, age, and
+  deadline. A missing or unresponsive actor is unavailable, never an empty
+  roster. This explicit read adds no historical jobs to ordinary captures.
 - **Provider previews have request and observer custody.** Each pushed delta
   and terminal marker carries the durable request coordinates as `generation`.
   Preview observations retain their source; releasing an old observer cannot

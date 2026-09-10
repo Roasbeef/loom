@@ -477,9 +477,19 @@ fn exercise(
   let closed = tui_driver.play(terminal.data, [backend.KeyPress("esc")])
   assert closed.model.overlay == tui.NoOverlay
     as "Esc dismissed the inspector rather than being dropped before it opened"
+
+  // Completion and live-job observations can change the layout after a scroll
+  // sample. Keep navigating within the existing deadline until the sample
+  // returned by the wait itself contains the winning author's rendered name.
   let observed =
     tui_v2_test.await(terminal.data, fn(sample) {
-      string.contains(sample.frame, author.name)
+      case string.contains(sample.frame, author.name) {
+        True -> True
+        False -> {
+          let _ = tui_driver.play(terminal.data, [backend.KeyPress("pageup")])
+          False
+        }
+      }
     })
   assert string.contains(observed.frame, author.name)
     as "the observer renders the winning author, not just the decoded record"

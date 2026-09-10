@@ -19,6 +19,7 @@ import core/json
 import core/message
 import core/register
 import core/tx
+import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/atom
@@ -3541,4 +3542,418 @@ pub fn a_prompt_cannot_bypass_held_input_before_the_retirement_hint_test() {
       }
     })
     as "the held turn still precedes the newly arrived normal prompt"
+}
+
+// Queue edits reuse the parked provider above. The actual held item and its
+// revision are obtained through credited metadata, never inferred from text.
+// Subscribe and finish its initial credited cut before any later queue read.
+// The general mutation fixture intentionally leaves that cut open; these tests
+// exercise repeated captures and therefore must return every continuation.
+fn queued_socket(
+  harness: Harness,
+  principal: access.Principal,
+  role: access.Authority,
+) -> gateway.ConnectionHandle {
+  let #(socket, _, _) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      principal,
+      role,
+      process.self(),
+    )
+  let assert protocol.SnapshotBegin(header) =
+    queued_request(
+      socket,
+      900,
+      protocol.Subscribe(
+        ids.session_id_to_string(api.session_id(harness.runtime)),
+        None,
+      ),
+    )
+    as "the queued-input fixture subscribes with a credited cut"
+  let assert json.String(snapshot_id) = queue_field(header, "snapshot_id")
+    as "the initial cut carries its continuation identity"
+  finish_queue_capture(socket, snapshot_id, 0, 900_000, 100)
+  socket
+}
+
+fn finish_queue_capture(
+  socket: gateway.ConnectionHandle,
+  snapshot_id: String,
+  index: Int,
+  request: Int,
+  remaining: Int,
+) -> Nil {
+  assert remaining > 0 as "the bounded fixture capture must terminate"
+  case
+    queued_request(socket, request, protocol.SnapshotNext(snapshot_id, index))
+  {
+    protocol.SnapshotEnd(_) -> Nil
+    protocol.SnapshotChunk(_) ->
+      finish_queue_capture(
+        socket,
+        snapshot_id,
+        index + 1,
+        request + 1,
+        remaining - 1,
+      )
+    _ ->
+      panic as "every credited continuation yields a fragment or its terminal marker"
+  }
+}
+
+fn queued_request(
+  socket: gateway.ConnectionHandle,
+  id: Int,
+  command: protocol.Command,
+) -> protocol.Event {
+  let assert Ok(frame) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(id:, command:)),
+    )
+    as "the queue command receives a bounded reply"
+  let assert Ok(envelope) = protocol.decode_event(frame)
+    as "the queue reply decodes"
+  envelope.event
+}
+
+fn queue_field(value: json.JsonValue, key: String) -> json.JsonValue {
+  let assert json.Object(fields) = value as "the queue record is an object"
+  let assert Ok(value) = list.key_find(fields, key)
+    as "the queue record carries its required field"
+  value
+}
+
+fn queued_rows(
+  socket: gateway.ConnectionHandle,
+  id: Int,
+) -> List(json.JsonValue) {
+  let assert protocol.SnapshotBegin(header) =
+    queued_request(socket, id, protocol.CatchUp(0))
+    as "queue metadata starts a credited capture"
+  let assert json.String(snapshot_id) = queue_field(header, "snapshot_id")
+    as "the capture identifies its continuation"
+  let assert protocol.SnapshotChunk(chunk) =
+    queued_request(socket, id + 1, protocol.SnapshotNext(snapshot_id, 0))
+    as "the first credited fragment carries metadata"
+  assert queue_field(chunk, "kind") == json.String("metadata")
+  let assert json.String(data) = queue_field(chunk, "data")
+    as "metadata bytes have their standard base64 encoding"
+  let assert Ok(bytes) = bit_array.base64_decode(data)
+    as "the metadata encoding is valid"
+  assert queue_field(chunk, "total_bytes")
+    == json.Int(bit_array.byte_size(bytes))
+    as "this bounded fixture's metadata fits in one complete fragment"
+  let assert Ok(text) = bit_array.to_string(bytes)
+    as "complete metadata is UTF-8"
+  let assert Ok(value) = json.parse(text) as "metadata is complete JSON"
+  let assert json.Array(rows) = queue_field(value, "pending_inputs")
+    as "queue rows are present even when empty"
+  finish_queue_capture(socket, snapshot_id, 1, id * 1000, 100)
+  rows
+}
+
+fn queued_id(row: json.JsonValue) -> String {
+  let assert json.String(id) = queue_field(row, "id")
+    as "held input has an opaque identity"
+  id
+}
+
+fn queued_board(
+  socket: gateway.ConnectionHandle,
+  request: Int,
+  id: String,
+) -> json.JsonValue {
+  let assert protocol.SnapshotEvent(protocol.QueuedInputSnapshot(board)) =
+    queued_request(socket, request, protocol.QueuedInputGet("main", id))
+    as "the original author receives complete editable text"
+  board
+}
+
+fn queued_edit(
+  socket: gateway.ConnectionHandle,
+  request: Int,
+  id: String,
+  revision: Int,
+  text: String,
+) -> protocol.Event {
+  queued_request(
+    socket,
+    request,
+    protocol.EditQueuedInput("main", id, revision, text),
+  )
+}
+
+fn assert_queue_outcome(event: protocol.Event) -> Nil {
+  let assert protocol.MutationOutcome(body) = event
+    as "the held update receives a mutation outcome"
+  assert queue_field(body, "status") == json.String("queued")
+}
+
+fn queue_messages(harness: Harness) -> List(message.AgentMessage) {
+  let assert Ok(rows) =
+    storage.scan_entries(
+      harness.runtime.session.store,
+      storage.entry_scan() |> storage.entry_seq_range(Some(1), None),
+    )
+    as "the fixture observes admitted messages directly"
+  list.filter_map(rows, fn(row) {
+    case row {
+      core_entry.MessageEntry(message: message.UserMessage(..) as user, ..) ->
+        Ok(user)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Editing preserves original content custody and FIFO identity across reconnect.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match queued_input_edit` runs the queue regressions.
+pub fn queued_input_edit_preserves_images_identity_and_revision_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let _ = queued_request(alice, 1000, protocol.Prompt("main", "open"))
+  let first_image = message.UserImage("AQID", "image/png")
+  let second_image = message.UserImage("BAUG", "image/jpeg")
+  let original = [
+    message.UserText("before", Some("old-signature")),
+    first_image,
+    message.UserText("second", None),
+    second_image,
+  ]
+  assert_queue_outcome(queued_request(
+    alice,
+    1001,
+    protocol.PromptContent("main", original),
+  ))
+  assert_queue_outcome(queued_request(
+    alice,
+    1002,
+    protocol.FollowUp("main", "duplicate"),
+  ))
+  assert_queue_outcome(queued_request(
+    alice,
+    1003,
+    protocol.FollowUp("main", "duplicate"),
+  ))
+  let assert [image_row, first_duplicate, second_duplicate] =
+    queued_rows(alice, 1010)
+    as "each held submission has its own ordered row"
+  let image_id = queued_id(image_row)
+  assert queued_id(first_duplicate) != queued_id(second_duplicate)
+  assert queue_field(image_row, "revision") == json.Int(0)
+  assert queue_field(image_row, "editable") == json.Bool(True)
+  let original_board = queued_board(alice, 1012, image_id)
+  assert queue_field(original_board, "text") == json.String("before\nsecond")
+  assert queue_field(original_board, "attachment_count") == json.Int(2)
+
+  // A renamed reconnect is still the original principal. Its edit cannot
+  // rewrite the author snapshot attached to the original submission.
+  gateway.connection_detach(alice)
+  let reconnected =
+    queued_socket(
+      harness,
+      operator("alice", "Renamed Alice"),
+      access.Participant(access.Operator),
+    )
+  let replacement = string.repeat("complete document ", 800)
+  assert_queue_outcome(queued_edit(reconnected, 1020, image_id, 0, replacement))
+  let updated = queued_board(reconnected, 1021, image_id)
+  assert queue_field(updated, "text") == json.String(replacement)
+  assert queue_field(updated, "revision") == json.Int(1)
+  assert queue_field(updated, "attachment_count") == json.Int(2)
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    queued_edit(reconnected, 1022, image_id, 0, "stale")
+    as "an old revision cannot overwrite the accepted edit"
+  assert_queue_outcome(queued_edit(
+    reconnected,
+    1023,
+    queued_id(second_duplicate),
+    0,
+    "last",
+  ))
+  let assert [same_image, same_first, same_second] =
+    queued_rows(reconnected, 1030)
+    as "editing changes no queue position"
+  assert list.map([same_image, same_first, same_second], queued_id)
+    == list.map([image_row, first_duplicate, second_duplicate], queued_id)
+  let assert json.String(excerpt) = queue_field(same_image, "text")
+    as "ordinary metadata retains its bounded excerpt"
+  assert string.byte_size(excerpt) <= 512
+  assert excerpt != replacement
+
+  release_gate(gate)
+  let assert poll.Answered(messages) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      let messages = queue_messages(harness)
+      case list.length(messages) == 4 {
+        True -> poll.Done(messages)
+        False -> poll.Retry
+      }
+    })
+    as "the queue drains once in its original order"
+  let assert [
+    _,
+    message.UserMessage(content:, origin:, timestamp:),
+    message.UserMessage(content: middle, ..),
+    message.UserMessage(content: last, ..),
+  ] = messages
+    as "all admitted rows retain their original user-message shape"
+  assert content
+    == [message.UserText(replacement, None), first_image, second_image]
+  assert origin == Some(message.Origin("alice", "Alice"))
+  let #(original_time, _) = clock.read(harness.runtime.effects.clock)
+  assert timestamp == original_time
+  assert middle == [message.UserText("duplicate", None)]
+  assert last == [message.UserText("last", None)]
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    queued_edit(reconnected, 1040, image_id, 1, "too late")
+    as "a drain that wins never turns an edit into another prompt"
+  assert list.length(queue_messages(harness)) == 4
+}
+
+/// Complete reads and edits require the original mutable principal.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match queued_input_edit` runs the queue regressions.
+pub fn queued_input_edit_authority_bounds_and_priority_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let bob =
+    queued_socket(
+      harness,
+      access.Principal("owner", "Owner", access.OwnerPrincipal),
+      access.Owner,
+    )
+  let observer =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Observer),
+    )
+  let _ = queued_request(alice, 1100, protocol.Prompt("main", "open"))
+  assert_queue_outcome(queued_request(
+    alice,
+    1101,
+    protocol.FollowUp("main", "first"),
+  ))
+  assert_queue_outcome(queued_request(
+    alice,
+    1102,
+    protocol.FollowUp("main", string.repeat("x", 48_000)),
+  ))
+  let assert [first, oversized] = queued_rows(alice, 1110)
+    as "both inputs are still held behind the controlled provider"
+  let first_id = queued_id(first)
+  let oversized_id = queued_id(oversized)
+
+  // Even owner authority does not make another principal the original author.
+  list.each([bob, observer], fn(socket) {
+    let assert [row, _] = queued_rows(socket, 1120)
+      as "every subscribed peer may display the queue"
+    assert queue_field(row, "editable") == json.Bool(False)
+    let assert protocol.ErrorEvent(code: "forbidden", ..) =
+      queued_request(socket, 1122, protocol.QueuedInputGet("main", first_id))
+      as "complete editing text is restricted to its mutable author"
+    let assert protocol.ErrorEvent(code: "forbidden", ..) =
+      queued_edit(socket, 1123, first_id, 0, "someone else's edit")
+      as "an observer or another principal cannot replace held text"
+  })
+  let assert protocol.ErrorEvent(code: "queued_input_too_large", ..) =
+    queued_request(alice, 1130, protocol.QueuedInputGet("main", oversized_id))
+    as "oversized complete text is refused instead of silently truncated"
+  let assert protocol.ErrorEvent(code: "queued_input_too_large", ..) =
+    queued_edit(alice, 1131, first_id, 0, string.repeat("\"", 24_000))
+    as "the actual escaped reply size bounds a replacement"
+  let untouched = queued_board(alice, 1132, first_id)
+  assert queue_field(untouched, "revision") == json.Int(0)
+  assert queue_field(untouched, "text") == json.String("first")
+  assert_queue_outcome(queued_edit(alice, 1133, first_id, 0, "edited first"))
+  assert_queue_outcome(queued_edit(
+    alice,
+    1134,
+    oversized_id,
+    0,
+    "edited second",
+  ))
+
+  // Editing ordinary inputs cannot move them ahead of steering. The held
+  // provider cannot finish naturally before the explicit release below.
+  assert_queue_outcome(queued_request(
+    alice,
+    1140,
+    protocol.Steer("main", "steer first"),
+  ))
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "steer first"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "steering keeps its priority over edited ordinary input"
+  release_gate(gate)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case
+        user_prompt_texts(harness)
+        == ["open", "steer first", "edited first", "edited second"]
+      {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "edited ordinary messages retain FIFO order after steering"
+}
+
+// Repeated client request IDs cannot alias the gateway's held-item identity.
+pub fn queued_input_edit_repeated_request_ids_are_distinct_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let _ = queued_request(alice, 1200, protocol.Prompt("main", "open"))
+  assert_queue_outcome(queued_request(
+    alice,
+    1201,
+    protocol.FollowUp("main", "first"),
+  ))
+  assert_queue_outcome(queued_request(
+    alice,
+    1201,
+    protocol.FollowUp("main", "second"),
+  ))
+  let assert [first, second] = queued_rows(alice, 1210)
+    as "both requests create distinct held items"
+  let first_id = queued_id(first)
+  let second_id = queued_id(second)
+  assert first_id != second_id
+  assert_queue_outcome(queued_edit(alice, 1220, first_id, 0, "edited first"))
+  assert queue_field(queued_board(alice, 1221, first_id), "text")
+    == json.String("edited first")
+  assert queue_field(queued_board(alice, 1222, second_id), "text")
+    == json.String("second")
+  release_gate(gate)
 }

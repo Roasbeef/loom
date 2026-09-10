@@ -1,0 +1,1 @@
+{"v":2,"event":"snapshot","body":{"mode":"worktree_diff","board":{"status":"ready","request_id":51,"source":"git","observed_at_ms":1000,"repository":"head","entries":[],"total":0,"omitted":0,"extent":"complete"}}}

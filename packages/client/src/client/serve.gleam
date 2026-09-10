@@ -68,6 +68,7 @@ import client/secrets
 import client/server
 import client/system_prompt
 import client/wiring
+import client/worktree_diff
 import core/clock.{type Clock}
 import core/ids
 import filepath
@@ -2863,6 +2864,23 @@ fn assemble_in(
       supervision.worker(fn() {
         hub.start(
           hub.default_options(settings.session_id, runtime)
+            |> hub.with_worktree_diff(fn() {
+              worktree_diff.capture(worktree_diff.Wiring(
+                workspace: settings.workspace,
+                broker: broker_actor,
+                base_policy:,
+                clock:,
+                demand: settings.demand,
+                env: environment,
+                entropy:,
+              ))
+              |> result.map(worktree_diff.to_json)
+              |> result.map_error(worktree_diff.error_message)
+            })
+            |> hub.with_live_jobs(fn(strand) {
+              jobs.live_jobs(jobs_name, strand, waiting: 1000)
+              |> result.map_error(string.inspect)
+            })
             |> hub.with_catalog(settings.catalog)
             |> hub.with_registry(tool_registry)
             |> hub.with_code_mode_issue(case toolchain {

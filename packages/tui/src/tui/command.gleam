@@ -62,6 +62,12 @@ pub type Command {
   /// Browse successful edit diffs retained in this client.
   Diff
 
+  /// Inspect held inputs without creating another submission.
+  QueueInspect
+
+  /// Inspect the latest completed operation and separately observed live jobs.
+  Summary
+
   /// Toggle expanded reasoning and tool detail.
   Details
 
@@ -221,7 +227,8 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/sessions", "switch local sessions", False),
     Suggestion("/rename", "rename the current session", True),
     Suggestion("/notes", "browse agent notes", False),
-    Suggestion("/diff", "browse captured edit diffs", False),
+    Suggestion("/diff", "observe current worktree changes", False),
+    Suggestion("/summary", "inspect the latest completed operation", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
     Suggestion("/strands", "list session strands", False),
@@ -235,7 +242,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/approve", "approve an exact displayed request", True),
     Suggestion("/deny", "reject an exact displayed request", True),
     Suggestion("/steer", "inject into the live operation", True),
-    Suggestion("/queue", "run after the live operation", True),
+    Suggestion("/queue", "inspect queued inputs; /queue text adds one", False),
     Suggestion("/clear", "clear this local transcript", False),
     Suggestion("/quit", "leave the client", False),
   ]
@@ -289,12 +296,13 @@ pub fn parse(input: String) -> Command {
     "/deny" -> MissingArgument("deny")
     "/notes" -> Notes
     "/diff" -> Diff
+    "/summary" -> Summary
     "/details" -> Details
     "/effort" -> MissingArgument("effort")
     "/compact" -> Compact
     "/abort" -> Abort
     "/steer" -> MissingArgument("steer")
-    "/queue" -> MissingArgument("queue")
+    "/queue" -> QueueInspect
     "/clear" -> Clear
     "/quit" -> Quit
     "/strand" -> MissingArgument("strand")
@@ -374,7 +382,7 @@ pub fn help_text() -> String {
   <> "/sessions         switch locally managed sessions\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"
-  <> "/diff             browse captured edit diffs\n"
+  <> "/diff             observe current worktree changes\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
   <> "/strands          list session strands\n"
@@ -385,6 +393,8 @@ pub fn help_text() -> String {
   <> "/compact          compact the active strand\n"
   <> "/abort            abort the live operation\n"
   <> "/steer <text>     inject into the live operation\n"
+  <> "/summary          inspect latest completion and live jobs\n"
+  <> "/queue            inspect and edit queued inputs\n"
   <> "/queue <text>     run after the live operation\n"
   <> "/clear            clear this local transcript\n"
   <> "/quit             leave the client"

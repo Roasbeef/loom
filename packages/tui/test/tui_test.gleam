@@ -709,7 +709,7 @@ pub fn steer_and_queue_commands_test() {
     == command.Steer("use the new constraint")
   assert command.parse("/queue review the result")
     == command.Queue("review the result")
-  assert command.parse("/queue") == command.MissingArgument("queue")
+  assert command.parse("/queue") == command.QueueInspect
 }
 
 pub fn steer_and_follow_up_frames_test() {
@@ -1666,7 +1666,7 @@ pub fn a_script_draws_one_frame_per_event_test() {
   let assert Ok(run) = tui.run_script(model, script)
   assert list.length(run.frames) == 4
   let assert Ok(last) = list.last(run.frames)
-  assert string.contains(frame.buffer_to_text(last), "/details")
+  assert string.contains(frame.buffer_to_text(last), "/diff")
 }
 
 pub fn a_scripted_resize_moves_the_reported_size_test() {

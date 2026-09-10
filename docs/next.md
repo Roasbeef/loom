@@ -1,223 +1,241 @@
 # Next
 
 Read this first for current work, settled boundaries, and remaining acceptance
-criteria. Rewrite it after the next body of work. Measurements and detailed
-review evidence belong in their own documents.
+criteria. Rewrite it after the next body of work. Detailed review and test
+accounts belong in their own documents.
 
-Re-baselined on September 10, 2026 against merged PR #342 (`e50e6351`) and
-the gate-recovery implementation in PR #343 (`0bf37c63`). PR #341
-(`8f0d79ff`) and PR #342 are merged. The follow-up's complete local gate,
-GitHub checks and twenty-run Linux acceptance passed as recorded below. A result for one commit does not sign off another.
+Re-baselined September 10, 2026 against merged PR #343 (`822c5c8b`) and the
+UX implementation and native follow-ups through `dadecfce`, plus the etui
+dependency update described below. PR #343 is merged and #335 is closed.
+PR #344 carries the UX work on `codex/ux-followthrough`. Merge authorization
+was given on September 10; its live PR state and the exact commit's Linux
+signoff establish integration status. Local checks do not substitute for that
+required signoff.
 
 ## Where the tree is
 
 | Body of work | Current state |
 |---|---|
-| Domain lifecycle | PRs 337–340 are in the baseline. This follow-up changes no production process, admission or retirement custody. |
-| Human controls | Host-owned priority steering, normal queued turns, operation-bound Escape, and tool/notes/diff presentation are merged. |
-| Rendering | PR #341 reuses settled speaker/text layout at the same width and discards old keys when projections are replaced. |
-| Changes pane | PR #342 keeps the conversation beside captured edits from 140 columns, falls back to one panel below that width, and preserves independent scrolling. |
-| Installed tools | PATH discovery, ripgrep and explicitly configured read-only support mounts are available. Disposable jailed probes passed Go tests, Apple Git, ripgrep and a basic cgo/SDK build. The owner's configuration is unchanged. |
-| Measurements | The recorded 532-entry replay produced 537 equivalent frames, about 3.3× faster with 60% less process CPU and 29% fewer profiled heap-word allocations. These remain replay measurements, not live-client CPU or daemon-memory evidence. |
-| Gate recovery | Lifecycle observations now authenticate disposable same-epoch connections. A read timeout cannot retire the fixture's separate mutation connection. `make replay-simulation SIM_SEED=n` selects one generated session case. |
-| Release acceptance | Joined shipped tests, SQLite/resource decisions, scheduling and memory-off observations retain their separate tracker scope. |
+| Human controls | Priority steering, ordinary queued turns, and operation-bound Escape are in the baseline. Bare `/queue` now fetches and edits complete held input by identity and revision. |
+| Changes pane | `/diff` observes the attached workspace through jailed Git, including net staged/unstaged and untracked changes. File navigation, explicit refresh, wide side pane, and narrow fallback are implemented. |
+| Completion | The latest card and `/summary` report captured operation outcomes, edits, and actual tool/command results, with current queue counts and a separate live-job observation. |
+| Rendering | The existing settled-layout cache and independent conversation/diff scrolling remain. No new performance claim is made for the additional views. |
+| Gate recovery | PR #343 is merged; #335 was closed with its existing acceptance evidence. The direct `make replay-simulation SIM_SEED=n` target remains available. |
+| Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their own open issues. |
 
 ### What the previous edition got wrong
 
-The previous edition described rendering and responsive changes as follow-ups
-awaiting integration. Both are now merged. PR #342 was merged with explicit
-owner authorization after Linux gate failures; its local acceptance did not
-establish a passing final Linux signoff. The recovery-fixture failure is part
-of #335, and the separate conformance timeout remains an observation to
-classify if it returns.
-
-The recovery fixtures treated a timed-out read as a reason to retry on the
-same control connection. That owner retires on an in-flight deadline, so the
-next read receives `Disconnected`. The new test observation boundary probes
-the original endpoint and epoch once per lifecycle wait. Authentication and
-status reads consume one fifteen-second deadline, and the observation requests
-closure before returning. Mutations retain their original connection. It does
-not launch a daemon or retry uncertain mutations. Controlled-peer regressions
-check owner retirement, replies beyond the former two-second limits, and
-closure while the observation caller remains alive.
-
-The older invalid-replay correction remains documented in
-[the execution note](design-notes/developer-experience-execution.md): the
-original reconstruction rendered protocol errors, and its timings and 22.2%
-sanitizer attribution were withdrawn. [The performance guide](performance.md#reuse-settled-transcript-layout)
-records the corrected workload and its limits. Production client, TUI, broker
-and host sources are unchanged by the gate-recovery follow-up.
+The previous handoff still directed the next session to merge #343 and close
+#335. Both actions completed on September 10. It also described file navigation,
+worktree diffs, queued-input editing, and completion summaries as unimplemented.
+Those flows are now implemented and locally exercised together. The remaining
+acceptance list below does not silently inherit success from those tests.
 
 ### Current verification
 
-The complete local `make check` passed on `0bf37c63`, including 1,516 client
-tests, 281 TUI tests and zero house-rule lint errors.
-`make replay-simulation SIM_SEED=33` passed independently, and documentation
-checks passed with existing warnings.
+All local gate stages passed, using the initial full gate and the affected and
+remaining stages after integration fixes. Final results include 1,531 client
+tests, 310 TUI tests, 77 conformance tests, and 127 lint-package tests. Native
+helper format, vet, build, and tests passed. The native terminal was rebuilt,
+and its real-daemon fixture passed. House-rule lint reports zero errors and
+649 warnings; documentation checks report zero errors with existing warnings.
+The initial failures and their repairs are recorded in the review below.
 
-The controlled-peer shared-deadline regression passed. Restoring either short
-authentication or read deadline makes it fail, as does removing explicit
-observation closure. Independent review identified the need to keep the test
-caller alive while checking closure; the regression now does so.
+Opt-in shipped bootstrap fixtures were not enabled, and real code-mode build
+fixtures reported their absent seed. Those skips are not shipped acceptance or
+Linux signoff. The new joined Git/queue/job scenario ran without a skip.
 
-Thirty focused Linux recovery runs and twenty consecutive complete
-`scripts/e2e_client_bootstrap.sh` runs passed on `0bf37c63`, with
-`LOOM_TEST_PARALLEL=8` and all eleven expected Linux enforcement layers.
-Every complete run recorded thirteen fixture commands exiting zero, with no
-skips. The earlier standalone sequence lacked delegated cgroups and does not
-count. All fifteen GitHub checks passed on the same code commit, including
-both platform gates and the 200-seed soak.
+The focused backend tests cover queue revision conflicts, admission races,
+original-author restrictions, retained images, reused request IDs, real jailed
+Git, observation cancellation, and the live-job roster. The wire conformance
+suite checks 48 fixtures. Terminal regressions cover namespace-safe drafts,
+uncertain saves, async worktree correlation, unrelated errors, file identity,
+scrolling across resize, and partial or unavailable completion evidence.
 
-The identity-recovery fixture intentionally waits for the crashed writer's
-natural lease expiry. These native-VM fixtures have no simulation seed. The
-single-seed target is for the generated session simulation; its failure
-report prints the seed and corroboration verdict before EUnit truncates the
-panic. #335's two acceptance criteria are met. PR #343 records integration
-status and checks for the final documentation commit; this handoff does not
-claim a separate final-head remote signoff.
+The joined `joined_queue_worktree_and_completion_drive` test passed with a real
+daemon, websocket, terminal model, broker, and Git repository. Five exact
+provider requests exercise a successful edit, actual bash exit 7, a live
+background job, and the next turn consuming the exact edited multiline prompt.
+The terminal also selects external and untracked Git changes. The provider is
+a deterministic fixture and the display backend is virtual; this does not prove
+an external provider network or every interactive terminal layout.
 
-## Remaining video-review scope
+One independent review found four reachable integration errors: a live-job
+read classified as a mutation, a duplicate synchronous worktree reply, queue
+identity reuse across sessions, and unrelated errors clearing pending views.
+Each was corrected and covered. See [the review](review/ux-followthrough.md).
 
-The original UX acceptance list remains open beyond the merged changes.
-`/diff` has its responsive right-hand pane and narrow fallback; its changed-file
-navigator and consolidated worktree diff are missing. Editing already queued
-input and the proposed completion/running-job summary are also missing.
-Broader SDK/framework builds, joined reconnect/control exercise, reading and
-selection under live output, complete latency distributions and daemon-memory
-plateau remain unverified. See the
-[acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review).
+A later direct native run exposed a missed worktree patch-cache invalidation.
+Keyboard selection, mouse selection, and delivered observations now invalidate
+that projection, and the cache records its actual board and selection. Native
+160-by-48 and 100-by-30 checks and the strengthened joined fixture passed.
+The same run found that etui retained terminal flow control on this macOS host,
+consuming the editor's Ctrl+s shortcut. The fork now clears `IXON` after entering
+raw mode, and both Loom pins use `ff80e0e`. It retains all seven commits beneath
+the previous `702a884` pin. The rebuilt native client saved an exact multiline
+queued prompt with Ctrl+s and delivered it to the next provider request, starting
+from an ordinary terminal with flow control enabled. No pane adjustment was
+needed. [Issue #345](https://github.com/Roasbeef/loom/issues/345) tracks upstreaming
+the complete remaining eight-commit fork stack.
+
+The prior head's shipped live-delivery and multiplayer CI fixtures required
+all answers within one viewport. They now inspect real scrolled history while
+retaining the original ordered-record and author assertions. Both opt-in tests
+passed locally against a newly built lean server release. GitHub run
+`34530464675` at `dadecfce` then passed both platform bootstrap lanes and the
+macOS gate, but its Linux client job failed one approval/effect display fixture
+(1,530 passed). That fixture passes in a focused local rerun; fresh CI must
+establish the dependency update's status.
+
+The etui update passed all 312 TUI tests, the joined queue/worktree/completion
+fixture, native shipment build, and documentation checks. Its own fork passed
+891 Erlang and 844 JavaScript tests, JavaScript smoke, and the real PTY regression
+for Ctrl+s delivery and normal/SIGKILL/SIGINT terminal restoration. The PTY test
+fails against the old fork source. One independent review found no actionable
+issue in this terminal change.
+
+The next hosted run, `34535424119` at `c923b92c`, passed the Linux client
+suite but its aggregate gate reported two undeclared enforcement skips: joined
+terminal observations and worktree observation. Both fixtures now have hard
+runs in the delegated Linux jail and macOS end-to-end jobs, each followed by
+a census that permits no skip. Only the ordinary Linux runner declares those
+prerequisite skips. All seven focused tests and the strict census passed locally
+on macOS. Final-head hosted checks and the required Linux signoff are recorded
+on PR #344; the merge gate remains the repository's `scripts/signoff.sh`.
+
+The first signoff at `8d4811ea` exposed three fixture assumptions: the queue
+save waited for a transient notice, approval scrolling stopped before later
+layout updates, and a non-repository fixture omitted the protected blob store
+that production boot creates. The fixtures now observe retained save state,
+continue navigation within the original deadline, and prepare that directory.
+The joined and approval fixtures each passed five isolated macOS runs; all six
+worktree tests passed. A shared code-mode helper build now publishes through a
+unique adjacent staging file and atomic rename. All 280 seeded code-mode tests
+passed without skips, and 64 concurrent Linux builds and controlled failure
+checks passed. The original build race did not reproduce in the stress probe.
+Two older lifecycle failures each passed five isolated Linux runs; their
+full-suite cause remains unresolved. The final-head signoff must pass before
+merge, including those tests and the complete skip census.
 
 ## What to do next
 
-1. **Finish #343's integration and close #335.** The code commit passed the
-   full local gate, GitHub checks and twenty complete Linux bootstrap runs.
-   **Exit:** merge the reviewed change with the final head's required checks
-   satisfied and close #335 with the recorded evidence. Classify a future
-   simulation failure from its full seed/verdict report; repeating native-VM
-   fixtures does not reproduce BEAM interleavings from a seed.
+1. **Confirm the UX integration state.** Inspect PR #344 and continue from
+   its merged head once the required checks and Linux signoff pass. The owner
+   explicitly authorized this merge. **Exit:** the PR is merged through the
+   normal gate and its resulting commit is recorded on GitHub.
 
-2. **Continue the remaining UX scope deliberately.** The missing changes-pane
-   navigation, queued-input editing and completion summary are separate from
-   this fixture fix. Explicit read-only support mounts passed disposable tool
-   probes; adopting them in the owner's configuration is still an owner
-   choice. **Exit:** each selected flow works in the intended environment.
-   The source-file splitting survey remains report-only; no broad split is
-   authorized by the usability work.
+2. **Finish the remaining video acceptance.** Exercise reading and selection
+   under sustained output across layouts, the joined reconnect/held-tool/multiple
+   queue scenario, and broader SDK/framework builds. Measure command-to-ack
+   latency distributions and owner-attributed daemon memory plateau separately.
+   **Exit:** the [acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review)
+   has direct evidence for each selected flow. The source-splitting survey
+   remains report-only; no broad module refactor is part of this work.
 
-3. **Keep release dependencies explicit.** **#247** owns the SQLite binding
-   decision; **#241** hosted macOS latency; **#246** the joined authority, fault,
-   pressure and crash matrix; **#244** recurring schedules, detached timers and
-   recovery; **#245** memory-off/no-distillation evidence. All remain open.
-   **Exit:** each issue's own acceptance on the final dependency set.
+3. **Keep release dependencies explicit.** **#247** owns the SQLite binding;
+   **#241** hosted macOS latency; **#246** the shipped authority/fault/pressure
+   matrix; **#244** schedules and timer recovery; **#245** memory-off evidence.
+   All were open at this audit. **Exit:** each issue's own acceptance on the
+   final dependency set.
 
-4. **Keep follow-ups narrow.** **#248** owns dependency fingerprint/re-resolution
-   problems. **#296** concerns bundled ERTS in jailed PATH; **#286** refused
-   extension visibility; **#283** idle helper retirement. **Exit:** reproduce
-   each specific symptom before patching it. History-index issue **#324**
-   remains closed.
+4. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
+   re-resolution; **#296** bundled ERTS in jailed PATH; **#286** refused extension
+   visibility; **#283** idle helper retirement. **Exit:** reproduce the specific
+   symptom before changing its owner. History-index issue **#324** remains closed.
 
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
 
-**One daemon, metadata-only restart.** The
-[execution ruling](design-notes/single-daemon.md#execution-ruling) requires
-explicit authorized opens. Listing and preview do not resume work. A terminal
-never resends an uncertain mutation: [ADR-009](adr/009-record-terminal-attempt-custody.md)
-and [ADR-010](adr/010-retain-one-unsent-terminal-command.md) separate retained
-attempt identity from the one unsent command.
+**Queue edits do not resubmit.** [Protocol 024](../protocol-change/024-edit-queued-input.md)
+keeps FIFO position, priority, author, timestamp, and images while comparing
+held ID and revision in the gateway actor. Only the currently mutable original
+principal can fetch or edit. A stale or drained item conflicts. Unknown saves
+retain a locked draft and require an explicit read in the same session, epoch,
+and incarnation; a new connection alone may reconcile it. Queue lifetime is
+still transient under protocol 018.
+
+**Worktree observation is owner-scoped and bounded.**
+[Protocol 025](../protocol-change/025-worktree-observation.md) uses the attached
+workspace's final policy and existing broker, demoting filesystem grants to
+reads. The gateway acknowledges pending work and runs Git outside its handler
+through Weft. The final push has no `reply_to`, retains the original request ID,
+and rechecks authority. Omitted files, partial patches, and failed refreshes are
+explicit. A pinned HEAD plus later filesystem reads is not an atomic snapshot.
+
+**Completion evidence and current jobs have different timestamps.** The
+terminal attributes history only between an observed operation source and its
+result leaf. Missing starts or ancestors remain unavailable or partial.
+[Protocol 026](../protocol-change/026-live-jobs-observation.md) queries the existing
+jobs actor explicitly and includes starting, running, and draining jobs. Ordinary
+conversation refreshes neither scan job history nor invoke Git.
+
+**One daemon, explicit activation.** The
+[execution ruling](design-notes/single-daemon.md#execution-ruling) keeps listing
+and preview from resuming work. [ADR-009](adr/009-record-terminal-attempt-custody.md)
+and [ADR-010](adr/010-retain-one-unsent-terminal-command.md) retain attempt
+identity and one unsent command without retrying uncertain mutations.
 
 **Original custody evidence decides retirement.**
 [Protocol 014](../protocol-change/014-helper-shutdown-witness.md) retains the
-native port until observed exit. Timeout, closed channels and a late `noproc`
-do not prove transitive cleanup. The manager's domain replacement follows the
-same rule, as documented in [sessions](architecture/sessions.md).
+native port until observed exit. Timeout, closed channels, and late `noproc`
+are not cleanup proof. Domain retirement is recorded in
+[sessions](architecture/sessions.md). Normal code-mode teardown remains scoped
+to `broker.abort_step`; operation-wide abort keeps its separate meaning in
+[ADR-005](adr/005-budget-pooling-granularity.md).
 
-**Admission and heavy work have different owners.** The registry acknowledges
-a bounded parked reservation; domain/session builders do heavy work outside
-its handler. A caller's five-second timeout remains an uncertain call outcome,
-not cancellation of an accepted operation. Do not add an unbounded postponed
-request queue to solve the closing-domain window.
+**Authority and jail roots remain server-owned.** Protocols
+[015](../protocol-change/015-daemon-control-and-session-attachments.md),
+[016](../protocol-change/016-record-human-origin.md), and
+[020](../protocol-change/020-minimal-jail-root.md) own activation, origin, and
+minimal roots. Explicit toolchain/support mounts remain configuration choices.
+This work does not modify the owner's installed configuration.
 
-**Authority is server-owned and checked at use.** Protocols
-[015](../protocol-change/015-daemon-control-and-session-attachments.md) and
-[016](../protocol-change/016-record-human-origin.md) define activation,
-membership and human origin. Workspace memory is owner-private; sharing uses
-session-only scope and explicit transcript acceptance.
+**Portable decisions and process ownership keep their boundaries.**
+`core`, `machine`, and `prompt` remain free of I/O and external functions.
+Process machinery follows [the Weft mapping](weft.md); the existing library
+supplies observation cancellation without a new Weft API.
 
-**The current jail base is an allowlist.**
-[Protocol 020](../protocol-change/020-minimal-jail-root.md) owns minimal roots,
-read-only toolchain regions and the compatibility host view for a readable
-root of `/`. [Protocol 004](../protocol-change/004-sandbox-policy-explicit-mounts.md)
-owns explicit mounts: merge identical derived mounts during assembly, refuse
-invalid or protected-path overlaps during validation. There is no `GrantMount`;
-[#243](https://github.com/Roasbeef/loom/issues/243)'s approval-policy question is
-separate. Darwin ancestor metadata grants remain recorded in
-[ADR-006](adr/006-macos-seatbelt-boundary.md).
-
-**Socket admission runs after initialization and keeps a transfer barrier.**
-The ownership and ordering are documented in
-[`session_socket`](../packages/client/src/client/daemon/session_socket.gleam).
-Do not move cross-actor admission back into the websocket initializer or let
-the upgrading HTTP process release its reservation before transfer is attempted.
-
-**Routine teardown is scoped to its own step.** A code-mode satellite uses
-`broker.abort_step`; operator abort retains operation-wide meaning. Background
-jobs may own sibling steps. [ADR-005](adr/005-budget-pooling-granularity.md) records
-the identity and abort decisions; [effects](architecture/effects.md#background-jobs)
-describes the resulting ownership.
-
-**Pure decisions stay portable; process machinery goes through Weft.**
-`core`, `machine` and `prompt` have no I/O or external functions. See
-[the style guide](gleam-style.md) and [the Weft mapping](weft.md).
-Production SQL is generated, with connection policy centralized in
-`storage/sqlite_policy`.
-
-**Only the gate script posts signoff.** `scripts/signoff.sh` produces the
-`signoff/linux` verdict for a pushed commit; do not post a success by hand.
-Keep runner hostnames in environment/configuration rather than repository
-artifacts. A merge status applies to its exact commit, not a later edited tree.
+**Only the gate posts Linux signoff.** `scripts/signoff.sh` owns the verdict
+for a pushed commit. Never post success by hand or treat an older commit's
+signoff as evidence for a changed tree.
 
 ## Deliberately open
 
 None of these is unfinished work somebody forgot.
 
-- Host-held input retains protocol 018's transient lifetime. This work changes
-  ordering and visibility, not durable queue storage or process custody.
-- Exact last-result reconciliation is safe but latest-wins. A missing or
-  unrelated result cannot establish retirement across arbitrarily skipped
-  operations; request pushes and reconnect handling remain the normal path.
-- **#243** remains the shipped approval-policy question. Broad local reads and
-  a user's approval route are separate decisions. **#85** remains optional
-  microVM work and is not a prerequisite for the current usability scope.
-- Background-job retention, foreground-to-job conversion, and other existing
-  jobs design work remain in the [jobs note](design-notes/background-jobs.md).
-  Closed delivery issues **#240** and **#183** are not reopened by this branch.
+- Completion remains latest-wins. A missed operation start cannot be reconstructed
+  by guessing from the last user message, and a skipped result is not retirement
+  evidence for an unrelated operation.
+- Worktree boards are explicit observations, with a captured-edit fallback for
+  preview, replay, or unavailable service. There is no filesystem watcher,
+  staging UI, commit action, or write capability in this change.
+- **#243** remains the shipped approval-policy question; **#85** remains optional
+  microVM work. Neither is a prerequisite added by these UX flows.
+- Background-job retention and conversion remain in the
+  [jobs note](design-notes/background-jobs.md). Closed delivery issues **#240**
+  and **#183** are not reopened by a current roster.
 
 ## How to verify
 
 ```sh
-make binaries
-LOOM_TEST_PARALLEL=8 make check
-make release release-client
+make check
 make doc-check
+bash scripts/test.sh client --match joined_queue_worktree_and_completion_drive
+bash scripts/test.sh client --match domain_observation_test
+bash scripts/test.sh tui --match queue_editor_test
+bash scripts/test.sh tui --match worktree_view_test
 make replay-simulation SIM_SEED=33
-make signoff SIGNOFF_ARGS=--dry-run
-LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote
 ```
 
-The bootstrap script requires the current `binaries` and `server-shipment`
-artifacts. Run it directly for the complete shipped-fixture acceptance;
-ordinary package checks report skips when their supplied executable is absent.
-For focused control retirement, use `bash scripts/test.sh client --match
-tui_daemon_read_deadline_is_not_a_mutation_outcome_test`.
-`gleam dev history <authorized.jsonl>` in `packages/tui` runs the repeatable
-saved-history layout measurement.
+The ordinary gate builds current helpers and the native terminal. Opt-in shipped
+bootstrap tests require `server-shipment` and their explicit environment; package
+success with those prerequisites absent is not shipped-fixture acceptance.
+Prepare `make codemode-seed` for real code-mode build coverage. Keep enforced
+code-mode worktrees outside `/tmp`, where the jail replaces sockets with scratch.
 
-Push the exact head before remote signoff and use one gate at a time in its
-owned checkout. Capture the gate command's exit status directly. Do not run
-performance comparisons alongside builds or test suites. Keep enforced
-code-mode state outside `/tmp`, which the jail replaces with scratch tmpfs.
-Preserve the original user session and unrelated checkout state. See
-[execution](execution.md) for the remaining operational rules.
+Capture each command's own exit status. Use one build/gate at a time in its
+checkout, and preserve the owner's session and unrelated work. Push the exact
+head before any separately required remote signoff. See [execution](execution.md)
+for the remaining operational rules.

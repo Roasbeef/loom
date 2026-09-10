@@ -238,18 +238,23 @@ principal's authority over the target session. Three authorities exist.
 
 | Authority | Origin | Session commands allowed |
 |---|---|---|
-| `owner` | The owner token. | All. |
-| `operator` | A membership with role `operator`. | All. |
-| `observer` | A membership with role `observer`. | Read-only commands only. |
+| `owner` | The owner token. | All, subject to original-author checks on queued input. |
+| `operator` | A membership with role `operator`. | All except `worktree_diff`, subject to original-author checks on queued input. |
+| `observer` | A membership with role `observer`. | Read-only commands that do not require owner or mutable-principal authority. |
 
 Source: (`client/gateway.gleam:1892-1898`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
-`history`, `escalations_get`, `models`, `notes` and `schedules`. Every other
+`history`, `escalations_get`, `models`, `notes`, `live_jobs`, `queued_input`,
+`worktree_diff` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
 Source: (`client/gateway.gleam:1957-1981`) and
 (`client/gateway.gleam:2834-2846`).
+
+Read classification does not grant access to every observation. `worktree_diff`
+requires owner authority; `queued_input` requires the currently mutable original
+submitting principal. Sections 4.9.17 and 4.9.18 define those narrower checks.
 
 On the control endpoint, owner authority is required for
 `sessions.create`, `sessions.default`, `sessions.set_default`,
@@ -1071,7 +1076,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1327-1335`).
+`wrong_session`. Source: (`client/gateway.gleam:1422-1430`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1277,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:797`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:841`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1333,7 +1338,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4083-4089`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4626-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -1582,6 +1587,50 @@ A client must label excerpts and omissions and must not equate an older
 run-start digest with this current observation. See
 [protocol 023](../protocol-change/023-current-client-observations.md).
 
+#### 4.9.17 `queued_input` and `edit_queued_input`
+
+`queued_input` takes `strand` and the opaque held item `id`. Its `snapshot`
+mode is `queued_input`, and `board` contains the complete `text`, `revision`,
+`kind`, and `attachment_count` alongside both identities. Only the original
+submitting principal, currently allowed to mutate the session, can read or
+edit the item. Owner status does not override another principal's authorship.
+Ordinary `pending_inputs` includes a per-recipient `editable` flag and revision.
+
+`edit_queued_input` takes `strand`, `id`, `expected_revision`, and replacement
+`text`. A successful compare-and-swap preserves position, priority, author,
+timestamp, and images, increments revision, and replies with `mutation_outcome`
+status `queued`. A stale or drained item returns `conflict`. Full encoded
+boards must fit 48,000 bytes; oversized text is refused rather than excerpted.
+An uncertain edit must be explicitly reconciled, never resubmitted as a new
+prompt. See [protocol 024](../protocol-change/024-edit-queued-input.md).
+
+#### 4.9.18 `worktree_diff`
+
+This subscribed owner-only read takes an empty body and uses the attached
+session's workspace and sandbox policy. The ordinary reply is `snapshot` mode
+`worktree_diff`, with `board: {status: "pending", request_id: Int}`. The final
+snapshot is a push with no `reply_to`; its board retains that request ID and
+has status `ready` or `failed`. A final failure supplies `code` and `message`.
+
+A ready board contains `source: "git"`, `observed_at_ms`, `repository`,
+`entries`, `total`, `omitted`, and `extent`. Each entry contains literal `path`,
+`index_status`, `worktree_status`, `patch`, `kind`, and `extent`. At most 24 files
+and 40,960 encoded bytes are returned. Patches compare staged and unstaged
+changes together against a pinned HEAD; untracked and unborn files are
+additions. Concurrent filesystem reads are an observation, not an atomic
+snapshot. See [protocol 025](../protocol-change/025-worktree-observation.md)
+for closed vocabularies, exact limits, and cancellation ownership.
+
+#### 4.9.19 `live_jobs`
+
+This read takes `strand` and returns `snapshot` mode `live_jobs`, with a
+`board` containing `strand`, `observed_at_ms`, `jobs`, `total`, and `omitted`.
+Each job supplies `id`, `state`, `started_by`, `command_excerpt`, `age_ms`, and
+`deadline_ms`. States are `starting`, `running`, and `draining`; the originating
+operation is independent of the strand's current operation. The existing jobs
+actor returns at most four rows. An unavailable actor is an error rather than
+an empty roster. See [protocol 026](../protocol-change/026-live-jobs-observation.md).
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -1590,9 +1639,10 @@ Over the authenticated session transport a client sees:
 
 - transfer frames: `snapshot_begin`, `snapshot_chunk`, `snapshot_end`;
 - mutation replies: `mutation_outcome`;
-- listing replies: `snapshot` with mode `models` or `schedules`;
+- auxiliary replies: `snapshot` with mode `models`, `schedules`, `notes`,
+  `queued_input`, `live_jobs`, or pending `worktree_diff`;
 - pushed frames: `committed`, `stream_delta`, `presence`, `snapshot`
-  with mode `config`, and `error`;
+  with mode `config` or final `worktree_diff`, and `error`;
 - refusals: `error` with `reply_to`.
 
 `snapshot` with mode `full`, `resume` or `strands`, and the durable
@@ -1611,7 +1661,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `notes` or `schedules`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `notes`, `schedules`, `queued_input`, `worktree_diff` or `live_jobs`. |
 
 Source: (`client/protocol.gleam:1448-1517`).
 
@@ -1620,7 +1670,8 @@ Mode `full` carries `session`, `next_seq`, `strands`, `entries`,
 Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
-Mode `schedules` carries `schedules`.
+Mode `schedules` carries `schedules`. Modes `queued_input`, `worktree_diff`,
+and `live_jobs` carry `board` (sections 4.9.17 through 4.9.19).
 Source: (`client/protocol.gleam:1013-1050`).
 
 ```json
@@ -2640,7 +2691,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2645`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2746`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**

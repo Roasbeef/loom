@@ -123,6 +123,7 @@ import client/jobstate.{
 import client/jobtail.{type Tail}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
+import core/json.{type JsonValue}
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Selector, type Subject}
@@ -577,6 +578,8 @@ pub opaque type Message {
 
   ListAll(strand: String, reply_with: Subject(Result(List(Listed), Refusal)))
 
+  LiveJobs(strand: String, reply_with: Subject(Result(JsonValue, Refusal)))
+
   Kill(strand: String, id: JobId, reply_with: Subject(Result(Nil, Refusal)))
 
   Write(
@@ -837,6 +840,21 @@ pub fn list_jobs(
   ask(name, waiting, fn(reply) { ListAll(strand:, reply_with: reply) })
 }
 
+/// Reads at most four live jobs without scanning durable job history.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobs.live_jobs(name, "main", waiting: 1000)
+/// ```
+pub fn live_jobs(
+  name: address.Address(Message),
+  strand: String,
+  waiting waiting: Int,
+) -> Result(JsonValue, Refusal) {
+  ask(name, waiting, fn(reply) { LiveJobs(strand:, reply_with: reply) })
+}
+
 /// Asks the broker to stop one job. Needs no approval: a strand may
 /// always stop what it started.
 ///
@@ -983,6 +1001,11 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
 
+    LiveJobs(strand:, reply_with:) -> {
+      let #(now, _clock) = clock.read(state.wiring.clock)
+      process.send(reply_with, Ok(live_board(state.jobs, strand, now)))
+      actor.continue(state)
+    }
     ListAll(strand:, reply_with:) -> {
       process.send(reply_with, Ok(listing(state, strand)))
       actor.continue(state)
@@ -2097,6 +2120,87 @@ fn ask_runner(control: Control) -> Result(Streams, Nil) {
   answer
 }
 
+// Only admitted live records become rows. The fold visits the actor's existing
+// dictionary but holds at most four records; it never queries durable history.
+fn live_board(
+  records: Dict(JobId, Held),
+  strand: String,
+  now: Int,
+) -> JsonValue {
+  let #(total, rows) =
+    dict.fold(records, #(0, []), fn(acc, _id, held) {
+      case
+        held.record.owner == strand && !jobstate.is_terminal(held.record.state)
+      {
+        False -> acc
+        True -> {
+          let rows = case acc.0 < max_jobs_per_strand {
+            True -> [live_row(held.record, now), ..acc.1]
+            False -> acc.1
+          }
+          #(acc.0 + 1, rows)
+        }
+      }
+    })
+  json.Object([
+    #("strand", json.String(strand)),
+    #("observed_at_ms", json.Int(now)),
+    #("jobs", json.Array(list.reverse(rows))),
+    #("total", json.Int(total)),
+    #("omitted", json.Int(int.max(total - max_jobs_per_strand, 0))),
+  ])
+}
+
+fn live_row(record: JobRecord, now: Int) -> JsonValue {
+  let phase = case record.state {
+    jobstate.Starting -> "starting"
+    jobstate.Running -> "running"
+    jobstate.Draining(..) -> "draining"
+    jobstate.Exited(..) | jobstate.Killed(..) | jobstate.Lost(..) -> "terminal"
+  }
+  json.Object([
+    #("id", json.String(jobstate.job_id_to_string(record.id))),
+    #("state", json.String(phase)),
+    #("started_by", json.String(ids.op_id_to_string(record.started_by))),
+    #("command_excerpt", json.String(command_excerpt(record.spec.argv))),
+    #("age_ms", json.Int(int.max(now - record.started_at_ms, 0))),
+    #("deadline_ms", json.Int(record.deadline_ms)),
+  ])
+}
+
+// Stop before joining an arbitrarily large argv. Each grapheme is admitted
+// only while its bytes fit, so terminal display gets a UTF-8-safe prefix.
+fn command_excerpt(argv: List(String)) -> String {
+  argv
+  |> list.fold_until(#(512, []), fn(acc, arg) {
+    case acc.0 <= 0 {
+      True -> list.Stop(acc)
+      False -> {
+        let text = string.slice(arg, 0, acc.0)
+        let #(remaining, parts) =
+          string.to_graphemes(text)
+          |> list.fold_until(acc, fn(acc, grapheme) {
+            case string.byte_size(grapheme) <= acc.0 {
+              True ->
+                list.Continue(
+                  #(acc.0 - string.byte_size(grapheme), [grapheme, ..acc.1]),
+                )
+              False -> list.Stop(#(0, acc.1))
+            }
+          })
+        case remaining > 0 {
+          True -> list.Continue(#(remaining - 1, [" ", ..parts]))
+          False -> list.Stop(#(remaining, parts))
+        }
+      }
+    }
+  })
+  |> fn(acc) { acc.1 }
+  |> list.reverse
+  |> string.concat
+  |> string.trim_end
+}
+
 fn listing(state: State, strand: String) -> List(Listed) {
   let #(now, _clock) = clock.read(state.wiring.clock)
   dict.values(state.jobs)
@@ -2355,6 +2459,7 @@ fn drain(state: State, until: Int) -> State {
     Ok(Reap)
     | Ok(PollOne(..))
     | Ok(ListAll(..))
+    | Ok(LiveJobs(..))
     | Ok(Kill(..))
     | Ok(Write(..))
     | Ok(DeadlinePassed(..)) -> drain(state, until)

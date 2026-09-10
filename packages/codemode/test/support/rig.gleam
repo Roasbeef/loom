@@ -277,7 +277,11 @@ fn executable(name: String) -> Result(String, String) {
   |> replace_error(name <> " is not on PATH")
 }
 
-// Built with the Go toolchain, which caches, so this is cheap per run.
+// Parallel prerequisites may rebuild this shared helper at the same time.
+// Go copies cached executables through an unlinked or truncated destination,
+// so another builder can mistake that interval for a non-object output.
+// Each invocation builds into its own file beside the helper, then publishes
+// the complete executable with an atomic rename. Go still checks freshness.
 fn build_helper() -> Result(String, String) {
   let assert Ok(here) = simplifile.current_directory()
   let directory = here <> "/build/e2e-codemode"
@@ -285,9 +289,13 @@ fn build_helper() -> Result(String, String) {
   let helper_path = directory <> "/loom-exec"
   let output =
     ffi_peer.os_cmd(
-      "cd ../sandbox && go build -o '"
+      "cd ../sandbox && helper_tmp=$(mktemp '"
       <> helper_path
-      <> "' ./cmd/loom-exec && echo LOOM_BUILD_OK",
+      <> ".XXXXXX') && trap 'rm -f \"$helper_tmp\"' EXIT && "
+      <> "go build -o \"$helper_tmp\" ./cmd/loom-exec && "
+      <> "mv -f \"$helper_tmp\" '"
+      <> helper_path
+      <> "' && echo LOOM_BUILD_OK",
     )
   case string.contains(output, "LOOM_BUILD_OK") {
     True -> Ok(helper_path)
