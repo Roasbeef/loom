@@ -171,10 +171,15 @@ fn model_with_patch() {
       ),
     )
   let base =
-    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
   tui.Model(
     ..base,
     diff_view: tui.DiffVisible,
+    strands: [],
     worktree: state,
     input: textarea.state_from_string("draft"),
   )
@@ -186,7 +191,7 @@ fn key(model, key) {
 }
 
 fn painted(model: tui.Model) {
-  let model = tui.update(backend.Resize(model.width, model.height), model)
+  let model = tui.update(backend.Tick, model)
   let #(buf, _) =
     tui.view(model, geometry.rect_new(0, 0, model.width, model.height))
   frame.buffer_to_text(buf)
@@ -198,11 +203,53 @@ pub fn file_focus_keeps_composer_text_and_patch_scroll_independent_test() {
   let selected = model |> key("ctrl+d") |> key("down") |> key("down")
   assert selected.worktree.selected == 2
   assert textarea.value(selected.input) == "draftr"
-  assert string.contains(painted(selected), "second patch")
+  let visible = painted(selected)
+  assert string.contains(visible, "second patch")
+  assert !string.contains(visible, "patch-row-")
+    as "selection replaces all-file rows without a resize or server event"
   let resumed = selected |> key("enter") |> key("x")
   assert textarea.value(resumed.input) == "draftrx"
   let resized = tui.update(backend.Resize(160, 35), resumed)
   assert resized.worktree.selected == 2
+}
+
+pub fn mouse_selection_replaces_cached_patch_without_resize_test() {
+  let selected =
+    tui.update(backend.MousePress(2, 6, backend.MouseLeft), model_with_patch())
+  assert selected.worktree.selected == 2
+  let visible = painted(selected)
+  assert string.contains(visible, "second patch")
+  assert !string.contains(visible, "patch-row-")
+    as "mouse navigation invalidates the same patch cache as keyboard navigation"
+}
+
+pub fn ready_observation_replaces_cached_patch_without_resize_test() {
+  let previous = model_with_patch()
+  let waiting =
+    tui.Model(
+      ..previous,
+      worktree: worktree_view.State(
+        ..previous.worktree,
+        owner: "",
+        awaiting: Some(9),
+      ),
+    )
+  let observed =
+    tui.apply_channel_update(
+      waiting,
+      session_channel.Auxiliary(
+        protocol.WorktreeSnapshot(
+          worktree_view.Ready(
+            board(9, [file("refreshed.gleam", "fresh observation patch")]),
+          ),
+        ),
+      ),
+    )
+    |> fn(model) { tui.update(backend.Tick, model) }
+  let visible = painted(observed)
+  assert string.contains(visible, "fresh observation patch")
+  assert !string.contains(visible, "second patch")
+    as "the delivered board replaces cached rows without a terminal resize"
 }
 
 pub fn patch_scroll_can_reach_the_first_row_before_and_after_resize_test() {

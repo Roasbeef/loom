@@ -1593,6 +1593,8 @@ fn ux_turns(
     ux_await(driver, "selected current-file patch", fn(sample) {
       sample.model.worktree.selected == 1
       && string.contains(sample.frame, "TWO")
+      && !string.contains(sample.frame, "external current")
+      && !string.contains(sample.frame, "untracked current")
     }),
   )
   process.send(second.1, Nil)

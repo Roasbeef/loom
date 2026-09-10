@@ -496,6 +496,10 @@ pub type Model {
     diff_line_cache: Dict(Line, List(span.Line)),
     /// The row count belongs to the cached diff projection and its width.
     diff_row_count: Int,
+    /// The observation and selection that produced the cached patch rows.
+    /// Compare against the cache source even when a driver applied a reply
+    /// before the next terminal update.
+    diff_worktree_source: #(Option(worktree_view.Board), Int),
     /// Latest explicit read of the notes board, with its own revision.
     note_board: Option(notes_view.Board),
     overlay: Overlay,
@@ -844,6 +848,7 @@ pub fn new_model_with_clock(
     diff_rows: [],
     diff_line_cache: dict.new(),
     diff_row_count: 0,
+    diff_worktree_source: #(None, 0),
     note_board: None,
     overlay: NoOverlay,
     models: demo_models(),
@@ -3474,6 +3479,9 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   }
 }
 
+// File selection and received observations invalidate the render revision even
+// when the conversation is unchanged. The outer render cache must admit those
+// transitions before this independent patch cache can inspect its own inputs.
 // Diff rows have their own width and scroll position. Reuse the projection
 // while only live fragments or composer text changed: admitted records already
 // invalidate the durable cache, and pending legacy entries name an append.
@@ -3486,6 +3494,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         diff_rows: [],
         diff_line_cache: dict.new(),
         diff_row_count: 0,
+        diff_worktree_source: #(None, 0),
       )
     DiffVisible -> {
       let matches =
@@ -3493,7 +3502,8 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         && after.record_cache_valid
         && after.record_cache_strand == after.active_strand
         && list.is_empty(after.pending_records)
-        && before.worktree == after.worktree
+        && after.diff_worktree_source
+        == #(after.worktree.board, after.worktree.selected)
         && diff_width(before) == diff_width(after)
       case matches {
         True -> after
@@ -3510,6 +3520,10 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
             diff_rows: rows,
             diff_line_cache: line_cache,
             diff_row_count: count,
+            diff_worktree_source: #(
+              after.worktree.board,
+              after.worktree.selected,
+            ),
             diff_scroll_offset: anchored_scroll_offset(
               after.diff_scroll_offset,
               before.diff_row_count,
@@ -4590,6 +4604,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           observation,
         ),
       )
+      |> invalidate_transcript
     protocol.QueuedInputSnapshot(document) ->
       Model(
         ..model,
@@ -6318,6 +6333,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
           focus: worktree_view.Navigator,
         ),
       )
+      |> invalidate_transcript
     None ->
       Model(..model, selection: Some(selection.start(hit_area(model, at), at)))
   }
@@ -8306,6 +8322,7 @@ fn select_diff_file(model: Model, delta: Int) -> Model {
     worktree: worktree_view.State(..model.worktree, selected:),
     diff_scroll_offset: 0,
   )
+  |> invalidate_transcript
 }
 
 fn diff_title(model: Model) -> String {
