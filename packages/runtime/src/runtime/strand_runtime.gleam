@@ -156,7 +156,7 @@ pub opaque type Message {
 
   /// Commit the durable abort marker for the open operation, then cancel
   /// live effects and reconcile.
-  RequestAbort
+  RequestAbort(operation: OpId)
 
   /// A provider-shaped effect delivered its terminal event.
   ProviderDone(token: EffectToken, terminal: stream.StreamEvent)
@@ -387,11 +387,11 @@ pub fn nudge(strand: Subject(Message)) -> Nil {
 /// ## Examples
 ///
 /// ```gleam
-/// // strand_runtime.request_abort(subject)
+/// // strand_runtime.request_abort(subject, operation)
 /// ```
 ///
-pub fn request_abort(strand: Subject(Message)) -> Nil {
-  send_if_registered(strand, RequestAbort)
+pub fn request_abort(strand: Subject(Message), operation: OpId) -> Nil {
+  send_if_registered(strand, RequestAbort(operation:))
 }
 
 // Public strand addresses may be registered names which disappear between a
@@ -429,7 +429,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
     RetryDue -> finish(logger, drive(State(..state, retry_wake: None)))
-    RequestAbort -> finish(logger, abort(state))
+    RequestAbort(operation:) -> finish(logger, abort(state, operation))
     ProviderDone(token:, terminal:) ->
       finish(logger, provider_done(state, token, terminal))
     ToolDone(token:, outcome:) ->
@@ -738,9 +738,10 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
   }
 }
 
-fn abort(state: State) -> Outcome {
-  case abort_commit(state, 8) {
+fn abort(state: State, operation: OpId) -> Outcome {
+  case abort_commit(state, operation, 8) {
     AbortFailed(reason) -> Halt(reason)
+    AbortObsolete -> Continue(state)
 
     // ORCH-L5: exhausting the stale-retry ladder must not drop the abort
     // (the request is fire-and-forget, so nobody would learn it was
@@ -753,7 +754,7 @@ fn abort(state: State) -> Outcome {
     AbortRaceLost -> {
       let internal = state.internal
       state.effects.timers.after(state.poll_interval_ms, fn() {
-        wake(internal, RequestAbort)
+        wake(internal, RequestAbort(operation:))
       })
       Continue(state)
     }
@@ -773,7 +774,10 @@ fn abort(state: State) -> Outcome {
 
 // What one abort request attempt concluded.
 type AbortAttempt {
-  /// The marker is durable (or there was nothing to abort).
+  /// The target operation has ended; its successor must remain untouched.
+  AbortObsolete
+
+  /// The target operation's marker is durable.
   AbortDurable(State)
 
   /// The marker commit kept losing its seq race; nothing is durable yet.
@@ -784,12 +788,16 @@ type AbortAttempt {
 }
 
 // Commits the cancel_requested marker with a bounded stale-retry loop.
-fn abort_commit(state: State, attempts: Int) -> AbortAttempt {
+fn abort_commit(state: State, operation: OpId, attempts: Int) -> AbortAttempt {
   use <- bool.guard(when: attempts <= 0, return: AbortRaceLost)
   case load(state) {
     Error(reason) -> AbortFailed(reason)
-    Ok(Idle) -> AbortDurable(state)
-    Ok(Open(loaded)) -> abort_commit_open(state, loaded, attempts)
+    Ok(Idle) -> AbortObsolete
+    Ok(Open(loaded)) ->
+      case loaded.op.id == operation {
+        True -> abort_commit_open(state, loaded, attempts)
+        False -> AbortObsolete
+      }
   }
 }
 
@@ -804,12 +812,13 @@ fn abort_commit_open(
   {
     queue.AbortAlreadyRequested(..) -> AbortDurable(state)
     queue.AbortPlanned(tx: plan_tx, ..) ->
-      commit_abort_marker(state, plan_tx, attempts)
+      commit_abort_marker(state, loaded.op.id, plan_tx, attempts)
   }
 }
 
 fn commit_abort_marker(
   state: State,
+  operation: OpId,
   plan_tx: tx.Tx,
   attempts: Int,
 ) -> AbortAttempt {
@@ -818,7 +827,7 @@ fn commit_abort_marker(
     Error(writer.Unavailable) ->
       AbortFailed("the session writer is unavailable")
     Error(writer.Underlying(tx.StaleExpectation(..))) ->
-      abort_commit(state, attempts - 1)
+      abort_commit(state, operation, attempts - 1)
     Error(writer.Underlying(tx.Corruption(report:))) ->
       AbortFailed(corruption.describe(report))
     Error(writer.Underlying(tx.Faulted(reason:))) -> AbortFailed(reason)
