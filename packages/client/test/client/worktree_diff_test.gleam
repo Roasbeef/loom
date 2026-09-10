@@ -9,6 +9,7 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
+import client/codemode
 import client/daemon/transfer
 import client/serve
 import client/worktree_diff
@@ -268,6 +269,15 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
         as "the fixture owns a workspace"
       let assert Ok(workspace) = bootstrap.canonical_directory(directory)
         as "the fixture policy uses absolute paths"
+
+      // Production boot creates the protected blob store before starting its
+      // effect plane. A read-only observation must find that mask mount point
+      // already present; bubblewrap cannot create it through a read-only root.
+      let assert Ok(Nil) =
+        bootstrap.ensure_private_directory(
+          workspace <> "/" <> codemode.blob_directory,
+        )
+        as "the fixture materializes the protected store as production boot does"
 
       // Apple ships the real Git executable with Xcode; /usr/bin/git is a
       // launcher whose discovery needs unrelated host preferences. Admit only

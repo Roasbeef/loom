@@ -1484,10 +1484,14 @@ fn ux_turns(
       backend.Paste(ux_suffix),
       backend.KeyPress("ctrl+s"),
     ])
+
+  // The save acknowledgement closes and clears the editor. A later capture
+  // can replace its notice before polling samples it, so wait for the retained
+  // editor state; reopening below proves the exact saved text and revision.
   use _ <- result.try(
     ux_await(driver, "confirmed queued replacement", fn(sample) {
       sample.model.queue_editor.surface == queue_editor.Closed
-      && sample.model.notice == "queued input updated"
+      && sample.model.queue_editor.draft == None
     }),
   )
   let _ =
