@@ -537,6 +537,9 @@ pub type Model {
     rendered_row_count: Int,
     rendered_rows: List(span.Line),
     record_rows: List(span.Line),
+    /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
+    /// only the current projection, so old branches and outcomes are released.
+    record_line_cache: Dict(Line, List(span.Line)),
     pending_records: List(protocol.EntryRecord),
     record_cache_valid: Bool,
     record_cache_width: Int,
@@ -827,6 +830,7 @@ pub fn new_model_with_clock(
     rendered_row_count: 0,
     rendered_rows: [],
     record_rows: [],
+    record_line_cache: dict.new(),
     pending_records: [],
     record_cache_valid: False,
     record_cache_width: 0,
@@ -3357,10 +3361,11 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
   before != after
 }
 
-// Durable history is immutable after admission, so wrapped record rows can be
-// retained across live stream fragments. New records are rendered as one small
-// batch and prepended to the newest-first cache; width, strand, and detail
-// changes rebuild it from source because each changes the rendered shape.
+// Durable rows survive live stream fragments. Compact tool groups can change
+// when a result arrives, so their projection is rebuilt from current entries.
+// Unchanged presentation lines reuse their wrapped rows within the same width;
+// a changed outcome has a different key and cannot retain its pending label.
+// Expanded append-only history still extends the row list as one small batch.
 fn refresh_record_cache(model: Model, width: Int) -> Model {
   let cache_matches =
     model.record_cache_valid
@@ -3370,7 +3375,11 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     && { model.details_expanded || list.is_empty(model.pending_records) }
   case cache_matches, model.pending_records {
     False, _ -> {
-      let record_rows =
+      let previous = case model.record_cache_width == width {
+        True -> model.record_line_cache
+        False -> dict.new()
+      }
+      let #(record_rows, record_line_cache) =
         model.transcript
         |> list.append(record_lines(
           model.records,
@@ -3378,12 +3387,11 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
           model.details_expanded,
           solo_owner(model.captured),
         ))
-        |> transcript_content
-        |> fn(content) { markdown.wrap_lines(content.lines, width) }
-        |> list.reverse
+        |> cached_record_lines(width, previous)
       Model(
         ..model,
         record_rows:,
+        record_line_cache:,
         pending_records: [],
         record_cache_valid: True,
         record_cache_width: width,
@@ -3410,6 +3418,30 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
       )
     }
   }
+}
+
+// Each line is rendered independently, including its speaker prefix and
+// trailing blank rows. Reusing that complete result preserves wrapping and
+// styling without parsing or measuring unchanged text again. The next map is
+// built only from current lines; hints from a replaced cut do not become an
+// ever-growing store of discarded history.
+fn cached_record_lines(
+  lines: List(Line),
+  width: Int,
+  previous: Dict(Line, List(span.Line)),
+) -> #(List(span.Line), Dict(Line, List(span.Line))) {
+  list.fold(lines, #([], dict.new()), fn(acc, line) {
+    let #(rows, cached) = acc
+    let rendered =
+      dict.get(previous, line)
+      |> result.lazy_unwrap(fn() {
+        render_line(line) |> markdown.wrap_lines(width)
+      })
+    #(
+      list.append(list.reverse(rendered), rows),
+      dict.insert(cached, line, rendered),
+    )
+  })
 }
 
 // The viewport consumes rows newest-first. Keeping that order in the cache
@@ -4157,6 +4189,7 @@ fn adopt_session(
     rendered_row_count: 0,
     rendered_rows: [],
     record_rows: [],
+    record_line_cache: dict.new(),
     pending_records: [],
     record_cache_valid: False,
     record_cache_width: 0,
@@ -4265,6 +4298,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         records: list.reverse(entries),
         streams: [],
         record_rows: [],
+        record_line_cache: dict.new(),
         // The snapshot is the server's own account of the strand, so it
         // already carries every submission the daemon committed while this
         // client was away — the gateway holds its queue across a disconnect
@@ -6371,6 +6405,7 @@ fn submit_text(model: Model) -> Model {
         transcript: [],
         records: [],
         record_rows: [],
+        record_line_cache: dict.new(),
         pending_records: [],
         record_cache_valid: False,
         // `/clear` empties the local view, and an echo is part of that view
