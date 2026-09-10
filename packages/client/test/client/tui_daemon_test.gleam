@@ -606,6 +606,11 @@ pub fn tui_daemon_read_deadline_is_not_a_mutation_outcome_test() {
     assert daemon.request(control, protocol.Status, 40)
       == Error(daemon.TimedOut)
     assert received(incoming).command == server_protocol.Status
+
+    // A read timeout retires the owner just as a lost mutation reply does.
+    // Retrying a lifecycle observation on this handle cannot make progress.
+    assert daemon.request(control, protocol.Status, 1000)
+      == Error(daemon.Disconnected)
     assert process.receive(incoming, 0) == Error(Nil)
   })
 }

@@ -21,6 +21,7 @@ import simplifile
 import storage/catalogue
 import storage/domain
 import storage/sqlite
+import support/daemon_observation
 import support/internal/ffi_proc
 import tui/bootstrap as terminal_bootstrap
 import tui/daemon
@@ -119,7 +120,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       5000,
     )
     as "explicit creation occupies the sole runtime slot"
-  await_resident(first.control, blocker.session_id)
+  await_resident(first, blocker.session_id)
 
   // This refusal is a durable barrier, not an ambiguous caller timeout. The
   // manager commits the reservation before testing its occupied capacity.
@@ -166,13 +167,13 @@ fn exercise(server, directory, paths: endpoint.Paths) {
     daemon.request(second.control, request, 5000)
     as "the original creation key explicitly resumes its durable reservation"
   assert retried.session_id == reserved.id
-  await_resident(second.control, reserved.id)
+  await_resident(second, reserved.id)
 
   // Original custody must retire before the independent identity inspection.
   let assert Ok(_) =
     daemon.request(second.control, protocol.StopSession(reserved.id), 5000)
     as "the recovered session begins orderly retirement"
-  await_saved(second.control, reserved.id)
+  await_saved(second, reserved.id)
   assert durable(paths)
     == #(catalogue.Registration(..reserved, state: catalogue.Saved), selected)
   let assert Ok(#(Some(id), _)) = sqlite.identity(reserved.path)
@@ -232,10 +233,10 @@ fn assert_metadata_only(control, reserved: catalogue.Registration) {
   assert simplifile.is_file(reserved.path) == Ok(False)
 }
 
-fn await_resident(control, id) {
+fn await_resident(connected, id) {
   let assert poll.Answered(Nil) =
     poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(id), 2000) {
+      case daemon_observation.session(connected, id, 2000) {
         Ok(protocol.SessionReply(protocol.Session(
           status: protocol.Resident(_),
           ..,
@@ -244,12 +245,9 @@ fn await_resident(control, id) {
           status: protocol.Opening(_),
           ..,
         ))) -> poll.Retry
-        // A read that ran out of its own budget is not an answer about
-        // the row; it says the daemon has not replied yet. Under a loaded
-        // scheduler a shipped daemon really does take longer than two
-        // seconds to answer a status read, and treating that as the answer
-        // ended the poll with `Error(TimedOut)` while the outer fifteen
-        // seconds still had most of their budget left.
+
+        // The timed-out observation has closed its own connection. The next
+        // attempt authenticates a fresh owner at the same daemon epoch.
         Error(daemon.TimedOut) -> poll.Retry
 
         other -> poll.Fail(string.inspect(other))
@@ -258,22 +256,19 @@ fn await_resident(control, id) {
     as "explicit assembly reaches its resident incarnation"
 }
 
-fn await_saved(control, id) {
+fn await_saved(connected, id) {
   let assert poll.Answered(Nil) =
     poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon.request(control, protocol.GetSession(id), 2000) {
+      case daemon_observation.session(connected, id, 2000) {
         Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
           poll.Done(Nil)
         Ok(protocol.SessionReply(protocol.Session(
           status: protocol.Stopping(_),
           ..,
         ))) -> poll.Retry
-        // A read that ran out of its own budget is not an answer about
-        // the row; it says the daemon has not replied yet. Under a loaded
-        // scheduler a shipped daemon really does take longer than two
-        // seconds to answer a status read, and treating that as the answer
-        // ended the poll with `Error(TimedOut)` while the outer fifteen
-        // seconds still had most of their budget left.
+
+        // The timed-out observation has closed its own connection. The next
+        // attempt authenticates a fresh owner at the same daemon epoch.
         Error(daemon.TimedOut) -> poll.Retry
 
         other -> poll.Fail(string.inspect(other))
