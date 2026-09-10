@@ -4,100 +4,117 @@ Read this first for current work, settled boundaries, and remaining acceptance
 criteria. Rewrite it after the next body of work. Measurements and detailed
 review evidence belong in their own documents.
 
-Re-baselined on September 9, 2026 against merged PR #340 (`93d50830`) and
-its rendering follow-up on `codex/render-costs`, plus the responsive changes
-pane on `codex/responsive-diff`. PR #340's head `107b3851`
-passed all 16 checks, including Linux signoff, before the merge. The follow-up
-has its own verification and must not inherit that commit's signoff.
+Re-baselined on September 10, 2026 against merged PR #342 (`e50e6351`) and
+the gate-recovery implementation in PR #343 (`0bf37c63`). PR #341
+(`8f0d79ff`) and PR #342 are merged. The follow-up's complete local gate,
+GitHub checks and twenty-run Linux acceptance passed as recorded below. A result for one commit does not sign off another.
 
 ## Where the tree is
 
 | Body of work | Current state |
 |---|---|
-| Domain lifecycle | PRs 337–339 and 340 are in the baseline. The rendering follow-up changes no process or admission custody. |
-| Human controls | Host-owned priority steering and normal queued turns, operation-bound Escape, and current tool/notes/diff presentation landed in PR #340. |
-| Installed tools | Generic PATH discovery and ripgrep work. Explicit read-only workspace mounts can expose Go/Xcode support trees under existing policy; the distribution guide documents configuration. A disposable configured session passed real jailed Go tests, Apple Git and ripgrep; the owner's configuration is unchanged. |
-| Rendering | Rebuilt compact groups reuse layout for unchanged speaker/text lines at the same width. Replaced projections discard old keys. No package or dependency was added. |
-| Changes pane | `/diff` keeps the conversation beside captured edits from 140 columns, falls back to one panel below that width, and preserves independent scrolling. This follow-up has its own verification below. |
-| Measurements | Validated 532-record replay is about 3.3× faster, with 60% less process CPU and 29% fewer profiled heap-word allocations. Settled process heap is unchanged; this is not a live-client CPU or daemon-memory result. See the performance guide. |
+| Domain lifecycle | PRs 337–340 are in the baseline. This follow-up changes no production process, admission or retirement custody. |
+| Human controls | Host-owned priority steering, normal queued turns, operation-bound Escape, and tool/notes/diff presentation are merged. |
+| Rendering | PR #341 reuses settled speaker/text layout at the same width and discards old keys when projections are replaced. |
+| Changes pane | PR #342 keeps the conversation beside captured edits from 140 columns, falls back to one panel below that width, and preserves independent scrolling. |
+| Installed tools | PATH discovery, ripgrep and explicitly configured read-only support mounts are available. Disposable jailed probes passed Go tests, Apple Git, ripgrep and a basic cgo/SDK build. The owner's configuration is unchanged. |
+| Measurements | The recorded 532-entry replay produced 537 equivalent frames, about 3.3× faster with 60% less process CPU and 29% fewer profiled heap-word allocations. These remain replay measurements, not live-client CPU or daemon-memory evidence. |
+| Gate recovery | Lifecycle observations now authenticate disposable same-epoch connections. A read timeout cannot retire the fixture's separate mutation connection. `make replay-simulation SIM_SEED=n` selects one generated session case. |
 | Release acceptance | Joined shipped tests, SQLite/resource decisions, scheduling and memory-off observations retain their separate tracker scope. |
 
 ### What the previous edition got wrong
 
-The previous edition treated the reconstructed original-session replay as valid
-conversation evidence. It actually rendered rejected wire events: the envelope
-version and initial snapshot were wrong. The old replay times and 22.2%
-sanitizer attribution are withdrawn in
-[the execution note](design-notes/developer-experience-execution.md).
-The direct sanitizer equivalence checks and text timings remain valid.
+The previous edition described rendering and responsive changes as follow-ups
+awaiting integration. Both are now merged. PR #342 was merged with explicit
+owner authorization after Linux gate failures; its local acceptance did not
+establish a passing final Linux signoff. The recovery-fixture failure is part
+of #335, and the separate conformance timeout remains an observation to
+classify if it returns.
 
-The corrected replay admits all 532 records, rejects failure notices and produces
-537 byte-identical baseline/head frames. A checked developer driver now enforces
-admission before timing. [The performance guide](performance.md#reuse-settled-transcript-layout)
-records the workload, retained-memory cost, allocation units and measured limits.
-An independent advisor review found no actionable issue in the cache or tests.
-The complete local gate passed, including 1,515 client and 275 TUI tests.
-The rebuilt client passed a real-terminal probe for edits, notes, code mode,
-diffs, Escape and steer, against the unchanged merged daemon.
+The recovery fixtures treated a timed-out read as a reason to retry on the
+same control connection. That owner retires on an in-flight deadline, so the
+next read receives `Disconnected`. The new test observation boundary probes
+the original endpoint and epoch once per lifecycle wait. Authentication and
+status reads consume one fifteen-second deadline, and the observation requests
+closure before returning. Mutations retain their original connection. It does
+not launch a daemon or retry uncertain mutations. Controlled-peer regressions
+check owner retirement, replies beyond the former two-second limits, and
+closure while the observation caller remains alive.
 
-The responsive changes follow-up passed the complete local `make check`,
-including 1,515 client and 281 TUI tests, and `make doc-check` with existing
-warnings. Its independent advisor review found no actionable issue. The rebuilt
-client passed a real-terminal resize from 160 to 100 columns and back, retained
-the pane through a new turn, and closed it with `/diff`. The same disposable
-session passed the edit, notes, code-mode, configured-tool, Escape and steer
-flow. These local results do not constitute remote signoff for this follow-up.
+The older invalid-replay correction remains documented in
+[the execution note](design-notes/developer-experience-execution.md): the
+original reconstruction rendered protocol errors, and its timings and 22.2%
+sanitizer attribution were withdrawn. [The performance guide](performance.md#reuse-settled-transcript-layout)
+records the corrected workload and its limits. Production client, TUI, broker
+and host sources are unchanged by the gate-recovery follow-up.
 
-A subsequent configured probe ran `CGO_ENABLED=1 go test -v ./...` in the
-jail, compiling `<stdlib.h>` and checking a real `C.abs` result. The documented
-Go/Xcode mounts support that basic cgo/SDK build; broader framework builds were
-not exercised.
+### Current verification
 
-The previous installed-tools wording also omitted an existing option: trusted
-configuration can grant explicit support-tree reads without changing protocol
-020. [The distribution guide](distribution.md#installed-tool-support-trees)
-shows that path. Automatic broad host reads remain an owner policy decision.
+The complete local `make check` passed on `0bf37c63`, including 1,516 client
+tests, 281 TUI tests and zero house-rule lint errors.
+`make replay-simulation SIM_SEED=33` passed independently, and documentation
+checks passed with existing warnings.
+
+The controlled-peer shared-deadline regression passed. Restoring either short
+authentication or read deadline makes it fail, as does removing explicit
+observation closure. Independent review identified the need to keep the test
+caller alive while checking closure; the regression now does so.
+
+Thirty focused Linux recovery runs and twenty consecutive complete
+`scripts/e2e_client_bootstrap.sh` runs passed on `0bf37c63`, with
+`LOOM_TEST_PARALLEL=8` and all eleven expected Linux enforcement layers.
+Every complete run recorded thirteen fixture commands exiting zero, with no
+skips. The earlier standalone sequence lacked delegated cgroups and does not
+count. All fifteen GitHub checks passed on the same code commit, including
+both platform gates and the 200-seed soak.
+
+The identity-recovery fixture intentionally waits for the crashed writer's
+natural lease expiry. These native-VM fixtures have no simulation seed. The
+single-seed target is for the generated session simulation; its failure
+report prints the seed and corroboration verdict before EUnit truncates the
+panic. #335's two acceptance criteria are met. PR #343 records integration
+status and checks for the final documentation commit; this handoff does not
+claim a separate final-head remote signoff.
 
 ## Remaining video-review scope
 
-The full original UX acceptance list is not complete. `/diff` now has its
-responsive right-hand pane and narrow fallback. Its changed-file navigator and
-consolidated worktree diff are missing. Editing already queued input and the proposed explicit
-completion/running-job summary are also missing. Broader SDK/framework builds, joined
-reconnect/control exercise, reading and selection under live output, complete
-latency distributions and daemon-memory plateau remain unverified. See the
+The original UX acceptance list remains open beyond the merged changes.
+`/diff` has its responsive right-hand pane and narrow fallback; its changed-file
+navigator and consolidated worktree diff are missing. Editing already queued
+input and the proposed completion/running-job summary are also missing.
+Broader SDK/framework builds, joined reconnect/control exercise, reading and
+selection under live output, complete latency distributions and daemon-memory
+plateau remain unverified. See the
 [acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review).
-These are remaining accepted UX work, not work closed by PR #340 or the rendering
-optimization.
 
 ## What to do next
 
-1. **Choose the desired installed-tool configuration.** Explicit read-only
-   support mounts passed real jailed Go, Git and ripgrep in a disposable session.
-   The owner can adopt that configuration. Generic access without naming
-   directories remains a separate policy decision: record broad local reads
-   before implementation and retain restricted writes and shared confinement.
-   **Exit:** the selected policy works in the owner's intended environment; any
-   changed enforcement boundary passes exact-head signoff.
+1. **Finish #343's integration and close #335.** The code commit passed the
+   full local gate, GitHub checks and twenty complete Linux bootstrap runs.
+   **Exit:** merge the reviewed change with the final head's required checks
+   satisfied and close #335 with the recorded evidence. Classify a future
+   simulation failure from its full seed/verdict report; repeating native-VM
+   fixtures does not reproduce BEAM interleavings from a seed.
 
-2. **Treat source-file splitting as a separate decision.** The requested survey
-   is complete and report-only. No broad module refactor is authorized by this
-   usability work. **Exit:** the owner selects any follow-up scope before files
-   are split; preserve gateway actor ordering and runtime state-machine custody.
+2. **Continue the remaining UX scope deliberately.** The missing changes-pane
+   navigation, queued-input editing and completion summary are separate from
+   this fixture fix. Explicit read-only support mounts passed disposable tool
+   probes; adopting them in the owner's configuration is still an owner
+   choice. **Exit:** each selected flow works in the intended environment.
+   The source-file splitting survey remains report-only; no broad split is
+   authorized by the usability work.
 
 3. **Keep release dependencies explicit.** **#247** owns the SQLite binding
    decision; **#241** hosted macOS latency; **#246** the joined authority, fault,
    pressure and crash matrix; **#244** recurring schedules, detached timers and
-   recovery; **#245** memory-off/no-distillation evidence. All remain open at
-   this audit. **Exit:** each issue's own acceptance on the final dependency set.
-   The short local measurements in this branch do not close those issues.
+   recovery; **#245** memory-off/no-distillation evidence. All remain open.
+   **Exit:** each issue's own acceptance on the final dependency set.
 
-4. **Keep follow-ups narrow.** **#335** owns remaining gate reliability symptoms
-   and **#248** dependency fingerprint/re-resolution problems. **#296** remains
-   about bundled ERTS in jailed PATH, not generic PATH discovery; **#286** owns
-   refused-extension visibility and **#283** idle helper retirement. **Exit:**
-   reproduce each specific symptom before patching it. Do not infer closure
-   from an unrelated green run. History-index issue **#324** remains closed.
+4. **Keep follow-ups narrow.** **#248** owns dependency fingerprint/re-resolution
+   problems. **#296** concerns bundled ERTS in jailed PATH; **#286** refused
+   extension visibility; **#283** idle helper retirement. **Exit:** reproduce
+   each specific symptom before patching it. History-index issue **#324**
+   remains closed.
 
 ## Rulings already made
 
@@ -185,14 +202,18 @@ make binaries
 LOOM_TEST_PARALLEL=8 make check
 make release release-client
 make doc-check
+make replay-simulation SIM_SEED=33
 make signoff SIGNOFF_ARGS=--dry-run
 LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote
 ```
 
-For focused control regressions, use `bash scripts/test.sh client --match
-gateway_test`; the TUI request-boundary regressions use the same runner with
-`tui --match generation_stream_test`. `gleam dev history <authorized.jsonl>`
-in `packages/tui` runs the repeatable saved-history layout measurement.
+The bootstrap script requires the current `binaries` and `server-shipment`
+artifacts. Run it directly for the complete shipped-fixture acceptance;
+ordinary package checks report skips when their supplied executable is absent.
+For focused control retirement, use `bash scripts/test.sh client --match
+tui_daemon_read_deadline_is_not_a_mutation_outcome_test`.
+`gleam dev history <authorized.jsonl>` in `packages/tui` runs the repeatable
+saved-history layout measurement.
 
 Push the exact head before remote signoff and use one gate at a time in its
 owned checkout. Capture the gate command's exit status directly. Do not run

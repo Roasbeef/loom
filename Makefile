@@ -305,6 +305,14 @@ SOAK_FROM  ?= 1
 # this only if you have measured that your seeds are cheap.
 SOAK_CHUNK ?= 50
 
+# Replay just one generated case, without running unrelated conformance tests.
+SIM_SEED ?= 1
+.PHONY: replay-simulation
+replay-simulation: ## Replay one session simulation seed (SIM_SEED=n)
+	@case '$(SIM_SEED)' in ''|*[!0-9]*) echo 'SIM_SEED must be a non-negative integer' >&2; exit 2;; esac
+	@LOOM_SOAK_FROM=$(SIM_SEED) LOOM_SOAK_SEEDS=1 \
+		bash scripts/test.sh conformance --match conformance@simulation_test:soak_test
+
 .PHONY: soak
 soak: ## Long deterministic-simulation run (SOAK_SEEDS=n SOAK_FROM=n SOAK_CHUNK=n)
 	@from=$(SOAK_FROM); left=$(SOAK_SEEDS); \

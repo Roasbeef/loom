@@ -22,6 +22,9 @@ them from their own test mains.
   `Unstable` means the same script under the same schedule reached
   different verdicts. Both, plus the run's own `[timing]` evidence, are
   folded into `Failure.detail` so every existing printer shows them.
+  The reproduction text includes `make replay-simulation SIM_SEED=<seed>`,
+  which selects only the single-seed soak test rather than rerunning the
+  entire conformance package.
 - `conformance/simulation/script.{Script, Op, Settle, Intervention}` — the
   semantic half: what the session is *asked* to do. `Script.subagent` is
   the multi-strand coda: an optional brief that spawns a subagent strand

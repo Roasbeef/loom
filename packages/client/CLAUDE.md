@@ -3064,6 +3064,17 @@ build plane masks them where the jail can build the mask.
   `main` does, through `host.relay_sigterm`, and a test that boots a
   server leaves the node's signal handling alone.
 
+## Shipped recovery observations
+
+The reservation and identity recovery fixtures keep lifecycle mutations on
+their original control connection. `test/support/daemon_observation` opens
+one authenticated connection per lifecycle wait, using the fixture's original
+endpoint and epoch. Its handshake and every `GetSession` read share the same
+fifteen-second deadline. A transport failure ends that wait; it never retries
+a retired control owner. Closure is requested before the observation outcome
+is checked, and no probe launches another daemon. Mutation replies retain
+their existing unknown-outcome semantics.
+
 ## Deep Docs
 
 - [docs/architecture/orchestration.md](../../docs/architecture/orchestration.md)

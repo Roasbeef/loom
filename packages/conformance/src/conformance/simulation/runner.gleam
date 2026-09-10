@@ -344,6 +344,8 @@ pub fn reproduce(seed: Int, script: Script, schedule: Schedule) -> String {
   <> script.describe(script)
   <> "  |  faults: "
   <> fault.describe(schedule)
+  <> "\n    make replay-simulation SIM_SEED="
+  <> int.to_string(seed)
 }
 
 // --- the checks -----------------------------------------------------------
