@@ -138,3 +138,24 @@ fixture that failed in Linux CI at the preceding `dadecfce` head also passed in
 a focused local rerun; this does not establish Linux success for the new head.
 [Issue #345](https://github.com/Roasbeef/loom/issues/345) tracks upstreaming all
 eight remaining fork commits and eventually returning Loom to upstream.
+
+
+## Hosted enforcement coverage
+
+At `c923b92c`, run `34535424119` passed the Linux client suite but failed its
+aggregate skip census. The new joined-terminal scenario and three jailed
+worktree tests had correctly declined an ordinary runner whose helper reported
+only degraded enforcement. This was a missing CI coverage assignment, not a
+passing test of their jailed behavior.
+
+The delegated Linux jail job and the hard macOS end-to-end job now run the
+joined scenario and all six worktree tests explicitly. Their combined census
+uses an empty declaration set, so any prerequisite skip fails the job. The
+ordinary Linux gate declares only the two exact unavailable-enforcement
+markers; the full Linux signoff continues to demand enforced execution without
+those waivers. No fixture assertion or prerequisite check was weakened.
+
+The exact new macOS step passed all seven focused tests with a clean strict
+census. Both workflow steps parse as YAML and pass shell syntax checks. The
+final pushed commit must still pass hosted CI and the repository's Linux
+signoff before the authorized merge; those results belong to the PR checks.

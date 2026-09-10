@@ -7,8 +7,10 @@ accounts belong in their own documents.
 Re-baselined September 10, 2026 against merged PR #343 (`822c5c8b`) and the
 UX implementation and native follow-ups through `dadecfce`, plus the etui
 dependency update described below. PR #343 is merged and #335 is closed.
-The UX work is on `codex/ux-followthrough`; local validation does not establish
-GitHub checks, Linux signoff, review approval, or merge authorization.
+PR #344 carries the UX work on `codex/ux-followthrough`. Merge authorization
+was given on September 10; its live PR state and the exact commit's Linux
+signoff establish integration status. Local checks do not substitute for that
+required signoff.
 
 ## Where the tree is
 
@@ -92,12 +94,21 @@ for Ctrl+s delivery and normal/SIGKILL/SIGINT terminal restoration. The PTY test
 fails against the old fork source. One independent review found no actionable
 issue in this terminal change.
 
+The next hosted run, `34535424119` at `c923b92c`, passed the Linux client
+suite but its aggregate gate reported two undeclared enforcement skips: joined
+terminal observations and worktree observation. Both fixtures now have hard
+runs in the delegated Linux jail and macOS end-to-end jobs, each followed by
+a census that permits no skip. Only the ordinary Linux runner declares those
+prerequisite skips. All seven focused tests and the strict census passed locally
+on macOS. Final-head hosted checks and the required Linux signoff are recorded
+on PR #344; the merge gate remains the repository's `scripts/signoff.sh`.
+
 ## What to do next
 
-1. **Integrate the UX follow-through.** Inspect the feature branch's exact
-   head and required CI/review state. **Exit:** merge only with the required
-   authorization and checks. The previous permission to merge #343 does not
-   apply to this change.
+1. **Confirm the UX integration state.** Inspect PR #344 and continue from
+   its merged head once the required checks and Linux signoff pass. The owner
+   explicitly authorized this merge. **Exit:** the PR is merged through the
+   normal gate and its resulting commit is recorded on GitHub.
 
 2. **Finish the remaining video acceptance.** Exercise reading and selection
    under sustained output across layouts, the joined reconnect/held-tool/multiple
