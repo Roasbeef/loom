@@ -43,6 +43,18 @@ configuration can grant explicit support-tree reads without changing protocol
 020. [The distribution guide](distribution.md#installed-tool-support-trees)
 shows that path. Automatic broad host reads remain an owner policy decision.
 
+## Remaining video-review scope
+
+The full original UX acceptance list is not complete. `/diff` is implemented as
+a replacement transcript view; its responsive right-hand pane and changed-file
+navigator are missing. Editing already queued input and the proposed explicit
+completion/running-job summary are also missing. The cgo/SDK probe, joined
+reconnect/control exercise, reading and selection under live output, complete
+latency distributions and daemon-memory plateau remain unverified. See the
+[acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review).
+These are remaining accepted UX work, not work closed by PR #340 or the rendering
+optimization.
+
 ## What to do next
 
 1. **Choose the desired installed-tool configuration.** Explicit read-only

@@ -159,3 +159,32 @@ protocol 020. No broader read policy has been inferred or enabled.
 
 The separate survey of large source files is report-only. It does not authorize
 module splitting as part of this implementation.
+
+## Acceptance still open from the video review
+
+PR #340 is a substantial implementation of the review, not completion of every
+item in it. The initial note explicitly requested a persistent diff pane at
+sufficient width. `/diff` currently replaces the transcript at every width and
+shows captured successful edits in history order; it has neither the responsive
+right-hand pane nor a changed-file navigator or consolidated worktree diff.
+
+Pending inputs now have reliable host custody and visible delivery state, but
+editing an already queued message is not implemented. The terminal also lacks
+the proposed explicit completion summary tying changes and validation to
+remaining work and running jobs. Existing scrollback and selection mechanisms
+were preserved; the full reading/selection-under-output acceptance exercise was
+not repeated across all of the proposed layouts.
+
+The configured Go/Git/search probe passed. The representative cgo/SDK test,
+generic access without naming support directories, and a single actionable
+missing-dependency diagnostic remain outside that proof. Control regressions
+cover skipped state transitions and stream identities, and real streaming
+Escape/steer passed; they are not the entire joined reconnect/held-tool/multiple
+queue scenario described by the original acceptance note.
+
+Resource work has measured replay and sampled real-terminal behavior, but the
+full short/long, idle/streaming command-to-ack distributions and owner-attributed
+daemon memory plateau are still unproven. The proposed 50 ms paint and 100 ms
+control budgets have not been accepted as end-to-end guarantees. Keep these
+items open instead of inferring completion from green tests for implemented
+behavior.
