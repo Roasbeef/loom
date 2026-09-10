@@ -52,3 +52,44 @@ including compilation and runner startup). It exercises the shipped TUI model
 with a virtual display backend, rather than an external provider network or
 interactive terminal emulator. Full repository gate results and integration
 state are recorded in `docs/next.md` and the pull request.
+
+## Direct native terminal follow-up
+
+A separate tmux pane ran the shipped native client against a disposable daemon,
+Git workspace, and loopback HTTP provider. Real tool execution edited `e.txt`,
+returned bash exit 7, and started a background job. The completed operation card
+showed its captured edit and a separate live-job count while a successor ran.
+The provider later received the exact multiline input saved in the queue editor.
+
+The native run found two gaps beyond the earlier independent review. First,
+macOS terminal settings retained `ixon`, with Ctrl+s assigned to output stop.
+The terminal consumed the advertised save shortcut. Disabling flow control only
+in the disposable pane confirmed that the editor then saved successfully. This
+is an outstanding native terminal setup issue in the pinned etui dependency;
+the test-pane adjustment is not a production fix.
+
+Second, selecting a file changed its highlight without invalidating the outer
+render cache. The patch could continue showing all files. The earlier test
+forced a resize before painting and only checked that selected text was present;
+the joined fixture also accepted that text within an all-file patch. The repair
+invalidates selection and observation transitions and keys cached patches to
+the board and selection that actually produced them. Tests now flush an ordinary
+idle tick, exclude unrelated patch content, and cover keyboard, mouse, and
+observation delivery before the next tick. The strengthened regression failed
+before the repair.
+
+The rebuilt native client showed only the selected external-file patch at
+160-by-48 and retained it after resizing to 100-by-30. The joined daemon fixture
+also passed with assertions excluding the other files' patch content.
+
+After that repair, the complete TUI package gate passed all 312 tests. TUI lint
+and the documentation gate reported zero errors. These are local results;
+the earlier PR head has failing GitHub jobs and remains a draft.
+
+At the prior head `947c6ee3`, GitHub run `34517952502` reported 1,529 passing
+Linux client tests and two failures in the opt-in shipped live-delivery and
+multiplayer fixtures. Both terminal deadline frames show the newest answers
+and the completion card; their predicates still require every earlier answer
+in the same 80-by-24 viewport. The Linux jail job also fails in that multiplayer
+fixture. These shipped viewport assertions remain to be repaired and rerun;
+they were skipped in the earlier local gate because no shipped server was set.

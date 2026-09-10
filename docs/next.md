@@ -62,6 +62,15 @@ read classified as a mutation, a duplicate synchronous worktree reply, queue
 identity reuse across sessions, and unrelated errors clearing pending views.
 Each was corrected and covered. See [the review](review/ux-followthrough.md).
 
+A later direct native run exposed a missed worktree patch-cache invalidation.
+Keyboard selection, mouse selection, and delivered observations now invalidate
+that projection, and the cache records its actual board and selection. Native
+160-by-48 and 100-by-30 checks and the strengthened joined fixture passed.
+The same run found that the pinned etui setup leaves terminal flow control
+active on this macOS host, consuming the editor's Ctrl+s shortcut. Disabling
+flow control in the disposable pane confirmed the cause; a production terminal
+setup repair remains outstanding before treating native queue editing as ready.
+
 ## What to do next
 
 1. **Integrate the UX follow-through.** Inspect the feature branch's exact

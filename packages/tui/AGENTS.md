@@ -328,6 +328,9 @@ that tree separately from the self-contained server.
   the selected raw path when it still exists. A pending reply releases the
   command lane; the final push must match the actual sent request ID and
   attachment. Failed refresh retains the previous board with a stale label.
+  Selection and received observations invalidate the render revision. The
+  patch cache stores the board and selection that produced its rows, so a
+  reply applied before a terminal tick still replaces the previous patch.
 - **Queued-input editing**: bare `/queue` opens `tui/queue_editor`; `/queue text`
   still submits a queued turn. Enter fetches the complete selected item,
   ordinary Enter inserts a newline in its editor, and Ctrl+s saves its exact
