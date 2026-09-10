@@ -654,3 +654,31 @@ is three lines shorter for it.
 The self-contained client already bundles its own ERTS; only the slim archive
 requires a host OTP installation. The remaining single-daemon release gates,
 including current platform coverage, are recorded in [next.md](next.md).
+
+## Installed-tool support trees
+
+The developer jail inherits the daemon's PATH, but locating an executable does
+not grant access to the files it loads. Go needs its installed standard library;
+Apple's Git launcher needs the selected developer directory. Add those roots to
+the trusted daemon configuration's existing workspace mounts when the minimal
+policy does not already expose them:
+
+```toml
+[workspace]
+mounts = [
+  { path = "/absolute/path/to/go", access = "ro" },
+  { path = "/Applications/Xcode.app", access = "ro" },
+]
+```
+
+Use `go env GOROOT` and `xcode-select -p` on the host to locate the installations.
+For a full Xcode installation, grant the enclosing `.app` tree: the launcher
+also reads `Contents/Info.plist` and sibling shared frameworks outside
+`Contents/Developer`. Keep any existing entries when editing this table. These examples grant reads;
+compilation outputs still need a permitted writable workspace or cache. Other
+tools may need different support trees. The parser requires absolute, distinct
+paths and a known access mode; composed-policy validation rejects overlap with
+masked regions. Configure the trusted daemon file selected at startup, not an
+untrusted repository file, and use a fresh daemon/session to verify the policy.
+This is the existing explicit-mount mechanism, not automatic tool discovery of
+filesystem permissions.

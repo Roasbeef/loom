@@ -905,7 +905,10 @@ not a second lifecycle registry.
 
 Durable records and transient streams never alias. The client caches wrapped
 durable rows by strand, width, and detail mode, and rewraps only the changing
-stream fragments. When the durable assistant entry arrives, it clears that
+stream fragments. Compact tool groups recompute their projection when outcomes
+arrive, reusing wrapped rows for unchanged speaker/text lines at the same
+width. Rebuilt maps retain only current lines; session adoption, full snapshots
+and `/clear` discard the hints. When the durable assistant entry arrives, it clears that
 strand's fragments and becomes the sole transcript authority. Model-authored
 terminal controls are replaced before Mork or etui sees them; source blocks
 retain their bytes and indentation without executing ANSI or HTML.

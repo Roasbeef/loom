@@ -10,12 +10,14 @@ import etui/buffer
 import etui/geometry.{type Rect}
 import etui/style
 import etui/widgets/block
+import gleam/int
 import gleam/io
 import gleamy/bench
 import tui
 import tui/theme
 import tui_burst_dev
 import tui_history_dev
+import tui_replay_dev
 
 type PanelPair {
   PanelPair(base: buffer.Buffer, transcript: Rect, input: Rect)
@@ -34,6 +36,11 @@ type PanelPair {
 pub fn main() {
   case argv.load().arguments {
     ["history", path] -> tui_history_dev.run(path)
+    ["replay", path, count] -> {
+      let assert Ok(expected) = int.parse(count)
+        as "the replay record count must be an integer"
+      tui_replay_dev.run(path, expected)
+    }
     _ -> render_benchmarks()
   }
 }

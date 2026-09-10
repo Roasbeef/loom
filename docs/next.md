@@ -4,47 +4,66 @@ Read this first for current work, settled boundaries, and remaining acceptance
 criteria. Rewrite it after the next body of work. Measurements and detailed
 review evidence belong in their own documents.
 
-Re-baselined on September 9, 2026 against `eb0bbe60` and the developer-experience
-implementation on this branch. The local complete gate and terminal probes
-were rerun. Tracker states below were refreshed. Older domain-admission Linux
-signoff remains historical evidence; consult the exact current head's status
-for its Linux result.
+Re-baselined on September 9, 2026 against merged PR #340 (`93d50830`) and
+its rendering follow-up on `codex/render-costs`. PR #340's head `107b3851`
+passed all 16 checks, including Linux signoff, before the merge. The follow-up
+has its own verification and must not inherit that commit's signoff.
 
 ## Where the tree is
 
 | Body of work | Current state |
 |---|---|
-| Domain lifecycle | The baseline includes PRs 337, 338 and 339: daemon simulation, parked admission during domain retirement, and the retirement corpus. This usability work does not change that custody boundary. |
-| Human controls | The host owns priority steering and normal queued turns. Escape stops the observed operation and preserves pending input. Delayed aborts cannot cancel a successor. |
-| Current presentation | Request identities separate live text; exact durable results reconcile missing ends. The TUI has compact tool groups, actual pending action, captured edit diffs, current notes and code-mode availability. |
-| Installed tools | Generic PATH discovery works and ripgrep runs. Go/Git support is still blocked by the undecided filesystem read policy. No tool directory enumeration or replacement download was introduced. |
-| Measurements | Saved-history initial layout improved. Reconstructed original-session replay identified avoidable sanitizer work. Repeated streaming CPU and daemon memory did not establish a reduction. See the execution note for values and limits. |
-| Release acceptance | This remains distinct from usability acceptance. The joined shipped matrix, SQLite/resource decisions, scheduling and memory-off observations retain their own tracker scope. |
+| Domain lifecycle | PRs 337–339 and 340 are in the baseline. The rendering follow-up changes no process or admission custody. |
+| Human controls | Host-owned priority steering and normal queued turns, operation-bound Escape, and current tool/notes/diff presentation landed in PR #340. |
+| Installed tools | Generic PATH discovery and ripgrep work. Explicit read-only workspace mounts can expose Go/Xcode support trees under existing policy; the distribution guide documents configuration. A disposable configured session passed real jailed Go tests, Apple Git and ripgrep; the owner's configuration is unchanged. |
+| Rendering | Rebuilt compact groups reuse layout for unchanged speaker/text lines at the same width. Replaced projections discard old keys. No package or dependency was added. |
+| Measurements | Validated 532-record replay is about 3.3× faster, with 60% less process CPU and 29% fewer profiled heap-word allocations. Settled process heap is unchanged; this is not a live-client CPU or daemon-memory result. See the performance guide. |
+| Release acceptance | Joined shipped tests, SQLite/resource decisions, scheduling and memory-off observations retain their separate tracker scope. |
 
-### What the previous edition got out of date
+### What the previous edition got wrong
 
-The previous edition named the three-interface recording evaluation as the next
-work and suggested choosing one small improvement afterward. The evaluation is
-complete, and the owner authorized implementing its full improvement list.
-[The execution note](design-notes/developer-experience-execution.md) now records
-that work, the tests, the measured limits, and the unresolved policy decision.
-The original recorded session was never resumed for mutating test traffic.
+The previous edition treated the reconstructed original-session replay as valid
+conversation evidence. It actually rendered rejected wire events: the envelope
+version and initial snapshot were wrong. The old replay times and 22.2%
+sanitizer attribution are withdrawn in
+[the execution note](design-notes/developer-experience-execution.md).
+The direct sanitizer equivalence checks and text timings remain valid.
 
-The complete local gate passed, including 1,515 client and 272 TUI tests. A real
-release terminal exercised file editing, current notes, code mode, diffs,
-Escape, and steer. An independent review found three reachable ordering or
-reconciliation gaps; the fixes have regressions which failed with the old
-behavior restored. This does not claim that Go/Git acceptance is complete.
+The corrected replay admits all 532 records, rejects failure notices and produces
+537 byte-identical baseline/head frames. A checked developer driver now enforces
+admission before timing. [The performance guide](performance.md#reuse-settled-transcript-layout)
+records the workload, retained-memory cost, allocation units and measured limits.
+An independent advisor review found no actionable issue in the cache or tests.
+The complete local gate passed, including 1,515 client and 275 TUI tests.
+The rebuilt client passed a real-terminal probe for edits, notes, code mode,
+diffs, Escape and steer, against the unchanged merged daemon.
+
+The previous installed-tools wording also omitted an existing option: trusted
+configuration can grant explicit support-tree reads without changing protocol
+020. [The distribution guide](distribution.md#installed-tool-support-trees)
+shows that path. Automatic broad host reads remain an owner policy decision.
+
+## Remaining video-review scope
+
+The full original UX acceptance list is not complete. `/diff` is implemented as
+a replacement transcript view; its responsive right-hand pane and changed-file
+navigator are missing. Editing already queued input and the proposed explicit
+completion/running-job summary are also missing. The cgo/SDK probe, joined
+reconnect/control exercise, reading and selection under live output, complete
+latency distributions and daemon-memory plateau remain unverified. See the
+[acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review).
+These are remaining accepted UX work, not work closed by PR #340 or the rendering
+optimization.
 
 ## What to do next
 
-1. **Resolve owner-only host reads, then complete tool acceptance.** The owner
-   wants installed tools to work without enumerating installation directories.
-   Decide whether local owner-only sessions receive broad host reads while
-   retaining restricted writes and shared-session confinement. Record an
-   approved policy in a protocol change before implementation. **Exit:** real
-   jailed Go, Git and ripgrep succeed using installed tools, without downloads,
-   and the changed enforcement boundary passes the exact-head signoff.
+1. **Choose the desired installed-tool configuration.** Explicit read-only
+   support mounts passed real jailed Go, Git and ripgrep in a disposable session.
+   The owner can adopt that configuration. Generic access without naming
+   directories remains a separate policy decision: record broad local reads
+   before implementation and retain restricted writes and shared confinement.
+   **Exit:** the selected policy works in the owner's intended environment; any
+   changed enforcement boundary passes exact-head signoff.
 
 2. **Treat source-file splitting as a separate decision.** The requested survey
    is complete and report-only. No broad module refactor is authorized by this
