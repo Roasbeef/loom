@@ -162,20 +162,33 @@ module splitting as part of this implementation.
 
 ## Acceptance still open from the video review
 
-PR #340 is a substantial implementation of the review, not completion of every
-item in it. The responsive-diff follow-up implements the persistent right-hand
-pane at 140 columns or wider, with a single-panel fallback below that width.
-It preserves conversation and changes scroll positions independently and stays
-open across turns and resizing. `/diff` still shows captured successful edits
-in history order; a changed-file navigator and consolidated worktree diff are
-not implemented.
+The responsive pane, changed-file navigation, queued-message editor, and
+completion summary are implemented. `/diff` requests a bounded observation of
+the attached workspace, including net staged/unstaged patches and untracked
+files. Up/Down and mouse selection choose a file; Enter returns to the composer,
+Ctrl+d changes focus, and `r` refreshes. The 140-column side pane and narrow
+fallback preserve independent conversation and patch scrolling.
 
-Pending inputs now have reliable host custody and visible delivery state, but
-editing an already queued message is not implemented. The terminal also lacks
-the proposed explicit completion summary tying changes and validation to
-remaining work and running jobs. Existing scrollback and selection mechanisms
-were preserved; the full reading/selection-under-output acceptance exercise was
-not repeated across all of the proposed layouts.
+Bare `/queue` fetches complete text before editing. Ctrl+s replaces the exact
+held revision while preserving priority, position, author, and images.
+Conflicts retain the draft; uncertain saves require explicit reconciliation in
+the same queue namespace. The completion card and `/summary` attribute captured
+edits and actual tool/command outcomes to an observed operation boundary. Current
+queue counts and live jobs are separate observations; missing evidence remains
+unavailable rather than becoming success or an empty roster.
+
+The joined `joined_queue_worktree_and_completion_drive` fixture passes through
+a real daemon, websocket, and TUI driver. Five exact provider requests exercise
+a successful `fs_edit`, bash exit 7, a live background job, and a second turn
+using the complete edited multiline prompt. The same run navigates actual tool,
+external, and untracked Git changes. Its provider transport is deterministic;
+it does not establish behavior of an external provider network. Focused tests
+cover stale/drained edits, author restrictions, reconnect namespaces, async reply
+correlation, file identity across refresh, and patch scrolling across resize.
+
+Existing scrollback and selection mechanisms remain; the full reading and
+selection exercise under live output has not been repeated across every
+proposed layout.
 
 The configured Go/Git/search probe passed. A subsequent real-terminal probe
 also passed `CGO_ENABLED=1 go test -v ./...` with a C `<stdlib.h>` include and

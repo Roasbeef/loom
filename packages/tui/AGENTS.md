@@ -307,9 +307,9 @@ that tree separately from the self-contained server.
 - **Compact tools and changes**: `tui/tool_activity` groups consecutive tool
   calls, joining results by call ID and ending a group when a later response
   reuses an ID. Compact history shows the latest three calls and the group's
-  failure count; Ctrl+g recovers the original entries. `/diff` shows successful
-  captured `fs_edit` diffs from the retained history window, not a claim about
-  current worktree contents. Current-action labels use the captured operation's
+  failure count; Ctrl+g recovers the original entries. Captured `fs_edit` diffs
+  remain the explicitly labelled fallback when a worktree observation is
+  unavailable. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
 - **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
   140 columns or wider and a single-panel changes view below that width. The
@@ -320,6 +320,32 @@ that tree separately from the self-contained server.
   rows reuse unchanged line layouts at the same width and discard old keys
   when the captured projection changes. Closing the pane releases its cache
   and restores the conversation's scroll position.
+- **Worktree navigation**: `tui/worktree_view` validates a bounded Git board
+  from the attached session. `/diff` requests an observation; Up/Down selects
+  all changes or a raw file identity, Enter returns to the composer, Ctrl+d
+  changes focus, and `r` refreshes while the navigator has focus. Mouse file
+  selection and patch scrolling use the rendered pane geometry. Refresh keeps
+  the selected raw path when it still exists. A pending reply releases the
+  command lane; the final push must match the actual sent request ID and
+  attachment. Failed refresh retains the previous board with a stale label.
+- **Queued-input editing**: bare `/queue` opens `tui/queue_editor`; `/queue text`
+  still submits a queued turn. Enter fetches the complete selected item,
+  ordinary Enter inserts a newline in its editor, and Ctrl+s saves its exact
+  revision. Images remain on the server. The draft is separate from the
+  ordinary composer and survives Escape, conflict, or an uncertain save.
+  Ctrl+r explicitly reconciles the same item and queue namespace. A changed
+  session, epoch, or incarnation cannot adopt an old draft, even if the opaque
+  item ID repeats; a new connection within that namespace may reconcile it.
+- **Completion and live jobs**: `tui/completion_summary` retains observed
+  operation start boundaries and processes a result before a successor in the
+  same cut. It attributes captured edits and paired tool outcomes only within
+  that ancestry interval. Missing ancestry is partial; a missed start is
+  unavailable. The latest card and `/summary` show actual command exit codes,
+  queued work, and a separately timestamped `tui/live_jobs` roster. Completion,
+  opening the summary, or explicit `r` requests the roster once when the lane
+  is free. Ordinary transcript refreshes do not query job history or run Git.
+  `session_channel.RequestRefused` carries the command and actual request ID,
+  so an unrelated refusal cannot settle a queue, worktree, or jobs request.
 - **Current notes**: `/notes` requests a separate bounded `notes` observation.
   `tui/notes_view` validates values, last-write revisions, capture revision,
   excerpt markers and omitted counts. `r` refreshes the panel without a new
