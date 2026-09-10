@@ -5,7 +5,8 @@ criteria. Rewrite it after the next body of work. Measurements and detailed
 review evidence belong in their own documents.
 
 Re-baselined on September 9, 2026 against merged PR #340 (`93d50830`) and
-its rendering follow-up on `codex/render-costs`. PR #340's head `107b3851`
+its rendering follow-up on `codex/render-costs`, plus the responsive changes
+pane on `codex/responsive-diff`. PR #340's head `107b3851`
 passed all 16 checks, including Linux signoff, before the merge. The follow-up
 has its own verification and must not inherit that commit's signoff.
 
@@ -17,6 +18,7 @@ has its own verification and must not inherit that commit's signoff.
 | Human controls | Host-owned priority steering and normal queued turns, operation-bound Escape, and current tool/notes/diff presentation landed in PR #340. |
 | Installed tools | Generic PATH discovery and ripgrep work. Explicit read-only workspace mounts can expose Go/Xcode support trees under existing policy; the distribution guide documents configuration. A disposable configured session passed real jailed Go tests, Apple Git and ripgrep; the owner's configuration is unchanged. |
 | Rendering | Rebuilt compact groups reuse layout for unchanged speaker/text lines at the same width. Replaced projections discard old keys. No package or dependency was added. |
+| Changes pane | `/diff` keeps the conversation beside captured edits from 140 columns, falls back to one panel below that width, and preserves independent scrolling. This follow-up has its own verification below. |
 | Measurements | Validated 532-record replay is about 3.3× faster, with 60% less process CPU and 29% fewer profiled heap-word allocations. Settled process heap is unchanged; this is not a live-client CPU or daemon-memory result. See the performance guide. |
 | Release acceptance | Joined shipped tests, SQLite/resource decisions, scheduling and memory-off observations retain their separate tracker scope. |
 
@@ -38,6 +40,14 @@ The complete local gate passed, including 1,515 client and 275 TUI tests.
 The rebuilt client passed a real-terminal probe for edits, notes, code mode,
 diffs, Escape and steer, against the unchanged merged daemon.
 
+The responsive changes follow-up passed the complete local `make check`,
+including 1,515 client and 281 TUI tests, and `make doc-check` with existing
+warnings. Its independent advisor review found no actionable issue. The rebuilt
+client passed a real-terminal resize from 160 to 100 columns and back, retained
+the pane through a new turn, and closed it with `/diff`. The same disposable
+session passed the edit, notes, code-mode, configured-tool, Escape and steer
+flow. These local results do not constitute remote signoff for this follow-up.
+
 The previous installed-tools wording also omitted an existing option: trusted
 configuration can grant explicit support-tree reads without changing protocol
 020. [The distribution guide](distribution.md#installed-tool-support-trees)
@@ -45,9 +55,9 @@ shows that path. Automatic broad host reads remain an owner policy decision.
 
 ## Remaining video-review scope
 
-The full original UX acceptance list is not complete. `/diff` is implemented as
-a replacement transcript view; its responsive right-hand pane and changed-file
-navigator are missing. Editing already queued input and the proposed explicit
+The full original UX acceptance list is not complete. `/diff` now has its
+responsive right-hand pane and narrow fallback. Its changed-file navigator and
+consolidated worktree diff are missing. Editing already queued input and the proposed explicit
 completion/running-job summary are also missing. The cgo/SDK probe, joined
 reconnect/control exercise, reading and selection under live output, complete
 latency distributions and daemon-memory plateau remain unverified. See the
