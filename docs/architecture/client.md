@@ -903,6 +903,14 @@ surface. The model selector searches catalogue names and provider identities.
 The agent inspector is a projection of server strands and operation phases,
 not a second lifecycle registry.
 
+`/diff` toggles captured successful edits. At 140 columns or wider it keeps the
+conversation visible beside a right-hand changes pane; narrower terminals show
+changes in the main panel. Resizing preserves the open view and each pane's
+scroll position. Mouse-wheel input follows the pane under the pointer, while
+PgUp/PgDn scroll changes while open. Escape closes the pane. The changes pane
+temporarily takes the agent rail's space and restores its visibility on close.
+It shows retained edit history, not a consolidated worktree diff or file browser.
+
 Durable records and transient streams never alias. The client caches wrapped
 durable rows by strand, width, and detail mode, and rewraps only the changing
 stream fragments. Compact tool groups recompute their projection when outcomes

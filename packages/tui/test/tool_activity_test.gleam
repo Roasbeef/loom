@@ -10,6 +10,9 @@ import core/register
 import etui/backend
 import etui/geometry
 import etui/widgets/textarea
+import gleam/dict
+import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import machine/codec as machine_codec
@@ -242,4 +245,157 @@ pub fn the_diff_panel_shows_only_successful_captured_edits_test() {
   let closed = tui.update(backend.KeyPress("esc"), opened)
   assert closed.diff_view == tui.DiffHidden
   assert closed.interrupt == None
+}
+
+fn changes_model(diff) {
+  let details =
+    json.Object([
+      #("path", json.String("src/file.gleam")),
+      #("diff", json.String(diff)),
+    ])
+  model()
+  |> tui.accept_connection_message(
+    connection.Incoming(gateway.user_entry("main", "CONVERSATION_MARKER", 1)),
+  )
+  |> received(call(2, "edit", "fs_edit", args()))
+  |> received(outcome(3, "edit", False, Some(details)))
+}
+
+fn toggle_diff(model) {
+  tui.update(
+    backend.KeyPress("enter"),
+    tui.Model(..model, input: textarea.state_from_string("/diff")),
+  )
+}
+
+fn painted_buffer(model, width) {
+  let updated = tui.update(backend.Resize(width, 40), model)
+  let #(drawn, _) = tui.view(updated, geometry.rect_new(0, 0, width, 40))
+  #(updated, drawn)
+}
+
+fn columns(drawn, left, width) {
+  int.range(0, 40, [], fn(rows, row) {
+    [frame.row_text(drawn, left, row, width), ..rows]
+  })
+  |> list.reverse
+  |> string.join("\n")
+}
+
+pub fn wide_diff_keeps_the_conversation_visible_on_the_left_test() {
+  let #(opened, drawn) =
+    changes_model("--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new")
+    |> toggle_diff
+    |> painted_buffer(160)
+  let left = columns(drawn, 0, 88)
+  let right = columns(drawn, 88, 72)
+  assert string.contains(left, "transcript / main")
+  assert string.contains(left, "CONVERSATION_MARKER")
+  assert string.contains(right, "captured changes")
+  assert string.contains(right, "+new")
+  assert !string.contains(right, "CONVERSATION_MARKER")
+
+  // Copy selection is clipped to the pane, rather than spanning the live
+  // conversation and unrelated diff cells on the same terminal row.
+  let right_area = tui.hit_area(opened, geometry.Position(100, 10))
+  assert right_area.position.x == 89
+  assert right_area.size.width == 70
+}
+
+pub fn diff_resize_uses_one_panel_below_the_readable_split_width_test() {
+  let #(wide, _) =
+    changes_model("-old\n+new") |> toggle_diff |> painted_buffer(140)
+  let #(narrow, single) = painted_buffer(wide, 139)
+  let text = frame.buffer_to_text(single)
+  assert string.contains(text, "captured changes")
+  assert !string.contains(text, "CONVERSATION_MARKER")
+  let #(restored, split) = painted_buffer(narrow, 160)
+  assert string.contains(columns(split, 0, 88), "CONVERSATION_MARKER")
+  assert string.contains(columns(split, 88, 72), "+new")
+  assert restored.diff_view == tui.DiffVisible
+}
+
+pub fn diff_and_conversation_scroll_independently_test() {
+  let long_diff =
+    int.range(1, 101, [], fn(rows, index) {
+      ["+changed line " <> int.to_string(index), ..rows]
+    })
+    |> list.reverse
+    |> string.join("\n")
+  let #(opened, _) =
+    int.range(4, 64, changes_model(long_diff), fn(current, seq) {
+      tui.accept_connection_message(
+        current,
+        connection.Incoming(gateway.user_entry(
+          "main",
+          "older conversation",
+          seq,
+        )),
+      )
+    })
+    |> toggle_diff
+    |> painted_buffer(160)
+  assert opened.rendered_row_count > 40
+    as "both panes must contain enough rows to exercise independent scrolling"
+  let right = tui.update(backend.MouseScroll(100, 10, True), opened)
+  assert right.diff_scroll_offset == 3
+  assert right.scroll_offset == opened.scroll_offset
+  let left = tui.update(backend.MouseScroll(10, 10, True), right)
+  assert left.scroll_offset == 3
+  assert left.diff_scroll_offset == right.diff_scroll_offset
+  let paged = tui.update(backend.KeyPress("pageup"), left)
+  assert paged.diff_scroll_offset > left.diff_scroll_offset
+  assert paged.scroll_offset == left.scroll_offset
+  let closed = tui.update(backend.KeyPress("esc"), paged)
+  assert closed.diff_view == tui.DiffHidden
+  assert closed.scroll_offset == left.scroll_offset
+  assert closed.diff_rows == []
+  assert dict.is_empty(closed.diff_line_cache)
+}
+
+pub fn replacement_history_releases_the_open_diffs_old_layout_test() {
+  let #(opened, _) =
+    changes_model("-old\n+DISCARDED_DIFF_MARKER")
+    |> toggle_diff
+    |> painted_buffer(160)
+  let #(replaced, drawn) =
+    opened
+    |> tui.accept_connection_message(
+      connection.Incoming(gateway.full_snapshot("new")),
+    )
+    |> painted_buffer(160)
+  assert !string.contains(frame.buffer_to_text(drawn), "DISCARDED_DIFF_MARKER")
+  assert !list.any(dict.keys(replaced.diff_line_cache), fn(line) {
+    string.contains(line.text, "DISCARDED_DIFF_MARKER")
+  })
+    as "replacement history cannot keep the old diff reachable through layout hints"
+}
+
+pub fn an_open_diff_keeps_up_with_new_captured_edits_test() {
+  let #(opened, _) =
+    changes_model("-old\n+new") |> toggle_diff |> painted_buffer(160)
+  let details =
+    json.Object([
+      #("path", json.String("src/second.gleam")),
+      #("diff", json.String("-second old\n+SECOND_EDIT_MARKER")),
+    ])
+  let #(updated, drawn) =
+    opened
+    |> received(call(4, "second", "fs_edit", args()))
+    |> received(outcome(5, "second", False, Some(details)))
+    |> painted_buffer(160)
+  assert updated.diff_view == tui.DiffVisible
+  assert string.contains(columns(drawn, 88, 72), "SECOND_EDIT_MARKER")
+  assert string.contains(columns(drawn, 0, 88), "CONVERSATION_MARKER")
+}
+
+pub fn diff_toggle_restores_the_agent_rail_preference_test() {
+  let base = tui.Model(..changes_model("-old\n+new"), agent_rail_visible: True)
+  let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
+  assert opened.agent_rail_visible
+  assert tui.hit_area(opened, geometry.Position(100, 10)).position.x == 89
+  let #(closed, _) = opened |> toggle_diff |> painted_buffer(160)
+  assert closed.diff_view == tui.DiffHidden
+  assert closed.agent_rail_visible
+  assert tui.hit_area(closed, geometry.Position(140, 10)).position.x == 127
 }

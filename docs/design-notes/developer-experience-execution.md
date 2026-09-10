@@ -163,10 +163,12 @@ module splitting as part of this implementation.
 ## Acceptance still open from the video review
 
 PR #340 is a substantial implementation of the review, not completion of every
-item in it. The initial note explicitly requested a persistent diff pane at
-sufficient width. `/diff` currently replaces the transcript at every width and
-shows captured successful edits in history order; it has neither the responsive
-right-hand pane nor a changed-file navigator or consolidated worktree diff.
+item in it. The responsive-diff follow-up implements the persistent right-hand
+pane at 140 columns or wider, with a single-panel fallback below that width.
+It preserves conversation and changes scroll positions independently and stays
+open across turns and resizing. `/diff` still shows captured successful edits
+in history order; a changed-file navigator and consolidated worktree diff are
+not implemented.
 
 Pending inputs now have reliable host custody and visible delivery state, but
 editing an already queued message is not implemented. The terminal also lacks
@@ -175,9 +177,12 @@ remaining work and running jobs. Existing scrollback and selection mechanisms
 were preserved; the full reading/selection-under-output acceptance exercise was
 not repeated across all of the proposed layouts.
 
-The configured Go/Git/search probe passed. The representative cgo/SDK test,
-generic access without naming support directories, and a single actionable
-missing-dependency diagnostic remain outside that proof. Control regressions
+The configured Go/Git/search probe passed. A subsequent real-terminal probe
+also passed `CGO_ENABLED=1 go test -v ./...` with a C `<stdlib.h>` include and
+an assertion on `C.abs`. The same documented Go/Xcode mounts support that basic
+cgo/SDK build. Broader framework builds, generic access without naming support
+directories, and a single actionable missing-dependency diagnostic remain
+outside that proof. Control regressions
 cover skipped state transitions and stream identities, and real streaming
 Escape/steer passed; they are not the entire joined reconnect/held-tool/multiple
 queue scenario described by the original acceptance note.

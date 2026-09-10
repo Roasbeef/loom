@@ -98,6 +98,13 @@ pub type DiffVisibility {
   DiffVisible
 }
 
+// Scroll direction names the operation without carrying a Boolean polarity
+// through the two independently scrollable reading surfaces.
+type ScrollDirection {
+  Older
+  Newer
+}
+
 /// One rendered transcript line before markdown and wrapping.
 @internal
 pub type Line {
@@ -452,6 +459,17 @@ pub type Model {
     notes_open: Bool,
     /// A dedicated view of captured edit diffs, without tool retries.
     diff_view: DiffVisibility,
+    /// Diff scrolling is independent of conversation scrolling, including
+    /// while a narrow terminal temporarily shows only the changes.
+    diff_scroll_offset: Int,
+    /// Cached newest-first diff rows. Stream fragments cannot make the
+    /// changes pane reparse settled edit results.
+    diff_rows: List(span.Line),
+    /// Current diff lines retain layout across captures at the same width.
+    /// Rebuilding keeps only the newly captured projection's keys.
+    diff_line_cache: Dict(Line, List(span.Line)),
+    /// The row count belongs to the cached diff projection and its width.
+    diff_row_count: Int,
     /// Latest explicit read of the notes board, with its own revision.
     note_board: Option(notes_view.Board),
     overlay: Overlay,
@@ -785,6 +803,10 @@ pub fn new_model_with_clock(
     help_open: False,
     notes_open: False,
     diff_view: DiffHidden,
+    diff_scroll_offset: 0,
+    diff_rows: [],
+    diff_line_cache: dict.new(),
+    diff_row_count: 0,
     note_board: None,
     overlay: NoOverlay,
     models: demo_models(),
@@ -1891,8 +1913,8 @@ fn render_frame(
   screen: Rect,
 ) -> #(buffer.Buffer, Result(geometry.Position, Nil)) {
   let #(header_area, body_area, input_area, footer_area) = layout(screen, model)
-  let #(transcript_panel, agent_panel) =
-    body_layout(body_area, model.width, model.agent_rail_visible)
+  let #(transcript_panel, agent_panel, changes_panel) =
+    body_layout(body_area, model)
   let transcript_area = panel_inner(transcript_panel)
   let #(paste_area, editor_area) =
     input_layout(panel_inner(input_area), model.attachments)
@@ -1922,6 +1944,7 @@ fn render_frame(
     )
     |> render_transcript(transcript_area, model)
     |> render_agent_rail(agent_panel, model)
+    |> render_changes_panel(changes_panel, model)
     |> render_panel_border(input_area, input_title(model), theme.signal)
     |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, input_view)
@@ -2076,10 +2099,52 @@ fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
   }
 }
 
-fn body_layout(body: Rect, width: Int, visible: Bool) -> #(Rect, Rect) {
-  case visible && width >= 100, geometry.split_h(body, [Fill, Length(34)]) {
-    True, [transcript, agents] -> #(transcript, agents)
-    _, _ -> #(body, geometry.rect_zero())
+// The changes pane gets a readable column without squeezing the conversation
+// below sixty-eight cells. It borrows the optional rail's place; closing it
+// restores the operator's rail preference rather than changing that setting.
+fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
+  let changes = diff_pane_width(model)
+  let rail = case model.agent_rail_visible && model.width >= 100 {
+    True -> 34
+    False -> 0
+  }
+  let secondary = case changes > 0 {
+    True -> changes
+    False -> rail
+  }
+  case geometry.split_h(body, [Fill, Length(secondary)]) {
+    [main, side] if changes > 0 -> #(main, geometry.rect_zero(), side)
+    [main, side] -> #(main, side, geometry.rect_zero())
+    _ -> #(body, geometry.rect_zero(), geometry.rect_zero())
+  }
+}
+
+fn diff_pane_width(model: Model) -> Int {
+  case model.diff_view == DiffVisible && model.width >= 140 {
+    True -> int.min(72, model.width / 2)
+    False -> 0
+  }
+}
+
+fn main_shows_diff(model: Model) -> Bool {
+  model.diff_view == DiffVisible && diff_pane_width(model) == 0
+}
+
+fn render_changes_panel(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  case area.size.width > 0 {
+    True ->
+      buf
+      |> render_panel_border(area, " captured changes ", theme.quiet)
+      |> render_rows(
+        panel_inner(area),
+        model.diff_rows,
+        model.diff_scroll_offset,
+      )
+    False -> buf
   }
 }
 
@@ -2133,20 +2198,32 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
+  case main_shows_diff(model) {
+    True -> render_rows(buf, area, model.diff_rows, model.diff_scroll_offset)
+    False -> render_rows(buf, area, model.rendered_rows, model.scroll_offset)
+  }
+}
+
+fn render_rows(
+  buf: buffer.Buffer,
+  area: Rect,
+  rows: List(span.Line),
+  offset: Int,
+) -> buffer.Buffer {
   let visible =
-    model.rendered_rows
-    |> list.drop(model.scroll_offset)
+    rows
+    |> list.drop(offset)
     |> list.take(area.size.height)
     |> list.reverse
   paragraph.render_styled(buf, area, visible)
 }
 
 fn transcript_title(model: Model) -> String {
-  let surface = case model.help_open, model.notes_open, model.diff_view {
+  let surface = case model.help_open, model.notes_open, main_shows_diff(model) {
     True, _, _ -> "help"
     False, True, _ -> "agent notes"
-    False, False, DiffVisible -> "captured changes"
-    False, False, DiffHidden -> "transcript"
+    False, False, True -> "captured changes"
+    False, False, False -> "transcript"
   }
   " "
   <> surface
@@ -3009,8 +3086,11 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
       handle_paste(clear_selection(model), text)
       |> mark_activity
       |> invalidate_frame
-    backend.MouseScroll(_, _, up) ->
-      scroll_transcript(clear_selection(model), up, 3)
+    backend.MouseScroll(x, y, up) ->
+      scroll_at(clear_selection(model), geometry.Position(x, y), case up {
+        True -> Older
+        False -> Newer
+      })
       |> mark_activity
       |> invalidate_frame
 
@@ -3330,7 +3410,8 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
-      let cached = refresh_record_cache(after, width)
+      let cached =
+        refresh_diff_cache(before, after) |> refresh_record_cache(width)
       let rendered_rows = rendered_rows_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
       let anchored =
@@ -3352,6 +3433,80 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       )
     }
     False -> after
+  }
+}
+
+// Diff rows have their own width and scroll position. Reuse the projection
+// while only live fragments or composer text changed: admitted records already
+// invalidate the durable cache, and pending legacy entries name an append.
+// Closing the view releases its rows rather than retaining a hidden history.
+fn refresh_diff_cache(before: Model, after: Model) -> Model {
+  let cached = case after.diff_view {
+    DiffHidden ->
+      Model(
+        ..after,
+        diff_rows: [],
+        diff_line_cache: dict.new(),
+        diff_row_count: 0,
+      )
+    DiffVisible -> {
+      let matches =
+        before.diff_view == DiffVisible
+        && after.record_cache_valid
+        && after.record_cache_strand == after.active_strand
+        && list.is_empty(after.pending_records)
+        && diff_width(before) == diff_width(after)
+      case matches {
+        True -> after
+        False -> {
+          let #(rows, line_cache) =
+            diff_content(after)
+            |> cached_record_lines(
+              diff_width(after),
+              previous_diff_layout(before, after),
+            )
+          let count = list.length(rows)
+          Model(
+            ..after,
+            diff_rows: rows,
+            diff_line_cache: line_cache,
+            diff_row_count: count,
+            diff_scroll_offset: anchored_scroll_offset(
+              after.diff_scroll_offset,
+              before.diff_row_count,
+              count,
+            ),
+          )
+        }
+      }
+    }
+  }
+  Model(
+    ..cached,
+    diff_scroll_offset: bounded_scroll_offset(
+      cached.diff_scroll_offset,
+      cached.diff_row_count,
+      transcript_viewport_height(cached),
+    ),
+  )
+}
+
+fn previous_diff_layout(
+  before: Model,
+  after: Model,
+) -> Dict(Line, List(span.Line)) {
+  case
+    before.diff_view == DiffVisible && diff_width(before) == diff_width(after)
+  {
+    True -> after.diff_line_cache
+    False -> dict.new()
+  }
+}
+
+fn diff_width(model: Model) -> Int {
+  case diff_pane_width(model) {
+    0 -> transcript_width(model)
+    width -> int.max(1, width - 2)
   }
 }
 
@@ -3447,19 +3602,14 @@ fn cached_record_lines(
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
 fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
-  case model.help_open, model.notes_open, model.diff_view {
-    True, _, _ ->
+  case model.help_open, model.notes_open {
+    True, _ ->
       help_content().lines |> markdown.wrap_lines(width) |> list.reverse
-    False, True, _ ->
+    False, True ->
       notes_content(model).lines
       |> markdown.wrap_lines(width)
       |> list.reverse
-    False, False, DiffVisible ->
-      diff_content(model)
-      |> transcript_content
-      |> fn(content) { markdown.wrap_lines(content.lines, width) }
-      |> list.reverse
-    False, False, DiffHidden ->
+    False, False ->
       stream_lines(
         display_streams(model),
         model.active_strand,
@@ -5867,7 +6017,6 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
       Model(
         ..model,
         diff_view: DiffHidden,
-        scroll_offset: 0,
         repaint_phase: !model.repaint_phase,
         notice: "changes closed",
       )
@@ -5879,8 +6028,8 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
     keys.Char("r"), False, True -> refresh_notes(model)
     keys.Ctrl("g"), _, _ -> toggle_details(model)
-    keys.PageUp, _, _ -> scroll_transcript(model, True, 10)
-    keys.PageDown, _, _ -> scroll_transcript(model, False, 10)
+    keys.PageUp, _, _ -> scroll_reading_panel(model, Older, 10)
+    keys.PageDown, _, _ -> scroll_reading_panel(model, Newer, 10)
     keys.Escape, True, _ ->
       Model(
         ..model,
@@ -6083,11 +6232,12 @@ fn write_clipboard(clipboard: Clipboard, text: String) -> Nil {
 pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body_area, input_area, _) = layout(screen, model)
-  let #(transcript_panel, agent_panel) =
-    body_layout(body_area, model.width, model.agent_rail_visible)
+  let #(transcript_panel, agent_panel, changes_panel) =
+    body_layout(body_area, model)
   [
     panel_inner(transcript_panel),
     panel_inner(agent_panel),
+    panel_inner(changes_panel),
     panel_inner(input_area),
   ]
   |> list.find(fn(area) { geometry.contains(area, at) })
@@ -6105,6 +6255,47 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
     True -> "following output"
     False -> "scrollback"
   })
+}
+
+// Page keys inspect the explicitly opened changes. Wheel input instead names
+// a surface by position, so the conversation remains readable alongside it.
+fn scroll_reading_panel(
+  model: Model,
+  direction: ScrollDirection,
+  rows: Int,
+) -> Model {
+  case model.diff_view {
+    DiffVisible -> scroll_diff(model, direction, rows)
+    DiffHidden -> scroll_transcript(model, direction == Older, rows)
+  }
+}
+
+fn scroll_at(
+  model: Model,
+  position: geometry.Position,
+  direction: ScrollDirection,
+) -> Model {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(_, _, changes) = body_layout(body, model)
+  case main_shows_diff(model) || geometry.contains(changes, position) {
+    True -> scroll_diff(model, direction, 3)
+    False -> scroll_transcript(model, direction == Older, 3)
+  }
+}
+
+fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
+  let offset =
+    scroll_offset(model.diff_scroll_offset, direction == Older, rows)
+    |> bounded_scroll_offset(
+      model.diff_row_count,
+      transcript_viewport_height(model),
+    )
+  Model(
+    ..model,
+    diff_scroll_offset: offset,
+    notice: "scrolling captured changes",
+  )
 }
 
 fn transcript_viewport_height(model: Model) -> Int {
@@ -6127,11 +6318,9 @@ pub fn transcript_height(
 }
 
 fn transcript_width(model: Model) -> Int {
-  let rail_width = case model.agent_rail_visible && model.width >= 100 {
-    True -> 34
-    False -> 0
-  }
-  int.max(1, model.width - rail_width - 2)
+  let #(main, _, _) =
+    body_layout(geometry.rect_new(0, 0, model.width, model.height), model)
+  int.max(1, main.size.width - 2)
 }
 
 /// Moves a transcript offset without allowing it to cross the live tail.
@@ -6495,16 +6684,25 @@ fn submit_text(model: Model) -> Model {
           notice: "agent notes",
         ),
       )
-    command.Diff ->
+    command.Diff -> {
+      let visibility = case cleared.diff_view {
+        DiffHidden -> DiffVisible
+        DiffVisible -> DiffHidden
+      }
       Model(
         ..cleared,
         help_open: False,
         notes_open: False,
-        diff_view: DiffVisible,
-        scroll_offset: 0,
+        diff_view: visibility,
+        diff_scroll_offset: 0,
         repaint_phase: !cleared.repaint_phase,
-        notice: "captured edits · PgUp/PgDn scroll · Esc returns",
+        notice: case visibility {
+          DiffVisible ->
+            "captured edits · PgUp/PgDn scroll changes · Esc closes"
+          DiffHidden -> "changes closed"
+        },
       )
+    }
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
       case is_known_strand(cleared.strands, name) {

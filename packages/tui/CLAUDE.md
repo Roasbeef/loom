@@ -311,6 +311,15 @@ that tree separately from the self-contained server.
   captured `fs_edit` diffs from the retained history window, not a claim about
   current worktree contents. Current-action labels use the captured operation's
   effect-pending batch indices rather than unmatched transcript calls.
+- **Responsive changes pane**: `/diff` toggles a persistent right-hand pane at
+  140 columns or wider and a single-panel changes view below that width. The
+  pane temporarily occupies the agent rail's space without changing its saved
+  visibility. Conversation and changes retain separate scroll offsets; wheel
+  input follows the pointer, while PgUp/PgDn scroll the open changes view.
+  Layout, wrapping, and selection use the same body geometry. Captured diff
+  rows reuse unchanged line layouts at the same width and discard old keys
+  when the captured projection changes. Closing the pane releases its cache
+  and restores the conversation's scroll position.
 - **Current notes**: `/notes` requests a separate bounded `notes` observation.
   `tui/notes_view` validates values, last-write revisions, capture revision,
   excerpt markers and omitted counts. `r` refreshes the panel without a new
