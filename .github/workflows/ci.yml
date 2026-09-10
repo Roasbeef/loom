@@ -640,9 +640,9 @@ jobs:
   # The fan-in. Everything it needs to say pass/fail already ran in a
   # separate job; this job's only real work is the skip census, and that
   # has to run here rather than per bucket. `.github/declared-skips-
-  # linux-gate` declares exactly one skip (the shipped-multiplayer live
-  # tool subsection, which only the `client` package's tests can produce),
-  # and skip_census.sh fails a run when a declared marker matches nothing
+  # linux-gate` declares enforcement prerequisites exercised by other
+  # lanes. Only client tests produce these markers, and skip_census.sh
+  # fails a run when a declared marker matches nothing
   # it was given — so a bucket that never touches `client` would report
   # that declaration as stale if censused alone. Passing every bucket's
   # log to one census call, exactly as the old single job passed its one
@@ -905,6 +905,23 @@ jobs:
       - name: make e2e-client-bootstrap
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e-client-bootstrap 2>&1 | tee e2e-client-bootstrap-macos.log
 
+      # These observations need a real jail. Keep them in the hard macOS
+      # lane, with no skip declarations, rather than relying on the advisory
+      # package check to establish that their assertions actually ran.
+      - name: Terminal observations with Seatbelt enforcement
+        env:
+          LOOM_TEST_TIMEOUT_SECONDS: 180
+        run: |
+          set -euo pipefail
+          .github/scripts/hex_retry.sh bash scripts/test.sh client \
+            --match client@tui_e2e_test:joined_queue_worktree_and_completion_drive_test_ \
+            2>&1 | tee ux-joined-macos.log
+          .github/scripts/hex_retry.sh bash scripts/test.sh client \
+            --match client@worktree_diff_test: \
+            2>&1 | tee ux-worktree-macos.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "macos (terminal observations)" ux-joined-macos.log ux-worktree-macos.log
+
       - name: make e2e
         run: set -o pipefail; .github/scripts/hex_retry.sh make e2e 2>&1 | tee e2e-macos.log
 
@@ -925,6 +942,8 @@ jobs:
             e2e-macos.log
             e2e-codemode-macos.log
             e2e-client-bootstrap-macos.log
+            ux-joined-macos.log
+            ux-worktree-macos.log
             packages/client/build/owned-assembly-*/daemon-soak.jsonl
             packages/client/build/shipped-*/state/daemon.log
           retention-days: 14
@@ -1238,6 +1257,24 @@ jobs:
       - name: Skip census (shipped background jobs)
         run: .github/scripts/skip_census.sh "jail (linux, shipped jobs)" shipped-jobs.log
 
+      # The ordinary runner cannot supply all of these fixtures' required
+      # enforcement layers. This lane has verified them and must execute both
+      # observations; an environmental skip is therefore a failure here.
+      - name: Terminal observations with delegated enforcement
+        env:
+          LOOM_TEST_TIMEOUT_SECONDS: 180
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          .github/scripts/hex_retry.sh bash scripts/test.sh client \
+            --match client@tui_e2e_test:joined_queue_worktree_and_completion_drive_test_ \
+            2>&1 | tee ux-joined.log
+          .github/scripts/hex_retry.sh bash scripts/test.sh client \
+            --match client@worktree_diff_test: \
+            2>&1 | tee ux-worktree.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, terminal observations)" ux-joined.log ux-worktree.log
+
       # actions/upload-artifact v7.0.1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
@@ -1250,6 +1287,8 @@ jobs:
             e2e-codemode.log
             shipped-multiplayer.log
             shipped-jobs.log
+            ux-joined.log
+            ux-worktree.log
           retention-days: 14
 
   # ------------------------------------------------------------- the oracle
