@@ -103,6 +103,20 @@ prerequisite skips. All seven focused tests and the strict census passed locally
 on macOS. Final-head hosted checks and the required Linux signoff are recorded
 on PR #344; the merge gate remains the repository's `scripts/signoff.sh`.
 
+The first signoff at `8d4811ea` exposed three fixture assumptions: the queue
+save waited for a transient notice, approval scrolling stopped before later
+layout updates, and a non-repository fixture omitted the protected blob store
+that production boot creates. The fixtures now observe retained save state,
+continue navigation within the original deadline, and prepare that directory.
+The joined and approval fixtures each passed five isolated macOS runs; all six
+worktree tests passed. A shared code-mode helper build now publishes through a
+unique adjacent staging file and atomic rename. All 280 seeded code-mode tests
+passed without skips, and 64 concurrent Linux builds and controlled failure
+checks passed. The original build race did not reproduce in the stress probe.
+Two older lifecycle failures each passed five isolated Linux runs; their
+full-suite cause remains unresolved. The final-head signoff must pass before
+merge, including those tests and the complete skip census.
+
 ## What to do next
 
 1. **Confirm the UX integration state.** Inspect PR #344 and continue from
