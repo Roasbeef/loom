@@ -18,6 +18,7 @@ import tui/connection
 import tui/frame
 import tui/recording
 import tui/session_channel
+import tui/virtual_backend
 
 pub fn tui_recording_v2_fast_initial_attachment_and_settled_turn_replay_test() {
   session_socket_test.fixture(fn(port, token, session, _epoch, _harness) {
@@ -92,11 +93,25 @@ pub fn tui_recording_v2_fast_initial_attachment_and_settled_turn_replay_test() {
     let visible = frame.buffer_to_text(last)
     assert string.contains(visible, "recorded v2 turn")
 
-    // The replayed cut is a lone owner, whose banner carries the participant
-    // count without the redundant name and role. This still proves the cut
-    // reached the frame; only the identity it prints has changed.
-    assert string.contains(visible, "Attached · 1 present")
-    assert string.contains(visible, session)
+    // Recorded resizes preserve the original 80x24 terminal. The completed
+    // turn and its current-work card can move the initial attachment banner
+    // above the tail, so inspect it through the replay's ordinary scrollback.
+    let assert Ok(history_frames) =
+      tui.replay_steps(
+        list.append(recording.to_steps(moments), [
+          virtual_backend.Input(backend.KeyPress("pageup")),
+        ]),
+        backend.TerminalSize(110, 30),
+      )
+      as "recorded attachment evidence remains reachable after settlement"
+    let assert Ok(history) = list.last(history_frames)
+      as "scrollback paints the retained adopted conversation"
+    let visible_history = frame.buffer_to_text(history)
+
+    // A lone owner's banner retains its participant count without repeating
+    // the name and role. Both assertions still inspect a rendered frame.
+    assert string.contains(visible_history, "Attached · 1 present")
+    assert string.contains(visible_history, session)
     let assert Ok(Nil) = simplifile.delete(path)
       as "the generated test recording is removed"
   })

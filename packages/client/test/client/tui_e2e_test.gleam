@@ -65,6 +65,7 @@ import core/ids
 import core/json
 import core/message
 import etui/backend
+import etui/widgets/textarea
 import filepath
 import gleam/bit_array
 import gleam/erlang/process
@@ -83,13 +84,18 @@ import provider/model
 import provider/secret
 import runtime/api
 import simplifile
+import support/enforcement
 import support/internal/ffi_proc
 import support/internal/ffi_ws
 import support/provider as provider_test
 import support/terminal.{type Terminal}
 import support/tui_driver
 import telemetry/log
+import tools/hashline
+import tui/completion_summary
+import tui/queue_editor
 import tui/session_channel
+import weft/actor
 import weft/poll
 
 // A home directory that does not exist, so a server booted here never
@@ -857,7 +863,12 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
               selected_domain.memory_path,
             ))
             == Ok(Nil)
-          let base = serve.base_policy(record.workspace)
+          let base =
+            policy.SandboxPolicy(
+              ..serve.base_policy(record.workspace),
+              readable_roots: settings.base_policy.readable_roots,
+              mounts: settings.base_policy.mounts,
+            )
           serve.assemble_owned(
             serve.Settings(
               ..settings,
@@ -1008,4 +1019,593 @@ fn settings_at(test_root: String) -> serve.Settings {
     // `[tools]` table existed.
     tools: catalog.default_tools(),
   )
+}
+
+// One joined scenario keeps the first operation live while editing a long held
+// turn, then inspects its completion while the queued successor is already live.
+pub fn joined_queue_worktree_and_completion_drive_test_() -> EunitTest {
+  Timeout(120 / gleeunit_timeout_scale, fn() {
+    case
+      enforcement.probe(
+        absolute("../../bin/loom"),
+        "joined terminal observations",
+      )
+    {
+      enforcement.EnforcementAbsent -> Nil
+      enforcement.EnforcementLive -> ux_drive()
+    }
+  })
+}
+
+type UxScriptMessage {
+  UxRequest(
+    body: String,
+    release: process.Subject(Nil),
+    reply: process.Subject(Int),
+  )
+  UxRead(reply: process.Subject(UxScriptState))
+}
+
+type UxScriptState {
+  UxScriptState(
+    next: Int,
+    requests: List(#(Int, String)),
+    releases: List(process.Subject(Nil)),
+  )
+}
+
+const ux_first = "exercise real edit, failed command, and background job"
+
+const ux_final = "joined-first-operation-finished"
+
+const ux_suffix = "\nedited exact final line after the full draft"
+
+fn ux_original() -> String {
+  "queued second prompt\n"
+  <> string.repeat("preserve the complete long input line\n", 50)
+  <> "original tail"
+}
+
+fn ux_controller() {
+  actor.new(UxScriptState(1, [], []))
+  |> actor.on_message(fn(state, message) {
+    case message {
+      UxRequest(body, release, reply) -> {
+        process.send(reply, state.next)
+        actor.continue(
+          UxScriptState(
+            state.next + 1,
+            [#(state.next, body), ..state.requests],
+            [release, ..state.releases],
+          ),
+        )
+      }
+      UxRead(reply) -> {
+        process.send(reply, state)
+        actor.continue(state)
+      }
+    }
+  })
+  |> actor.start
+}
+
+fn ux_drive() -> Nil {
+  let test_root =
+    "build/tui-joined-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let workspace = absolute(test_root) <> "/work"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+    as "the joined fixture owns its repository"
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/e.txt", "one\ntwo\nthree\n")
+    as "the hashline edit starts from known content"
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/external.txt", "external original\n")
+    as "external changes have a committed original"
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/.gitignore", ".codemode/\n.loom/\n")
+    as "daemon scratch is not a fixture worktree change"
+  let assert Ok(git) = ffi_proc.which("git") as "the fixture requires Git"
+  list.each(
+    [
+      ["init", "--quiet"],
+      ["add", "--", "e.txt", "external.txt", ".gitignore"],
+      [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "original",
+      ],
+    ],
+    fn(arguments) {
+      let assert Ok(#(0, _)) = ffi_proc.run(git, arguments, in: workspace)
+        as "trusted fixture setup commits its exact original files"
+    },
+  )
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/external.txt", "external current\n")
+    as "a non-tool edit must appear in the worktree observation"
+  let assert Ok(Nil) =
+    simplifile.write(workspace <> "/untracked.txt", "untracked current\n")
+    as "the file navigator must include an untracked file"
+  let assert Ok(script) = ux_controller()
+    as "the scripted provider records requests"
+  let stages = process.new_subject()
+  let base_settings = settings_at(test_root)
+
+  // The installed Apple developer tree is a fixture read capability. Git's
+  // platform launcher must be able to discover its real executable there.
+  let developer = "/Applications/Xcode.app"
+  let base = case simplifile.is_directory(developer) {
+    Ok(True) ->
+      policy.SandboxPolicy(..base_settings.base_policy, readable_roots: [
+        developer,
+      ])
+    Ok(False) | Error(_) -> base_settings.base_policy
+  }
+  let settings =
+    serve.Settings(
+      ..base_settings,
+      base_policy: base,
+      demand: exec.PlatformEnforcement,
+      gateway: catalog.gateway(
+        scripted_catalog(),
+        transport: ux_transport(script.data, stages),
+        secrets: secret.from_list([#("ACME_KEY", "tui-e2e-key")]),
+        clock: clock.fixed(at: 0),
+      ),
+    )
+  let assert Ok(booted) = boot(settings) as "the joined daemon boots"
+  let address =
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v2/control"
+  let outcome = case
+    tui_driver.start(address, booted.served.token, booted.session_id)
+  {
+    Error(reason) -> Error(string.inspect(reason))
+    Ok(driver) -> {
+      let outcome = ux_turns(driver.data, stages)
+      tui_driver.stop(driver.data)
+      outcome
+    }
+  }
+
+  // Every assertion about the joined run follows cleanup. A failed UI wait
+  // must release both held HTTP owners and the real background execution.
+  let scripted = actor.call(script.data, 1000, UxRead)
+  list.each(scripted.releases, fn(release) { process.send(release, Nil) })
+  shutdown(booted)
+  case outcome {
+    Error(reason) -> io.println_error(reason)
+    Ok(Nil) -> Nil
+  }
+  assert outcome == Ok(Nil) as string.inspect(outcome)
+  assert list.length(scripted.requests) == 5
+    as "the exact edited second prompt begins one successor turn"
+  list.each(scripted.requests, fn(request) {
+    assert ux_expected(request.0, request.1)
+      as "each provider request carries the exact preceding user or tool result"
+  })
+  assert simplifile.read(workspace <> "/e.txt") == Ok("one\nTWO\nthree\n")
+    as "the scripted model's hashline edit reached the actual filesystem"
+}
+
+fn ux_transport(
+  controller: process.Subject(UxScriptMessage),
+  stages: process.Subject(#(Int, process.Subject(Nil))),
+) -> http.Transport {
+  provider_test.transport(fn(request, events) {
+    let release = process.new_subject()
+    let index =
+      actor.call(controller, 1000, UxRequest(request.body, release, _))
+    case index {
+      4 | 5 -> {
+        process.send(stages, #(index, release))
+        let _released = process.receive(release, 60_000)
+        Nil
+      }
+      _ -> Nil
+    }
+    let response = case index {
+      1 -> ux_tool_sse("ux-edit", "fs_edit", ux_edit())
+      2 ->
+        ux_tool_sse(
+          "ux-check",
+          "bash",
+          json.Object([
+            #("command", json.String("printf 'validation failed\\n'; exit 7")),
+          ]),
+        )
+      3 ->
+        ux_tool_sse(
+          "ux-job",
+          "bash",
+          json.Object([
+            #("command", json.String("sleep 60")),
+            #("mode", json.String("background")),
+          ]),
+        )
+      4 -> sse_transcript(ux_final)
+      5 -> sse_transcript("joined-successor-finished")
+      _ -> sse_transcript("unexpected extra provider request")
+    }
+    process.send(
+      events,
+      http.ResponseStatus(200, [#("content-type", "text/event-stream")]),
+    )
+    process.send(events, http.ResponseChunk(bit_array.from_string(response)))
+    process.send(events, http.ResponseEnd)
+  })
+}
+
+fn ux_edit() -> json.JsonValue {
+  let anchor =
+    json.Object([
+      #("line", json.Int(2)),
+      #("anchor", json.String(hashline.anchor("two"))),
+    ])
+  json.Object([
+    #("path", json.String("e.txt")),
+    #("digest", json.String(hashline.digest("one\ntwo\nthree\n"))),
+    #(
+      "hunks",
+      json.Array([
+        json.Object([
+          #("op", json.String("replace")),
+          #("from", anchor),
+          #("to", anchor),
+          #("lines", json.Array([json.String("TWO")])),
+        ]),
+      ]),
+    ),
+  ])
+}
+
+fn ux_tool_sse(id: String, name: String, arguments: json.JsonValue) -> String {
+  sse_event(
+    "message_start",
+    json.to_string(
+      json.Object([
+        #("type", json.String("message_start")),
+        #(
+          "message",
+          json.Object([
+            #("id", json.String(id)),
+            #("model", json.String("loom-1")),
+            #(
+              "usage",
+              json.Object([
+                #("input_tokens", json.Int(10)),
+                #("output_tokens", json.Int(0)),
+              ]),
+            ),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  <> sse_event(
+    "content_block_start",
+    json.to_string(
+      json.Object([
+        #("type", json.String("content_block_start")),
+        #("index", json.Int(0)),
+        #(
+          "content_block",
+          json.Object([
+            #("type", json.String("tool_use")),
+            #("id", json.String(id)),
+            #("name", json.String(name)),
+            #("input", json.Object([])),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  <> sse_event(
+    "content_block_delta",
+    json.to_string(
+      json.Object([
+        #("type", json.String("content_block_delta")),
+        #("index", json.Int(0)),
+        #(
+          "delta",
+          json.Object([
+            #("type", json.String("input_json_delta")),
+            #("partial_json", json.String(json.to_string(arguments))),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  <> sse_event(
+    "content_block_stop",
+    "{\"type\":\"content_block_stop\",\"index\":0}",
+  )
+  <> sse_event(
+    "message_delta",
+    "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}",
+  )
+  <> sse_event("message_stop", "{\"type\":\"message_stop\"}")
+}
+
+fn ux_expected(index: Int, body: String) -> Bool {
+  let users = ux_blocks(body)
+  case index {
+    1 ->
+      list.any(users, fn(block) {
+        ux_field(block, "text") == Some(json.String(ux_first))
+      })
+    2 -> ux_result(users, "ux-edit", completion_summary.Succeeded)
+    3 -> ux_result(users, "ux-check", completion_summary.Failed)
+    4 -> ux_result(users, "ux-job", completion_summary.Succeeded)
+    5 ->
+      list.any(users, fn(block) {
+        ux_field(block, "text") == Some(json.String(ux_original() <> ux_suffix))
+      })
+    _ -> False
+  }
+}
+
+fn ux_blocks(body: String) -> List(json.JsonValue) {
+  case json.parse(body) {
+    Ok(json.Object(fields)) ->
+      case list.key_find(fields, "messages") {
+        Ok(json.Array(messages)) ->
+          list.flat_map(messages, fn(message) {
+            case ux_field(message, "role"), ux_field(message, "content") {
+              Some(json.String("user")), Some(json.Array(blocks)) -> blocks
+              _, _ -> []
+            }
+          })
+        _ -> []
+      }
+    _ -> []
+  }
+}
+
+fn ux_field(value: json.JsonValue, key: String) {
+  case value {
+    json.Object(fields) ->
+      case list.key_find(fields, key) {
+        Ok(value) -> Some(value)
+        Error(Nil) -> None
+      }
+    _ -> None
+  }
+}
+
+fn ux_result(
+  blocks: List(json.JsonValue),
+  id: String,
+  status: completion_summary.ToolStatus,
+) -> Bool {
+  list.any(blocks, fn(block) {
+    ux_field(block, "type") == Some(json.String("tool_result"))
+    && ux_field(block, "tool_use_id") == Some(json.String(id))
+    && ux_field(block, "is_error")
+    == Some(json.Bool(status == completion_summary.Failed))
+  })
+}
+
+fn ux_await(
+  driver,
+  label: String,
+  predicate: fn(tui_driver.Sample) -> Bool,
+) -> Result(tui_driver.Sample, String) {
+  case
+    poll.until(within: 15_000, every: 10, attempt: fn() {
+      let sample = tui_driver.play(driver, [])
+      case predicate(sample) {
+        True -> poll.Done(sample)
+        False -> poll.Retry
+      }
+    })
+  {
+    poll.Answered(sample) -> Ok(sample)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> {
+      let sample = tui_driver.play(driver, [])
+      Error(
+        label
+        <> " timed out:\n"
+        <> sample.frame
+        <> "\nqueue: "
+        <> string.inspect(sample.model.queue_editor)
+        <> "\nnotice: "
+        <> sample.model.notice,
+      )
+    }
+  }
+}
+
+fn ux_turns(
+  driver: process.Subject(tui_driver.Message),
+  stages: process.Subject(#(Int, process.Subject(Nil))),
+) -> Result(Nil, String) {
+  use _ <- result.try(ux_await(driver, "initial attachment", writable))
+  let _ =
+    tui_driver.play(driver, [backend.Paste(ux_first), backend.KeyPress("enter")])
+  use first <- result.try(
+    process.receive(stages, 20_000)
+    |> result.replace_error(
+      "the three real tools did not reach the held final response",
+    ),
+  )
+  use Nil <- result.try(ux_stage(
+    first.0,
+    4,
+    "the first held provider request must be number four",
+  ))
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste(ux_original()),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "queued second turn", fn(sample) {
+      writable(sample)
+      && case sample.model.captured {
+        Some(#(_, view)) ->
+          case view.pending_inputs {
+            Some(rows) -> list.any(rows, fn(row) { row.strand == "main" })
+            None -> False
+          }
+        None -> False
+      }
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste("/queue"),
+      backend.KeyPress("enter"),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "complete queue editor", fn(sample) {
+      case sample.model.queue_editor.draft {
+        Some(draft) ->
+          draft.document.text == ux_original()
+          && textarea.value(draft.input) == ux_original()
+        None -> False
+      }
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.KeyPress("end"),
+      backend.Paste(ux_suffix),
+      backend.KeyPress("ctrl+s"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "confirmed queued replacement", fn(sample) {
+      sample.model.queue_editor.surface == queue_editor.Closed
+      && sample.model.notice == "queued input updated"
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste("/queue"),
+      backend.KeyPress("enter"),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "authoritative saved queue draft", fn(sample) {
+      case sample.model.queue_editor.draft {
+        Some(draft) ->
+          draft.document.text == ux_original() <> ux_suffix
+          && draft.document.revision == 1
+          && draft.delivery == queue_editor.Editable
+        None -> False
+      }
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.KeyPress("esc"),
+      backend.KeyPress("esc"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "closed queue editor", fn(sample) {
+      sample.model.queue_editor.surface == queue_editor.Closed
+    }),
+  )
+  process.send(first.1, Nil)
+  use second <- result.try(
+    process.receive(stages, 20_000)
+    |> result.replace_error("the edited queued turn did not start"),
+  )
+  use Nil <- result.try(ux_stage(
+    second.0,
+    5,
+    "the edited successor starts exactly one provider call",
+  ))
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste("/summary"),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "prior completion during successor", fn(sample) {
+      sample.model.summary_surface == queue_editor.Inspector
+      && case completion_summary.latest(sample.model.completion, "main") {
+        Some(summary) ->
+          summary.coverage == completion_summary.Complete
+          && summary.edits == ["e.txt"]
+          && summary.final_assistant == Some(ux_final)
+          && list.any(summary.tools, fn(tool) {
+            tool.id == "ux-check"
+            && tool.status == completion_summary.Failed
+            && tool.exit_code == Some(7)
+          })
+          && case sample.model.jobs {
+            Some(board) ->
+              board.total == 1
+              && list.any(board.jobs, fn(job) {
+                job.started_by == summary.operation
+                && string.contains(job.command, "sleep 60")
+              })
+            None -> False
+          }
+          && list.any(sample.model.strands, fn(strand) {
+            strand.id == "main" && strand.live_phase != None
+          })
+        None -> False
+      }
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.KeyPress("esc"),
+      backend.Paste("/diff"),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "real worktree navigator", fn(sample) {
+      case sample.model.worktree.board {
+        Some(board) ->
+          list.any(board.files, fn(file) {
+            file.path == "external.txt"
+            && string.contains(file.patch, "-external original")
+            && string.contains(file.patch, "+external current")
+          })
+          && list.any(board.files, fn(file) {
+            file.path == "untracked.txt"
+            && string.contains(file.patch, "+untracked current")
+          })
+        None -> False
+      }
+    }),
+  )
+  let _ =
+    tui_driver.play(driver, [
+      backend.KeyPress("ctrl+d"),
+      backend.KeyPress("down"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "selected current-file patch", fn(sample) {
+      sample.model.worktree.selected == 1
+      && string.contains(sample.frame, "TWO")
+    }),
+  )
+  process.send(second.1, Nil)
+  Ok(Nil)
+}
+
+fn ux_stage(
+  actual: Int,
+  expected: Int,
+  message: String,
+) -> Result(Nil, String) {
+  case actual == expected {
+    True -> Ok(Nil)
+    False -> Error(message)
+  }
 }
