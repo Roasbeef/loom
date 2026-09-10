@@ -486,8 +486,10 @@ pub fn tool_for(mode: CodeMode) -> Tool {
     name: tool_name,
     description: description(mode),
     prompt_snippet: option.Some(
-      "`code_mode` runs a Gleam program against the capability prelude in "
-      <> "place of a batch of tool calls.",
+      "Prefer `code_mode` for batches of reads, searches, or checks, and "
+      <> "dependent steps whose intermediate results a program can handle. "
+      <> "Return a concise summary; use a direct tool when the next step "
+      <> "needs your judgment.",
     ),
     schema: tool.object_schema(
       list.flatten([
@@ -595,8 +597,9 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 ///
 pub fn description(mode: CodeMode) -> String {
   "Run a Gleam program in a jailed satellite and get one structured "
-  <> "result. Use it instead of a chain of tool calls when the steps "
-  <> "depend on each other: loops, conditionals, and concurrency happen "
+  <> "result. Prefer it for batches of independent file reads, searches, "
+  <> "or checks, and for dependent steps you can express without inspecting "
+  <> "each result yourself. Loops, conditionals, and concurrency happen "
   <> "inside the program, and only what `main` returns comes back — the "
   <> "intermediate output never enters the conversation. Write `pub fn "
   <> "main() -> report.Outcome`, returning `report.text(...)` or "
