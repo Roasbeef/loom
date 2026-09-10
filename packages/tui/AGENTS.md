@@ -227,11 +227,13 @@ that tree separately from the self-contained server.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `702a88415d66acab7c977da41850a7e02cc2ebed` with bounded input bursts; Mork
+  `ff80e0e21580a4b0077cc6989b6dc551af320505` with bounded input bursts and POSIX flow control disabled in raw mode; Mork
   1.12.x for CommonMark;
   and small Gleam utility packages. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
-  because its public API is still moving quickly.
+  because its public API is still moving quickly. Loom issue #345 tracks
+  upstreaming the complete remaining fork stack, including the earlier polling,
+  frame-diff, and input-batching commits retained by this pin.
 - **Counterpart**: `packages/client` speaks the other side of ClientGateway.
   `packages/client/protocol.md` remains the body-schema authority;
   this package does not change that wire.

@@ -33,6 +33,6 @@ tom = ">= 2.1.0 and < 3.0.0"
 [dev_dependencies]
 sqlight = ">= 1.0.0 and < 2.0.0"
 tui = { path = "../tui" }
-etui = { git = "https://github.com/Roasbeef/etui.git", ref = "702a88415d66acab7c977da41850a7e02cc2ebed" }
+etui = { git = "https://github.com/Roasbeef/etui.git", ref = "ff80e0e21580a4b0077cc6989b6dc551af320505" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 gleam_httpc = ">= 5.0.0 and < 6.0.0"
