@@ -274,7 +274,7 @@ that tree separately from the self-contained server.
   `/sessions` opens the daemon's authorized metadata selector. `/approve <id>`
   and `/deny <id>` answer the captured request; `/approvals <id>` loads an exact
   decision. `/notes` opens the
-  latest durable agent-note digest, `Shift+Tab` toggles the compact rail,
+  current note values with their revisions, `Shift+Tab` toggles the compact rail,
   `Ctrl+G` toggles reasoning/tool detail, and Page Up/Page Down traverse
   transcript scrollback. Escape closes an open surface before it requests an
   active-operation interrupt. Mouse-wheel events share that same tail-relative
@@ -294,20 +294,25 @@ that tree separately from the self-contained server.
   command, and Enter on an agent opens its strand transcript. A strand switch
   requests its effective config so the header never attributes the previous
   strand's model to it.
-- **Live submission**: Enter sends a `prompt` whether or not the strand is
-  running. On a running strand the daemon holds it and runs it when the strand
-  settles, answering `queued`; the client draws the operator's line under the
-  live tail with a queued marker until the entry it stands for commits. Tab
-  changes one draft to a `steer`, folded into the run already going, then
-  resets. `/steer` and `/queue` expose `steer` and `follow_up` explicitly.
-  A steer and a follow-up commit an ordinary user entry too, so they are
-  recorded alongside the held prompts as interjections that draw nothing;
-  the list is kept in commit order — interjections join the open run and
-  commit during it, held prompts wait for it to settle — and a committed
-  user turn retires its head. A submission waits for the daemon's outcome
-  before it joins that list, so a refusal takes its echo with it, and a
-  snapshot, an adoption, an attach or `/clear` empties the list with the
-  transcript it was drawn over.
+- **Live submission**: Enter queues a prompt behind current work. Tab selects
+  one steering draft; submitting it puts the message at the front of the host
+  queue and stops the observed operation. Escape stops current work while the
+  host retains all queued turns. `pending_inputs` supplies queue identity and
+  order, including repeated text and other peers; the terminal replaces rows
+  from each cut instead of guessing which user entry consumed an echo. The
+  interrupt marker carries the stopped operation and clears when a cut shows
+  idle or a successor. Older recordings retain their local echo semantics.
+- **Compact tools and changes**: `tui/tool_activity` groups consecutive tool
+  calls, joining results by call ID and ending a group when a later response
+  reuses an ID. Compact history shows the latest three calls and the group's
+  failure count; Ctrl+g recovers the original entries. `/diff` shows successful
+  captured `fs_edit` diffs from the retained history window, not a claim about
+  current worktree contents. Current-action labels use the captured operation's
+  effect-pending batch indices rather than unmatched transcript calls.
+- **Current notes**: `/notes` requests a separate bounded `notes` observation.
+  `tui/notes_view` validates values, last-write revisions, capture revision,
+  excerpt markers and omitted counts. `r` refreshes the panel without a new
+  model turn. Historical run-start digests remain explicitly historical.
 - **Paste**: small pastes retain the ordinary editor path. A paste estimated
   at 400 tokens or spanning eight lines becomes a compact attachment in the
   input row; the full bytes are appended to the editable instruction only
@@ -463,7 +468,7 @@ that tree separately from the self-contained server.
   a user message. Human authorship does not identify host-injected notes, so the
   client recognizes only the exact server-owned preamble and `agent-notes`
   fence, hides that envelope from conversation, and exposes it through
-  `/notes`. Do not broaden this into heuristic filtering.
+  historical fallback of `/notes`. Do not broaden this into heuristic filtering.
 - **Large context stays bounded without data loss.** Compact paste indicators
   are presentation state only. Submission expands the original bytes, and a
   durable large user turn stays previewed until detail mode asks for it.
@@ -593,12 +598,16 @@ that tree separately from the self-contained server.
   exists, is dropped, and any number of deferred notices collapse into one
   capture. The 250ms idle refresh is the recovery path for a lost notice and
   the only path on a daemon that pushes nothing.
-- **Pushed deltas outrank the sampled preview.** A stream is tagged with its
-  operation; fragments accumulate while it holds and start over on the next
-  one. A completed cut prefers the accumulated live text when it names the
-  operation the cut says is running, falls back to the snapshot's
-  discontinuous `stream_preview` when nothing has been pushed, and keeps
-  neither once the strand has no live operation.
+- **Provider requests own live fragments.** Modern streams carry operation
+  and generation identity. A new generation replaces every prior kind on its
+  strand; `end` replaces only its own generation with an empty marker. A late
+  cut cannot erase a newer pushed request, and a late terminal cannot erase
+  its successor. The marker suppresses every older captured preview. A
+  captured last result for the exact operation also retires its fragments,
+  covering relay failure paths which omit the optional observer's end event.
+  An absent or unrelated latest result is not retirement evidence.
+  Captured previews are rendered from the current cut and never appended to
+  pushed history. Older recordings retain operation-only reconciliation.
 - **A live stream is bounded, and its text is owned.** `Stream` carries the
   bytes its fragments weigh, and past twice `tui.live_stream_limit` — 24 KiB,
   the same clip the snapshot preview takes — the fragments collapse into one

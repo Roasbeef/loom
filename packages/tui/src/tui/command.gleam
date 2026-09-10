@@ -59,6 +59,9 @@ pub type Command {
   /// Browse the active strand's injected agent-note digest.
   Notes
 
+  /// Browse successful edit diffs retained in this client.
+  Diff
+
   /// Toggle expanded reasoning and tool detail.
   Details
 
@@ -218,6 +221,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/sessions", "switch local sessions", False),
     Suggestion("/rename", "rename the current session", True),
     Suggestion("/notes", "browse agent notes", False),
+    Suggestion("/diff", "browse captured edit diffs", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
     Suggestion("/strands", "list session strands", False),
@@ -284,6 +288,7 @@ pub fn parse(input: String) -> Command {
     "/approve" -> MissingArgument("approve")
     "/deny" -> MissingArgument("deny")
     "/notes" -> Notes
+    "/diff" -> Diff
     "/details" -> Details
     "/effort" -> MissingArgument("effort")
     "/compact" -> Compact
@@ -368,7 +373,8 @@ pub fn help_text() -> String {
   <> "/agents           inspect agents and sub-agents\n"
   <> "/sessions         switch locally managed sessions\n"
   <> "/rename <name>    rename the current session\n"
-  <> "/notes            browse the active strand's agent notes\n"
+  <> "/notes            refresh current agent notes\n"
+  <> "/diff             browse captured edit diffs\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"
   <> "/strands          list session strands\n"

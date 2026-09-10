@@ -22,21 +22,13 @@ pub fn multiline(text: String) -> String {
   |> string.replace("\r\n", "\n")
   |> string.replace("\r", "\n")
   |> strip_terminal_sequences
-  |> string.to_utf_codepoints
-  |> list.map(fn(codepoint) {
-    let code = string.utf_codepoint_to_int(codepoint)
-    case code == 0x0A, invisible(code) {
-      True, _ -> "\n"
-      False, True -> "�"
-      False, False -> string.from_utf_codepoints([codepoint])
-    }
-  })
-  |> string.concat
 }
 
 // Complete terminal escape sequences are formatting instructions rather than
 // transcript text. Removing them as units avoids leaving their visible CSI or
-// OSC payload behind after the leading control byte is replaced.
+// OSC payload behind after the leading control byte is replaced. The same
+// pass replaces unsafe codepoints, so safe text is decoded and rebuilt only
+// once rather than allocating a separate one-character string for each codepoint.
 fn strip_terminal_sequences(text: String) -> String {
   text
   |> string.to_utf_codepoints
@@ -54,8 +46,18 @@ fn strip_sequences(
     [first, ..rest] ->
       case terminal_sequence_tail(first, rest) {
         Some(after) -> strip_sequences(after, kept)
-        None -> strip_sequences(rest, [first, ..kept])
+        None -> strip_sequences(rest, keep_visible(first, kept))
       }
+  }
+}
+
+// Keep codepoints until the final string construction. This also preserves
+// owned output rather than returning a slice of the untrusted input buffer.
+fn keep_visible(first: UtfCodepoint, kept: List(UtfCodepoint)) {
+  let code = string.utf_codepoint_to_int(first)
+  case code != 0x0A && invisible(code) {
+    True -> list.append(string.to_utf_codepoints("�"), kept)
+    False -> [first, ..kept]
   }
 }
 

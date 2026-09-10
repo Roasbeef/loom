@@ -554,7 +554,7 @@ pub fn read_tool() -> tool.Tool {
     name: "fs_read",
     description: "Read a text file as anchored lines (line:anchor|text). "
       <> "Use offset/limit to window large files; anchors are what fs_edit "
-      <> "hunks must reference, and the details carry the file digest "
+      <> "hunks must reference, and the result text carries the file digest "
       <> "fs_edit requires.",
     prompt_snippet: Some(
       "`fs_read` reads a text file as anchored lines, which is where an "
@@ -610,10 +610,16 @@ fn read_outcome(
   limit: Int,
 ) -> ToolOutcome {
   let window = hashline.window(content, offset:, limit:)
-  let text = case window.lines {
+  let digest = hashline.digest(content)
+  let lines = case window.lines {
     [] -> empty_window_text(window.total_lines, offset)
     _ -> hashline.render(window)
   }
+
+  // Provider adapters intentionally omit presentation details. The digest is
+  // an edit prerequisite, so it must travel in model-visible result content
+  // beside the anchors, including for an empty file or a windowed read.
+  let text = "digest: " <> digest <> "\n" <> lines
 
   // An anchored read must stay inline — anchors in a blob would be
   // useless for planning edits — so an oversized window is refused
@@ -636,7 +642,7 @@ fn read_outcome(
       #("total_lines", json.Int(window.total_lines)),
       #("has_more", json.Bool(window.has_more)),
       #("trailing_newline", json.Bool(window.trailing_newline)),
-      #("digest", json.String(hashline.digest(content))),
+      #("digest", json.String(digest)),
       #("anchor_version", json.Int(hashline.anchor_version)),
     ]),
   )
@@ -838,7 +844,7 @@ pub fn edit_tool() -> tool.Tool {
   tool.Tool(
     name: "fs_edit",
     description: "Apply anchored edit hunks to a file. Pass the digest from "
-      <> "fs_read's details; each hunk references lines by the {line, anchor} "
+      <> "fs_read's result text; each hunk references lines by the {line, anchor} "
       <> "pairs from fs_read. A stale anchor or a changed file rejects the "
       <> "whole edit and returns fresh anchors and the fresh digest.",
     prompt_snippet: Some(
@@ -921,7 +927,7 @@ fn edit_schema() -> JsonValue {
         #(
           "digest",
           tool.string_property(
-            "the file digest from fs_read's details; the edit applies only "
+            "the file digest from fs_read's result text; the edit applies only "
             <> "if the file is still exactly that content",
           ),
         ),
@@ -948,7 +954,7 @@ fn run_edit(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use content <- tool.or_outcome(read_text(ctx, resolved), identity_outcome)
   use edited <- tool.or_outcome(
     hashline.apply(content, hashline.Plan(digest:, hunks:)),
-    apply_error_outcome,
+    fn(error) { apply_error_outcome(error, content) },
   )
   use Nil <- tool.or_outcome(
     ctx.filesystem.write(resolved, <<edited:utf8>>),
@@ -968,15 +974,21 @@ fn edit_outcome(
   edited: String,
 ) -> ToolOutcome {
   let total_lines = list.length(hashline.split_lines(edited).lines)
+  let digest = hashline.digest(edited)
   tool.success(
-    "applied " <> int.to_string(list.length(hunks)) <> " hunk(s) to " <> path,
+    "applied "
+    <> int.to_string(list.length(hunks))
+    <> " hunk(s) to "
+    <> path
+    <> "\ndigest: "
+    <> digest,
   )
   |> tool.with_details(
     json.Object([
       #("path", json.String(path)),
       #("hunks_applied", json.Int(list.length(hunks))),
       #("total_lines", json.Int(total_lines)),
-      #("digest", json.String(hashline.digest(edited))),
+      #("digest", json.String(digest)),
       #("anchor_version", json.Int(hashline.anchor_version)),
       #("diff", json.String(hashline.render_diff(before, hunks))),
     ]),
@@ -1069,7 +1081,10 @@ fn require(
   }
 }
 
-fn apply_error_outcome(error: hashline.ApplyError) -> ToolOutcome {
+fn apply_error_outcome(
+  error: hashline.ApplyError,
+  content: String,
+) -> ToolOutcome {
   case error {
     hashline.MalformedPlan(reason:) ->
       tool.failure("invalid edit plan: " <> reason)
@@ -1078,18 +1093,22 @@ fn apply_error_outcome(error: hashline.ApplyError) -> ToolOutcome {
         "invalid edit plan: hunks overlap at line " <> int.to_string(line),
       )
     hashline.StaleAnchors(stale:) -> {
+      let digest = hashline.digest(content)
       let regions =
         stale
         |> list.map(stale_region_text)
         |> string.join(with: "\n")
       tool.failure(
         "stale anchors: the file changed since it was read; re-plan against "
-        <> "these fresh anchors\n"
+        <> "these fresh anchors.\ndigest: "
+        <> digest
+        <> "\n"
         <> regions,
       )
       |> tool.with_details(
         json.Object([
           #("error", json.String("stale_anchors")),
+          #("digest", json.String(digest)),
           #("stale", json.Array(list.map(stale, encode_stale_entry))),
           #("anchor_version", json.Int(hashline.anchor_version)),
         ]),
@@ -1099,9 +1118,9 @@ fn apply_error_outcome(error: hashline.ApplyError) -> ToolOutcome {
       tool.failure(
         "stale content: the file is no longer the exact content this edit "
         <> "was planned against (or the edit already applied); re-plan "
-        <> "against digest "
+        <> "against the fresh file.\ndigest: "
         <> digest
-        <> " and these fresh anchors\n"
+        <> "\nFresh anchors:\n"
         <> fresh_lines_text(fresh),
       )
       |> tool.with_details(

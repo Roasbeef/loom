@@ -502,9 +502,11 @@ extended by the M3 runtime wave.
 - **A lost abort race re-delivers, it never halts the strand** (ORCH-L5).
   Exhausting the stale-retry ladder must not drop a fire-and-forget request
   (nobody would learn it was lost) and must not restart the strand for a
-  transient race, so the driver re-sends `RequestAbort` to itself after a
-  pacing delay and keeps running; every retry re-reads durable state, so
-  the loop converges once the concurrent committers quiet down.
+  transient race, so the driver re-sends `RequestAbort(operation)` to itself after a
+  pacing delay and keeps running. Every retry compares that same captured
+  identity with durable state. An idle or successor operation makes the request
+  obsolete without cancelling effects. `api.abort_operation` is the explicit
+  identity seam; `api.abort` captures the current identity before sending.
 - **Interrupted effects stay registered, and settle faithfully.** Live
   effects are cancelled *after* the durable marker (pi §4.6 order) but are
   not deregistered: an effect that already delivered a real settlement

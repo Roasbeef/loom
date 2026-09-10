@@ -26,7 +26,8 @@ import etui/widgets/paragraph
 import etui/widgets/statusbar
 import etui/widgets/textarea as text_area
 import gleam/bit_array
-import gleam/dict
+import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/float
 import gleam/int
@@ -57,6 +58,7 @@ import tui/image_drop
 import tui/internal/ffi_terminal
 import tui/markdown
 import tui/model_selector
+import tui/notes_view
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/selection
@@ -67,6 +69,7 @@ import tui/snapshot
 import tui/snapshot_view
 import tui/text_hygiene
 import tui/theme
+import tui/tool_activity
 import tui/virtual_backend
 import tui/workspace
 import weft
@@ -83,6 +86,16 @@ pub type Speaker {
   ToolDetail
   ToolFailure
   Failure
+}
+
+/// Whether the transcript area is showing captured edits.
+@internal
+pub type DiffVisibility {
+  /// Show conversation history.
+  DiffHidden
+
+  /// Show successful edits from the retained history window.
+  DiffVisible
 }
 
 /// One rendered transcript line before markdown and wrapping.
@@ -107,12 +120,10 @@ pub const live_stream_limit = 24_576
 
 /// The undurable fragments of one strand-and-kind generation.
 ///
-/// The operation is what makes a fragment list a generation rather than a
-/// running total. Fragments accumulate while it holds, and the first fragment
-/// of a new one starts the list over, so the answer on screen is always the
-/// answer being produced now. A snapshot's sampled preview names the same
-/// operation the cut does, which is how the two representations of one live
-/// answer are compared.
+/// A request owns its text, thinking and tool-call fragments. Operation IDs
+/// alone cannot separate requests around tool batches or retries. An `end`
+/// observation keeps an empty marker until the next request so an older cut's
+/// sampled preview cannot resurrect a completed answer.
 ///
 /// `bytes` is what the fragments weigh, carried rather than recomputed: the
 /// budget is checked once per delta and a delta arrives per provider token,
@@ -123,6 +134,7 @@ pub type Stream {
   Stream(
     strand: String,
     operation: String,
+    generation: String,
     kind: String,
     fragments: List(String),
     bytes: Int,
@@ -323,7 +335,14 @@ pub type Clipboard {
 /// One held instruction, waiting for the operation it interrupted to settle.
 @internal
 pub type Interrupt {
-  Interrupt(strand: String, pending: Option(String))
+  Interrupt(
+    /// The strand whose current work was stopped.
+    strand: String,
+    /// The observed operation; a successor completes this interrupt too.
+    operation: Option(String),
+    /// Legacy recordings retain replacement text until their terminal event.
+    pending: Option(String),
+  )
 }
 
 /// What a finished picker control job produced.
@@ -431,6 +450,10 @@ pub type Model {
     notice: String,
     help_open: Bool,
     notes_open: Bool,
+    /// A dedicated view of captured edit diffs, without tool retries.
+    diff_view: DiffVisibility,
+    /// Latest explicit read of the notes board, with its own revision.
+    note_board: Option(notes_view.Board),
     overlay: Overlay,
     models: List(protocol.ModelInfo),
     current_model: String,
@@ -758,6 +781,8 @@ pub fn new_model_with_clock(
     notice: "interactive design preview",
     help_open: False,
     notes_open: False,
+    diff_view: DiffHidden,
+    note_board: None,
     overlay: NoOverlay,
     models: demo_models(),
     current_model: "baseten-kimi-k3",
@@ -2113,10 +2138,11 @@ fn render_transcript(
 }
 
 fn transcript_title(model: Model) -> String {
-  let surface = case model.help_open, model.notes_open {
-    True, _ -> "help"
-    False, True -> "agent notes"
-    False, False -> "transcript"
+  let surface = case model.help_open, model.notes_open, model.diff_view {
+    True, _, _ -> "help"
+    False, True, _ -> "agent notes"
+    False, False, DiffVisible -> "captured changes"
+    False, False, DiffHidden -> "transcript"
   }
   " "
   <> surface
@@ -2161,7 +2187,12 @@ fn render_line(line: Line) -> List(span.Line) {
           span.span_plain(text),
         ])
       })
-      |> list.append([span.line_plain("")])
+      |> list.append(case line.speaker {
+        ToolCall | ToolResult | ToolFailure -> []
+        System | User | Reasoning | Failure | Assistant | ToolDetail -> [
+          span.line_plain(""),
+        ]
+      })
   }
 }
 
@@ -2208,7 +2239,66 @@ fn help_content() -> span.Text {
   ])
 }
 
-fn notes_content(
+fn refresh_notes(model: Model) -> Model {
+  send_frame(
+    Model(..model, notice: "refreshing notes"),
+    protocol.notes(model.next_id, model.active_strand),
+  )
+}
+
+fn notes_content(model: Model) -> span.Text {
+  case model.note_board {
+    None -> historical_notes_content(model.records, model.active_strand)
+    Some(board) -> current_notes_content(board, model.active_strand)
+  }
+}
+
+fn current_notes_content(
+  board: notes_view.Board,
+  active_strand: String,
+) -> span.Text {
+  case board.strand == active_strand {
+    False -> transcript_content([Line(System, "refresh notes for this strand")])
+    True -> {
+      let heading =
+        "notes for "
+        <> board.strand
+        <> " · read at revision "
+        <> int.to_string(board.as_of)
+        <> " · r to refresh"
+      let rows =
+        list.flat_map(board.notes, fn(note) {
+          let extent = case note.extent {
+            notes_view.Complete -> ""
+            notes_view.Excerpt -> " · excerpt"
+          }
+          [
+            Line(
+              System,
+              note.key
+                <> " · updated at revision "
+                <> int.to_string(note.seq)
+                <> extent,
+            ),
+            Line(Assistant, note.text),
+          ]
+        })
+      let omitted = board.total - list.length(board.notes)
+      let tail = case omitted > 0 {
+        True -> [
+          Line(
+            System,
+            int.to_string(omitted) <> " more notes exceed this display budget",
+          ),
+        ]
+        False -> []
+      }
+      transcript_content([Line(System, heading), ..list.append(rows, tail)])
+    }
+  }
+}
+
+fn historical_notes_content(
   records: List(protocol.EntryRecord),
   active_strand: String,
 ) -> span.Text {
@@ -2227,7 +2317,7 @@ fn notes_content(
   case latest {
     Some(payload) ->
       transcript_content([
-        Line(System, "durable blackboard digest · newest values first"),
+        Line(System, "historical run-start digest · r to fetch current notes"),
         Line(Assistant, "```agent-notes\n" <> payload <> "\n```"),
       ])
     None ->
@@ -2730,7 +2820,7 @@ fn active_status_label(model: Model) -> Option(String) {
         Some("tool_call") -> "calling tool"
         _ -> "thinking"
       })
-    Some("tools") -> Some("running tools")
+    Some("tools") -> Some(running_tool_label(model))
     Some("starting") -> Some("starting")
     Some("checkpoint") -> Some("checkpointing")
     Some("compacting") -> Some("compacting")
@@ -2741,12 +2831,37 @@ fn active_status_label(model: Model) -> Option(String) {
   }
 }
 
+fn running_tool_label(model: Model) -> String {
+  let calls = case model.captured {
+    None -> []
+    Some(#(_, view)) ->
+      case dict.get(view.operations, model.active_strand) {
+        Error(Nil) -> []
+        Ok(current) ->
+          tool_activity.running(
+            view.cells,
+            list.map(model.records, fn(record) { record.entry }),
+            current,
+          )
+      }
+  }
+  case calls {
+    [] -> "preparing tools"
+    [call, ..rest] ->
+      compact(tool_call_summary(call.name, call.arguments, False), 72)
+      <> case rest {
+        [] -> ""
+        more -> " + " <> int.to_string(list.length(more)) <> " running"
+      }
+  }
+}
+
 fn active_stream_kind(model: Model) -> Option(String) {
-  model.streams
+  display_streams(model)
   |> list.reverse
   |> list.find(fn(stream) {
     let Stream(strand:, ..) = stream
-    strand == model.active_strand
+    strand == model.active_strand && stream.kind != "end"
   })
   |> result.map(fn(stream) {
     let Stream(kind:, ..) = stream
@@ -2984,6 +3099,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         ..model,
         session: cut.attachment.expected.session,
         captured: None,
+        note_board: None,
         approvals: [],
         inspecting_approval: None,
         records: [],
@@ -3201,6 +3317,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
     || before.details_expanded != after.details_expanded
     || before.help_open != after.help_open
     || before.notes_open != after.notes_open
+    || before.diff_view != after.diff_view
     || before.active_strand != after.active_strand
     || viewport_height_changed(
       transcript_viewport_height(before),
@@ -3250,6 +3367,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     && model.record_cache_width == width
     && model.record_cache_strand == model.active_strand
     && model.record_cache_details == model.details_expanded
+    && { model.details_expanded || list.is_empty(model.pending_records) }
   case cache_matches, model.pending_records {
     False, _ -> {
       let record_rows =
@@ -3297,16 +3415,25 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
 fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
-  case model.help_open, model.notes_open {
-    True, _ ->
+  case model.help_open, model.notes_open, model.diff_view {
+    True, _, _ ->
       help_content().lines |> markdown.wrap_lines(width) |> list.reverse
-    False, True ->
-      notes_content(model.records, model.active_strand).lines
+    False, True, _ ->
+      notes_content(model).lines
       |> markdown.wrap_lines(width)
       |> list.reverse
-    False, False ->
-      stream_lines(model.streams, model.active_strand, model.details_expanded)
-      |> list.append(queued_lines(model.queued, model.awaiting_outcome))
+    False, False, DiffVisible ->
+      diff_content(model)
+      |> transcript_content
+      |> fn(content) { markdown.wrap_lines(content.lines, width) }
+      |> list.reverse
+    False, False, DiffHidden ->
+      stream_lines(
+        display_streams(model),
+        model.active_strand,
+        model.details_expanded,
+      )
+      |> list.append(pending_input_lines(model))
       |> transcript_content
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
@@ -3422,6 +3549,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           },
           channel: Some(channel),
           captured: None,
+          note_board: None,
           approvals: [],
           overlay: NoOverlay,
           creation_key: case creation_key {
@@ -3541,10 +3669,10 @@ pub fn apply_channel_update(
     // A pushed fragment is the same thing the directly attached client
     // receives as a stream delta, so it lands in the same live-stream region
     // by the same route rather than through a second renderer.
-    session_channel.Streamed(strand:, operation:, kind:, text:) ->
+    session_channel.Streamed(strand:, operation:, generation:, kind:, text:) ->
       apply_event(
         model,
-        protocol.StreamDelta(strand:, operation:, kind:, text:),
+        protocol.StreamDelta(strand:, operation:, generation:, kind:, text:),
       )
 
     // A prompt aimed at a busy strand used to come back as a conflict, with
@@ -3594,7 +3722,11 @@ pub fn apply_channel_update(
       )
     session_channel.Failed(reason) ->
       append_error(
-        Model(..discard_own_turn(model), peer: after_close(model.peer)),
+        Model(
+          ..discard_own_turn(model),
+          peer: after_close(model.peer),
+          streams: [],
+        ),
         "conversation: " <> reason,
       )
   }
@@ -3719,23 +3851,19 @@ fn render_cut(
     Some(id) -> "History not loaded beyond " <> id <> "."
   }
 
-  // Pushed deltas accumulate a continuous transcript of the live answer, so
-  // where both describe the strand's current operation they outrank the
-  // snapshot's discontinuous sample. The preview remains the fallback for a
-  // terminal that attached mid-answer and has been pushed nothing yet, and a
-  // strand with no live operation — its entry has committed — keeps neither.
-  let streams = case dict.get(view.operations, active) {
-    Error(Nil) -> []
-    Ok(operation) ->
-      case live_streams(model.streams, active, operation), view.preview {
-        [], Some(preview) if preview.operation == operation -> {
-          let text = owned(preview.text)
-          [Stream(active, operation, "text", [text], string.byte_size(text))]
-        }
-        [], Some(_) | [], None -> []
-        live, _ -> live
-      }
-  }
+  // Request-scoped pushes outrun captures: a cut may have started before
+  // the request that is streaming now. Retain those observations, including
+  // terminal markers, until an exact durable last result proves retirement.
+  // An unrelated idle cut cannot retire a newer request. This fallback also
+  // covers relay failures which bypass the optional presentation observer.
+  // Legacy recordings retain their operation-based law.
+  let operation = dict.get(view.operations, active)
+  let live =
+    list.filter(model.streams, fn(stream) {
+      stream.strand == active
+      && { stream.generation != "" || operation == Ok(stream.operation) }
+      && !snapshot_view.has_result(view, active, stream.operation)
+    })
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -3746,7 +3874,12 @@ fn render_cut(
     records: branch.records,
     usage: view.usage,
     current_model: current_model,
-    streams: streams,
+    streams: live,
+    interrupt: reconcile_interrupt(model.interrupt, view.operations),
+    queued: case view.pending_inputs {
+      Some(_) -> []
+      None -> model.queued
+    },
     submitting: None,
     record_cache_valid: False,
     notice: notice,
@@ -3785,6 +3918,7 @@ fn configuration_lines(view: snapshot_view.View, active: String) {
     Error(Nil) -> []
   }
   [
+    Line(System, code_mode_status(view, active)),
     Line(
       System,
       "Shared settings: "
@@ -3795,6 +3929,29 @@ fn configuration_lines(view: snapshot_view.View, active: String) {
     ),
     ..configuration
   ]
+}
+
+// Availability comes from the live registry; enabling comes from this strand's
+// captured configuration. A missing tool must never be described as ready.
+fn code_mode_status(view: snapshot_view.View, active: String) -> String {
+  case view.tools {
+    None -> "code mode · host availability not reported"
+    Some(tools) -> {
+      let enabled = case dict.get(view.configurations, active) {
+        Ok(config) ->
+          list.contains(config.configuration.active_tool_names, "code_mode")
+        Error(Nil) -> False
+      }
+      case list.contains(tools.registered, "code_mode"), enabled {
+        True, True ->
+          "code mode enabled · batches of reads, searches, and checks"
+        True, False -> "code mode · disabled for this strand"
+        False, _ ->
+          "code mode unavailable · "
+          <> option.unwrap(tools.code_mode_issue, "not registered by this host")
+      }
+    }
+  }
 }
 
 fn changed_by(author: Option(message.Origin)) {
@@ -3972,6 +4129,8 @@ fn adopt_session(
     ..model,
     help_open: False,
     notes_open: False,
+    diff_view: DiffHidden,
+    note_board: None,
     overlay: NoOverlay,
     session: target.session,
     local_options: Some(options),
@@ -4077,7 +4236,7 @@ fn handle_presentation_message(
       |> invalidate_frame
     connection.Closed(reason) ->
       append_error(
-        Model(..model, peer: after_close(model.peer)),
+        Model(..model, peer: after_close(model.peer), streams: []),
         "connection closed: " <> reason,
       )
       |> mark_activity
@@ -4153,6 +4312,10 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           Model(..model, current_model: name, notice: "model: " <> name)
         None -> model
       }
+    protocol.NotesSnapshot(board) ->
+      invalidate_transcript(
+        Model(..model, note_board: Some(board), notice: "notes refreshed"),
+      )
     protocol.EntryAdded(record:) -> {
       let protocol.EntryRecord(strand:, ..) = record
       let updated =
@@ -4176,7 +4339,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         False -> updated
       }
     }
-    protocol.StreamDelta(strand:, operation:, kind:, text:) -> {
+    protocol.StreamDelta(strand:, operation:, generation:, kind:, text:) -> {
       // The generation clock normally started when the strand entered
       // its `assistant` phase (see `OperationChanged`); a fragment that
       // finds it unset is the fallback, for a phase sequence that never
@@ -4185,9 +4348,19 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       let updated =
         Model(
           ..model,
-          streams: append_stream(model.streams, strand, operation, kind, text),
+          streams: receive_stream(
+            model.streams,
+            strand,
+            operation,
+            generation,
+            kind,
+            text,
+          ),
           generation_started_ms:,
-          notice: "streaming " <> kind,
+          notice: case kind {
+            "end" -> "request finished"
+            _ -> "streaming " <> kind
+          },
         )
       case strand == model.active_strand {
         True -> invalidate_transcript(updated)
@@ -4282,6 +4455,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
+    | protocol.NotesSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -4345,23 +4519,54 @@ fn set_strand_phase(
   })
 }
 
-// The strand's live fragments, if they belong to the operation the cut says
-// is running. Fragments from a finished operation are not a live answer.
-fn live_streams(
+// A provider request owns all its fragment kinds. A new request replaces
+// them together; an old terminal can retire only its own request. Completion
+// comes from the same observer as deltas, independent of snapshot timing.
+fn receive_stream(
   streams: List(Stream),
   strand: String,
   operation: String,
+  generation: String,
+  kind: String,
+  text: String,
 ) -> List(Stream) {
-  list.filter(streams, fn(stream) {
-    let Stream(strand: owner, operation: op, ..) = stream
-    owner == strand && op == operation
-  })
+  case kind {
+    "end" -> {
+      let newer =
+        list.any(streams, fn(stream) {
+          stream.strand == strand
+          && {
+            stream.operation != operation || stream.generation != generation
+          }
+        })
+      case newer {
+        True -> streams
+        False -> [
+          Stream(strand, operation, generation, "end", [], 0),
+          ..list.filter(streams, fn(stream) { stream.strand != strand })
+        ]
+      }
+    }
+    _ -> {
+      let retained =
+        list.filter(streams, fn(stream) {
+          stream.strand != strand
+          || {
+            stream.operation == operation
+            && stream.generation == generation
+            && stream.kind != "end"
+          }
+        })
+      append_stream(retained, strand, operation, generation, kind, text)
+    }
+  }
 }
 
 fn append_stream(
   streams: List(Stream),
   strand: String,
   operation: String,
+  generation: String,
   kind: String,
   fragment: String,
 ) -> List(Stream) {
@@ -4369,12 +4574,20 @@ fn append_stream(
   let width = string.byte_size(fragment)
   case streams {
     [] -> [
-      Stream(strand:, operation:, kind:, fragments: [fragment], bytes: width),
+      Stream(
+        strand:,
+        operation:,
+        generation:,
+        kind:,
+        fragments: [fragment],
+        bytes: width,
+      ),
     ]
     [
       Stream(
         strand: owner,
         operation: current_op,
+        generation: current_generation,
         kind: stream_kind,
         fragments: current,
         bytes: held,
@@ -4392,17 +4605,21 @@ fn append_stream(
             True -> #([fragment], width)
             False -> bounded([fragment, ..current], held + width)
           }
-          [Stream(strand:, operation:, kind:, fragments:, bytes:), ..rest]
+          [
+            Stream(strand:, operation:, generation:, kind:, fragments:, bytes:),
+            ..rest
+          ]
         }
         False -> [
           Stream(
             strand: owner,
             operation: current_op,
+            generation: current_generation,
             kind: stream_kind,
             fragments: current,
             bytes: held,
           ),
-          ..append_stream(rest, strand, operation, kind, fragment)
+          ..append_stream(rest, strand, operation, generation, kind, fragment)
         ]
       }
   }
@@ -4510,6 +4727,68 @@ fn queued_lines(
   }
 }
 
+// Modern cuts carry the complete host queue, including other peers' input.
+// Replacing that list also removes drained rows after reconnect or a skipped
+// idle interval, without matching repeated text against transcript entries.
+fn pending_input_lines(model: Model) -> List(Line) {
+  let pending = case model.captured {
+    Some(#(_, view)) -> view.pending_inputs
+    None -> None
+  }
+  case pending {
+    None -> queued_lines(model.queued, model.awaiting_outcome)
+    Some(rows) -> {
+      let visible =
+        list.filter(rows, fn(row) { row.strand == model.active_strand })
+      let queued =
+        list.flat_map(visible, fn(row) {
+          [
+            Line(User, row.text),
+            Line(System, case row.kind {
+              snapshot_view.Steer -> "steer · runs next"
+              snapshot_view.Queue -> "queued · after this turn"
+            }),
+          ]
+        })
+      list.append(queued, queued_lines([], model.awaiting_outcome))
+    }
+  }
+}
+
+// Captured previews are standalone observations, never stored as delta
+// history. Once pushed observations arrive they take precedence, including
+// their empty terminal marker: unequal request identities do not prove that
+// a captured preview is newer than the request whose end was just observed.
+fn display_streams(model: Model) -> List(Stream) {
+  let active =
+    list.filter(model.streams, fn(stream) {
+      stream.strand == model.active_strand
+    })
+  let preview = case model.captured {
+    Some(#(_, view)) ->
+      case view.preview, dict.get(view.operations, model.active_strand) {
+        Some(sample), Ok(op) if op == sample.operation -> Some(sample)
+        Some(_), Ok(_) | Some(_), Error(Nil) | None, _ -> None
+      }
+    None -> None
+  }
+  case active, preview {
+    [], Some(sample) -> [preview_stream(model.active_strand, sample)]
+    _, _ -> active
+  }
+}
+
+fn preview_stream(strand: String, sample: snapshot_view.Preview) -> Stream {
+  Stream(
+    strand,
+    sample.operation,
+    sample.generation,
+    sample.kind,
+    [sample.text],
+    string.byte_size(sample.text),
+  )
+}
+
 fn stream_lines(
   streams: List(Stream),
   active_strand: String,
@@ -4518,7 +4797,7 @@ fn stream_lines(
   streams
   |> list.filter_map(fn(stream) {
     let Stream(strand:, kind:, fragments:, ..) = stream
-    case strand == active_strand {
+    case strand == active_strand && kind != "end" {
       False -> Error(Nil)
       True -> {
         let text = fragments |> list.reverse |> string.concat
@@ -4554,10 +4833,130 @@ fn record_lines(
     let protocol.EntryRecord(strand:, ..) = record
     strand == active_strand
   })
-  |> list.flat_map(fn(record) {
-    let protocol.EntryRecord(entry: value, ..) = record
-    entry_lines(value, details_expanded, local_owner)
-  })
+  |> list.map(fn(record) { record.entry })
+  |> fn(entries) {
+    case details_expanded {
+      True -> list.flat_map(entries, entry_lines(_, True, local_owner))
+      False ->
+        entries
+        |> tool_activity.project
+        |> list.flat_map(fn(item) {
+          case item {
+            tool_activity.Narrative(value) ->
+              entry_lines(value, False, local_owner)
+            tool_activity.Tools(calls) -> activity_lines(calls)
+          }
+        })
+    }
+  }
+}
+
+// A group retains only three recent invocation rows on the compact surface.
+// Failures remain counted even after later attempts succeed, and expanded
+// history can recover every original result without a second host request.
+fn activity_lines(calls: List(tool_activity.Call)) -> List(Line) {
+  let failed =
+    list.count(calls, fn(call) {
+      case call.outcome {
+        Some(message.ToolResultMessage(is_error: True, ..)) -> True
+        _ -> False
+      }
+    })
+  let count = list.length(calls)
+  let heading =
+    "tools · "
+    <> int.to_string(count)
+    <> case count {
+      1 -> " call"
+      _ -> " calls"
+    }
+    <> case failed {
+      0 -> ""
+      n -> " · " <> int.to_string(n) <> " failed"
+    }
+    <> case count > 3 {
+      True -> " · latest 3 shown · Ctrl+g expands"
+      False -> ""
+    }
+  [
+    Line(System, heading),
+    ..{
+      calls
+      |> list.drop(int.max(0, count - 3))
+      |> list.flat_map(activity_call_lines)
+    }
+  ]
+}
+
+fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
+  let summary =
+    tool_call_summary(call.invocation.name, call.invocation.arguments, False)
+  case call.outcome {
+    None -> [Line(ToolCall, summary <> " · awaiting result")]
+    Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
+      Line(ToolFailure, summary),
+      Line(
+        ToolResult,
+        content
+          |> list.map(tool_result_text)
+          |> string.join("\n")
+          |> compact(110),
+      ),
+    ]
+    Some(message.ToolResultMessage(is_error: False, ..)) -> [
+      Line(ToolCall, "✓ " <> summary),
+    ]
+    Some(message.UserMessage(..))
+    | Some(message.AssistantMessage(..))
+    | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+}
+
+// These are captured tool diffs, not a claim about the worktree's current
+// contents. Retention can omit earlier edits, and later external edits are
+// outside this transcript's authority, so the panel names that boundary.
+fn diff_content(model: Model) -> List(Line) {
+  let edits =
+    model.records
+    |> list.reverse
+    |> list.filter(fn(record) { record.strand == model.active_strand })
+    |> list.flat_map(fn(record) {
+      case record.entry {
+        entry.MessageEntry(
+          message: message.ToolResultMessage(
+            tool_name: "fs_edit",
+            is_error: False,
+            details: Some(json.Object(fields)),
+            ..,
+          ),
+          ..,
+        ) ->
+          case string_field(fields, "diff") {
+            None -> []
+            Some(diff) -> [
+              Line(
+                System,
+                string_field(fields, "path")
+                  |> option.unwrap("edited file"),
+              ),
+              Line(ToolDetail, "```diff\n" <> diff <> "\n```"),
+            ]
+          }
+        _ -> []
+      }
+    })
+  case edits {
+    [] -> [
+      Line(System, "No captured edit diffs in the retained history window."),
+    ]
+    [_, ..] -> [
+      Line(
+        System,
+        "Captured edits in history order · PgUp/PgDn scroll · Esc returns",
+      ),
+      ..edits
+    ]
+  }
 }
 
 fn entry_lines(
@@ -4799,7 +5198,8 @@ pub fn tool_call_summary(
   arguments: json.JsonValue,
   details_expanded: Bool,
 ) -> String {
-  let rendered = json.to_string(arguments)
+  // Full argument encoding belongs to the fallback. Eagerly encoding a
+  // large patch or file body just to display its path wastes every repaint.
   case name, arguments {
     "bash", json.Object(fields) ->
       case string_field(fields, "command") {
@@ -4808,12 +5208,18 @@ pub fn tool_call_summary(
             True -> "Bash($ " <> command <> ")"
             False -> "Bash(" <> compact(command, 112) <> ")"
           }
-        None -> generic_tool_call(name, rendered, details_expanded)
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
-    "read", json.Object(fields) ->
+    "read", json.Object(fields)
+    | "fs_read", json.Object(fields)
+    | "fs_write", json.Object(fields)
+    | "fs_edit", json.Object(fields)
+    ->
       case string_field(fields, "path") {
-        Some(path) -> "Read(" <> compact(path, 112) <> ")"
-        None -> generic_tool_call(name, rendered, details_expanded)
+        Some(path) -> name <> " · " <> compact(path, 112)
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
     "agent_spawn", json.Object(fields) ->
       case string_field(fields, "purpose") {
@@ -4825,7 +5231,8 @@ pub fn tool_call_summary(
               <> option_text(string_field(fields, "brief"), "\nbrief: ")
             False -> "agent_spawn · " <> compact(purpose, 108)
           }
-        None -> generic_tool_call(name, rendered, details_expanded)
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
     "agent_wait", json.Object(fields) ->
       case list.key_find(fields, "handles") {
@@ -4836,13 +5243,23 @@ pub fn tool_call_summary(
             [_] -> " subagent"
             _ -> " subagents"
           }
-        _ -> generic_tool_call(name, rendered, details_expanded)
+        _ ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
+    "grep", json.Object(fields) ->
+      "grep"
+      <> option_text(string_field(fields, "pattern"), " · ")
+      <> option_text(string_field(fields, "path"), " in ")
     "agent_note", json.Object(fields) ->
-      "agent_note" <> option_text(string_field(fields, "key"), " · ")
+      "agent_note"
+      <> option_text(string_field(fields, "key"), " · ")
+      <> case list.key_find(fields, "value") {
+        Ok(value) -> " = " <> compact(json.to_string(value), 90)
+        Error(Nil) -> ""
+      }
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
-    _, _ -> generic_tool_call(name, rendered, details_expanded)
+    _, _ -> generic_tool_call(name, json.to_string(arguments), details_expanded)
   }
 }
 
@@ -5411,7 +5828,22 @@ pub fn command_palette_escape(key: keys.Key) -> Bool {
 }
 
 fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
+  case key, model.diff_view {
+    keys.Escape, DiffVisible ->
+      Model(
+        ..model,
+        diff_view: DiffHidden,
+        scroll_offset: 0,
+        repaint_phase: !model.repaint_phase,
+        notice: "changes closed",
+      )
+    _, _ -> update_conversation_key(key, model)
+  }
+}
+
+fn update_conversation_key(key: keys.Key, model: Model) -> Model {
   case key, model.help_open, model.notes_open {
+    keys.Char("r"), False, True -> refresh_notes(model)
     keys.Ctrl("g"), _, _ -> toggle_details(model)
     keys.PageUp, _, _ -> scroll_transcript(model, True, 10)
     keys.PageDown, _, _ -> scroll_transcript(model, False, 10)
@@ -5427,6 +5859,8 @@ fn update_main_key_without_palette(key: keys.Key, model: Model) -> Model {
       Model(
         ..model,
         notes_open: False,
+        diff_view: DiffHidden,
+        note_board: None,
         scroll_offset: 0,
         repaint_phase: !model.repaint_phase,
         notice: "agent notes closed",
@@ -5793,6 +6227,7 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Rename(_)
     | command.Approvals(_)
     | command.Notes
+    | command.Diff
     | command.Details
     | command.Strand(_)
     | command.Clear
@@ -5924,6 +6359,8 @@ fn submit_text(model: Model) -> Model {
         ..cleared,
         help_open: True,
         notes_open: False,
+        diff_view: DiffHidden,
+        note_board: None,
         scroll_offset: 0,
         repaint_phase: !cleared.repaint_phase,
         notice: "/help",
@@ -6012,13 +6449,26 @@ fn submit_text(model: Model) -> Model {
     command.Approve(id) -> decide(cleared, id, approval.approve)
     command.Deny(id) -> decide(cleared, id, approval.deny)
     command.Notes ->
+      refresh_notes(
+        Model(
+          ..cleared,
+          help_open: False,
+          notes_open: True,
+          diff_view: DiffHidden,
+          scroll_offset: 0,
+          repaint_phase: !cleared.repaint_phase,
+          notice: "agent notes",
+        ),
+      )
+    command.Diff ->
       Model(
         ..cleared,
         help_open: False,
-        notes_open: True,
+        notes_open: False,
+        diff_view: DiffVisible,
         scroll_offset: 0,
         repaint_phase: !cleared.repaint_phase,
-        notice: "agent notes",
+        notice: "captured edits · PgUp/PgDn scroll · Esc returns",
       )
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
@@ -6094,6 +6544,7 @@ fn submit_with_images(model: Model) -> Model {
     | command.Approve(_)
     | command.Deny(_)
     | command.Notes
+    | command.Diff
     | command.Details
     | command.Strand(_)
     | command.Fork(_)
@@ -6309,6 +6760,11 @@ fn hold_or_send_interrupt(
   strand: String,
   text: String,
 ) -> Model {
+  // Modern hosts keep human input outside the operation being cancelled.
+  // Send it immediately so its priority is shared across attached terminals.
+  use <- bool.lazy_guard(before.channel != None, fn() {
+    send_steer(cleared, text)
+  })
   case active_strand_live(before) {
     False -> send_prompt_to(Model(..cleared, interrupt: None), strand, text)
     True -> {
@@ -6319,7 +6775,7 @@ fn hold_or_send_interrupt(
       }
       Model(
         ..cleared,
-        interrupt: Some(Interrupt(strand:, pending:)),
+        interrupt: Some(Interrupt(strand:, operation: None, pending:)),
         notice: "steer captured; waiting for stop",
       )
     }
@@ -6513,23 +6969,30 @@ fn drained_echoes(
 fn send_steer(model: Model, text: String) -> Model {
   send_frame(
     Model(
-      ..expect_own_turn(model, Interjection),
+      ..expect_own_turn(model, steering_submission(model, text)),
       notice: "steered " <> model.active_strand,
     ),
     protocol.steer(model.next_id, model.active_strand, text),
   )
 }
 
-// `/queue` lands on the same run as a steer and commits the same kind of
-// entry, one turn later, so it is recorded the same way.
+// Both controls transfer input custody to the modern host queue. Older
+// recordings still account for their original in-operation interjections.
 fn send_follow_up(model: Model, text: String) -> Model {
   send_frame(
     Model(
-      ..expect_own_turn(model, Interjection),
+      ..expect_own_turn(model, steering_submission(model, text)),
       notice: "queued after " <> model.active_strand,
     ),
     protocol.follow_up(model.next_id, model.active_strand, text),
   )
+}
+
+fn steering_submission(model: Model, text: String) -> Submission {
+  case model.channel {
+    Some(_) -> HeldPrompt(text)
+    None -> Interjection
+  }
 }
 
 fn toggle_submission_mode(model: Model) -> Model {
@@ -6557,7 +7020,11 @@ fn interrupt_active(model: Model) -> Model {
       send_frame(
         Model(
           ..model,
-          interrupt: Some(Interrupt(strand:, pending: None)),
+          interrupt: Some(Interrupt(
+            strand:,
+            operation: captured_operation(model, strand),
+            pending: None,
+          )),
           submission_mode: PromptNext,
           notice: "interrupt requested; type the replacement steer",
         ),
@@ -6594,7 +7061,7 @@ fn active_interrupt(model: Model) -> Option(String) {
 
 fn settle_interrupt(model: Model, strand: String, phase: String) -> Model {
   case phase == "done", model.interrupt {
-    True, Some(Interrupt(strand: target, pending:)) ->
+    True, Some(Interrupt(strand: target, pending:, ..)) ->
       case target == strand, pending {
         True, Some(text) ->
           send_prompt_to(Model(..model, interrupt: None), target, text)
@@ -6603,6 +7070,30 @@ fn settle_interrupt(model: Model, strand: String, phase: String) -> Model {
         False, _ -> model
       }
     _, _ -> model
+  }
+}
+
+// A coherent cut may skip the idle interval between two queued turns. Match
+// the operation, not just the strand's busy flag, when retiring the stop UI.
+fn reconcile_interrupt(
+  interrupt: Option(Interrupt),
+  operations: Dict(String, String),
+) -> Option(Interrupt) {
+  case interrupt {
+    None -> None
+    Some(stopped) ->
+      case dict.get(operations, stopped.strand), stopped.operation {
+        Error(Nil), _ -> None
+        Ok(current), Some(previous) if current != previous -> None
+        Ok(_), _ -> interrupt
+      }
+  }
+}
+
+fn captured_operation(model: Model, strand: String) -> Option(String) {
+  case model.captured {
+    Some(#(_, view)) -> dict.get(view.operations, strand) |> option.from_result
+    None -> None
   }
 }
 

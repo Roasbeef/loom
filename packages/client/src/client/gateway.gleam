@@ -138,6 +138,7 @@ import broker/policy.{type Grant}
 import client/catalog
 import client/daemon/transfer
 import client/grants
+import client/notes_view
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
@@ -279,6 +280,8 @@ pub type Options {
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
+    /// Boot diagnostic when code mode could not be registered.
+    code_mode_issue: Option(String),
     schedules: Option(scheduleadmin.Admin),
     /// The effect plane's own sweep of an aborted operation, called by
     /// the `abort` command with the operation it just marked cancelled.
@@ -306,6 +309,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     bus: None,
     catalog: None,
     registry: None,
+    code_mode_issue: None,
     schedules: None,
     effect_abort: None,
   )
@@ -337,6 +341,21 @@ pub fn with_catalog(options: Options, catalog: catalog.Catalog) -> Options {
 ///
 pub fn with_registry(options: Options, registry: Registry) -> Options {
   Options(..options, registry: Some(registry))
+}
+
+/// Supplies the host's code-mode discovery diagnostic for client display.
+/// Registration itself still comes from the actual tool registry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_code_mode_issue(options, Some("compiler unavailable"))
+/// ```
+pub fn with_code_mode_issue(
+  options: Options,
+  reason: Option(String),
+) -> Options {
+  Options(..options, code_mode_issue: reason)
 }
 
 /// Supplies the operator-facing scheduling door the `schedules` and
@@ -389,7 +408,7 @@ pub opaque type Message {
   Request(connection: Int, text: String, reply: Subject(Result(String, String)))
   MaintainTransfers
   LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
-  Preview(Int, String, String, Subject(Result(Nil, String)))
+  Preview(Int, String, String, String, String, Subject(Result(Nil, String)))
   ReleasePreview(Int, Subject(Nil))
   Attach(sink: fn(String) -> Nil, reply: Subject(Int))
   AttachAuthenticated(
@@ -407,7 +426,8 @@ pub opaque type Message {
   FromClient(connection: Int, text: String)
   CommitHint
   BusHint(published: bus.Published)
-  ProviderDelta(operation: OpId, delta: stream.Delta)
+  ProviderDelta(operation: OpId, generation: String, delta: stream.Delta)
+  ProviderEnded(operation: OpId, generation: String)
 }
 
 // Whether a connection has completed the `subscribe` handshake. It gates three
@@ -448,6 +468,11 @@ type Connection {
   )
 }
 
+/// A preview is valid only while its original observer lease is live.
+type LivePreview {
+  LivePreview(source: Int, payload: JsonValue)
+}
+
 type State {
   State(
     subject: Subject(Message),
@@ -456,7 +481,7 @@ type State {
     next_transfer: Int,
     preview_sources: Dict(Int, process.Monitor),
     next_preview_source: Int,
-    preview: Option(JsonValue),
+    preview: Option(LivePreview),
     preview_revision: Int,
     session_id: String,
     runtime: api.Runtime,
@@ -478,6 +503,8 @@ type State {
     catalog: Option(catalog.Catalog),
     // The tool registry, when the host configured one.
     registry: Option(Registry),
+    // The original boot diagnostic, not a guessed missing executable.
+    code_mode_issue: Option(String),
     // The operator's scheduling door, when this host has one.
     schedules: Option(scheduleadmin.Admin),
   )
@@ -512,6 +539,10 @@ type Emit {
 /// drops and clears its own local queued state when the socket closes.
 type Held {
   Held(
+    /// The submitting connection's request ID, unique within that connection.
+    request: Int,
+    /// Steers precede queued turns; arrival order is retained within each kind.
+    order: InputOrder,
     /// The message exactly as it was built at submission, carrying the
     /// origin the submitting connection had *then*. Re-minting it at
     /// drain time would credit whoever happens to be attached when the
@@ -526,9 +557,18 @@ type Held {
   )
 }
 
-// How many prompts one strand may hold. A stalled strand accumulates at
-// most this much hub memory per peer before the fifth submission is
-// refused with the conflict the whole command used to answer with.
+/// Human input priority belongs to the host queue, outside the operation
+/// being cancelled, so stopping that operation cannot discard the next input.
+type InputOrder {
+  /// Run after all already submitted steers and queued turns.
+  AfterTurn
+
+  /// Interrupt the current operation and precede ordinary queued turns.
+  SteerNext
+}
+
+// Each priority has its own bound. A full normal queue must still admit a
+// steer, while a peer submitting repeated steers cannot grow memory forever.
 const held_per_strand = 4
 
 /// Starts the hub registered under `name`. The initial high-water is the
@@ -618,6 +658,7 @@ fn start_with_delivery(
         effect_abort: options.effect_abort,
         catalog: options.catalog,
         registry: options.registry,
+        code_mode_issue: options.code_mode_issue,
         schedules: options.schedules,
       )
 
@@ -883,13 +924,39 @@ fn observe_provider(
     effects.PollRequest(operation:, ..) -> operation
     effects.SummaryRequest(operation:, ..) -> operation
   }
+  let generation = request_identity(spec)
   fn(event) {
     case event {
       stream.Delta(delta:) ->
-        send_if_alive(name, ProviderDelta(operation:, delta:))
-      stream.Settled(..) | stream.Failed(..) -> Nil
+        send_if_alive(name, ProviderDelta(operation:, generation:, delta:))
+      stream.Settled(..) | stream.Failed(..) ->
+        send_if_alive(name, ProviderEnded(operation:, generation:))
     }
   }
+}
+
+// Step and attempt belong to the durable request, so every observer derives
+// the same identity without minting a second counter or consulting live state.
+fn request_identity(spec: effects.RequestSpec) -> String {
+  let parts = case spec {
+    effects.GenerationRequest(step_id:, attempt:, ..) -> [
+      json.String("generation"),
+      json.String(step_id),
+      json.Int(attempt),
+    ]
+    effects.PollRequest(step_id:, poll:, ..) -> [
+      json.String("poll"),
+      json.String(step_id),
+      json.Int(poll),
+    ]
+    effects.SummaryRequest(task_id:, attempt:, request_index:, ..) -> [
+      json.String("summary"),
+      json.String(task_id),
+      json.Int(attempt),
+      json.Int(request_index),
+    ]
+  }
+  json.to_string(json.Array(parts))
 }
 
 /// Adds bounded, explicitly discontinuous previews to a network gateway.
@@ -930,7 +997,7 @@ pub fn tap_preview_provider(surface: effects.ProviderSurface, to name) {
         )
         Ok(#(subject, source))
       }
-      preview_observer(lease, operation)
+      preview_observer(lease, operation, request_identity(spec))
     })
   }
   effects.PreparedProviderSurface(
@@ -943,26 +1010,29 @@ pub fn tap_preview_provider(surface: effects.ProviderSurface, to name) {
 fn preview_observer(
   lease,
   operation: String,
+  generation: String,
 ) -> provider_relay.ObservationCallback {
   provider_relay.ObservationCallback(fn(event) {
     case lease, event {
       Ok(#(subject, source)), stream.Delta(delta) -> {
-        let text = case delta {
-          stream.TextDelta(_, text) -> text
-          stream.ThinkingDelta(_, text) -> text
-          stream.ToolCallDelta(_, _, _, text) -> text
+        let #(kind, text) = case delta {
+          stream.TextDelta(_, text) -> #("text", text)
+          stream.ThinkingDelta(_, text) -> #("thinking", text)
+          stream.ToolCallDelta(_, _, _, text) -> #("tool_call", text)
         }
         let sent =
           call.try_call(subject, waiting: 200, sending: Preview(
             source,
             operation,
+            generation,
+            kind,
             preview_text(text),
             _,
           ))
           |> result.replace_error("preview delivery timed out")
           |> result.flatten
         case sent {
-          Ok(Nil) -> preview_observer(lease, operation)
+          Ok(Nil) -> preview_observer(lease, operation, generation)
           Error(_) -> ignored_preview(lease)
         }
       }
@@ -1037,8 +1107,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     LeasePreview(pid, expires, reply) ->
       actor.continue(lease_preview(state, pid, expires, reply))
-    Preview(source, operation, text, reply) ->
-      actor.continue(record_preview(state, source, operation, text, reply))
+    Preview(source, operation, generation, kind, text, reply) ->
+      actor.continue(record_preview(
+        state,
+        source,
+        operation,
+        generation,
+        kind,
+        text,
+        reply,
+      ))
     ReleasePreview(source, reply) -> {
       let state = forget_preview(state, source)
       process.send(reply, Nil)
@@ -1142,8 +1220,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
     // as the frame leaves, and a second check on the same evidence in the
     // same turn would only double the registry calls per token per peer.
-    ProviderDelta(operation:, delta:) -> {
-      broadcast_delta(state, operation, delta)
+    ProviderDelta(operation:, generation:, delta:) -> {
+      broadcast_delta(state, operation, generation, Some(delta))
+      actor.continue(state)
+    }
+    ProviderEnded(operation:, generation:) -> {
+      broadcast_delta(state, operation, generation, None)
       actor.continue(state)
     }
   }
@@ -1281,6 +1363,7 @@ fn network_command(
     | protocol.Compact(..)
     | protocol.CreateStrand(..)
     | protocol.ListModels
+    | protocol.NotesGet(..)
     | protocol.SetConfig(..)
     | protocol.ListSchedules
     | protocol.CancelSchedule(..)
@@ -1429,9 +1512,24 @@ fn captured_transfer(
         api.encode_run_defaults(state.runtime.settings, None),
       ),
       #("peers", json.Array(roster(state))),
+      #("pending_inputs", json.Array(pending_inputs(state))),
+      #("tool_availability", case state.registry {
+        None -> json.Null
+        Some(registry) ->
+          json.Object([
+            #(
+              "registered",
+              json.Array(list.map(tool.names(registry), json.String)),
+            ),
+            #("code_mode_issue", case state.code_mode_issue {
+              None -> json.Null
+              Some(reason) -> json.String(reason)
+            }),
+          ])
+      }),
       #(
         "stream_preview",
-        option.map(state.preview, fn(value) { value })
+        option.map(state.preview, fn(value) { value.payload })
           |> option.unwrap(json.Null),
       ),
     ])
@@ -1784,12 +1882,13 @@ fn revalidate_all(state: State) -> State {
 }
 
 fn remove_socket(state: State, down: process.Down) -> State {
+  let sources =
+    dict.filter(state.preview_sources, fn(_, watch) { watch != down.monitor })
   let state =
     State(
       ..state,
-      preview_sources: dict.filter(state.preview_sources, fn(_, watch) {
-        watch != down.monitor
-      }),
+      preview_sources: sources,
+      preview: retained_preview(state.preview, sources),
     )
   list.fold(dict.to_list(state.connections), state, fn(state, pair) {
     let #(id, link) = pair
@@ -1829,6 +1928,8 @@ fn record_preview(
   state: State,
   source,
   operation,
+  generation,
+  kind,
   text: String,
   reply,
 ) -> State {
@@ -1847,14 +1948,17 @@ fn record_preview(
       State(
         ..state,
         preview_revision: revision,
-        preview: Some(
-          json.Object([
+        preview: Some(LivePreview(
+          source:,
+          payload: json.Object([
             #("revision", json.Int(revision)),
             #("operation", json.String(operation)),
+            #("generation", json.String(generation)),
+            #("kind", json.String(kind)),
             #("text", json.String(text)),
             #("discontinuous", json.Bool(True)),
           ]),
-        ),
+        )),
       )
     }
   }
@@ -1865,11 +1969,27 @@ fn forget_preview(state: State, source) -> State {
     Error(Nil) -> state
     Ok(watch) -> {
       process.demonitor_process(watch)
+      let sources = dict.delete(state.preview_sources, source)
       State(
         ..state,
-        preview_sources: dict.delete(state.preview_sources, source),
+        preview_sources: sources,
+        preview: retained_preview(state.preview, sources),
       )
     }
+  }
+}
+
+fn retained_preview(
+  preview: Option(LivePreview),
+  sources: Dict(Int, process.Monitor),
+) -> Option(LivePreview) {
+  case preview {
+    None -> None
+    Some(sample) ->
+      case dict.has_key(sources, sample.source) {
+        True -> preview
+        False -> None
+      }
   }
 }
 
@@ -1962,6 +2082,7 @@ fn read_only(command: Command) {
     | protocol.History(..)
     | protocol.EscalationsGet(..)
     | protocol.ListModels
+    | protocol.NotesGet(..)
     | protocol.ListSchedules -> True
     protocol.Prompt(..)
     | protocol.PromptContent(..)
@@ -2030,6 +2151,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.MutationOutcome(..)
     | protocol.AttachmentEvent(..)
     | protocol.PresenceEvent(..)
+    | protocol.InputQueueChanged
     | protocol.StreamDeltaEvent(..)
     | protocol.CommittedEvent(..)
     | protocol.ErrorEvent(..)
@@ -2690,7 +2812,12 @@ fn reply_error(
 // the same 24 KiB `preview_text` bound that sample uses, which is what
 // keeps a pushed frame under the reply ceiling without a second size
 // mechanism (`protocol-change/018`).
-fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
+fn broadcast_delta(
+  state: State,
+  operation: OpId,
+  generation: String,
+  delta: Option(stream.Delta),
+) -> Nil {
   let op_text = ids.op_id_to_string(operation)
   let strand = case
     dict.to_list(state.live)
@@ -2704,35 +2831,49 @@ fn broadcast_delta(state: State, operation: OpId, delta: stream.Delta) -> Nil {
       }
   }
   let event = case delta {
-    stream.TextDelta(index: _, text:) ->
+    Some(stream.TextDelta(index: _, text:)) ->
       protocol.StreamDeltaEvent(
         strand:,
         op: op_text,
+        generation: Some(generation),
         kind: protocol.TextKind,
         text: Some(preview_text(text)),
         call_id: None,
         tool_name: None,
         arguments_fragment: None,
       )
-    stream.ThinkingDelta(index: _, thinking:) ->
+    Some(stream.ThinkingDelta(index: _, thinking:)) ->
       protocol.StreamDeltaEvent(
         strand:,
         op: op_text,
+        generation: Some(generation),
         kind: protocol.ThinkingKind,
         text: Some(preview_text(thinking)),
         call_id: None,
         tool_name: None,
         arguments_fragment: None,
       )
-    stream.ToolCallDelta(index: _, call_id:, name:, arguments_json:) ->
+    Some(stream.ToolCallDelta(index: _, call_id:, name:, arguments_json:)) ->
       protocol.StreamDeltaEvent(
         strand:,
         op: op_text,
+        generation: Some(generation),
         kind: protocol.ToolCallKind,
         text: None,
         call_id: Some(call_id),
         tool_name: Some(name),
         arguments_fragment: Some(preview_text(arguments_json)),
+      )
+    None ->
+      protocol.StreamDeltaEvent(
+        strand:,
+        op: op_text,
+        generation: Some(generation),
+        kind: protocol.EndKind,
+        text: None,
+        call_id: None,
+        tool_name: None,
+        arguments_fragment: None,
       )
   }
   let frame =
@@ -2934,6 +3075,8 @@ fn run_command(
     protocol.CreateStrand(name:), Subscribed ->
       create_strand(state, connection, id, name)
     protocol.ListModels, Subscribed -> list_models(state, connection, id)
+    protocol.NotesGet(strand), Subscribed ->
+      read_notes(state, connection, id, strand)
     protocol.SetConfig(strand:, config:), Subscribed ->
       set_config(state, connection, id, strand, config)
     protocol.ListSchedules, Subscribed -> list_schedules(state, connection, id)
@@ -3446,18 +3589,25 @@ fn prompt_message(
   prompt: AgentMessage,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
+
+  // Durable retirement can precede its commit hint in this mailbox. A new
+  // normal prompt must join existing custody even when the runtime is already
+  // idle, or it would bypass a held steer and the ordinary FIFO behind it.
+  use <- bool.lazy_guard(dict.has_key(state.held, strand), fn() {
+    hold_prompt(state, connection, id, strand, prompt, AfterTurn)
+    |> pull_and_broadcast
+  })
   let target = api.on_strand(state.runtime, strand)
   let admitted = api.prompt(target, [prompt])
   case admitted {
-    // A busy strand is a scheduling question, not a conflict. `steer` and
-    // `follow_up` fold a message into the run that is already going;
-    // `prompt` means "next turn", and holding it here is what lets two
+    // A busy strand is a scheduling question, not a conflict. Ordinary
+    // prompts and follow-ups mean "next turn", and holding them lets two
     // peers submit inside one catch-up window without either being told
     // to try again. The built message is what is held, so the entry
     // commits under the origin recorded now rather than one resolved at
     // drain time.
     Error(api.AcceptRejected(reason: acceptance.StrandBusy)) ->
-      hold_prompt(state, connection, id, strand, prompt)
+      hold_prompt(state, connection, id, strand, prompt, AfterTurn)
 
     Ok(_) | Error(_) -> {
       use _op <- or_reply(
@@ -3489,15 +3639,17 @@ fn hold_prompt(
   id: Int,
   strand: String,
   prompt: AgentMessage,
+  order: InputOrder,
 ) -> State {
   let queued = dict.get(state.held, strand) |> result.unwrap([])
+  let same_priority = list.filter(queued, fn(item) { item.order == order })
 
   // "Is it already full?" is a question about the bound, not about the
   // length, so it is answered by dropping one short of the bound and
   // asking whether anything is left: that walks four elements however
   // many there are. A queue of exactly four leaves one behind and is
   // full; a queue of three leaves none and has room.
-  case list.drop(queued, held_per_strand - 1) != [] {
+  case list.drop(same_priority, held_per_strand - 1) != [] {
     True -> {
       reply_error(
         state,
@@ -3510,22 +3662,95 @@ fn hold_prompt(
     }
     False -> {
       reply(state, connection, id, mutation_outcome("queued"))
-      put_held(
-        state,
-        strand,
-        list.append(queued, [Held(prompt:, submitter: connection)]),
-      )
+      let item = Held(prompt:, submitter: connection, request: id, order:)
+      let queue = case order {
+        AfterTurn -> list.append(queued, [item])
+        SteerNext -> {
+          let #(steers, turns) =
+            list.split_while(queued, fn(item) { item.order == SteerNext })
+          list.append(steers, [item, ..turns])
+        }
+      }
+      let state = put_held(state, strand, queue)
+
+      // Custody transfers to the queue before cancellation is requested.
+      // The abort can now settle without losing the message that caused it.
+      case order {
+        AfterTurn -> state
+        SteerNext -> {
+          stop_current(state, strand)
+          pull_and_broadcast(state)
+        }
+      }
     }
   }
 }
 
 fn put_held(state: State, strand: String, queue: List(Held)) -> State {
-  case queue {
+  let state = case queue {
     // An emptied strand leaves the dictionary rather than sitting in it
     // as an empty list, so `drain_idle_strands` iterates over strands
     // that actually hold something.
     [] -> State(..state, held: dict.delete(state.held, strand))
     [_, ..] -> State(..state, held: dict.insert(state.held, strand, queue))
+  }
+  dict.each(state.connections, fn(id, _link) {
+    send_to(state, id, EventEnvelope(None, None, protocol.InputQueueChanged))
+  })
+  state
+}
+
+// These rows are queue identities, not guessed transcript matches. Two peers
+// may submit identical text; each row retires only when its own item drains.
+fn pending_inputs(state: State) -> List(JsonValue) {
+  dict.to_list(state.held)
+  |> list.flat_map(fn(pair) {
+    let #(strand, queued) = pair
+    list.map(queued, fn(item) {
+      let text = pending_text(item.prompt)
+      let bytes = bit_array.from_string(text)
+      json.Object([
+        #(
+          "id",
+          json.String(
+            int.to_string(item.submitter) <> ":" <> int.to_string(item.request),
+          ),
+        ),
+        #("strand", json.String(strand)),
+        #(
+          "kind",
+          json.String(case item.order {
+            AfterTurn -> "queue"
+            SteerNext -> "steer"
+          }),
+        ),
+        #(
+          "text",
+          json.String(preview_prefix(
+            bytes,
+            int.min(bit_array.byte_size(bytes), 512),
+            4,
+          )),
+        ),
+      ])
+    })
+  })
+}
+
+fn pending_text(prompt: AgentMessage) -> String {
+  case prompt {
+    message.UserMessage(content:, ..) ->
+      content
+      |> list.filter_map(fn(block) {
+        case block {
+          message.UserText(text:, ..) -> Ok(text)
+          message.UserImage(..) -> Ok("[image]")
+        }
+      })
+      |> string.join("\n")
+    message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> ""
   }
 }
 
@@ -3547,7 +3772,7 @@ fn drain_idle_strands(state: State) -> State {
 // around, and the next terminal transition is where the next one belongs.
 fn drain_strand(state: State, strand: String) -> State {
   case dict.get(state.held, strand) {
-    Ok([Held(prompt:, submitter:), ..rest]) -> {
+    Ok([Held(prompt:, submitter:, ..), ..rest]) -> {
       let target = api.on_strand(state.runtime, strand)
       case api.prompt(target, [prompt]) {
         // Admitted, and nothing more is said. The command that queued
@@ -3695,63 +3920,12 @@ fn steer(
   text: String,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
-  let target = api.on_strand(state.runtime, strand)
   let message = user_message(state, connection, text)
-  use entry_id <- or_reply(
-    result.map_error(api.steer(target, message), steer_error(_, strand)),
-    state,
-    connection,
-    id,
-  )
-  reply(state, connection, id, queued_entry(strand, entry_id, message))
-  pull_and_broadcast(state)
+  hold_prompt(state, connection, id, strand, message, SteerNext)
 }
 
-// `steer`'s error mapping: a strand with no live run gets a wording of
-// its own (there is nothing to steer), everything else falls through to
-// the shared `describe_api_error` table.
-fn steer_error(error: api.ApiError, strand: String) -> #(String, String) {
-  case error {
-    api.QueueRejected(reason: queue.NoActiveRun) -> #(
-      protocol.code_conflict,
-      "strand " <> strand <> " has no live operation to steer",
-    )
-    _ -> describe_api_error(error, strand)
-  }
-}
-
-// The ack for a queued (not yet placed) steer/follow-up item: the
-// reserved entry id and the message, with no parent and no storage seq
-// (the placed entry broadcasts later with both).
-fn queued_entry(
-  strand: String,
-  entry_id: EntryId,
-  message: AgentMessage,
-) -> WireEvent {
-  protocol.EntryEvent(record: EntryRecord(
-    strand:,
-    entry: entry.MessageEntry(
-      id: entry_id,
-      parent: None,
-      seq: 0,
-      ts: message_timestamp(message),
-      message:,
-      terminate: False,
-    ),
-  ))
-}
-
-fn message_timestamp(message: AgentMessage) -> Int {
-  case message {
-    message.UserMessage(timestamp:, ..) -> timestamp
-    message.AssistantMessage(timestamp:, ..) -> timestamp
-    message.ToolResultMessage(timestamp:, ..) -> timestamp
-    message.CustomMessage(..) -> 0
-  }
-}
-
-// Open question 7, answered: a follow-up on an idle strand starts a
-// run, mirroring `send_to_strand`'s idle path.
+// Follow-up is a queued turn. It belongs outside the current operation so
+// Escape and steering cannot discard it during that operation's abort drain.
 fn follow_up(
   state: State,
   connection: Int,
@@ -3759,21 +3933,21 @@ fn follow_up(
   strand: String,
   text: String,
 ) -> State {
-  use <- known_strand(state, connection, id, strand)
-  let target = api.on_strand(state.runtime, strand)
-  let message = user_message(state, connection, text)
-  case api.follow_up(target, message) {
-    Ok(entry_id) -> {
-      reply(state, connection, id, queued_entry(strand, entry_id, message))
-      pull_and_broadcast(state)
+  prompt(state, connection, id, strand, text)
+}
+
+// A human control captures its target before sending any asynchronous work.
+// The runtime marker and broker sweep must refer to that same operation.
+fn stop_current(state: State, strand: String) -> Nil {
+  case session.strand_state(state.runtime.session, strand) {
+    Ok(Some(session.Cell(
+      value: machine_strand.StrandState(current_operation: Some(op), ..),
+      ..,
+    ))) -> {
+      api.abort_operation(api.on_strand(state.runtime, strand), op)
+      sweep_effects(state, op)
     }
-    Error(api.QueueRejected(reason: queue.NoActiveRun)) ->
-      prompt(state, connection, id, strand, text)
-    Error(error) -> {
-      let #(code, description) = describe_api_error(error, strand)
-      reply_error(state, connection, id, code, description)
-      state
-    }
+    Ok(None) | Ok(Some(_)) | Error(_) -> Nil
   }
 }
 
@@ -3784,7 +3958,7 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       value: machine_strand.StrandState(current_operation: Some(op), ..),
       ..,
     ))) -> {
-      api.abort(api.on_strand(state.runtime, strand))
+      api.abort_operation(api.on_strand(state.runtime, strand), op)
 
       // And the effect plane, which the runtime cannot address. Its
       // abort stops the strand's live effects — every effect the
@@ -4448,6 +4622,34 @@ fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
 // configured catalogue answers an empty listing — the honest shape for
 // "there is nothing to pick from", and the same reply a client gets
 // either way, so it needs no special case.
+// Notes have an independent bounded read. A large board can refuse this
+// auxiliary view without making the conversation itself unreadable.
+fn read_notes(state: State, connection: Int, id: Int, strand: String) -> State {
+  use <- known_strand(state, connection, id, strand)
+  case notes_view.read(state.runtime.session, strand) {
+    Ok(board) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.NotesSnapshot(board)),
+      )
+      state
+    }
+    Error(snapshot.MetadataTooLarge) -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        "notes_too_large",
+        "notes exceed the display budget; use agent_notes with a narrower prefix",
+      )
+      state
+    }
+    Error(error) -> reader_failed(state, connection, id, error, ReaderBudget)
+  }
+}
+
 fn list_models(state: State, connection: Int, id: Int) -> State {
   let models = case state.catalog {
     None -> []

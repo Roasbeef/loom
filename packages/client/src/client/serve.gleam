@@ -2865,6 +2865,14 @@ fn assemble_in(
           hub.default_options(settings.session_id, runtime)
             |> hub.with_catalog(settings.catalog)
             |> hub.with_registry(tool_registry)
+            |> hub.with_code_mode_issue(case toolchain {
+              Error(reason) -> Some(reason)
+              Ok(_) ->
+                case list.contains(settings.deactivated_tools, "code_mode") {
+                  True -> Some("disabled in the host tool configuration")
+                  False -> None
+                }
+            })
             // The operator's abort reaches the effect plane here, and
             // this is the only place it can: the runtime stops the
             // strand's live effects, but a background job runs under a
@@ -3483,8 +3491,18 @@ pub fn tool_environment(
   tools: catalog.ToolsConfig,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
+  // Installation discovery is the host shell's responsibility. Carry its
+  // search path as a whole instead of guessing which language managers the
+  // owner installed. This changes lookup only; filesystem access remains a
+  // separate sandbox decision. Empty components do not grant cwd precedence.
+  let inherited_path =
+    reading("PATH")
+    |> result.map(string.split(_, ":"))
+    |> result.unwrap([])
+    |> list.filter(fn(path) { path != "" })
   let owned =
     session_environment(workspace, toolchain_path)
+    |> extending_path(inherited_path)
     |> extending_path(tools.path)
 
   // A pass-through name settles one of two ways, so the fold carries

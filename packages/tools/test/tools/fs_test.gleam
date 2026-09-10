@@ -73,6 +73,17 @@ fn first_text(outcome: tool.ToolOutcome) -> String {
   text
 }
 
+// Exactly the text provider adapters expose to the model, without borrowing
+// the presentation-only details that used to hide this edit prerequisite.
+fn visible_digest(outcome: tool.ToolOutcome) -> String {
+  let assert Ok(line) =
+    first_text(outcome)
+    |> string.split("\n")
+    |> list.find(fn(line) { string.starts_with(line, "digest: ") })
+    as "the model-visible result must expose its file digest"
+  string.drop_start(line, 8)
+}
+
 // --- resolve_path --------------------------------------------------------
 
 pub fn resolve_relative_test() {
@@ -137,7 +148,9 @@ pub fn read_renders_anchored_lines_test() {
   let outcome = tool_value.run(ctx, args([#("path", json.String("a.txt"))]))
   assert outcome.is_error == False
   assert first_text(outcome)
-    == "1:"
+    == "digest: "
+    <> hashline.digest("alpha\nbeta\n")
+    <> "\n1:"
     <> hashline.anchor("alpha")
     <> "|alpha\n2:"
     <> hashline.anchor("beta")
@@ -218,7 +231,8 @@ pub fn read_empty_file_test() {
   let outcome =
     fs.read_tool().run(ctx, args([#("path", json.String("empty.txt"))]))
   assert outcome.is_error == False
-  assert first_text(outcome) == "(empty file)"
+  assert first_text(outcome)
+    == "digest: " <> hashline.digest("") <> "\n(empty file)"
 }
 
 pub fn read_invalid_offset_test() {
@@ -290,12 +304,13 @@ pub fn edit_replace_roundtrip_test() {
   let #(ctx, _filesystem) = memory_ctx()
   let content = "one\ntwo\nthree\n"
   write_file(ctx, "e.txt", content)
+  let read = fs.read_tool().run(ctx, args([#("path", json.String("e.txt"))]))
   let outcome =
     fs.edit_tool().run(
       ctx,
       args([
         #("path", json.String("e.txt")),
-        #("digest", digest_of(content)),
+        #("digest", json.String(visible_digest(read))),
         #(
           "hunks",
           json.Array([
@@ -310,6 +325,10 @@ pub fn edit_replace_roundtrip_test() {
       ]),
     )
   assert outcome.is_error == False
+
+  // Providers send content and omit details. Both initial planning and the
+  // next edit must obtain their digest through that model-visible surface.
+  assert visible_digest(outcome) == hashline.digest("one\nTWO\nthree\n")
   // Success details carry the post-edit digest, so a follow-up edit can
   // chain without re-reading.
   let assert Some(json.Object(fields)) = outcome.details
@@ -379,6 +398,7 @@ pub fn edit_stale_anchor_structured_rejection_test() {
     )
   assert outcome.is_error
   assert string.contains(first_text(outcome), "stale anchors")
+  assert visible_digest(outcome) == hashline.digest("one\ntwo CHANGED\nthree\n")
   // Details carry the fresh anchors for the stale region.
   let assert Some(json.Object(fields)) = outcome.details
   assert list.key_find(fields, "error") == Ok(json.String("stale_anchors"))

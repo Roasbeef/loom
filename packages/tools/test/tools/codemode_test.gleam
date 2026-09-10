@@ -952,16 +952,15 @@ pub fn an_orchestration_only_host_renders_no_workspace_signatures_test() {
   assert !string.contains(described, "### cap/fs")
 }
 
-pub fn a_single_seam_description_still_opens_exactly_as_it_did_test() {
-  // `bb799ca` made a one-seam host render byte-identically to the tool
-  // before seams were selectable. The signatures are appended, so that
-  // sentence is still the description's exact prefix — a host with no
-  // choice to make reads no word about one.
+pub fn a_single_seam_description_guides_batches_without_a_choice_test() {
+  // Selection guidance applies to every host, while a host with one seam
+  // pays for no prose asking it to choose an unavailable alternative.
   let described = codemode.description(echoing())
   let before =
     "Run a Gleam program in a jailed satellite and get one structured "
-    <> "result. Use it instead of a chain of tool calls when the steps "
-    <> "depend on each other: loops, conditionals, and concurrency happen "
+    <> "result. Prefer it for batches of independent file reads, searches, "
+    <> "or checks, and for dependent steps you can express without inspecting "
+    <> "each result yourself. Loops, conditionals, and concurrency happen "
     <> "inside the program, and only what `main` returns comes back — the "
     <> "intermediate output never enters the conversation. Write `pub fn "
     <> "main() -> report.Outcome`, returning `report.text(...)` or "

@@ -67,6 +67,8 @@ pub type Update {
     strand: String,
     /// The operation the fragment belongs to.
     operation: String,
+    /// One request within the operation, including its retry attempt.
+    generation: String,
     /// The open-set stream kind, such as `thinking` or `text`.
     kind: String,
     /// The bounded, sanitized-later fragment bytes.
@@ -498,9 +500,12 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // Presence and attachment carry nothing renderable; what they say is
     // that the next capture differs, which is what a notice says too.
     protocol.MetadataChanged -> capture_or_defer(channel)
-    protocol.StreamDelta(strand:, operation:, kind:, text:) -> #(channel, [
-      Streamed(strand:, operation:, kind:, text:),
-    ])
+    protocol.StreamDelta(strand:, operation:, generation:, kind:, text:) -> #(
+      channel,
+      [
+        Streamed(strand:, operation:, generation:, kind:, text:),
+      ],
+    )
 
     // A pushed error reports a failure the daemon had on this terminal's
     // behalf — a held prompt that could not be admitted when its turn came.
@@ -514,6 +519,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
+    | protocol.NotesSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -695,6 +701,7 @@ fn matching_presentation(name, intent, event) {
   case name, intent, event {
     _, _, protocol.ServerError(..) -> True
     "models", Read, protocol.ModelsSnapshot(_) -> True
+    "notes", Read, protocol.NotesSnapshot(_) -> True
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
     _, _, _ -> False
@@ -1040,7 +1047,7 @@ fn outbound(frame: String) {
   case name {
     json.String(name) -> {
       let intent = case name {
-        "models" | "schedules" -> Read
+        "models" | "schedules" | "notes" -> Read
         _ -> Mutation
       }
       Ok(Outbound(name, suffix, intent))

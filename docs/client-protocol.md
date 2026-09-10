@@ -245,7 +245,7 @@ principal's authority over the target session. Three authorities exist.
 Source: (`client/gateway.gleam:1892-1898`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
-`history`, `escalations_get`, `models` and `schedules`. Every other
+`history`, `escalations_get`, `models`, `notes` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
 Source: (`client/gateway.gleam:1957-1981`) and
@@ -1011,7 +1011,9 @@ state: everything a client needs besides the entries themselves.
 | `message_count` | integer | required | Messages in the session. |
 | `host_run_settings` | object | required | The host's effective run defaults. |
 | `peers` | array | required | Presence roster at capture time; same shape as the `presence` event's entries. |
-| `stream_preview` | object or null | required | A bounded, discontinuous sample of a live answer, or `null`. |
+| `stream_preview` | object or null | required | A bounded, discontinuous sample of a live request, or `null`. |
+| `pending_inputs` | array | optional | Host-held input ordered by priority and arrival; empty authoritatively clears the queue. |
+| `tool_availability` | object or null | optional | Actual registered names and an optional code-mode boot diagnostic. |
 
 Source: (`client/gateway.gleam:1393-1437`).
 
@@ -1035,10 +1037,18 @@ For an `escalations` window, the cells are exactly the requested
 escalation records, and nothing else.
 Source: (`client/gateway.gleam:1358-1369`).
 
-`stream_preview`, when present, carries `revision`, `operation`, `text`
-and `discontinuous: true`. Because it is discontinuous, a client MUST
+`stream_preview`, when present, carries `revision`, `operation`, `generation`,
+`kind`, `text` and `discontinuous: true`. Older recordings may omit generation
+and kind. Because it is discontinuous, a client MUST
 render it as a standalone sample and MUST NOT concatenate two samples.
 Source: (`client/gateway.gleam:1849-1857`).
+
+`pending_inputs` rows contain `id`, `strand`, `kind` (`steer` or `queue`),
+and `text` (at most 512 UTF-8 bytes). The ID combines connection and request
+identity; repeated text is not interchangeable. The host retains the full
+message and author. Unadmitted input has the gateway's transient lifetime.
+`tool_availability` contains `registered` (names) and `code_mode_issue` (text
+or null). Strand configuration still decides which registered tools are enabled.
 
 ### 4.4 `subscribe`
 
@@ -1061,7 +1071,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1245-1254`).
+`wrong_session`. Source: (`client/gateway.gleam:1327-1335`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1249,7 +1259,7 @@ server that predates this command answers `unsupported`.
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `strand` | string | required | Target strand name. |
-| `text` | string | required | Text to inject into the live run. |
+| `text` | string | required | Priority replacement instruction. |
 
 Source: (`client/protocol.gleam:779`).
 
@@ -1257,28 +1267,24 @@ Source: (`client/protocol.gleam:779`).
 {"v":2,"id":4,"cmd":"steer","body":{"strand":"main","text":"prefer exponential backoff"}}
 ```
 
-The text is picked up at the run's next checkpoint. A strand with no
-live operation refuses with `conflict` and the message `strand <name>
-has no live operation to steer`.
-Source: (`client/gateway.gleam:3713-3721`).
-
-The item becomes durable as a pending register, not yet a placed entry.
-It is placed, under the same entry id, when the run consumes it. A
-client MUST treat the acknowledgement as a pending marker and MUST NOT
-assume the placed entry will arrive: an abort, or a run that settles
-without reaching the item, drops it.
+The host puts the text ahead of ordinary queued turns, then stops the observed
+operation. An idle steer starts a turn. Arrival order is preserved among steers,
+and each strand has four steering slots independent of its four normal slots.
+The reply is `queued`: custody is in gateway memory until the turn is admitted.
+A gateway restart may lose unadmitted input. `pending_inputs` and
+`input_queue_changed` expose the current queue without guessing from entries.
+See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:780`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:797`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
 ```
 
-The turn runs after the live operation settles. On an idle strand it
-starts a run, behaving as `prompt`.
-Source: (`client/gateway.gleam:3755-3778`).
+The turn uses the same normal host queue as `prompt`. On an idle strand it
+starts a run. Stopping the current operation does not discard this queue.
 
 #### 4.9.5 `abort`
 
@@ -1292,8 +1298,10 @@ Source: (`client/protocol.gleam:781-785`).
 {"v":2,"id":6,"cmd":"abort","body":{"strand":"main"}}
 ```
 
-The server marks the operation cancelled and sweeps the effect plane, so
-that a background job the operation started also stops. A strand with no
+The server captures the current operation identity, marks that operation
+cancelled and sweeps its effect plane, so its background jobs also stop.
+Retries retain the same identity and cannot cancel a successor. Host-held
+prompts and steers remain queued and run after reconciliation. A strand with no
 live operation refuses with `conflict`.
 Source: (`client/gateway.gleam:3780-3823`).
 
@@ -1325,7 +1333,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:3909-3915`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4083-4089`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -1558,6 +1566,22 @@ Source: (`client/gateway.gleam:4525-4582`).
 
 ---
 
+#### 4.9.16 `notes`
+
+This read-only auxiliary command takes `{"strand":"main"}` and replies with
+`snapshot` mode `notes`, containing `board`. The board has `strand`, `as_of`
+(the session revision read), `total` (all note cells), and `notes` (newest-write
+first). Each row has `key`, `seq`, `text`, and `extent`, either `complete` or
+`excerpt`. Values are at most 4096 UTF-8 bytes; encoded rows total at most
+48000 bytes. `total` may exceed the displayed count. A row's `seq` cannot
+exceed `as_of`.
+
+The separate storage capture is bounded to 1 MiB and 1024 cells. Exceeding it
+returns `notes_too_large` for this view; conversation capture remains available.
+A client must label excerpts and omissions and must not equate an older
+run-start digest with this current observation. See
+[protocol 023](../protocol-change/023-current-client-observations.md).
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -1587,7 +1611,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models` or `schedules`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `notes` or `schedules`. |
 
 Source: (`client/protocol.gleam:1448-1517`).
 
@@ -1595,7 +1619,8 @@ Mode `full` carries `session`, `next_seq`, `strands`, `entries`,
 `escalations` (pending only, omitted when empty) and `usage`.
 Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
-`models` carries `models`. Mode `schedules` carries `schedules`.
+`models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
+Mode `schedules` carries `schedules`.
 Source: (`client/protocol.gleam:1013-1050`).
 
 ```json
@@ -2042,7 +2067,8 @@ it. A client that missed one entirely is repaired by any later
 | `strand` | string | required | Strand receiving the fragment. |
 | `op` | string | required | Operation the fragment belongs to. |
 | `ephemeral` | boolean | required | Always `true`. |
-| `kind` | string | required | `text`, `thinking` or `tool_call`. |
+| `generation` | string | optional | Request identity within the operation; supplied by current hosts. |
+| `kind` | string | required | `text`, `thinking`, `tool_call` or `end`. |
 | `text` | string | optional | Carries `text` and `thinking` fragments. |
 | `call_id` | string | optional | Carries `tool_call` fragments. |
 | `tool_name` | string | optional | Carries `tool_call` fragments. |
@@ -2054,21 +2080,23 @@ Source: (`client/protocol.gleam:1266-1293`).
 {"v":2,"event":"stream_delta","body":{"strand":"main","op":"op-1","ephemeral":true,"kind":"tool_call","call_id":"call-1","tool_name":"bash","arguments_fragment":"{\"command\":\"go te"}}
 ```
 
-Deltas are never persisted, never sequenced and never replayed. The
-settled `entry` for the same operation wholly supersedes them, so a
-client discards its accumulated deltas for an operation once that
-operation's entries arrive.
+Deltas are ephemeral and never part of durable history. Current hosts identify
+each provider request by operation and generation. A new generation replaces
+all old fragment kinds on that strand. `end` carries the same identities and
+no content; it retires only that generation. It proves neither durable
+settlement nor completed effect cleanup.
 
-Each fragment is clipped to 24576 bytes before encoding, which is what
-keeps a pushed frame under the reply ceiling.
-Source: (`client/gateway.gleam:2687-2692`).
+A terminal retains an empty end marker to suppress a late preview of that
+request. A late cut or terminal marker must not erase a newer pushed request.
+Captured previews are standalone observations, never appended to delta history.
+Historical recordings without generation retain operation-only handling.
+Each fragment is clipped to 24576 bytes before encoding. Deltas reach every
+subscribed connection, including peers that did not issue the prompt.
+See [protocol 021](../protocol-change/021-request-scoped-streams.md).
 
-Deltas reach every subscribed connection, including one that did not
-issue the prompt. Source: (`client/gateway.gleam:2740-2745`).
-
-`op` is what tells a continuing answer from the first fragment of the
-next one. A client MUST group deltas by `op` and MUST NOT concatenate
-across a change of `op`.
+`input_queue_changed` is another ephemeral push, with an empty body.
+It requests a fresh cut even if the durable sequence cursor did not change;
+the queue rows themselves arrive only in captured metadata.
 
 ### 5.14 `mutation_outcome`
 
@@ -2285,7 +2313,7 @@ Source: (`docs/architecture/client.md:111-115`).
 | `unknown_escalation` | `approve`, `deny` on an id with no record. | Refresh with `escalations_get`. |
 | `not_pending` | `approve`, `deny` on a record already resolved. | Refresh and stop asking. |
 | `stale_approval` | `approve`, `deny` when `expected_seq`, `action` or `grants` do not match. | Re-render from `details.escalation` and ask again. |
-| `conflict` | A busy strand with a full queue; `steer` or `abort` with no live operation; nothing to compact; a duplicate strand name; an operator `[[schedule]]`; a lost write lease. | Reconcile, then decide. |
+| `conflict` | A busy strand with a full queue; `abort` with no live operation; nothing to compact; a duplicate strand name; an operator `[[schedule]]`; a lost write lease. | Reconcile, then decide. |
 | `unsupported` | An unknown command name; a bounded-transfer command on the host fixture; `schedule_cancel` with no scheduling plane. | Stop offering the feature. |
 | `forbidden` | Any mutation from an observer. | Disable the control. |
 | `internal` | A server-side failure. The command's effect is unspecified. | Reconcile with `catch_up`. |
@@ -2347,7 +2375,8 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Descriptor page | 100 entries | `subscribe`, `catch_up`, `history` |
 | Recent window | 100 entries | `subscribe` |
 | Escalation lookup | 8 ids | `escalations_get` |
-| Held prompts per strand | 4 | `prompt`, `prompt_content` |
+| Held normal inputs per strand | 4 | `prompt`, `prompt_content`, `follow_up` |
+| Held priority inputs per strand | 4 | `steer` |
 | Stream delta text | 24576 bytes | `stream_delta` |
 | Escalation preview | 2048 bytes | `escalation.preview` |
 | Session listing page | 60000 bytes | `sessions.list` |
@@ -2611,7 +2640,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2523`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2645`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**

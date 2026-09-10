@@ -785,8 +785,28 @@ fn addressed_strand_subject(
 /// ```
 ///
 pub fn abort(runtime: Runtime) -> Nil {
+  case session.strand_state(runtime.session, runtime.strand) {
+    Ok(Some(session.Cell(
+      value: strand.StrandState(current_operation: Some(operation), ..),
+      ..,
+    ))) -> abort_operation(runtime, operation)
+    Ok(None) | Ok(Some(_)) | Error(_) -> Nil
+  }
+}
+
+/// Requests cancellation of exactly the observed operation. A delayed request
+/// or stale-commit retry cannot cancel a successor admitted on the same strand.
+/// The strand owns the durable marker and effect cleanup, as for `abort`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.abort_operation(runtime, operation)
+/// ```
+///
+pub fn abort_operation(runtime: Runtime, operation: OpId) -> Nil {
   case addressed_strand_subject(runtime) {
-    Ok(subject) -> strand_runtime.request_abort(subject)
+    Ok(subject) -> strand_runtime.request_abort(subject, operation)
 
     // No live driver (mid-restart): nothing can serialize the marker
     // right now; as with a pre-commit crash, the caller re-requests

@@ -1532,6 +1532,28 @@ pub fn the_default_tools_table_leaves_the_environment_alone_test() {
   assert unset == []
 }
 
+pub fn host_path_discovery_needs_no_per_tool_directory_list_test() {
+  let #(environment, unset) =
+    serve.tool_environment(
+      "/work",
+      Some("/bundled/bin:/usr/bin:/bin"),
+      catalog.default_tools(),
+      reading: fn(name) {
+        case name {
+          "PATH" -> Ok("/owner/custom-sdk/bin::/another/installation/bin")
+          _ -> Error(Nil)
+        }
+      },
+    )
+  assert list.key_find(environment, "PATH")
+    == Ok(
+      "/bundled/bin:/usr/bin:/bin:/owner/custom-sdk/bin:/another/installation/bin",
+    )
+  assert list.key_find(environment, "HOME") == Ok("/work/.codemode/home")
+  assert list.key_find(environment, "TMPDIR") == Ok("/work/.codemode/tmp")
+  assert unset == []
+}
+
 pub fn a_full_network_table_opens_the_base_policy_test() {
   // Both halves matter and neither implies the other: the network is
   // what the meet takes from the base, and the allowlist is what stops

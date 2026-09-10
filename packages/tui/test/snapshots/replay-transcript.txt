@@ -4,10 +4,10 @@
 │                                                                                  │
 │› run the tests                                                                   │
 │                                                                                  │
-│● Bash(make check-tui)                                                            │
+│◇ tools · 1 call · 1 failed                                                       │
 │                                                                                  │
-│└ × bash · error: compilation failed test/tui_test.gleam:12                       │
-│                                                                                  │
+│└ × Bash(make check-tui)                                                          │
+│└ error: compilation failed test/tui_test.gleam:12                                │
 │◆ Looking at the failure now.                                                     │
 │                                                                                  │
 │                                                                                  │
