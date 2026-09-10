@@ -347,6 +347,12 @@ can repair from.
   stale; it cannot double-apply. The cost is deliberate: a concurrent edit
   far from every hunk also rejects, buying one replan round trip for the
   impossibility of silent double-application.
+- **Edit prerequisites must reach model-visible text.** `fs_read` includes
+  its exact digest before anchored lines; successful edits include the new
+  digest, and stale-content or stale-anchor errors include the current digest.
+  Presentation-only `details` retain these fields too, but provider adapters
+  do not send that object to the model. Digest and anchor validation remain
+  unchanged; a stale plan still rejects before writing.
 - **Anchors depend only on line content** — first 8 hex of FNV-1a 64 over
   the line's UTF-8 bytes, `anchor_version` 1, package-internal and never
   stored durably. Unrelated edits never change a line's anchor, though they

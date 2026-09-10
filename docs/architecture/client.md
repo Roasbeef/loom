@@ -125,6 +125,22 @@ Recorded connection closure applies the same transition during replay.
 [ADR-010](../adr/010-retain-one-unsent-terminal-command.md) records the decision
 and the live failure that motivated it.
 
+Human steering now means prompt preemption: the gateway queues it ahead of
+ordinary turns, then stops the observed operation. Escape stops current work
+and preserves the gateway queues. The cut's `pending_inputs` is the shared
+queue view; input text is never used as an identity. These queues retain their
+protocol-018 transient lifetime. [Protocol 022](../../protocol-change/022-human-input-priority.md)
+records priority, bounds and operation-specific cancellation.
+
+Live provider text is scoped to a request generation within an operation.
+Terminal markers retire only their own request, and stale cuts cannot erase a
+newer pushed answer. Compact tool groups preserve call identity; `/diff` shows
+captured edits. `/notes` reads current values through `client/notes_view` and
+validates them in `tui/notes_view`, independently of the conversation transfer.
+The panel names capture and last-write revisions and labels excerpts. See
+[protocol 021](../../protocol-change/021-request-scoped-streams.md) and
+[protocol 023](../../protocol-change/023-current-client-observations.md).
+
 The authoritative composition is
 [`client/daemon/main`](../../packages/client/src/client/daemon/main.gleam),
 [`client/daemon/server`](../../packages/client/src/client/daemon/server.gleam),
