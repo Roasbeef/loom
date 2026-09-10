@@ -307,6 +307,13 @@ one, and a "minimal script" arrived at that way would be a fiction.
 seeds in three chunks, the coverage assertion over the same seeds, four
 hundred wire seeds, and the pinned corpus — in about twenty seconds.
 
+Replay one generated session case with `make replay-simulation SIM_SEED=33`.
+This selects only `simulation_test:soak_test`, runs exactly that seed, and
+prints the runner's full failure report before failing. It does not run the
+fast sweep, pinned corpus, or unrelated jailed conformance tests. Repeat the
+same command to compare verdicts for the same script and fault schedule;
+BEAM process interleavings remain outside the seed's control.
+
 `make soak` runs the long one: `SOAK_SEEDS` seeds (default 2000) from
 `SOAK_FROM` (default 1), with shrinking. Budget roughly a second per
 seed. It is opt-in through the environment rather than a separate
@@ -325,12 +332,12 @@ before each one. Driving the environment variables directly means
 choosing a count that fits inside the timeout yourself.
 
 A soak failure prints the same reproduction line as any other. Re-run
-that seed alone through the fast path first: if it reproduces, the
-schedule is deterministic and the failing check names the property to
-read. If it does not, the failure depends on an interleaving the runner
-does not control (see below), and the seed is a hint rather than a
-handle — run the soak again over a range containing it and see whether
-it returns.
+that seed alone with `make replay-simulation SIM_SEED=<seed>`. The failing
+check names the property to read. Repeated failures strengthen the evidence;
+they do not establish control over BEAM scheduling. If the failure does not
+repeat, an interleaving or other execution condition outside the seed may
+be involved (see below). Keep the seed and compare repeated runs before
+widening the range.
 
 The pinned corpus is the memory. A case that found a real defect is kept
 as a hand-built script-and-schedule pair rather than as a seed, because
