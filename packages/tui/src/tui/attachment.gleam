@@ -381,6 +381,7 @@ fn apply_updates(candidate: Candidate, updates) {
     [channel.Streamed(..), ..rest] | [channel.Noticed(_), ..rest] ->
       apply_updates(candidate, rest)
     [channel.Auxiliary(_), ..]
+    | [channel.RequestRefused(..), ..]
     | [channel.Submission(_), ..]
     | [channel.LookedUp(..), ..]
     | [channel.Acknowledged(..), ..]

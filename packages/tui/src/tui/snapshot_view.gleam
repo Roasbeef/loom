@@ -123,7 +123,20 @@ pub type PendingInput {
     kind: InputKind,
     /// A bounded display excerpt; the host retains the full submitted content.
     text: String,
+    /// Revision required when requesting a conditional replacement.
+    revision: Int,
+    /// Older hosts cannot authorize editing by omission.
+    editing: Editing,
   )
+}
+
+/// Editability is an explicit server assertion for this attachment.
+pub type Editing {
+  /// The host permits this attachment to request a replacement.
+  Editable
+
+  /// The item is visible without replacement authority.
+  ReadOnly
 }
 
 /// The scheduling intent attached to a human submission.
@@ -308,9 +321,19 @@ fn decode_pending_input(value) {
     id == "" || strand == "" || string.byte_size(content) > 512,
     Error("invalid pending input extent"),
   )
+  use revision <- result.try(case list.key_find(fields, "revision") {
+    Ok(json.Int(value)) if value >= 0 -> Ok(value)
+    Error(Nil) -> Ok(0)
+    _ -> Error("invalid pending input revision")
+  })
+  use editing <- result.try(case list.key_find(fields, "editable") {
+    Ok(json.Bool(True)) -> Ok(Editable)
+    Ok(json.Bool(False)) | Error(Nil) -> Ok(ReadOnly)
+    _ -> Error("invalid pending input editability")
+  })
   case kind {
-    "steer" -> Ok(PendingInput(id, strand, Steer, content))
-    "queue" -> Ok(PendingInput(id, strand, Queue, content))
+    "steer" -> Ok(PendingInput(id, strand, Steer, content, revision, editing))
+    "queue" -> Ok(PendingInput(id, strand, Queue, content, revision, editing))
     _ -> Error("invalid pending input kind")
   }
 }

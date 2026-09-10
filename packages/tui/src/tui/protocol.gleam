@@ -12,7 +12,10 @@ import core/message.{type Usage, type UserBlock}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/live_jobs
 import tui/notes_view
+import tui/queue_editor
+import tui/worktree_view
 
 /// One strand from a snapshot.
 pub type Strand {
@@ -112,6 +115,15 @@ pub type Event {
 
   /// A current blackboard read, separate from the historical transcript.
   NotesSnapshot(board: notes_view.Board)
+
+  /// Complete authoritative text for one revision-fenced queued edit.
+  QueuedInputSnapshot(document: queue_editor.Document)
+
+  /// A bounded asynchronous Git observation with its actual request identity.
+  WorktreeSnapshot(observation: worktree_view.Event)
+
+  /// Current live jobs, observed separately from a completed operation.
+  LiveJobsSnapshot(board: live_jobs.Board)
 
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
@@ -443,6 +455,9 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
   case event {
     ModelsSnapshot(_)
     | NotesSnapshot(_)
+    | QueuedInputSnapshot(_)
+    | WorktreeSnapshot(_)
+    | LiveJobsSnapshot(_)
     | SchedulesSnapshot(_)
     | ServerError(..) -> Ok(event)
     FullSnapshot(..)
@@ -557,6 +572,18 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "notes" -> {
       use board <- result.try(required_value(fields, "board"))
       notes_view.decode(board) |> result.map(NotesSnapshot)
+    }
+    "live_jobs" -> {
+      use board <- result.try(required_value(fields, "board"))
+      live_jobs.decode(board) |> result.map(LiveJobsSnapshot)
+    }
+    "worktree_diff" -> {
+      use board <- result.try(required_value(fields, "board"))
+      worktree_view.decode(board) |> result.map(WorktreeSnapshot)
+    }
+    "queued_input" -> {
+      use board <- result.try(required_value(fields, "board"))
+      queue_editor.decode(board) |> result.map(QueuedInputSnapshot)
     }
     "schedules" -> result.map(decode_schedules(fields), SchedulesSnapshot)
     "config" -> {
@@ -895,4 +922,60 @@ fn map_object_field(
     | json.Bool(..)
     | json.Null -> value
   }
+}
+
+/// Fetches complete queued text before an editor is populated.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.queued_input(6, "main", "2:19")
+/// ```
+pub fn queued_input(id: Int, strand: String, input_id: String) -> String {
+  command(id, "queued_input", [
+    #("strand", json.String(strand)),
+    #("id", json.String(input_id)),
+  ])
+}
+
+/// Replaces text at one exact held revision without resubmitting the prompt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.edit_queued_input(7, document, "corrected text")
+/// ```
+pub fn edit_queued_input(
+  id: Int,
+  document: queue_editor.Document,
+  text: String,
+) -> String {
+  command(id, "edit_queued_input", [
+    #("strand", json.String(document.strand)),
+    #("id", json.String(document.id)),
+    #("expected_revision", json.Int(document.revision)),
+    #("text", json.String(text)),
+  ])
+}
+
+/// Reads one bounded worktree observation without mutating repository state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.worktree_diff(8)
+/// ```
+pub fn worktree_diff(id: Int) -> String {
+  command(id, "worktree_diff", [])
+}
+
+/// Reads the current nonterminal job roster for one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.live_jobs(9, "main")
+/// ```
+pub fn live_jobs(id: Int, strand: String) -> String {
+  command(id, "live_jobs", [#("strand", json.String(strand))])
 }

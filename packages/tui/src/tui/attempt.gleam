@@ -279,6 +279,11 @@ fn decode_selection(kind, fields) {
     }
     "subscribe"
     | "models"
+    | "notes"
+    | "queued_input"
+    | "edit_queued_input"
+    | "worktree_diff"
+    | "live_jobs"
     | "schedules"
     | "schedule_cancel"
     | "prompt"

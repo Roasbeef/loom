@@ -1181,3 +1181,112 @@ pub fn explicit_retirement_preserves_original_sent_identity_live_and_recorded_te
     attempt_replay.apply(state, attempt.Closed(attempt.Id(1)))
     as "subsequent recorded local cleanup cannot publish uncertainty twice"
 }
+
+pub fn auxiliary_and_queued_edit_descriptors_round_trip_without_command_bodies_test() {
+  let kinds = [
+    "queued_input", "edit_queued_input", "worktree_diff", "live_jobs", "notes",
+  ]
+  list.each(kinds, fn(kind) {
+    let request =
+      attempt.Issued(
+        attempt.Id(1),
+        attempt.Request(4, kind, attempt.NoSelection),
+      )
+    let fields = attempt.encode(request)
+    assert attempt.decode(json.Object(fields)) == Ok(request)
+
+    // Queue text, replacement revision, job arguments, and repository paths
+    // are not selectors. Ordinary commands retain only their kind and IDs.
+    assert list.map(fields, fn(field) { field.0 })
+      == ["t", "attempt", "id", "kind"]
+    let moments = [
+      recording.Moment(0, recording.LocalFormatTwo),
+      recording.Moment(1, recording.Attempt(request)),
+    ]
+    let encoded =
+      moments |> list.map(recording.encode_line) |> string.join("\n")
+    assert recording.decode_text(encoded) == Ok(moments)
+  })
+
+  let unknown =
+    attempt.Issued(
+      attempt.Id(1),
+      attempt.Request(4, "unrecognized_command", attempt.NoSelection),
+    )
+  assert attempt.decode(json.Object(attempt.encode(unknown)))
+    == Error("unknown recorded command kind")
+}
+
+pub fn recorded_auxiliary_refusals_replay_in_their_original_command_slots_test() {
+  let kinds = [
+    "queued_input", "edit_queued_input", "worktree_diff", "live_jobs", "notes",
+  ]
+  let commands =
+    list.index_map(kinds, fn(kind, index) {
+      let id = index + 4
+      [
+        attempt.Issued(
+          attempt.Id(1),
+          attempt.Request(id, kind, attempt.NoSelection),
+        ),
+        attempt.Received(
+          attempt.Id(1),
+          frame(
+            id,
+            "error",
+            json.Object([
+              #("code", json.String("unavailable")),
+              #(
+                "message",
+                json.String("observation unavailable in this recording"),
+              ),
+            ]),
+          ),
+        ),
+      ]
+    })
+    |> list.flatten
+  let source =
+    list.append(events(1, "A"), [attempt.Adopted(attempt.Id(1)), ..commands])
+  let moments = [
+    recording.Moment(0, recording.LocalFormatTwo),
+    ..list.index_map(source, fn(event, index) {
+      recording.Moment(index + 1, recording.Attempt(event))
+    })
+  ]
+  let assert Ok(decoded) =
+    recording.decode_text(
+      moments |> list.map(recording.encode_line) |> string.join("\n"),
+    )
+    as "a complete format-two recording accepts every issued descriptor"
+  let decoded_events =
+    list.filter_map(decoded, fn(moment) {
+      case moment.event {
+        recording.Attempt(event) -> Ok(event)
+        _ -> Error(Nil)
+      }
+    })
+  let assert Ok(#(_, changes)) = run(attempt_replay.new(), decoded_events)
+    as "recorded reads and edits consume the same reply slots as live commands"
+  let outcomes =
+    list.filter_map(changes, fn(change) {
+      case change {
+        attempt_replay.Update(session_channel.RequestRefused(
+          kind,
+          id,
+          "unavailable",
+          _,
+        )) -> Ok(#(kind, id))
+        _ -> Error(Nil)
+      }
+    })
+  assert outcomes
+    == list.index_map(kinds, fn(kind, index) { #(kind, index + 4) })
+  assert !list.any(changes, fn(change) {
+    case change {
+      attempt_replay.Update(session_channel.UnknownOutcome(..))
+      | attempt_replay.Update(session_channel.Failed(_)) -> True
+      _ -> False
+    }
+  })
+}

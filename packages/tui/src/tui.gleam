@@ -48,6 +48,7 @@ import tui/attempt
 import tui/attempt_replay
 import tui/bootstrap
 import tui/command
+import tui/completion_summary
 import tui/composer
 import tui/connection
 import tui/daemon
@@ -56,10 +57,12 @@ import tui/daemon/selection as daemon_selection
 import tui/frame
 import tui/image_drop
 import tui/internal/ffi_terminal
+import tui/live_jobs
 import tui/markdown
 import tui/model_selector
 import tui/notes_view
 import tui/protocol.{ModelInfo, Strand}
+import tui/queue_editor
 import tui/recording
 import tui/selection
 import tui/session_channel
@@ -72,6 +75,7 @@ import tui/theme
 import tui/tool_activity
 import tui/virtual_backend
 import tui/workspace
+import tui/worktree_view
 import weft
 
 /// Who a transcript line belongs to, which is the whole of its styling.
@@ -455,6 +459,28 @@ pub type Model {
     transcript: List(Line),
     records: List(protocol.EntryRecord),
     notice: String,
+    /// A complete queue draft never borrows the ordinary composer.
+    queue_editor: queue_editor.State,
+    /// Current Git observation and independent file-navigation state.
+    worktree: worktree_view.State,
+    /// Attachment-local terminal result provenance.
+    completion: completion_summary.State,
+    /// Exact attachment which owns the remembered operation boundaries.
+    completion_owner: String,
+    /// Details visibility does not borrow the composer.
+    summary_surface: queue_editor.Surface,
+    /// Independent detailed-summary scroll offset.
+    summary_scroll: Int,
+    /// Current job observation is separate from the result timestamp.
+    jobs: Option(live_jobs.Board),
+    /// One explicit job read deferred behind the mutation lane.
+    jobs_refresh: worktree_view.Refresh,
+    /// Attachment and strand for the one issued roster read.
+    jobs_awaiting: Option(#(String, String)),
+    /// Actual lane request ID; unrelated refusals cannot settle this read.
+    jobs_request: Option(Int),
+    /// Missing observations are unavailable, never a zero-job assertion.
+    jobs_notice: String,
     help_open: Bool,
     notes_open: Bool,
     /// A dedicated view of captured edit diffs, without tool retries.
@@ -800,6 +826,17 @@ pub fn new_model_with_clock(
     ],
     records: [],
     notice: "interactive design preview",
+    queue_editor: queue_editor.new(),
+    worktree: worktree_view.new(),
+    completion: completion_summary.new(),
+    completion_owner: "",
+    summary_surface: queue_editor.Closed,
+    summary_scroll: 0,
+    jobs: None,
+    jobs_refresh: worktree_view.Settled,
+    jobs_awaiting: None,
+    jobs_request: None,
+    jobs_notice: "Live jobs unavailable; /summary requests a current observation",
     help_open: False,
     notes_open: False,
     diff_view: DiffHidden,
@@ -1980,7 +2017,9 @@ fn render_frame(
     | DaemonSelector(_)
     | ApprovalInspector(_) -> Error(Nil)
   }
-  #(rendered, cursor)
+  let #(rendered, cursor) =
+    render_summary_surface(rendered, cursor, screen, model)
+  render_queue_surface(rendered, cursor, screen, model)
 }
 
 /// The area inside a one-cell rounded border.
@@ -2138,12 +2177,8 @@ fn render_changes_panel(
   case area.size.width > 0 {
     True ->
       buf
-      |> render_panel_border(area, " captured changes ", theme.quiet)
-      |> render_rows(
-        panel_inner(area),
-        model.diff_rows,
-        model.diff_scroll_offset,
-      )
+      |> render_panel_border(area, diff_title(model), theme.quiet)
+      |> render_diff_view(panel_inner(area), model)
     False -> buf
   }
 }
@@ -2199,7 +2234,7 @@ fn render_transcript(
   model: Model,
 ) -> buffer.Buffer {
   case main_shows_diff(model) {
-    True -> render_rows(buf, area, model.diff_rows, model.diff_scroll_offset)
+    True -> render_diff_view(buf, area, model)
     False -> render_rows(buf, area, model.rendered_rows, model.scroll_offset)
   }
 }
@@ -2222,7 +2257,7 @@ fn transcript_title(model: Model) -> String {
   let surface = case model.help_open, model.notes_open, main_shows_diff(model) {
     True, _, _ -> "help"
     False, True, _ -> "agent notes"
-    False, False, True -> "captured changes"
+    False, False, True -> diff_title(model)
     False, False, False -> "transcript"
   }
   " "
@@ -3144,7 +3179,10 @@ fn update_tick(model: Model) -> Model {
   let animated = advance_activity_indicator(drain_replay(model))
   let switched = drain_candidate(drain_control(drain_session_switch(animated)))
   let drained = drain_connection(switched, 64)
-  let drained = tick_channel(drained)
+  let drained =
+    tick_channel(
+      service_jobs_read(service_worktree_read(service_queue_read(drained))),
+    )
   let quiet_for_ms =
     next_quiet_for(
       model.quiet_for_ms,
@@ -3455,6 +3493,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         && after.record_cache_valid
         && after.record_cache_strand == after.active_strand
         && list.is_empty(after.pending_records)
+        && before.worktree == after.worktree
         && diff_width(before) == diff_width(after)
       case matches {
         True -> after
@@ -3486,7 +3525,7 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
     diff_scroll_offset: bounded_scroll_offset(
       cached.diff_scroll_offset,
       cached.diff_row_count,
-      transcript_viewport_height(cached),
+      diff_patch_height(cached),
     ),
   )
 }
@@ -3616,6 +3655,7 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
         model.details_expanded,
       )
       |> list.append(pending_input_lines(model))
+      |> list.append(completion_card(model))
       |> transcript_content
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
@@ -3624,6 +3664,19 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
 }
 
 fn handle_paste(model: Model, text: String) -> Model {
+  case model.queue_editor.surface {
+    queue_editor.Editor ->
+      edit_queue_text(model, fn(input) { insert_queue_paste(input, text) })
+    queue_editor.Inspector -> model
+    queue_editor.Closed ->
+      case model.summary_surface {
+        queue_editor.Closed -> handle_composer_paste(model, text)
+        queue_editor.Editor | queue_editor.Inspector -> model
+      }
+  }
+}
+
+fn handle_composer_paste(model: Model, text: String) -> Model {
   case model.pending_submission {
     Some(_) -> waiting_notice(model)
     None -> paste_unlocked(model, text)
@@ -3841,6 +3894,8 @@ pub fn apply_channel_update(
       }
     }
     session_channel.Auxiliary(event) -> apply_event(model, event)
+    session_channel.RequestRefused(command, request_id, code, message) ->
+      apply_request_refused(model, command, request_id, code, message)
 
     // Nothing here is visible, and that is the point: the count moves for
     // every notice the daemon pushed, including the ones a held sequence or
@@ -3865,6 +3920,13 @@ pub fn apply_channel_update(
     // already shows the line and says it is queued — the echo went in when the
     // frame was written — so this confirms the booking in the footer rather
     // than writing a second copy of the same news.
+    session_channel.Acknowledged("edit_queued_input", "queued") ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.new(),
+        notice: "queued input updated",
+      )
+      |> invalidate_frame
     session_channel.Acknowledged("prompt", "queued") ->
       Model(
         ..settle_own_turn(model),
@@ -3894,6 +3956,10 @@ pub fn apply_channel_update(
       append_error(
         Model(
           ..model,
+          queue_editor: case command {
+            "edit_queued_input" -> queue_editor.unknown(model.queue_editor)
+            _ -> model.queue_editor
+          },
           unconfirmed: Some(UnconfirmedSubmission(
             model.session,
             command,
@@ -3908,6 +3974,22 @@ pub fn apply_channel_update(
           ..discard_own_turn(model),
           peer: after_close(model.peer),
           streams: [],
+          queue_editor: queue_editor.refused(
+            model.queue_editor,
+            "Disconnected; draft retained",
+          ),
+          jobs_refresh: worktree_view.Settled,
+          jobs_awaiting: None,
+          jobs_notice: "Live jobs unavailable: conversation disconnected",
+          worktree: case model.worktree.awaiting {
+            Some(id) ->
+              worktree_view.receive(
+                model.worktree,
+                queue_owner(model),
+                worktree_view.Failed(id, "conversation disconnected"),
+              )
+            None -> model.worktree
+          },
         ),
         "conversation: " <> reason,
       )
@@ -4001,6 +4083,8 @@ fn render_cut(
         [] -> "main"
       }
   }
+  let model = observe_completion(model, cut, view, active)
+  let model = retain_queue_selection(model, view, active)
   let branch = snapshot_view.branch(view, cut.window, active)
   let current_model = case dict.get(view.configurations, active) {
     Ok(config) -> config.configuration.model.model_id
@@ -4496,6 +4580,26 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           Model(..model, current_model: name, notice: "model: " <> name)
         None -> model
       }
+    protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
+    protocol.WorktreeSnapshot(observation) ->
+      Model(
+        ..model,
+        worktree: worktree_view.receive(
+          model.worktree,
+          queue_owner(model),
+          observation,
+        ),
+      )
+    protocol.QueuedInputSnapshot(document) ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.receive(
+          model.queue_editor,
+          queue_owner(model),
+          queue_namespace(model),
+          document,
+        ),
+      )
     protocol.NotesSnapshot(board) ->
       invalidate_transcript(
         Model(..model, note_board: Some(board), notice: "notes refreshed"),
@@ -4640,6 +4744,9 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
     | protocol.NotesSnapshot(..)
+    | protocol.QueuedInputSnapshot(..)
+    | protocol.WorktreeSnapshot(..)
+    | protocol.LiveJobsSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -5100,6 +5207,19 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
 // contents. Retention can omit earlier edits, and later external edits are
 // outside this transcript's authority, so the panel names that boundary.
 fn diff_content(model: Model) -> List(Line) {
+  case model.worktree.board {
+    Some(_) ->
+      list.map(worktree_view.patches(model.worktree), fn(text) {
+        Line(ToolResult, text)
+      })
+    None -> [
+      Line(System, model.worktree.message),
+      ..captured_diff_content(model)
+    ]
+  }
+}
+
+fn captured_diff_content(model: Model) -> List(Line) {
   let edits =
     model.records
     |> list.reverse
@@ -5801,6 +5921,18 @@ pub fn usage_summary(usage: message.Usage) -> String {
 }
 
 fn update_key(key: keys.Key, model: Model) -> Model {
+  case model.queue_editor.surface {
+    queue_editor.Inspector | queue_editor.Editor -> update_queue_key(key, model)
+    queue_editor.Closed ->
+      case model.summary_surface {
+        queue_editor.Closed -> update_normal_key(key, model)
+        queue_editor.Inspector | queue_editor.Editor ->
+          update_summary_key(key, model)
+      }
+  }
+}
+
+fn update_normal_key(key: keys.Key, model: Model) -> Model {
   case key == keys.Ctrl("c") {
     True -> quit(model)
     False ->
@@ -5943,6 +6075,24 @@ fn update_agent_inspector(key: keys.Key, model: Model, selected: Int) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
+  case model.diff_view, model.worktree.focus, key {
+    DiffVisible, _, keys.Ctrl("d") ->
+      Model(
+        ..model,
+        worktree: worktree_view.State(
+          ..model.worktree,
+          focus: case model.worktree.focus {
+            worktree_view.Composer -> worktree_view.Navigator
+            worktree_view.Navigator -> worktree_view.Composer
+          },
+        ),
+      )
+    DiffVisible, worktree_view.Navigator, _ -> update_diff_key(key, model)
+    _, _, _ -> update_palette_key(key, model)
+  }
+}
+
+fn update_palette_key(key: keys.Key, model: Model) -> Model {
   let suggestions = command.suggestions(text_area.value(model.input))
   case suggestions, command_palette_escape(key), key {
     [_, ..], True, _ ->
@@ -6156,7 +6306,21 @@ fn clear_selection(model: Model) -> Model {
 // A press starts over: whatever was highlighted is replaced by a fresh
 // selection in the area the press landed in.
 fn begin_selection(model: Model, at: geometry.Position) -> Model {
-  Model(..model, selection: Some(selection.start(hit_area(model, at), at)))
+  case diff_navigation_hit(model, at) {
+    Some(selected) ->
+      Model(
+        ..model,
+        selection: None,
+        diff_scroll_offset: 0,
+        worktree: worktree_view.State(
+          ..model.worktree,
+          selected:,
+          focus: worktree_view.Navigator,
+        ),
+      )
+    None ->
+      Model(..model, selection: Some(selection.start(hit_area(model, at), at)))
+  }
 }
 
 // A drag without a press this client saw, which a terminal that started
@@ -6287,10 +6451,7 @@ fn scroll_at(
 fn scroll_diff(model: Model, direction: ScrollDirection, rows: Int) -> Model {
   let offset =
     scroll_offset(model.diff_scroll_offset, direction == Older, rows)
-    |> bounded_scroll_offset(
-      model.diff_row_count,
-      transcript_viewport_height(model),
-    )
+    |> bounded_scroll_offset(model.diff_row_count, diff_patch_height(model))
   Model(
     ..model,
     diff_scroll_offset: offset,
@@ -6451,6 +6612,8 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Approvals(_)
     | command.Notes
     | command.Diff
+    | command.QueueInspect
+    | command.Summary
     | command.Details
     | command.Strand(_)
     | command.Clear
@@ -6684,25 +6847,9 @@ fn submit_text(model: Model) -> Model {
           notice: "agent notes",
         ),
       )
-    command.Diff -> {
-      let visibility = case cleared.diff_view {
-        DiffHidden -> DiffVisible
-        DiffVisible -> DiffHidden
-      }
-      Model(
-        ..cleared,
-        help_open: False,
-        notes_open: False,
-        diff_view: visibility,
-        diff_scroll_offset: 0,
-        repaint_phase: !cleared.repaint_phase,
-        notice: case visibility {
-          DiffVisible ->
-            "captured edits · PgUp/PgDn scroll changes · Esc closes"
-          DiffHidden -> "changes closed"
-        },
-      )
-    }
+    command.QueueInspect -> open_queue(cleared)
+    command.Summary -> open_summary(cleared)
+    command.Diff -> open_diff(cleared)
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
       case is_known_strand(cleared.strands, name) {
@@ -6764,6 +6911,7 @@ fn submit_with_images(model: Model) -> Model {
   let input = text_area.value(model.input)
   case command.parse(input) {
     command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
+    command.QueueInspect | command.Diff | command.Summary -> submit_text(model)
     command.Help
     | command.Models
     | command.Model(_)
@@ -6777,7 +6925,6 @@ fn submit_with_images(model: Model) -> Model {
     | command.Approve(_)
     | command.Deny(_)
     | command.Notes
-    | command.Diff
     | command.Details
     | command.Strand(_)
     | command.Fork(_)
@@ -7415,7 +7562,24 @@ fn apply_submission(
         False -> model
       }
     }
-    session_channel.Sent(command, _) -> {
+    session_channel.Sent(command, request_id) -> {
+      let model = case command {
+        "queued_input" | "edit_queued_input" ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.State(
+              ..model.queue_editor,
+              request_id: Some(request_id),
+            ),
+          )
+        "live_jobs" -> Model(..model, jobs_request: Some(request_id))
+        "worktree_diff" ->
+          Model(
+            ..model,
+            worktree: worktree_view.sent(model.worktree, request_id),
+          )
+        _ -> model
+      }
       let sent = case model.pending_submission {
         Some(ComposerSubmission) -> clear_composer(model)
         Some(OverlaySubmission) | None -> model
@@ -7445,7 +7609,10 @@ fn apply_submission(
 
       // The frame never reached the wire, so no entry answers it.
       append_error(
-        discard_own_turn(model),
+        Model(
+          ..discard_own_turn(model),
+          queue_editor: queue_editor.refused(model.queue_editor, reason),
+        ),
         "Not sent: " <> reason <> "; draft retained",
       )
     }
@@ -7635,4 +7802,906 @@ fn append_error(model: Model, text: String) -> Model {
 // prevents session history from becoming an idle-time CPU cost.
 fn invalidate_transcript(model: Model) -> Model {
   Model(..model, render_revision: model.render_revision + 1)
+}
+
+fn queue_owner(model: Model) -> String {
+  case model.captured {
+    Some(#(cut, _)) -> {
+      let expected = cut.attachment.expected
+      expected.session
+      <> ":"
+      <> expected.epoch
+      <> ":"
+      <> expected.incarnation
+      <> ":"
+      <> cut.attachment.connection_id
+    }
+    None -> ""
+  }
+}
+
+/// Opens held-input inspection without touching composer text or attachments.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.open_queue(model)
+/// ```
+@internal
+pub fn open_queue(model: Model) -> Model {
+  Model(..model, queue_editor: queue_editor.open(model.queue_editor))
+  |> invalidate_frame
+}
+
+fn queue_rows(model: Model) -> List(snapshot_view.PendingInput) {
+  case model.captured {
+    Some(#(_, view)) ->
+      option.unwrap(view.pending_inputs, [])
+      |> list.filter(fn(row) { row.strand == model.active_strand })
+    None -> []
+  }
+}
+
+fn update_queue_key(key: keys.Key, model: Model) -> Model {
+  let state = model.queue_editor
+  case key, state.surface {
+    keys.Ctrl("c"), _ -> quit(model)
+    keys.Escape, queue_editor.Editor ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          surface: queue_editor.Inspector,
+          fetch: None,
+          awaiting: None,
+        ),
+      )
+    keys.Escape, queue_editor.Inspector ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          surface: queue_editor.Closed,
+          fetch: None,
+          awaiting: None,
+        ),
+      )
+    keys.Up, queue_editor.Inspector ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          selected: int.max(0, state.selected - 1),
+        ),
+      )
+    keys.Down, queue_editor.Inspector ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          selected: int.min(
+            int.max(0, list.length(queue_rows(model)) - 1),
+            state.selected + 1,
+          ),
+        ),
+      )
+    keys.Enter, queue_editor.Inspector -> select_queue_input(model)
+    keys.Ctrl("r"), queue_editor.Editor -> reconcile_queue_draft(model)
+    keys.Ctrl("s"), queue_editor.Editor -> save_queue_draft(model)
+    _, queue_editor.Editor ->
+      edit_queue_text(model, fn(input) { queue_text_key(key, input) })
+    _, queue_editor.Closed | _, queue_editor.Inspector -> model
+  }
+}
+
+fn select_queue_input(model: Model) -> Model {
+  let state = model.queue_editor
+  case list.first(list.drop(queue_rows(model), state.selected)) {
+    Ok(row) if row.editing == snapshot_view.Editable -> {
+      let fetch =
+        queue_editor.Fetch(
+          queue_owner(model),
+          queue_namespace(model),
+          row.strand,
+          row.id,
+        )
+      service_queue_read(
+        Model(
+          ..model,
+          queue_editor: queue_editor.State(
+            ..state,
+            fetch: Some(fetch),
+            awaiting: None,
+            request_id: None,
+            message: "Waiting for the full queued input…",
+          ),
+        ),
+      )
+    }
+    Ok(_) ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..state,
+          message: "This queued input is read-only for this attachment",
+        ),
+      )
+    Error(Nil) -> model
+  }
+}
+
+fn reconcile_queue_draft(model: Model) -> Model {
+  let state = model.queue_editor
+  case state.draft {
+    Some(draft) if draft.delivery != queue_editor.Saving -> {
+      use <- bool.guard(
+        draft.namespace != queue_namespace(model),
+        Model(
+          ..model,
+          queue_editor: queue_editor.State(
+            ..state,
+            message: "Queue namespace changed; this retained draft cannot be rebound",
+          ),
+        ),
+      )
+      let fetch =
+        queue_editor.Fetch(
+          queue_owner(model),
+          queue_namespace(model),
+          draft.document.strand,
+          draft.document.id,
+        )
+      service_queue_read(
+        Model(
+          ..model,
+          queue_editor: queue_editor.State(
+            ..state,
+            fetch: Some(fetch),
+            message: "Explicitly reconciling with the current queue…",
+          ),
+        ),
+      )
+    }
+    Some(_) | None -> model
+  }
+}
+
+fn service_queue_read(model: Model) -> Model {
+  case model.channel, model.queue_editor.fetch {
+    Some(channel), Some(fetch) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          case queue_owner(model) == fetch.owner {
+            True ->
+              send_frame(
+                Model(
+                  ..model,
+                  queue_editor: queue_editor.State(
+                    ..model.queue_editor,
+                    fetch: None,
+                    awaiting: Some(fetch),
+                  ),
+                ),
+                protocol.queued_input(model.next_id, fetch.strand, fetch.id),
+              )
+            False ->
+              Model(
+                ..model,
+                queue_editor: queue_editor.State(
+                  ..model.queue_editor,
+                  fetch: None,
+                  message: "Attachment changed; select the input again",
+                ),
+              )
+          }
+        False -> model
+      }
+    None, Some(_) ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..model.queue_editor,
+          fetch: None,
+          message: "Queue editing requires a live conversation attachment",
+        ),
+      )
+    _, None -> model
+  }
+}
+
+fn save_queue_draft(model: Model) -> Model {
+  case model.queue_editor.draft, model.channel {
+    Some(draft), Some(channel) if draft.delivery == queue_editor.Editable -> {
+      let available =
+        session_channel.mutation_available(channel)
+        && queue_owner(model) == draft.owner
+        && queue_namespace(model) == draft.namespace
+      case available {
+        True ->
+          send_frame(
+            Model(
+              ..model,
+              pending_submission: Some(OverlaySubmission),
+              queue_editor: queue_editor.State(
+                ..model.queue_editor,
+                draft: Some(
+                  queue_editor.Draft(..draft, delivery: queue_editor.Saving),
+                ),
+                message: "Saving this revision…",
+              ),
+            ),
+            protocol.edit_queued_input(
+              model.next_id,
+              draft.document,
+              text_area.value(draft.input),
+            ),
+          )
+        False ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.State(
+              ..model.queue_editor,
+              message: "Attachment changed or command lane is busy; draft retained",
+            ),
+          )
+      }
+    }
+    _, _ -> model
+  }
+}
+
+fn edit_queue_text(
+  model: Model,
+  edit: fn(text_area.TextAreaState) -> text_area.TextAreaState,
+) -> Model {
+  case model.queue_editor.draft {
+    Some(draft) if draft.delivery == queue_editor.Editable ->
+      Model(
+        ..model,
+        queue_editor: queue_editor.State(
+          ..model.queue_editor,
+          draft: Some(queue_editor.Draft(..draft, input: edit(draft.input))),
+        ),
+      )
+    Some(_) | None -> model
+  }
+}
+
+fn queue_text_key(
+  key: keys.Key,
+  input: text_area.TextAreaState,
+) -> text_area.TextAreaState {
+  case key {
+    keys.Enter ->
+      text_area.newline(
+        text_area.textarea_new() |> text_area.with_max_lines(0),
+        input,
+      )
+    keys.Backspace -> text_area.backspace(input)
+    keys.Left -> text_area.move_cursor_left(input)
+    keys.Right -> text_area.move_cursor_right(input)
+    keys.Up -> text_area.move_cursor_up(input)
+    keys.Down -> text_area.move_cursor_down(input)
+    keys.Home | keys.Ctrl("a") -> text_area.move_to_line_start(input)
+    keys.End | keys.Ctrl("e") -> text_area.move_to_line_end(input)
+    keys.Char(value) ->
+      text_area.insert_char(text_area.textarea_new(), input, value)
+    _ -> input
+  }
+}
+
+fn insert_queue_paste(
+  input: text_area.TextAreaState,
+  text: String,
+) -> text_area.TextAreaState {
+  list.fold(string.to_graphemes(text), input, fn(state, char) {
+    case char {
+      "\n" -> queue_text_key(keys.Enter, state)
+      _ -> queue_text_key(keys.Char(char), state)
+    }
+  })
+}
+
+fn render_queue_surface(buf, cursor, screen, model: Model) {
+  let state = model.queue_editor
+  case state.surface {
+    queue_editor.Closed -> #(buf, cursor)
+    queue_editor.Inspector -> {
+      let rows = queue_rows(model)
+      let labels =
+        list.index_map(rows, fn(row, index) {
+          let prefix = case index == state.selected {
+            True -> "> "
+            False -> "  "
+          }
+          let access = case row.editing {
+            snapshot_view.Editable -> "editable"
+            snapshot_view.ReadOnly -> "read-only"
+          }
+          span.line_plain(
+            prefix
+            <> case row.kind {
+              snapshot_view.Queue -> "queue "
+              snapshot_view.Steer -> "steer "
+            }
+            <> text_hygiene.single_line(row.id)
+            <> " · "
+            <> access
+            <> " · "
+            <> text_hygiene.single_line(row.text),
+          )
+        })
+      let labels = case labels {
+        [] -> [
+          span.line_plain("No queued inputs in the current captured view"),
+        ]
+        _ -> labels
+      }
+      let inner = panel_inner(screen)
+      let body =
+        geometry.rect_new(
+          inner.position.x,
+          inner.position.y + 2,
+          inner.size.width,
+          int.max(0, inner.size.height - 2),
+        )
+      let rendered =
+        buffer.buffer_new(screen)
+        |> render_panel_border(
+          screen,
+          " queued inputs · " <> model.active_strand <> " ",
+          theme.signal,
+        )
+        |> paragraph.render_styled(inner, [span.line_plain(state.message)])
+        |> paragraph.render_styled(
+          body,
+          list.drop(labels, int.max(0, state.selected - body.size.height + 1)),
+        )
+      #(rendered, Error(Nil))
+    }
+    queue_editor.Editor -> render_queue_draft(buf, screen, state)
+  }
+}
+
+fn render_queue_draft(buf, screen, state: queue_editor.State) {
+  case state.draft {
+    None -> #(buf, Error(Nil))
+    Some(draft) -> {
+      let inner = panel_inner(screen)
+      let area =
+        geometry.rect_new(
+          inner.position.x,
+          inner.position.y + 2,
+          inner.size.width,
+          int.max(0, inner.size.height - 3),
+        )
+
+      // Presentation removes terminal controls while the full source remains
+      // unchanged in the draft. Saving never round-trips displayed excerpts.
+      let safe =
+        text_area.TextAreaState(
+          ..draft.input,
+          lines: list.map(draft.input.lines, text_hygiene.single_line),
+        )
+      let input = input_view_state(safe, area.size.width)
+      let rendered =
+        buffer.buffer_new(screen)
+        |> render_panel_border(
+          screen,
+          " queued input · "
+            <> text_hygiene.single_line(draft.document.id)
+            <> " · revision "
+            <> int.to_string(draft.document.revision)
+            <> " ",
+          theme.signal,
+        )
+        |> paragraph.render_styled(inner, [
+          span.line_plain(state.message),
+          span.line_plain(
+            int.to_string(draft.document.attachment_count)
+            <> " image attachments retained",
+          ),
+        ])
+        |> text_area.render(
+          area,
+          text_area.textarea_new() |> text_area.with_max_lines(0),
+          input,
+        )
+      #(rendered, text_area.cursor_screen_pos(input, area))
+    }
+  }
+}
+
+/// Opens current worktree inspection without changing composer ownership.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.open_diff(model)
+/// ```
+@internal
+pub fn open_diff(model: Model) -> Model {
+  case model.diff_view {
+    DiffVisible -> Model(..model, diff_view: DiffHidden)
+    DiffHidden ->
+      refresh_worktree(
+        Model(
+          ..model,
+          diff_view: DiffVisible,
+          diff_scroll_offset: 0,
+          help_open: False,
+          notes_open: False,
+        ),
+      )
+  }
+}
+
+fn refresh_worktree(model: Model) -> Model {
+  case model.peer, model.channel {
+    Attached(_), Some(_) ->
+      service_worktree_read(
+        Model(
+          ..model,
+          worktree: worktree_view.request(model.worktree, queue_owner(model)),
+        ),
+      )
+    _, _ ->
+      Model(
+        ..model,
+        worktree: worktree_view.new(),
+        notice: "Captured edits · live worktree observation unavailable",
+      )
+  }
+}
+
+fn service_worktree_read(model: Model) -> Model {
+  case model.channel, model.worktree.refresh {
+    Some(channel), worktree_view.Requested ->
+      case session_channel.ready_for_read(channel) {
+        True -> send_frame(model, protocol.worktree_diff(model.next_id))
+        False -> model
+      }
+    _, _ -> model
+  }
+}
+
+fn update_diff_key(key: keys.Key, model: Model) -> Model {
+  case key {
+    keys.Ctrl("c") -> quit(model)
+    keys.Up -> select_diff_file(model, -1)
+    keys.Down -> select_diff_file(model, 1)
+    keys.Enter ->
+      Model(
+        ..model,
+        worktree: worktree_view.State(
+          ..model.worktree,
+          focus: worktree_view.Composer,
+        ),
+      )
+    keys.Char("r") -> refresh_worktree(model)
+    keys.Escape ->
+      Model(
+        ..model,
+        diff_view: DiffHidden,
+        worktree: worktree_view.State(
+          ..model.worktree,
+          focus: worktree_view.Composer,
+        ),
+      )
+    keys.PageUp -> scroll_diff(model, Older, 10)
+    keys.PageDown -> scroll_diff(model, Newer, 10)
+    _ -> model
+  }
+}
+
+fn select_diff_file(model: Model, delta: Int) -> Model {
+  let selected =
+    int.clamp(
+      model.worktree.selected + delta,
+      0,
+      list.length(worktree_view.labels(model.worktree)) - 1,
+    )
+  Model(
+    ..model,
+    worktree: worktree_view.State(..model.worktree, selected:),
+    diff_scroll_offset: 0,
+  )
+}
+
+fn diff_title(model: Model) -> String {
+  case model.worktree.board {
+    Some(_) -> " worktree changes "
+    None -> " captured changes "
+  }
+}
+
+fn render_diff_view(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  let height = int.min(6, int.max(1, area.size.height / 3))
+  let nav =
+    geometry.rect_new(
+      area.position.x,
+      area.position.y + 2,
+      area.size.width,
+      height,
+    )
+  let patch =
+    geometry.rect_new(
+      area.position.x,
+      area.position.y + height + 2,
+      area.size.width,
+      int.max(0, area.size.height - height - 2),
+    )
+  let labels =
+    worktree_view.labels(model.worktree)
+    |> list.index_map(fn(label, index) {
+      span.line_plain(
+        case index == model.worktree.selected {
+          True -> "> "
+          False -> "  "
+        }
+        <> label,
+      )
+    })
+  let focus = case model.worktree.focus {
+    worktree_view.Composer ->
+      "Ctrl+d: file navigation · PgUp/PgDn: patch · Esc: close"
+    worktree_view.Navigator ->
+      "↑/↓: files · r: refresh · Enter: composer · Esc: close"
+  }
+  buf
+  |> paragraph.render_styled(area, [
+    span.line_plain(model.worktree.message),
+    span.line_plain(focus),
+  ])
+  |> paragraph.render_styled(
+    nav,
+    list.drop(labels, int.max(0, model.worktree.selected - height + 1)),
+  )
+  |> render_rows(patch, model.diff_rows, model.diff_scroll_offset)
+}
+
+fn observe_completion(
+  model: Model,
+  cut: snapshot.Captured,
+  view: snapshot_view.View,
+  active: String,
+) -> Model {
+  let owner = queue_owner(Model(..model, captured: Some(#(cut, view))))
+  let previous = case model.completion_owner == owner {
+    True -> model.completion
+    False -> completion_summary.new()
+  }
+  let entries =
+    list.filter_map(cut.window.items, fn(item) {
+      case item {
+        snapshot.Loaded(entry, _) -> Ok(entry)
+        snapshot.Unloaded(..) -> Error(Nil)
+      }
+    })
+  let completion = completion_summary.observe(previous, view.cells, entries)
+  let changed =
+    completion_summary.latest(previous, active)
+    != completion_summary.latest(completion, active)
+  Model(
+    ..model,
+    completion:,
+    completion_owner: owner,
+    worktree: case model.worktree.owner == owner {
+      True -> model.worktree
+      False -> worktree_view.new()
+    },
+    jobs: case model.completion_owner == owner {
+      True -> model.jobs
+      False -> None
+    },
+    jobs_awaiting: case model.completion_owner == owner {
+      True -> model.jobs_awaiting
+      False -> None
+    },
+    jobs_refresh: case changed {
+      True -> worktree_view.Requested
+      False -> model.jobs_refresh
+    },
+  )
+}
+
+fn retain_queue_selection(
+  model: Model,
+  view: snapshot_view.View,
+  active: String,
+) -> Model {
+  let old =
+    queue_rows(model) |> list.drop(model.queue_editor.selected) |> list.first
+  let rows =
+    option.unwrap(view.pending_inputs, [])
+    |> list.filter(fn(row) { row.strand == active })
+  let selected = case old {
+    Ok(row) ->
+      rows
+      |> list.index_map(fn(item, index) { #(item.id, index) })
+      |> list.key_find(row.id)
+      |> result.unwrap(0)
+    Error(Nil) -> 0
+  }
+  Model(
+    ..model,
+    queue_editor: queue_editor.State(..model.queue_editor, selected:),
+  )
+}
+
+/// Opens detailed completion evidence while preserving the ordinary composer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.open_summary(model)
+/// ```
+@internal
+pub fn open_summary(model: Model) -> Model {
+  service_jobs_read(
+    Model(
+      ..model,
+      summary_surface: queue_editor.Inspector,
+      summary_scroll: 0,
+      jobs_refresh: worktree_view.Requested,
+    ),
+  )
+  |> invalidate_frame
+}
+
+fn service_jobs_read(model: Model) -> Model {
+  case model.channel, model.jobs_refresh, model.peer {
+    Some(channel), worktree_view.Requested, Attached(_) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_frame(
+            Model(
+              ..model,
+              jobs_refresh: worktree_view.Settled,
+              jobs_awaiting: Some(#(queue_owner(model), model.active_strand)),
+              jobs_notice: "Refreshing live jobs; previous observation may be stale",
+            ),
+            protocol.live_jobs(model.next_id, model.active_strand),
+          )
+        False -> model
+      }
+    _, worktree_view.Requested, _ ->
+      Model(
+        ..model,
+        jobs_refresh: worktree_view.Settled,
+        jobs_notice: "Live jobs unavailable without a live conversation attachment",
+      )
+    _, worktree_view.Settled, _ -> model
+  }
+}
+
+fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
+  case model.jobs_awaiting {
+    Some(#(owner, strand)) if strand == board.strand ->
+      case owner == queue_owner(model) {
+        True ->
+          Model(
+            ..model,
+            jobs: Some(board),
+            jobs_awaiting: None,
+            jobs_request: None,
+            jobs_notice: "Live jobs observed separately from operation completion",
+          )
+          |> invalidate_transcript
+        False -> model
+      }
+    Some(_) | None -> model
+  }
+}
+
+fn completion_card(model: Model) -> List(Line) {
+  case completion_summary.latest(model.completion, model.active_strand) {
+    None -> []
+    Some(summary) -> [
+      Line(
+        System,
+        "Latest operation: "
+          <> completion_summary.brief(summary)
+          <> case summary.coverage {
+          completion_summary.Unavailable -> " · operation details unavailable"
+          completion_summary.Partial ->
+            " · partial captured edits "
+            <> int.to_string(list.length(summary.edits))
+          completion_summary.Complete ->
+            " · captured edits " <> int.to_string(list.length(summary.edits))
+        }
+          <> " · /summary for details",
+      ),
+      Line(System, queue_count_line(model)),
+      Line(System, jobs_brief(model)),
+    ]
+  }
+}
+
+fn queue_count_line(model: Model) -> String {
+  case model.captured {
+    Some(#(_, view)) ->
+      case view.pending_inputs {
+        Some(rows) ->
+          "Queued inputs: "
+          <> int.to_string(
+            list.length(
+              list.filter(rows, fn(row) { row.strand == model.active_strand }),
+            ),
+          )
+        None -> "Queued input count unavailable"
+      }
+    None -> "Queued input count unavailable"
+  }
+}
+
+fn jobs_brief(model: Model) -> String {
+  case model.jobs {
+    Some(board) if board.strand == model.active_strand ->
+      "Live jobs: "
+      <> int.to_string(board.total)
+      <> " · observed at "
+      <> int.to_string(board.observed_at_ms)
+      <> " ms"
+    Some(_) -> "Live jobs unavailable for this strand; /summary refreshes"
+    None -> model.jobs_notice
+  }
+}
+
+fn summary_lines(model: Model) -> List(String) {
+  let completed = case
+    completion_summary.latest(model.completion, model.active_strand)
+  {
+    None -> ["No completed operation captured for this strand"]
+    Some(summary) -> completion_summary.lines(summary)
+  }
+  let jobs = case model.jobs {
+    Some(board) if board.strand == model.active_strand -> live_jobs.lines(board)
+    Some(_) -> ["Live jobs unavailable for this strand; r refreshes"]
+    None -> [model.jobs_notice]
+  }
+  list.append(completed, ["", queue_count_line(model), "", ..jobs])
+}
+
+fn update_summary_key(key: keys.Key, model: Model) -> Model {
+  case key {
+    keys.Ctrl("c") -> quit(model)
+    keys.Escape -> Model(..model, summary_surface: queue_editor.Closed)
+    keys.Char("r") ->
+      service_jobs_read(Model(..model, jobs_refresh: worktree_view.Requested))
+    keys.Up ->
+      Model(..model, summary_scroll: int.max(0, model.summary_scroll - 1))
+    keys.Down -> Model(..model, summary_scroll: model.summary_scroll + 1)
+    keys.PageUp ->
+      Model(..model, summary_scroll: int.max(0, model.summary_scroll - 10))
+    keys.PageDown -> Model(..model, summary_scroll: model.summary_scroll + 10)
+    _ -> model
+  }
+}
+
+fn render_summary_surface(buf, cursor, screen, model: Model) {
+  case model.summary_surface {
+    queue_editor.Closed -> #(buf, cursor)
+    queue_editor.Inspector | queue_editor.Editor -> {
+      let inner = panel_inner(screen)
+      let lines =
+        summary_lines(model)
+        |> list.map(fn(text) { span.line_plain(text_hygiene.multiline(text)) })
+        |> markdown.wrap_lines(inner.size.width)
+      let offset =
+        int.min(
+          model.summary_scroll,
+          int.max(0, list.length(lines) - inner.size.height),
+        )
+      let rendered =
+        buffer.buffer_new(screen)
+        |> render_panel_border(
+          screen,
+          " latest completion · Esc: back · r: refresh live jobs ",
+          theme.signal,
+        )
+        |> paragraph.render_styled(inner, list.drop(lines, offset))
+      #(rendered, Error(Nil))
+    }
+  }
+}
+
+fn diff_patch_height(model: Model) -> Int {
+  let available = transcript_viewport_height(model)
+  int.max(0, available - int.min(6, int.max(1, available / 3)) - 2)
+}
+
+fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
+  use <- bool.guard(
+    model.diff_view != DiffVisible
+      || model.queue_editor.surface != queue_editor.Closed
+      || model.summary_surface != queue_editor.Closed,
+    None,
+  )
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, body, _, _) = layout(screen, model)
+  let #(main, _, changes) = body_layout(body, model)
+  let area =
+    panel_inner(case main_shows_diff(model) {
+      True -> main
+      False -> changes
+    })
+  let height = int.min(6, int.max(1, area.size.height / 3))
+  let navigation =
+    geometry.rect_new(
+      area.position.x,
+      area.position.y + 2,
+      area.size.width,
+      height,
+    )
+  use <- bool.guard(!geometry.contains(navigation, at), None)
+  let index =
+    int.max(0, model.worktree.selected - height + 1)
+    + at.y
+    - navigation.position.y
+  case index < list.length(worktree_view.labels(model.worktree)) {
+    True -> Some(index)
+    False -> None
+  }
+}
+
+fn queue_namespace(model: Model) -> String {
+  case model.captured {
+    Some(#(cut, _)) ->
+      json.to_string(
+        json.Array([
+          json.String(cut.attachment.expected.session),
+          json.String(cut.attachment.expected.epoch),
+          json.String(cut.attachment.expected.incarnation),
+        ]),
+      )
+    None -> ""
+  }
+}
+
+fn apply_request_refused(
+  model: Model,
+  command: String,
+  request_id: Int,
+  code: String,
+  message: String,
+) -> Model {
+  let reason = code <> ": " <> message
+  let updated = case command {
+    "queued_input" | "edit_queued_input" ->
+      case model.queue_editor.request_id == Some(request_id) {
+        True ->
+          Model(
+            ..model,
+            queue_editor: queue_editor.refused(model.queue_editor, reason),
+          )
+        False -> model
+      }
+    "live_jobs" ->
+      case model.jobs_request == Some(request_id) {
+        True ->
+          Model(
+            ..model,
+            jobs_request: None,
+            jobs_awaiting: None,
+            jobs_notice: "Live jobs unavailable: " <> reason,
+          )
+        False -> model
+      }
+    "worktree_diff" ->
+      Model(
+        ..model,
+        worktree: worktree_view.receive(
+          model.worktree,
+          queue_owner(model),
+          worktree_view.Failed(request_id, reason),
+        ),
+      )
+    _ -> model
+  }
+  apply_event(updated, protocol.ServerError(code, message))
 }

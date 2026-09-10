@@ -59,6 +59,18 @@ pub type Update {
   /// Models/schedules or a typed server refusal.
   Auxiliary(event: protocol.Event)
 
+  /// A refusal belongs only to the exact correlated command which was issued.
+  RequestRefused(
+    /// Command which owned the outstanding reply slot.
+    command: String,
+    /// Actual wire identity already checked by the channel.
+    request_id: Int,
+    /// Server refusal class.
+    code: String,
+    /// Server explanation, sanitized by presentation.
+    message: String,
+  )
+
   /// One pushed provider fragment, ordered within its operation by the
   /// socket that delivered it. Unlike the snapshot's sampled preview these
   /// are continuous, so a renderer appends them until the operation changes.
@@ -511,7 +523,9 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // behalf — a held prompt that could not be admitted when its turn came.
     // The connection is fine, so this is the same auxiliary refusal a
     // correlated error is, and the socket stays open.
-    protocol.ServerError(..) -> #(channel, [Auxiliary(event)])
+    protocol.ServerError(..) | protocol.WorktreeSnapshot(_) -> #(channel, [
+      Auxiliary(event),
+    ])
 
     // Everything else in the event vocabulary is either unknown to this
     // client or reachable only as a correlated reply. Dropping it is what
@@ -520,6 +534,8 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
     | protocol.NotesSnapshot(..)
+    | protocol.QueuedInputSnapshot(..)
+    | protocol.LiveJobsSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
@@ -664,6 +680,12 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
         Channel(..channel, phase: Ready, refresh_at: channel.timestamp())
       send_queued(channel, [Acknowledged(name, status)])
     }
+    AwaitingReply(name, _),
+      session_wire.Presentation(protocol.ServerError(code, message))
+    ->
+      send_queued(Channel(..channel, phase: Ready), [
+        RequestRefused(name, channel.request_id, code, message),
+      ])
     AwaitingReply(name, intent), session_wire.Presentation(event) ->
       case matching_presentation(name, intent, event) {
         True ->
@@ -702,6 +724,9 @@ fn matching_presentation(name, intent, event) {
     _, _, protocol.ServerError(..) -> True
     "models", Read, protocol.ModelsSnapshot(_) -> True
     "notes", Read, protocol.NotesSnapshot(_) -> True
+    "queued_input", Read, protocol.QueuedInputSnapshot(_) -> True
+    "worktree_diff", Read, protocol.WorktreeSnapshot(_) -> True
+    "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
     _, _, _ -> False
@@ -1047,7 +1072,12 @@ fn outbound(frame: String) {
   case name {
     json.String(name) -> {
       let intent = case name {
-        "models" | "schedules" | "notes" -> Read
+        "models"
+        | "schedules"
+        | "notes"
+        | "queued_input"
+        | "worktree_diff"
+        | "live_jobs" -> Read
         _ -> Mutation
       }
       Ok(Outbound(name, suffix, intent))
@@ -1058,4 +1088,15 @@ fn outbound(frame: String) {
 
 fn now() {
   bootstrap.monotonic_time_ms()
+}
+
+/// Admits auxiliary reads only after retained mutations and captures finish.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.ready_for_read(channel)
+/// ```
+pub fn ready_for_read(channel: Channel) -> Bool {
+  channel.phase == Ready && channel.queued == None && synchronized(channel)
 }
