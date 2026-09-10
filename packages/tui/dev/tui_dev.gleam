@@ -5,6 +5,7 @@
 //// in a normal frame and isolates the cell-by-cell interior clear removed by
 //// `tui.render_panel_border`.
 
+import argv
 import etui/buffer
 import etui/geometry.{type Rect}
 import etui/style
@@ -14,6 +15,7 @@ import gleamy/bench
 import tui
 import tui/theme
 import tui_burst_dev
+import tui_history_dev
 
 type PanelPair {
   PanelPair(base: buffer.Buffer, transcript: Rect, input: Rect)
@@ -30,6 +32,13 @@ type PanelPair {
 /// make bench-tui
 /// ```
 pub fn main() {
+  case argv.load().arguments {
+    ["history", path] -> tui_history_dev.run(path)
+    _ -> render_benchmarks()
+  }
+}
+
+fn render_benchmarks() {
   bench.run(
     [
       bench.Input(
