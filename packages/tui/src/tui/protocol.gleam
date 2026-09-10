@@ -12,6 +12,7 @@ import core/message.{type Usage, type UserBlock}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/notes_view
 
 /// One strand from a snapshot.
 pub type Strand {
@@ -109,6 +110,9 @@ pub type Event {
     models: List(ModelInfo),
   )
 
+  /// A current blackboard read, separate from the historical transcript.
+  NotesSnapshot(board: notes_view.Board)
+
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
   SchedulesSnapshot(
@@ -136,6 +140,8 @@ pub type Event {
     /// answer from the first fragment of the next one. Older recordings
     /// carry no operation and decode to the empty identity.
     operation: String,
+    /// One request within the operation, including its retry attempt.
+    generation: String,
     /// The open-set stream kind, such as `thinking` or `text`.
     kind: String,
     /// The sanitized-later fragment bytes.
@@ -277,6 +283,17 @@ pub fn follow_up(id: Int, strand: String, text: String) -> String {
 /// ```
 pub fn models(id: Int) -> String {
   command(id, "models", [])
+}
+
+/// Requests a bounded current view of one strand's notes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.notes(6, "main")
+/// ```
+pub fn notes(id: Int, strand: String) -> String {
+  command(id, "notes", [#("strand", json.String(strand))])
 }
 
 /// Encodes a request for the session's schedule listing.
@@ -424,7 +441,10 @@ pub fn decode_event(text: String) -> Result(Event, String) {
 pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
   use event <- result.try(decode_version(text, 2))
   case event {
-    ModelsSnapshot(_) | SchedulesSnapshot(_) | ServerError(..) -> Ok(event)
+    ModelsSnapshot(_)
+    | NotesSnapshot(_)
+    | SchedulesSnapshot(_)
+    | ServerError(..) -> Ok(event)
     FullSnapshot(..)
     | StrandsSnapshot(_)
     | ConfigSnapshot(_)
@@ -459,7 +479,7 @@ pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
   use name <- result.try(required_string(fields, "event"))
   case name {
     "committed" -> decode_committed(fields)
-    "presence" | "attachment" -> Ok(MetadataChanged)
+    "presence" | "attachment" | "input_queue_changed" -> Ok(MetadataChanged)
     other -> decode_body(other, body_of(fields))
   }
 }
@@ -534,6 +554,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     }
     "strands" -> result.map(decode_strands(fields), StrandsSnapshot)
     "models" -> result.map(decode_models(fields), ModelsSnapshot)
+    "notes" -> {
+      use board <- result.try(required_value(fields, "board"))
+      notes_view.decode(board) |> result.map(NotesSnapshot)
+    }
     "schedules" -> result.map(decode_schedules(fields), SchedulesSnapshot)
     "config" -> {
       use config <- result.try(required_object(fields, "config"))
@@ -649,6 +673,7 @@ fn decode_delta(body: JsonValue) -> Result(Event, String) {
   // start the next one afresh. It is read optionally so that a recording made
   // before the field mattered still replays.
   use operation <- result.try(defaulted_string(fields, "op"))
+  use generation <- result.try(defaulted_string(fields, "generation"))
   use kind <- result.try(required_string(fields, "kind"))
   use text <- result.try(optional_string(fields, "text"))
   use tool <- result.try(optional_string(fields, "tool_name"))
@@ -659,7 +684,7 @@ fn decode_delta(body: JsonValue) -> Result(Event, String) {
     "tool_call" -> option.unwrap(tool, "tool")
     _ -> option.unwrap(text, "")
   }
-  Ok(StreamDelta(strand:, operation:, kind:, text: content))
+  Ok(StreamDelta(strand:, operation:, generation:, kind:, text: content))
 }
 
 fn decode_operation(body: JsonValue) -> Result(Event, String) {

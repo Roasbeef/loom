@@ -75,6 +75,7 @@ pub fn session_wire_decodes_every_pushed_shape_and_drops_unknown_names_test() {
       session_wire.Pushed(protocol.StreamDelta(
         strand: "main",
         operation: "op-1",
+        generation: "",
         kind: "text",
         text: "hel",
       )),

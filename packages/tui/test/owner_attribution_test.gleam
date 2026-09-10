@@ -56,6 +56,8 @@ fn model(role, peers) {
       peers,
       [],
       None,
+      None,
+      None,
     )
   tui.Model(..base, captured: Some(#(cut, view)), transcript: [], records: [
     record(owner(), "my prompt"),

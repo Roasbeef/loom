@@ -166,8 +166,7 @@ fn begin(id: Int, transfer_id: String, window: String, next_seq: Int) {
   )
 }
 
-fn piece(id: Int, transfer_id: String) {
-  let data = metadata()
+fn piece(id: Int, transfer_id: String, data: String) {
   reply(
     id,
     "snapshot_chunk",
@@ -216,9 +215,26 @@ pub fn transfer(
   window: String,
   next_seq: Int,
 ) -> List(connection.Message) {
+  transfer_with_metadata(first, transfer_id, window, next_seq, metadata())
+}
+
+/// A real credited transfer carrying the supplied bounded metadata object.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let frames = pushed.transfer_with_metadata(1, "1:1", "recent", 10, data)
+/// ```
+pub fn transfer_with_metadata(
+  first: Int,
+  transfer_id: String,
+  window: String,
+  next_seq: Int,
+  data: String,
+) -> List(connection.Message) {
   [
     begin(first, transfer_id, window, next_seq),
-    piece(first + 1, transfer_id),
+    piece(first + 1, transfer_id, data),
     finish(first + 2, transfer_id, next_seq),
   ]
 }

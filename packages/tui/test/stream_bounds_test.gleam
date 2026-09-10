@@ -323,7 +323,7 @@ pub fn a_later_operation_drops_the_stream_it_replaces_test() {
   // than forwarding them, so neither path is reachable from a frame here.
   let next =
     tui.accept_connection_message(model, pushed.delta("main", "op-2", "New"))
-  assert next.streams == [tui.Stream("main", "op-2", "text", ["New"], 3)]
+  assert next.streams == [tui.Stream("main", "op-2", "", "text", ["New"], 3)]
     as "the previous operation's fragments are dropped, not carried forward"
   let assert Some(_) = next.channel as "the lane survives the whole answer"
   assert next.notices == 0 as "no notice was pushed in this fixture"

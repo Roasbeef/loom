@@ -65,6 +65,10 @@ pub type Preview {
     revision: Int,
     /// Operation identity which may be mapped to a captured strand state.
     operation: String,
+    /// Request identity shared with live deltas; empty for old recordings.
+    generation: String,
+    /// The fragment's actual content kind, so thinking is never an answer.
+    kind: String,
     /// At most 24KiB; replaces the previous preview rather than appending.
     text: String,
   )
@@ -91,7 +95,44 @@ pub type View {
     cells: List(Cell),
     /// Latest optional transient observation.
     preview: Option(Preview),
+    /// Authoritative host queue; absent only in older protocol recordings.
+    pending_inputs: Option(List(PendingInput)),
+    /// Actual host registration and discovery diagnostics, when supplied.
+    tools: Option(ToolAvailability),
   )
+}
+
+/// Tool registration is distinct from a strand's enabled subset.
+pub type ToolAvailability {
+  ToolAvailability(
+    /// Names in the registry which dispatches this session's tool calls.
+    registered: List(String),
+    /// Why the host could not register code mode, or disabled it explicitly.
+    code_mode_issue: Option(String),
+  )
+}
+
+/// One host-owned input awaiting admission to an operation.
+pub type PendingInput {
+  PendingInput(
+    /// Unique connection and request identity, independent of message text.
+    id: String,
+    /// The strand whose queue owns this item.
+    strand: String,
+    /// Steering precedes ordinary turns within the captured queue order.
+    kind: InputKind,
+    /// A bounded display excerpt; the host retains the full submitted content.
+    text: String,
+  )
+}
+
+/// The scheduling intent attached to a human submission.
+pub type InputKind {
+  /// Preempt current work and run before ordinary queued turns.
+  Steer
+
+  /// Run after the current operation and earlier queued input.
+  Queue
 }
 
 /// One bounded mutable register cell from the captured cut.
@@ -187,6 +228,8 @@ fn decode_view(fields, cells, usage) {
     ),
   )
   use preview <- result.try(decode_preview(fields))
+  use pending <- result.try(decode_pending(fields))
+  use tools <- result.try(decode_tools(fields))
   Ok(View(
     list.map(strands, fn(row) { row.0 }),
     dict.from_list(list.map(strands, fn(row) { #(row.0.id, row.1) })),
@@ -201,7 +244,75 @@ fn decode_view(fields, cells, usage) {
     peers,
     cells,
     preview,
+    pending,
+    tools,
   ))
+}
+
+fn decode_tools(fields) {
+  case list.key_find(fields, "tool_availability") {
+    Error(Nil) | Ok(json.Null) -> Ok(None)
+    Ok(value) -> {
+      use fields <- result.try(object(value))
+      use names <- result.try(array(fields, "registered"))
+      use <- bool.guard(
+        list.drop(names, 1024) != [],
+        Error("too many registered tools"),
+      )
+      use registered <- result.try(
+        list.try_map(names, fn(value) {
+          case value {
+            json.String(name) -> Ok(name)
+            _ -> Error("invalid registered tool name")
+          }
+        }),
+      )
+      use reason <- result.try(field(fields, "code_mode_issue"))
+      case reason {
+        json.Null -> Ok(Some(ToolAvailability(registered, None)))
+        json.String(reason) ->
+          Ok(Some(ToolAvailability(registered, Some(reason))))
+        _ -> Error("invalid code mode diagnostic")
+      }
+    }
+  }
+}
+
+fn decode_pending(fields) {
+  case list.key_find(fields, "pending_inputs") {
+    Error(Nil) -> Ok(None)
+    Ok(_) -> {
+      use raw <- result.try(array(fields, "pending_inputs"))
+      use <- bool.guard(
+        list.drop(raw, 2048) != [],
+        Error("too many pending inputs"),
+      )
+      use rows <- result.try(list.try_map(raw, decode_pending_input))
+      let identities = list.map(rows, fn(row) { #(row.id, Nil) })
+      use <- bool.guard(
+        dict.size(dict.from_list(identities)) != list.length(rows),
+        Error("duplicate pending input identity"),
+      )
+      Ok(Some(rows))
+    }
+  }
+}
+
+fn decode_pending_input(value) {
+  use fields <- result.try(object(value))
+  use id <- result.try(text(fields, "id"))
+  use strand <- result.try(text(fields, "strand"))
+  use content <- result.try(text(fields, "text"))
+  use kind <- result.try(text(fields, "kind"))
+  use <- bool.guard(
+    id == "" || strand == "" || string.byte_size(content) > 512,
+    Error("invalid pending input extent"),
+  )
+  case kind {
+    "steer" -> Ok(PendingInput(id, strand, Steer, content))
+    "queue" -> Ok(PendingInput(id, strand, Queue, content))
+    _ -> Error("invalid pending input kind")
+  }
 }
 
 /// Decodes only requested exact escalation keys, including explicit absences.
@@ -404,6 +515,8 @@ fn decode_preview(fields) {
       use fields <- result.try(object(value))
       use revision <- result.try(number(fields, "revision"))
       use operation <- result.try(text(fields, "operation"))
+      use generation <- result.try(optional_text(fields, "generation", ""))
+      use kind <- result.try(optional_text(fields, "kind", "text"))
       use text <- result.try(text(fields, "text"))
       use discontinuous <- result.try(field(fields, "discontinuous"))
       use <- bool.guard(
@@ -411,8 +524,19 @@ fn decode_preview(fields) {
           || discontinuous != json.Bool(True),
         Error("invalid bounded stream preview"),
       )
-      Ok(Some(Preview(revision, operation, text)))
+      use <- bool.guard(
+        !list.contains(["text", "thinking", "tool_call"], kind),
+        Error("invalid stream preview kind"),
+      )
+      Ok(Some(Preview(revision, operation, generation, kind, text)))
     }
+  }
+}
+
+fn optional_text(fields, name, fallback) {
+  case list.key_find(fields, name) {
+    Error(Nil) -> Ok(fallback)
+    Ok(_) -> text(fields, name)
   }
 }
 
@@ -522,5 +646,34 @@ fn array(fields, name) {
     | json.Float(_)
     | json.Bool(_)
     | json.Null -> Error("expected metadata array")
+  }
+}
+
+/// Reports whether this cut proves that the exact operation has retired.
+///
+/// Last results are durable and name their operation, unlike an idle strand
+/// sampled before a newer request began. The latest result may supersede an
+/// older one, so absence is not retirement evidence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert snapshot_view.has_result(view, "main", "unobserved") == False
+/// ```
+pub fn has_result(view: View, strand: String, current: String) -> Bool {
+  let result =
+    view.cells
+    |> list.find(fn(cell) {
+      cell.namespace == register.StrandLastResult && cell.key == strand
+    })
+    |> result.try(fn(cell) {
+      machine_codec.decode_last_result(cell.value) |> result.replace_error(Nil)
+    })
+  case result {
+    Ok(operation.RunLastResult(operation: id, ..))
+    | Ok(operation.CompactionLastResult(operation: id, ..))
+    | Ok(operation.NavigationLastResult(operation: id, ..)) ->
+      ids.op_id_to_string(id) == current
+    Error(Nil) -> False
   }
 }
