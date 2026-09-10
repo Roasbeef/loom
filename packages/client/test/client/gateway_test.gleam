@@ -42,6 +42,7 @@ import storage/storage
 import support/addresses
 import support/tool_registry
 import tools/tool
+import tui/notes_view as terminal_notes
 import weft/actor
 import weft/poll
 
@@ -54,6 +55,7 @@ pub type Harness {
     connection: Int,
     inbox: Subject(String),
     runtime: api.Runtime,
+    commits: process.Pid,
   )
 }
 
@@ -198,7 +200,7 @@ fn start_harness_reserved(
   }
   let name = addresses.new()
   let forwarder_name = addresses.new()
-  let assert Ok(_forwarder) =
+  let assert Ok(forwarder) =
     gateway.commit_forwarder(to: name, as_name: forwarder_name)
   let effects =
     effects.Effects(
@@ -308,7 +310,7 @@ fn start_harness_reserved(
   let assert Ok(connection) =
     gateway.attach(hub, fn(frame) { process.send(inbox, frame) })
     as "the live gateway must attach the test client"
-  Harness(hub:, connection:, inbox:, runtime:)
+  Harness(hub:, connection:, inbox:, runtime:, commits: forwarder.pid)
 }
 
 fn send_raw(harness: Harness, frame: String) -> Nil {
@@ -889,16 +891,15 @@ pub fn double_subscribe_conflicts_test() {
 
 // --- semantic errors -------------------------------------------------------
 
-pub fn steer_idle_conflicts_test() {
+pub fn steer_idle_starts_a_turn_test() {
   let harness = start_harness()
   subscribe(harness)
   send(harness, 3, protocol.Steer(strand: "main", text: "faster"))
   let envelope = next(harness)
   assert envelope.reply_to == Some(3)
-  let assert protocol.ErrorEvent(code: "conflict", message:, ..) =
-    envelope.event
-  // The exact message the golden error fixture shows.
-  assert message == "strand main has no live operation to steer"
+  let assert protocol.MutationOutcome(json.Object(fields)) = envelope.event
+    as "an idle steer is accepted into the host queue"
+  assert list.key_find(fields, "status") == Ok(json.String("queued"))
 }
 
 pub fn unknown_strand_refused_test() {
@@ -906,6 +907,38 @@ pub fn unknown_strand_refused_test() {
   subscribe(harness)
   send(harness, 6, protocol.Prompt(strand: "ghost", text: "hi"))
   expect_error(harness, 6, "unknown_strand")
+}
+
+pub fn notes_reads_current_values_and_revision_without_a_new_turn_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let assert Ok(_) =
+    api.put_fact(harness.runtime, "agent/main/plan", json.String("first plan"))
+    as "the initial note is durable"
+  send(harness, 850, protocol.NotesGet("main"))
+  let first = next(harness)
+  let assert protocol.SnapshotEvent(protocol.NotesSnapshot(raw)) = first.event
+    as "notes have their own bounded auxiliary reply"
+  let assert Ok(board) = terminal_notes.decode(raw)
+    as "the independent terminal decoder accepts the board"
+  assert list.map(board.notes, fn(note) { note.text }) == ["first plan"]
+
+  let assert Ok(_) =
+    api.put_fact(
+      harness.runtime,
+      "agent/main/plan",
+      json.String("updated plan"),
+    )
+    as "the note changes without another run-start digest"
+  send(harness, 851, protocol.NotesGet("main"))
+  let second = next(harness)
+  let assert protocol.SnapshotEvent(protocol.NotesSnapshot(raw)) = second.event
+    as "a refresh reads the mutable board again"
+  let assert Ok(updated) = terminal_notes.decode(raw)
+    as "the refreshed board remains well-formed"
+  assert updated.as_of > board.as_of
+    as "the view reports a newer durable revision"
+  assert list.map(updated.notes, fn(note) { note.text }) == ["updated plan"]
 }
 
 pub fn prompt_content_admits_one_ordered_user_message_test() {
@@ -2899,10 +2932,25 @@ pub fn a_provider_delta_reaches_only_a_subscribed_socket_test() {
 
   let envelope = next_on(inbox)
   assert envelope.reply_to == None
-  let assert protocol.StreamDeltaEvent(kind: protocol.TextKind, text:, ..) =
-    envelope.event
+  let assert protocol.StreamDeltaEvent(
+    kind: protocol.TextKind,
+    text:,
+    generation:,
+    ..,
+  ) = envelope.event
     as "a subscribed peer is pushed the delta"
   assert text == Some("tok")
+  assert generation != None
+    as "production deltas identify their provider request"
+  let terminal = next_on(inbox)
+  let assert protocol.StreamDeltaEvent(
+    kind: protocol.EndKind,
+    generation: ended,
+    text: None,
+    ..,
+  ) = terminal.event
+    as "the same observer closes the request after its last delta"
+  assert ended == generation as "completion cannot retire another request"
   assert process.receive(quiet, within: 100) == Error(Nil)
 }
 
@@ -2975,28 +3023,59 @@ fn release_gate(gate: Subject(GateMessage)) -> Nil {
   process.call(gate, waiting: 5000, sending: ReleaseGate)
 }
 
-// A provider whose turn does not end until the test releases it, which is
-// the only way this fixture can hold an operation open long enough for a
-// second prompt to meet a busy strand.
-//
-// It parks by *receiving on a subject it just made*, never by asking the
-// gate a question. `process.call` exits its caller when the answer is
-// late, and a loaded runner made that reachable: a killed effect process
-// ends the operation, the strand goes idle, and the queue this fixture
-// exists to fill drains itself out from under the test.
+// The provider publishes its owner before waiting at the test gate. Stop can
+// therefore retire a parked request exactly as it can a production stream.
 fn parked_provider(gate: Subject(GateMessage)) -> effects.ProviderSurface {
-  effects.ProviderSurface(timeout_ms: 30_000, request: fn(_spec) {
-    let events = process.new_subject()
-    let waiting = process.new_subject()
-    process.send(gate, ParkGate(waiting))
-    let _open = process.receive(waiting, within: 20_000)
-    let assert Ok(settled) = stream.settle(scripted_answer())
-    process.send(
-      events,
-      stream.Settled(message: settled, usage: effects.zero_usage()),
-    )
-    stream.immediate(events:, cancel: fn() { Nil })
-  })
+  effects.PreparedProviderSurface(
+    timeout_ms: 30_000,
+    prepare: fn(_spec) { prepare_parked(gate) },
+    request: fn(_spec) { prepare_parked(gate) |> stream.start_prepared },
+  )
+}
+
+fn prepare_parked(gate: Subject(GateMessage)) -> stream.PreparedStream {
+  let events = process.new_subject()
+  let ready = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      let begin = process.new_subject()
+      let cancel = process.new_subject()
+      process.send(ready, #(begin, cancel))
+      let start =
+        process.new_selector()
+        |> process.select_map(begin, fn(_nil) { True })
+        |> process.select_map(cancel, fn(_nil) { False })
+        |> process.selector_receive_forever()
+      case start {
+        False -> Nil
+        True -> {
+          let waiting = process.new_subject()
+          process.send(gate, ParkGate(waiting))
+          let finish =
+            process.new_selector()
+            |> process.select_map(waiting, fn(_nil) { True })
+            |> process.select_map(cancel, fn(_nil) { False })
+            |> process.selector_receive_forever()
+          let terminal = case finish {
+            True -> {
+              let assert Ok(settled) = stream.settle(scripted_answer())
+                as "the fixture answer must settle"
+              stream.Settled(message: settled, usage: effects.zero_usage())
+            }
+            False -> stream.Failed(stream.ProviderCancelled)
+          }
+          process.send(events, terminal)
+        }
+      }
+    })
+  let assert Ok(#(begin, cancel)) = process.receive(ready, 1000)
+    as "the parked owner publishes its own control subjects"
+  stream.PreparedStream(
+    handle: stream.owned(events:, owner:, cancel: fn() {
+      process.send(cancel, Nil)
+    }),
+    begin: fn() { process.send(begin, Nil) },
+  )
 }
 
 fn parked_network_harness(gate: Subject(GateMessage)) -> Harness {
@@ -3023,6 +3102,121 @@ fn outcome_status(frame: String) -> String {
   let assert Ok(json.String(status)) = list.key_find(fields, "status")
     as "the outcome carries a status"
   status
+}
+
+/// Steering has capacity even when ordinary input has filled its queue. The
+/// parked provider cannot finish naturally, so seeing the steer before release
+/// proves that the gateway preempted it and retained the queued turns.
+pub fn steer_preempts_and_precedes_a_full_turn_queue_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(810, "main", "open"))
+    as "the first prompt opens the parked run"
+  list.each([811, 812, 813, 814], fn(id) {
+    let assert Ok(frame) =
+      gateway.connection_request(
+        socket,
+        protocol.encode_command(protocol.CommandEnvelope(
+          id:,
+          command: protocol.FollowUp(
+            strand: "main",
+            text: "queued " <> int.to_string(id),
+          ),
+        )),
+      )
+      as "each ordinary follow-up is accepted"
+    assert outcome_status(frame) == "queued"
+  })
+
+  let assert Ok(steered) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(
+        id: 815,
+        command: protocol.Steer(strand: "main", text: "change direction"),
+      )),
+    )
+    as "the full turn queue still has room for steering"
+  assert outcome_status(steered) == "queued"
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) {
+        ["open", "change direction"] -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the steer starts without waiting for the parked provider"
+
+  release_gate(gate)
+  let expected = [
+    "open", "change direction", "queued 811", "queued 812", "queued 813",
+    "queued 814",
+  ]
+  let assert poll.Answered(_) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case user_prompt_texts(harness) == expected {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "all queued turns survive preemption and retain their order"
+}
+
+/// Escape stops only current work. The first queued turn starts as soon as
+/// cancellation drains, and later queued turns remain available afterward.
+pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  list.each([#(820, "open"), #(821, "next"), #(822, "last")], fn(item) {
+    let assert Ok(_) =
+      gateway.connection_request(socket, prompt_frame(item.0, "main", item.1))
+      as "the prompt or queued turn is accepted"
+    Nil
+  })
+  let assert Ok(_) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(
+        id: 823,
+        command: protocol.Abort("main"),
+      )),
+    )
+    as "Escape is acknowledged"
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "next"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the next queued turn starts after cancellation without another key"
+
+  release_gate(gate)
+  let assert poll.Answered(_) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "next", "last"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "Escape preserves every remaining queued turn"
 }
 
 /// Two peers submitting inside one catch-up window is the case issue #240
@@ -3295,4 +3489,56 @@ fn pushed_error(inbox: Subject(String), remaining: Int) -> protocol.Event {
     _, True -> pushed_error(inbox, remaining - 1)
     _, False -> panic as "a pushed error must reach the submitter"
   }
+}
+
+/// A normal prompt cannot pass input whose custody transferred before the
+/// runtime retired, even when that retirement's commit hint is still delayed.
+pub fn a_prompt_cannot_bypass_held_input_before_the_retirement_hint_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  // Withholding from the first admission also excludes an older hint already
+  // queued in the gateway when the runtime's retirement becomes visible.
+  let assert True = suspend_test_process(harness.commits)
+    as "commit hints are withheld while the runtime can still settle"
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(820, "main", "open"))
+    as "the first operation starts"
+  let assert Ok(held) =
+    gateway.connection_request(socket, prompt_frame(821, "main", "first held"))
+    as "the next turn transfers to host custody"
+  assert outcome_status(held) == "queued"
+  release_gate(gate)
+  let retired =
+    poll.until(within: 5000, every: 5, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  let arrived =
+    gateway.connection_request(socket, prompt_frame(822, "main", "second held"))
+  let assert True = resume_test_process(harness.commits)
+    as "the original forwarder resumes before assertions can fail"
+  assert retired == poll.Answered(Nil)
+    as "the command observes a durably idle runtime before its gateway hint"
+  let assert Ok(frame) = arrived as "the new prompt was accepted"
+  assert outcome_status(frame) == "queued"
+    as "existing host custody takes priority over direct admission"
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 5, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "first held", "second held"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the held turn still precedes the newly arrived normal prompt"
 }

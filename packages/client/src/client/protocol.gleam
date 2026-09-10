@@ -164,6 +164,9 @@ pub type Command {
   /// Request the model catalogue; answered by a `models` snapshot.
   ListModels
 
+  /// Reads a bounded, current blackboard view for one strand.
+  NotesGet(strand: String)
+
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
 
@@ -221,6 +224,9 @@ pub type Snapshot {
 
   /// The model catalogue (the `models` command's reply).
   ModelsSnapshot(models: List(ModelInfo))
+
+  /// Current note values and their captured revision, bounded for display.
+  NotesSnapshot(board: JsonValue)
 
   /// Every schedule the session holds (the reply to both `schedules`
   /// and a successful `schedule_cancel`, so one reply re-renders a
@@ -387,6 +393,9 @@ pub type DeltaKind {
   /// A tool-call fragment (carried in `call_id`/`tool_name`/
   /// `arguments_fragment`).
   ToolCallKind
+
+  /// The named provider request ended; no fragment payload is carried.
+  EndKind
 }
 
 /// One decoded server event body.
@@ -413,6 +422,9 @@ pub type Event {
   /// Complete transient roster; it never writes conversation entries.
   PresenceEvent(peers: List(JsonValue))
 
+  /// The host queue changed; fetch its authoritative pending-input metadata.
+  InputQueueChanged
+
   /// A snapshot reply.
   SnapshotEvent(snapshot: Snapshot)
 
@@ -437,6 +449,8 @@ pub type Event {
   StreamDeltaEvent(
     strand: String,
     op: String,
+    /// Provider request identity; absent only on older recordings.
+    generation: Option(String),
     kind: DeltaKind,
     text: Option(String),
     call_id: Option(String),
@@ -633,6 +647,10 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       object_of([#("name", option.map(name, json.String))]),
     )
     ListModels -> #("models", json.Object([]))
+    NotesGet(strand:) -> #(
+      "notes",
+      json.Object([#("strand", json.String(strand))]),
+    )
     SetConfig(strand:, config:) -> #(
       "set_config",
       object_of([
@@ -839,6 +857,11 @@ fn decode_command_body(
 
     // The body is deliberately empty today; tolerant reading applies.
     "models" -> Ok(ListModels)
+    "notes" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      Ok(NotesGet(strand:))
+    }
     "set_config" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(optional_string(fields, "strand"))
@@ -937,6 +960,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
       "presence",
       json.Object([#("peers", json.Array(peers))]),
     )
+    InputQueueChanged -> #("input_queue_changed", json.Object([]))
     SnapshotEvent(snapshot:) -> #("snapshot", encode_snapshot(snapshot))
     EntryEvent(record:) -> #("entry", encode_entry_record(record))
     OpTransitionEvent(op:, strand:, phase:) -> #(
@@ -954,6 +978,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
     StreamDeltaEvent(
       strand:,
       op:,
+      generation:,
       kind:,
       text:,
       call_id:,
@@ -964,6 +989,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
       object_of([
         #("strand", Some(json.String(strand))),
         #("op", Some(json.String(op))),
+        #("generation", option.map(generation, json.String)),
         #("ephemeral", Some(json.Bool(True))),
         #("kind", Some(json.String(kind_to_string(kind)))),
         #("text", option.map(text, json.String)),
@@ -1041,6 +1067,11 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       json.Object([
         #("mode", json.String("models")),
         #("models", json.Array(list.map(models, encode_model_info))),
+      ])
+    NotesSnapshot(board:) ->
+      json.Object([
+        #("mode", json.String("notes")),
+        #("board", board),
       ])
     SchedulesSnapshot(schedules:) ->
       json.Object([
@@ -1170,6 +1201,7 @@ fn kind_to_string(kind: DeltaKind) -> String {
     TextKind -> "text"
     ThinkingKind -> "thinking"
     ToolCallKind -> "tool_call"
+    EndKind -> "end"
   }
 }
 
@@ -1246,6 +1278,10 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         Ok(_) | Error(Nil) -> Error("peers must be an array")
       }
     }
+    "input_queue_changed" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(InputQueueChanged)
+    }
     "snapshot" -> decode_snapshot(body)
     "entry" -> {
       use record <- result.try(decode_entry_record(body))
@@ -1267,11 +1303,13 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
       use op <- result.try(required_string(fields, "op"))
+      use generation <- result.try(optional_string(fields, "generation"))
       use kind_text <- result.try(required_string(fields, "kind"))
       use kind <- result.try(case kind_text {
         "text" -> Ok(TextKind)
         "thinking" -> Ok(ThinkingKind)
         "tool_call" -> Ok(ToolCallKind)
+        "end" -> Ok(EndKind)
         other -> Error("unknown delta kind: " <> other)
       })
       use text <- result.try(optional_string(fields, "text"))
@@ -1284,6 +1322,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       Ok(StreamDeltaEvent(
         strand:,
         op:,
+        generation:,
         kind:,
         text:,
         call_id:,
@@ -1504,6 +1543,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         Ok(_) -> Error("models must be an array")
       })
       Ok(SnapshotEvent(ModelsSnapshot(models:)))
+    }
+    "notes" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing notes board"),
+      )
+      Ok(SnapshotEvent(NotesSnapshot(board:)))
     }
     "schedules" -> {
       use schedules <- result.try(case list.key_find(fields, "schedules") {

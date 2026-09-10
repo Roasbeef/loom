@@ -2865,6 +2865,14 @@ fn assemble_in(
           hub.default_options(settings.session_id, runtime)
             |> hub.with_catalog(settings.catalog)
             |> hub.with_registry(tool_registry)
+            |> hub.with_code_mode_issue(case toolchain {
+              Error(reason) -> Some(reason)
+              Ok(_) ->
+                case list.contains(settings.deactivated_tools, "code_mode") {
+                  True -> Some("disabled in the host tool configuration")
+                  False -> None
+                }
+            })
             // The operator's abort reaches the effect plane here, and
             // this is the only place it can: the runtime stops the
             // strand's live effects, but a background job runs under a

@@ -2064,7 +2064,8 @@ build plane masks them where the jail can build the mask.
 - **Actor messages**: `gateway.Message` — `Attach(sink, reply)` (a call,
   returning the connection id), `Detach(connection)`,
   `FromClient(connection, text)`, `CommitHint`, `BusHint(published)`, and
-  `ProviderDelta(operation, delta)` (casts). Senders: `client/server`'s
+  `ProviderDelta(operation, generation, delta)` and
+  `ProviderEnded(operation, generation)` (casts). Senders: `client/server`'s
   socket handlers, `commit_forwarder` (from `runtime/writer.Event`),
   `events/bus` subscriptions, and `tap_provider`'s wrapper. The hub's bus
   subscription is keyed by the session's **canonical id**
@@ -2156,8 +2157,10 @@ build plane masks them where the jail can build the mask.
   `.git` file leaves the base untouched.
 - **A jailed child's environment is three names, built once per session.**
   `serve.session_environment` gives every tool shell, satellite and hook
-  host the same `PATH` (the code-mode toolchain's when one was found, so
-  `gleam` and `erl` resolve in the shell as they do for the compiler),
+  host the same `PATH`. The bundled toolchain stays first, followed by the
+  host PATH and explicit additions, so arbitrary installations are discoverable
+  without naming language-manager directories. Lookup does not widen filesystem
+  reads. The other server-owned names are
   `HOME` (`<workspace>/.codemode/home`, so `bash -l` reads no operator
   dotfiles and what a toolchain writes to its home — macOS makes a
   `Library/Caches` — stays out of the operator's tree) and `TMPDIR`
@@ -2166,7 +2169,7 @@ build plane masks them where the jail can build the mask.
   session base policy grants `TMPDIR` for the same reason the code-mode
   builder grants it on its derived base: the policy meet keeps only the
   names the base allows.
-- **The `[tools]` table is the only thing that widens either.**
+- **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (off is the default and what an absent table means) plus `env` names
   read from the host at boot and `[tools.set]` literals;
@@ -2252,15 +2255,24 @@ build plane masks them where the jail can build the mask.
   sequence the store already held. The prime reads the whole history once
   per start, so a supervised restart of a long session's hub pays that
   read again.
-- **Held prompts are hub memory, four per strand.** A `prompt` refused
-  with `StrandBusy` is held with the origin recorded at submission and
-  answered `queued`; the hub drains the head when a pull observes the
-  strand's live operation gone. The fifth submission for one strand gets
-  the `conflict` the whole command used to answer with, so a strand whose
-  run never settles cannot grow unbounded state. The queue is
-  deliberately not durable — that would need a pending-run operation in
-  `machine` — and the wire says so by replying `queued` rather than
-  `admitted`.
+- **Human input is bounded hub memory with explicit priority.** Busy prompts
+  and follow-ups retain their submitted author and content until admission.
+  Steering joins a higher-priority FIFO and stops the observed operation;
+  Escape leaves both queues intact. Each strand has four normal and four
+  steering slots. `queued` acknowledges transient custody, and a gateway
+  restart can lose unadmitted input. `pending_inputs` exposes bounded excerpts
+  keyed by connection/request identity, while `input_queue_changed` requests
+  a refresh even when the durable cursor did not move.
+- **Provider previews have request and observer custody.** Each pushed delta
+  and terminal marker carries the durable request coordinates as `generation`.
+  Preview observations retain their source; releasing an old observer cannot
+  clear a newer source. Releasing the current observer removes its sample.
+- **Notes are an auxiliary bounded read.** `client/notes_view.read` captures
+  `agent/<strand>/` independently of conversation metadata. It returns current
+  values and revisions, at most 4096 bytes per value and 48000 encoded bytes
+  of rows. Oversized boards return `notes_too_large` without poisoning normal
+  captures. Tool-availability metadata names actual registry entries and the
+  host's code-mode discovery diagnostic separately from strand configuration.
 - **Socket admission is the websocket process's first handler turn, never
   its initializer.** mist starts every websocket process with a hard 500 ms
   initializer budget it does not expose, and a missed budget kills the
