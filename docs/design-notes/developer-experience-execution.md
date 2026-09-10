@@ -1,8 +1,11 @@
 # Developer experience fixes
 
-Status: implemented and locally verified on `codex/developer-experience`, based
-on `eb0bbe60`. The complete request remains in progress because host filesystem
-read policy for ordinary installed tools still needs an owner decision.
+Status: PR #340 merged as `93d50830` on September 9, 2026 after all 16
+checks passed, including exact-head Linux signoff. Its head was `107b3851`.
+Explicit support-tree mounts passed jailed Go, Apple Git and ripgrep in a
+disposable follow-up session. The owner's configuration is unchanged; generic
+access without naming directories remains a broader host-read policy decision. The rendering follow-up is documented in
+[the performance guide](../performance.md#reuse-settled-transcript-layout).
 
 The accepted review compared the September 9 Loom, Claude, and Codex terminal
 recordings. It covered controls, environment setup, transcript inspection,
@@ -108,12 +111,18 @@ those events without reopening the session or executing providers and tools.
 The reconstruction cannot recover original keystrokes, streamed deltas, or
 model and tool timing.
 
-One untraced run took 10.10 seconds on `eb0bbe60` and 9.63 seconds on the reviewed
-implementation. Peak RSS was 565 MiB and 544 MiB respectively. Replay retains
-all rendered frames, so these peaks do not measure live-client memory. An Erlang
-call profile attributed 22.2% of traced exclusive runtime to terminal text
-sanitizing, followed by span tokenization and cell-width calculation. Tracing
-adds overhead; its elapsed time is not comparable to the untraced runs.
+**Measurement correction, September 9:** the original reconstruction used v2
+wire envelopes in legacy `incoming` recording events, whose reducer expects
+v1. Its initial snapshot also contained an invalid null `live_op`. The earlier
+10.10/9.63-second timings, 565/544-MiB peaks, and 22.2% sanitizer attribution
+measured rejected frames, not admitted conversation history. Those figures are
+withdrawn as original-session evidence. Matching frame counts did not detect
+the error; checking final admitted records did.
+
+The follow-up fixes both fixture shapes and requires 532 admitted records and
+no failure notices before accepting a measurement. All 537 frames match
+byte-for-byte across its baseline and optimization. The performance guide
+records the valid comparison against the merged PR #340 source.
 
 We combined unsafe-codepoint replacement with the existing escape-sequence
 pass, removing a second decode and the allocation of one-character strings.
@@ -123,10 +132,9 @@ Against an archived copy of the old sanitizer, output matched for every
 those text values fell from 79.3 ms to 21.4 ms. Existing hostile-terminal and
 Markdown tests passed, and the independent reviewer checked the small delta.
 
-The first native replay with the sanitizer simplification took 10.23 seconds
-and peaked at 556 MiB. That run does not establish an overall replay speedup.
-The retained improvement is a smaller sanitizer with less measured local work;
-there is no new cache, parser, dependency, or claimed live CPU reduction.
+The sanitizer equivalence checks and direct text timings above did not use the
+invalid wire reconstruction and remain valid. They establish reduced sanitizer
+work, independently of the later layout-cache optimization.
 
 ## Remaining decision
 
@@ -136,8 +144,15 @@ current minimal-root policy. The observed failures were Go's missing `testing`
 standard package and `xcode-select` reporting no developer tools. Downloading
 another compiler is not the remedy implemented here.
 
-The owner requested generic installed-tool support without enumerating tool or
-dependency directories. Completing that behavior requires choosing whether
+Explicit `[workspace].mounts` can grant read access to installed support trees
+under the existing policy; [the distribution guide](../distribution.md#installed-tool-support-trees)
+gives an example. The rendering follow-up verified all three tools in a
+disposable real-terminal session with Go's GOROOT and the complete Xcode app
+mounted read-only, plus a writable workspace-local Go cache. Mounting only
+Xcode's `Contents/Developer` was insufficient: the launcher also reads its
+Info.plist and sibling shared frameworks. No owner configuration was changed.
+
+Support without enumerating tool or dependency directories requires choosing whether
 local owner-only sessions receive broad host reads, while preserving restricted
 writes and shared-session confinement. This changes the boundary recorded in
 protocol 020. No broader read policy has been inferred or enabled.

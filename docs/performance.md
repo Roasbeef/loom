@@ -440,3 +440,92 @@ Tests prove semantics; profiles prove where resources went. Keep both. A patch
 that lowers CPU but breaks scroll anchoring, transient settlement, or keyboard
 latency is a regression. A patch that preserves every test but has no matched
 before-and-after measurement is still a hypothesis.
+
+## Reuse settled transcript layout
+
+Compact tool groups need a fresh projection when a result arrives: their status,
+summary and failure count can change. Recomputing that projection used to parse
+and wrap every settled line again. The TUI now keys wrapped rows by the complete
+presentation `Line`, including speaker and text, and reuses them at the same
+width. A changed result produces a different key. Width changes discard the old
+map; each rebuild fills a fresh map with only current lines. Full snapshots,
+session adoption and `/clear` discard it too.
+
+This removes repeat work before trying to speed up each parser or width lookup.
+It saves sanitizing, CommonMark parsing, span tokenization and cell measurement
+for unchanged lines. Expanded history keeps its existing append-only fast path.
+The cache owns no process, timer, dependency or protocol state. It adds a map of
+layout hints for current history, so it does not establish a bound on history
+retention or prove lower idle CPU.
+
+The September 9 comparison used OTP 29, Gleam 1.18.1, a 160×48 virtual terminal,
+and PR #340's merged source (`93d50830`, source-identical to `107b3851`) as the
+baseline, compared with layout-cache commit `5de0464b`. A private reconstruction contained an empty snapshot followed by 532
+durable records, with all timing offsets zero. It cannot reproduce the original
+session's streamed fragments, keystrokes, tool execution or network latency.
+Both revisions admitted 532 records with no failure notices and produced 537
+byte-identical frames. Three serial runs per revision gave:
+
+| Measurement | Merged baseline | Line-layout reuse |
+|---|---:|---:|
+| Replay elapsed, median | 13.27 s | 4.01 s |
+| Replay elapsed, range | 13.18–13.34 s | 4.00–4.33 s |
+| Process user CPU, median | 13.89 s | 5.10 s |
+| Process system CPU, median | 1.46 s | 1.00 s |
+| Peak process RSS, range | 999–1,004 MiB | 698–701 MiB |
+
+Replay elapsed excludes startup and final frame serialization. Process CPU and
+RSS include both. The virtual backend retains every frame, so this peak is not
+a live-client footprint. The comparison establishes roughly 3.3× faster replay
+and 60% less total process CPU on this workload, not a universal speedup.
+
+A separate same-process `tprof` call-memory profile counted 1,451,508,562 heap
+words before and 1,032,710,946 after, about 29% fewer allocated words. These are
+cumulative allocations, not simultaneously live bytes, and exclude a general
+claim about native allocations. An `eprof` call census showed the removed work:
+
+| Calls in the complete replay | Baseline | Line-layout reuse |
+|---|---:|---:|
+| `tui.render_line` | 76,698 | 734 |
+| `etui/span.tokenise` | 102,386 | 991 |
+| `etui/text.cell_width` | 1,153,528 | 131,539 |
+
+After dropping replay frames and forcing GC while retaining the final model,
+both runs used 4,119,656 process bytes. Deduplicated referenced binaries grew
+from 593,852 to 617,408 bytes. Layout reuse therefore trades a small retained
+binary increase for less transient work on this input; it does not demonstrate
+a smaller settled model. Projection still sanitizes compact summaries, and
+frame construction and capture remain substantial allocation sites. Profile
+those separately before introducing another cache or replacing text routines.
+
+### Validate admission before profiling
+
+An earlier reconstruction put v2 envelopes in legacy `incoming` events, whose
+reducer expects v1, and supplied an invalid null `live_op` in its initial
+snapshot. It rendered protocol errors while returning a successful replay and
+the expected frame count. The old 22.2% sanitizer attribution and replay timing
+claims in the developer-experience report are withdrawn as conversation-history
+evidence. Direct sanitizer equivalence and text microbenchmarks were separate
+and remain valid.
+
+Use the in-tree checked driver for future history-rendering measurements:
+
+```sh
+cd packages/tui
+gleam dev replay /private/tmp/authorized-recording.jsonl 532
+```
+
+The final argument is the expected final retained record count. The driver
+refuses a timing when history is missing, a replay error occurred, or failure
+notices remain. Derive fixtures through the current codecs and check the event
+lane: legacy `incoming` and live v2 connection-attempt traffic have different
+envelopes. Keep the same driver and private input on both revisions, verify
+styled frame equality, and measure serially without concurrent build work.
+A trace explains where work went; compare untraced runs for elapsed time.
+
+The complete local `make check` passed with 1,515 client and 275 TUI tests. The
+checked developer driver admitted the valid recording and failed the malformed
+one. An independent review found no actionable issue. A freshly built client
+also passed the existing real 160×48 terminal flow against the unchanged merged
+daemon: read/edit, current notes, code mode, captured diffs, Escape and steer.
+That functional probe is separate from the replay performance comparison.

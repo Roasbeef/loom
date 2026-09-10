@@ -23,8 +23,10 @@ that tree separately from the self-contained server.
 - `tui.Model` is the immutable presentation state. Durable entries,
   transient stream fragments, local notices, overlays, and scroll position
   remain distinct so a settled entry cannot duplicate its streamed answer.
-  Wrapped durable rows are cached by strand, width, and detail mode; pending
-  records extend that cache without reparsing older markdown.
+  Wrapped durable rows are cached by strand, width, and detail mode. Expanded
+  history appends pending records; compact groups rebuild their projection
+  and reuse wrapped rows keyed by the complete speaker/text line. Width changes
+  discard layout hints, and each rebuild retains only the current projection.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
   `Invalid` — and three that are not terminal applications at all,
   `Forward`, `Replay` and `Sessions`.
@@ -450,6 +452,15 @@ that tree separately from the self-contained server.
   settled entry arrives. The historical row cache contains durable records
   only; a stream fragment cannot make it reparse the settled transcript. This
   prevents both duplicate output and history-sized work per fragment.
+- **Layout hints belong to the current projection.** Compact outcomes can
+  change when a tool result arrives, so record identity alone is not a valid
+  key. `record_line_cache` keys the complete `Line`, including its speaker,
+  and only reuses rows at the same width. Each rebuild starts a fresh map:
+  discarded branches and superseded outcome text leave the cache. Session
+  adoption, full snapshots and `/clear` empty it. This saves repeated Markdown
+  parsing, sanitizing, span tokenization and cell-width calculation; it does
+  not bound the durable history itself. `dev/tui_replay_dev.gleam` validates
+  admitted record counts and failure notices before reporting replay time.
 - **Model text never becomes terminal control traffic.** The text-hygiene
   pass replaces C0/C1, bidirectional, zero-width, variation-selector, and tag
   codepoints before data reaches etui spans. Newlines survive only where the
