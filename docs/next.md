@@ -71,6 +71,12 @@ active on this macOS host, consuming the editor's Ctrl+s shortcut. Disabling
 flow control in the disposable pane confirmed the cause; a production terminal
 setup repair remains outstanding before treating native queue editing as ready.
 
+The prior head's shipped live-delivery and multiplayer CI fixtures required
+all answers within one viewport. They now inspect real scrolled history while
+retaining the original ordered-record and author assertions. Both opt-in tests
+passed locally against a newly built lean server release; the next GitHub run
+still needs to confirm the Linux and macOS jobs.
+
 ## What to do next
 
 1. **Integrate the UX follow-through.** Inspect the feature branch's exact

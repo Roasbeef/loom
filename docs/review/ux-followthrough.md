@@ -91,5 +91,14 @@ Linux client tests and two failures in the opt-in shipped live-delivery and
 multiplayer fixtures. Both terminal deadline frames show the newest answers
 and the completion card; their predicates still require every earlier answer
 in the same 80-by-24 viewport. The Linux jail job also fails in that multiplayer
-fixture. These shipped viewport assertions remain to be repaired and rerun;
-they were skipped in the earlier local gate because no shipped server was set.
+fixture. They were skipped in the earlier local gate because no shipped
+server was set. The fixtures now inspect answers across eight real PageUp
+frames and return to the newest viewport. Their exact record, author, order,
+idle, and stream-settlement predicates remain unchanged.
+
+A fresh `DIST_CODEMODE=0 make release` supplied the supported lean native
+server for the two opt-in tests. Shipped live delivery passed in 6.74 seconds
+including compilation and startup; shipped multiplayer passed in 5.15 seconds.
+The tests ran with `LOOM_BOOTSTRAP_E2E_SERVER` set, rather than taking their
+missing-server skip. This exercises their real server lifecycle on macOS;
+it does not establish the next GitHub run or code-mode bundle acceptance.
