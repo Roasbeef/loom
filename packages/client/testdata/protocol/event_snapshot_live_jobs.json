@@ -1,0 +1,1 @@
+{"v":2,"reply_to":52,"event":"snapshot","body":{"mode":"live_jobs","board":{"strand":"main","observed_at_ms":1000,"jobs":[{"id":"job-1","state":"running","started_by":"op-1","command_excerpt":"bash -c sleep 10","age_ms":250,"deadline_ms":10750}],"total":1,"omitted":0}}}

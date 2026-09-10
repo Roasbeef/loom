@@ -82,6 +82,7 @@ import client/protocol
 import client/serve
 import core/clock.{type Clock}
 import core/ids
+import core/json
 import core/message
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -1748,4 +1749,65 @@ pub fn an_unknown_jobs_key_is_refused_test() {
 
 fn repeat_bytes(chunk: BitArray, times: Int) -> BitArray {
   list.repeat(chunk, times) |> bit_array.concat
+}
+
+// The explicit display query must distinguish live state from retained history.
+pub fn live_jobs_roster_is_scoped_bounded_and_keeps_draining_test() {
+  let harness = start_harness()
+  let finished = start_job(harness, "main", "finished")
+  let running = start_job(harness, "main", string.repeat("🌿", 800))
+  let draining = start_job(harness, "main", "draining")
+  let sibling = start_job(harness, "sub:main/worker", "sibling")
+  settle_with(harness, finished, exited(0))
+  let assert jobstate.Exited(..) = settled_state(harness, "main", finished)
+    as "the terminal record is retained but excluded from the live roster"
+  let assert Ok(Nil) =
+    jobs.kill_job(harness.name, strand: "main", id: draining.id, waiting: 5000)
+    as "the live roster must retain a job while cancellation drains"
+  let assert Ok(board) = jobs.live_jobs(harness.name, "main", waiting: 5000)
+    as "the jobs actor answers the explicit bounded roster"
+  assert live_field(board, "total") == json.Int(2)
+  assert live_field(board, "omitted") == json.Int(0)
+  assert live_field(board, "strand") == json.String("main")
+  let assert json.Array(rows) = live_field(board, "jobs")
+    as "the roster carries rows"
+  assert list.length(rows) == 2
+  let assert Ok(active) =
+    list.find(rows, fn(row) {
+      live_field(row, "id")
+      == json.String(jobstate.job_id_to_string(running.id))
+    })
+    as "the running job is attributed to its exact job ID"
+  assert live_field(active, "state") == json.String("running")
+  assert live_field(active, "started_by")
+    == json.String(ids.op_id_to_string(harness.operation))
+  let assert json.String(excerpt) = live_field(active, "command_excerpt")
+    as "the command excerpt is valid UTF-8"
+  assert string.byte_size(excerpt) <= 512
+  assert string.contains(excerpt, "🌿")
+  let assert Ok(stopping) =
+    list.find(rows, fn(row) {
+      live_field(row, "id")
+      == json.String(jobstate.job_id_to_string(draining.id))
+    })
+    as "the draining job remains observable until settlement"
+  assert live_field(stopping, "state") == json.String("draining")
+  settle_with(harness, draining, cancelled_result())
+  settle_with(harness, running, exited(0))
+  settle_with(harness, sibling, exited(0))
+  let assert jobstate.Killed(..) = settled_state(harness, "main", draining)
+    as "the cancelled execution settled"
+  let assert jobstate.Exited(..) = settled_state(harness, "main", running)
+    as "the running execution settled"
+  let assert Ok(empty) = jobs.live_jobs(harness.name, "main", waiting: 5000)
+    as "successful empty state remains distinct from unavailability"
+  assert live_field(empty, "jobs") == json.Array([])
+  assert live_field(empty, "total") == json.Int(0)
+}
+
+fn live_field(value: json.JsonValue, name: String) -> json.JsonValue {
+  let assert json.Object(fields) = value as "the live roster has object fields"
+  let assert Ok(value) = list.key_find(fields, name)
+    as "the live roster field is present"
+  value
 }

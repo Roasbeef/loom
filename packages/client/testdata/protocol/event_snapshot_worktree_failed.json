@@ -1,0 +1,1 @@
+{"v":2,"event":"snapshot","body":{"mode":"worktree_diff","board":{"status":"failed","request_id":51,"code":"unavailable","message":"Git could not run"}}}

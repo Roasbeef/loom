@@ -373,3 +373,45 @@ pub fn the_wake_flag_is_the_wires_only_boolean_test() {
     as "a non-boolean wake must not decode"
   assert reason == "snapshot body: wake must be a boolean"
 }
+
+/// Queue editing carries an exact identity and a nonnegative revision.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match queued_input_protocol` runs these codecs.
+pub fn queued_input_protocol_round_trip_and_required_revision_test() {
+  list.each(
+    [
+      protocol.QueuedInputGet("main", "4:23"),
+      protocol.EditQueuedInput("main", "4:23", 0, "complete\ntext"),
+    ],
+    fn(command) {
+      let envelope = protocol.CommandEnvelope(9, command)
+      assert protocol.decode_command(protocol.encode_command(envelope))
+        == Ok(envelope)
+    },
+  )
+  let body =
+    "{\"v\":2,\"id\":9,\"cmd\":\"edit_queued_input\",\"body\":{\"strand\":\"main\",\"id\":\"4:23\",\"text\":\"new\""
+  let assert Error(protocol.BadBody(..)) = protocol.decode_command(body <> "}}")
+    as "an omitted revision never defaults to a current revision"
+  let assert Error(protocol.BadBody(..)) =
+    protocol.decode_command(body <> ",\"expected_revision\":-1}}")
+    as "negative revisions are not queue versions"
+  let board =
+    json.Object([
+      #("id", json.String("4:23")),
+      #("strand", json.String("main")),
+      #("revision", json.Int(1)),
+      #("kind", json.String("queue")),
+      #("text", json.String("complete\ntext")),
+      #("attachment_count", json.Int(2)),
+    ])
+  let envelope =
+    protocol.EventEnvelope(
+      Some(9),
+      None,
+      protocol.SnapshotEvent(protocol.QueuedInputSnapshot(board)),
+    )
+  assert protocol.decode_event(protocol.encode_event(envelope)) == Ok(envelope)
+}
