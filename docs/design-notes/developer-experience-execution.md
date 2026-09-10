@@ -177,9 +177,12 @@ remaining work and running jobs. Existing scrollback and selection mechanisms
 were preserved; the full reading/selection-under-output acceptance exercise was
 not repeated across all of the proposed layouts.
 
-The configured Go/Git/search probe passed. The representative cgo/SDK test,
-generic access without naming support directories, and a single actionable
-missing-dependency diagnostic remain outside that proof. Control regressions
+The configured Go/Git/search probe passed. A subsequent real-terminal probe
+also passed `CGO_ENABLED=1 go test -v ./...` with a C `<stdlib.h>` include and
+an assertion on `C.abs`. The same documented Go/Xcode mounts support that basic
+cgo/SDK build. Broader framework builds, generic access without naming support
+directories, and a single actionable missing-dependency diagnostic remain
+outside that proof. Control regressions
 cover skipped state transitions and stream identities, and real streaming
 Escape/steer passed; they are not the entire joined reconnect/held-tool/multiple
 queue scenario described by the original acceptance note.

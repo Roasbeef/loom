@@ -48,6 +48,11 @@ the pane through a new turn, and closed it with `/diff`. The same disposable
 session passed the edit, notes, code-mode, configured-tool, Escape and steer
 flow. These local results do not constitute remote signoff for this follow-up.
 
+A subsequent configured probe ran `CGO_ENABLED=1 go test -v ./...` in the
+jail, compiling `<stdlib.h>` and checking a real `C.abs` result. The documented
+Go/Xcode mounts support that basic cgo/SDK build; broader framework builds were
+not exercised.
+
 The previous installed-tools wording also omitted an existing option: trusted
 configuration can grant explicit support-tree reads without changing protocol
 020. [The distribution guide](distribution.md#installed-tool-support-trees)
@@ -58,7 +63,7 @@ shows that path. Automatic broad host reads remain an owner policy decision.
 The full original UX acceptance list is not complete. `/diff` now has its
 responsive right-hand pane and narrow fallback. Its changed-file navigator and
 consolidated worktree diff are missing. Editing already queued input and the proposed explicit
-completion/running-job summary are also missing. The cgo/SDK probe, joined
+completion/running-job summary are also missing. Broader SDK/framework builds, joined
 reconnect/control exercise, reading and selection under live output, complete
 latency distributions and daemon-memory plateau remain unverified. See the
 [acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review).
