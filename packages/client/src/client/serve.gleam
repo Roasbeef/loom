@@ -3483,8 +3483,18 @@ pub fn tool_environment(
   tools: catalog.ToolsConfig,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
+  // Installation discovery is the host shell's responsibility. Carry its
+  // search path as a whole instead of guessing which language managers the
+  // owner installed. This changes lookup only; filesystem access remains a
+  // separate sandbox decision. Empty components do not grant cwd precedence.
+  let inherited_path =
+    reading("PATH")
+    |> result.map(string.split(_, ":"))
+    |> result.unwrap([])
+    |> list.filter(fn(path) { path != "" })
   let owned =
     session_environment(workspace, toolchain_path)
+    |> extending_path(inherited_path)
     |> extending_path(tools.path)
 
   // A pass-through name settles one of two ways, so the fold carries
