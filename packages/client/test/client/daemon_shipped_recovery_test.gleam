@@ -234,47 +234,23 @@ fn assert_metadata_only(control, reserved: catalogue.Registration) {
 }
 
 fn await_resident(connected, id) {
-  let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon_observation.session(connected, id, 2000) {
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Resident(_),
-          ..,
-        ))) -> poll.Done(Nil)
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Opening(_),
-          ..,
-        ))) -> poll.Retry
-
-        // The timed-out observation has closed its own connection. The next
-        // attempt authenticates a fresh owner at the same daemon epoch.
-        Error(daemon.TimedOut) -> poll.Retry
-
-        other -> poll.Fail(string.inspect(other))
-      }
-    })
-    as "explicit assembly reaches its resident incarnation"
+  daemon_observation.until(connected, id, fn(row) {
+    case row.status {
+      protocol.Resident(_) -> poll.Done(Nil)
+      protocol.Opening(_) -> poll.Retry
+      other -> poll.Fail(string.inspect(other))
+    }
+  })
 }
 
 fn await_saved(connected, id) {
-  let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon_observation.session(connected, id, 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..))) ->
-          poll.Done(Nil)
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Stopping(_),
-          ..,
-        ))) -> poll.Retry
-
-        // The timed-out observation has closed its own connection. The next
-        // attempt authenticates a fresh owner at the same daemon epoch.
-        Error(daemon.TimedOut) -> poll.Retry
-
-        other -> poll.Fail(string.inspect(other))
-      }
-    })
-    as "the original runtime custody retires before inspecting its identity"
+  daemon_observation.until(connected, id, fn(row) {
+    case row.status {
+      protocol.Saved -> poll.Done(Nil)
+      protocol.Stopping(_) -> poll.Retry
+      other -> poll.Fail(string.inspect(other))
+    }
+  })
 }
 
 fn crash(paths: endpoint.Paths, original: endpoint.Endpoint) {

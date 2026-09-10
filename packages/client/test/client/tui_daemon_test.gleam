@@ -14,14 +14,18 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/system
+import host/bootstrap as native
+import host/endpoint
 import mist
 import simplifile
 import storage/domain
+import support/daemon_observation
 import tui
 import tui/attachment
 import tui/bootstrap
 import tui/connection
 import tui/daemon
+import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/protocol
 import tui/daemon/selection
 import tui/session_selector
@@ -612,6 +616,119 @@ pub fn tui_daemon_read_deadline_is_not_a_mutation_outcome_test() {
     assert daemon.request(control, protocol.Status, 1000)
       == Error(daemon.Disconnected)
     assert process.receive(incoming, 0) == Error(Nil)
+  })
+}
+
+/// A lifecycle observation can spend its shared budget on hello and reads.
+/// Neither phase has the former two-second deadline that retired its owner
+/// while the surrounding fifteen-second observation still had time left.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match tui_daemon_observation_uses_one_deadline`.
+pub fn tui_daemon_observation_uses_one_deadline_test() {
+  peer_listener(None, fn(port, peers, incoming, closed) {
+    let owner = process.self()
+    let controls = process.new_subject()
+    let _starter =
+      process.spawn(fn() {
+        process.send(
+          controls,
+          daemon.connect(address(port), "test-token", owner, 5000),
+        )
+      })
+    let assert Ok(original_peer) = process.receive(peers, 1000)
+      as "the original command connection reaches the controlled listener"
+    process.send(original_peer, Send(greeting))
+    let assert Ok(Ok(control)) = process.receive(controls, 1000)
+      as "the original command connection authenticates before observation"
+
+    // The test VM is the real native owner of this controlled listener. Its
+    // private endpoint gives the observation the same probe path as recovery.
+    let assert Ok(paths) =
+      endpoint.paths(
+        "build/daemon-observation-"
+        <> int.to_string(port)
+        <> "-"
+        <> int.to_string(native.system_time_ms()),
+      )
+      as "the observation owns a private endpoint directory"
+    assert native.atomic_write_private(
+        paths.token,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      )
+      == Ok(Nil)
+    let assert Ok(fence) = endpoint.observe(native.current_process_id())
+      as "the controlled listener has a real native birth fence"
+    let connected =
+      daemon_bootstrap.Connected(
+        control,
+        paths,
+        endpoint.Ready(fence, "127.0.0.1", port, "controlled"),
+      )
+    let #(id, _) = ids.mint_session(ids.generator(clock.fixed(0), 1))
+    let id = ids.session_id_to_string(id)
+    let finished = process.new_subject()
+    let worker =
+      process.spawn(fn() {
+        daemon_observation.until(connected, id, fn(row) {
+          assert row.session_id == id
+          assert row.status == protocol.Resident("incarnation")
+          poll.Done(Nil)
+        })
+        let release = process.new_subject()
+        process.send(finished, release)
+
+        // Keep the lifetime owner alive until the parent witnesses explicit
+        // observation closure; owner exit must not satisfy that assertion.
+        let assert Ok(Nil) = process.receive(release, 5000)
+          as "the parent releases the worker after witnessing observation closure"
+      })
+    let watch = process.monitor(worker)
+    let assert Ok(observation_peer) = process.receive(peers, 1000)
+      as "the lifecycle wait uses a separate observation connection"
+
+    // Withhold each reply past the old inner deadline. Receipts establish the
+    // phase before its delay; no guessed startup sleep selects the boundary.
+    assert process.new_selector()
+      |> process.select_specific_monitor(watch, fn(down) { down })
+      |> process.selector_receive(2100)
+      == Error(Nil)
+    assert process.receive(incoming, 0) == Error(Nil)
+    process.send(observation_peer, Send(greeting))
+    let request = received(incoming)
+    assert request.command == server_protocol.GetSession(id)
+    assert process.new_selector()
+      |> process.select_specific_monitor(watch, fn(down) { down })
+      |> process.selector_receive(2100)
+      == Error(Nil)
+    process.send(
+      observation_peer,
+      Send(reply(
+        request.id,
+        "sessions.get",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("workspace", json.String("/work")),
+          #("name", json.String("observed")),
+          #("created_at", json.Int(0)),
+          #(
+            "status",
+            json.Object([
+              #("state", json.String("resident")),
+              #("incarnation", json.String("incarnation")),
+            ]),
+          ),
+        ]),
+      )),
+    )
+    let assert Ok(release) = process.receive(finished, 1000)
+      as "the observation returns while its lifetime owner remains alive"
+    assert process.receive(closed, 1000) == Ok(Nil)
+    assert process.is_alive(worker)
+    assert process.is_alive(daemon.owner(control))
+    process.send(release, Nil)
+    daemon.close(control)
   })
 }
 

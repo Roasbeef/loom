@@ -472,58 +472,26 @@ fn assert_metadata_only(control, reserved: catalogue.Registration) {
 }
 
 fn await_resident(connected, id) {
-  let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon_observation.session(connected, id, 2000) {
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Resident(_),
-          ..,
-        ))) -> poll.Done(Nil)
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Opening(_),
-          ..,
-        ))) -> poll.Retry
-
-        // The timed-out observation has closed its own connection. The next
-        // attempt authenticates a fresh owner at the same daemon epoch.
-        Error(daemon.TimedOut) -> poll.Retry
-
-        other -> poll.Fail(string.inspect(other))
-      }
-    })
-    as "explicit assembly reaches its resident incarnation"
+  daemon_observation.until(connected, id, fn(row) {
+    case row.status {
+      protocol.Resident(_) -> poll.Done(Nil)
+      protocol.Opening(_) -> poll.Retry
+      other -> poll.Fail(string.inspect(other))
+    }
+  })
 }
 
-// Retirement is the claim: no resident writer was accepted. Which durable
-// state the row settles into is a second question this fixture does not fix —
-// an incarnation that never got as far as confirming its creation leaves the
-// record `Reserved`, and one that did leaves it `Saved`. Both are retired.
+// Retirement is the claim: no resident writer was accepted. An incarnation
+// that never confirmed creation leaves Reserved, while one that did leaves
+// Saved. Both have released runtime custody, and neither may report Resident.
 fn await_retired(connected, id) {
-  let assert poll.Answered(Nil) =
-    poll.until(within: 15_000, every: 25, attempt: fn() {
-      case daemon_observation.session(connected, id, 2000) {
-        Ok(protocol.SessionReply(protocol.Session(status: protocol.Saved, ..)))
-        | Ok(protocol.SessionReply(protocol.Session(
-            status: protocol.Reserved,
-            ..,
-          ))) -> poll.Done(Nil)
-        Ok(protocol.SessionReply(protocol.Session(
-          status: protocol.Opening(_),
-          ..,
-        )))
-        | Ok(protocol.SessionReply(protocol.Session(
-            status: protocol.Stopping(_),
-            ..,
-          ))) -> poll.Retry
-
-        // The timed-out observation has closed its own connection. The next
-        // attempt authenticates a fresh owner at the same daemon epoch.
-        Error(daemon.TimedOut) -> poll.Retry
-
-        other -> poll.Fail(string.inspect(other))
-      }
-    })
-    as "the failed or stopped assembly retires without accepting a resident writer"
+  daemon_observation.until(connected, id, fn(row) {
+    case row.status {
+      protocol.Saved | protocol.Reserved -> poll.Done(Nil)
+      protocol.Opening(_) | protocol.Stopping(_) -> poll.Retry
+      other -> poll.Fail(string.inspect(other))
+    }
+  })
 }
 
 fn crash(paths: endpoint.Paths, original: endpoint.Endpoint) {
