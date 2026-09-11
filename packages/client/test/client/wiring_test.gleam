@@ -113,6 +113,7 @@ fn helperless_broker() -> broker.Broker {
 fn config() -> wiring.Config {
   let workspace = "/nonexistent/loom-wiring-test"
   wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: routed_gateway(),
     role: model.Main,
     facts: entry_facts,

@@ -391,6 +391,7 @@ fn wiring_config(opened: session.Session) -> Result(wiring.Config, String) {
   let workspace = "/nonexistent/loom-compaction-test"
   Ok(
     wiring.Config(
+      observe_output: wiring.unobserved(),
       gateway: routed_gateway(),
       role: model.Main,
       facts: fn(_identity) { Error(Nil) },

@@ -225,6 +225,7 @@ fn start(setup: Setup) -> Harness {
     )
   let config =
     wiring.Config(
+      observe_output: wiring.unobserved(),
       gateway: routed_gateway(),
       role: model.Main,
       facts: fn(_identity) { Error(Nil) },

@@ -120,7 +120,6 @@ import client/internal/timebase
 import client/jobstate.{
   type JobId, type JobRecord, type JobSpill, type JobState, type KillCause,
 }
-import tools/tail.{type Tail}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -139,6 +138,7 @@ import tom
 import tools/bash
 import tools/blob
 import tools/fs
+import tools/tail.{type Tail}
 import tools/tool
 import weft
 import weft/actor
@@ -1425,15 +1425,9 @@ fn absorb(
 ) -> Runner {
   let streams = case stream {
     framing.Stdout ->
-      Streams(
-        ..runner.streams,
-        stdout: tail.push(runner.streams.stdout, data),
-      )
+      Streams(..runner.streams, stdout: tail.push(runner.streams.stdout, data))
     framing.Stderr ->
-      Streams(
-        ..runner.streams,
-        stderr: tail.push(runner.streams.stderr, data),
-      )
+      Streams(..runner.streams, stderr: tail.push(runner.streams.stderr, data))
   }
   let path = staging_path(root: runner.wiring.blob_root, id: runner.id, stream:)
   let staged = case runner.wiring.spill.append(path, data) {

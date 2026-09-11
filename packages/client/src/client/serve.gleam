@@ -73,6 +73,7 @@ import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
 import core/ids
+import events/bus
 import filepath
 import gleam/bit_array
 import gleam/dict.{type Dict}
@@ -2688,8 +2689,19 @@ fn assemble_in(
       // byte prefix (see `gateway.canonical_tool_names`).
       active_tool_names: tool.names(tool_registry),
     )
+
+  // The event bus is the node-global `pg` scope, and `bus.start` is the
+  // idempotent way onto it: one daemon assembles many sessions, and the
+  // second one must find the scope running rather than fail to start it
+  // (`docs/architecture/events.md` on why `start` and `supervised` do
+  // not compose). Sessions are kept apart by key, not by scope. Its one
+  // production traffic today is the rolling tail of a running tool call,
+  // published by the observer below and relayed by the hub as pushed
+  // `tool_output` frames (`protocol-change/028`).
+  let event_bus = bus.start()
   let built =
     wiring.build_effects(wiring.Config(
+      observe_output: hub.tool_output_observer(event_bus, opened),
       gateway: settings.gateway,
       role: model.Main,
       facts: catalogue_facts(settings.catalog),
@@ -2915,6 +2927,7 @@ fn assemble_in(
       supervision.worker(fn() {
         hub.start(
           hub.default_options(settings.session_id, runtime)
+            |> hub.with_bus(event_bus)
             |> hub.with_worktree_diff(fn() {
               worktree_diff.capture_since(worktree_wiring, git_start)
               |> result.map(worktree_diff.to_json)

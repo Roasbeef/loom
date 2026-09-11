@@ -291,6 +291,7 @@ fn wiring_config(
   let base = serve.protecting_index(policy.workspace_default(workspace), index)
   Ok(
     wiring.Config(
+      observe_output: wiring.unobserved(),
       gateway: routed_gateway(),
       role: model.Main,
       facts: fn(_identity) { Error(Nil) },

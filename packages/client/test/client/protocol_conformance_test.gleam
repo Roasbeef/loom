@@ -70,7 +70,7 @@ const event_fixtures = [
   "event_stream_delta_tool_call.json", "event_usage.json",
   "event_snapshot_queued_input.json", "event_snapshot_worktree_pending.json",
   "event_snapshot_worktree_ready.json", "event_snapshot_worktree_failed.json",
-  "event_snapshot_live_jobs.json",
+  "event_snapshot_live_jobs.json", "event_tool_output.json",
 ]
 
 pub fn command_fixtures_roundtrip_test() {
@@ -99,7 +99,7 @@ pub fn corpus_is_complete_test() {
     list.append(command_fixtures, event_fixtures)
     |> list.sort(string.compare)
   assert covered == json_files
-  assert list.length(json_files) == 48
+  assert list.length(json_files) == 49
 }
 
 // --- strictness and tolerance ----------------------------------------------

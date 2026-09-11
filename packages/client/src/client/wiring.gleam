@@ -87,8 +87,9 @@
 ////   `clear_call` against the broker — a clearance here is not an
 ////   execution grant.
 //// - **Execution.** Each `ToolRun` gets a fresh `Ctx` (op/step ids from
-////   the run, broker/filesystem/blob seams from the config) and goes
-////   through `tool.dispatch`. Dispatch is total: unknown names and every
+////   the run, broker/filesystem/blob seams from the config, and the
+////   output observer `Config.observe_output` resolves for that run) and
+////   goes through `tool.dispatch`. Dispatch is total: unknown names and every
 ////   tool failure come back as in-band `is_error` results, so the
 ////   adapter always answers `ToolCompleted`; `ToolFailed` remains the
 ////   runtime's own path for a dead effect worker. The persisted
@@ -247,7 +248,30 @@ pub type Config {
     clock: Clock,
     /// Fresh id-generator seeds; values must never repeat in-session.
     entropy: fn() -> Int,
+    /// Who watches a jailed execution's output while it runs. Resolved
+    /// once per `ToolRun` — the run names the operation and step every
+    /// observation is keyed by — and the observer it returns is shown
+    /// the rolling tail after every chunk (`tools/tool.collect_observed`,
+    /// issue #186). `unobserved()` for a host with no terminal to show
+    /// it to; `client/serve` supplies `gateway.tool_output_observer`,
+    /// which publishes on the event bus.
+    observe_output: fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil,
   )
+}
+
+/// An observer resolver that watches nothing: every execution's output
+/// still reaches its collected result, and no tail leaves the tool. The
+/// default for a host with nobody attached, and for tests about
+/// something else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.Config(..config, observe_output: wiring.unobserved())
+/// ```
+///
+pub fn unobserved() -> fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
+  fn(_run) { tool.ignore_output() }
 }
 
 /// Builds the production `Effects` record from a config. See the module
@@ -1046,7 +1070,7 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
     blob_root: config.blob_root,
     clear_call: escalating_runner(config, run),
     raise_refusal: raising_seam(config, run),
-    observe_output: tool.ignore_output(),
+    observe_output: config.observe_output(run),
   )
 }
 

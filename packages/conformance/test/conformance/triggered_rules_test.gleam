@@ -453,6 +453,7 @@ fn memory_session() -> Session {
 fn wiring_config(gw: gateway.Gateway, sess: Session) -> wiring.Config {
   let workspace = "/nonexistent/loom-ttsr-test"
   wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: gw,
     role: model.Main,
     facts: fn(_identity) { Error(Nil) },

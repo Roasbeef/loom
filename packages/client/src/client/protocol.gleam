@@ -490,6 +490,21 @@ pub type Event {
     arguments_fragment: Option(String),
   )
 
+  /// The rolling tail of a running tool call's output (`ephemeral`
+  /// always true on the wire; `protocol-change/028`). `tail` is the
+  /// whole retained window of one stream after its latest chunk, so a
+  /// receiver replaces what it shows for `{op, step, stream}` rather
+  /// than appending, and a dropped frame costs nothing the next one does
+  /// not restate. Wholly superseded by the settled tool-result `entry`.
+  ToolOutputEvent(
+    strand: String,
+    op: String,
+    step: String,
+    stream: OutputStream,
+    tail: String,
+    total_bytes: Int,
+  )
+
   /// One usage-ledger append.
   UsageEvent(strand: String, op: Option(String), usage: Usage)
 
@@ -509,6 +524,16 @@ pub type Event {
 
   /// A well-formed envelope with an unknown event name, kept as data.
   UnknownEvent(event: String, body: JsonValue)
+}
+
+/// Which of a running call's two output streams a `tool_output` frame
+/// carries — `"stdout"` or `"stderr"` on the wire.
+pub type OutputStream {
+  /// The command's standard output.
+  Stdout
+
+  /// The command's standard error.
+  Stderr
 }
 
 /// The `{code, message}` of a failed strand result.
@@ -1082,6 +1107,18 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         #("arguments_fragment", option.map(arguments_fragment, json.String)),
       ]),
     )
+    ToolOutputEvent(strand:, op:, step:, stream:, tail:, total_bytes:) -> #(
+      "tool_output",
+      json.Object([
+        #("strand", json.String(strand)),
+        #("op", json.String(op)),
+        #("step", json.String(step)),
+        #("ephemeral", json.Bool(True)),
+        #("stream", json.String(stream_to_string(stream))),
+        #("tail", json.String(tail)),
+        #("total_bytes", json.Int(total_bytes)),
+      ]),
+    )
     UsageEvent(strand:, op:, usage:) -> #(
       "usage",
       object_of([
@@ -1291,6 +1328,13 @@ fn encode_denial(denial: Denial) -> JsonValue {
   ])
 }
 
+fn stream_to_string(stream: OutputStream) -> String {
+  case stream {
+    Stdout -> "stdout"
+    Stderr -> "stderr"
+  }
+}
+
 fn kind_to_string(kind: DeltaKind) -> String {
   case kind {
     TextKind -> "text"
@@ -1424,6 +1468,21 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         tool_name:,
         arguments_fragment:,
       ))
+    }
+    "tool_output" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      use op <- result.try(required_string(fields, "op"))
+      use step <- result.try(required_string(fields, "step"))
+      use stream_text <- result.try(required_string(fields, "stream"))
+      use stream <- result.try(case stream_text {
+        "stdout" -> Ok(Stdout)
+        "stderr" -> Ok(Stderr)
+        other -> Error("unknown output stream: " <> other)
+      })
+      use tail <- result.try(required_string(fields, "tail"))
+      use total_bytes <- result.try(required_int(fields, "total_bytes"))
+      Ok(ToolOutputEvent(strand:, op:, step:, stream:, tail:, total_bytes:))
     }
     "usage" -> {
       use fields <- result.try(body_fields(body))

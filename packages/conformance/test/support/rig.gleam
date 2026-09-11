@@ -81,6 +81,7 @@ pub fn scripted_gateway(turns: List(Turn)) -> Gateway {
 /// fire.
 pub fn config(jail_rig: Jail, gw: Gateway, sess: Session) -> wiring.Config {
   wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: gw,
     role: model.Main,
     // No catalogue behind the e2e rig; the fallback counts below are the

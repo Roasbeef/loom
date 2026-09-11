@@ -31,8 +31,9 @@ mode-`0600` token file beside the session.
 - `seq` is a per-session, gateway-assigned, strictly increasing
   sequence over the **durable event stream**: `entry`, `op_transition`,
   `usage`, `escalation`, `strand_result`. These are rebuildable from
-  storage scans and replayable. `snapshot`, `stream_delta`, and `error`
-  are connection-scoped and never carry `seq`.
+  storage scans and replayable. `snapshot`, `stream_delta`,
+  `tool_output`, and `error` are connection-scoped and never carry
+  `seq`.
 - Every command receives exactly one reply on the issuing connection —
   an event with `reply_to` set (table below), or `error` with
   `reply_to` on failure. Reply events that are also durable-stream
@@ -243,6 +244,21 @@ never replayed; wholly superseded by the settled `entry` for the same
 `call_id`/`tool_name`/`arguments_fragment` carry `tool_call` fragments
 (`arguments_fragment` is a fragment of the arguments JSON, not
 necessarily parseable alone).
+
+### `tool_output`
+
+`{strand, op, step, ephemeral: true, stream: "stdout"|"stderr", tail,
+total_bytes}` — the rolling tail of a running tool call's output
+(`protocol-change/028`): `ephemeral` always `true`, never persisted,
+never seq'd, never replayed, pushed unsolicited to every subscribed
+connection while the call runs. `tail` is the whole retained window of
+one stream after its latest chunk — at most 4 KiB, beginning and ending
+on a character boundary, empty for output that is not UTF-8 — so a
+client *replaces* what it shows for `{op, step, stream}` rather than
+appending, and a dropped frame costs nothing the next one does not
+restate. `total_bytes` is how much the stream has carried in all, which
+is what tells a client the window is a tail and not the whole output.
+Wholly superseded by the settled tool-result `entry` for the same `op`.
 
 ### `usage`
 

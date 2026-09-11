@@ -43,12 +43,12 @@
 import client/jobs
 import client/jobseam
 import client/jobstate
-import tools/tail
 import codemode/workspace
 import core/ids.{type OpId}
 import gleam/list
 import gleam/result
 import tools/job
+import tools/tail
 import tools/tool.{type Ctx}
 
 /// The `job_*` tools' seam over one door.
