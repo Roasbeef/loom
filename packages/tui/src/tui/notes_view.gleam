@@ -8,6 +8,52 @@ import gleam/dict
 import gleam/list
 import gleam/result
 import gleam/string
+import tui/text_hygiene
+
+/// Presents complete structured notes as Markdown while retaining plain prose.
+///
+/// Parsing changes presentation only. Callers keep the original text for raw
+/// inspection, and excerpts must remain literal because they may end mid-value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert notes_view.readable("\"A readable note\"") == "A readable note"
+/// ```
+pub fn readable(text: String) -> String {
+  case json.parse(text) {
+    Ok(value) -> structured(value, 0)
+    Error(_) -> text
+  }
+  |> text_hygiene.multiline
+}
+
+fn structured(value: json.JsonValue, depth: Int) -> String {
+  case depth >= 6, value {
+    True, _ -> json.to_string(value)
+    False, json.String(text) -> text
+    False, json.Object(fields) ->
+      fields
+      |> list.map(fn(pair) {
+        "**"
+        <> text_hygiene.single_line(pair.0)
+        <> "**\n\n"
+        <> structured(pair.1, depth + 1)
+      })
+      |> string.join("\n\n")
+    False, json.Array(values) ->
+      values
+      |> list.map(fn(item) {
+        "- " <> string.replace(structured(item, depth + 1), "\n", "\n  ")
+      })
+      |> string.join("\n")
+    False, json.Int(_)
+    | False, json.Float(_)
+    | False, json.Bool(_)
+    | False, json.Null
+    -> json.to_string(value)
+  }
+}
 
 /// One current, bounded view of a strand's durable blackboard.
 pub type Board {

@@ -344,11 +344,15 @@ pub fn diff_and_conversation_scroll_independently_test() {
   assert left.scroll_offset == 3
   assert left.diff_scroll_offset == right.diff_scroll_offset
   let paged = tui.update(backend.KeyPress("pageup"), left)
-  assert paged.diff_scroll_offset > left.diff_scroll_offset
-  assert paged.scroll_offset == left.scroll_offset
-  let closed = tui.update(backend.KeyPress("esc"), paged)
+  assert paged.diff_scroll_offset == left.diff_scroll_offset
+  assert paged.scroll_offset > left.scroll_offset
+  let focused = tui.update(backend.KeyPress("ctrl+d"), paged)
+  let patch_paged = tui.update(backend.KeyPress("pageup"), focused)
+  assert patch_paged.diff_scroll_offset > focused.diff_scroll_offset
+  assert patch_paged.scroll_offset == paged.scroll_offset
+  let closed = tui.update(backend.KeyPress("esc"), patch_paged)
   assert closed.diff_view == tui.DiffHidden
-  assert closed.scroll_offset == left.scroll_offset
+  assert closed.scroll_offset == paged.scroll_offset
   assert closed.diff_rows == []
   assert dict.is_empty(closed.diff_line_cache)
 }
@@ -398,4 +402,103 @@ pub fn diff_toggle_restores_the_agent_rail_preference_test() {
   assert closed.diff_view == tui.DiffHidden
   assert closed.agent_rail_visible
   assert tui.hit_area(closed, geometry.Position(140, 10)).position.x == 127
+}
+
+pub fn compact_history_keeps_reasoning_between_tool_batches_test() {
+  let #(placed, body) = original(3)
+  let assert entry.MessageEntry(..) = placed as "the fixture is a message"
+  let assert message.AssistantMessage(..) = body
+    as "the fixture is an assistant"
+  let reasoning =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(..body, content: [
+        message.AssistantThinking("REASONING_BETWEEN_BATCHES", None, False),
+      ]),
+    )
+  let records = [
+    call(1, "first", "bash", args()),
+    outcome(2, "first", False, None),
+    reasoning,
+    call(4, "second", "bash", args()),
+  ]
+  let projected = tool_activity.project(records)
+  assert list.any(projected, fn(item) {
+    case item {
+      tool_activity.Narrative(value) -> value.id == reasoning.id
+      tool_activity.Tools(_) -> False
+    }
+  })
+  let #(rendered, text) = list.fold(records, model(), received) |> painted
+  assert !rendered.details_expanded
+  assert string.contains(text, "REASONING_BETWEEN_BATCHES")
+}
+
+pub fn calls_in_one_response_keep_distinct_anchors_in_both_detail_modes_test() {
+  let #(placed, body) = original(1)
+  let assert entry.MessageEntry(..) = placed
+    as "the fixture owns one durable response"
+  let assert message.AssistantMessage(..) = body
+    as "the fixture contains assistant blocks"
+  let content =
+    list.repeat(Nil, 40)
+    |> list.index_map(fn(_, index) {
+      message.AssistantToolCall(message.ToolCall(
+        int.to_string(index),
+        "bash",
+        args(),
+        None,
+        None,
+      ))
+    })
+  let entry =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(..body, content:),
+    )
+  let #(live, _) = model() |> received(entry) |> painted
+  assert live.rendered_anchors == []
+    as "Following live output does no scroll-anchor projection."
+  let compact = tui.update(backend.KeyPress("pageup"), live)
+  assert compact.scroll_offset > 0
+    as "The first history gesture captures the source anchors."
+  let keys = fn(model: tui.Model) {
+    model.rendered_anchors
+    |> list.filter_map(fn(row) {
+      case row {
+        Some(row) -> Ok(row.entry)
+        None -> Error(Nil)
+      }
+    })
+    |> list.unique
+    |> list.sort(string.compare)
+  }
+  assert list.length(keys(compact)) == 40
+    as "identical arguments do not collapse distinct calls within one response"
+  let #(expanded, _) =
+    tui.update(backend.KeyPress("ctrl+g"), compact) |> painted
+  assert keys(expanded) == keys(compact)
+    as "detail mode retains the same durable call identities"
+}
+
+pub fn replacement_history_releases_compact_presentation_caches_test() {
+  let #(loaded, _) =
+    model()
+    |> received(call(1, "old-call", "fs_edit", args()))
+    |> received(outcome(2, "old-call", False, None))
+    |> received(outcome(3, "orphan", True, None))
+    |> painted
+  assert !dict.is_empty(loaded.compact_call_cache)
+  assert !dict.is_empty(loaded.compact_entry_cache)
+
+  // The new capture supplies no old entries. Neither presentation cache may
+  // keep their tool output reachable after the authoritative replacement.
+  let #(replaced, _) =
+    loaded
+    |> tui.accept_connection_message(
+      connection.Incoming(gateway.full_snapshot("replacement")),
+    )
+    |> painted
+  assert dict.is_empty(replaced.compact_call_cache)
+  assert dict.is_empty(replaced.compact_entry_cache)
 }

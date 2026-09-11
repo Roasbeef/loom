@@ -327,7 +327,7 @@ fn help_line(state: State, width: Int) {
       span.line_new([
         span.span_styled(
           text_hygiene.single_line(
-            "delete " <> session_id <> "? y/n · any other key cancels",
+            "stop and delete " <> session_id <> "? y/n · any other key cancels",
           ),
           theme.overlay_signal(),
         ),

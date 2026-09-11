@@ -13,6 +13,9 @@ pub const graphite = style.Rgb(24, 27, 31)
 /// The foreground shared by the header and command rail.
 pub const paper = style.Rgb(226, 224, 216)
 
+/// The subtle background identifying user-authored transcript blocks.
+pub const user_background = style.Rgb(38, 34, 29)
+
 /// Operator-controlled actions and prompts.
 pub const signal = style.Rgb(240, 164, 70)
 

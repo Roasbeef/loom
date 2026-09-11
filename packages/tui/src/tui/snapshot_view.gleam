@@ -582,7 +582,7 @@ pub fn branch(view: View, window: snapshot.Window, strand: String) -> Branch {
     )
   case dict.get(view.leaves, strand) {
     Error(Nil) -> Branch([], Some("strand is not present in the captured cut"))
-    Ok(leaf) -> walk(entries, leaf, strand, [], 100)
+    Ok(leaf) -> walk(entries, leaf, strand, [], dict.size(entries))
   }
 }
 

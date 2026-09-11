@@ -105,7 +105,14 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
       cost: message.UsageCost(0.01, 0.02, 0.003, 0.004, 0.037),
     )
 
-  assert tui.usage_summary(usage) == "in 12k · out 678 · cache 90k/123 · $0.037"
+  assert tui.usage_summary(usage)
+    == "Total est $0.04 · in 12k · out 678 · cache 90k/123"
+  let measured =
+    message.Usage(
+      ..usage,
+      cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, 5.674667835999998),
+    )
+  assert string.contains(tui.usage_summary(measured), "est $5.67")
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {
@@ -133,12 +140,12 @@ pub fn output_rate_is_tokens_over_streamed_seconds_test() {
 pub fn footer_rows_depend_on_the_width_alone_test() {
   // The thresholds are the sections' fixed caps summed, so the row count
   // is a property of the window and cannot move while a turn runs. A
-  // 133-column pane is always two rows; a 200-column one is always one.
-  assert tui.footer_rows(201) == 1
-  assert tui.footer_rows(200) == 2
+  // 133-column pane is always two rows; a 213-column one is always one.
+  assert tui.footer_rows(213) == 1
+  assert tui.footer_rows(212) == 2
   assert tui.footer_rows(133) == 2
-  assert tui.footer_rows(100) == 2
-  assert tui.footer_rows(99) == 3
+  assert tui.footer_rows(112) == 2
+  assert tui.footer_rows(111) == 3
   assert tui.footer_rows(40) == 3
   assert tui.transcript_height(40, 3, 2) == 32
   assert tui.transcript_height(40, 3, 3) == 31
@@ -190,7 +197,7 @@ pub fn footer_status_preserves_transient_operator_feedback_test() {
 pub fn footer_project_label_grows_on_stacked_footers_test() {
   // One row: the label shares its row with usage and the model, so the cap
   // holds however wide the screen is.
-  assert tui.footer_project_limit(201) == 68
+  assert tui.footer_project_limit(213) == 68
   assert tui.footer_project_limit(300) == 68
 
   // Two or three rows: the primary row holds only the label and the model,
@@ -206,16 +213,16 @@ pub fn footer_status_grows_with_a_wide_terminal_test() {
 
   // At the single-row threshold the fixed cap holds and the notice is cut;
   // every column past it goes to the status, so a wide screen shows it all.
-  assert tui.footer_status_limit(201) == 40
+  assert tui.footer_status_limit(213) == 40
   assert tui.footer_status("2 live / 3 agents", notice, 40)
     == "2 live / 3 agents · steer captured; wai…"
-  assert tui.footer_status_limit(234) == 73
+  assert tui.footer_status_limit(246) == 73
   assert tui.footer_status("2 live / 3 agents", notice, 73)
     == "2 live / 3 agents · steer captured; waiting for stop"
 
   // Stacked layouts give the status its shared or whole row, never less
   // than the floor.
-  assert tui.footer_status_limit(150) == 90
+  assert tui.footer_status_limit(150) == 78
   assert tui.footer_status_limit(60) == 58
   assert tui.footer_status_limit(30) == 40
 }
@@ -1966,7 +1973,7 @@ pub fn a_recording_file_decodes_in_order_test() {
 pub fn footer_snapshot_one_row_test() {
   snapshot_test.assert_snapshot(
     "footer-one-row",
-    last_frame(quiet_model(connection.new_inbox()), 210, 12, []),
+    last_frame(quiet_model(connection.new_inbox()), 222, 12, []),
   )
 }
 
@@ -2211,4 +2218,49 @@ fn last_frame(
   let assert Ok(run) = tui.run_script(model, script)
   let assert Ok(last) = list.last(run.frames)
   frame.buffer_to_text(last)
+}
+
+pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
+  let inbox = connection.new_inbox()
+  let model =
+    tui.Model(..quiet_model(inbox), transcript: [
+      tui.Line(tui.System, "alpha beta"),
+      tui.Line(tui.System, "gamma delta"),
+    ])
+  let Position(x, y) = transcript_origin
+  let script =
+    virtual_backend.script(
+      backend.TerminalSize(width: 60, height: 12),
+      [
+        virtual_backend.Input(backend.MousePress(x + 2, y, backend.MouseLeft)),
+        virtual_backend.Deliver(
+          connection.Incoming(gateway.assistant_entry(
+            "main",
+            "NEW_TEXT_MUST_NOT_REPLACE_SELECTION",
+            4,
+          )),
+        ),
+        virtual_backend.Input(backend.Tick),
+        virtual_backend.Input(backend.KeyPress("ctrl+g")),
+        virtual_backend.Input(backend.MouseDrag(x + 4, y + 1, backend.MouseLeft)),
+        virtual_backend.Input(backend.MouseRelease(
+          x + 4,
+          y + 1,
+          backend.MouseLeft,
+        )),
+      ],
+      inbox,
+    )
+  let assert Ok(run) = tui.run_script(model, script)
+    as "the native reducer completes the selection"
+  let assert Some(selected) = run.final.selection
+    as "the copied range remains highlighted"
+  let assert Some(original) = run.final.selection_frame
+    as "the selection owns its original bounded screen"
+  let assert Ok(last) = list.last(run.frames)
+    as "the script painted a final frame"
+  assert selection.text(last, selected) == selection.text(original, selected)
+  assert selection.text(last, selected) == "\n\u{25C7} gam"
+  assert list.any(run.final.records, fn(record) { record.entry.seq == 4 })
+    as "incoming output still advances the model behind the selected pane"
 }

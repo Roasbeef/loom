@@ -286,6 +286,50 @@ fn range(stop: Int) -> List(Int) {
   int.range(0, stop, [], fn(acc, value) { [value, ..acc] }) |> list.reverse
 }
 
+pub fn automatic_wide_diff_preserves_composer_and_explicit_dismissal_test() {
+  let base =
+    tui.Model(
+      ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
+      input: textarea.state_from_string("draft"),
+    )
+  let wide = tui.update(backend.Resize(160, 35), base)
+  assert wide.diff_view == tui.DiffAutomatic
+  assert string.contains(painted(wide), "captured changes")
+  assert string.contains(painted(wide), "transcript / main")
+  assert textarea.value(key(wide, "x").input) == "draftx"
+  assert key(wide, "esc").diff_view == tui.DiffAutomatic
+    as "the default pane must not intercept the operation stop key"
+
+  let narrow = tui.update(backend.Resize(100, 35), wide)
+  assert !string.contains(painted(narrow), "captured changes")
+  let wide_again = tui.update(backend.Resize(160, 35), narrow)
+  assert string.contains(painted(wide_again), "captured changes")
+  let dismissed = tui.open_diff(wide_again)
+  assert dismissed.diff_view == tui.DiffHidden
+  let resized = tui.update(backend.Resize(170, 35), dismissed)
+  assert !string.contains(painted(resized), "captured changes")
+  assert textarea.value(resized.input) == "draft"
+
+  let manual = tui.open_diff(narrow)
+  assert manual.diff_view == tui.DiffVisible
+  assert string.contains(painted(manual), "captured changes")
+}
+
+pub fn changes_during_observation_schedule_exactly_one_followup_test() {
+  let inflight = waiting(8)
+  let dirty = worktree_view.request(inflight, "owner")
+  assert dirty.awaiting == Some(8)
+  assert dirty.refresh == worktree_view.Requested
+  assert worktree_view.request(dirty, "owner") == dirty
+  let ready =
+    worktree_view.receive(dirty, "owner", worktree_view.Ready(board(8, [])))
+  assert ready.awaiting == None
+  assert ready.refresh == worktree_view.Requested
+  let next = worktree_view.sent(ready, 9)
+  assert next.awaiting == Some(9)
+  assert next.refresh == worktree_view.Settled
+}
+
 pub fn live_jobs_is_a_read_and_its_correlated_roster_keeps_channel_ready_test() {
   let model = pushed.attached()
   let assert Some(channel) = model.channel

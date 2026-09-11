@@ -11,8 +11,10 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import gleam/int
 import gleam/list
 import gleam/option.{None}
+import gleam/string
 
 /// A `full` snapshot naming a session, with no strands and no history.
 pub fn full_snapshot(session: String) -> String {
@@ -210,30 +212,14 @@ fn message_entry(
 // so the sequence number picks one from a fixed family rather than minting a
 // fresh identifier from a clock.
 fn fixed_entry_id(seq: Int) -> ids.EntryId {
-  let text = "00000000-0000-7000-8000-00000000000" <> string_digit(seq % 10)
+  let text =
+    "00000000-0000-7000-8000-" <> string.pad_start(int.to_string(seq), 12, "0")
   case ids.parse_entry_id(text) {
     Ok(id) -> id
     Error(_) -> fallback_entry_id()
   }
 }
 
-fn string_digit(value: Int) -> String {
-  case value {
-    0 -> "0"
-    1 -> "1"
-    2 -> "2"
-    3 -> "3"
-    4 -> "4"
-    5 -> "5"
-    6 -> "6"
-    7 -> "7"
-    8 -> "8"
-    _ -> "9"
-  }
-}
-
-// Unreachable: the text above is a well-formed UUID. Answered rather than
-// asserted so a stricter parser fails a test instead of the whole suite.
 fn fallback_entry_id() -> ids.EntryId {
   case ids.parse_entry_id("00000000-0000-7000-8000-000000000000") {
     Ok(id) -> id

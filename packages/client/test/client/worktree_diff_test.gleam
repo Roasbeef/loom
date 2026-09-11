@@ -326,3 +326,42 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
     }
   }
 }
+
+// Generated caches must not spend the worktree's file or byte budget. A user
+// who deliberately tracks a file in the same directory still sees its edits.
+pub fn untracked_runtime_caches_do_not_hide_tracked_changes_test() {
+  use wiring <- with_fixture("runtime-caches")
+  setup(wiring, ["init", "--quiet"])
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(wiring.workspace <> "/.codemode/cache")
+    as "the generated cache directory exists"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(wiring.workspace <> "/.blobs")
+    as "the generated blob directory exists"
+  write(wiring, ".codemode/tracked.txt", "before\n")
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    "tracked fixture",
+  ])
+  write(wiring, ".codemode/tracked.txt", "after\n")
+  write(wiring, "new-source.txt", "real source\n")
+  int.range(from: 1, to: 80, with: Nil, run: fn(_, index) {
+    write(wiring, ".codemode/cache/" <> int.to_string(index), "cache\n")
+  })
+  write(wiring, ".blobs/generated", "blob\n")
+  let assert Ok(board) = worktree_diff.capture(wiring)
+    as "generated files cannot displace source changes"
+  assert board.total == 2
+  assert board.omitted == 0
+  assert string.contains(file(board, ".codemode/tracked.txt").patch, "+after")
+  assert string.contains(file(board, "new-source.txt").patch, "+real source")
+}

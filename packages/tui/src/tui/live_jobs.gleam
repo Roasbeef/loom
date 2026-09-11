@@ -106,11 +106,7 @@ fn decode_job(value) {
 /// ```
 pub fn lines(board: Board) -> List(String) {
   [
-    "Live jobs: "
-      <> int.to_string(board.total)
-      <> " · observed at "
-      <> int.to_string(board.observed_at_ms)
-      <> " ms",
+    "Live jobs: " <> int.to_string(board.total) <> " · at last refresh",
     ..list.map(board.jobs, fn(job) {
       text_hygiene.single_line(
         job.id
@@ -122,10 +118,15 @@ pub fn lines(board: Board) -> List(String) {
         <> job.command,
       )
       <> " · age "
-      <> int.to_string(job.age_ms)
-      <> " ms · deadline "
-      <> int.to_string(job.deadline_ms)
-      <> " ms"
+      <> duration(job.age_ms)
+      <> case job.deadline_ms >= board.observed_at_ms {
+        True ->
+          " · deadline in " <> duration(job.deadline_ms - board.observed_at_ms)
+        False ->
+          " · deadline passed "
+          <> duration(board.observed_at_ms - job.deadline_ms)
+          <> " ago"
+      }
     })
   ]
 }
@@ -148,5 +149,23 @@ fn number(fields, name) {
   case list.key_find(fields, name) {
     Ok(json.Int(value)) -> Ok(value)
     _ -> Error("invalid live jobs number: " <> name)
+  }
+}
+
+/// Formats an observed duration without exposing a server's clock origin.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert live_jobs.duration(62000) == "1m 2s"
+/// ```
+@internal
+pub fn duration(milliseconds: Int) -> String {
+  let seconds = int.max(0, milliseconds / 1000)
+  case seconds {
+    n if n < 60 -> int.to_string(n) <> "s"
+    n if n < 3600 ->
+      int.to_string(n / 60) <> "m " <> int.to_string(n % 60) <> "s"
+    n -> int.to_string(n / 3600) <> "h " <> int.to_string(n % 3600 / 60) <> "m"
   }
 }

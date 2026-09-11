@@ -2,16 +2,16 @@
 ╭ transcript / main ───────────────────────────────────────────────────────────────╮
 │◇ attached to session demo                                                        │
 │                                                                                  │
-│› run the tests                                                                   │
 │                                                                                  │
-│◇ tools · 1 call · 1 failed                                                       │
+│› User                                                                            │
+│run the tests                                                                     │
+│                                                                                  │
+│◇ tools · 1 call · 1 failed · Ctrl+g expands details                              │
 │                                                                                  │
 │└ × Bash(make check-tui)                                                          │
 │└ error: compilation failed test/tui_test.gleam:12                                │
-│◆ Looking at the failure now.                                                     │
 │                                                                                  │
-│                                                                                  │
-│                                                                                  │
+│◆ Agent Looking at the failure now.                                               │
 │                                                                                  │
 │                                                                                  │
 │                                                                                  │
@@ -20,5 +20,5 @@
 │                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
  replay                                                             baseten-kimi-k3
- in 0 · out 0 · cache 0/0 · $0.0
+ Total est $0.00 · in 0 · out 0 · cache 0/0
  0 live / 0 agents · streaming text

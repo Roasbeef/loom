@@ -58,6 +58,8 @@ pub type ToolOutcome {
     command: Option(String),
     /// The actual bash exit code, when captured in result details.
     exit_code: Option(Int),
+    /// Added and removed lines from a successful captured fs_edit patch.
+    edit_delta: Option(#(Int, Int)),
   )
 }
 
@@ -70,10 +72,14 @@ pub type Summary {
     outcome: operation.RunOutcome,
     /// Completeness of the ancestry walk, independently of result status.
     coverage: Coverage,
-    /// At most 32 distinct paths confirmed by successful fs_edit results.
+    /// At most 32 distinct paths confirmed by successful file mutations.
     edits: List(String),
     /// At most 32 most recent paired tool results in execution order.
     tools: List(ToolOutcome),
+    /// Distinct captured paths before presentation truncation.
+    edit_count: Int,
+    /// Recorded patch totals before presentation truncation.
+    edit_delta: Option(#(Int, Int)),
     /// A bounded excerpt of the designated final assistant entry, if loaded.
     final_assistant: Option(String),
   )
@@ -207,7 +213,7 @@ fn observe_result(
         Error(Nil) -> #(Unavailable, [])
         Ok(boundary) -> walk(entries, leaf, boundary.source, [], 2048)
       }
-      let #(edits, tools) = evidence(history)
+      let #(edits, tools, edit_count, edit_delta) = evidence(history)
       let summary =
         Summary(
           id,
@@ -215,7 +221,9 @@ fn observe_result(
           coverage,
           edits,
           tools,
-          assistant_text(history, final_assistant),
+          edit_count,
+          edit_delta,
+          assistant_text(dict.values(entries), final_assistant),
         )
       put(state, Strand(..strand, summary: Some(summary)))
     }
@@ -265,26 +273,37 @@ fn walk(
 // A fresh assistant batch owns its call ids; a result cannot match an old
 // invocation merely because the provider reused its id in a later response.
 fn evidence(history) {
-  let #(_, edits, tools) = list.fold(history, #(dict.new(), [], []), collect)
-  #(list.reverse(edits), list.reverse(tools))
+  let #(_, edits, tools, delta) =
+    list.fold(history, #(dict.new(), [], [], None), collect)
+  #(
+    list.reverse(list.take(edits, 32)),
+    list.reverse(tools),
+    list.length(edits),
+    delta,
+  )
 }
 
 fn collect(
-  acc: #(Dict(String, message.ToolCall), List(String), List(ToolOutcome)),
+  acc: #(
+    Dict(String, #(ids.EntryId, message.ToolCall)),
+    List(String),
+    List(ToolOutcome),
+    Option(#(Int, Int)),
+  ),
   value: entry.Entry,
 ) {
-  let #(pending, edits, tools) = acc
+  let #(pending, edits, tools, delta) = acc
   case value {
     entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) -> {
       let calls =
         list.filter_map(content, fn(block) {
           case block {
-            message.AssistantToolCall(call) -> Ok(#(call.id, call))
+            message.AssistantToolCall(call) -> Ok(#(call.id, #(value.id, call)))
             message.AssistantText(..) | message.AssistantThinking(..) ->
               Error(Nil)
           }
         })
-      #(dict.from_list(calls), edits, tools)
+      #(dict.from_list(calls), edits, tools, delta)
     }
     entry.MessageEntry(
       message: message.ToolResultMessage(tool_call_id:, tool_name:, ..) as outcome,
@@ -293,12 +312,17 @@ fn collect(
       let paired = dict.get(pending, tool_call_id)
       let pending = dict.delete(pending, tool_call_id)
       case paired {
-        Ok(call) if call.name == tool_name -> {
-          let paired = tool_activity.Call(call, Some(outcome))
+        Ok(#(source, call)) if call.name == tool_name -> {
+          let paired = tool_activity.Call(source, call, Some(outcome))
           let #(path, tool) = extract(paired)
-          #(pending, add_path(edits, path), list.take([tool, ..tools], 32))
+          #(
+            pending,
+            add_path(edits, path),
+            list.take([tool, ..tools], 32),
+            add_delta(delta, tool.edit_delta),
+          )
         }
-        Ok(_) | Error(Nil) -> #(pending, edits, tools)
+        Ok(_) | Error(Nil) -> #(pending, edits, tools, delta)
       }
     }
     _ -> acc
@@ -319,7 +343,7 @@ fn extract(call: tool_activity.Call) {
     _ -> #(Failed, None)
   }
   let path = case invocation.name, status {
-    "fs_edit", Succeeded -> text_field(details, "path")
+    "fs_edit", Succeeded | "fs_write", Succeeded -> text_field(details, "path")
     _, _ -> None
   }
   let #(command, exit_code) = case invocation.name {
@@ -331,8 +355,59 @@ fn extract(call: tool_activity.Call) {
   }
   #(
     path,
-    ToolOutcome(invocation.id, invocation.name, status, command, exit_code),
+    ToolOutcome(
+      invocation.id,
+      invocation.name,
+      status,
+      command,
+      exit_code,
+      captured_delta(invocation.name, status, details),
+    ),
   )
+}
+
+// fs_edit emits headerless unified hunks. The counts describe recorded edit
+// operations, which may touch the same line twice; they are not a Git net diff.
+fn captured_delta(name, status, details) {
+  case name, status, full_text_field(details, "diff") {
+    "fs_edit", Succeeded, Some(patch) -> {
+      let rows = string.split(patch, "\n")
+      Some(#(
+        list.count(rows, string.starts_with(_, "+")),
+        list.count(rows, string.starts_with(_, "-")),
+      ))
+    }
+    _, _, _ -> None
+  }
+}
+
+/// Summarizes captured mutations belonging to this operation alone.
+///
+/// A shell command can change files without producing an fs_edit patch. These
+/// counts therefore name their evidence and never claim to equal the workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // completion_summary.edit_totals(summary)
+/// ```
+@internal
+pub fn edit_totals(summary: Summary) -> String {
+  use <- bool.guard(
+    summary.coverage == Unavailable,
+    "Turn file-tool edits unavailable",
+  )
+  case summary.coverage {
+    Partial -> "Partial turn file-tool edits: "
+    Complete | Unavailable -> "Turn file-tool edits: "
+  }
+  <> int.to_string(summary.edit_count)
+  <> " paths"
+  <> case summary.edit_delta {
+    None -> " · line counts unavailable"
+    Some(#(added, removed)) ->
+      " · recorded +" <> int.to_string(added) <> "/−" <> int.to_string(removed)
+  }
 }
 
 fn add_path(paths, path) {
@@ -341,9 +416,26 @@ fn add_path(paths, path) {
     Some(path) -> {
       case list.contains(paths, path) {
         True -> paths
-        False -> list.take([path, ..paths], 32)
+        False -> [path, ..paths]
       }
     }
+  }
+}
+
+// Aggregate the bounded ancestry before discarding its display excerpts.
+fn add_delta(total, next) {
+  case total, next {
+    _, None -> total
+    None, Some(_) -> next
+    Some(#(added, removed)), Some(#(more_added, more_removed)) ->
+      Some(#(added + more_added, removed + more_removed))
+  }
+}
+
+fn full_text_field(value, key) {
+  case field(value, key) {
+    Ok(json.String(text)) -> Some(text)
+    _ -> None
   }
 }
 
@@ -383,7 +475,10 @@ fn assistant_text(history: List(entry.Entry), final: Option(ids.EntryId)) {
           }
         })
         |> string.join("\n")
-      Some(string.slice(text, 0, 512))
+      Some(case string.length(text) > 8192 {
+        True -> string.slice(text, 0, 8192) <> "\n\n[Continues in transcript]"
+        False -> text
+      })
     }
     _ -> None
   }
@@ -425,8 +520,17 @@ pub fn lines(summary: Summary) -> List(String) {
       "Operation start was not observed; edit and tool evidence unavailable."
   }
   list.flatten([
-    [brief(summary), "Operation: " <> summary.operation, coverage],
-    list.map(summary.edits, fn(path) { "Edited: " <> path }),
+    [brief(summary)],
+    case summary.final_assistant {
+      Some(text) -> ["", text, ""]
+      None -> ["Final assistant result is not loaded."]
+    },
+    ["Operation: " <> summary.operation, coverage, edit_totals(summary)],
+    list.map(summary.edits, fn(path) { "Changed: " <> path }),
+    [
+      "",
+      "Captured tool outcomes (exit status does not establish test coverage):",
+    ],
     list.map(summary.tools, tool_line),
   ])
 }

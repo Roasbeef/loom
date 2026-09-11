@@ -199,12 +199,11 @@ pub fn create_named(
   }
 }
 
-/// Removes one saved registration and reports the identity the daemon freed.
+/// Stops one selected session, waits for retirement, then removes its files.
 ///
-/// The daemon refuses a session it still holds a slot for, so a caller that
-/// wants a running session gone stops it first and waits for the stop to
-/// settle. Nothing is retried here: a lost reply leaves an outcome the caller
-/// resolves by listing again, not by sending a second delete.
+/// The picker has already confirmed this exact identity. Stop and delete are
+/// each sent once. A lost reply, unproven drain, or concurrent reopen keeps the
+/// registration rather than retrying a destructive command.
 ///
 /// ## Examples
 ///
@@ -212,18 +211,88 @@ pub fn create_named(
 /// // selection.delete(host, selected_id)
 /// ```
 pub fn delete(host: Host, session: String) -> Result(String, String) {
-  use reply <- result.try(
-    daemon.request(host.control, protocol.DeleteSession(session), 10_000)
-    |> result.map_error(failure),
-  )
+  delete_using(session, fn(command, within) {
+    daemon.request(host.control, command, within) |> result.map_error(failure)
+  })
+}
+
+/// Runs the confirmed lifecycle through the same bounded request seam in tests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.delete_using(selected_id, request)
+/// ```
+@internal
+pub fn delete_using(
+  session: String,
+  request: fn(protocol.Command, Int) -> Result(protocol.Reply, String),
+) -> Result(String, String) {
+  use stopped <- result.try(request(protocol.StopSession(session), 10_000))
+  use status <- result.try(case stopped {
+    protocol.LifecycleReply(status) -> Ok(status)
+    protocol.StatusReply(_)
+    | protocol.SessionsReply(_)
+    | protocol.SessionReply(_)
+    | protocol.DeletedReply(_)
+    | protocol.ShutdownReply ->
+      Error("stop returned an unexpected control reply; session kept")
+  })
+  use _ <- result.try(case status {
+    protocol.Saved | protocol.Reserved -> Ok(Nil)
+    protocol.Stopping(operation) ->
+      await_retirement(session, operation, request)
+    protocol.RecoveryBlocked -> Error("cleanup is not confirmed; session kept")
+    protocol.Resident(_) | protocol.Opening(_) ->
+      Error("session did not enter stopping; session kept")
+  })
+  use reply <- result.try(request(protocol.DeleteSession(session), 10_000))
   case reply {
-    protocol.DeletedReply(id) -> Ok(id)
+    protocol.DeletedReply(id) if id == session -> Ok(id)
     protocol.StatusReply(_)
     | protocol.SessionsReply(_)
     | protocol.SessionReply(_)
     | protocol.LifecycleReply(_)
+    | protocol.DeletedReply(_)
     | protocol.ShutdownReply ->
       Error("delete returned an unexpected control reply")
+  }
+}
+
+fn await_retirement(session, operation, request) {
+  // GetOperation retires with its slot. GetSession's Saved status is the
+  // daemon's positive proof that ordered cleanup released that slot.
+  case
+    poll.until(within: 60_000, every: 50, attempt: fn() {
+      case request(protocol.GetSession(session), 2000) {
+        Error(reason) -> poll.Fail(reason)
+        Ok(protocol.SessionReply(row)) if row.session_id == session -> {
+          case row.status {
+            protocol.Saved | protocol.Reserved -> poll.Done(Nil)
+            protocol.Stopping(current) if current == operation -> poll.Retry
+            protocol.RecoveryBlocked ->
+              poll.Fail("cleanup is not confirmed; session kept")
+            protocol.Stopping(_) | protocol.Resident(_) | protocol.Opening(_) ->
+              poll.Fail(
+                "session lifecycle changed while stopping; session kept",
+              )
+          }
+        }
+        Ok(protocol.StatusReply(_))
+        | Ok(protocol.SessionsReply(_))
+        | Ok(protocol.SessionReply(_))
+        | Ok(protocol.LifecycleReply(_))
+        | Ok(protocol.DeletedReply(_))
+        | Ok(protocol.ShutdownReply) ->
+          poll.Fail(
+            "stop observation returned an unexpected reply; session kept",
+          )
+      }
+    })
+  {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(reason) -> Error(reason)
+    poll.Expired -> Error("session is still stopping; delete was not sent")
   }
 }
 
