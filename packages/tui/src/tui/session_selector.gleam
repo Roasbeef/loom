@@ -97,6 +97,47 @@ pub fn new(page: protocol.Page, current: String) -> State {
   State(page, selected, current, Browsing)
 }
 
+/// Moves this workspace's sessions first without changing order within groups.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let nearby = session_selector.prioritize(page, "/work/project")
+/// ```
+pub fn prioritize(page: protocol.Page, workspace: String) -> protocol.Page {
+  let workspace = trim_slash(workspace)
+  let sessions =
+    list.sort(page.sessions, fn(left, right) {
+      int.compare(
+        workspace_rank(left.workspace, workspace),
+        workspace_rank(right.workspace, workspace),
+      )
+    })
+  protocol.Page(..page, sessions:)
+}
+
+fn trim_slash(path: String) -> String {
+  case string.ends_with(path, "/") && string.length(path) > 1 {
+    True -> trim_slash(string.drop_end(path, 1))
+    False -> path
+  }
+}
+
+fn workspace_rank(path: String, workspace: String) -> Int {
+  let path = trim_slash(path)
+  case path == workspace {
+    True -> 0
+    False ->
+      case
+        string.starts_with(path, workspace <> "/")
+        || string.starts_with(workspace, path <> "/")
+      {
+        True -> 1
+        False -> 2
+      }
+  }
+}
+
 /// Drops the named row from a page after the daemon confirmed its removal.
 ///
 /// The picker does not re-list: the reply proves this identity is gone, and

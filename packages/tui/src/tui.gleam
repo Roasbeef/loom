@@ -56,6 +56,7 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/file_read_view
 import tui/frame
 import tui/history_view
 import tui/image_drop
@@ -93,6 +94,10 @@ pub type Speaker {
   ToolCall
   ToolResult
   ToolDetail
+
+  /// Literal patch content, rendered without interpreting Markdown fences.
+  ToolPatch
+
   ToolFailure
   Failure
 }
@@ -595,6 +600,9 @@ pub type Model {
     /// passing rather than as a stall.
     activity_elapsed_s: Int,
     streams: List(Stream),
+    /// Transient rows captured when leaving the live tail. Durable history has
+    /// its own frozen ancestry; this keeps in-flight reasoning stationary too.
+    reading_lines: Option(List(Line)),
     scroll_offset: Int,
     render_revision: Int,
     rendered_revision: Int,
@@ -920,6 +928,7 @@ pub fn new_model_with_clock(
     activity_started_ms: None,
     activity_elapsed_s: 0,
     streams: [],
+    reading_lines: None,
     scroll_offset: 0,
     render_revision: 0,
     rendered_revision: -1,
@@ -1838,7 +1847,10 @@ fn finish_control(model: Model, result) {
     Some(Ok(PageLoaded(page, selected))) ->
       Model(
         ..model,
-        overlay: DaemonSelector(session_selector.new(page, selected)),
+        overlay: DaemonSelector(session_selector.new(
+          session_selector.prioritize(page, model.workspace.path),
+          selected,
+        )),
         notice: "Enter opens the highlighted session · n creates · d deletes",
       )
       |> invalidate_frame
@@ -2376,7 +2388,7 @@ fn render_line(line: Line) -> List(span.Line) {
     Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
-    ToolDetail -> #("  ", theme.quiet_text())
+    ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error  ", theme.danger_text())
   }
@@ -2407,6 +2419,7 @@ fn render_line(line: Line) -> List(span.Line) {
       ..markdown.render(line.text)
       |> prefix_rendered_lines(mark, mark_style)
     ]
+    ToolPatch -> markdown.diff(line.text)
     ToolDetail ->
       markdown.render(line.text)
       |> prefix_rendered_lines(mark, mark_style)
@@ -2426,7 +2439,13 @@ fn render_line(line: Line) -> List(span.Line) {
       })
       |> list.append(case line.speaker {
         ToolCall | ToolResult | ToolFailure -> []
-        System | User | Reasoning | Failure | Assistant | ToolDetail -> [
+        System
+        | User
+        | Reasoning
+        | Failure
+        | Assistant
+        | ToolDetail
+        | ToolPatch -> [
           span.line_plain(""),
         ]
       })
@@ -2519,6 +2538,16 @@ fn note_turn_relation(seq: Int, model: Model) -> String {
   }
 }
 
+// Raw inspection keeps the JSON representation but gives its structure rows.
+// Excerpts never enter this path because a cut value may not parse completely.
+fn raw_note_line(text: String) -> Line {
+  case json.parse(text) {
+    Ok(value) ->
+      Line(ToolDetail, "```json\n" <> pretty_json(value, 0) <> "\n```")
+    Error(_) -> Line(ToolResult, text)
+  }
+}
+
 fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
   let active_strand = model.active_strand
   case board.strand == active_strand {
@@ -2546,7 +2575,8 @@ fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
                 <> extent,
             ),
             case model.details_expanded, note.extent {
-              True, _ | False, notes_view.Excerpt -> Line(ToolResult, note.text)
+              _, notes_view.Excerpt -> Line(ToolResult, note.text)
+              True, notes_view.Complete -> raw_note_line(note.text)
               False, notes_view.Complete ->
                 Line(ToolDetail, notes_view.readable(note.text))
             },
@@ -3089,6 +3119,10 @@ fn editor_content_width(model: Model) -> Int {
 }
 
 fn input_title(model: Model) -> String {
+  use <- bool.guard(
+    model.scroll_offset > 0,
+    " ↓ Output below · click to jump · End with empty prompt ",
+  )
   case
     active_interrupt(model),
     active_status_label(model),
@@ -3683,6 +3717,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
     || { before.scroll_offset == 0 && after.scroll_offset > 0 }
+    || { before.scroll_offset > 0 && after.scroll_offset == 0 }
     || before.width != after.width
     || before.agent_rail_visible != after.agent_rail_visible
     || before.details_expanded != after.details_expanded
@@ -3697,8 +3732,20 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
+      let reading_lines = case after.scroll_offset == 0 {
+        True -> None
+        False ->
+          case before.reading_lines {
+            Some(lines)
+              if before.active_strand == after.active_strand
+              && before.session == after.session
+            -> Some(lines)
+            Some(_) | None -> Some(transient_lines(before))
+          }
+      }
       let cached =
-        refresh_diff_cache(before, after) |> refresh_record_cache(width)
+        refresh_diff_cache(before, Model(..after, reading_lines:))
+        |> refresh_record_cache(width)
       let rendered_rows = rendered_rows_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
 
@@ -4008,18 +4055,23 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
       |> markdown.wrap_lines(width)
       |> list.reverse
     False, False ->
-      stream_lines(
-        display_streams(model),
-        model.active_strand,
-        model.details_expanded,
-      )
-      |> list.append(pending_input_lines(model))
-      |> list.append(completion_card(model))
+      option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
       |> transcript_content
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
       |> list.append(model.record_rows)
   }
+}
+
+// The live tail is a bounded, disposable observation. Scrollback retains one
+// immutable projection so later fragments cannot reflow text under the reader.
+fn transient_lines(model: Model) -> List(Line) {
+  stream_lines(
+    display_streams(model),
+    model.active_strand,
+    model.details_expanded,
+  )
+  |> list.append(pending_input_lines(model))
 }
 
 fn handle_paste(model: Model, text: String) -> Model {
@@ -4828,6 +4880,7 @@ fn adopt_session(
     interrupt: None,
     submitting: None,
     streams: [],
+    reading_lines: None,
     scroll_offset: 0,
     rendered_revision: -1,
     rendered_row_count: 0,
@@ -5658,6 +5711,13 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
           |> compact(110),
       ),
     ]
+    Some(message.ToolResultMessage(
+      is_error: False,
+      details: Some(json.Object(fields)),
+      ..,
+    ))
+      if call.invocation.name == "fs_edit"
+    -> [Line(ToolCall, "✓ " <> summary), ..edit_patch_lines(fields, False)]
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
     ]
@@ -5691,8 +5751,11 @@ fn note_call_lines(name: String, arguments: json.JsonValue) -> List(Line) {
 fn diff_content(model: Model) -> List(Line) {
   case model.worktree.board {
     Some(_) ->
-      list.map(worktree_view.patches(model.worktree), fn(text) {
-        Line(ToolResult, text)
+      list.map(worktree_view.patches(model.worktree), fn(row) {
+        case row {
+          worktree_view.PatchHeading(text) -> Line(System, text)
+          worktree_view.PatchBody(text) -> Line(ToolPatch, text)
+        }
       })
     None -> [
       Line(System, model.worktree.message),
@@ -5725,7 +5788,7 @@ fn captured_diff_content(model: Model) -> List(Line) {
                 string_field(fields, "path")
                   |> option.unwrap("edited file"),
               ),
-              Line(ToolDetail, "```diff\n" <> diff <> "\n```"),
+              Line(ToolPatch, diff),
             ]
           }
         _ -> []
@@ -6086,11 +6149,17 @@ fn tool_result_lines(
   details_expanded: Bool,
 ) -> List(Line) {
   let result = content |> list.map(tool_result_text) |> string.join("\n")
+  let result = case tool_name, is_error {
+    "fs_read", False -> file_read_view.render(result)
+    _, _ -> result
+  }
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
-    "fs_edit", False, Some(json.Object(fields)) ->
-      edit_result_lines(fields, result, details_expanded)
+    "fs_edit", False, Some(json.Object(fields)) -> [
+      Line(ToolResult, "fs_edit · " <> compact(result, 120)),
+      ..edit_patch_lines(fields, details_expanded)
+    ]
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -6111,9 +6180,8 @@ fn tool_result_lines(
 // first stretch of the diff is enough to recognise the edit; expanded,
 // the whole of it. Details without a diff (an older record) fall back to
 // the summary alone.
-fn edit_result_lines(
+fn edit_patch_lines(
   fields: List(#(String, json.JsonValue)),
-  summary: String,
   details_expanded: Bool,
 ) -> List(Line) {
   case string_field(fields, "diff") {
@@ -6122,12 +6190,9 @@ fn edit_result_lines(
         True -> diff
         False -> program_preview(diff, 24)
       }
-      [
-        Line(ToolResult, "fs_edit · " <> compact(summary, 120)),
-        Line(ToolDetail, "```diff\n" <> shown <> "\n```"),
-      ]
+      [Line(ToolPatch, shown)]
     }
-    None -> [Line(ToolResult, "fs_edit · " <> compact(summary, 120))]
+    None -> []
   }
 }
 
@@ -6802,6 +6867,14 @@ fn clear_selection(model: Model) -> Model {
 // A press starts over: whatever was highlighted is replaced by a fresh
 // selection in the area the press landed in.
 fn begin_selection(model: Model, at: geometry.Position) -> Model {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, _, input_area, _) = layout(screen, model)
+  use <- bool.lazy_guard(
+    model.scroll_offset > 0 && at.y == input_area.position.y,
+    fn() {
+      scroll_transcript(clear_selection(model), False, model.rendered_row_count)
+    },
+  )
   case diff_navigation_hit(model, at) {
     Some(selected) ->
       Model(
@@ -9088,32 +9161,6 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
         False -> model
       }
     Some(_) | None -> model
-  }
-}
-
-fn completion_card(model: Model) -> List(Line) {
-  case completion_summary.latest(model.completion, model.active_strand) {
-    None -> []
-    Some(summary) -> [
-      Line(
-        System,
-        case active_strand_live(model) {
-          True -> "Previous operation: "
-          False -> "Latest operation: "
-        }
-          <> completion_summary.brief(summary)
-          <> case summary.coverage {
-          completion_summary.Unavailable -> " · operation details unavailable"
-          completion_summary.Partial ->
-            " · partial captured edits "
-            <> int.to_string(list.length(summary.edits))
-          completion_summary.Complete ->
-            " · captured edits " <> int.to_string(list.length(summary.edits))
-        }
-          <> " · /summary for details",
-      ),
-      Line(System, completion_summary.edit_totals(summary)),
-    ]
   }
 }
 

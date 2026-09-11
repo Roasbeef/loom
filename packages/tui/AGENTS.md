@@ -11,6 +11,36 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- Compact successful `fs_edit` rows include a 24-line inline patch preview;
+  expanded history uses the same patch projection with the complete result.
+  Failed edits and older results without a diff retain their summaries.
+  Indented user-message rows preserve spacing and stanza breaks rather than
+  passing through prose word wrapping; long source rows clip like code blocks.
+- `ToolPatch` renders unified patches directly with addition/removal colors;
+  filenames remain separate `PatchHeading` rows, and embedded fences cannot
+  terminate a patch. The worktree navigator includes a separate committed view
+  even when current status has no files. Its decoder accepts older hosts with
+  an explicit unavailable notice and bounds new commit streams at four KiB.
+- `notes_view.readable` unwraps one JSON document held inside a string value
+  and projects objects as compact nested lists with readable field labels.
+  Raw inspection pretty-prints complete JSON; excerpts remain literal.
+  `session_selector.prioritize` sorts exact workspace matches first, related
+  directories next, and preserves order within each group and selection by ID.
+
+- `Model.reading_lines` retains one bounded transient projection when scrolling
+  above the live tail. Incoming streams continue collecting without changing
+  that projection; returning to the bottom releases it. Durable history keeps
+  its existing frozen ancestry and row anchors. The composer border provides
+  a clickable jump action that preserves an unsent draft; End also returns to
+  the tail when the composer is empty.
+- `tui/file_read_view` removes recognized edit digests and hashline anchors
+  only from successful file-read presentation. Line numbers and source text
+  remain; stored results and model-facing edit prerequisites are unchanged.
+  Terminal hygiene expands tabs to four spaces while keeping other controls
+  inert. Markdown equality operators remain visible instead of coloring the
+  prose between two comparisons. Completion details remain in `/summary`,
+  without automatic operation and edit-total rows beneath the transcript.
+
 - Completion patch totals are accumulated before the 32-result/path display
   limit, using the complete already-bounded fs_edit patch. `edit_count` and
   `edit_delta` therefore survive display truncation and later history eviction.

@@ -1621,6 +1621,15 @@ additions. Concurrent filesystem reads are an observation, not an atomic
 snapshot. See [protocol 025](../protocol-change/025-worktree-observation.md)
 for closed vocabularies, exact limits, and cancellation ownership.
 
+Newer hosts also include `committed: {message, patch, extent}`. This is a
+bounded commit patch stream since the session's durable first-activation Git
+baseline, separately selectable from current file status. It shows at most 24
+commits and four KiB of patch text, explicitly labelling that scope and byte
+truncation. Merge patches compare the first parent so resolution changes remain
+visible. Missing or unrelated starting revisions produce an unavailable notice;
+commit timestamps are never used to invent a baseline. Older hosts may omit the
+field. See [protocol 029](../protocol-change/029-session-commit-observation.md).
+
 #### 4.9.19 `live_jobs`
 
 This read takes `strand` and returns `snapshot` mode `live_jobs`, with a

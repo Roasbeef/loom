@@ -22,6 +22,15 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- `client/session_git.prepare` writes the reserved `session/git-start` record
+  before the runtime writer starts. First activation probes HEAD through the
+  read-only worktree broker; restarts reuse the session/workspace-bound record.
+  Existing prompts without a baseline and inherited records from another
+  session remain unavailable. Store failures refuse boot; Git failures become
+  durable unavailable baselines. `worktree_diff.capture_since` adds a bounded
+  commit patch stream, including first-parent merge resolutions, to the same
+  owner-scoped observation and budget. Protocol 029 defines this optional field.
+
 - `provider_relay` retains its initiating deadline, cancellation receipt, or
   observer exit in `Relay.context` through the existing cancellation and proof
   states. Startup refusal records cancellation receipt too. Forwarded failures

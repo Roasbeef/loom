@@ -313,7 +313,10 @@ pub fn launch_lock_is_single_winner_test() {
   let assert Ok(first) = host_bootstrap.try_launch_lock(path)
   assert host_bootstrap.try_launch_lock(path) == Error("busy")
   host_bootstrap.release_launch_lock(first)
-  let assert Ok(second) = host_bootstrap.try_launch_lock(path)
+
+  // Closing the port precedes the external holder's exit, so reacquisition
+  // waits for the kernel lock to be released within the existing bound.
+  let assert Ok(second) = acquire_lock_eventually(path, 20)
   host_bootstrap.release_launch_lock(second)
   let _ = simplifile.delete(root)
 }

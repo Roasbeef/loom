@@ -110,8 +110,15 @@ pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
 fn is_code_row(line: span.Line) -> Bool {
   let span.Line(spans:, ..) = line
   list.any(spans, fn(value) {
-    let span.Span(content:, style:, ..) = value
-    content == "│ " && style == theme.signal_bold()
+    let span.Span(content:, style: row_style, ..) = value
+
+    // User rows have a three-space gutter. Additional leading whitespace is
+    // source indentation; word wrapping would collapse it and its alignment.
+    { content == "│ " && row_style == theme.signal_bold() }
+    || {
+      row_style == style.new(theme.paper, theme.user_background, style.none())
+      && string.starts_with(content, "    ")
+    }
   })
 }
 
@@ -196,6 +203,26 @@ fn diff_span(line: String) -> span.Span {
     _ -> CodePlain
   }
   code_span(CodePart(line, kind))
+}
+
+/// Renders patch bytes directly, keeping indentation and addition/removal colors.
+/// File contents cannot terminate a Markdown fence because no parser runs here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = markdown.diff("-old\n+new")
+/// ```
+pub fn diff(patch: String) -> List(span.Line) {
+  patch
+  |> text_hygiene.multiline
+  |> string.split("\n")
+  |> list.map(fn(line) {
+    span.line_new([
+      span.span_styled("│ ", theme.signal_bold()),
+      diff_span(line),
+    ])
+  })
 }
 
 fn gleam_parts(
@@ -527,8 +554,17 @@ fn inline_parts(
       nested_parts(document, children, style.add_modifier(base, style.italic()))
     Strong(children) ->
       nested_parts(document, children, style.add_modifier(base, style.bold()))
+
+    // Mork recognizes paired == delimiters even in ordinary comparisons.
+    // Preserve those operators as text instead of coloring unrelated prose.
     Highlight(children) ->
-      nested_parts(document, children, style.with_fg(base, theme.signal))
+      list.append(
+        [
+          Styled(span.span_styled("==", base)),
+          ..nested_parts(document, children, base)
+        ],
+        [Styled(span.span_styled("==", base))],
+      )
     Strikethrough(children) ->
       nested_parts(document, children, style.add_modifier(base, style.dim()))
     FullLink(text:, data:) -> link_parts(document, text, data, base)

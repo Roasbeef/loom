@@ -68,7 +68,7 @@ pub fn settings() -> serve.Settings {
     token_path: root <> "/never-created.token",
     workspace: root <> "/work",
     base_policy: serve.base_policy(root <> "/work"),
-    helper_path: "/bin/sh",
+    helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: "owned",
     demand: exec.BestEffort,

@@ -4,10 +4,19 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Re-baselined September 10, 2026 against merged main `3ce454e6` and the local UX
-polish commits through `429c66c6`. Source, local gates, and the relevant
-GitHub merge, run, and issue states were checked for this edition. The candidate
-has not been pushed; the hosted results below establish its base only.
+Re-baselined September 11, 2026 against merged main `ab01a239` and the local
+`tui/readable-scrollback` follow-up. PR #347 merged after its exact head
+`a760eb92` passed the complete hosted workflow (`34585964823`). The follow-up
+is published as draft PR #349. The expanded reading follow-up has passed the
+TUI package gate with 357 tests and the client package gate with 1,545 tests.
+Both package lints and the documentation gate pass. An independent review found
+one missing merge-patch mode; its correction has a passing native Git regression.
+Hosted run `34641215883` passed Linux but exposed an asynchronous lock-release
+assumption in the macOS bootstrap fixture. The fixture now uses its existing
+bounded acquisition helper; an omitted-release mutation still fails. The
+[reading follow-up review](review/readable-scrollback-review.md) records the
+repair and independent review. Updated hosted checks and Linux signoff remain
+the final gates for the published head.
 
 ## Where the tree is
 
@@ -15,7 +24,7 @@ has not been pushed; the hosted results below establish its base only.
 |---|---|
 | Human controls | Queue editing, priority steering, worktree observations, and completion summaries are merged in #344. |
 | Markdown skills | #346 is merged in `3ce454e6`; discovery, explicit activation, paged completion, and model-selected loading are shipped in the base. |
-| UX polish | General developer defaults, actionable tool failures, partial reviewer recovery, failure context, bounded history, automatic wide diff, selection, and current-state presentation are implemented locally. |
+| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
 | Local verification | One full `make check` passed: 4,191 Gleam tests, native helper checks, prelude verification, and house-rule lint. Installed native acceptance and matched measurements are recorded in the linked reports. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
@@ -45,10 +54,11 @@ now retains it until the authenticated read completes.
 
 ## What to do next
 
-1. **Validate and publish the UX candidate when requested.** The work remains
-   local on `codex/ux-polish`. **Exit:** review the acceptance and resource
-   reports, then run hosted checks and required Linux signoff on the exact
-   published head before normal merge. Local results do not replace that gate.
+1. **Validate the reading follow-up.** Draft PR #349 is on
+   `tui/readable-scrollback`. **Exit:** hosted checks and Linux signoff on its
+   published head. The [reading follow-up review](review/readable-scrollback-review.md)
+   records the local evidence and merge-patch correction. Preserve running user sessions; the compiled candidate does
+   not replace an already-running client or daemon.
 
 2. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,
@@ -82,6 +92,13 @@ reads. The gateway acknowledges pending work and runs Git outside its handler
 through Weft. The final push has no `reply_to`, retains the original request ID,
 and rechecks authority. Omitted files, partial patches, and failed refreshes are
 explicit. A pinned HEAD plus later filesystem reads is not an atomic snapshot.
+
+**Committed changes require a durable starting revision.**
+[Protocol 029](../protocol-change/029-session-commit-observation.md) captures HEAD
+before the runtime starts on first activation and keeps it across restarts.
+Legacy sessions and mismatched inherited records remain unavailable. Commit
+patches include merge-resolution bytes, and retain separate count/byte bounds;
+a clean working tree does not imply no commits since session start.
 
 **Completion evidence and current jobs have different timestamps.** The
 terminal attributes history only between an observed operation source and its

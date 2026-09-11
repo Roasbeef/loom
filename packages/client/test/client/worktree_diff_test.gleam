@@ -13,16 +13,23 @@ import client/catalog
 import client/codemode
 import client/daemon/transfer
 import client/serve
+import client/session_git
 import client/worktree_diff
 import core/clock
 import core/ids
+import core/json
+import core/register
+import core/tx
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/string
 import host/bootstrap
+import session/session
 import simplifile
+import storage/storage
 import support/enforcement
 import tools/tool
 
@@ -141,6 +148,144 @@ pub fn jailed_git_reports_real_net_changes_and_repository_states_test() {
   assert string.contains(file(board, "-untracked \nname").patch, "+addition")
   assert board.total == 4
   assert board.omitted == 0
+}
+
+// The baseline is durable before a model can turn a dirty tree into commits.
+pub fn committed_history_survives_clean_worktree_and_baseline_reuse_test() {
+  use wiring <- with_fixture("committed")
+  setup(wiring, ["init", "--quiet"])
+  write(wiring, "tracked.txt", "before\n")
+  commit_fixture(wiring, "before session")
+  let assert Ok(opened) = session.open_memory(wiring.clock)
+    as "the fixture owns a durable session handle"
+  let assert Ok(start) =
+    session_git.prepare(opened, "session", wiring.workspace, fn() {
+      worktree_diff.starting_revision(wiring)
+    })
+    as "the initial revision is pinned"
+  let assert worktree_diff.Revision(_) = start as "the repository has a HEAD"
+  write(wiring, "tracked.txt", "after\n")
+  commit_fixture(wiring, "during session")
+  let assert Ok(reopened) =
+    session_git.prepare(opened, "session", wiring.workspace, fn() {
+      worktree_diff.Unavailable("must not replace the original baseline")
+    })
+    as "reactivation reads the existing record"
+  assert reopened == start
+  let assert Ok(board) = worktree_diff.capture_since(wiring, reopened)
+    as "committed changes are independently observable"
+  assert board.total == 0
+  assert board.entries == []
+  assert string.contains(board.committed.patch, "during session")
+  assert !string.contains(board.committed.patch, "before session")
+  assert string.contains(board.committed.patch, "-before")
+  assert string.contains(board.committed.patch, "+after")
+
+  // A fork cannot borrow another session's history attribution.
+  let assert Ok(worktree_diff.Unavailable(_)) =
+    session_git.prepare(opened, "fork", wiring.workspace, fn() {
+      worktree_diff.Empty
+    })
+    as "a mismatched durable identity is unavailable"
+  let assert Ok(Nil) = session.close(opened) as "the fixture closes its store"
+  Nil
+}
+
+pub fn unborn_session_commits_are_bounded_and_keep_the_initial_commit_test() {
+  use wiring <- with_fixture("unborn-committed")
+  setup(wiring, ["init", "--quiet"])
+  let start = worktree_diff.starting_revision(wiring)
+  assert start == worktree_diff.Empty
+  write(wiring, "initial.txt", string.repeat("initial line\n", 3000))
+  commit_fixture(wiring, "first session commit")
+  let assert Ok(board) = worktree_diff.capture_since(wiring, start)
+    as "an initially unborn repository includes its first commit"
+  assert board.total == 0
+  assert string.contains(board.committed.patch, "first session commit")
+  assert string.contains(board.committed.patch, "+initial line")
+  assert board.committed.extent == worktree_diff.Limited
+  assert string.byte_size(board.committed.patch) <= 4096
+  assert transfer.encoded_size(
+      worktree_diff.to_json(board),
+      worktree_diff.board_byte_limit,
+    )
+    |> is_ok
+}
+
+pub fn committed_history_includes_merge_resolution_bytes_test() {
+  use wiring <- with_fixture("merge-committed")
+  setup(wiring, ["init", "--quiet", "--initial-branch=main"])
+  write(wiring, "tracked.txt", "before\n")
+  commit_fixture(wiring, "before session")
+  let start = worktree_diff.starting_revision(wiring)
+  setup(wiring, ["checkout", "--quiet", "-b", "side"])
+  write(wiring, "tracked.txt", "side\n")
+  commit_fixture(wiring, "side change")
+  setup(wiring, ["checkout", "--quiet", "main"])
+  write(wiring, "main.txt", "main\n")
+  commit_fixture(wiring, "main change")
+  setup(wiring, [
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "merge",
+    "--no-ff",
+    "--no-commit",
+    "side",
+  ])
+
+  // Merge commits can contain bytes written only while resolving the merge.
+  write(wiring, "tracked.txt", "resolved-only\n")
+  commit_fixture(wiring, "merge resolution")
+  let assert Ok(board) = worktree_diff.capture_since(wiring, start)
+    as "a merged clean tree retains the resolution patch"
+  assert board.total == 0
+  assert string.contains(board.committed.patch, "+resolved-only")
+}
+
+pub fn legacy_session_does_not_guess_its_starting_revision_test() {
+  let assert Ok(opened) = session.open_memory(clock.fixed(1000))
+    as "the fixture owns a session"
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        writes: [
+          tx.SetRegister(
+            register.FactCustom,
+            "prompt/system",
+            register.value(json.String("old prompt")),
+          ),
+        ],
+        expected: [tx.Expect(register.FactCustom, "prompt/system", None)],
+      ),
+    )
+    as "this session predates the Git baseline"
+  let assert Ok(worktree_diff.Unavailable(reason)) =
+    session_git.prepare(opened, "old", "/work", fn() {
+      worktree_diff.Revision(string.repeat("a", 40))
+    })
+    as "the current HEAD cannot establish historical state"
+  assert string.contains(reason, "not recorded")
+  let assert Ok(Nil) = session.close(opened) as "the store is closed"
+  Nil
+}
+
+fn commit_fixture(wiring, message) {
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    message,
+  ])
 }
 
 pub fn jailed_git_marks_patch_and_file_limits_test() {

@@ -22,10 +22,23 @@ import tui/text_hygiene
 /// ```
 pub fn readable(text: String) -> String {
   case json.parse(text) {
-    Ok(value) -> structured(value, 0)
+    Ok(value) -> structured(note_value(value), 0)
     Error(_) -> text
   }
   |> text_hygiene.multiline
+}
+
+// Some note tools accept a JSON document as a string value. Unwrap that
+// document once at the note boundary, rather than exposing escaped JSON.
+fn note_value(value: json.JsonValue) -> json.JsonValue {
+  case value {
+    json.String(text) ->
+      case json.parse(text) {
+        Ok(json.Object(_) as nested) | Ok(json.Array(_) as nested) -> nested
+        Ok(_) | Error(_) -> value
+      }
+    _ -> value
+  }
 }
 
 fn structured(value: json.JsonValue, depth: Int) -> String {
@@ -35,12 +48,14 @@ fn structured(value: json.JsonValue, depth: Int) -> String {
     False, json.Object(fields) ->
       fields
       |> list.map(fn(pair) {
-        "**"
-        <> text_hygiene.single_line(pair.0)
-        <> "**\n\n"
-        <> structured(pair.1, depth + 1)
+        let label = "- **" <> field_label(pair.0) <> "**"
+        let body = structured(pair.1, depth + 1)
+        case pair.1 {
+          json.Object(_) | json.Array(_) -> label <> "\n" <> indent(body)
+          _ -> label <> ": " <> string.replace(body, "\n", "\n  ")
+        }
       })
-      |> string.join("\n\n")
+      |> string.join("\n")
     False, json.Array(values) ->
       values
       |> list.map(fn(item) {
@@ -53,6 +68,22 @@ fn structured(value: json.JsonValue, depth: Int) -> String {
     | False, json.Null
     -> json.to_string(value)
   }
+}
+
+fn indent(text: String) -> String {
+  "  " <> string.replace(text, "\n", "\n  ")
+}
+
+fn field_label(key: String) -> String {
+  let label = text_hygiene.single_line(key) |> string.replace("_", " ")
+  let label =
+    string.uppercase(string.slice(label, 0, 1)) <> string.drop_start(label, 1)
+  label
+  |> string.replace("\\", "\\\\")
+  |> string.replace("*", "\\*")
+  |> string.replace("[", "\\[")
+  |> string.replace("]", "\\]")
+  |> string.replace("`", "\\`")
 }
 
 /// One current, bounded view of a strand's durable blackboard.

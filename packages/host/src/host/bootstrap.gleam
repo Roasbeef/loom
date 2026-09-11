@@ -304,8 +304,10 @@ pub fn try_launch_lock(path: String) -> Result(LaunchLock, String)
 
 /// Releases a launch lock.
 ///
-/// Uses OTP `erlang:port_close/1`; closing the helper port releases its kernel
-/// file lock.
+/// Uses OTP `erlang:port_close/1` to close the helper port. The external holder
+/// exits asynchronously and releases its kernel file lock, so callers that
+/// reacquire the lock must use bounded acquisition rather than assume it is
+/// already available when this function returns.
 ///
 /// ## Examples
 ///
