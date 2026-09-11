@@ -52,3 +52,20 @@ The work was built in the isolated checkout. It did not replace installed
 binaries or stop the operator's running daemon or extension satellite. Hosted
 checks must still validate the published head; local macOS results do not claim
 Linux signoff.
+
+## Inline edit follow-up
+
+The compact tool-activity path still reduced a successful edit to a checkmark
+and filename, bypassing the rich renderer. It now shares the same patch
+projection as expanded history: a 24-line preview inline, with the full patch
+available on expansion. Failure and missing-diff paths keep their summaries.
+The incoming-result regression exercises replacement of an already cached
+pending row, without opening the separate diff pane.
+
+A pasted-code regression also exposed prose word wrapping collapsing source
+indentation after tab normalization. Indented user-message rows now preserve
+spacing and blank lines like code rows; long source rows clip at the pane edge.
+A separate report-only review found no actionable issue in these changes.
+The follow-up TUI gate passed all 357 tests, including the three new compact
+edit/paste regressions. House-rule lint and the documentation gate also pass.
+The four terminal/server end-to-end checks also passed after the layout change.

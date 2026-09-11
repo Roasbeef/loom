@@ -8,7 +8,7 @@ Re-baselined September 11, 2026 against merged main `ab01a239` and the local
 `tui/readable-scrollback` follow-up. PR #347 merged after its exact head
 `a760eb92` passed the complete hosted workflow (`34585964823`). The follow-up
 is published as draft PR #349. The expanded reading follow-up has passed the
-TUI package gate with 354 tests and the client package gate with 1,545 tests.
+TUI package gate with 357 tests and the client package gate with 1,545 tests.
 Both package lints and the documentation gate pass. An independent review found
 one missing merge-patch mode; its correction has a passing native Git regression.
 Updated hosted checks remain pending.

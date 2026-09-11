@@ -11,6 +11,11 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- Compact successful `fs_edit` rows include a 24-line inline patch preview;
+  expanded history uses the same patch projection with the complete result.
+  Failed edits and older results without a diff retain their summaries.
+  Indented user-message rows preserve spacing and stanza breaks rather than
+  passing through prose word wrapping; long source rows clip like code blocks.
 - `ToolPatch` renders unified patches directly with addition/removal colors;
   filenames remain separate `PatchHeading` rows, and embedded fences cannot
   terminate a patch. The worktree navigator includes a separate committed view
