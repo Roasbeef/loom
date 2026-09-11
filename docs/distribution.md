@@ -77,6 +77,16 @@ download, and reproducing a build needs both git remotes rather than only
 hex. [ADR-011](adr/011-bounded-websocket-forks.md) has the reasoning, the
 upstream pull requests, and the maintenance cost.
 
+The Markdown skill loader also pins `glaml` to `Roasbeef/glaml` revision
+`084857e`, proposed upstream in
+[glaml PR #6](https://github.com/katekyy/glaml/pull/6). Version 3.0.2 declares
+`yamerl` both as a dependency and in `extra_applications`, producing duplicate
+entries in its OTP application metadata. Ordinary application startup accepts
+that metadata, but relx refuses it when assembling either the server or client
+release. The fork removes only the redundant declaration; parser source and the
+normal dependency remain unchanged. Return to Hex when a release carries the
+fix. Both release scripts retain relx output so assembly errors appear in CI.
+
 The build places one compiled test probe in `build/release/smoke-support`,
 outside the distributed `loom` tree. The smoke runs that probe on the bundled
 emulator, using the server's existing WebSocket transport. It adds no test

@@ -7,7 +7,9 @@ accounts belong in their own documents.
 Re-baselined September 10, 2026 against merged PR #344 (`329002f1`) and the
 local Markdown-skills implementation through `5626d1b5` on
 `codex/skill-discovery`. GitHub merge, run and issue states were checked again
-for this edition. The skill change has local verification and review; it has not been pushed or given Linux signoff.
+for this edition. The skill change is published as PR #346. The initial head
+passed macOS and Linux signoff; its release packaging correction requires
+fresh checks before merge.
 
 ## Where the tree is
 
@@ -59,7 +61,12 @@ tests, plus the native helper format, vet, build and tests. The final whitespace
 fix has focused client and joined end-to-end reruns. House-rule lint and the
 documentation gate are recorded with the review in
 [the skill review](review/markdown-skills.md). No single uninterrupted full-gate
-success or remote skills CI result is claimed.
+success is claimed for those initial local stages. PR #346 at `45ca3b22`
+subsequently passed hosted macOS checks and the full Linux signoff in 495
+seconds. Hosted Linux deliverables found duplicate glaml application metadata.
+The build now pins the minimal correction at `Roasbeef/glaml` revision
+`084857e`; [upstream PR #6](https://github.com/katekyy/glaml/pull/6) is open.
+The corrected head must pass fresh platform checks and Linux signoff.
 
 Real code-mode fixtures reported their absent seed, and opt-in shipped bootstrap
 fixtures were not enabled. Their package results are not shipped acceptance.
@@ -70,9 +77,10 @@ wrong error. Both were corrected and the reviewer confirmed no open findings.
 ## What to do next
 
 1. **Integrate Markdown skills.** Publication and merge after successful gates
-   were authorized on September 10. **Exit:** open the PR from
-   `codex/skill-discovery`, pass its exact head's macOS and Linux hosted checks
-   and required Linux signoff, then merge through the normal gate.
+   were authorized on September 10. **Exit:** pass PR #346's corrected head
+   through macOS and Linux hosted checks and required Linux signoff, then
+   merge through the normal gate. Replace the glaml fork with a released
+   upstream version once the metadata fix ships.
 
 2. **Finish the remaining video acceptance.** Exercise reading and selection
    under sustained output across layouts, the joined reconnect/held-tool/multiple
