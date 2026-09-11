@@ -571,3 +571,73 @@ pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
     as "the next stanza is visible"
   assert continuation == closing + 2
 }
+
+pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test() {
+  let populated =
+    list.fold(
+      list.index_map(list.repeat(Nil, 100), fn(_, index) { index + 1 }),
+      model(),
+      fn(state, index) {
+        let key = "call-" <> int.to_string(index)
+        let result = outcome(index * 2, key, False, None)
+        let assert entry.MessageEntry(
+          message: message.ToolResultMessage(..) as body,
+          ..,
+        ) = result
+          as "the fixture owns a tool result"
+        let result = case index {
+          50 ->
+            entry.MessageEntry(
+              ..result,
+              message: message.ToolResultMessage(..body, content: [
+                message.ToolResultText(
+                  string.repeat("long output line\n", 160),
+                  None,
+                ),
+              ]),
+            )
+          _ -> result
+        }
+        state
+        |> received(call(index * 2 - 1, key, "fs_edit", args()))
+        |> received(result)
+      },
+    )
+  let expanded =
+    populated
+    |> tui.update(backend.Resize(170, 104), _)
+    |> tui.update(backend.KeyPress("ctrl+g"), _)
+    |> tui.update(backend.MouseScroll(5, 5, True), _)
+  let height = tui.hit_area(expanded, geometry.Position(5, 5)).size.height
+  let prefix =
+    expanded.rendered_row_count - list.length(expanded.rendered_anchors)
+  let assert Ok(#(_, index)) =
+    expanded.rendered_anchors
+    |> list.index_map(fn(row, index) { #(row, index) })
+    |> list.find(fn(pair) {
+      case pair.0 {
+        Some(row) ->
+          string.ends_with(row.entry, "/call/call-50") && row.wrapped == 80
+        None -> False
+      }
+    })
+    as "expanded output shares the compact invocation's durable identity"
+  let reading =
+    tui.Model(..expanded, scroll_offset: prefix + index - height + 1)
+  let compact = tui.update(backend.KeyPress("ctrl+g"), reading)
+  let offset =
+    compact.rendered_row_count - list.length(compact.rendered_anchors)
+  let visible =
+    compact.rendered_anchors
+    |> list.index_map(fn(row, index) { #(row, offset + index) })
+    |> list.filter(fn(pair) {
+      pair.1 >= compact.scroll_offset && pair.1 < compact.scroll_offset + height
+    })
+  assert list.any(visible, fn(pair) {
+    case pair.0 {
+      Some(row) -> string.ends_with(row.entry, "/call/call-50")
+      None -> False
+    }
+  })
+    as "Ctrl+g retains the call whose long output the reader was inspecting"
+}

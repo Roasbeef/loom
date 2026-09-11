@@ -26,6 +26,7 @@ import tui/attempt_replay
 import tui/composer
 import tui/connection
 import tui/frame
+import tui/history_view
 import tui/protocol
 import tui/recording
 import tui/session_channel
@@ -1565,4 +1566,36 @@ fn split_history_data(data, collected) {
         ..collected
       ])
   }
+}
+
+pub fn deferred_history_read_retries_on_tick_after_capture_finishes_test() {
+  let #(busy, remaining) = waiting_capture(fn() { 0 })
+  let base =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+  let empty = history_view.empty()
+  let history =
+    history_view.State(
+      ..empty,
+      mode: history_view.Reading,
+      before_seq: 10,
+      request: history_view.Wanted,
+    )
+  let waiting =
+    tui.update(
+      backend.Tick,
+      tui.Model(..base, channel: Some(busy), scrollback: history),
+    )
+  assert waiting.scrollback.request == history_view.Wanted
+  let #(ready, _) = read_channel(busy, remaining)
+  assert session_channel.ready_for_read(ready)
+  let sent =
+    tui.update(backend.Tick, tui.Model(..waiting, channel: Some(ready)))
+  assert sent.scrollback.request == history_view.Pending(10)
+    as "the idle tick admits the remembered range without another scroll gesture"
+  let assert Some(channel) = sent.channel as "the read keeps the same channel"
+  assert !session_channel.ready_for_read(channel)
 }

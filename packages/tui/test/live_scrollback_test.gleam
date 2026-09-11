@@ -71,7 +71,7 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
   let assert Ok(#(_, y)) =
     frame.buffer_to_lines(shown)
     |> list.index_map(fn(row, y) { #(row, y) })
-    |> list.find(fn(pair) { string.contains(pair.0, "click to jump") })
+    |> list.find(fn(pair) { string.contains(pair.0, "click for latest") })
     as "the user has a visible jump action while reading above the tail"
   let resumed =
     tui.update(backend.MousePress(5, y, backend.MouseLeft), drafting)

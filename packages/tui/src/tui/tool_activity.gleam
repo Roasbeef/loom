@@ -36,6 +36,8 @@ pub type Call {
     invocation: message.ToolCall,
     /// The complete result, or absence when this window has no result yet.
     outcome: Option(message.AgentMessage),
+    /// Durable result identity joins expanded output to its compact call row.
+    result_source: Option(ids.EntryId),
   )
 }
 
@@ -137,7 +139,11 @@ fn collect(acc: #(List(Item), Group), value: entry.Entry) {
             calls: dict.insert(
               group.calls,
               tool_call_id,
-              Call(..call, outcome: Some(outcome)),
+              Call(
+                ..call,
+                outcome: Some(outcome),
+                result_source: Some(value.id),
+              ),
             ),
           ),
         )
@@ -212,7 +218,7 @@ fn add_call(group: Group, source: ids.EntryId, invocation: message.ToolCall) {
   let message.ToolCall(id:, ..) = invocation
   Group(
     order: [id, ..group.order],
-    calls: dict.insert(group.calls, id, Call(source, invocation, None)),
+    calls: dict.insert(group.calls, id, Call(source, invocation, None, None)),
   )
 }
 

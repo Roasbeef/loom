@@ -3149,8 +3149,12 @@ fn editor_content_width(model: Model) -> Int {
 
 fn input_title(model: Model) -> String {
   use <- bool.guard(
-    model.scroll_offset > 0,
-    " ↓ Output below · click to jump · End with empty prompt ",
+    model.peer == Disconnected,
+    " Disconnected · /sessions to reconnect · draft retained ",
+  )
+  use <- bool.guard(
+    reading_history(model),
+    " ↓ Scrollback · click for latest · End with empty prompt ",
   )
   case
     active_interrupt(model),
@@ -3444,6 +3448,7 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     False -> updated
   }
   refresh_render_cache(model, updated)
+  |> request_history_for_view
   |> refresh_frame_cache(frame_boundary(event))
 }
 
@@ -3743,11 +3748,14 @@ fn invalidate_frame(model: Model) -> Model {
 // drained, but those ticks must not compare or wrap the durable transcript.
 // Event handlers increment a scalar revision at the mutation boundary, which
 // keeps an idle cache check constant-time regardless of session length.
+fn reading_history(model: Model) -> Bool {
+  model.scrollback.mode == history_view.Reading || model.scroll_offset > 0
+}
+
 fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
-    || { before.scroll_offset == 0 && after.scroll_offset > 0 }
-    || { before.scroll_offset > 0 && after.scroll_offset == 0 }
+    || reading_history(before) != reading_history(after)
     || before.width != after.width
     || before.agent_rail_visible != after.agent_rail_visible
     || before.details_expanded != after.details_expanded
@@ -3762,9 +3770,9 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
-      let reading_lines = case after.scroll_offset == 0 {
-        True -> None
-        False ->
+      let reading_lines = case reading_history(after) {
+        False -> None
+        True ->
           case before.reading_lines {
             Some(lines)
               if before.active_strand == after.active_strand
@@ -3783,14 +3791,14 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       // them for every live fragment repeats the whole durable projection.
       // The first scroll into history captures them before later updates.
       let rendered_anchors = case
-        after.help_open || after.notes_open || after.scroll_offset == 0
+        after.help_open || after.notes_open || !reading_history(after)
       {
         True -> []
         False -> record_anchors_for(cached, width)
       }
-      let anchored = case after.scroll_offset == 0 {
-        True -> 0
-        False ->
+      let anchored = case reading_history(after) {
+        False -> 0
+        True ->
           transcript_anchor.relocate(
             before.rendered_anchors,
             rendered_anchors,
@@ -3997,7 +4005,38 @@ fn record_anchors_for(
     |> list.filter(fn(record) { record.strand == model.active_strand })
     |> list.map(fn(record) { record.entry })
   let blocks = case model.details_expanded {
-    True -> list.flat_map(entries, anchored_entry_blocks(_, model))
+    True -> {
+      // The compact projection owns call/result association, including reused
+      // provider IDs. Borrow that association rather than guessing it again.
+      let results =
+        entries
+        |> tool_activity.project
+        |> list.flat_map(fn(item) {
+          case item {
+            tool_activity.Narrative(_) -> []
+            tool_activity.Tools(calls) ->
+              list.filter_map(calls, fn(call) {
+                use source <- result.try(option.to_result(
+                  call.result_source,
+                  Nil,
+                ))
+                Ok(#(
+                  ids.entry_id_to_string(source),
+                  ids.entry_id_to_string(call.source)
+                    <> "/call/"
+                    <> call.invocation.id,
+                ))
+              })
+          }
+        })
+        |> dict.from_list
+      list.flat_map(entries, fn(value) {
+        anchored_entry_blocks(value, model)
+        |> list.map(fn(block) {
+          #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
+        })
+      })
+    }
     False ->
       entries
       |> tool_activity.project
@@ -4131,13 +4170,24 @@ fn paste_unlocked(model: Model, text: String) -> Model {
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
     Ok(None) ->
       case composer.classify(text) {
-        composer.Inline(text) ->
+        composer.Inline(text) -> {
+          // Paste follows the editor's insertion path so an existing draft
+          // and the cursor's suffix remain part of the next prompt.
+          let editor = text_area.textarea_new() |> text_area.with_max_lines(0)
+          let input =
+            list.fold(string.to_graphemes(text), model.input, fn(state, char) {
+              case char {
+                "\n" -> text_area.newline(editor, state)
+                _ -> text_area.insert_char(editor, state, char)
+              }
+            })
           Model(
             ..model,
-            input: text_area.state_from_string(text),
+            input:,
             history_index: 0,
-            history_draft: text,
+            history_draft: text_area.value(input),
           )
+        }
         composer.Compact(attachment) -> add_attachment(model, attachment)
       }
   }
@@ -7022,7 +7072,7 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.Home, False, False ->
       Model(..model, input: text_area.move_to_line_start(model.input))
     keys.End, False, False ->
-      case text_area.value(model.input) == "" && model.scroll_offset > 0 {
+      case text_area.value(model.input) == "" && reading_history(model) {
         True -> scroll_transcript(model, False, model.rendered_row_count)
         False -> Model(..model, input: text_area.move_to_line_end(model.input))
       }
@@ -7102,7 +7152,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, _, input_area, _) = layout(screen, model)
   use <- bool.lazy_guard(
-    model.scroll_offset > 0 && at.y == input_area.position.y,
+    reading_history(model) && at.y == input_area.position.y,
     fn() {
       scroll_transcript(clear_selection(model), False, model.rendered_row_count)
     },
@@ -7229,7 +7279,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       transcript_viewport_height(model),
     )
   let model =
-    Model(..model, scroll_offset: offset, notice: case offset == 0 {
+    Model(..model, scroll_offset: offset, notice: case offset == 0 && !older {
       True -> "following output"
       False -> "scrollback · End returns to latest (empty prompt)"
     })
@@ -7257,6 +7307,32 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
         }
       }
     }
+  }
+}
+
+// A page can contain only other strands, and collapsing details can leave
+// fewer rows than one screen. Continue the bounded demand until older rows
+// exist above this viewport. A busy lane keeps Wanted for the next event;
+// the user does not need another wheel gesture to retry the same read.
+fn request_history_for_view(model: Model) -> Model {
+  use <- bool.guard(
+    model.scrollback.mode != history_view.Reading
+      || model.help_open
+      || model.notes_open
+      || model.scroll_offset + transcript_viewport_height(model)
+      < model.rendered_row_count - 10,
+    model,
+  )
+  case model.captured {
+    None -> model
+    Some(#(_, view)) ->
+      Model(
+        ..model,
+        scrollback: history_view.older(
+          model.scrollback,
+          history_view.branch(model.scrollback, view).unloaded,
+        ),
+      )
   }
 }
 
