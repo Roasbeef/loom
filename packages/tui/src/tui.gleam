@@ -596,6 +596,9 @@ pub type Model {
     /// passing rather than as a stall.
     activity_elapsed_s: Int,
     streams: List(Stream),
+    /// Transient rows captured when leaving the live tail. Durable history has
+    /// its own frozen ancestry; this keeps in-flight reasoning stationary too.
+    reading_lines: Option(List(Line)),
     scroll_offset: Int,
     render_revision: Int,
     rendered_revision: Int,
@@ -921,6 +924,7 @@ pub fn new_model_with_clock(
     activity_started_ms: None,
     activity_elapsed_s: 0,
     streams: [],
+    reading_lines: None,
     scroll_offset: 0,
     render_revision: 0,
     rendered_revision: -1,
@@ -3090,6 +3094,10 @@ fn editor_content_width(model: Model) -> Int {
 }
 
 fn input_title(model: Model) -> String {
+  use <- bool.guard(
+    model.scroll_offset > 0,
+    " ↓ Output below · click to jump · End with empty prompt ",
+  )
   case
     active_interrupt(model),
     active_status_label(model),
@@ -3684,6 +3692,7 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
     || { before.scroll_offset == 0 && after.scroll_offset > 0 }
+    || { before.scroll_offset > 0 && after.scroll_offset == 0 }
     || before.width != after.width
     || before.agent_rail_visible != after.agent_rail_visible
     || before.details_expanded != after.details_expanded
@@ -3698,8 +3707,20 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
+      let reading_lines = case after.scroll_offset == 0 {
+        True -> None
+        False ->
+          case before.reading_lines {
+            Some(lines)
+              if before.active_strand == after.active_strand
+              && before.session == after.session
+            -> Some(lines)
+            Some(_) | None -> Some(transient_lines(before))
+          }
+      }
       let cached =
-        refresh_diff_cache(before, after) |> refresh_record_cache(width)
+        refresh_diff_cache(before, Model(..after, reading_lines:))
+        |> refresh_record_cache(width)
       let rendered_rows = rendered_rows_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
 
@@ -4009,18 +4030,23 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
       |> markdown.wrap_lines(width)
       |> list.reverse
     False, False ->
-      stream_lines(
-        display_streams(model),
-        model.active_strand,
-        model.details_expanded,
-      )
-      |> list.append(pending_input_lines(model))
-      |> list.append(completion_card(model))
+      option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
       |> transcript_content
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
       |> list.append(model.record_rows)
   }
+}
+
+// The live tail is a bounded, disposable observation. Scrollback retains one
+// immutable projection so later fragments cannot reflow text under the reader.
+fn transient_lines(model: Model) -> List(Line) {
+  stream_lines(
+    display_streams(model),
+    model.active_strand,
+    model.details_expanded,
+  )
+  |> list.append(pending_input_lines(model))
 }
 
 fn handle_paste(model: Model, text: String) -> Model {
@@ -4829,6 +4855,7 @@ fn adopt_session(
     interrupt: None,
     submitting: None,
     streams: [],
+    reading_lines: None,
     scroll_offset: 0,
     rendered_revision: -1,
     rendered_row_count: 0,
@@ -6807,6 +6834,14 @@ fn clear_selection(model: Model) -> Model {
 // A press starts over: whatever was highlighted is replaced by a fresh
 // selection in the area the press landed in.
 fn begin_selection(model: Model, at: geometry.Position) -> Model {
+  let screen = geometry.rect_new(0, 0, model.width, model.height)
+  let #(_, _, input_area, _) = layout(screen, model)
+  use <- bool.lazy_guard(
+    model.scroll_offset > 0 && at.y == input_area.position.y,
+    fn() {
+      scroll_transcript(clear_selection(model), False, model.rendered_row_count)
+    },
+  )
   case diff_navigation_hit(model, at) {
     Some(selected) ->
       Model(
@@ -9093,32 +9128,6 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
         False -> model
       }
     Some(_) | None -> model
-  }
-}
-
-fn completion_card(model: Model) -> List(Line) {
-  case completion_summary.latest(model.completion, model.active_strand) {
-    None -> []
-    Some(summary) -> [
-      Line(
-        System,
-        case active_strand_live(model) {
-          True -> "Previous operation: "
-          False -> "Latest operation: "
-        }
-          <> completion_summary.brief(summary)
-          <> case summary.coverage {
-          completion_summary.Unavailable -> " · operation details unavailable"
-          completion_summary.Partial ->
-            " · partial captured edits "
-            <> int.to_string(list.length(summary.edits))
-          completion_summary.Complete ->
-            " · captured edits " <> int.to_string(list.length(summary.edits))
-        }
-          <> " · /summary for details",
-      ),
-      Line(System, completion_summary.edit_totals(summary)),
-    ]
   }
 }
 
