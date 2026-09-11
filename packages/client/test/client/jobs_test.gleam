@@ -972,7 +972,7 @@ pub fn a_job_clears_under_its_own_ledger_identity_test() {
   assert spec.op_id == harness.operation
   assert spec.budget.max_outstanding == 1
   assert spec.budget.deadline_ms == started.deadline_ms
-  assert spec.argv == ["bash", "-lc", "tail -f build.log"]
+  assert spec.argv == ["bash", "-o", "pipefail", "-c", "tail -f build.log"]
   assert spec.response == broker.RefuseNarrowed
 }
 

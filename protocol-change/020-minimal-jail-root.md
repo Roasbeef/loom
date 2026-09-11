@@ -251,3 +251,28 @@ Proposed. The alternative, keeping `--ro-bind / /` and extending `protected`
 until it covers the interesting paths, is what the tree does today and it
 cannot be finished: a denylist over a shared account has no closing condition,
 and every new dotfile is a hole nobody filed.
+
+
+## Addendum: developer default and explicit lockdown (2026-09-10)
+
+The operator has selected a permissive development default with extra flags
+for lockdown. We retain the minimal-root helper and its enforcement probes,
+but new sessions now request host reads and full shell network access.
+`[workspace] read_scope = "workspace"` and `[tools] network = "off"` select
+the restricted policy independently. `loomd --read-scope` and `--network`
+override those fields for sessions it opens. Invalid values are errors.
+
+The fixed user/toolchain lists failed on ordinary installations: an executable
+could be visible while its standard library or SDK was missing. Extending the
+list repeats that failure for another layout. Host reads remove that dependency
+on installation paths. Accordingly, we remove the per-user and account-wide
+lists, and stop deriving session read grants from Gleam manifests. Explicit
+mounts and discovered code-mode dependencies remain for the restricted profile.
+
+This choice permits reading unprotected host files, including other checkouts.
+It does not provide mutual read isolation between sessions on the same account.
+Operators who need that property select workspace reads and grant outside
+paths explicitly. Workspace writes, protected daemon data, capability checks,
+and Rule Zero continue to apply. The wire policy and helper vocabulary do not
+change: 020 already specifies `/` as the explicit host-view request and the
+helper reports that view in its enforcement result.

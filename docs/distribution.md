@@ -665,30 +665,50 @@ The self-contained client already bundles its own ERTS; only the slim archive
 requires a host OTP installation. The remaining single-daemon release gates,
 including current platform coverage, are recorded in [next.md](next.md).
 
-## Installed-tool support trees
+## Default development policy and lockdown
 
-The developer jail inherits the daemon's PATH, but locating an executable does
-not grant access to the files it loads. Go needs its installed standard library;
-Apple's Git launcher needs the selected developer directory. Add those roots to
-the trusted daemon configuration's existing workspace mounts when the minimal
-policy does not already expose them:
+New sessions can read host files and use the network. Installed compilers,
+SDKs, interpreters, and sibling checkouts therefore work without a list of
+language-specific paths. Writes remain confined to the workspace and explicit
+writable mounts. The daemon's credentials, session databases, and private
+indexes remain masked in either mode.
+
+Tool shells use the daemon's PATH after the bundled compiler and any explicit
+`[tools] path` additions. They run non-login Bash with `pipefail`, so host shell
+startup files cannot replace that PATH and a successful `tail` cannot hide an
+earlier failed command. HOME and TMPDIR point into the workspace's `.codemode`
+directory, giving development tools writable caches without host-home writes.
+Native search uses PATH but receives no shell credentials and has no network
+or write access.
+
+To restrict a daemon's sessions, start it with:
+
+```sh
+loomd --read-scope workspace --network off
+```
+
+Or persist the policy in the trusted configuration selected by `loom --config`
+or `loomd --config`:
 
 ```toml
 [workspace]
-mounts = [
-  { path = "/absolute/path/to/go", access = "ro" },
-  { path = "/Applications/Xcode.app", access = "ro" },
-]
+read_scope = "workspace"
+# mounts = [{ path = "/absolute/shared/data", access = "ro" }]
+
+[tools]
+network = "off"
 ```
 
-Use `go env GOROOT` and `xcode-select -p` on the host to locate the installations.
-For a full Xcode installation, grant the enclosing `.app` tree: the launcher
-also reads `Contents/Info.plist` and sibling shared frameworks outside
-`Contents/Developer`. Keep any existing entries when editing this table. These examples grant reads;
-compilation outputs still need a permitted writable workspace or cache. Other
-tools may need different support trees. The parser requires absolute, distinct
-paths and a known access mode; composed-policy validation rejects overlap with
-masked regions. Configure the trusted daemon file selected at startup, not an
-untrusted repository file, and use a fresh daemon/session to verify the policy.
-This is the existing explicit-mount mechanism, not automatic tool discovery of
-filesystem permissions.
+`read_scope = "host"` and `network = "full"` are the defaults. The two settings
+are independent. Workspace reads retain the helper's system runtime and the
+explicitly admitted code-mode toolchain; other outside paths need `mounts`.
+Use `access = "rw"` only for an additional directory that tools must write.
+Daemon flags override the corresponding configuration fields, and misspelled
+values refuse startup. Settings take effect when a session is opened; they do
+not change the policy of an already resident session.
+
+Credential pass-through remains explicit: `[tools] env = ["GH_TOKEN"]` makes
+an intended GitHub token available without asking the model to open credential
+files. `[tools.set]` can provide other ordinary environment settings. PATH,
+HOME, and TMPDIR remain server-owned. Provider credentials are not implicitly
+copied into tool environments.

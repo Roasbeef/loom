@@ -26,6 +26,8 @@
 
 import broker/exec
 import broker/policy
+import client/catalog
+import client/daemon/main as entrypoint
 import client/memory
 import client/owned_assembly_test
 import client/serve
@@ -46,6 +48,44 @@ import support/enforcement
 import weft/poll
 
 // --- resolution -------------------------------------------------------------
+
+pub fn explicit_lockdown_flags_reach_managed_session_policy_test() {
+  let root = fake_state_root("lockdown")
+  let workspace = fixture_workspace("lockdown")
+  let assert Ok(flags) =
+    entrypoint.parse(["--read-scope", "workspace", "--network", "off"])
+    as "the daemon accepts explicit restrictions"
+  let settings = resolved_with(root, workspace, flags.session_defaults)
+  assert settings.base_policy.readable_roots == [workspace]
+  assert settings.base_policy.writable_roots == [workspace]
+  assert serve.under_tools_config(settings.base_policy, settings.tools).network
+    == policy.NetworkOff
+  assert settings.tools.network == catalog.ToolNetworkOff
+  assert list.contains(settings.base_policy.protected, root <> "/owner.token")
+
+  // A session without overrides gets the developer defaults, while an
+  // explicit flag takes precedence over the selected file in either direction.
+  let ordinary = resolved(root, workspace: workspace)
+  assert ordinary.base_policy.readable_roots == ["/"]
+  assert serve.under_tools_config(ordinary.base_policy, ordinary.tools).network
+    == policy.NetworkFull
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/loom.toml",
+      catalogue_document
+        <> "\n[workspace]\nread_scope = \"workspace\"\n[tools]\nnetwork = \"off\"\n",
+    )
+    as "the operator can persist a restricted profile"
+  let restricted = resolved(root, workspace: workspace)
+  assert restricted.base_policy.readable_roots == [workspace]
+  assert serve.under_tools_config(restricted.base_policy, restricted.tools).network
+    == policy.NetworkOff
+  let explicit =
+    resolved_with(root, workspace, ["--read-scope", "host", "--network", "full"])
+  assert explicit.base_policy.readable_roots == ["/"]
+  assert serve.under_tools_config(explicit.base_policy, explicit.tools).network
+    == policy.NetworkFull
+}
 
 pub fn the_daemon_masks_its_secrets_and_not_its_root_test() {
   let root = fake_state_root("resolution")
@@ -324,6 +364,14 @@ main = [\"acme\"]
 // registration, and a fixture that assembled the policy itself would
 // prove nothing about that path.
 fn resolved(root: String, workspace workspace: String) -> serve.Settings {
+  resolved_with(root, workspace, [])
+}
+
+fn resolved_with(
+  root: String,
+  workspace: String,
+  overrides: List(String),
+) -> serve.Settings {
   let fixture = owned_assembly_test.settings()
   let #(id, _) = ids.mint_session(ids.generator(clock.fixed(1), 909))
   let id = ids.session_id_to_string(id)
@@ -349,7 +397,7 @@ fn resolved(root: String, workspace workspace: String) -> serve.Settings {
     )
   let assert Ok(settings) =
     serve.resolve_managed(
-      ["--helper", fixture.helper_path],
+      ["--helper", fixture.helper_path, ..overrides],
       record,
       selected,
       root,

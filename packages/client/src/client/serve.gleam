@@ -527,7 +527,6 @@ pub fn start_build_plane(
   )
   let base =
     build_plane_policy(writable, state_root)
-    |> admitting_user_toolchains(home_directory())
     |> admitting_codemode(Ok(toolchain))
     |> merging_mounts
 
@@ -591,6 +590,8 @@ type Flags {
     codemode_seed: Option(String),
     codemode_seams: Option(String),
     demand: Option(EnforcementDemand),
+    read_scope: Option(catalog.ReadScope),
+    network: Option(catalog.ToolNetwork),
   )
 }
 
@@ -607,6 +608,8 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       codemode_seed: None,
       codemode_seams: None,
       demand: None,
+      read_scope: None,
+      network: None,
     ),
   )
 }
@@ -809,6 +812,14 @@ fn parse_loop(arguments: List(String), flags: Flags) -> Result(Flags, String) {
       parse_loop(rest, Flags(..flags, codemode_seed: Some(value)))
     ["--codemode-seams", value, ..rest] ->
       parse_loop(rest, Flags(..flags, codemode_seams: Some(value)))
+    ["--read-scope", value, ..rest] -> {
+      use scope <- result.try(catalog.parse_read_scope(value))
+      parse_loop(rest, Flags(..flags, read_scope: Some(scope)))
+    }
+    ["--network", value, ..rest] -> {
+      use network <- result.try(catalog.parse_tool_network(value))
+      parse_loop(rest, Flags(..flags, network: Some(network)))
+    }
     ["--best-effort", ..rest] ->
       set_demand(rest, flags, exec.BestEffort, "--best-effort")
     ["--full-enforcement", ..rest] ->
@@ -823,6 +834,8 @@ const usage = "usage: loomd --session <path.db>
   [--workspace <dir>]      workspace root (default the current directory)
   [--helper <path>]        loom-exec binary (default: beside this server, then PATH, then ./bin)
   [--config <loom.toml>]   model catalogue file (default: LOOM_* env vars)
+  [--read-scope <scope>]   host (default) or workspace; protected paths remain masked
+  [--network <mode>]       full (default) or off for jailed tools
   [--codemode-seed <dir>]  code-mode build seed (default <workspace>/build/codemode-seed, then the bundled one)
   [--codemode-seams <s>]   code-mode seams: workspace, orchestration, both (default workspace)
   [--full-enforcement]     require every requested resource and lifecycle layer
@@ -933,7 +946,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     domain_paths: None,
     base_policy: admitting_config_mounts(
-      base_policy(workspace),
+      base_policy_for(
+        workspace,
+        option.unwrap(flags.read_scope, workspace_config.read_scope),
+      ),
       workspace_config.mounts,
     ),
     helper_path:,
@@ -967,7 +983,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     jobs_policy:,
     deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
     memory:,
-    tools:,
+    tools: catalog.ToolsConfig(
+      ..tools,
+      network: option.unwrap(flags.network, tools.network),
+    ),
   ))
 }
 
@@ -2241,8 +2260,6 @@ fn assemble_in(
     |> allowing_tool_tmpdir
     |> under_tools_config(settings.tools)
     |> widening_linked_worktree(settings.workspace)
-    |> widening_path_dependencies(settings.workspace)
-    |> admitting_user_toolchains(settings.home)
     |> admitting_codemode(toolchain)
     |> merging_mounts
 
@@ -3535,8 +3552,7 @@ pub fn tool_environment(
     |> list.filter(fn(path) { path != "" })
   let owned =
     session_environment(workspace, toolchain_path)
-    |> extending_path(inherited_path)
-    |> extending_path(tools.path)
+    |> extending_path(list.append(tools.path, inherited_path))
 
   // A pass-through name settles one of two ways, so the fold carries
   // both answers: the pairs that were found, and the names that were not.
@@ -3663,124 +3679,6 @@ pub fn admitting_codemode(
   }
 }
 
-/// The per-user toolchain and cache directories a jail may reach, bound
-/// when they exist and simply absent when they do not.
-///
-/// Baseline behaviour must work with no configuration edits: a new user
-/// gets what any other coding agent gives by default, and does not edit
-/// a file to run an ordinary build. Under a minimal jail root that means
-/// a fixed, well-known set, because a denylist cannot be finished and an
-/// empty allowlist refuses every build. Every entry is `MountOptional`,
-/// so an account without `~/.rustup` is not a boot failure and not a
-/// refusal; it is a mount that was never emitted.
-///
-/// **Every entry is read-only**, and that costs no build anything. The
-/// jail's `HOME` is `tool_home_directory(workspace)`, which `parse_tools`
-/// refuses to let a `[tools]` table override, so a Go build writes
-/// `<workspace>/.codemode/home/.cache/go-build`, cargo writes the
-/// registry under the same home, and npm, hex, gleam and rebar do the
-/// same. None of them ever reaches the operator's account to write.
-/// Binding these directories read-write would therefore have helped no
-/// zero-configuration build while giving a session write access to
-/// `~/.cache`, where tokens live. A build that genuinely has to write
-/// outside the workspace names the directory in `[workspace] mounts`,
-/// where the operator can see the decision.
-///
-/// The nesting is deliberate. `~/.cargo`, `~/go` and `~/.local` each hold
-/// directories a build has reason to read beside directories it has none,
-/// so each is named by its children rather than by the parent:
-/// `.cargo/bin` and `.cargo/registry` rather than `.cargo`, `go/bin` and
-/// `go/pkg` rather than `go`, `.local/bin` rather than `.local`. Naming a
-/// parent binds whatever else an operator keeps under it.
-///
-/// A directory a `protected` entry already masks is dropped rather than
-/// mounted. The two contradict each other — `broker/policy.validate`
-/// refuses the pair, and it is right to — and between a mask over the
-/// daemon's own credentials and a cache an operator put underneath one,
-/// the mask is the half worth keeping. A build that needed that cache
-/// fails saying so; a mask that lost is a credential a session can read.
-///
-/// `None` for the home directory yields no user set at all, never a
-/// refusal: an account with no `HOME` is one this function knows nothing
-/// about, which is exactly the empty answer.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.admitting_user_toolchains(base, None) == base
-/// ```
-///
-@internal
-pub fn admitting_user_toolchains(
-  base: policy.SandboxPolicy,
-  home: Option(String),
-) -> policy.SandboxPolicy {
-  let under_home = case home {
-    None -> []
-    Some(home) -> {
-      list.map(user_toolchain_readable, fn(name) { home <> "/" <> name })
-    }
-  }
-  let wanted =
-    list.append(under_home, shared_toolchain_readable)
-    |> list.filter(fn(path) { simplifile.is_directory(path) == Ok(True) })
-    |> list.filter(fn(path) { !dropped_for_mask(path, base.protected) })
-    |> list.filter(fn(path) {
-      !list.any(base.mounts, fn(mount) { mount.path == path })
-    })
-  policy.SandboxPolicy(
-    ..base,
-    mounts: list.append(
-      base.mounts,
-      list.map(wanted, fn(path) {
-        policy.Mount(
-          path:,
-          access: policy.MountReadOnly,
-          requirement: policy.MountOptional,
-        )
-      }),
-    ),
-  )
-}
-
-/// The directories under `$HOME` that hold an installed toolchain, the
-/// shims a version manager puts on `PATH`, or a package cache a build
-/// reads from. Every one of them is mounted read-only.
-///
-/// Read-only is not a compromise here, because nothing in a session
-/// writes to these paths anyway. The jail's `HOME` is
-/// `tool_home_directory(workspace)`, so cargo, go, npm, hex, gleam and
-/// rebar put their caches under the workspace and never under the
-/// operator's account. A read-write grant would therefore help no build
-/// while handing a session the operator's `~/.cache` tokens. A build that
-/// genuinely has to write outside the workspace gets that from a
-/// `[workspace] mounts` entry the operator wrote, which is the one place
-/// the decision is visible.
-///
-/// `.local/share` is deliberately absent for the same reason turned
-/// around: keyrings and shell history live there, it is not a toolchain
-/// root, and the Python installers that use it write under the jail's own
-/// `HOME`.
-///
-/// See `admitting_user_toolchains` for the membership rule.
-pub const user_toolchain_readable = [
-  ".cargo/bin", ".cargo/registry", ".rustup", "go/bin", "go/pkg", ".nvm",
-  ".asdf", ".pyenv", ".rbenv", ".opam", ".ghcup", ".sdkman", ".nix-profile",
-  ".local/bin", ".cache", ".npm", ".pnpm", ".yarn", ".hex", ".mix", ".m2",
-  ".gradle", ".gem", ".stack", ".cabal", ".deno", ".bun",
-]
-
-/// The account-wide toolchain roots that are not under `$HOME`, mounted
-/// read-only.
-///
-/// Only one entry, because the helper already binds the rest. `/usr/local`
-/// is a system root on both platforms, `/opt/homebrew` and `/nix/store`
-/// are in the helper's `DarwinSystemRoots` and `SystemRoots`, and naming
-/// any of them a second time here only produces a duplicate for
-/// `merging_mounts` to collapse. Linuxbrew's prefix is what no
-/// system-root constant covers.
-pub const shared_toolchain_readable = ["/home/linuxbrew/.linuxbrew"]
-
 // A region a mask already covers, in either direction: the mask over the
 // region and the region over the mask are both the contradiction
 // `broker/policy.validate` refuses.
@@ -3793,9 +3691,8 @@ fn masked(path: String, protected: List(String)) -> Bool {
 // `masked`, and a line on stderr naming what it cost. A derived mount
 // dropped for a mask is silent otherwise, and the build that then fails
 // inside the jail reports a missing directory rather than the mask that
-// removed it. The default state root is `~/.cache/loom`, which sits under
-// the `.cache` entry of `user_toolchain_readable`, so this is a path an
-// ordinary host takes rather than a corner an operator has to construct.
+// removed it. Explicit mounts instead fail validation so the operator can
+// correct a configuration that contradicts a protected path.
 //
 // Stderr rather than the `Logger`: both callers are pure derivations in
 // the base-policy pipe and neither is handed a logger, and threading one
@@ -3816,10 +3713,7 @@ fn dropped_for_mask(path: String, protected: List(String)) -> Bool {
 /// The operator's home directory as the harness reads it, or `None` when
 /// `HOME` is unset.
 ///
-/// One reader, because `admitting_user_toolchains` is called from a
-/// session boot that has a `Settings` and from a build plane that does
-/// not, and two environment reads would be two answers to the same
-/// question.
+/// Tool configuration uses this value to expand an operator's `~` paths.
 ///
 /// ## Examples
 ///
@@ -4161,10 +4055,9 @@ fn allowing_tool_tmpdir(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
   )
 }
 
-// The operator's `path` entries go on the tail of the server's `PATH`:
-// the toolchain and system directories stay in front, so the shell and
-// the compiler resolve the same `gleam` and `erl`, and what follows is
-// where the rest of the host's tools are found.
+// Keep the discovered Loom toolchain first, then operator and host tools,
+// then system fallbacks. Putting system launchers ahead of the operator's
+// installed Git and Python made an explicit PATH addition ineffective.
 fn extending_path(
   environment: List(#(String, String)),
   extra: List(String),
@@ -4174,7 +4067,17 @@ fn extending_path(
     dirs ->
       list.map(environment, fn(pair) {
         case pair {
-          #("PATH", value) -> #("PATH", value <> ":" <> string.join(dirs, ":"))
+          #("PATH", value) -> {
+            let current = string.split(value, ":")
+            let fallback = ["/usr/local/bin", "/usr/bin", "/bin"]
+            let bundled =
+              list.filter(current, fn(path) { !list.contains(fallback, path) })
+            let ordered =
+              list.flatten([bundled, dirs, current])
+              |> list.filter(fn(path) { filepath.is_absolute(path) })
+              |> list.unique
+            #("PATH", string.join(ordered, ":"))
+          }
           other -> other
         }
       })
@@ -4923,39 +4826,45 @@ pub fn degraded(pool: Pool) -> Bool {
 /// the agent could only discover by writing a broken command.
 pub const shell_path = "/bin/sh"
 
-/// The default session base policy: workspace writable and readable,
-/// network off. Escalations widen it per approval. This is what `main`
-/// puts in `Settings.base_policy`; a host that supplies its own may
-/// serve a narrower one.
+/// The default development policy permits host reads and ordinary network
+/// access, with writes confined to the workspace. Protected harness data
+/// remains masked regardless of the readable scope.
 ///
-/// The whole host used to be readable here (`readable_roots: ["/"]`),
-/// which named what the helper's base view already was rather than what
-/// a session needs. `protocol-change/020` replaces that base view with a
-/// minimal root, so every region outside the workspace is now stated:
-/// the system roots by the helper, the toolchain by
-/// `admitting_codemode`, the per-user toolchain and cache directories by
-/// `admitting_user_toolchains`, the sibling checkouts a manifest names
-/// by `widening_path_dependencies`, and anything left over by an
-/// operator's `[workspace] mounts` line. What is not stated is not
-/// reachable, which is the point: `protected` masking is a denylist and
-/// cannot cover a dotfile nobody thought of.
+/// Installed tools can live anywhere on the host; the policy does not guess
+/// language managers, SDK directories, or package-cache locations.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // serve.base_policy("/work").writable_roots == ["/work"]
+/// assert serve.base_policy("/work").readable_roots == ["/"]
 /// ```
-///
 pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
+  base_policy_for(workspace, catalog.HostReads)
+}
+
+/// Selects host or workspace reads without changing the write boundary.
+/// Additional restricted-mode resources come from explicit workspace mounts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.base_policy_for("/work", catalog.WorkspaceReads).readable_roots
+///   == ["/work"]
+/// ```
+@internal
+pub fn base_policy_for(
+  workspace: String,
+  scope: catalog.ReadScope,
+) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..policy.workspace_default(workspace),
-    // The blob store is content-addressed, and an address is only worth
-    // something if nothing can be reached under it but the content it
-    // names — which a jailed `proc.run` inside the writable workspace
-    // could otherwise defeat by pre-planting bytes at a future address.
-    // Protecting the directory masks it from every jail; the harness's
-    // own blob writes never pass `resolve_writable`, so they cost
-    // nothing, and the bridge's `fs.write` is refused there, correctly.
+    readable_roots: case scope {
+      catalog.HostReads -> ["/"]
+      catalog.WorkspaceReads -> [workspace]
+    },
+    network: policy.NetworkFull,
+    // Content-addressed artifacts are written only by their harness owner.
+    // Broad reads must never let a jailed tool replace one behind its hash.
     protected: [workspace <> "/" <> codemode_wiring.blob_directory],
   )
 }

@@ -6,6 +6,7 @@
 //// survives readiness failures so bounded shutdown can report uncertainty.
 
 import argv
+import client/catalog
 import client/daemon/listener
 import client/daemon/manager
 import client/daemon/root
@@ -229,6 +230,32 @@ fn parse_loop(
     ["--bind", value, ..rest] -> {
       use #(bind_host, bind_port) <- result.try(bind_address(value))
       parse_loop(rest, Config(..config, bind_host:, bind_port:))
+    }
+    ["--read-scope", value, ..rest] -> {
+      use _scope <- result.try(catalog.parse_read_scope(value))
+      parse_loop(
+        rest,
+        Config(
+          ..config,
+          session_defaults: list.append(config.session_defaults, [
+            "--read-scope",
+            value,
+          ]),
+        ),
+      )
+    }
+    ["--network", value, ..rest] -> {
+      use _network <- result.try(catalog.parse_tool_network(value))
+      parse_loop(
+        rest,
+        Config(
+          ..config,
+          session_defaults: list.append(config.session_defaults, [
+            "--network",
+            value,
+          ]),
+        ),
+      )
     }
     [flag, value, ..rest]
       if flag == "--helper"

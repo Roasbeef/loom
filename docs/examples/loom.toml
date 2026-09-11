@@ -340,24 +340,18 @@ body = "The migration window opens today. Confirm the plan is ready."
 model_created = "steer"
 
 
-# What the jailed tool shells may reach. The whole table is optional, and
-# leaving it out means exactly what is written below: no network, and an
-# environment of the three names the server owns.
-#
-#   network = "off"  — the DEFAULT. bwrap unshares the network namespace
-#                      and seccomp denies the socket calls, so `gh`,
-#                      `git fetch` and `curl` do not work inside the
-#                      jail. That is the design and not an oversight:
-#                      egress is the exfiltration channel, and a model
-#                      that can read your repository and open a socket
-#                      can send it anywhere.
-#   network = "full" — unrestricted egress for every jailed tool shell.
-#                      This is YOUR decision to make per catalogue, and
-#                      it is the whole of the decision: there is no
-#                      host allowlist, because filtering by host needs
-#                      an egress proxy the spec defers, and a key that
-#                      accepted hosts would promise filtering nothing
-#                      enforces.
+# Development defaults: host files are readable, writes stay within the
+# workspace and explicit writable mounts, and shell network access is enabled.
+# Protected daemon data remains masked. For lockdown, choose the independent
+# settings below, or pass `loomd --read-scope workspace --network off`.
+[workspace]
+read_scope = "host"
+# read_scope = "workspace"
+# mounts = [{ path = "/absolute/shared/data", access = "ro" }]
+
+# network = "full" is the default, including when [tools] is absent.
+# network = "off" disables shell egress. Native search is always offline.
+# There is no host allowlist: the helper does not implement an egress proxy.
 #
 # `env` names host environment variables passed into every jailed tool
 # shell. The NAMES live here; the values are read from the server's own
@@ -374,7 +368,7 @@ model_created = "steer"
 # than the compiler does, or source your own dotfiles from inside the
 # jail.
 [tools]
-network = "off"
+network = "full"
 # env = ["GH_TOKEN"]
 # Directories appended to the shell's PATH after the server's own, which
 # stay in front so the shell resolves the same gleam the compiler does.

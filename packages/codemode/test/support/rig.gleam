@@ -148,20 +148,11 @@ pub fn start(
 /// allowlist — without which the helper would construct a child
 /// environment the boot runtime cannot find its socket in.
 ///
-/// This used to grant `readable_roots: ["/"]`, which meant the end-to-end
-/// suite ran under a base no daemon has produced since
-/// `protocol-change/020`. Every region outside the root reached the jail
-/// whether or not anything stated it, so the suite could not fail on a
-/// missing or duplicated mount, and it did not fail on the duplicate that
-/// broke every real session start. The base is now assembled the way
-/// `client/serve` assembles a session's: the workspace, plus the
-/// toolchain regions from `toolchain_mounts`, merged by path.
-///
-/// The per-user toolchain set `client/serve.admitting_user_toolchains`
-/// adds is deliberately not reproduced here. It is a constant belonging to
-/// that module, a copy of it in this rig would drift from the original,
-/// and nothing in this suite needs it: the jail is given no `HOME`, and
-/// the compiler and the BEAM it runs are the ones `prerequisites` located.
+/// This fixture deliberately uses the restricted profile so a missing or
+/// duplicated toolchain mount still fails. The default developer session can
+/// read the host, but code-mode compilation must also work with explicit
+/// workspace reads. The discovered compiler, ERTS, and seed are the complete
+/// dependency set for these programs; no language-manager path list is needed.
 pub fn base_policy(
   root: String,
   prerequisites: Prerequisites,
