@@ -12,6 +12,14 @@ processful shell around that sans-io core. WP-F.
 
 ## Key Types
 
+- `ProviderError.WithContext` carries the protocol 028 diagnostic envelope.
+  `FailureObservation` names one of four local boundaries, the initiating
+  event, known request/attempt identity, and configured time bounds. The
+  envelope normalizes to at most one observation per boundary; oversized
+  request identities are omitted, and the gateway scrubs retained strings.
+  Classification and cancellation-sensitive routing inspect `underlying_error`.
+  Context never substitutes for a drain witness or changes a deadline.
+
 - `provider/gateway.Gateway` — opaque, built with the builder pattern
   (`new`, `add_provider`, `route`, `price`, `with_attempt_timeout`); exposes the
   frozen contract `resolve(gw, role)` and `request(gw, req)`. `prepare`

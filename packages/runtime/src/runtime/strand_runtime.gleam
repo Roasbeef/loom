@@ -1881,7 +1881,13 @@ fn spawn_provider(
               handle,
               stop,
               driver,
-              effects.provider_timeout_ms(surface),
+              effects.failure_observation(
+                spec,
+                stream.RuntimeSource,
+                stream.TerminalResponse,
+                effects.provider_timeout_ms(surface),
+                provider_cancel_grace_ms,
+              ),
             )
           {
             None -> stream.release_drain(drain)
@@ -1917,16 +1923,28 @@ fn await_provider(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
   driver: Pid,
-  timeout_ms: Int,
+  context: stream.FailureObservation,
 ) -> Option(stream.StreamEvent) {
   let deadline = process.new_subject()
-  let deadline_timer = process.send_after(deadline, timeout_ms, Nil)
+  let deadline_timer =
+    process.send_after(
+      deadline,
+      option.unwrap(context.request_timeout_ms, 0),
+      Nil,
+    )
   let selector =
     process.new_selector()
     |> process.select_map(handle.events, ProviderStream)
     |> process.select_map(stop, fn(_nil) { StopProvider })
     |> process.select_map(deadline, fn(_nil) { ProviderDeadline })
-  await_provider_selected(selector, handle, stop, driver, deadline_timer)
+  await_provider_selected(
+    selector,
+    handle,
+    stop,
+    driver,
+    deadline_timer,
+    context,
+  )
 }
 
 // Retain one selector carrying one scheduled deadline across every delta. A
@@ -1938,20 +1956,34 @@ fn await_provider_selected(
   stop: Subject(Nil),
   driver: Pid,
   deadline_timer: Timer,
+  context: stream.FailureObservation,
 ) -> Option(stream.StreamEvent) {
   case process.selector_receive_forever(selector) {
     ProviderStream(stream.Delta(..)) ->
-      await_provider_selected(selector, handle, stop, driver, deadline_timer)
+      await_provider_selected(
+        selector,
+        handle,
+        stop,
+        driver,
+        deadline_timer,
+        context,
+      )
     ProviderStream(stream.Settled(..) as terminal)
     | ProviderStream(stream.Failed(..) as terminal) -> {
       retire_provider_deadline(deadline_timer)
-      Some(terminal)
+      Some(stream.contextual_event(terminal, context))
     }
     StopProvider -> {
       retire_provider_deadline(deadline_timer)
       stream.cancel(handle)
       case process.is_alive(driver) {
-        True -> await_provider_cancel(handle, stop, driver)
+        True ->
+          await_provider_cancel(
+            handle,
+            stop,
+            driver,
+            stream.FailureObservation(..context, cause: stream.ExplicitStop),
+          )
 
         // The reaper sent this stop after observing the driver's Down. No
         // caller remains to consume a terminal, and the reaper independently
@@ -1963,11 +1995,19 @@ fn await_provider_selected(
     ProviderDeadline -> {
       retire_provider_deadline(deadline_timer)
       stream.cancel(handle)
-      await_provider_cancel(handle, stop, driver)
+      await_provider_cancel(
+        handle,
+        stop,
+        driver,
+        stream.FailureObservation(..context, cause: stream.RequestDeadline),
+      )
     }
     ProviderCancelExpired -> {
       retire_provider_deadline(deadline_timer)
-      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+      Some(stream.contextual_event(
+        stream.Failed(error: stream.CancellationUnconfirmed),
+        context,
+      ))
     }
   }
 }
@@ -1984,6 +2024,7 @@ fn await_provider_cancel(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
   driver: Pid,
+  context: stream.FailureObservation,
 ) -> Option(stream.StreamEvent) {
   let deadline = process.new_subject()
   let _timer = process.send_after(deadline, provider_cancel_grace_ms, Nil)
@@ -1992,7 +2033,7 @@ fn await_provider_cancel(
     |> process.select_map(handle.events, ProviderStream)
     |> process.select_map(stop, fn(_nil) { StopProvider })
     |> process.select_map(deadline, fn(_nil) { ProviderCancelExpired })
-  await_provider_cancel_selected(selector, driver)
+  await_provider_cancel_selected(selector, driver, context)
 }
 
 // This loop retains the selector carrying the one scheduled deadline. Late
@@ -2001,23 +2042,34 @@ fn await_provider_cancel(
 fn await_provider_cancel_selected(
   selector: process.Selector(ProviderWaitEvent),
   driver: Pid,
+  context: stream.FailureObservation,
 ) -> Option(stream.StreamEvent) {
   case process.selector_receive_forever(selector) {
     ProviderStream(stream.Delta(..)) ->
-      await_provider_cancel_selected(selector, driver)
+      await_provider_cancel_selected(selector, driver, context)
     ProviderStream(stream.Settled(..) as terminal)
-    | ProviderStream(stream.Failed(..) as terminal) -> Some(terminal)
+    | ProviderStream(stream.Failed(..) as terminal) ->
+      Some(stream.contextual_event(terminal, context))
     StopProvider ->
       case process.is_alive(driver) {
         True -> {
-          Some(stream.Failed(error: stream.CancellationUnconfirmed))
+          Some(stream.contextual_event(
+            stream.Failed(error: stream.CancellationUnconfirmed),
+            context,
+          ))
         }
         False -> None
       }
     ProviderCancelExpired ->
-      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+      Some(stream.contextual_event(
+        stream.Failed(error: stream.CancellationUnconfirmed),
+        context,
+      ))
     ProviderDeadline ->
-      Some(stream.Failed(error: stream.CancellationUnconfirmed))
+      Some(stream.contextual_event(
+        stream.Failed(error: stream.CancellationUnconfirmed),
+        context,
+      ))
   }
 }
 

@@ -342,7 +342,7 @@ pub fn run_delivers_deltas_and_returns_terminal_test() {
       consumer: process.self(),
       within: 1000,
     )
-  assert terminal
+  assert bare_terminal(terminal)
     == stream.AttemptTerminal(
       stream.Failed(stream.StreamDisconnected(context: "echo done")),
     )
@@ -364,7 +364,7 @@ pub fn run_times_out_in_band_test() {
       consumer: process.self(),
       within: 50,
     )
-  assert terminal
+  assert bare_terminal(terminal)
     == stream.AttemptTerminal(
       stream.Failed(stream.TransportFailed(
         reason: "timed out waiting for the provider",
@@ -386,7 +386,7 @@ pub fn run_deadline_is_not_refreshed_by_active_chunks_test() {
       consumer: process.self(),
       within: 40,
     )
-  assert outcome
+  assert bare_terminal(outcome)
     == stream.AttemptTerminal(
       stream.Failed(stream.TransportFailed(
         reason: "timed out waiting for the provider",
@@ -431,7 +431,7 @@ pub fn run_transport_failure_in_band_test() {
       consumer: process.self(),
       within: 1000,
     )
-  assert terminal
+  assert bare_terminal(terminal)
     == stream.AttemptTerminal(
       stream.Failed(stream.TransportFailed(reason: "connection refused")),
     )
@@ -451,7 +451,10 @@ pub fn run_explicit_cancel_stops_transport_test() {
       consumer: process.self(),
       within: 1000,
     )
-  assert outcome == stream.AttemptCancelled
+  let assert stream.AttemptCancelled(context) = outcome
+    as "the attempt owns cancellation"
+  assert context.cause == stream.CancellationRequested
+  assert context.request_timeout_ms == Some(1000)
   assert receive_from(cancelled, 100) == Ok(Nil)
 }
 
@@ -520,7 +523,9 @@ pub fn run_cancel_between_chunks_drops_late_http_terminal_test() {
 
   process.send(control, stream.Cancel)
 
-  assert receive_from(outcomes, 1000) == Ok(stream.AttemptCancelled)
+  let assert Ok(stream.AttemptCancelled(context)) = receive_from(outcomes, 1000)
+    as "cancellation remains a route-stopping outcome"
+  assert context.cause == stream.CancellationRequested
   assert receive_from(cancelled, 100) == Ok(Nil)
   let assert Ok(True) =
     process.new_selector()
@@ -559,7 +564,11 @@ pub fn run_timeout_refuses_to_retry_stubborn_transport_owner_test() {
       within: 20,
     )
   let assert Ok(owner) = receive_from(owners, 100)
-  assert outcome == stream.AttemptCancellationUnconfirmed
+  let assert stream.AttemptCancellationUnconfirmed(context) = outcome
+    as "the stubborn owner has not confirmed drain"
+  assert context.cause == stream.RequestDeadline
+  assert context.request_timeout_ms == Some(20)
+  assert context.cancellation_timeout_ms == Some(100)
   assert receive_from(cancelled, 100) == Ok(Nil)
   assert process.is_alive(owner)
   process.kill(owner)
@@ -596,7 +605,7 @@ pub fn run_transport_death_fails_in_band_test() {
       consumer: process.self(),
       within: 1000,
     )
-  assert outcome
+  assert bare_terminal(outcome)
     == stream.AttemptTerminal(
       stream.Failed(stream.TransportFailed(
         reason: "provider transport stopped before a terminal response",
@@ -619,7 +628,7 @@ pub fn run_start_failure_fails_once_in_band_test() {
       consumer: process.self(),
       within: 1000,
     )
-  assert outcome
+  assert bare_terminal(outcome)
     == stream.AttemptTerminal(
       stream.Failed(stream.TransportFailed(reason: "start failed: unavailable")),
     )
@@ -677,7 +686,10 @@ pub fn run_tracked_publishes_owner_before_transport_start_test() {
   assert receive_from(transport_started, 20) == Error(Nil)
   process.send(permit, Nil)
   assert receive_from(transport_started, 1000) == Ok(Nil)
-  assert receive_from(outcomes, 1000) == Ok(stream.AttemptDrainProofLost)
+  let assert Ok(stream.AttemptDrainProofLost(context)) =
+    receive_from(outcomes, 1000)
+    as "abnormal retirement cannot prove drain"
+  assert context.source == stream.AttemptSource
 }
 
 pub fn run_tracked_publishes_cancel_capability_before_runner_death_test() {
@@ -854,4 +866,12 @@ fn send_to(subject: process.Subject(a), value: a) -> Nil {
 
 fn receive_from(subject: process.Subject(a), timeout: Int) -> Result(a, Nil) {
   process.receive(subject, within: timeout)
+}
+
+fn bare_terminal(outcome) {
+  case outcome {
+    stream.AttemptTerminal(stream.Failed(error)) ->
+      stream.AttemptTerminal(stream.Failed(stream.underlying_error(error)))
+    _ -> outcome
+  }
 }

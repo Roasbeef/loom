@@ -20,11 +20,15 @@
 //// strand name to newly replayed work.
 
 import core/clock
+import core/entry
 import core/json
+import core/message
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
+import gleam/option.{Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/string
 import machine/operation.{
   NormalizedRetryPolicy, ReplaySafe, RunFailed, RunLastResult,
 }
@@ -34,6 +38,7 @@ import runtime/effects
 import runtime/strand_runtime
 import runtime/supervisor
 import session/session
+import storage/storage
 import support/fake
 import support/harness
 import support/recorder
@@ -240,7 +245,29 @@ pub fn provider_timeout_cancels_before_settling_test() {
     api.await_result(rt, op, within_ms: 5000)
     as "the cancelled provider request must settle terminally"
   assert error.code == "provider_error"
-  assert error.message == "provider request was cancelled"
+  assert error.message
+    == "provider request was cancelled (runtime: request deadline)"
+  let assert Ok(Some(session.Cell(value: Some(leaf), ..))) =
+    session.strand_leaf(sess, "main")
+    as "the terminal settlement retains its leaf"
+  let assert Ok(messages) =
+    storage.scan_branch(sess.store, storage.branch_scan(leaf))
+    as "the durable branch remains readable"
+  assert list.any(messages, fn(message) {
+    case message {
+      entry.MessageEntry(
+        message: message.AssistantMessage(diagnostics: Some(value), ..),
+        ..,
+      ) -> {
+        let encoded = json.to_string(value)
+        string.contains(encoded, "request deadline")
+        && string.contains(encoded, "request_timeout_ms")
+        && string.contains(encoded, "request_id")
+      }
+      _ -> False
+    }
+  })
+    as "the outer deadline and local request identity survive durable settlement"
   assert recorder.read(rec, "provider-cancelled") == 1
   process.kill(rt.tree.supervisor)
 }
@@ -279,7 +306,8 @@ pub fn provider_deadline_is_not_refreshed_by_delta_flood_test() {
   let assert Ok(RunLastResult(outcome: RunFailed(error:), ..)) =
     api.await_result(rt, op, within_ms: 1000)
     as "provider activity must not renew the attempt deadline"
-  assert error.message == "provider request was cancelled"
+  assert error.message
+    == "provider request was cancelled (runtime: request deadline)"
   let assert Ok(flooder) = process.receive(flooders, within: 1000)
   process.kill(flooder)
   process.kill(rt.tree.supervisor)
@@ -415,7 +443,8 @@ pub fn provider_timeout_without_acknowledgement_stays_terminal_test() {
     api.await_result(rt, op, within_ms: 5000)
     as "an unacknowledged cancellation must still settle terminally"
   assert error.code == "provider_error"
-  assert error.message == "provider cancellation could not be confirmed"
+  assert error.message
+    == "provider cancellation could not be confirmed (runtime: request deadline)"
   // A retryable fallback would dispatch and cancel the request again.
   assert recorder.read(rec, "unacknowledged-cancel") == 1
   process.kill(rt.tree.supervisor)
@@ -456,7 +485,8 @@ pub fn provider_cancellation_deadline_survives_delta_flood_test() {
   let assert Ok(RunLastResult(outcome: RunFailed(error:), ..)) =
     api.await_result(rt, op, within_ms: 3500)
     as "late deltas must not extend the cancellation grace"
-  assert error.message == "provider cancellation could not be confirmed"
+  assert error.message
+    == "provider cancellation could not be confirmed (runtime: request deadline)"
   let assert Ok(flooder) = process.receive(flooders, within: 1000)
   process.kill(flooder)
   process.kill(rt.tree.supervisor)

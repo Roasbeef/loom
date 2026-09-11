@@ -1975,8 +1975,9 @@ pub fn preview_observation_drops_backlog_but_preserves_consumer_and_cancel_test(
   process.send(release, Nil)
   assert process.receive(seen, within: 1000)
     == Ok(stream.Failed(stream.ProviderCancelled))
-  assert stream.next(handle, within: 1000)
-    == Ok(stream.Failed(stream.ProviderCancelled))
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+    as "the consumer receives one cancellation terminal"
+  assert stream.underlying_error(error) == stream.ProviderCancelled
   assert stream.await_drain_forever(witness) == stream.Drained
 }
 
@@ -2114,8 +2115,9 @@ pub fn expired_preview_admission_cannot_allocate_after_caller_timeout_test() {
     == Ok(stream.Delta(stream.TextDelta(0, "still authoritative")))
   assert process_monitor_count(pid) == baseline
   stream.cancel(handle)
-  assert stream.next(handle, within: 1000)
-    == Ok(stream.Failed(stream.ProviderCancelled))
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+    as "the consumer receives one cancellation terminal"
+  assert stream.underlying_error(error) == stream.ProviderCancelled
   assert stream.await_drain_forever(witness) == stream.Drained
   let _ = api.close(harness.runtime)
   Nil
@@ -2184,8 +2186,13 @@ pub fn provider_tap_forwards_explicit_cancellation_once_test() {
   stream.cancel(handle)
 
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
-  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
-    stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert stream.ProviderCancelled = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
+  assert list.any(stream.failure_context(error), fn(context) {
+    context.source == stream.RelaySource
+    && context.cause == stream.CancellationRequested
+  })
   assert stream.next(handle, within: 10) == Error(Nil)
 }
 
@@ -2240,8 +2247,9 @@ pub fn provider_relay_bounds_unacknowledged_cancellation_test() {
 
   stream.cancel(handle)
 
-  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
-    stream.next(handle, within: 2500)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 2500)
+  let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   let assert Ok(True) =
     process.new_selector()
@@ -2276,8 +2284,9 @@ pub fn provider_relay_custodian_is_distinct_from_inner_consumer_test() {
 
   assert inner_consumer != owner
     as "fallible stream consumption must not be the public drain witness"
-  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
-    stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert stream.ProviderCancelled = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
 
   // Deliberately await proof after retirement, not while racing the terminal.
   // Only a monitor installed before begin can retain the original exit reason.
@@ -2316,8 +2325,12 @@ pub fn provider_relay_cancel_during_inner_start_keeps_guard_test() {
   assert process.receive(cancelled, within: 20) == Error(Nil)
   process.send(start_gate, Nil)
   assert process.receive(cancelled, within: 1000) == Ok(Nil)
-  assert stream.next(handle, within: 1000)
-    == Ok(stream.Failed(error: stream.ProviderCancelled))
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+    as "the cancelled startup produces one terminal"
+  assert stream.underlying_error(error) == stream.ProviderCancelled
+  assert list.any(stream.failure_context(error), fn(context) {
+    context.cause == stream.CancellationRequested
+  })
   assert stream.await_drain_forever(drain_witness) == stream.Drained
 }
 
@@ -2345,9 +2358,10 @@ pub fn provider_relay_startup_cancel_has_one_delta_proof_deadline_test() {
 
   // The flood runs longer than the 1.5-second cancellation grace. The relay
   // must discard each delta without treating activity as renewed proof time.
-  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
-    stream.next(handle, within: 2500)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 2500)
     as "startup cancellation must keep one fixed proof deadline"
+  let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
   let assert Ok(flooder) = process.receive(flooders, within: 1000)
   process.kill(flooder)
 }
@@ -2401,9 +2415,10 @@ pub fn provider_relay_observes_a_burst_in_order_test() {
   assert burst_indices(fn() { stream.next(handle, within: 1000) }, 5)
     == [1, 2, 3, 4, 5]
     as "the consumer must be forwarded the same deltas, in the same order"
-  let assert Ok(stream.Failed(error: stream.ProviderCancelled)) =
-    stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
     as "the terminal is forwarded once the observer has seen it"
+  let assert stream.ProviderCancelled = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
 }
 
 fn burst_indices(
@@ -2515,8 +2530,9 @@ pub fn provider_relay_worker_crash_fails_promptly_and_cancels_test() {
     stream.Delta(stream.TextDelta(index: 0, text: "before crash")),
   )
 
-  let assert Ok(stream.Failed(error: stream.TransportFailed(reason:))) =
-    stream.next(handle, within: 1000)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 1000)
+  let assert stream.TransportFailed(reason:) = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
   assert reason == "provider relay worker stopped before a terminal response"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert stream.await_drain(drain_witness, within: 1000) == stream.Drained
@@ -2554,8 +2570,9 @@ pub fn provider_relay_worker_crash_waits_for_stubborn_owner_test() {
   let drain_witness = stream.watch_drain(handle)
   let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
 
-  let assert Ok(stream.Failed(error: stream.CancellationUnconfirmed)) =
-    stream.next(handle, within: 2500)
+  let assert Ok(stream.Failed(error)) = stream.next(handle, within: 2500)
+  let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
+    as "the relay preserves the underlying terminal error"
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
   assert process.is_alive(owner)
   assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut

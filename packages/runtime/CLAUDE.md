@@ -13,6 +13,12 @@ extended by the M3 runtime wave.
 
 ## Key Types
 
+- `effects.failure_observation` derives diagnostic identity from the captured
+  `RequestSpec`. Provider effects retain their own deadline or stop through
+  cancellation acknowledgement; the inner custodian records only cancellation
+  receipt. `settle_failure` persists these facts beside any `retry_after_ms`
+  in the existing assistant diagnostics field. Successful messages are unchanged.
+
 - `runtime/api.Runtime` — the live session handle: the `SessionTree`, the
   `Session`, the session's canonical `SessionId` (`api.session_id`), the
   `Effects` record, the strand name, and the `RunSettings`. `api.open`
@@ -377,6 +383,14 @@ extended by the M3 runtime wave.
   observation.
 
 ## Invariants
+
+- **A provider retry hint survives settlement and recovery.** The runtime
+  preserves a retryable error's `retry_after_ms` in the existing assistant
+  diagnostics JSON. The machine persists the later of that minimum delay and
+  its captured exponential policy as `GenerationRetryWait.not_before`.
+  Missing, malformed, negative, or shorter hints cannot shorten the policy.
+  Summary failures use the same convention in `OperationError.details` when
+  their producer supplies it. Terminal cancellation remains terminal.
 
 - **One writer, structurally.** All commits are calls into one actor, so
   "transactions on one session are serialized" is a property of the process

@@ -121,6 +121,14 @@ package is wrong.
 
 ## Invariants
 
+- **A provider retry hint survives settlement and recovery.** The runtime
+  preserves a retryable error's `retry_after_ms` in the existing assistant
+  diagnostics JSON. The machine persists the later of that minimum delay and
+  its captured exponential policy as `GenerationRetryWait.not_before`.
+  Missing, malformed, negative, or shorter hints cannot shorten the policy.
+  Summary failures use the same convention in `OperationError.details` when
+  their producer supplies it. Terminal cancellation remains terminal.
+
 - **The state is total.** Recovery reads `op.state` and nothing else to
   decide where to resume; no transition may depend on the previous state
   having been observed. `strand.last_result` is never read by the driver;

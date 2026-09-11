@@ -240,11 +240,19 @@ pub fn cancel(handle: StreamHandle) -> Nil
 // events: Delta(TextDelta|ToolCallDelta|ThinkingDelta) | Settled(SettledAssistantMessage, Usage) | Failed(ProviderError)
 // StreamHandle = {events: Subject(StreamEvent), cancel: fn() -> Nil,
 //                 owner: Option(Pid)}
-// ProviderError includes ProviderCancelled and CancellationUnconfirmed;
-// both are terminal and never fall back.
+// ProviderError includes ProviderCancelled, CancellationUnconfirmed and DrainProofLost;
+// all three remain terminal beneath WithContext (protocol-change/028).
 pub fn resolve(gw, role: Role) -> Result(ResolvedModel, MissingIdentity)
 // Role = Main | Subagent | Plan | Summarize | Vision | Custom(String)
 ```
+
+[Protocol 028](../protocol-change/028-provider-failure-context.md) adds a
+normalized `WithContext` envelope to the error vocabulary. Its at most four
+local observations preserve initiating events and known request identities
+through cancellation. Consumers unwrap for retry and cancellation routing;
+only the original monitor can prove drain. Runtime copies the envelope into
+the existing optional assistant diagnostics field. Role fallback scheduling
+is unchanged; persisted machine retries retain provider backoff hints.
 
 Fallback chains resolve at dispatch; the durable state stores the resolved `{provider, model_id}`. Adapters must map provider stop reasons totally; unknown → `Failed(UnmappedStopReason)` (in-band), never a crash. Adapter-computable overflow (input+cache_read > context_window, negligible output) settles as `error` with the canonical overflow message pattern.
 

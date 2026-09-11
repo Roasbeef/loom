@@ -296,6 +296,7 @@ type Relay {
     drain: Drain,
     observation: Observation,
     mode: ObservationMode,
+    context: stream.FailureObservation,
   )
 }
 
@@ -539,15 +540,43 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
     // grace the owner has to answer it.
     Forwarding, Relaying(relay:), CancelRequested -> {
       stream.cancel(relay.inner)
-      sm.transition(to: Cancelling, data: data)
+      sm.transition(
+        to: Cancelling,
+        data: Relaying(
+          Relay(
+            ..relay,
+            context: stream.FailureObservation(
+              ..relay.context,
+              cause: stream.CancellationRequested,
+            ),
+          ),
+        ),
+      )
     }
 
     // A worker that cannot finish the job and a stream that has gone quiet
     // are the same fact to the inner owner: cancel it and wait, bounded, for
     // the proof.
-    Forwarding, Relaying(relay:), RequestExpired
-    | Forwarding, Relaying(relay:), ObserverDown
-    -> fail_and_drain(relay)
+    Forwarding, Relaying(relay:), RequestExpired ->
+      fail_and_drain(
+        Relay(
+          ..relay,
+          context: stream.FailureObservation(
+            ..relay.context,
+            cause: stream.RequestDeadline,
+          ),
+        ),
+      )
+    Forwarding, Relaying(relay:), ObserverDown ->
+      fail_and_drain(
+        Relay(
+          ..relay,
+          context: stream.FailureObservation(
+            ..relay.context,
+            cause: stream.TransportExit,
+          ),
+        ),
+      )
 
     // Consumer death closes the observation boundary before cancellation can
     // produce a terminal event. This keeps wrapper-local side effects, such as
@@ -590,15 +619,24 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
     ProvingFailure, Relaying(relay:), InnerRetired(proof: InnerDrained) -> {
       process.send(
         relay.outer,
-        stream.Failed(error: stream.TransportFailed(
-          reason: "provider relay worker stopped before a terminal response",
-        )),
+        stream.contextual_event(
+          stream.Failed(error: stream.TransportFailed(
+            reason: "provider relay worker stopped before a terminal response",
+          )),
+          relay.context,
+        ),
       )
       sm.stop()
     }
 
     ProvingFailure, Relaying(relay:), InnerRetired(proof: InnerProofLost) -> {
-      process.send(relay.outer, stream.Failed(error: stream.DrainProofLost))
+      process.send(
+        relay.outer,
+        stream.contextual_event(
+          stream.Failed(error: stream.DrainProofLost),
+          relay.context,
+        ),
+      )
       lost_proof()
     }
 
@@ -608,7 +646,10 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
     ProvingFailure, Relaying(relay:), DrainExpired -> {
       process.send(
         relay.outer,
-        stream.Failed(error: stream.CancellationUnconfirmed),
+        stream.contextual_event(
+          stream.Failed(error: stream.CancellationUnconfirmed),
+          relay.context,
+        ),
       )
       sm.transition(to: Proving, data: data)
     }
@@ -756,6 +797,13 @@ fn open_inner(
       drain:,
       observation: Idle,
       mode: startup.mode,
+      context: effects.failure_observation(
+        startup.spec,
+        stream.RelaySource,
+        stream.TerminalResponse,
+        effects.provider_timeout_ms(startup.surface) + 100,
+        cancel_grace_ms,
+      ),
     )
   let selector =
     relay_selector(
@@ -775,7 +823,18 @@ fn open_inner(
       // Start-time cancellation enters the ordinary cancelling state, so it
       // gets that state's single deadline rather than one of its own. An idle
       // timeout would let each late delta silently renew the grace period.
-      sm.transition(to: Cancelling, data: Relaying(relay))
+      sm.transition(
+        to: Cancelling,
+        data: Relaying(
+          Relay(
+            ..relay,
+            context: stream.FailureObservation(
+              ..relay.context,
+              cause: stream.CancellationRequested,
+            ),
+          ),
+        ),
+      )
       |> sm.with_selector(selector)
     }
     True -> {
@@ -1121,7 +1180,10 @@ fn abandon(relay: Relay) -> sm.Next(Phase, Data, Msg) {
 fn unconfirmed(relay: Relay) -> sm.Next(Phase, Data, Msg) {
   process.send(
     relay.outer,
-    stream.Failed(error: stream.CancellationUnconfirmed),
+    stream.contextual_event(
+      stream.Failed(error: stream.CancellationUnconfirmed),
+      relay.context,
+    ),
   )
   stream.cancel(relay.inner)
   sm.transition(to: Proving, data: Relaying(relay))
@@ -1142,7 +1204,8 @@ fn lost_proof() -> sm.Next(Phase, Data, Msg) {
 // keeps its answer alive.
 fn deliver(relay: Relay, event: stream.StreamEvent) -> Nil {
   case consumer_liveness(relay.consumer) {
-    ConsumerAlive -> process.send(relay.outer, event)
+    ConsumerAlive ->
+      process.send(relay.outer, stream.contextual_event(event, relay.context))
     ConsumerGone -> Nil
   }
 }

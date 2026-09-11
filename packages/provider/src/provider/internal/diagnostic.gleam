@@ -10,6 +10,8 @@
 
 import core/corruption
 import gleam/bit_array
+import gleam/list
+import gleam/option
 import gleam/string
 import provider/stream.{
   type ProviderError, CancellationUnconfirmed, DrainProofLost, HttpError,
@@ -71,6 +73,23 @@ pub fn scrub_error(
   secret secret: String,
 ) -> ProviderError {
   case error {
+    stream.WithContext(inner, _) ->
+      list.fold(
+        list.reverse(stream.failure_context(error)),
+        scrub_error(stream.underlying_error(inner), secret),
+        fn(error, observation) {
+          stream.with_context(
+            error,
+            stream.FailureObservation(
+              ..observation,
+              request_id: option.map(observation.request_id, scrub_label(
+                _,
+                secret,
+              )),
+            ),
+          )
+        },
+      )
     ProviderCancelled -> ProviderCancelled
     CancellationUnconfirmed -> CancellationUnconfirmed
     DrainProofLost -> DrainProofLost

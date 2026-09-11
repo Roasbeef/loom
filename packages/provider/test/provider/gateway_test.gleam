@@ -296,7 +296,7 @@ pub fn exhausted_chain_fails_in_band_with_last_error_test() {
     )
   let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
-  assert error
+  assert stream.underlying_error(error)
     == stream.HttpError(
       status: 529,
       api_error_type: "overloaded_error",
@@ -316,8 +316,10 @@ pub fn terminal_failure_does_not_walk_the_chain_test() {
       }
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
-  let assert Ok(#([], stream.Failed(stream.HttpError(status: 400, ..)))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
+  let assert stream.HttpError(status: 400, ..) = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 pub fn reflected_secret_is_scrubbed_from_http_error_test() {
@@ -427,8 +429,10 @@ pub fn cancellation_is_terminal_and_prevents_fallback_test() {
     == Ok("https://primary.test/v1/messages")
   stream.cancel(handle)
   stream.cancel(handle)
-  let assert Ok(#([], stream.Failed(stream.ProviderCancelled))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 1000)
+  let assert stream.ProviderCancelled = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
   assert process.receive(cancelled, within: 1000)
     == Ok("https://primary.test/v1/messages")
   assert process.receive(started, within: 100) == Error(Nil)
@@ -519,7 +523,7 @@ pub fn cancellation_racing_retryable_failure_stops_fallback_test() {
   let assert Ok(Nil) = process.receive(cancelled, within: 2500)
     as "the cancellation deadline must reach the retryable attempt"
   let assert Ok(#([], terminal)) = stream.await_terminal(handle, within: 1000)
-  assert case terminal {
+  assert case bare_event(terminal) {
     stream.Failed(stream.ProviderCancelled)
     | stream.Failed(stream.CancellationUnconfirmed) -> True
     _ -> False
@@ -609,8 +613,10 @@ pub fn transport_prepare_crash_fails_closed_test() {
       panic as "transport seam crashed"
     })
   let handle = gateway.request(two_provider_gateway(crashing), main_request())
-  let assert Ok(#([], stream.Failed(stream.TransportFailed(..)))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 1000)
+  let assert stream.TransportFailed(..) = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 pub fn abnormal_transport_owner_reports_lost_drain_proof_test() {
@@ -642,8 +648,10 @@ pub fn abnormal_transport_owner_reports_lost_drain_proof_test() {
       )
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
-  let assert Ok(#([], stream.Failed(stream.DrainProofLost))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 1000)
+  let assert stream.DrainProofLost = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 /// Only the guard classifies the active attempt when the pump dies without
@@ -678,8 +686,10 @@ pub fn abnormal_attempt_owner_outlives_a_dead_pump_test() {
     })
   let handle = gateway.request(two_provider_gateway(transport), main_request())
   assert process.receive(registered, within: 1000) == Ok(Nil)
-  let assert Ok(#([], stream.Failed(stream.DrainProofLost))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2500)
+  let assert stream.DrainProofLost = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
@@ -718,8 +728,14 @@ pub fn cancellation_during_transport_start_keeps_drain_witness_test() {
   let assert Ok(start_gate) = process.receive(entered, within: 1000)
   stream.cancel(handle)
   assert stream.await_drain(drain_witness, within: 20) == stream.TimedOut
-  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2500)
+  let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
+  assert list.any(stream.failure_context(error), fn(context) {
+    context.cause == stream.CancellationRequested
+  })
+    as "the bounded terminal retains the observed cancel before late retirement"
   process.send(start_gate, Nil)
   let assert Ok(#(owner, release)) = process.receive(owners, within: 1000)
   let assert Ok(Nil) = process.receive(cancelled, within: 1000)
@@ -775,8 +791,10 @@ pub fn cancellation_expiry_rejects_late_attempt_registration_test() {
     process.receive(prepare_entered, within: 1000)
 
   stream.cancel(handle)
-  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2500)
+  let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
   process.send(release_prepare, Nil)
 
   assert process.receive(cancelled, within: 1000) == Ok(Nil)
@@ -830,8 +848,10 @@ pub fn cancellation_rejected_registration_stays_terminal_test() {
     process.receive(prepare_entered, within: 1000)
 
   stream.cancel(handle)
-  let assert Ok(#([], stream.Failed(stream.CancellationUnconfirmed))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2500)
+  let assert stream.CancellationUnconfirmed = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
   process.send(release_prepare, Nil)
   assert process.receive(cancelled, within: 1000) == Ok(Nil)
   assert stream.await_drain(drain, within: 1000) == stream.Drained
@@ -942,8 +962,10 @@ pub fn unroutable_role_fails_in_band_test() {
       target: model.ForRole(model.Vision, None),
     )
   let handle = gateway.request(gw, request)
-  let assert Ok(#([], stream.Failed(stream.NoIdentity(role: "vision")))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
+  let assert stream.NoIdentity(role: "vision") = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 // --- the reasoning-budget overlay (protocol-change/009) --------------------
@@ -1037,8 +1059,10 @@ pub fn for_resolved_dispatches_exactly_once_test() {
       target: model.ForResolved(target("primary", "model-a")),
     )
   let handle = gateway.request(two_provider_gateway(transport), request)
-  let assert Ok(#([], stream.Failed(stream.HttpError(status: 529, ..)))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
+  let assert stream.HttpError(status: 529, ..) = stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 pub fn missing_secret_fails_with_name_only_test() {
@@ -1057,7 +1081,7 @@ pub fn missing_secret_fails_with_name_only_test() {
   let handle = gateway.request(gw, main_request())
   let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
-  assert error
+  assert stream.underlying_error(error)
     == stream.NoSecret(provider: "anthropic", secret_name: "ANTHROPIC_API_KEY")
 }
 
@@ -1069,8 +1093,11 @@ pub fn unknown_provider_in_resolved_identity_fails_in_band_test() {
       target: model.ForResolved(target("ghost", "phantom-model")),
     )
   let handle = gateway.request(gw, request)
-  let assert Ok(#([], stream.Failed(stream.UnknownProvider(provider: "ghost")))) =
+  let assert Ok(#([], stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
+  let assert stream.UnknownProvider(provider: "ghost") =
+    stream.underlying_error(error)
+    as "context preserves the exact underlying failure"
 }
 
 // --- secret leak scan --------------------------------------------------------
@@ -1113,4 +1140,11 @@ pub fn described_errors_never_carry_the_secret_test() {
   let assert Ok(#(_deltas, stream.Failed(error))) =
     stream.await_terminal(handle, within: 2000)
   assert !string.contains(stream.describe_error(error), secret_value)
+}
+
+fn bare_event(event) {
+  case event {
+    stream.Failed(error) -> stream.Failed(stream.underlying_error(error))
+    _ -> event
+  }
 }

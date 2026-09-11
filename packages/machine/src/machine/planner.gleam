@@ -1393,7 +1393,7 @@ fn settle_provider_error(
           Assistant(generation: GenerationRetryWait(
             context:,
             next_attempt: number + 1,
-            not_before: in.now + backoff(context.retry, number),
+            not_before: in.now + settled_backoff(context.retry, number, message),
             error_message:,
           )),
         )
@@ -3199,7 +3199,8 @@ fn summary_failed(
         SummaryRetryWait(
           context:,
           next_attempt: attempt + 1,
-          not_before: in.now + backoff(context.retry, attempt),
+          not_before: in.now
+            + hinted_backoff(context.retry, attempt, error.details),
           error_message: error.message,
         ),
       )
@@ -4254,6 +4255,39 @@ fn settled_retryable(message: AgentMessage) -> Bool {
   case message {
     AssistantMessage(raw_stop_reason: Some("retryable"), ..) -> True
     _ -> False
+  }
+}
+
+// The runtime preserves Retry-After in the existing diagnostic field. Old
+// recordings without a hint retain their configured exponential delay.
+fn settled_backoff(
+  retry: NormalizedRetryPolicy,
+  finished_attempt: Int,
+  message: AgentMessage,
+) -> Int {
+  let diagnostics = case message {
+    AssistantMessage(diagnostics:, ..) -> diagnostics
+    _ -> None
+  }
+  hinted_backoff(retry, finished_attempt, diagnostics)
+}
+
+// A provider hint can only lengthen the configured wait. Malformed or
+// negative values cannot shorten the policy or escape the total decoder.
+fn hinted_backoff(
+  retry: NormalizedRetryPolicy,
+  finished_attempt: Int,
+  diagnostics: Option(JsonValue),
+) -> Int {
+  let configured = backoff(retry, finished_attempt)
+  case diagnostics {
+    Some(json.Object(fields)) -> {
+      case list.key_find(fields, "retry_after_ms") {
+        Ok(json.Int(delay)) -> int.max(configured, delay)
+        _ -> configured
+      }
+    }
+    _ -> configured
   }
 }
 

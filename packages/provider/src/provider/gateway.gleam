@@ -899,8 +899,12 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // from above — that would erase the only acknowledgement that its
     // native descendant stopped — so the public terminal says exactly that
     // and the guard stays alive behind it until the owner retires.
-    Reaping(..), ReapExpired -> {
-      emit(guard, Failed(stream.CancellationUnconfirmed))
+    Reaping(cause), ReapExpired -> {
+      let initiator = case cause {
+        PumpStoppedEarly -> stream.TransportExit
+        PumpGoneAfterCancel -> stream.CancellationRequested
+      }
+      emit(guard, gateway_failure(stream.CancellationUnconfirmed, initiator))
       close_attempt(guard)
     }
 
@@ -1197,6 +1201,18 @@ fn forward_or_settle(guard: Guard, streamed: StreamEvent) -> Step {
 // real pump terminal if one arrives; pump death or expiry only proves that
 // the request could not confirm which side of the race won.
 fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
+  let streamed =
+    stream.contextual_event(
+      streamed,
+      stream.FailureObservation(
+        stream.GatewaySource,
+        stream.CancellationRequested,
+        None,
+        None,
+        Some(request_cancel_grace_ms),
+        None,
+      ),
+    )
   case streamed {
     // The response window closed when cancellation was selected.
     Delta(..) -> sm.keep(guard)
@@ -1204,12 +1220,19 @@ fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
     // CancellationUnconfirmed is deliberately bounded for the public
     // caller. The guard remains alive behind that terminal until the
     // retained witness eventually adjudicates the real owner exit.
-    Settled(..) | Failed(stream.CancellationUnconfirmed) -> {
+    Settled(..) -> {
       emit(guard, streamed)
       close_pump(guard)
     }
 
-    Failed(..) -> settle(guard, streamed)
+    Failed(error) ->
+      case stream.underlying_error(error) {
+        stream.CancellationUnconfirmed -> {
+          emit(guard, streamed)
+          close_pump(guard)
+        }
+        _ -> settle(guard, streamed)
+      }
   }
 }
 
@@ -1231,9 +1254,23 @@ fn publish_settled(
 ) -> Step {
   emit(guard, case exit {
     ActiveDrained -> terminal
-    ActiveProofLost -> Failed(stream.DrainProofLost)
+    ActiveProofLost -> lost_terminal_proof(terminal)
   })
   close_pump(guard)
+}
+
+// Lost custody changes the error class, not the event which began cleanup.
+fn lost_terminal_proof(terminal: StreamEvent) -> StreamEvent {
+  case terminal {
+    Failed(error) ->
+      Failed(list.fold(
+        list.reverse(stream.failure_context(error)),
+        stream.DrainProofLost,
+        stream.with_context,
+      ))
+    Settled(..) | Delta(..) ->
+      gateway_failure(stream.DrainProofLost, stream.TransportExit)
+  }
 }
 
 // The pump died without authoring a terminal. The active transport is asked
@@ -1250,14 +1287,22 @@ fn reap(guard: Guard, cause: ReapCause) -> Step {
 
 fn publish_reaped(guard: Guard, cause: ReapCause, exit: ActiveExit) -> Step {
   emit(guard, case exit {
-    ActiveProofLost -> Failed(stream.DrainProofLost)
+    ActiveProofLost ->
+      gateway_failure(stream.DrainProofLost, stream.TransportExit)
     ActiveDrained ->
       case cause {
         PumpStoppedEarly ->
-          Failed(stream.TransportFailed(
-            reason: "provider request pump stopped before a terminal response",
-          ))
-        PumpGoneAfterCancel -> Failed(stream.CancellationUnconfirmed)
+          gateway_failure(
+            stream.TransportFailed(
+              reason: "provider request pump stopped before a terminal response",
+            ),
+            stream.TransportExit,
+          )
+        PumpGoneAfterCancel ->
+          gateway_failure(
+            stream.CancellationUnconfirmed,
+            stream.CancellationRequested,
+          )
       }
   })
   sm.stop()
@@ -1271,9 +1316,13 @@ fn expire_cancellation(guard: Guard) -> Step {
   cancel_pump(guard)
   cancel_attempt(guard.attempt)
   emit(guard, case guard.attempt {
-    ExitedAttempt(outcome: ActiveProofLost) -> Failed(stream.DrainProofLost)
+    ExitedAttempt(outcome: ActiveProofLost) ->
+      gateway_failure(stream.DrainProofLost, stream.TransportExit)
     ExitedAttempt(outcome: ActiveDrained) | NoAttempt | LiveAttempt(..) ->
-      Failed(stream.CancellationUnconfirmed)
+      gateway_failure(
+        stream.CancellationUnconfirmed,
+        stream.CancellationRequested,
+      )
   })
   close_pump(guard)
 }
@@ -1431,6 +1480,7 @@ fn pump(
         gateway,
         request,
         now,
+        1,
         [resolved],
         events,
         attempts,
@@ -1481,6 +1531,7 @@ fn dispatch_role(
             gateway,
             request,
             now,
+            1,
             overlaid(chain, thinking),
             events,
             attempts,
@@ -1515,6 +1566,7 @@ fn attempt(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
+  ordinal: Int,
   targets: List(ResolvedModel),
   events: process.Subject(StreamEvent),
   attempts: process.Subject(AttemptRegistration),
@@ -1534,6 +1586,7 @@ fn attempt(
               gateway,
               request,
               now,
+              ordinal,
               target,
               events,
               attempts,
@@ -1544,6 +1597,7 @@ fn attempt(
             gateway,
             request,
             now,
+            ordinal,
             outcome,
             rest,
             events,
@@ -1563,6 +1617,7 @@ fn continue_or_deliver(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
+  ordinal: Int,
   outcome: AttemptOutcome,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
@@ -1571,16 +1626,28 @@ fn continue_or_deliver(
   consumer: process.Pid,
 ) -> Nil {
   case outcome {
-    AttemptCancelled -> process.send(events, Failed(ProviderCancelled))
-    AttemptCancellationUnconfirmed ->
-      process.send(events, Failed(stream.CancellationUnconfirmed))
-    AttemptDrainProofLost -> process.send(events, Failed(stream.DrainProofLost))
+    AttemptCancelled(context) ->
+      process.send(
+        events,
+        Failed(stream.with_context(ProviderCancelled, context)),
+      )
+    AttemptCancellationUnconfirmed(context) ->
+      process.send(
+        events,
+        Failed(stream.with_context(stream.CancellationUnconfirmed, context)),
+      )
+    AttemptDrainProofLost(context) ->
+      process.send(
+        events,
+        Failed(stream.with_context(stream.DrainProofLost, context)),
+      )
     ConsumerGone -> Nil
     AttemptTerminal(terminal:) ->
       continue_terminal(
         gateway,
         request,
         now,
+        ordinal,
         terminal,
         rest,
         events,
@@ -1595,6 +1662,7 @@ fn continue_terminal(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
+  ordinal: Int,
   terminal: StreamEvent,
   rest: List(ResolvedModel),
   events: process.Subject(StreamEvent),
@@ -1610,6 +1678,7 @@ fn continue_terminal(
             gateway,
             request,
             now,
+            ordinal + 1,
             rest,
             events,
             attempts,
@@ -1628,6 +1697,7 @@ fn attempt_one(
   gateway: Gateway,
   request: ProviderRequest,
   now: Int,
+  ordinal: Int,
   target: ResolvedModel,
   events: process.Subject(StreamEvent),
   attempts: process.Subject(AttemptRegistration),
@@ -1692,7 +1762,60 @@ fn attempt_one(
   // and doing it before `continue_or_deliver` means the ledger writes a
   // priced record without a second costing pass anywhere above the seam.
   priced(gateway, outcome, target)
+  |> annotate_attempt(ordinal, gateway.attempt_timeout_ms)
   |> scrub_attempt(api_key)
+}
+
+// The ordinal names this route walk, independently of the machine's retries.
+fn annotate_attempt(
+  outcome: AttemptOutcome,
+  ordinal: Int,
+  timeout: Int,
+) -> AttemptOutcome {
+  case outcome {
+    AttemptTerminal(terminal) ->
+      AttemptTerminal(stream.contextual_event(
+        terminal,
+        stream.FailureObservation(
+          stream.GatewaySource,
+          stream.TerminalResponse,
+          Some(ordinal),
+          Some(timeout),
+          Some(request_cancel_grace_ms),
+          None,
+        ),
+      ))
+    AttemptCancelled(context) ->
+      AttemptCancelled(
+        stream.FailureObservation(..context, attempt: Some(ordinal)),
+      )
+    AttemptCancellationUnconfirmed(context) ->
+      AttemptCancellationUnconfirmed(
+        stream.FailureObservation(..context, attempt: Some(ordinal)),
+      )
+    AttemptDrainProofLost(context) ->
+      AttemptDrainProofLost(
+        stream.FailureObservation(..context, attempt: Some(ordinal)),
+      )
+    ConsumerGone -> ConsumerGone
+  }
+}
+
+fn gateway_failure(
+  error: stream.ProviderError,
+  cause: stream.FailureCause,
+) -> StreamEvent {
+  Failed(stream.with_context(
+    error,
+    stream.FailureObservation(
+      stream.GatewaySource,
+      cause,
+      None,
+      None,
+      Some(request_cancel_grace_ms),
+      None,
+    ),
+  ))
 }
 
 // Rewrites a settled attempt's usage with the target provider's rate card.
@@ -1712,9 +1835,10 @@ fn priced(
       ))
 
     AttemptTerminal(terminal:), _ -> AttemptTerminal(terminal:)
-    AttemptCancelled, _ -> AttemptCancelled
-    AttemptCancellationUnconfirmed, _ -> AttemptCancellationUnconfirmed
-    AttemptDrainProofLost, _ -> AttemptDrainProofLost
+    AttemptCancelled(context), _ -> AttemptCancelled(context)
+    AttemptCancellationUnconfirmed(context), _ ->
+      AttemptCancellationUnconfirmed(context)
+    AttemptDrainProofLost(context), _ -> AttemptDrainProofLost(context)
     ConsumerGone, _ -> ConsumerGone
   }
 }
@@ -1750,9 +1874,10 @@ fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
     AttemptTerminal(Failed(error:)) ->
       AttemptTerminal(Failed(error: diagnostic.scrub_error(error, api_key)))
     AttemptTerminal(terminal:) -> AttemptTerminal(terminal:)
-    AttemptCancelled -> AttemptCancelled
-    AttemptCancellationUnconfirmed -> AttemptCancellationUnconfirmed
-    AttemptDrainProofLost -> AttemptDrainProofLost
+    AttemptCancelled(context) -> AttemptCancelled(context)
+    AttemptCancellationUnconfirmed(context) ->
+      AttemptCancellationUnconfirmed(context)
+    AttemptDrainProofLost(context) -> AttemptDrainProofLost(context)
     ConsumerGone -> ConsumerGone
   }
 }

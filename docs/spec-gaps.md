@@ -317,7 +317,12 @@ the other side.
    carries the adapter's retryable judgment; the planner derives it from
    `raw_stop_reason == "retryable"` and `ClassifyCtx.error_retryable`
    carries it. The runtime must bridge provider's `retry.classify` into
-   this convention — reconcile when wiring WP-E.
+   this convention. `runtime/effects.settle_failure` also preserves an optional
+   `retry_after_ms` integer in `AssistantMessage.diagnostics`; the machine
+   takes the maximum of that hint and its captured exponential policy, then
+   persists the absolute retry deadline. A summary producer can supply the
+   same hint in `OperationError.details`. Missing or malformed hints retain
+   the configured delay; terminal classification never becomes retryable.
 4. **Prefix scans.** Terminal cleanup deletes tool-args and preparation
    registers from caller-supplied key lists, since the pure machine
    cannot scan; delete-absent being a no-op keeps this as over-approximate
