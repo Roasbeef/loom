@@ -49,6 +49,7 @@ import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import tools/blob
 import tools/tool.{type Tool, type ToolOutcome}
@@ -156,7 +157,9 @@ pub fn clamp_limit(limit: Int) -> Int {
 pub fn tool(history: History) -> Tool {
   tool.Tool(
     name: tool_name,
-    description: "Search the durable history of this repository's sessions, "
+    description: "Search requires a query, for example {\"action\":\"search\",\"query\":\"timeout retry\",\"limit\":5}. "
+      <> "For a complete hit, use {\"action\":\"read\",\"session\":\"<session from hit>\",\"entry\":\"<entry from hit>\"}. "
+      <> "Search the durable history of this repository's sessions, "
       <> "including earlier ones you have no memory of, for something you "
       <> "no longer have in context. Returns ranked excerpts naming the "
       <> "session and entry each came from. Use action=read with those "
@@ -287,7 +290,13 @@ fn read_outcome(ctx: tool.Ctx, bounded: blob.Bounded) -> ToolOutcome {
 }
 
 fn search(history: History, args: JsonValue) -> ToolOutcome {
-  use query <- tool.with_arg(tool.required_string(args, "query"))
+  use query <- tool.with_arg(
+    tool.required_string(args, "query")
+    |> result.map_error(fn(reason) {
+      reason
+      <> "; search requires {\"query\":\"words to find\"}; use action=read with session and entry IDs to read a hit"
+    }),
+  )
   use limit <- tool.with_arg(tool.optional_int(args, "limit"))
   use named_scope <- tool.with_arg(tool.optional_string(args, "scope"))
   use scope <- tool.or_outcome(parse_scope(named_scope), tool.failure)

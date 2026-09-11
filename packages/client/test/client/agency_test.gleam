@@ -1556,3 +1556,31 @@ pub fn a_child_cannot_reach_the_contract_it_is_judged_against_test() {
     == Error(Nil)
   close(harness)
 }
+
+pub fn a_stopped_reviewer_returns_saved_observations_as_partial_work_test() {
+  let harness = start_harness(Hangs)
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the reviewer begins a real operation"
+  let assert Ok(Nil) =
+    harness.seam.note(
+      caller_on(child.strand, "review:tools", 0),
+      "progress",
+      json.String(
+        "Checked parser ownership; lifetime cleanup still needs review.",
+      ),
+    )
+    as "review progress is durable before cancellation"
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  let assert agent.Ready(outcome: agent.Aborted, report:, notes:, ..) =
+    joined(harness, caller, child.handle)
+    as "the stopped reviewer remains stopped while exposing partial progress"
+  assert string.contains(report, "Partial reviewer output (stopped)")
+  assert string.contains(report, "lifetime cleanup still needs review")
+  assert string.contains(report, "may include work from earlier turns")
+  assert notes != []
+  close(harness)
+}
