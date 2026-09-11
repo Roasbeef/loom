@@ -69,3 +69,20 @@ A separate report-only review found no actionable issue in these changes.
 The follow-up TUI gate passed all 357 tests, including the three new compact
 edit/paste regressions. House-rule lint and the documentation gate also pass.
 The four terminal/server end-to-end checks also passed after the layout change.
+
+## Hosted lock fixture repair
+
+Hosted run `34641215883` failed the macOS bootstrap single-winner fixture:
+the immediate acquisition after `release_launch_lock` returned `busy`.
+Closing the Erlang port precedes the external holder's exit and kernel unlock.
+Production acquisition and the neighboring owner-death and inode fixtures
+already wait boundedly for that transition. The single-winner fixture now
+uses the same existing 500-ms acquisition helper and retains its exclusion
+assertion while the original owner holds the lock. The host API documentation
+now describes that ordering; executable production code is unchanged.
+
+Five focused runs passed under the baseline and CI shell-sabotage variants.
+Omitting the release deliberately made the repaired fixture fail with `busy`
+at bounded reacquisition, proving that the wait still detects a retained lock.
+The release was restored, all five variants passed again, and a separate
+review found no actionable defect in the repair.

@@ -11,7 +11,12 @@ is published as draft PR #349. The expanded reading follow-up has passed the
 TUI package gate with 357 tests and the client package gate with 1,545 tests.
 Both package lints and the documentation gate pass. An independent review found
 one missing merge-patch mode; its correction has a passing native Git regression.
-Updated hosted checks remain pending.
+Hosted run `34641215883` passed Linux but exposed an asynchronous lock-release
+assumption in the macOS bootstrap fixture. The fixture now uses its existing
+bounded acquisition helper; an omitted-release mutation still fails. The
+[reading follow-up review](review/readable-scrollback-review.md) records the
+repair and independent review. Updated hosted checks and Linux signoff remain
+the final gates for the published head.
 
 ## Where the tree is
 
