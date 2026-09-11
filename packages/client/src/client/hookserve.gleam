@@ -43,11 +43,18 @@ import client/hookdecisions
 import client/hookrunner
 import client/hooktrust
 import client/hookwire
+import core/clock.{type Clock}
+import core/ids
 import core/json.{type JsonValue}
+import core/message.{type AgentMessage}
+import gleam/dict
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import runtime/effects.{type Effects}
 import simplifile
+import weft/actor
 
 /// One discovered source file, before parsing: where it is and which
 /// precedence class it belongs to.
@@ -397,5 +404,302 @@ pub fn compaction_note(serving: Serving, trigger: String) -> Option(String) {
   case hookwire.combine_injections(notes) {
     hookdecisions.Injected(text) -> Some(text)
     hookdecisions.NoContext | hookdecisions.Blocked(_) -> None
+  }
+}
+
+// --- the composition ---------------------------------------------------------
+
+/// The consecutive-continuation cap, the contract's own override of a
+/// Stop hook that keeps blocking on a condition that will never
+/// resolve: after this many follow-ups placed by the gate for one
+/// operation, the gate stops asking and the run finishes.
+pub const stop_block_cap = 8
+
+/// Composes the imported gates into one session's `Effects`, wrapping
+/// rather than replacing — the same discipline the native extension
+/// bus's `wire` holds, so the two layers coexist: a native `[[hook]]`
+/// and an imported `Stop` hook both sit at the run-end boundary, and
+/// either's follow-up is placed through the same born-placed slot.
+///
+/// The continuation counter is one small actor rather than a field
+/// because the `run_end` slot is a plain function the driver calls from
+/// its own process: the only state a plain function can keep is state
+/// somebody else owns, and an actor keyed on the operation is the house
+/// shape for that (`weft/actor`, per the mapping in `docs/weft.md`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let composed = hookserve.wire(effects, serving, logger)
+/// ```
+///
+pub fn wire(
+  effects: Effects,
+  serving: Serving,
+  clock: Clock,
+) -> Result(Effects, String) {
+  let counters =
+    actor.new(dict.new())
+    |> actor.on_message(fn(counters, message) {
+      case message {
+        Tally(operation, reply) -> {
+          let count = dict.get(counters, operation) |> result.unwrap(0)
+          process.send(reply, count)
+          actor.continue(dict.insert(counters, operation, count + 1))
+        }
+      }
+    })
+    |> actor.start
+    |> result.map(fn(started) { started.data })
+  use counters <- result.try(
+    counters
+    |> result.map_error(fn(_reason) {
+      "the stop-gate counter would not start; imported Stop hooks are off"
+    }),
+  )
+  let built = effects.hooks
+  let tools = effects.tools
+  Ok(
+    effects.Effects(
+      ..effects,
+      hooks: effects.Hooks(
+        ..built,
+        run_start: fn(operation) {
+          list.append(
+            built.run_start(operation),
+            started_context(serving, clock),
+          )
+        },
+        run_end: fn(operation) {
+          // A notification beside the existing slot, never instead of it,
+          // and the continuation gate asked only when the harness itself
+          // had no follow-up to place: a harness follow-up and a hook
+          // continuation are the same slot, and the harness's own wins.
+          let follow_up = built.run_end(operation)
+          case
+            follow_up,
+            stop_block(ids.op_id_to_string(operation), serving, counters)
+          {
+            Some(_harness), _ -> follow_up
+            None, hookdecisions.Continue(reason) ->
+              Some(continuation_message(reason, clock))
+            None, hookdecisions.Finish -> None
+          }
+        },
+        compaction_note: fn(operation, cue) {
+          list.append(
+            built.compaction_note(operation, cue),
+            case hookserve_compaction_note(serving, cue) {
+              Some(note) -> [note]
+              None -> []
+            },
+          )
+        },
+      ),
+      tools: effects.ToolSurface(
+        ..tools,
+        clear: fn(query) { cleared(serving, tools.clear(query), query) },
+        run: fn(run) { ran(serving, tools.run(run), run) },
+      ),
+    ),
+  )
+}
+
+// One question to the continuation counter: how many follow-ups
+// has the gate placed for this operation so far, incrementing as it
+// answers. A `call` rather than a cast because the run-end slot is
+// about to decide on the answer, and a decision on a count it has
+// not read is not a decision.
+type CounterMessage {
+  Tally(operation: String, reply: Subject(Int))
+}
+
+// The Stop gate with the cap applied: the count is read (and
+// incremented) first, so a gate that has already placed the cap's
+// worth of continuations stops asking and lets the run finish — the
+// contract's own override, expressed as the harness's bound rather
+// than a new one.
+fn stop_block(
+  operation: String,
+  serving: Serving,
+  counters: Subject(CounterMessage),
+) -> hookdecisions.Continuation {
+  let placed =
+    actor.call(counters, waiting: 1000, sending: fn(reply) {
+      Tally(operation, reply)
+    })
+  case placed >= stop_block_cap {
+    True -> hookdecisions.Finish
+    False -> stop_gate(serving)
+  }
+}
+
+// The follow-up message the gate places when a Stop hook continues:
+// a user message carrying the hook's reason, attributed in its text
+// the way the contract's continuation prompt is — the hook said it,
+// and the model reading it should know that.
+fn continuation_message(reason: String, clock: Clock) -> AgentMessage {
+  let #(now, _clock) = clock.read(clock)
+  message.UserMessage(
+    content: [
+      message.UserText(
+        // The attribution is the contract's own shape: the
+        // continuation prompt is the hook's reason, and the model
+        // reading it should know a hook said it rather than the
+        // operator.
+        text: "[Stop hook] " <> reason,
+        text_signature: None,
+      ),
+    ],
+    timestamp: now,
+    origin: None,
+  )
+}
+
+// The SessionStart injection as one run-start message: fired once
+// per composed Effects, at the first run start, in the shape the
+// native bus renders its own injections in so both kinds of hook
+// read identically in the transcript.
+fn started_context(serving: Serving, clock: Clock) -> List(AgentMessage) {
+  case session_context(serving, "startup") {
+    hookdecisions.Injected(text) -> [continuation_message(text, clock)]
+    hookdecisions.NoContext | hookdecisions.Blocked(_) -> []
+  }
+}
+
+// The PreCompact note for one cue, in the cue's own trigger names.
+fn hookserve_compaction_note(
+  serving: Serving,
+  cue: effects.CompactionCue,
+) -> Option(String) {
+  compaction_note(serving, trigger_of(cue.cause))
+}
+
+fn trigger_of(cause: effects.CompactionCause) -> String {
+  case cause {
+    effects.RequestedCompaction -> "manual"
+    effects.ThresholdCompaction | effects.OverflowCompaction -> "auto"
+  }
+}
+
+// The PreToolUse gate applied to a clearance the harness already
+// granted — the same ordering the native bus's `cleared` holds: a
+// refusal passes through untouched, and only a cleared call is ever
+// asked about, because asking about a call that will not run wakes
+// a satellite for nothing and invites a second, contradictory
+// reason.
+fn cleared(
+  serving: Serving,
+  clearance: effects.Clearance,
+  query: effects.ClearanceQuery,
+) -> effects.Clearance {
+  case clearance {
+    effects.ClearanceRefused(..) -> clearance
+    effects.Cleared(effective_arguments: _, replay:) -> {
+      let verdict =
+        tool_gate(serving, query.call.name, query.call.id, query.call.arguments)
+      case verdict {
+        hookdecisions.Proceed -> clearance
+        hookdecisions.Deny(reason) ->
+          effects.ClearanceRefused(
+            reason: "a PreToolUse hook blocked "
+            <> query.call.name
+            <> ": "
+            <> reason,
+          )
+        hookdecisions.Ask(reason) ->
+          // `ask` cannot escalate from inside a clearance the harness
+          // already granted; the honest degradation is to refuse with
+          // the reason, and the parity matrix says so.
+          effects.ClearanceRefused(
+            reason: "a PreToolUse hook asks for confirmation on "
+            <> query.call.name
+            <> ": "
+            <> reason,
+          )
+        hookdecisions.Rewrite(updated) ->
+          effects.Cleared(effective_arguments: updated, replay:)
+      }
+    }
+  }
+}
+
+// The PostToolUse feedback folded over a settled result: the
+// replacement narrows to the content the model reads, the same rule
+// the native `tool_result` fold holds, and feedback and context ride
+// beside the original in one attributed text rather than three
+// fields.
+fn ran(
+  serving: Serving,
+  outcome: effects.ToolOutcome,
+  run: effects.ToolRun,
+) -> effects.ToolOutcome {
+  case outcome {
+    effects.ToolFailed(..) -> outcome
+    effects.ToolCompleted(result:, terminate:) -> {
+      let feedback =
+        tool_feedback(serving, run.call.name, run.call.id, run.arguments)
+      case feedback.replacement, feedback.context, feedback.reason {
+        None, None, None -> outcome
+        _, _, _ ->
+          effects.ToolCompleted(result: retexted(result, feedback), terminate:)
+      }
+    }
+  }
+}
+
+// A settled result with the hook feedback applied.
+//
+// A full `updatedToolOutput` replacement substitutes the content the
+// model reads: the hook's JSON is rendered as the result's one text
+// block, which is the honest narrowing — the contract's own warning
+// that a replacement must match the tool's output shape is a shape
+// the model reads, and a text rendering is the shape every tool
+// result carries here. Feedback and context ride after it as one
+// attributed block: a tool result the hook annotated is one result,
+// and the attribution stays in the text the model reads.
+fn retexted(result: AgentMessage, feedback: hookwire.Feedback) -> AgentMessage {
+  case result {
+    message.ToolResultMessage(..) as original ->
+      message.ToolResultMessage(
+        ..original,
+        content: annotated(original.content, feedback),
+      )
+    _ -> result
+  }
+}
+
+// The content of one settled result after the hook's say-so: the
+// replacement when the hook made one, else the original, then the
+// note the hook attached — or nothing at all when the hook had
+// neither, which is the common case and the one that costs nothing.
+fn annotated(
+  original: List(message.ToolResultBlock),
+  feedback: hookwire.Feedback,
+) -> List(message.ToolResultBlock) {
+  let replaced = case feedback.replacement {
+    Some(replacement) -> [
+      message.ToolResultText(
+        text: json.to_string(replacement),
+        text_signature: None,
+      ),
+    ]
+    None -> original
+  }
+  let note = case feedback.reason, feedback.context {
+    None, None -> ""
+    Some(reason), None -> reason
+    None, Some(context) -> context
+    Some(reason), Some(context) -> reason <> "\n\n" <> context
+  }
+  case note {
+    "" -> replaced
+    _ ->
+      list.append(replaced, [
+        message.ToolResultText(
+          text: "[PostToolUse hook] " <> note,
+          text_signature: None,
+        ),
+      ])
   }
 }
