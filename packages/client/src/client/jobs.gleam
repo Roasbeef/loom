@@ -120,7 +120,7 @@ import client/internal/timebase
 import client/jobstate.{
   type JobId, type JobRecord, type JobSpill, type JobState, type KillCause,
 }
-import client/jobtail.{type Tail}
+import tools/tail.{type Tail}
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -261,11 +261,11 @@ pub type Polled {
     age_ms: Int,
     deadline_ms: Int,
     /// What each stream carried after the cursor the poll asked with, and
-    /// where to carry on from. `client/jobtail`'s own answer, passed
+    /// where to carry on from. `tools/tail`'s own answer, passed
     /// straight through: a record of the same three fields here would be
     /// a second name for one type and a place for the two to drift.
-    stdout: jobtail.Since,
-    stderr: jobtail.Since,
+    stdout: tail.Since,
+    stderr: tail.Since,
     /// The content addresses of the whole streams, once the job has
     /// finished. Empty while it runs.
     spill: JobSpill,
@@ -1427,12 +1427,12 @@ fn absorb(
     framing.Stdout ->
       Streams(
         ..runner.streams,
-        stdout: jobtail.push(runner.streams.stdout, data),
+        stdout: tail.push(runner.streams.stdout, data),
       )
     framing.Stderr ->
       Streams(
         ..runner.streams,
-        stderr: jobtail.push(runner.streams.stderr, data),
+        stderr: tail.push(runner.streams.stderr, data),
       )
   }
   let path = staging_path(root: runner.wiring.blob_root, id: runner.id, stream:)
@@ -1961,8 +1961,8 @@ fn detached_of(custody: Custody) -> Custody {
 // show, and what a poll of it therefore reads.
 fn no_streams() -> Streams {
   Streams(
-    stdout: jobtail.new(capacity: tail_bytes),
-    stderr: jobtail.new(capacity: tail_bytes),
+    stdout: tail.new(capacity: tail_bytes),
+    stderr: tail.new(capacity: tail_bytes),
   )
 }
 
@@ -2077,8 +2077,8 @@ fn polled(
     state: held.record.state,
     age_ms: now - held.record.started_at_ms,
     deadline_ms: held.record.deadline_ms,
-    stdout: jobtail.since(streams.stdout, cursors.stdout),
-    stderr: jobtail.since(streams.stderr, cursors.stderr),
+    stdout: tail.since(streams.stdout, cursors.stdout),
+    stderr: tail.since(streams.stderr, cursors.stderr),
     spill: held.record.spill,
   ))
 }

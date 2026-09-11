@@ -1,20 +1,23 @@
 //// A bounded rolling tail over one output stream, with a monotone byte
-//// cursor: what a background job has printed lately, and what a reader
+//// cursor: what a running command has printed lately, and what a reader
 //// who last looked at cursor *n* has missed since.
 ////
 //// ## Why this is not `blob` and not a list of chunks
 ////
-//// Every existing consumer of the broker's `CallOutput` stream folds
-//// every chunk into a list and emits nothing until the call settles
-//// (`tools/tool.collect_events`), because every existing consumer is a
-//// foreground tool call that has nothing to say until then. A background
-//// job is the first consumer that has to answer "what has it printed
-//// since I last looked" while the process is still running, and answer it
-//// many times, from a process that must not grow without bound in the
-//// meantime. Neither shape fits: an unbounded list is the memory leak a
-//// `tail -f` held for a session would become, and `blob.bound` is
-//// one-shot and content-addressed over a *complete* body, which a running
-//// job does not have.
+//// The broker relays jailed output as a stream of `CallOutput` chunks,
+//// and until the tail existed every consumer folded every chunk into a
+//// list and emitted nothing until the call settled, because a foreground
+//// tool call has nothing to *return* until then. Two consumers need the
+//// stream as a stream. A background job has to answer "what has it
+//// printed since I last looked" while the process is still running, and
+//// answer it many times, from a process that must not grow without bound
+//// in the meantime. A foreground call has to show a watching terminal
+//// what the command is printing *now*, chunk by chunk, without holding a
+//// second copy of everything it has printed so far. Neither of the old
+//// shapes fits either: an unbounded list is the memory leak a `tail -f`
+//// held for a session would become, and `blob.bound` is one-shot and
+//// content-addressed over a *complete* body, which a running command
+//// does not have.
 ////
 //// So the window is bounded and the stream position is not. `push` drops
 //// from the front once the window is full; `since` answers with the bytes
@@ -45,8 +48,11 @@
 //// that held bytes back forever waiting for a character boundary that is
 //// never coming would be worse than one that hands over what it has.
 ////
-//// This module holds no process and performs no I/O. The runner that owns
-//// one of these per stream is `client/jobs`.
+//// This module holds no process and performs no I/O. Two owners hold one
+//// of these per stream: the job runner in `client/jobs`, whose `job_poll`
+//// answers from `since`, and the foreground collector in
+//// `tools/tool.collect_observed`, which publishes the window after every
+//// chunk so a terminal can show a running command's tail (issue #186).
 
 import gleam/bit_array
 import gleam/bool
@@ -100,12 +106,12 @@ const utf8_backoff = 3
 /// ## Examples
 ///
 /// ```gleam
-/// assert jobtail.received(jobtail.new(capacity: 8)) == 0
+/// assert tail.received(tail.new(capacity: 8)) == 0
 /// ```
 ///
 /// ```gleam
-/// assert jobtail.since(jobtail.new(capacity: 8), 0)
-///   == jobtail.Since(bytes: <<>>, cursor: 0, dropped: 0)
+/// assert tail.since(tail.new(capacity: 8), 0)
+///   == tail.Since(bytes: <<>>, cursor: 0, dropped: 0)
 /// ```
 ///
 pub fn new(capacity capacity: Int) -> Tail {
@@ -118,8 +124,8 @@ pub fn new(capacity capacity: Int) -> Tail {
 /// ## Examples
 ///
 /// ```gleam
-/// let tail = jobtail.push(jobtail.new(capacity: 2), <<"abcd":utf8>>)
-/// assert jobtail.received(tail) == 4
+/// let tail = tail.push(tail.new(capacity: 2), <<"abcd":utf8>>)
+/// assert tail.received(tail) == 4
 /// ```
 ///
 pub fn received(tail: Tail) -> Int {
@@ -132,13 +138,13 @@ pub fn received(tail: Tail) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// let tail = jobtail.push(jobtail.new(capacity: 4), <<"hello":utf8>>)
-/// assert jobtail.since(tail, 0).dropped == 1
+/// let tail = tail.push(tail.new(capacity: 4), <<"hello":utf8>>)
+/// assert tail.since(tail, 0).dropped == 1
 /// ```
 ///
 /// ```gleam
-/// let tail = jobtail.push(jobtail.new(capacity: 16), <<"hi":utf8>>)
-/// assert jobtail.since(tail, 0).bytes == <<"hi":utf8>>
+/// let tail = tail.push(tail.new(capacity: 16), <<"hi":utf8>>)
+/// assert tail.since(tail, 0).bytes == <<"hi":utf8>>
 /// ```
 ///
 pub fn push(tail: Tail, chunk: BitArray) -> Tail {
@@ -210,14 +216,14 @@ fn trim(tail: Tail) -> Tail {
 /// ## Examples
 ///
 /// ```gleam
-/// let tail = jobtail.push(jobtail.new(capacity: 16), <<"abc":utf8>>)
-/// assert jobtail.since(tail, 1)
-///   == jobtail.Since(bytes: <<"bc":utf8>>, cursor: 3, dropped: 0)
+/// let tail = tail.push(tail.new(capacity: 16), <<"abc":utf8>>)
+/// assert tail.since(tail, 1)
+///   == tail.Since(bytes: <<"bc":utf8>>, cursor: 3, dropped: 0)
 /// ```
 ///
 /// ```gleam
-/// let tail = jobtail.push(jobtail.new(capacity: 2), <<"abcd":utf8>>)
-/// assert jobtail.since(tail, 0).dropped == 2
+/// let tail = tail.push(tail.new(capacity: 2), <<"abcd":utf8>>)
+/// assert tail.since(tail, 0).dropped == 2
 /// ```
 ///
 pub fn since(tail: Tail, cursor: Int) -> Since {
