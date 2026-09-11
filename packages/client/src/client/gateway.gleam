@@ -574,7 +574,7 @@ type State {
     live: Dict(String, String),
     // strand → prompts held for a busy strand, in arrival order at this
     // one actor, which is what makes the order total.
-    held: Dict(String, List(Held)),
+    held: Dict(String, HeldQueue),
     // Monotonic item identity prevents reused client request IDs from aliasing.
     next_held: Int,
     // entry id (text) → strand attribution cache.
@@ -610,6 +610,25 @@ type Delivery {
 // One materialized durable event: its storage seq plus the wire event.
 type Emit {
   Emit(seq: Int, event: WireEvent)
+}
+
+// The drain policy belongs to the items whose custody it changes. Removing
+// an empty queue also removes its batch intent, so a later run cannot inherit it.
+type HeldQueue {
+  HeldQueue(
+    /// Messages retain their admitted order and original author.
+    items: List(Held),
+    /// Explicit abort admits the existing queue together after retirement.
+    drain: HeldDrain,
+  )
+}
+
+type HeldDrain {
+  /// Ordinary settlement opens one successor per held prompt.
+  OnlyHead
+
+  /// Explicit abort gives the successor every currently held message.
+  AllHeld
 }
 
 /// One `prompt` the hub is holding for a strand that was busy when it
@@ -4176,7 +4195,7 @@ fn hold_prompt(
   order: InputOrder,
 ) -> State {
   use author <- or_reply(input_author(state, connection), state, connection, id)
-  let queued = dict.get(state.held, strand) |> result.unwrap([])
+  let queued = held_items(state, strand)
   let same_priority = list.filter(queued, fn(item) { item.order == order })
 
   // "Is it already full?" is a question about the bound, not about the
@@ -4231,13 +4250,27 @@ fn hold_prompt(
   }
 }
 
+fn held_items(state: State, strand: String) -> List(Held) {
+  dict.get(state.held, strand)
+  |> result.map(fn(queue) { queue.items })
+  |> result.unwrap([])
+}
+
 fn put_held(state: State, strand: String, queue: List(Held)) -> State {
+  let drain =
+    dict.get(state.held, strand)
+    |> result.map(fn(queue) { queue.drain })
+    |> result.unwrap(OnlyHead)
   let state = case queue {
     // An emptied strand leaves the dictionary rather than sitting in it
     // as an empty list, so `drain_idle_strands` iterates over strands
     // that actually hold something.
     [] -> State(..state, held: dict.delete(state.held, strand))
-    [_, ..] -> State(..state, held: dict.insert(state.held, strand, queue))
+    [_, ..] ->
+      State(
+        ..state,
+        held: dict.insert(state.held, strand, HeldQueue(queue, drain)),
+      )
   }
   dict.each(state.connections, fn(id, _link) {
     send_to(state, id, EventEnvelope(None, None, protocol.InputQueueChanged))
@@ -4250,8 +4283,8 @@ fn put_held(state: State, strand: String, queue: List(Held)) -> State {
 fn pending_inputs(state: State, connection: Int) -> List(JsonValue) {
   dict.to_list(state.held)
   |> list.flat_map(fn(pair) {
-    let #(strand, queued) = pair
-    list.map(queued, fn(item) {
+    let #(strand, queue) = pair
+    list.map(queue.items, fn(item) {
       let text = pending_text(item.prompt)
       let bytes = bit_array.from_string(text)
       json.Object([
@@ -4318,8 +4351,7 @@ fn editable_input(
 ) -> Result(Held, #(String, String)) {
   use author <- result.try(input_author(state, connection))
   use item <- result.try(
-    dict.get(state.held, strand)
-    |> result.unwrap([])
+    held_items(state, strand)
     |> list.find(fn(item) { held_id(item) == input_id })
     |> result.replace_error(#(
       protocol.code_conflict,
@@ -4459,8 +4491,7 @@ fn edit_queued_input(
   let updated = Held(..item, prompt:, revision: item.revision + 1)
   use _board <- or_reply(queued_board(strand, updated), state, connection, id)
   let queue =
-    dict.get(state.held, strand)
-    |> result.unwrap([])
+    held_items(state, strand)
     |> list.map(fn(candidate) {
       case held_id(candidate) == input_id {
         True -> updated
@@ -4502,49 +4533,46 @@ fn drain_idle_strands(state: State) -> State {
   })
 }
 
-// Submits one strand's head prompt. Only the head: a second submission
-// would be refused by the very acceptance this queue exists to work
-// around, and the next terminal transition is where the next one belongs.
+// The queue owns whether this successor receives its head or every held
+// message. Admission transfers the chosen batch in one runtime transaction;
+// the gateway retains all members until that transaction succeeds.
 fn drain_strand(state: State, strand: String) -> State {
   case dict.get(state.held, strand) {
-    Ok([Held(prompt:, submitter:, ..), ..rest]) -> {
+    Ok(HeldQueue(items: [head, ..tail] as items, drain:)) -> {
+      let #(batch, rest) = case drain {
+        OnlyHead -> #([head], tail)
+        AllHeld -> #(items, [])
+      }
       let target = api.on_strand(state.runtime, strand)
-      case api.prompt(target, [prompt]) {
-        // Admitted, and nothing more is said. The command that queued
-        // this was answered when it arrived; its entry now reaches every
-        // terminal — the submitter's included — as an ordinary notice.
+      case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
+        // Original queue acknowledgements already transferred custody. Each
+        // admitted message now reaches the peers through ordinary notices.
         Ok(_op) -> put_held(state, strand, rest)
 
-        // A run opened between the register read and this call: through a
-        // host path, a scheduled fire, or another peer's own drain. The
-        // prompt keeps the head and the next transition drains it.
+        // Another admission can win between the register read and this call.
+        // Keep both the messages and their drain policy for the next retirement.
         Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> state
 
-        // Any other refusal is this prompt's own and it is dropped:
-        // holding a message the strand will never accept is a leak whose
-        // submitter is never told. The report goes out unsolicited,
-        // through the same per-frame authority check every frame passes,
-        // so a submitter that lost membership gets nothing.
+        // A rejected batch cannot wait for a transition it will never cause.
+        // Report the rejection to each original submitter before retiring it.
         Error(refused) -> {
           let #(code, message) = describe_api_error(refused, strand)
-          send_to(
-            state,
-            submitter,
-            EventEnvelope(
-              reply_to: None,
-              seq: None,
-              event: protocol.ErrorEvent(code:, message:, details: None),
-            ),
-          )
-
-          // The strand is still idle and nothing else will transition it,
-          // so the next held prompt tries now rather than waiting for a
-          // terminal transition that a dropped head can never produce.
+          list.each(batch, fn(item) {
+            send_to(
+              state,
+              item.submitter,
+              EventEnvelope(
+                reply_to: None,
+                seq: None,
+                event: protocol.ErrorEvent(code:, message:, details: None),
+              ),
+            )
+          })
           drain_strand(put_held(state, strand, rest), strand)
         }
       }
     }
-    Ok([]) | Error(Nil) -> state
+    Ok(HeldQueue(items: [], ..)) | Error(Nil) -> state
   }
 }
 
@@ -4699,6 +4727,15 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       value: machine_strand.StrandState(current_operation: Some(op), ..),
       ..,
     ))) -> {
+      // Mark existing custody before requesting cancellation. The next idle
+      // transition admits these messages together without rebuilding content.
+      let held =
+        dict.get(state.held, strand)
+        |> result.map(fn(queue) {
+          dict.insert(state.held, strand, HeldQueue(..queue, drain: AllHeld))
+        })
+        |> result.unwrap(state.held)
+      let state = State(..state, held:)
       api.abort_operation(api.on_strand(state.runtime, strand), op)
 
       // And the effect plane, which the runtime cannot address. Its

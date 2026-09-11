@@ -3336,8 +3336,8 @@ pub fn steer_preempts_and_precedes_a_full_turn_queue_test() {
     as "all queued turns survive preemption and retain their order"
 }
 
-/// Escape stops only current work. The first queued turn starts as soon as
-/// cancellation drains, and later queued turns remain available afterward.
+/// Escape submits every held message before the replacement provider runs.
+/// Long multiline prompts must remain complete rather than becoming excerpts.
 pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
   let gate = start_gate()
   let harness = parked_network_harness(gate)
@@ -3349,7 +3349,10 @@ pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
       operator("alice", "Alice"),
       access.Participant(access.Operator),
     )
-  list.each([#(820, "open"), #(821, "next"), #(822, "last")], fn(item) {
+  let next = string.repeat("Keep this complete line.\n", 256)
+  let last = "First line\n\nLast queued instruction"
+  let expected = ["open", next, last]
+  list.each([#(820, "open"), #(821, next), #(822, last)], fn(item) {
     let assert Ok(_) =
       gateway.connection_request(socket, prompt_frame(item.0, "main", item.1))
       as "the prompt or queued turn is accepted"
@@ -3366,22 +3369,85 @@ pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
     as "Escape is acknowledged"
   let assert poll.Answered(_) =
     poll.until(within: 5000, every: 10, attempt: fn() {
-      case user_prompt_texts(harness) == ["open", "next"] {
+      case user_prompt_texts(harness) == expected {
         True -> poll.Done(Nil)
         False -> poll.Retry
       }
     })
-    as "the next queued turn starts after cancellation without another key"
+    as "every held message commits before the replacement provider is released"
 
   release_gate(gate)
   let assert poll.Answered(_) =
     poll.until(within: 15_000, every: 25, attempt: fn() {
-      case user_prompt_texts(harness) == ["open", "next", "last"] {
+      case user_prompt_texts(harness) == expected {
         True -> poll.Done(Nil)
         False -> poll.Retry
       }
     })
     as "Escape preserves every remaining queued turn"
+}
+
+/// Batch admission transfers original messages rather than joining their text.
+/// Another author's image and all text blocks survive before provider settlement.
+pub fn abort_batch_preserves_each_authors_complete_message_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let bob =
+    queued_socket(
+      harness,
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+  let _ = queued_request(alice, 830, protocol.Prompt("main", "open"))
+  let first = string.repeat("Full first message\n", 300)
+  let content = [
+    message.UserText("Before the image\n", None),
+    message.UserImage("AQID", "image/png"),
+    message.UserText(string.repeat("After the image\n", 300), None),
+  ]
+  assert_queue_outcome(queued_request(
+    alice,
+    831,
+    protocol.Prompt("main", first),
+  ))
+  assert_queue_outcome(queued_request(
+    bob,
+    832,
+    protocol.PromptContent("main", content),
+  ))
+  let #(submitted_at, _) = clock.read(harness.runtime.effects.clock)
+  let _ = queued_request(alice, 833, protocol.Abort("main"))
+  let assert poll.Answered(messages) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      let messages = queue_messages(harness)
+      case list.length(messages) == 3 {
+        True -> poll.Done(messages)
+        False -> poll.Retry
+      }
+    })
+    as "both messages commit while the replacement provider remains parked"
+  let assert [_, first_message, image_message] = messages
+    as "the batch retains two distinct user messages"
+  assert first_message
+    == message.UserMessage(
+      [message.UserText(first, None)],
+      submitted_at,
+      Some(message.Origin("alice", "Alice")),
+    )
+  assert image_message
+    == message.UserMessage(
+      content,
+      submitted_at,
+      Some(message.Origin("bob", "Bob")),
+    )
+  assert queued_rows(alice, 834) == []
+  release_gate(gate)
 }
 
 /// Two peers submitting inside one catch-up window is the case issue #240

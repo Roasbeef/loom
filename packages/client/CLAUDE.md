@@ -2294,8 +2294,12 @@ build plane masks them where the jail can build the mask.
 - **Human input is bounded hub memory with explicit priority.** Busy prompts
   and follow-ups retain their submitted author and content until admission.
   Steering joins a higher-priority FIFO and stops the observed operation;
-  Escape leaves both queues intact. Each strand has four normal and four
-  steering slots. `queued` acknowledges transient custody, and a gateway
+  explicit Escape marks the existing `HeldQueue` as `AllHeld`. After the
+  captured operation retires, one `api.prompt` admits every original message
+  together. Natural completion and steering retain `OnlyHead` draining.
+  Removing an empty queue also removes its drain mode; reads and edits preserve
+  the mode while retaining each item's identity. Each strand has four normal
+  and four steering slots. `queued` acknowledges transient custody, and a gateway
   restart can lose unadmitted input. `pending_inputs` exposes bounded excerpts
   keyed by server-minted monotonic item identity, while `input_queue_changed` requests
   a refresh even when the durable cursor did not move.
