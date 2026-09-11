@@ -11,6 +11,17 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- `ToolPatch` renders unified patches directly with addition/removal colors;
+  filenames remain separate `PatchHeading` rows, and embedded fences cannot
+  terminate a patch. The worktree navigator includes a separate committed view
+  even when current status has no files. Its decoder accepts older hosts with
+  an explicit unavailable notice and bounds new commit streams at four KiB.
+- `notes_view.readable` unwraps one JSON document held inside a string value
+  and projects objects as compact nested lists with readable field labels.
+  Raw inspection pretty-prints complete JSON; excerpts remain literal.
+  `session_selector.prioritize` sorts exact workspace matches first, related
+  directories next, and preserves order within each group and selection by ID.
+
 - `Model.reading_lines` retains one bounded transient projection when scrolling
   above the live tail. Incoming streams continue collecting without changing
   that projection; returning to the bottom releases it. Durable history keeps

@@ -7,8 +7,11 @@ in their own documents.
 Re-baselined September 11, 2026 against merged main `ab01a239` and the local
 `tui/readable-scrollback` follow-up. PR #347 merged after its exact head
 `a760eb92` passed the complete hosted workflow (`34585964823`). The follow-up
-has passed the TUI package gate with 349 tests and an independent review;
-its publication and hosted checks remain pending.
+is published as draft PR #349. The expanded reading follow-up has passed the
+TUI package gate with 354 tests and the client package gate with 1,545 tests.
+Both package lints and the documentation gate pass. An independent review found
+one missing merge-patch mode; its correction has a passing native Git regression.
+Updated hosted checks remain pending.
 
 ## Where the tree is
 
@@ -16,7 +19,7 @@ its publication and hosted checks remain pending.
 |---|---|
 | Human controls | Queue editing, priority steering, worktree observations, and completion summaries are merged in #344. |
 | Markdown skills | #346 is merged in `3ce454e6`; discovery, explicit activation, paged completion, and model-selected loading are shipped in the base. |
-| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. |
+| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
 | Local verification | One full `make check` passed: 4,191 Gleam tests, native helper checks, prelude verification, and house-rule lint. Installed native acceptance and matched measurements are recorded in the linked reports. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
@@ -46,9 +49,10 @@ now retains it until the authenticated read completes.
 
 ## What to do next
 
-1. **Publish and validate the reading follow-up.** Work is on
+1. **Validate the reading follow-up.** Draft PR #349 is on
    `tui/readable-scrollback`. **Exit:** hosted checks and Linux signoff on its
-   published head. Preserve running user sessions; the compiled candidate does
+   published head. The [reading follow-up review](review/readable-scrollback-review.md)
+   records the local evidence and merge-patch correction. Preserve running user sessions; the compiled candidate does
    not replace an already-running client or daemon.
 
 2. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
@@ -83,6 +87,13 @@ reads. The gateway acknowledges pending work and runs Git outside its handler
 through Weft. The final push has no `reply_to`, retains the original request ID,
 and rechecks authority. Omitted files, partial patches, and failed refreshes are
 explicit. A pinned HEAD plus later filesystem reads is not an atomic snapshot.
+
+**Committed changes require a durable starting revision.**
+[Protocol 029](../protocol-change/029-session-commit-observation.md) captures HEAD
+before the runtime starts on first activation and keeps it across restarts.
+Legacy sessions and mismatched inherited records remain unavailable. Commit
+patches include merge-resolution bytes, and retain separate count/byte bounds;
+a clean working tree does not imply no commits since session start.
 
 **Completion evidence and current jobs have different timestamps.** The
 terminal attributes history only between an observed operation source and its
