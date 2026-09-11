@@ -59,6 +59,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/file_read_view
 import tui/frame
+import tui/herdr
 import tui/history_view
 import tui/image_drop
 import tui/internal/ffi_terminal
@@ -680,6 +681,17 @@ pub type Model {
     selection_frame: Option(buffer.Buffer),
     /// Whether a finished selection reaches the terminal's clipboard.
     clipboard: Clipboard,
+    /// The Herdr pane reporter, when this terminal runs inside one. Held
+    /// in the model for the same reason the recorder is: the publish runs
+    /// where the lifecycle events just landed, which is inside `update`.
+    herdr_reporter: Option(herdr.Reporter),
+    /// The pane state and session last reported, so only a change sends.
+    herdr_published: Option(herdr.Publication),
+    /// A `done` report for a just-settled operation, consumed by the next
+    /// publish. The reducer sets the flag; the publisher reads and clears
+    /// it, which is what keeps a transient transition out of the state the
+    /// frame derives from.
+    herdr_settled: Bool,
   )
 }
 
@@ -984,6 +996,9 @@ pub fn new_model_with_clock(
     activity_revision: 0,
     quiet_for_ms: quiet_after_ms,
     recorder: None,
+    herdr_reporter: None,
+    herdr_published: None,
+    herdr_settled: False,
     selection: None,
     selection_frame: None,
     clipboard: NoClipboard,
@@ -1042,6 +1057,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // loop shares stdout with something that is not one.
   let initial =
     open_recording(Model(..launched, clipboard: TerminalClipboard), record)
+    |> start_herdr_reporter
+
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
@@ -3481,9 +3498,63 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     False -> updated
   }
   let updated = sync_context(model, updated)
-  refresh_render_cache(model, updated)
+  let published = publish_herdr(updated)
+  refresh_render_cache(model, published)
   |> request_history_for_view
   |> refresh_frame_cache(frame_boundary(event))
+}
+
+// Starts the Herdr pane reporter when the launch environment carries a
+// pane. Started here rather than in `main` so the launchers that are not
+// terminal applications — `ext`, `replay`, `sessions` — never grow a
+// process, and so the model the loop runs is the only one that owns it.
+// A refused start is silent by design: the reporter is a convenience for
+// the pane around the terminal, and the session must never learn it
+// exists by failing.
+fn start_herdr_reporter(model: Model) -> Model {
+  case herdr.configure(model.monotonic_time_ms()) {
+    None -> model
+    Some(config) ->
+      case herdr.start(config) {
+        Ok(reporter) -> Model(..model, herdr_reporter: Some(reporter))
+        Error(_) -> model
+      }
+  }
+}
+
+// Reports the pane state to Herdr when — and only when — it changed.
+//
+// The report derives from the same fields the frame does, so the pane
+// cannot tell the operator something the screen disagrees with. A
+// session switch is reported even at an unchanged state, because the
+// session id is what `herdr session` resume keys on; and the first
+// publish announces the session without a state claim, which is what
+// lets a pane opened onto an idle session still resume. Publishing on
+// every event is deliberately cheap: the comparison is two fields and
+// the send is one message to a local process.
+fn publish_herdr(model: Model) -> Model {
+  case model.herdr_reporter {
+    None -> model
+    Some(_) -> {
+      let settled = model.herdr_settled
+      let next =
+        herdr.Publication(
+          state: herdr.state_for(model.strands, model.approvals, settled),
+          session: model.session,
+        )
+      case herdr.changed(model.herdr_published, next) {
+        False -> Model(..model, herdr_settled: False)
+        True -> {
+          case model.herdr_published {
+            None -> herdr.announce(model.herdr_reporter, model.session)
+            Some(_) -> Nil
+          }
+          herdr.report(model.herdr_reporter, next.state, next.session, "")
+          Model(..model, herdr_published: Some(next), herdr_settled: False)
+        }
+      }
+    }
+  }
 }
 
 // Ticks and resizes flush; everything a person or a terminal can produce in a
@@ -5365,6 +5436,11 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             True -> clear_tails(model.tool_tails, strand)
             False -> model.tool_tails
           },
+          // A settled operation is the one transition Herdr's pane state
+          // cannot derive from the strand table alone: the strand is idle
+          // before and after, so the reducer hands it to the publisher as a
+          // flag rather than as model state.
+          herdr_settled: model.herdr_settled || phase == "done",
           notice: strand <> ": " <> phase,
         )
       let settled = settle_interrupt(updated, strand, phase)
