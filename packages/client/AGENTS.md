@@ -22,6 +22,17 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- `provider_relay` retains its initiating deadline, cancellation receipt, or
+  observer exit in `Relay.context` through the existing cancellation and proof
+  states. Startup refusal records cancellation receipt too. Forwarded failures
+  retain protocol 028 context; no diagnostic can certify owner retirement.
+
+- Failed or stopped Agency waits preserve their terminal outcome and expose
+  saved observations as explicitly labelled partial reports. A missing final
+  answer can fall back to at most eight note excerpts. Notes remain mutable
+  strand state and are never attributed to the just-finished operation without
+  evidence; the result still carries the original structured notes separately.
+
 - `client/skills` serves metadata pages from the assembly's immutable
   `host/skill.Catalogue` and expands selected skills before prompt admission.
   `client/skill_tool.tools` contributes `load_skill` through the existing
@@ -1488,8 +1499,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `<state_root>/extensions` by default, so the build runs one directory
   below `owner.token`. It grants no readable root beyond the staging
   directory: `start_build_plane` discovers the toolchain *before* it
-  builds this base, then admits the toolchain mounts and the per-user
-  toolchain set onto it, so a compile reaches what it needs by name
+  builds this base, then admits the discovered toolchain mounts onto it, so a compile reaches what it needs by name
   rather than by inheriting the host. Every state-root entry goes in **conditionally**
   here, `established_masks` included, because an install may be the first
   thing that ever runs on a host and a mask over a path a daemon has not
@@ -1512,23 +1522,17 @@ catalogue without opening runtimes. Explicit admission invokes
   — is refused at boot by `base_policy_fault` naming both paths, which is
   the same treatment `broker/policy.validate` gives every mount-over-mask
   pair.
-- `client/serve.{admitting_user_toolchains, widening_path_dependencies,
-  admitting_config_mounts}` — the rest of `protocol-change/020`'s base.
-  The session base no longer grants `readable_roots: ["/"]`, so every
-  region outside the workspace is stated: the fixed per-user toolchain
-  and cache set under `$HOME` (`user_toolchain_readable`, every entry
-  read-only and `MountOptional`, absent directories simply omitted),
-  the account-wide root in `shared_toolchain_readable`, the sibling
-  checkouts a `gleam.toml` `path =` dependency names, and an
-  operator's `[workspace] mounts` line. Read-only costs no build
-  anything: the jail's `HOME` is `tool_home_directory(workspace)`, so
-  cargo, go, npm, hex, gleam and rebar write their caches under the
-  workspace and never under the operator's account, and a read-write
-  bind would only have exposed `~/.cache`. Write access outside the
-  workspace comes from `[workspace] mounts` alone. A *derived* entry
-  overlapping a mask is dropped with a line on stderr naming it,
-  because the mask is the half worth keeping; a *configured* one is
-  left in, so `base_policy_fault` refuses the boot naming both.
+- `client/serve.{base_policy_for, admitting_config_mounts}` select the
+  session's filesystem view. `catalog.ReadScope` defaults to `HostReads`,
+  with readable root `/`; `WorkspaceReads` selects the minimal helper view.
+  The trusted `[workspace] read_scope` setting and daemon `--read-scope`
+  flag select between them. There is no language-specific admission list
+  and session assembly does not infer read grants from package manifests.
+  Writes remain scoped to the workspace, linked Git metadata, and explicit
+  writable mounts. HOME and TMPDIR remain under the workspace, so build
+  caches do not require host-home writes. A configured mount overlapping
+  a protected path refuses assembly. Protocol-change/020's addendum records
+  why the minimal view is now an explicit restriction.
 - `client/serve.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a
@@ -2177,11 +2181,10 @@ build plane masks them where the jail can build the mask.
 - **A jailed child's environment is three names, built once per session.**
   `serve.session_environment` gives every tool shell, satellite and hook
   host the same `PATH`. The bundled toolchain stays first, followed by the
-  host PATH and explicit additions, so arbitrary installations are discoverable
+  explicit additions and host PATH, so arbitrary installations are discoverable
   without naming language-manager directories. Lookup does not widen filesystem
   reads. The other server-owned names are
-  `HOME` (`<workspace>/.codemode/home`, so `bash -l` reads no operator
-  dotfiles and what a toolchain writes to its home — macOS makes a
+  `HOME` (`<workspace>/.codemode/home`, so what a toolchain writes to its home — macOS makes a
   `Library/Caches` — stays out of the operator's tree) and `TMPDIR`
   (`<workspace>/.codemode/tmp`, the one root the jail lets a tool write;
   the host's temp directory is not reachable from inside). The
@@ -2190,14 +2193,15 @@ build plane masks them where the jail can build the mask.
   names the base allows.
 - **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
-  (off is the default and what an absent table means) plus `env` names
+  (full is the default and what an absent table means) plus `env` names
   read from the host at boot and `[tools.set]` literals;
   `serve.tool_environment` appends them *after* the three server-owned
   names, and `serve.under_tools_config` puts the chosen network on the
-  session base and every configured name on its `env_allow`. Both halves
+  session base and every configured name on its `env_allow`. The daemon
+  `--network off|full` flag overrides the selected file at session resolution. Both halves
   are load-bearing and neither implies the other: the meet takes the
-  narrower network, which is why `bash` and `grep` ask for the base's
-  (`tool.asking_base_network`) rather than stating off, and the meet also
+  narrower network. Bash asks for the base network, while native search
+  remains offline and passes only PATH. The meet also
   intersects `env_allow`, which is why a name in the environment but not
   on the allowlist is a narrowing refusal rather than a variable. `PATH`,
   `HOME` and `TMPDIR` are refused from both lists by the parser, so the
@@ -3155,3 +3159,10 @@ their existing unknown-outcome semantics.
   `Environment` may never grow.
 - [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+The worktree observer enumerates tracked status separately from untracked
+files. Its untracked query excludes only Loom's canonical generated
+`.codemode` and `.blobs` directories before enumeration, so toolchain caches
+cannot consume the observation budget. Tracked changes under those directories
+still appear. Both outputs retain NUL-framed path identity and the existing
+read-only broker, deadline and byte bounds; no repository ignore file is edited.
