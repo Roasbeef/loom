@@ -246,7 +246,7 @@ Source: (`client/gateway.gleam:1892-1898`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
 `history`, `escalations_get`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
-`worktree_diff` and `schedules`. Every other
+`worktree_diff`, `context` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
 Source: (`client/gateway.gleam:1957-1981`) and
@@ -1668,6 +1668,29 @@ remains ordinary input for clients with their own command language. See
 [protocol 027](../protocol-change/027-markdown-skills.md) for capture, invocation
 flags and expansion limits.
 
+#### 4.9.21 `context`
+
+`{strand: string}` reads the current model window and projected context with
+ordinary session-read authority. The pending reply uses mode `context`; the
+final push carries the same `board.request_id` without `reply_to`. It shares
+`worktree_diff`'s worker slots, fourteen-second deadline, socket cancellation,
+and delivery revalidation. Worktree authority remains owner-only.
+
+A ready board includes `strand`, `as_of`, `model`, positive `context_window`,
+`used_tokens`, `basis`, `compaction_used_tokens`, nullable `checkpoint_at`,
+`reserve_tokens`, `categories`, `items`, `items_total`, and `items_omitted`.
+Category rows carry `name` and `tokens`; items also carry `category`. Counts are
+nonnegative. The board is bounded to 48,000 encoded bytes; omitted detail never
+changes the aggregate estimates. A failed observation is unavailable, not zero.
+
+`reported_plus_estimate` reuses the newest usable provider total and estimates
+newer messages. `estimated` prices the pinned system prompt, active definitions,
+and projected messages when no post-compaction baseline exists. Component
+estimates are independent; they are not normalized to the headline. The provider
+total includes output and already includes static context. See
+[protocol 030](../protocol-change/030-context-observation.md) for the complete
+accounting contract and limits.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -1677,9 +1700,9 @@ Over the authenticated session transport a client sees:
 - transfer frames: `snapshot_begin`, `snapshot_chunk`, `snapshot_end`;
 - mutation replies: `mutation_outcome`;
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
-  `queued_input`, `live_jobs`, or pending `worktree_diff`;
+  `queued_input`, `live_jobs`, or pending `worktree_diff` / `context`;
 - pushed frames: `committed`, `stream_delta`, `tool_output`, `presence`,
-  `snapshot` with mode `config` or final `worktree_diff`, and `error`;
+  `snapshot` with mode `config` or final `worktree_diff` / `context`, and `error`;
 - refusals: `error` with `reply_to`.
 
 `snapshot` with mode `full`, `resume` or `strands`, and the durable
@@ -1698,7 +1721,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff` or `live_jobs`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs` or `context`. |
 
 Source: (`client/protocol.gleam:1448-1517`).
 
@@ -1708,7 +1731,7 @@ Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
 Mode `schedules` carries `schedules`. Modes `queued_input`, `worktree_diff`,
-`live_jobs` and `skills` carry `board` (sections 4.9.17 through 4.9.20).
+`live_jobs`, `skills`, and `context` carry `board` (sections 4.9.17 through 4.9.21).
 Source: (`client/protocol.gleam:1013-1050`).
 
 ```json

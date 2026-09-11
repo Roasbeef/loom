@@ -1248,3 +1248,16 @@ and WP-L the scope, `docs/review/m3-gateway.md` is the adversarial review
 behind the token hardening with `docs/review/m3-triage.md` recording what
 was fixed and what was accepted, and `docs/spec-gaps.md` under "From
 WP-L" records where the implementation refined the spec.
+
+
+## Current context observation
+
+`client/context_view` captures a strand's configuration and leaf together, then
+reads its immutable branch through the latest compaction. It shares the runtime
+projection and usage baseline while estimating the pinned system prompt, active
+tool definitions, and projected messages independently. The gateway executes
+this ordinary read in its existing bounded observation worker pool. It never
+replays hooks or calls a provider. The terminal's `/context` inspector and
+persistent percentage consume this board, not retained scrollback or cumulative
+billing. [Protocol 030](../../protocol-change/030-context-observation.md) owns
+request correlation, byte bounds, and the estimate semantics.
