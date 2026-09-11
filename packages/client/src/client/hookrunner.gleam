@@ -140,11 +140,23 @@ pub type Outcome {
     /// caller surfaces this rather than trusting a short `stdout` to
     /// be the whole one.
     truncated: Bool,
-    /// Whether the wall deadline killed the run. A timed-out hook's
-    /// output is discarded by contract, so a timed-out outcome carries
-    /// no text.
-    timed_out: Bool,
+    /// How the run ended: its own exit, or the wall's. A timed-out
+    /// hook's output is discarded by contract, so a wall-cancelled
+    /// outcome carries no text.
+    ending: Ending,
   )
+}
+
+/// How one hook process's run ended, decoded from the broker's
+/// `cancelled` and `timed_out` flags where the conversion belongs:
+/// so the decision readers branch on the question rather than
+/// carrying a raw boolean's polarity across a call site.
+pub type Ending {
+  /// The process ran to its own exit.
+  RanToExit
+
+  /// The wall deadline killed it — the run's output is discarded.
+  WallCancelled
 }
 
 /// Why a run could not produce an `Outcome` at all.
@@ -208,9 +220,12 @@ pub fn run(
   let spec = call_spec(ctx, command, now, timeout_s)
   let events = process.new_subject()
 
-  use call <- result_try(
-    broker.clear_call(ctx.broker, spec, events, waiting: wait_ms),
-  )
+  use call <- result_try(broker.clear_call(
+    ctx.broker,
+    spec,
+    events,
+    waiting: wait_ms,
+  ))
 
   // The event payload is the whole of stdin, closed after: a hook
   // reads one document and exits, and a pipeline that waits on more
@@ -280,8 +295,10 @@ fn call_spec(
     argv: argv(ctx.workspace, command),
     env: ctx.env,
     cwd: ctx.workspace,
-    budget: budget.Budget(max_outstanding: 1, deadline_ms: now + timeout_s
-      * 1000),
+    budget: budget.Budget(
+      max_outstanding: 1,
+      deadline_ms: now + timeout_s * 1000,
+    ),
   )
 }
 
@@ -327,33 +344,39 @@ fn settled(collected: tool.Collected) -> Outcome {
         stdout: "",
         stderr: "the sandbox did not settle the hook",
         truncated: False,
-        timed_out: False,
+        ending: RanToExit,
       )
 
     broker.CallExited(result:) -> {
-      // The three flags the caller reads off a settlement, computed
-      // once: whether the wall killed this run, whether any output
-      // survived it, and whether what survived was the whole of it.
-      let discarded = result.cancelled || result.timed_out
+      // The two questions the caller reads off a settlement, answered
+      // once: whether the wall killed this run — a cancelled payload
+      // reports no text at all, since the contract discards a
+      // timed-out hook's output and a decision read out of a
+      // half-written stdout would be worse than no decision — and
+      // whether what survived was the whole of it.
+      let ending = case result.cancelled || result.timed_out {
+        True -> WallCancelled
+        False -> RanToExit
+      }
       Outcome(
         code: result.code,
-        stdout: case discarded {
-          True -> ""
-          False -> text(collected.stdout)
+        stdout: case ending {
+          WallCancelled -> ""
+          RanToExit -> text(collected.stdout)
         },
-        stderr: case discarded {
-          True -> ""
-          False -> text(collected.stderr)
+        stderr: case ending {
+          WallCancelled -> ""
+          RanToExit -> text(collected.stderr)
         },
-        truncated: case discarded {
-          True -> False
-          False ->
+        truncated: case ending {
+          WallCancelled -> False
+          RanToExit ->
             collected.stdout_truncated
             || collected.stderr_truncated
             || result.stdout_truncated
             || result.stderr_truncated
         },
-        timed_out: result.timed_out,
+        ending: ending,
       )
     }
   }

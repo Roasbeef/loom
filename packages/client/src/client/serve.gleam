@@ -24,6 +24,78 @@
 //// boot and open_instance remain internal host/test seams. They are not CLI
 //// compatibility modes: invoking this module's main refuses per-session serving.
 
+// The imported-hook layer: load this session's Claude-compatible
+// sources, keep the trusted ones, and compose their gates. Loading is
+// best-effort with a logged line per skipped source — one broken
+// source never takes the session's hooks down with it, and a session
+// with no sources composes nothing, which is the same as before this
+// existed. The runner context reuses the harness-side coordinates
+// the extension bus already clears under, so an imported hook's
+// process is attributed the same way a native hook satellite's is.
+fn with_imported_hooks(
+  built: effects.Effects,
+  settings: Settings,
+  clock: Clock,
+  environment: List(#(String, String)),
+  base_policy: policy.SandboxPolicy,
+  broker_actor: broker.Broker,
+  logger: Logger,
+  entropy: fn() -> Int,
+) -> effects.Effects {
+  let located = hookserve.locations(settings.home, settings.workspace)
+  let trust_root = option.map(settings.home, fn(home) { home <> "/hooktrust" })
+  let wiring =
+    hookwire.Wiring(
+      config: hookcompat.Config(
+        entries: [],
+        source: hookcompat.Source(label: "none", origin: hookcompat.LoomInline),
+      ),
+      session_id: settings.session_id,
+      transcript_path: settings.session_path,
+      workspace: settings.workspace,
+    )
+  let coordinates =
+    hook_coordinates(settings, base_policy, entropy(), clock, environment)
+  let runner =
+    hookrunner.Context(
+      broker: broker_actor,
+      base_policy: base_policy,
+      op_id: coordinates.op_id,
+      step_id: "imported-hooks",
+      workspace: settings.workspace,
+      env: list.append(environment, [
+        #("CLAUDE_PROJECT_DIR", settings.workspace),
+      ]),
+      demand: settings.demand,
+      clock: clock,
+      session_id: settings.session_id,
+      transcript_path: settings.session_path,
+    )
+  let serving = hookserve.load(located, trust_root, wiring, runner)
+  list.each(serving.skipped, fn(path) {
+    log.warn(logger, "hooks.source_skipped", [
+      field.ident(key: "path", value: path),
+      field.text(
+        key: "reason",
+        value: "untrusted or unreadable; run `loom hooks trust`",
+      ),
+    ])
+  })
+  case serving.config.entries {
+    [] -> built
+    _ ->
+      case hookserve.wire(built, serving, clock) {
+        Ok(composed) -> composed
+        Error(reason) -> {
+          log.warn(logger, "hooks.unavailable", [
+            field.text(key: "reason", value: reason),
+          ])
+          built
+        }
+      }
+  }
+}
+
 import broker/broker.{type Broker}
 import broker/egress
 import broker/exec.{type EnforcementDemand, type Pool}
@@ -48,6 +120,10 @@ import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/history
+import client/hookcompat
+import client/hookrunner
+import client/hookserve
+import client/hookwire
 import client/host
 import client/install
 import client/internal/ffi_os
@@ -2778,6 +2854,26 @@ fn assemble_in(
   // two layers coexist at all.
   let effects_record =
     with_extension_hooks(effects_record, extensions, opened, clock, logger)
+
+  // The imported-hook compatibility layer goes on last of all, over
+  // the bus-composed record, for the same reason the bus goes on
+  // last over the harness's own slots: a source's Stop hook is asked
+  // after every native follow-up, and its PreToolUse verdict after
+  // the harness's own clearance and any native gate — the ordering
+  // that keeps one authority story. A session with no imported
+  // sources composes nothing, which is the same as before this
+  // existed.
+  let effects_record =
+    with_imported_hooks(
+      effects_record,
+      settings,
+      clock,
+      environment,
+      base_policy,
+      broker_actor,
+      logger,
+      entropy,
+    )
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open_published(

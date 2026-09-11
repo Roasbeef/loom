@@ -3,6 +3,7 @@
 //// precedence. Pure — no processes, just the readers over outcomes.
 
 import client/hookdecisions
+import client/hookrunner.{RanToExit, WallCancelled}
 import core/json
 import gleam/list
 import gleam/string
@@ -19,7 +20,8 @@ pub fn stdout_classification_follows_the_contract_test() {
 }
 
 pub fn pretooluse_exit_two_blocks_with_stderr_test() {
-  let decision = hookdecisions.tool_permission(2, "no rm allowed", "", False)
+  let decision =
+    hookdecisions.tool_permission(2, "no rm allowed", "", RanToExit)
   let assert hookdecisions.Deny(reason) = decision
   assert reason == "no rm allowed"
 }
@@ -27,97 +29,117 @@ pub fn pretooluse_exit_two_blocks_with_stderr_test() {
 pub fn pretooluse_json_deny_wins_over_allow_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PreToolUse")),
-        #("permissionDecision", json.String("deny")),
-        #("permissionDecisionReason", json.String("blocked")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PreToolUse")),
+          #("permissionDecision", json.String("deny")),
+          #("permissionDecisionReason", json.String("blocked")),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Deny("blocked") =
-    hookdecisions.tool_permission(0, "", stdout, False)
+    hookdecisions.tool_permission(0, "", stdout, RanToExit)
 }
 
 pub fn pretooluse_allow_with_updated_input_rewrites_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PreToolUse")),
-        #("permissionDecision", json.String("allow")),
-        #("updatedInput", json.Object([#("command", json.String("echo ok"))])),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PreToolUse")),
+          #("permissionDecision", json.String("allow")),
+          #("updatedInput", json.Object([#("command", json.String("echo ok"))])),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Rewrite(updated) =
-    hookdecisions.tool_permission(0, "", stdout, False)
+    hookdecisions.tool_permission(0, "", stdout, RanToExit)
   let assert Ok(json.Object(_)) = Ok(updated)
 }
 
 pub fn pretooluse_bare_allow_is_proceed_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PreToolUse")),
-        #("permissionDecision", json.String("allow")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PreToolUse")),
+          #("permissionDecision", json.String("allow")),
+        ]),
+      ),
     ])
     |> json.to_string
-  assert hookdecisions.Proceed == hookdecisions.tool_permission(0, "", stdout, False)
+  assert hookdecisions.Proceed
+    == hookdecisions.tool_permission(0, "", stdout, RanToExit)
 }
 
 pub fn pretooluse_ask_escalates_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PreToolUse")),
-        #("permissionDecision", json.String("ask")),
-        #("permissionDecisionReason", json.String("confirm")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PreToolUse")),
+          #("permissionDecision", json.String("ask")),
+          #("permissionDecisionReason", json.String("confirm")),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Ask("confirm") =
-    hookdecisions.tool_permission(0, "", stdout, False)
+    hookdecisions.tool_permission(0, "", stdout, RanToExit)
 }
 
 pub fn pretooluse_plain_stdout_is_no_decision_test() {
   assert hookdecisions.Proceed
-    == hookdecisions.tool_permission(0, "", "hello world", False)
+    == hookdecisions.tool_permission(0, "", "hello world", RanToExit)
 }
 
 pub fn pretooluse_hookspecific_naming_another_event_is_ignored_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PostToolUse")),
-        #("permissionDecision", json.String("deny")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PostToolUse")),
+          #("permissionDecision", json.String("deny")),
+        ]),
+      ),
     ])
     |> json.to_string
-  assert hookdecisions.Proceed == hookdecisions.tool_permission(0, "", stdout, False)
+  assert hookdecisions.Proceed
+    == hookdecisions.tool_permission(0, "", stdout, RanToExit)
 }
 
 pub fn pretooluse_a_timed_out_hook_renders_no_decision_test() {
   assert hookdecisions.Proceed
-    == hookdecisions.tool_permission(2, "late", "{}", True)
+    == hookdecisions.tool_permission(2, "late", "{}", WallCancelled)
 }
 
 pub fn pretooluse_a_nonblocking_exit_code_with_valid_json_decides_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PreToolUse")),
-        #("permissionDecision", json.String("deny")),
-        #("permissionDecisionReason", json.String("no")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PreToolUse")),
+          #("permissionDecision", json.String("deny")),
+          #("permissionDecisionReason", json.String("no")),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Deny("no") =
-    hookdecisions.tool_permission(3, "", stdout, False)
+    hookdecisions.tool_permission(3, "", stdout, RanToExit)
 }
 
 pub fn posttooluse_exit_two_is_feedback_not_a_block_test() {
   let assert hookdecisions.Feedback("look at the output") =
-    hookdecisions.tool_feedback(2, "look at the output", "", False)
+    hookdecisions.tool_feedback(2, "look at the output", "", RanToExit)
 }
 
 pub fn posttooluse_decision_block_adds_reason_test() {
@@ -128,20 +150,26 @@ pub fn posttooluse_decision_block_adds_reason_test() {
     ])
     |> json.to_string
   let assert hookdecisions.Feedback("tests must pass first") =
-    hookdecisions.tool_feedback(0, "", stdout, False)
+    hookdecisions.tool_feedback(0, "", stdout, RanToExit)
 }
 
 pub fn posttooluse_updated_output_replaces_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PostToolUse")),
-        #("updatedToolOutput", json.Object([#("stdout", json.String("[redacted]"))])),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PostToolUse")),
+          #(
+            "updatedToolOutput",
+            json.Object([#("stdout", json.String("[redacted]"))]),
+          ),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Rewritten(replacement) =
-    hookdecisions.tool_feedback(0, "", stdout, False)
+    hookdecisions.tool_feedback(0, "", stdout, RanToExit)
   let assert Ok(json.Object(fields)) = Ok(replacement)
   let assert Ok(json.String("[redacted]")) = list.key_find(fields, "stdout")
 }
@@ -149,19 +177,25 @@ pub fn posttooluse_updated_output_replaces_test() {
 pub fn posttooluse_additional_context_is_injected_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("PostToolUse")),
-        #("additionalContext", json.String("generated file; edit src instead")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("PostToolUse")),
+          #(
+            "additionalContext",
+            json.String("generated file; edit src instead"),
+          ),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Context("generated file; edit src instead") =
-    hookdecisions.tool_feedback(0, "", stdout, False)
+    hookdecisions.tool_feedback(0, "", stdout, RanToExit)
 }
 
 pub fn stop_exit_two_continues_with_stderr_test() {
   let assert hookdecisions.Continue("run the tests first") =
-    hookdecisions.continuation(2, "run the tests first", "", False)
+    hookdecisions.continuation(2, "run the tests first", "", RanToExit)
 }
 
 pub fn stop_decision_block_continues_test() {
@@ -172,33 +206,48 @@ pub fn stop_decision_block_continues_test() {
     ])
     |> json.to_string
   let assert hookdecisions.Continue("must run the suite") =
-    hookdecisions.continuation(0, "", stdout, False)
+    hookdecisions.continuation(0, "", stdout, RanToExit)
 }
 
 pub fn stop_additional_context_continues_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("Stop")),
-        #("additionalContext", json.String("run the test suite before finishing")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("Stop")),
+          #(
+            "additionalContext",
+            json.String("run the test suite before finishing"),
+          ),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Continue("run the test suite before finishing") =
-    hookdecisions.continuation(0, "", stdout, False)
+    hookdecisions.continuation(0, "", stdout, RanToExit)
 }
 
 pub fn stop_silent_allows_finishing_test() {
-  assert hookdecisions.Finish == hookdecisions.continuation(0, "", "", False)
+  assert hookdecisions.Finish
+    == hookdecisions.continuation(0, "", "", RanToExit)
 }
 
 pub fn stop_timed_out_finishes_test() {
-  assert hookdecisions.Finish == hookdecisions.continuation(2, "x", "", True)
+  assert hookdecisions.Finish
+    == hookdecisions.continuation(2, "x", "", WallCancelled)
 }
 
 pub fn userpromptsubmit_exit_two_blocks_the_prompt_test() {
   let assert hookdecisions.Blocked("ask first") =
-    hookdecisions.context_injection("UserPromptSubmit", True, 2, "ask first", "", False)
+    hookdecisions.context_injection(
+      "UserPromptSubmit",
+      hookdecisions.RejectsPrompt,
+      2,
+      "ask first",
+      "",
+      RanToExit,
+    )
 }
 
 pub fn userpromptsubmit_decision_block_blocks_test() {
@@ -209,38 +258,76 @@ pub fn userpromptsubmit_decision_block_blocks_test() {
     ])
     |> json.to_string
   let assert hookdecisions.Blocked("not in CI") =
-    hookdecisions.context_injection("UserPromptSubmit", True, 0, "", stdout, False)
+    hookdecisions.context_injection(
+      "UserPromptSubmit",
+      hookdecisions.RejectsPrompt,
+      0,
+      "",
+      stdout,
+      RanToExit,
+    )
 }
 
 pub fn userpromptsubmit_plain_stdout_is_context_test() {
   let assert hookdecisions.Injected("branch context here") =
-    hookdecisions.context_injection("UserPromptSubmit", True, 0, "", "branch context here", False)
+    hookdecisions.context_injection(
+      "UserPromptSubmit",
+      hookdecisions.RejectsPrompt,
+      0,
+      "",
+      "branch context here",
+      RanToExit,
+    )
 }
 
 pub fn userpromptsubmit_json_context_test() {
   let stdout =
     json.Object([
-      #("hookSpecificOutput", json.Object([
-        #("hookEventName", json.String("UserPromptSubmit")),
-        #("additionalContext", json.String("today is friday")),
-      ])),
+      #(
+        "hookSpecificOutput",
+        json.Object([
+          #("hookEventName", json.String("UserPromptSubmit")),
+          #("additionalContext", json.String("today is friday")),
+        ]),
+      ),
     ])
     |> json.to_string
   let assert hookdecisions.Injected("today is friday") =
-    hookdecisions.context_injection("UserPromptSubmit", True, 0, "", stdout, False)
+    hookdecisions.context_injection(
+      "UserPromptSubmit",
+      hookdecisions.RejectsPrompt,
+      0,
+      "",
+      stdout,
+      RanToExit,
+    )
 }
 
 pub fn sessionstart_cannot_block_test() {
   // Exit 2 on a non-blocking context event is not a rejection: the
   // contract's per-event table has no block for SessionStart.
   let decision =
-    hookdecisions.context_injection("SessionStart", False, 2, "whatever", "", False)
+    hookdecisions.context_injection(
+      "SessionStart",
+      hookdecisions.CannotBlock,
+      2,
+      "whatever",
+      "",
+      RanToExit,
+    )
   assert hookdecisions.NoContext == decision
 }
 
 pub fn sessionstart_plain_stdout_is_context_test() {
   let assert hookdecisions.Injected("current branch: main") =
-    hookdecisions.context_injection("SessionStart", False, 0, "", "current branch: main", False)
+    hookdecisions.context_injection(
+      "SessionStart",
+      hookdecisions.CannotBlock,
+      0,
+      "",
+      "current branch: main",
+      RanToExit,
+    )
 }
 
 pub fn output_caps_at_ten_thousand_test() {

@@ -267,7 +267,7 @@ pub fn tool_gate(
       outcome.code,
       outcome.stderr,
       outcome.stdout,
-      outcome.timed_out,
+      outcome.ending,
     ))
   })
   |> hookwire.combine_permissions
@@ -295,7 +295,7 @@ pub fn stop_gate(serving: Serving) -> hookdecisions.Continuation {
       outcome.code,
       outcome.stderr,
       outcome.stdout,
-      outcome.timed_out,
+      outcome.ending,
     ))
   })
   |> hookwire.combine_continuations
@@ -325,11 +325,11 @@ pub fn session_context(
     ))
     Ok(hookdecisions.context_injection(
       "SessionStart",
-      False,
+      hookdecisions.CannotBlock,
       outcome.code,
       outcome.stderr,
       outcome.stdout,
-      outcome.timed_out,
+      outcome.ending,
     ))
   })
   |> hookwire.combine_injections
@@ -367,7 +367,7 @@ pub fn tool_feedback(
       outcome.code,
       outcome.stderr,
       outcome.stdout,
-      outcome.timed_out,
+      outcome.ending,
     ))
   })
   |> hookwire.combine_feedback
@@ -394,11 +394,11 @@ pub fn compaction_note(serving: Serving, trigger: String) -> Option(String) {
       ))
       Ok(hookdecisions.context_injection(
         "PreCompact",
-        False,
+        hookdecisions.CannotBlock,
         outcome.code,
         outcome.stderr,
         outcome.stdout,
-        outcome.timed_out,
+        outcome.ending,
       ))
     })
   case hookwire.combine_injections(notes) {

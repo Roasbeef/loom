@@ -8,13 +8,13 @@ import broker/exec
 import broker/policy
 import broker/token
 import client/hookrunner
-import host/bootstrap
 import client/internal/ffi_os
 import client/serve
 import core/clock
 import core/ids
 import gleam/int
 import gleam/option.{None, Some}
+import host/bootstrap
 import simplifile
 
 pub fn shell_form_hook_runs_and_reports_test() {
@@ -24,14 +24,15 @@ pub fn shell_form_hook_runs_and_reports_test() {
   assert outcome.code == 7
   assert outcome.stdout == "out\n"
   assert outcome.stderr == "err\n"
-  assert !outcome.timed_out
+  assert outcome.ending == hookrunner.RanToExit
   assert !outcome.truncated
 }
 
 pub fn stdin_reaches_the_hook_test() {
   let #(ctx, _helper) = fixture()
   let cmd = hookrunner.Command("cat", None, Some(3))
-  let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{\"prompt\":\"hello\"}", 30)
+  let assert Ok(outcome) =
+    hookrunner.run(ctx, cmd, "{\"prompt\":\"hello\"}", 30)
   assert outcome.code == 0
   assert outcome.stdout == "{\"prompt\":\"hello\"}"
 }
@@ -58,7 +59,7 @@ pub fn a_timed_out_hook_reports_no_output_test() {
   let started = bootstrap.monotonic_time_ms()
   let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
   let elapsed = bootstrap.monotonic_time_ms() - started
-  assert outcome.timed_out
+  assert outcome.ending == hookrunner.WallCancelled
   assert outcome.stdout == ""
   assert outcome.stderr == ""
   assert elapsed < 20_000
@@ -83,10 +84,10 @@ pub fn the_env_allowlist_reaches_the_hook_test() {
 pub fn the_env_allowlist_hides_names_the_hook_did_not_list_test() {
   let #(ctx, _helper) = fixture()
   let ctx =
-    hookrunner.Context(
-      ..ctx,
-      env: [#("PATH", "/usr/bin:/bin"), ..delete(ctx.env, "PATH")],
-    )
+    hookrunner.Context(..ctx, env: [
+      #("PATH", "/usr/bin:/bin"),
+      ..delete(ctx.env, "PATH")
+    ])
   let cmd = hookrunner.Command("echo ${HOOK_UNSEEN:-unset}", None, Some(3))
   let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
   assert outcome.stdout == "unset\n"
@@ -135,12 +136,14 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
     ))
   let wall = clock.from_function(ffi_os.system_time_ms)
   let assert Ok(broker_actor) =
-    broker.start(broker.BrokerConfig(
-      entropy: token.production_entropy(),
-      clock: wall,
-      checkout: fn() { Ok(helper) },
-      checkin: fn(_helper) { Nil },
-    ))
+    broker.start(
+      broker.BrokerConfig(
+        entropy: token.production_entropy(),
+        clock: wall,
+        checkout: fn() { Ok(helper) },
+        checkin: fn(_helper) { Nil },
+      ),
+    )
   let #(op_id, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_911))
   #(
     hookrunner.Context(

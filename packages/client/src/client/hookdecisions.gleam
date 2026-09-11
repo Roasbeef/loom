@@ -31,6 +31,7 @@
 //// whether the text class matters, because four events make plain
 //// stdout into model context and the rest ignore it.
 
+import client/hookrunner.{type Ending, RanToExit, WallCancelled}
 import core/json.{type JsonValue}
 import gleam/int
 import gleam/list
@@ -84,8 +85,6 @@ pub fn classify(stdout: String) -> Stdout {
   }
 }
 
-
-
 /// What a `PreToolUse` hook decided about one planned call.
 ///
 /// The four outcomes are the contract's four `permissionDecision`
@@ -129,11 +128,11 @@ pub fn tool_permission(
   code: Int,
   stderr: String,
   stdout: String,
-  timed_out: Bool,
+  ending: Ending,
 ) -> ToolPermission {
-  case timed_out {
-    True -> Proceed
-    False ->
+  case ending {
+    WallCancelled -> Proceed
+    RanToExit ->
       case code {
         _ if code == blocking_code -> Deny(reason_for_block(stderr, stdout))
         _ ->
@@ -155,10 +154,16 @@ fn permission_of(
 ) -> ToolPermission {
   let specific = specific_fields("PreToolUse", fields)
   case string_field(specific, "permissionDecision") {
-    Some("deny") -> Deny(string_field(specific, "permissionDecisionReason")
-      |> option.unwrap(reason_for_block(stderr, "")))
-    Some("ask") -> Ask(string_field(specific, "permissionDecisionReason")
-      |> option.unwrap(""))
+    Some("deny") ->
+      Deny(
+        string_field(specific, "permissionDecisionReason")
+        |> option.lazy_unwrap(fn() { reason_for_block(stderr, "") }),
+      )
+    Some("ask") ->
+      Ask(
+        string_field(specific, "permissionDecisionReason")
+        |> option.unwrap(""),
+      )
     Some("allow") ->
       case updated_input(specific) {
         Some(updated) -> Rewrite(updated)
@@ -198,11 +203,11 @@ pub fn tool_feedback(
   code: Int,
   stderr: String,
   stdout: String,
-  timed_out: Bool,
+  ending: Ending,
 ) -> ToolFeedback {
-  case timed_out {
-    True -> Nothing
-    False ->
+  case ending {
+    WallCancelled -> Nothing
+    RanToExit ->
       case code {
         _ if code == blocking_code -> Feedback(stderr)
         _ ->
@@ -253,11 +258,11 @@ pub fn continuation(
   code: Int,
   stderr: String,
   stdout: String,
-  timed_out: Bool,
+  ending: Ending,
 ) -> Continuation {
-  case timed_out {
-    True -> Finish
-    False ->
+  case ending {
+    WallCancelled -> Finish
+    RanToExit ->
       case code {
         _ if code == blocking_code ->
           Continue(case string.trim(stderr) {
@@ -303,24 +308,31 @@ pub type ContextInjection {
   Blocked(reason: String)
 }
 
-/// Reads a context-carrying event's outcome.
-///
-/// `blocking: True` selects the `UserPromptSubmit` reading, where exit
-/// 2 rejects the prompt and a `decision: "block"` does the same;
-/// `blocking: False` is the `SessionStart`/`SubagentStart` reading,
-/// where neither exit 2 nor any decision field blocks and plain
-/// stdout is context.
+/// Which contract reading a context-carrying event takes: the events
+/// the contract lets block a prompt, and the ones it does not.
+pub type PromptBlocking {
+  /// The `UserPromptSubmit` reading: exit 2 rejects the prompt and a
+  /// `decision: "block"` does the same.
+  RejectsPrompt
+
+  /// The `SessionStart`/`SubagentStart` reading: neither exit 2 nor
+  /// any decision field blocks, and plain stdout is context.
+  CannotBlock
+}
+
+/// Reads a context-carrying event's outcome under one of its two
+/// contract readings.
 pub fn context_injection(
   event: String,
-  blocking: Bool,
+  blocking: PromptBlocking,
   code: Int,
   stderr: String,
   stdout: String,
-  timed_out: Bool,
+  ending: Ending,
 ) -> ContextInjection {
-  case timed_out {
-    True -> NoContext
-    False -> {
+  case ending {
+    WallCancelled -> NoContext
+    RanToExit -> {
       case blocking_decision(blocking, code, stderr, stdout) {
         Blocked(reason) -> Blocked(reason)
         _ ->
@@ -335,14 +347,14 @@ pub fn context_injection(
 }
 
 fn blocking_decision(
-  blocking: Bool,
+  blocking: PromptBlocking,
   code: Int,
   stderr: String,
   stdout: String,
 ) -> ContextInjection {
   case blocking, code {
-    True, c if c == blocking_code -> Blocked(string.trim(stderr))
-    True, _ ->
+    RejectsPrompt, c if c == blocking_code -> Blocked(string.trim(stderr))
+    RejectsPrompt, _ ->
       case classify(stdout) {
         Json(fields) ->
           case string_field(fields, "decision") {
@@ -352,7 +364,7 @@ fn blocking_decision(
           }
         _ -> NoContext
       }
-    False, _ -> NoContext
+    CannotBlock, _ -> NoContext
   }
 }
 
@@ -420,9 +432,7 @@ pub fn string_field(
 }
 
 /// Reads the `updatedInput` replacement object.
-pub fn updated_input(
-  fields: List(#(String, JsonValue)),
-) -> Option(JsonValue) {
+pub fn updated_input(fields: List(#(String, JsonValue))) -> Option(JsonValue) {
   updated_input_named(fields, "updatedInput")
 }
 
@@ -442,13 +452,15 @@ fn reason_for_block(stderr: String, stdout: String) -> String {
   case classify(stdout) {
     Json(fields) ->
       string_field(fields, "reason")
-      |> option.or(string_field(
-        list.key_find(fields, "hookSpecificOutput")
-        |> result.unwrap(json.Null)
-        |> object_fields,
-        "permissionDecisionReason",
-      ))
-      |> option.unwrap(string.trim(stderr))
+      |> option.lazy_or(fn() {
+        string_field(
+          list.key_find(fields, "hookSpecificOutput")
+            |> result.unwrap(json.Null)
+            |> object_fields,
+          "permissionDecisionReason",
+        )
+      })
+      |> option.lazy_unwrap(fn() { string.trim(stderr) })
     _ -> string.trim(stderr)
   }
 }
@@ -464,9 +476,13 @@ fn object_fields(value: JsonValue) -> List(#(String, JsonValue)) {
 /// preview shape a large tool result gets: the head, a marker naming
 /// what was dropped, and nothing else.
 pub fn capped(text: String) -> String {
-  case string.length(text) <= output_cap {
-    True -> text
-    False ->
+  // `drop_start` against the bound stops at the cap rather than
+  // walking the whole string, which is the bounded answer the lint
+  // asks for: a hook that printed a database is not re-scanned to
+  // decide it was too long.
+  case string.drop_start(text, output_cap) {
+    "" -> text
+    _ ->
       string.slice(text, 0, output_cap)
       <> "\n[hook output capped at "
       <> int.to_string(output_cap)

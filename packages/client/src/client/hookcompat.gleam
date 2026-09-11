@@ -345,6 +345,20 @@ pub type RunMode {
   BackgroundAsync
 }
 
+/// Whether a background handler wakes the session on exit code 2.
+///
+/// The contract's `asyncRewake` is a boolean in both wire shapes, so
+/// the question is modelled rather than carried — the same conversion
+/// `RunMode` makes for `async`.
+pub type Rewake {
+  /// The default: the handler's exit is noticed, not acted on.
+  Quiet
+
+  /// `asyncRewake: true`: exit code 2 wakes the session and the
+  /// stderr becomes a reminder the model reads.
+  WakesSession
+}
+
 /// Whether a handler runs once or repeats.
 ///
 /// Claude honours `once` only for hooks declared in skill frontmatter
@@ -377,7 +391,7 @@ pub type Handler {
     run_mode: RunMode,
     /// `asyncRewake: true` / `async_rewake = true`: background, and
     /// wakes the session on exit code 2.
-    async_rewake: Bool,
+    rewake: Rewake,
     /// The per-handler `timeout` in seconds; `None` means the
     /// contract's per-event default, which the caller supplies.
     timeout_s: Option(Int),
@@ -911,7 +925,7 @@ fn handler_from_common(
       command:,
       args:,
       run_mode: run_mode_of(async_flag),
-      async_rewake: async_rewake == Some(True),
+      rewake: rewake_of(async_rewake),
       timeout_s:,
       url:,
       server:,
@@ -929,7 +943,7 @@ fn handler_from_common(
     command:,
     args:,
     run_mode: run_mode_of(async_flag),
-    async_rewake: async_rewake == Some(True),
+    rewake: rewake_of(async_rewake),
     timeout_s:,
     url:,
     server:,
@@ -950,11 +964,24 @@ fn run_mode_of(async_flag: Option(Bool)) -> RunMode {
   }
 }
 
+// The wire flag is a three-state boolean the parsers read raw
+// (`Some(True)`, `Some(False)`, `None`); these three conversions are
+// where it turns into the modelled question, and the `Bool` never
+// crosses any other signature.
+
 // The lifetime from the raw three-state flag.
 fn lifetime_of(once: Option(Bool)) -> Lifetime {
   case once {
     Some(True) -> Once
     _ -> Repeats
+  }
+}
+
+// The rewake question from the raw three-state flag.
+fn rewake_of(async_rewake: Option(Bool)) -> Rewake {
+  case async_rewake {
+    Some(True) -> WakesSession
+    _ -> Quiet
   }
 }
 
@@ -1100,7 +1127,7 @@ fn render_handler(name: String, handler: Handler) -> String {
   <> command_line
   <> render_args(handler.args)
   <> render_run_mode(handler.run_mode)
-  <> render_async_rewake(handler.async_rewake)
+  <> render_async_rewake(handler.rewake)
   <> render_timeout(handler.timeout_s)
   <> render_url(handler)
   <> render_server_tool(handler)
@@ -1125,10 +1152,10 @@ fn render_run_mode(mode: RunMode) -> String {
   }
 }
 
-fn render_async_rewake(rewake: Bool) -> String {
+fn render_async_rewake(rewake: Rewake) -> String {
   case rewake {
-    False -> ""
-    True -> "async_rewake = true\n"
+    Quiet -> ""
+    WakesSession -> "async_rewake = true\n"
   }
 }
 
