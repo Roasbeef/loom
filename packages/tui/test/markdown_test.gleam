@@ -112,6 +112,23 @@ pub fn single_line_replaces_row_breaks_and_controls_test() {
   |> should.equal("one two�")
 }
 
+pub fn source_tabs_render_as_spaces_without_admitting_controls_test() {
+  text_hygiene.multiline("\tif ready {\n\t\twork()\n}\u{7}")
+  |> should.equal("    if ready {\n        work()\n}�")
+}
+
+pub fn equality_comparisons_do_not_highlight_intervening_prose_test() {
+  let text = "If mode == Ready, wait until count == 0."
+  let rendered = markdown.render(text)
+  rendered |> visible_text |> should.equal(text <> "\n")
+  let plain = markdown.render("ordinary prose")
+  let assert [span.Line(spans: [sample], ..), ..] = plain
+    as "plain prose supplies the expected text style"
+  rendered
+  |> list.flat_map(fn(line) { line.spans })
+  |> list.each(fn(part) { part.style |> should.equal(sample.style) })
+}
+
 pub fn terminal_formatting_sequences_leave_no_visible_residue_test() {
   text_hygiene.multiline(
     "\u{1b}[38;2;226;224;216mstyled\u{1b}[0m\n\u{1b}[?25lready\u{1b}[?25h\u{1b}]0;title\u{7}",

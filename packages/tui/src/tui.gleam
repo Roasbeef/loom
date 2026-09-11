@@ -56,6 +56,7 @@ import tui/connection
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
+import tui/file_read_view
 import tui/frame
 import tui/history_view
 import tui/image_drop
@@ -6086,6 +6087,10 @@ fn tool_result_lines(
   details_expanded: Bool,
 ) -> List(Line) {
   let result = content |> list.map(tool_result_text) |> string.join("\n")
+  let result = case tool_name, is_error {
+    "fs_read", False -> file_read_view.render(result)
+    _, _ -> result
+  }
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)

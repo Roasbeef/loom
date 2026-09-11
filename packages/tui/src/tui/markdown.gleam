@@ -527,8 +527,17 @@ fn inline_parts(
       nested_parts(document, children, style.add_modifier(base, style.italic()))
     Strong(children) ->
       nested_parts(document, children, style.add_modifier(base, style.bold()))
+
+    // Mork recognizes paired == delimiters even in ordinary comparisons.
+    // Preserve those operators as text instead of coloring unrelated prose.
     Highlight(children) ->
-      nested_parts(document, children, style.with_fg(base, theme.signal))
+      list.append(
+        [
+          Styled(span.span_styled("==", base)),
+          ..nested_parts(document, children, base)
+        ],
+        [Styled(span.span_styled("==", base))],
+      )
     Strikethrough(children) ->
       nested_parts(document, children, style.add_modifier(base, style.dim()))
     FullLink(text:, data:) -> link_parts(document, text, data, base)

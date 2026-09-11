@@ -55,9 +55,13 @@ fn strip_sequences(
 // owned output rather than returning a slice of the untrusted input buffer.
 fn keep_visible(first: UtfCodepoint, kept: List(UtfCodepoint)) {
   let code = string.utf_codepoint_to_int(first)
-  case code != 0x0A && invisible(code) {
-    True -> list.append(string.to_utf_codepoints("�"), kept)
-    False -> [first, ..kept]
+
+  // Tabs are ordinary source indentation, but cannot reach the terminal as
+  // control bytes. Four literal spaces keep them readable in every renderer.
+  case code == 0x09, code != 0x0A && invisible(code) {
+    True, _ -> list.append(string.to_utf_codepoints("    "), kept)
+    False, True -> list.append(string.to_utf_codepoints("�"), kept)
+    False, False -> [first, ..kept]
   }
 }
 
