@@ -1119,7 +1119,7 @@ fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
   Ready(
     handle:,
     outcome: outcome_of(last),
-    report: report_of(runtime, last),
+    report: partial_report(outcome_of(last), report_of(runtime, last), notes),
     // The notes are already in hand, so the contract costs one point read
     // for the schema and no second listing: the result cell *is* a note,
     // which is the whole reason the blackboard was the right place to put
@@ -1127,6 +1127,52 @@ fn ready(runtime: api.Runtime, handle: Handle, last: LastResult) -> Waited {
     result: terminal_result(runtime, handle.strand, notes),
     notes:,
   )
+}
+
+// A failed reviewer can still have useful saved observations. These notes
+// are mutable strand state, so they are labelled as such rather than attributed
+// to this operation or presented as a completed review.
+fn partial_report(
+  outcome: Outcome,
+  final: String,
+  notes: List(#(String, JsonValue)),
+) -> String {
+  case outcome {
+    Completed -> final
+    Failed(_) | Aborted -> {
+      let heading = case outcome {
+        Failed(_) -> "Partial reviewer output (failed)."
+        Aborted -> "Partial reviewer output (stopped)."
+        Completed -> "Reviewer output."
+      }
+      case final, notes {
+        "", [] -> heading <> " No final answer or saved notes are available."
+        "", _ -> {
+          let excerpt =
+            notes
+            |> list.take(8)
+            |> list.map(fn(pair) {
+              let text = case pair.1 {
+                json.String(text) -> text
+                value -> json.to_string(value)
+              }
+              pair.0
+              <> ":\n"
+              <> string.slice(text, 0, 2048)
+              <> case string.length(text) > 2048 {
+                True -> "\n[Note excerpt; full value remains in notes.]"
+                False -> ""
+              }
+            })
+            |> string.join("\n\n")
+          heading
+          <> "\n\nLatest saved notes; these may include work from earlier turns:\n\n"
+          <> excerpt
+        }
+        _, _ -> heading <> "\n\n" <> final
+      }
+    }
+  }
 }
 
 fn terminal_result(
@@ -1179,8 +1225,8 @@ fn structural_outcome(outcome: operation.StructuralOutcome) -> Outcome {
 // The report is a projection, not a stored field: `LastResult` carries
 // only the entry id of the final assistant response, so the text is read
 // back through the writer. A run that ended without one — a failure, an
-// abort, or a batch every tool terminated — has no report, and the
-// outcome is what says so.
+// abort, or a batch every tool terminated — has no final answer. The caller
+// may separately present saved notes as explicitly labelled partial work.
 fn report_of(runtime: api.Runtime, last: LastResult) -> String {
   case last {
     operation.RunLastResult(final_assistant: Some(entry), ..) ->

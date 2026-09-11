@@ -174,12 +174,10 @@ pub type McpServer {
 
 /// Whether this host's jailed tool shells reach the network at all.
 ///
-/// A two-variant type rather than a `Bool`: the jail is offline by
-/// design, so egress is a posture an operator takes deliberately and the
-/// name at the call site has to say which posture it is.
+/// Network access is independent of filesystem access. Development sessions
+/// permit ordinary network tools; an operator can explicitly select offline.
 pub type ToolNetwork {
-  /// No egress at all — what the jail has always built, and what an
-  /// absent `[tools]` table means.
+  /// No egress at all, selected by configuration or `--network off`.
   ToolNetworkOff
 
   /// Unrestricted egress for every jailed tool shell, which is what
@@ -876,19 +874,17 @@ fn positive_int(
 
 // --- the [tools] table -----------------------------------------------------
 
-/// The posture a catalogue with no `[tools]` table configures: no
-/// egress, and nothing added to the environment the server builds. It is
-/// the jail this harness has always constructed, written down so that an
-/// absent table and an explicit `network = "off"` are the same value.
+/// The default development posture permits ordinary network access without
+/// inheriting secret environment values. `network = "off"` narrows egress.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert catalog.default_tools().network == catalog.ToolNetworkOff
+/// assert catalog.default_tools().network == catalog.ToolNetworkFull
 /// ```
 ///
 pub fn default_tools() -> ToolsConfig {
-  ToolsConfig(network: ToolNetworkOff, env: [], set: [], path: [])
+  ToolsConfig(network: ToolNetworkFull, env: [], set: [], path: [])
 }
 
 /// One `[workspace] mounts` entry: a host region an operator states the
@@ -908,10 +904,23 @@ pub type WorkspaceMount {
   )
 }
 
-/// The `[workspace]` table: the operator-stated mounts and nothing else
-/// yet.
+/// The readable filesystem scope, independent of workspace write access.
+pub type ReadScope {
+  /// Installed tools and host files are readable, except protected paths.
+  HostReads
+
+  /// Only the workspace, system runtime, and explicit mounts are readable.
+  WorkspaceReads
+}
+
+/// The `[workspace]` table selects read scope and explicit additional mounts.
 pub type WorkspaceConfig {
-  WorkspaceConfig(mounts: List(WorkspaceMount))
+  WorkspaceConfig(
+    /// Host reads by default; workspace reads select a restricted view.
+    read_scope: ReadScope,
+    /// Additional operator-authorized read-only or writable regions.
+    mounts: List(WorkspaceMount),
+  )
 }
 
 /// The `[workspace]` table a file that omits it means: no mounts beyond
@@ -924,7 +933,7 @@ pub type WorkspaceConfig {
 /// ```
 ///
 pub fn default_workspace() -> WorkspaceConfig {
-  WorkspaceConfig(mounts: [])
+  WorkspaceConfig(read_scope: HostReads, mounts: [])
 }
 
 /// Parses the optional `[workspace]` table out of the same `loom.toml`
@@ -969,7 +978,18 @@ pub fn parse_workspace(text: String) -> Result(WorkspaceConfig, String) {
 fn workspace_table(
   fields: Dict(String, tom.Toml),
 ) -> Result(WorkspaceConfig, String) {
-  use Nil <- result.try(known_keys(dict.keys(fields), ["mounts"], "[workspace]"))
+  use Nil <- result.try(known_keys(
+    dict.keys(fields),
+    ["read_scope", "mounts"],
+    "[workspace]",
+  ))
+  use read_scope <- result.try(
+    case optional_string(fields, "workspace", "read_scope") {
+      Ok(Ok(word)) -> parse_read_scope(word)
+      Ok(Error(Nil)) -> Ok(HostReads)
+      Error(reason) -> Error(reason)
+    },
+  )
   use items <- result.try(case dict.get(fields, "mounts") {
     Ok(tom.Array(items)) -> Ok(items)
 
@@ -996,7 +1016,23 @@ fn workspace_table(
     })
     |> result.replace(Nil),
   )
-  Ok(WorkspaceConfig(mounts:))
+  Ok(WorkspaceConfig(read_scope:, mounts:))
+}
+
+/// Decodes the same filesystem scope in configuration and daemon flags.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_read_scope("workspace") == Ok(catalog.WorkspaceReads)
+/// ```
+@internal
+pub fn parse_read_scope(word: String) -> Result(ReadScope, String) {
+  case word {
+    "host" -> Ok(HostReads)
+    "workspace" -> Ok(WorkspaceReads)
+    _ -> Error("read_scope must be host or workspace")
+  }
 }
 
 const mounts_shape = "workspace.mounts must be an array of { path = \"/abs\", access = \"ro\"|\"rw\" } tables"
@@ -1097,7 +1133,7 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
   ))
   use network <- result.try(case optional_string(fields, "tools", "network") {
     Ok(Ok(word)) -> parse_tool_network(word)
-    Ok(Error(Nil)) -> Ok(ToolNetworkOff)
+    Ok(Error(Nil)) -> Ok(ToolNetworkFull)
     Error(message) -> Error(message)
   })
   use env <- result.try(tool_env_names(fields))
@@ -1127,7 +1163,15 @@ fn tools_table(fields: Dict(String, tom.Toml)) -> Result(ToolsConfig, String) {
 // Exactly two words, because the third one the wire vocabulary has —
 // proxy — needs an egress proxy this phase does not ship, and a config
 // that accepted the word would promise host filtering nothing enforces.
-fn parse_tool_network(word: String) -> Result(ToolNetwork, String) {
+/// Decodes the shared configuration and daemon network flag.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_tool_network("off") == Ok(catalog.ToolNetworkOff)
+/// ```
+@internal
+pub fn parse_tool_network(word: String) -> Result(ToolNetwork, String) {
   case word {
     "off" -> Ok(ToolNetworkOff)
     "full" -> Ok(ToolNetworkFull)

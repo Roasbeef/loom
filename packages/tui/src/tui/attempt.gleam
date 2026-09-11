@@ -41,6 +41,14 @@ pub type Selection {
     from_seq: Int,
   )
 
+  /// Exclusive bounds of one older page, without conversation content.
+  HistoryRange(
+    /// Sequence immediately before the requested range.
+    after_seq: Int,
+    /// Sequence immediately after the requested range.
+    before_seq: Int,
+  )
+
   /// At most eight exact escalation keys, not their actions or grants.
   Decisions(
     /// Distinct exact keys whose resolution may update the approval view.
@@ -180,6 +188,10 @@ fn encode_selection(selection) {
       #("snapshot_id", json.String(id)),
       #("index", json.Int(index)),
     ]
+    HistoryRange(after, before) -> [
+      #("after_seq", json.Int(after)),
+      #("before_seq", json.Int(before)),
+    ]
     Cursor(seq) -> [#("from_seq", json.Int(seq))]
     Decisions(ids) -> [#("ids", json.Array(list.map(ids, json.String)))]
   }
@@ -258,6 +270,15 @@ fn decode_selection(kind, fields) {
       use seq <- result.try(integer(fields, "from_seq"))
       use <- bool.guard(seq < 0, Error("negative catch-up cursor"))
       Ok(Cursor(seq))
+    }
+    "history" -> {
+      use after <- result.try(integer(fields, "after_seq"))
+      use before <- result.try(integer(fields, "before_seq"))
+      use <- bool.guard(
+        after < 0 || before <= after || before - after > 101,
+        Error("invalid recorded history range"),
+      )
+      Ok(HistoryRange(after, before))
     }
     "escalations_get" -> {
       use values <- result.try(case list.key_find(fields, "ids") {

@@ -10,8 +10,10 @@
 
 import argv
 import core/entry
+import core/ids
 import core/json
 import core/message
+import core/register
 import etui/app
 import etui/backend
 import etui/backend/default
@@ -55,6 +57,7 @@ import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/frame
+import tui/history_view
 import tui/image_drop
 import tui/internal/ffi_terminal
 import tui/live_jobs
@@ -64,6 +67,7 @@ import tui/notes_view
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
 import tui/recording
+import tui/reviewer_status
 import tui/selection
 import tui/session_channel
 import tui/session_selector
@@ -73,6 +77,7 @@ import tui/snapshot_view
 import tui/text_hygiene
 import tui/theme
 import tui/tool_activity
+import tui/transcript_anchor
 import tui/virtual_backend
 import tui/workspace
 import tui/worktree_view
@@ -95,6 +100,9 @@ pub type Speaker {
 /// Whether the transcript area is showing captured edits.
 @internal
 pub type DiffVisibility {
+  /// Show a side pane when wide enough, preserving conversation on narrow screens.
+  DiffAutomatic
+
   /// Show conversation history.
   DiffHidden
 
@@ -458,6 +466,8 @@ pub type Model {
     awaiting_outcome: Option(Submission),
     transcript: List(Line),
     records: List(protocol.EntryRecord),
+    /// Bounded scrollback is independent of the authoritative live cut.
+    scrollback: history_view.State,
     notice: String,
     /// A complete queue draft never borrows the ordinary composer.
     queue_editor: queue_editor.State,
@@ -473,6 +483,8 @@ pub type Model {
     summary_scroll: Int,
     /// Current job observation is separate from the result timestamp.
     jobs: Option(live_jobs.Board),
+    /// Local receipt time; server and terminal clocks are never subtracted.
+    jobs_observed_ms: Option(Int),
     /// One explicit job read deferred behind the mutation lane.
     jobs_refresh: worktree_view.Refresh,
     /// Attachment and strand for the one issued roster read.
@@ -510,6 +522,8 @@ pub type Model {
     workspace: workspace.Context,
     strands: List(protocol.Strand),
     agent_summary: String,
+    /// Current reviewer progress, with operation-owned task excerpts.
+    reviewer_rows: List(reviewer_status.Row),
     active_strand: String,
     session: String,
     local_options: Option(bootstrap.Options),
@@ -586,10 +600,20 @@ pub type Model {
     rendered_revision: Int,
     rendered_row_count: Int,
     rendered_rows: List(span.Line),
+    /// Durable provenance for wrapped rows; transient rows have no anchor.
+    rendered_anchors: List(Option(transcript_anchor.Row)),
     record_rows: List(span.Line),
     /// Wrapped rows keyed by the complete presentation line. A rebuild keeps
     /// only the current projection, so old branches and outcomes are released.
     record_line_cache: Dict(Line, List(span.Line)),
+    /// Compact invocation rows keyed by their complete immutable outcome.
+    /// Rebuilds retain only calls in the current projection.
+    compact_call_cache: Dict(tool_activity.Call, List(Line)),
+    /// Narrative presentation retains only the current entries and owner.
+    compact_entry_cache: Dict(
+      #(entry.Entry, Option(message.Origin)),
+      List(Line),
+    ),
     pending_records: List(protocol.EntryRecord),
     record_cache_valid: Bool,
     record_cache_width: Int,
@@ -614,6 +638,8 @@ pub type Model {
     /// the next key, wheel notch, paste or resize rather than tracked
     /// through a reflow.
     selection: Option(selection.Selection),
+    /// The selected pane stays on its original cells until the selection ends.
+    selection_frame: Option(buffer.Buffer),
     /// Whether a finished selection reaches the terminal's clipboard.
     clipboard: Clipboard,
   )
@@ -831,6 +857,7 @@ pub fn new_model_with_clock(
       ),
     ],
     records: [],
+    scrollback: history_view.empty(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
     worktree: worktree_view.new(),
@@ -839,13 +866,14 @@ pub fn new_model_with_clock(
     summary_surface: queue_editor.Closed,
     summary_scroll: 0,
     jobs: None,
+    jobs_observed_ms: None,
     jobs_refresh: worktree_view.Settled,
     jobs_awaiting: None,
     jobs_request: None,
     jobs_notice: "Live jobs unavailable; /summary requests a current observation",
     help_open: False,
     notes_open: False,
-    diff_view: DiffHidden,
+    diff_view: DiffAutomatic,
     diff_scroll_offset: 0,
     diff_rows: [],
     diff_line_cache: dict.new(),
@@ -859,6 +887,7 @@ pub fn new_model_with_clock(
     workspace: project,
     strands:,
     agent_summary: agents.summary(strands),
+    reviewer_rows: [],
     active_strand: "main",
     session: "demo",
     local_options: None,
@@ -896,8 +925,11 @@ pub fn new_model_with_clock(
     rendered_revision: -1,
     rendered_row_count: 0,
     rendered_rows: [],
+    rendered_anchors: [],
     record_rows: [],
     record_line_cache: dict.new(),
+    compact_call_cache: dict.new(),
+    compact_entry_cache: dict.new(),
     pending_records: [],
     record_cache_valid: False,
     record_cache_width: 0,
@@ -912,6 +944,7 @@ pub fn new_model_with_clock(
     quiet_for_ms: quiet_after_ms,
     recorder: None,
     selection: None,
+    selection_frame: None,
     clipboard: NoClipboard,
   )
 }
@@ -1448,6 +1481,7 @@ pub fn replay_steps(
       session: "replay",
       strands: [],
       agent_summary: agents.summary([]),
+      reviewer_rows: [],
       notice: "replaying",
     )
   use run <- result.try(run_script(
@@ -1548,6 +1582,7 @@ fn live_base(base: Model) -> Model {
     transcript: [],
     current_model: "unconfigured",
     agent_summary: agents.summary([]),
+    reviewer_rows: [],
     notice: "select a saved session or create one",
   )
 }
@@ -1701,13 +1736,13 @@ fn begin_delete(model: Model, session: String) -> Model {
             SessionDeleted(id)
           },
         ])
-        |> weft.deadline(12_000)
+        |> weft.deadline(85_000)
         |> weft.cancel_with(cancel)
         |> weft.start_relayed(replies)
       Model(
         ..model,
         control_request: Some(ControlRequest(cancel, replies, None)),
-        notice: "deleting session " <> session,
+        notice: "stopping and deleting session " <> session,
       )
     }
   }
@@ -1963,8 +1998,10 @@ fn render_frame(
   let #(transcript_panel, agent_panel, changes_panel) =
     body_layout(body_area, model)
   let transcript_area = panel_inner(transcript_panel)
+  let #(pending_area, composer_area) =
+    pending_layout(panel_inner(input_area), model)
   let #(paste_area, editor_area) =
-    input_layout(panel_inner(input_area), model.attachments)
+    input_layout(composer_area, model.attachments)
 
   // The editor is wrapped to the cells the chip leaves it, never resized to
   // fit: the source text and cursor stay exactly what history will replay.
@@ -1993,6 +2030,7 @@ fn render_frame(
     |> render_agent_rail(agent_panel, model)
     |> render_changes_panel(changes_panel, model)
     |> render_panel_border(input_area, input_title(model), theme.signal)
+    |> render_pending_band(pending_area, model)
     |> render_paste_chip(paste_area, model.attachments)
     |> text_area.render(editor_area, editor, input_view)
     |> render_footer(footer_area, model)
@@ -2013,10 +2051,35 @@ fn render_frame(
     ApprovalInspector(panel) -> approval_panel.render(base, screen, panel)
   }
 
-  // The highlight is the last paint, over overlays too: it marks cells of
-  // the frame as shown, and those are what a copy reads back.
+  // Selected cells keep their original contents. A growing pending/reviewer
+  // band may shrink the pane, so restore only its current intersection; the
+  // selected transcript must never paint over newly visible controls.
   let rendered = case model.selection {
-    Some(selected) -> selection.highlight(rendered, selected)
+    Some(selected) -> {
+      let current_area =
+        [
+          transcript_area,
+          panel_inner(agent_panel),
+          panel_inner(changes_panel),
+          panel_inner(input_area),
+        ]
+        |> list.find(fn(area) { area.position == selected.area.position })
+        |> result.unwrap(selected.area)
+      case
+        model.selection_frame,
+        geometry.intersect(selected.area, current_area)
+      {
+        Some(original), Ok(area) ->
+          buffer.blit(
+            rendered,
+            selection.highlight(original, selected),
+            area,
+            area.position,
+          )
+        None, _ -> selection.highlight(rendered, selected)
+        Some(_), Error(Nil) -> rendered
+      }
+    }
     None -> rendered
   }
   let cursor = case model.overlay {
@@ -2169,10 +2232,14 @@ fn body_layout(body: Rect, model: Model) -> #(Rect, Rect, Rect) {
 }
 
 fn diff_pane_width(model: Model) -> Int {
-  case model.diff_view == DiffVisible && model.width >= 140 {
+  case model.diff_view != DiffHidden && model.width >= 140 {
     True -> int.min(72, model.width / 2)
     False -> 0
   }
+}
+
+fn diff_shown(model: Model) -> Bool {
+  model.diff_view == DiffVisible || diff_pane_width(model) > 0
 }
 
 fn main_shows_diff(model: Model) -> Bool {
@@ -2260,6 +2327,24 @@ fn render_rows(
     |> list.drop(offset)
     |> list.take(area.size.height)
     |> list.reverse
+    |> list.map(fn(line) {
+      case line.spans {
+        [first, ..] if first.style.bg == theme.user_background ->
+          span.Line(
+            ..line,
+            spans: list.append(line.spans, [
+              span.span_styled(
+                string.repeat(
+                  " ",
+                  int.max(0, area.size.width - span.line_width(line)),
+                ),
+                first.style,
+              ),
+            ]),
+          )
+        _ -> line
+      }
+    })
   paragraph.render_styled(buf, area, visible)
 }
 
@@ -2287,8 +2372,8 @@ fn render_line(line: Line) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
-    Assistant -> #("◆ ", theme.current_bold())
-    Reasoning -> #("∴ reason ", theme.quiet_text())
+    Assistant -> #("◆ Agent  ", theme.current_bold())
+    Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail -> #("  ", theme.quiet_text())
@@ -2296,10 +2381,36 @@ fn render_line(line: Line) -> List(span.Line) {
     Failure -> #("! error  ", theme.danger_text())
   }
   case line.speaker {
-    Assistant | ToolDetail ->
+    User -> {
+      let body_style =
+        style.new(theme.paper, theme.user_background, style.none())
+      let label_style =
+        style.new(theme.signal, theme.user_background, style.bold())
+
+      // A separate label and shaded block identify the speaker without
+      // depending on hue. Wrapped rows retain the same background, and copy
+      // continues to read the exact visible frame rather than another layout.
+      [
+        span.line_plain(""),
+        span.line_new([span.span_styled(" › User", label_style)]),
+        ..line.text
+        |> text_hygiene.multiline
+        |> string.split("\n")
+        |> list.map(fn(text) {
+          span.line_new([span.span_styled("   " <> text, body_style)])
+        })
+        |> list.append([span.line_plain("")])
+      ]
+    }
+    Assistant | Reasoning -> [
+      span.line_plain(""),
+      ..markdown.render(line.text)
+      |> prefix_rendered_lines(mark, mark_style)
+    ]
+    ToolDetail ->
       markdown.render(line.text)
       |> prefix_rendered_lines(mark, mark_style)
-    System | User | Reasoning | ToolCall | ToolResult | ToolFailure | Failure ->
+    System | ToolCall | ToolResult | ToolFailure | Failure ->
       line.text
       |> text_hygiene.multiline
       |> string.split("\n")
@@ -2375,14 +2486,41 @@ fn refresh_notes(model: Model) -> Model {
 fn notes_content(model: Model) -> span.Text {
   case model.note_board {
     None -> historical_notes_content(model.records, model.active_strand)
-    Some(board) -> current_notes_content(board, model.active_strand)
+    Some(board) -> current_notes_content(board, model)
   }
 }
 
-fn current_notes_content(
-  board: notes_view.Board,
-  active_strand: String,
-) -> span.Text {
+fn note_read_status(board: notes_view.Board, model: Model) -> String {
+  case model.captured {
+    Some(#(cut, _)) if cut.next_seq - 1 > board.as_of ->
+      "Session advanced since this read · r refreshes. Saved plans may need correction."
+    _ ->
+      "Last observed note values. Saved plans may need correction as work progresses."
+  }
+}
+
+// Only the accepted operation's own revision establishes that a note predates
+// this turn. Unrelated session activity says nothing about the note's accuracy.
+fn note_turn_relation(seq: Int, model: Model) -> String {
+  case model.captured {
+    None -> ""
+    Some(#(_, view)) -> {
+      let started = {
+        use current <- result.try(dict.get(view.operations, model.active_strand))
+        list.find(view.cells, fn(cell) {
+          cell.namespace == register.OpMeta && cell.key == current
+        })
+      }
+      case started {
+        Ok(cell) if seq < cell.seq -> " · written before current turn"
+        _ -> ""
+      }
+    }
+  }
+}
+
+fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
+  let active_strand = model.active_strand
   case board.strand == active_strand {
     False -> transcript_content([Line(System, "refresh notes for this strand")])
     True -> {
@@ -2404,9 +2542,14 @@ fn current_notes_content(
               note.key
                 <> " · updated at revision "
                 <> int.to_string(note.seq)
+                <> note_turn_relation(note.seq, model)
                 <> extent,
             ),
-            Line(Assistant, note.text),
+            case model.details_expanded, note.extent {
+              True, _ | False, notes_view.Excerpt -> Line(ToolResult, note.text)
+              False, notes_view.Complete ->
+                Line(ToolDetail, notes_view.readable(note.text))
+            },
           ]
         })
       let omitted = board.total - list.length(board.notes)
@@ -2419,7 +2562,11 @@ fn current_notes_content(
         ]
         False -> []
       }
-      transcript_content([Line(System, heading), ..list.append(rows, tail)])
+      transcript_content([
+        Line(System, heading),
+        Line(System, note_read_status(board, model)),
+        ..list.append(rows, tail)
+      ])
     }
   }
 }
@@ -2555,7 +2702,7 @@ pub fn footer_status(
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.footer_project_limit(201) == 68
+/// assert tui.footer_project_limit(213) == 68
 /// assert tui.footer_project_limit(150) == 118
 /// ```
 @internal
@@ -2573,15 +2720,15 @@ pub fn footer_project_limit(width: Int) -> Int {
 /// notice text, and the status keeps the cap's forty cells as a floor. A
 /// terminal wider than the single row needs hands the status every spare
 /// cell, because a notice such as `steer captured; waiting for stop` cut
-/// to forty cells on a 234-column screen was the fixed cap outliving its
+/// to forty cells on a 246-column screen was the fixed cap outliving its
 /// reason. On two rows the status shares its row with usage; on three it
 /// has the row to itself.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.footer_status_limit(201) == 40
-/// assert tui.footer_status_limit(234) == 73
+/// assert tui.footer_status_limit(213) == 40
+/// assert tui.footer_status_limit(246) == 73
 /// ```
 @internal
 pub fn footer_status_limit(width: Int) -> Int {
@@ -2604,7 +2751,7 @@ const footer_project_cells = 70
 
 const footer_model_cells = 30
 
-const footer_usage_cells = 58
+const footer_usage_cells = 70
 
 const footer_status_cells = 42
 
@@ -2633,7 +2780,7 @@ fn footer_single_row_cells() -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.footer_rows(201) == 1
+/// assert tui.footer_rows(213) == 1
 /// assert tui.footer_rows(133) == 2
 /// assert tui.footer_rows(40) == 3
 /// ```
@@ -2866,7 +3013,73 @@ fn input_height(model: Model) -> Int {
     |> int.max(1)
     |> int.min(4)
 
-  content_rows + 2 + chip_rows
+  content_rows + 2 + chip_rows + pending_height(model)
+}
+
+fn pending_height(model: Model) -> Int {
+  list.length(composer_status_lines(model))
+}
+
+fn composer_status_lines(model: Model) -> List(String) {
+  let pending = case pending_status(model) {
+    None -> []
+    Some(text) -> [text]
+  }
+  list.append(
+    reviewer_status.lines(model.reviewer_rows, model.active_strand),
+    pending,
+  )
+}
+
+fn pending_layout(area: Rect, model: Model) -> #(Rect, Rect) {
+  case geometry.split_v(area, [Length(pending_height(model)), Fill]) {
+    [status, composer] -> #(status, composer)
+    _ -> #(geometry.rect_zero(), area)
+  }
+}
+
+// Receipt is a server fact; sending and waiting for a free channel are local
+// facts. Naming them separately prevents an accepted queue from looking lost.
+fn pending_status(model: Model) -> Option(String) {
+  case model.pending_submission, model.awaiting_outcome {
+    Some(_), _ -> Some("Not sent yet · waiting for session sync · Esc cancels")
+    None, Some(_) -> Some("Sent · waiting for receipt")
+    None, None -> {
+      case queue_rows(model) {
+        [] -> None
+        [first, ..rest] ->
+          Some(
+            "Received · "
+            <> case first.kind {
+              snapshot_view.Queue -> "queued after this turn"
+              snapshot_view.Steer -> "steer before queued turns"
+            }
+            <> case rest {
+              [] -> ""
+              more -> " · +" <> int.to_string(list.length(more)) <> " pending"
+            }
+            <> " · /queue edits · "
+            <> text_hygiene.single_line(first.text),
+          )
+      }
+    }
+  }
+}
+
+fn render_pending_band(
+  buf: buffer.Buffer,
+  area: Rect,
+  model: Model,
+) -> buffer.Buffer {
+  paragraph.render_styled(
+    buf,
+    area,
+    list.map(composer_status_lines(model), fn(status) {
+      span.line_new([
+        span.span_styled(compact(status, area.size.width), theme.quiet_text()),
+      ])
+    }),
+  )
 }
 
 // Stacking the chips leaves the editor the full interior width, so the wrap
@@ -2889,6 +3102,7 @@ fn input_title(model: Model) -> String {
       <> activity_glyph(model.activity_frame)
       <> " "
       <> status
+      <> " · turn"
       <> elapsed_label(model.activity_elapsed_s)
       <> " · enter queues · tab steers "
   }
@@ -3116,7 +3330,7 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     // so it goes with the old layout rather than surviving as a highlight
     // over whatever now occupies those cells.
     backend.Resize(width, height) ->
-      Model(..model, width:, height:, selection: None)
+      Model(..model, width:, height:, selection: None, selection_frame: None)
       |> mark_activity
       |> invalidate_frame
     backend.Tick -> update_tick(model)
@@ -3161,6 +3375,10 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     | backend.MouseRelease(_, _, backend.MouseMiddle)
     | backend.MouseRelease(_, _, backend.MouseRight)
     | backend.MouseMove(..) -> model
+  }
+  let updated = case !diff_shown(model) && diff_shown(updated) {
+    True -> request_visible_worktree(updated)
+    False -> updated
   }
   refresh_render_cache(model, updated)
   |> refresh_frame_cache(frame_boundary(event))
@@ -3225,6 +3443,14 @@ fn drain_replay(model: Model) -> Model {
 
 fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
   case change {
+    attempt_replay.RequestedHistory(before) ->
+      Model(
+        ..model,
+        scrollback: history_view.sent(
+          history_view.freeze(model.scrollback),
+          before,
+        ),
+      )
     attempt_replay.Rejected(reason) ->
       append_error(model, "open session: " <> reason)
     attempt_replay.Adopt(cut, view) ->
@@ -3232,6 +3458,10 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         ..model,
         session: cut.attachment.expected.session,
         captured: None,
+        scrollback: case model.session == cut.attachment.expected.session {
+          True -> history_view.cancel(model.scrollback)
+          False -> history_view.empty()
+        },
         note_board: None,
         approvals: [],
         inspecting_approval: None,
@@ -3240,8 +3470,14 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         models: [],
         skills: [],
         current_model: "loading…",
-        active_strand: "main",
-        scroll_offset: 0,
+        active_strand: case model.session == cut.attachment.expected.session {
+          True -> model.active_strand
+          False -> "main"
+        },
+        scroll_offset: case model.session == cut.attachment.expected.session {
+          True -> model.scroll_offset
+          False -> 0
+        },
         record_cache_valid: False,
         submitting: None,
         interrupt: None,
@@ -3446,6 +3682,7 @@ fn invalidate_frame(model: Model) -> Model {
 fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
+    || { before.scroll_offset == 0 && after.scroll_offset > 0 }
     || before.width != after.width
     || before.agent_rail_visible != after.agent_rail_visible
     || before.details_expanded != after.details_expanded
@@ -3464,17 +3701,35 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
         refresh_diff_cache(before, after) |> refresh_record_cache(width)
       let rendered_rows = rendered_rows_for(cached, width)
       let rendered_row_count = list.length(rendered_rows)
-      let anchored =
-        anchored_scroll_offset(
-          after.scroll_offset,
-          before.rendered_row_count,
-          rendered_row_count,
-        )
+
+      // Source anchors are needed only while reading older output. Building
+      // them for every live fragment repeats the whole durable projection.
+      // The first scroll into history captures them before later updates.
+      let rendered_anchors = case
+        after.help_open || after.notes_open || after.scroll_offset == 0
+      {
+        True -> []
+        False -> record_anchors_for(cached, width)
+      }
+      let anchored = case after.scroll_offset == 0 {
+        True -> 0
+        False ->
+          transcript_anchor.relocate(
+            before.rendered_anchors,
+            rendered_anchors,
+            after.scroll_offset,
+            transcript_viewport_height(before),
+            before.rendered_row_count - list.length(before.rendered_anchors),
+            rendered_row_count - list.length(rendered_anchors),
+          )
+          |> option.unwrap(after.scroll_offset)
+      }
       Model(
         ..cached,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
         rendered_rows:,
+        rendered_anchors:,
         scroll_offset: bounded_scroll_offset(
           anchored,
           rendered_row_count,
@@ -3494,8 +3749,8 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
 // invalidate the durable cache, and pending legacy entries name an append.
 // Closing the view releases its rows rather than retaining a hidden history.
 fn refresh_diff_cache(before: Model, after: Model) -> Model {
-  let cached = case after.diff_view {
-    DiffHidden ->
+  let cached = case diff_shown(after) {
+    False ->
       Model(
         ..after,
         diff_rows: [],
@@ -3503,9 +3758,9 @@ fn refresh_diff_cache(before: Model, after: Model) -> Model {
         diff_row_count: 0,
         diff_worktree_source: #(None, 0),
       )
-    DiffVisible -> {
+    True -> {
       let matches =
-        before.diff_view == DiffVisible
+        diff_shown(before)
         && after.record_cache_valid
         && after.record_cache_strand == after.active_strand
         && list.is_empty(after.pending_records)
@@ -3555,9 +3810,7 @@ fn previous_diff_layout(
   before: Model,
   after: Model,
 ) -> Dict(Line, List(span.Line)) {
-  case
-    before.diff_view == DiffVisible && diff_width(before) == diff_width(after)
-  {
+  case diff_shown(before) && diff_width(before) == diff_width(after) {
     True -> after.diff_line_cache
     False -> dict.new()
   }
@@ -3594,19 +3847,18 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         True -> model.record_line_cache
         False -> dict.new()
       }
+      let #(lines, compact_call_cache, compact_entry_cache) =
+        record_lines(model.records, model)
       let #(record_rows, record_line_cache) =
         model.transcript
-        |> list.append(record_lines(
-          model.records,
-          model.active_strand,
-          model.details_expanded,
-          solo_owner(model.captured),
-        ))
+        |> list.append(lines)
         |> cached_record_lines(width, previous)
       Model(
         ..model,
         record_rows:,
         record_line_cache:,
+        compact_call_cache:,
+        compact_entry_cache:,
         pending_records: [],
         record_cache_valid: True,
         record_cache_width: width,
@@ -3618,11 +3870,8 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     True, pending -> {
       let newest_rows =
         pending
-        |> record_lines(
-          model.active_strand,
-          model.details_expanded,
-          solo_owner(model.captured),
-        )
+        |> record_lines(model)
+        |> fn(projection) { projection.0 }
         |> transcript_content
         |> fn(content) { markdown.wrap_lines(content.lines, width) }
         |> list.reverse
@@ -3657,6 +3906,95 @@ fn cached_record_lines(
       dict.insert(cached, line, rendered),
     )
   })
+}
+
+// Cached wrapping is reused here; identity is supplied by the durable entry,
+// never inferred from text equality. Equal user messages keep distinct anchors.
+fn record_anchors_for(
+  model: Model,
+  width: Int,
+) -> List(Option(transcript_anchor.Row)) {
+  let entries =
+    model.records
+    |> list.reverse
+    |> list.filter(fn(record) { record.strand == model.active_strand })
+    |> list.map(fn(record) { record.entry })
+  let blocks = case model.details_expanded {
+    True -> list.flat_map(entries, anchored_entry_blocks(_, model))
+    False ->
+      entries
+      |> tool_activity.project
+      |> list.flat_map(fn(item) {
+        case item {
+          tool_activity.Narrative(value) -> anchored_entry_blocks(value, model)
+          tool_activity.Tools(calls) -> {
+            let heading = [activity_heading(calls)]
+            [
+              #("", heading),
+              ..list.map(calls, fn(call) {
+                #(
+                  ids.entry_id_to_string(call.source)
+                    <> "/call/"
+                    <> call.invocation.id,
+                  dict.get(model.compact_call_cache, call)
+                    |> result.lazy_unwrap(fn() { activity_call_lines(call) }),
+                )
+              })
+            ]
+          }
+        }
+      })
+  }
+  [#("", model.transcript), ..blocks]
+  |> list.flat_map(fn(block) {
+    block.1
+    |> list.index_map(fn(line, part) { #(line, part) })
+    |> list.flat_map(fn(pair) {
+      let rendered =
+        dict.get(model.record_line_cache, pair.0)
+        |> result.lazy_unwrap(fn() {
+          render_line(pair.0) |> markdown.wrap_lines(width)
+        })
+      list.index_map(rendered, fn(_, wrapped) {
+        case block.0 {
+          "" -> None
+          id -> Some(transcript_anchor.Row(id, pair.1, wrapped))
+        }
+      })
+    })
+  })
+  |> list.reverse
+}
+
+// Tool calls keep the same block identity in compact and expanded views.
+// Provider IDs are qualified by their durable owner, since a later response
+// may legitimately reuse them. Text and reasoning use their source index.
+fn anchored_entry_blocks(value: entry.Entry, model: Model) {
+  let details = model.details_expanded
+  let owner = solo_owner(model.captured)
+  let id = ids.entry_id_to_string(value.id)
+  case value {
+    entry.MessageEntry(
+      message: message.AssistantMessage(content:, error_message:, ..),
+      ..,
+    ) -> {
+      let blocks =
+        list.index_map(content, fn(block, index) {
+          let key = case block {
+            message.AssistantToolCall(call) -> id <> "/call/" <> call.id
+            message.AssistantText(..) | message.AssistantThinking(..) ->
+              id <> "/block/" <> int.to_string(index)
+          }
+          #(key, assistant_block_lines(block, details))
+        })
+      case error_message {
+        Some(reason) ->
+          list.append(blocks, [#(id <> "/error", [Line(Failure, reason)])])
+        None -> blocks
+      }
+    }
+    _ -> [#(id, entry_lines(value, details, owner))]
+  }
 }
 
 // The viewport consumes rows newest-first. Keeping that order in the cache
@@ -3791,6 +4129,11 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // and a sent request keeps that identity rather than acquiring the new
       // session's.
       let model = retire_previous(model)
+      let model = case model.session == cut.attachment.expected.session {
+        True ->
+          Model(..model, scrollback: history_view.cancel(model.scrollback))
+        False -> Model(..model, scrollback: history_view.empty())
+      }
 
       // Only then is the old inbox drained. Draining first would discard
       // frames the retirement is entitled to reduce.
@@ -3826,7 +4169,10 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           skills: [],
           next_id: 1,
           record_cache_valid: False,
-          scroll_offset: 0,
+          scroll_offset: case model.scrollback.mode {
+            history_view.Reading -> model.scroll_offset
+            history_view.Live -> 0
+          },
         )
         |> apply_cut(cut, view)
 
@@ -3835,7 +4181,8 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // the same reducer, and a marker ahead of its cut would move the
       // visible session before the frames that justify it.
       session_channel.adopted(channel)
-      let adopted = adopted |> send_frame(protocol.models(1))
+      let adopted =
+        adopted |> send_frame(protocol.models(1)) |> request_visible_worktree
       case cancelled {
         Some(notice) -> append_system(adopted, notice)
         None -> adopted
@@ -3877,6 +4224,7 @@ fn tick_channel(model: Model) -> Model {
         Model(..model, channel: Some(channel)),
         apply_channel_update,
       )
+      |> service_history
     }
   }
 }
@@ -3895,6 +4243,8 @@ pub fn apply_channel_update(
       apply_submission(model, disposition)
     session_channel.Captured(cut, view, trigger) ->
       reconcile_cut(model, cut, view, trigger)
+    session_channel.HistoryPage(window, before, after) ->
+      receive_history(model, window, before, after)
     session_channel.LookedUp(records, missing) -> {
       let inspected = inspect_looked_up(model, records, missing)
       let updated =
@@ -3916,6 +4266,11 @@ pub fn apply_channel_update(
       }
     }
     session_channel.Auxiliary(event) -> apply_event(model, event)
+    session_channel.RequestRefused("history", _, code, message) ->
+      append_error(
+        Model(..model, scrollback: history_view.cancel(model.scrollback)),
+        "Older history: " <> code <> ": " <> message,
+      )
     session_channel.RequestRefused(command, request_id, code, message) ->
       apply_request_refused(model, command, request_id, code, message)
 
@@ -3995,6 +4350,7 @@ pub fn apply_channel_update(
         Model(
           ..discard_own_turn(model),
           peer: after_close(model.peer),
+          scrollback: history_view.cancel(model.scrollback),
           streams: [],
           queue_editor: queue_editor.refused(
             model.queue_editor,
@@ -4035,6 +4391,10 @@ fn reconcile_cut(
     -> Model(..model, captured: Some(#(cut, view)))
     Some(_) | None -> {
       let updated = apply_cut(Model(..model, last_capture: trigger), cut, view)
+      let updated = case model.captured {
+        Some(#(previous, _)) if previous.next_seq == cut.next_seq -> updated
+        Some(_) | None -> request_visible_worktree(updated)
+      }
       let disappeared =
         model.approvals
         |> list.filter(fn(old) {
@@ -4107,7 +4467,15 @@ fn render_cut(
   }
   let model = observe_completion(model, cut, view, active)
   let model = retain_queue_selection(model, view, active)
-  let branch = snapshot_view.branch(view, cut.window, active)
+  let same_operation = case model.captured {
+    Some(#(_, previous)) ->
+      model.active_strand == active
+      && dict.get(previous.operations, model.active_strand)
+      == dict.get(view.operations, active)
+    None -> False
+  }
+  let history = history_view.capture(model.scrollback, cut.window, view, active)
+  let branch = history_view.branch(history, view)
   let current_model = case dict.get(view.configurations, active) {
     Ok(config) -> config.configuration.model.model_id
     Error(Nil) -> "unconfigured"
@@ -4135,8 +4503,13 @@ fn render_cut(
     }
   }
   let boundary = case branch.unloaded {
-    None -> "Recent window; older history may be unloaded."
-    Some(id) -> "History not loaded beyond " <> id <> "."
+    None -> "Beginning of this conversation."
+    Some(_) ->
+      case history.request {
+        history_view.Wanted | history_view.Pending(_) ->
+          "Loading older conversation…"
+        history_view.Quiet -> "Scroll up to load older conversation."
+      }
   }
 
   // Request-scoped pushes outrun captures: a cut may have started before
@@ -4159,7 +4532,21 @@ fn render_cut(
     active_strand: active,
     strands: view.strands,
     agent_summary: agents.summary(view.strands),
+    reviewer_rows: reviewer_status.observe(
+      model.reviewer_rows,
+      cut.window,
+      view,
+    ),
     records: branch.records,
+    scrollback: history,
+    activity_started_ms: case same_operation {
+      True -> model.activity_started_ms
+      False -> None
+    },
+    activity_elapsed_s: case same_operation {
+      True -> model.activity_elapsed_s
+      False -> 0
+    },
     usage: view.usage,
     current_model: current_model,
     streams: live,
@@ -4417,7 +4804,6 @@ fn adopt_session(
     ..model,
     help_open: False,
     notes_open: False,
-    diff_view: DiffHidden,
     note_board: None,
     overlay: NoOverlay,
     session: target.session,
@@ -4436,6 +4822,7 @@ fn adopt_session(
     workspace: workspace.discover_from(choice.workspace),
     strands: [],
     agent_summary: agents.summary([]),
+    reviewer_rows: [],
     active_strand: "main",
     usage: zero_usage(),
     interrupt: None,
@@ -4445,8 +4832,11 @@ fn adopt_session(
     rendered_revision: -1,
     rendered_row_count: 0,
     rendered_rows: [],
+    rendered_anchors: [],
     record_rows: [],
     record_line_cache: dict.new(),
+    compact_call_cache: dict.new(),
+    compact_entry_cache: dict.new(),
     pending_records: [],
     record_cache_valid: False,
     record_cache_width: 0,
@@ -4556,6 +4946,8 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         streams: [],
         record_rows: [],
         record_line_cache: dict.new(),
+        compact_call_cache: dict.new(),
+        compact_entry_cache: dict.new(),
         // The snapshot is the server's own account of the strand, so it
         // already carries every submission the daemon committed while this
         // client was away — the gateway holds its queue across a disconnect
@@ -5128,7 +5520,7 @@ fn preview_stream(strand: String, sample: snapshot_view.Preview) -> Stream {
 fn stream_lines(
   streams: List(Stream),
   active_strand: String,
-  details_expanded: Bool,
+  _details_expanded: Bool,
 ) -> List(Line) {
   streams
   |> list.filter_map(fn(stream) {
@@ -5138,11 +5530,7 @@ fn stream_lines(
       True -> {
         let text = fragments |> list.reverse |> string.concat
         Ok(case kind {
-          "thinking" ->
-            Line(Reasoning, case details_expanded {
-              True -> text
-              False -> compact(text, 140)
-            })
+          "thinking" -> Line(Reasoning, text)
           "tool_call" -> Line(ToolCall, live_tool_call_summary(text))
           _ -> Line(Assistant, text)
         })
@@ -5159,38 +5547,79 @@ pub fn live_tool_call_summary(name: String) -> String {
 
 fn record_lines(
   records: List(protocol.EntryRecord),
-  active_strand: String,
-  details_expanded: Bool,
-  local_owner: Option(message.Origin),
-) -> List(Line) {
-  records
-  |> list.reverse
-  |> list.filter(fn(record) {
-    let protocol.EntryRecord(strand:, ..) = record
-    strand == active_strand
-  })
-  |> list.map(fn(record) { record.entry })
-  |> fn(entries) {
-    case details_expanded {
-      True -> list.flat_map(entries, entry_lines(_, True, local_owner))
-      False ->
+  model: Model,
+) -> #(
+  List(Line),
+  Dict(tool_activity.Call, List(Line)),
+  Dict(#(entry.Entry, Option(message.Origin)), List(Line)),
+) {
+  let entries =
+    records
+    |> list.reverse
+    |> list.filter(fn(record) { record.strand == model.active_strand })
+    |> list.map(fn(record) { record.entry })
+  let owner = solo_owner(model.captured)
+  case model.details_expanded {
+    True -> #(
+      list.flat_map(entries, entry_lines(_, True, owner)),
+      dict.new(),
+      dict.new(),
+    )
+    False -> {
+      let #(reversed, calls, narratives) =
         entries
         |> tool_activity.project
-        |> list.flat_map(fn(item) {
+        |> list.fold(#([], dict.new(), dict.new()), fn(acc, item) {
           case item {
-            tool_activity.Narrative(value) ->
-              entry_lines(value, False, local_owner)
-            tool_activity.Tools(calls) -> activity_lines(calls)
+            tool_activity.Narrative(value) -> {
+              let key = #(value, owner)
+              let lines =
+                dict.get(model.compact_entry_cache, key)
+                |> result.lazy_unwrap(fn() { entry_lines(value, False, owner) })
+              #(
+                list.append(list.reverse(lines), acc.0),
+                acc.1,
+                dict.insert(acc.2, key, lines),
+              )
+            }
+            tool_activity.Tools(calls) -> {
+              let #(lines, cached) =
+                cached_activity_lines(calls, model.compact_call_cache)
+              #(
+                list.append(list.reverse(lines), acc.0),
+                dict.merge(acc.1, cached),
+                acc.2,
+              )
+            }
           }
         })
+      #(list.reverse(reversed), calls, narratives)
     }
   }
 }
 
-// A group retains only three recent invocation rows on the compact surface.
-// Failures remain counted even after later attempts succeed, and expanded
-// history can recover every original result without a second host request.
-fn activity_lines(calls: List(tool_activity.Call)) -> List(Line) {
+// Outcome identity is part of the key, so receiving a result replaces its
+// pending row. The new map contains only visible calls and releases old cuts.
+fn cached_activity_lines(
+  calls: List(tool_activity.Call),
+  previous: Dict(tool_activity.Call, List(Line)),
+) -> #(List(Line), Dict(tool_activity.Call, List(Line))) {
+  let #(reversed, cached) =
+    list.fold(calls, #([], dict.new()), fn(acc, call) {
+      let lines =
+        dict.get(previous, call)
+        |> result.lazy_unwrap(fn() { activity_call_lines(call) })
+      #(
+        list.append(list.reverse(lines), acc.0),
+        dict.insert(acc.1, call, lines),
+      )
+    })
+  #([activity_heading(calls), ..list.reverse(reversed)], cached)
+}
+
+// Compact mode folds arguments and results, never invocation history. Every
+// call keeps its chronological row so scrolling can recover earlier work.
+fn activity_heading(calls: List(tool_activity.Call)) -> Line {
   let failed =
     list.count(calls, fn(call) {
       case call.outcome {
@@ -5210,24 +5639,14 @@ fn activity_lines(calls: List(tool_activity.Call)) -> List(Line) {
       0 -> ""
       n -> " · " <> int.to_string(n) <> " failed"
     }
-    <> case count > 3 {
-      True -> " · latest 3 shown · Ctrl+g expands"
-      False -> ""
-    }
-  [
-    Line(System, heading),
-    ..{
-      calls
-      |> list.drop(int.max(0, count - 3))
-      |> list.flat_map(activity_call_lines)
-    }
-  ]
+    <> " · Ctrl+g expands details"
+  Line(System, heading)
 }
 
 fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
   let summary =
     tool_call_summary(call.invocation.name, call.invocation.arguments, False)
-  case call.outcome {
+  let rows = case call.outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
       Line(ToolFailure, summary),
@@ -5245,6 +5664,24 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     Some(message.UserMessage(..))
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
+  }
+  list.append(
+    rows,
+    note_call_lines(call.invocation.name, call.invocation.arguments),
+  )
+}
+
+// Notes are useful output, even when ordinary tool details are collapsed.
+// Known note tools expose their value; arbitrary tool JSON keeps its own schema.
+fn note_call_lines(name: String, arguments: json.JsonValue) -> List(Line) {
+  let value = case name, arguments {
+    "agent_note", json.Object(fields) -> list.key_find(fields, "value")
+    "remember", json.Object(fields) -> list.key_find(fields, "note")
+    _, _ -> Error(Nil)
+  }
+  case value {
+    Ok(value) -> [Line(ToolDetail, notes_view.readable(json.to_string(value)))]
+    Error(Nil) -> []
   }
 }
 
@@ -5437,12 +5874,7 @@ fn assistant_block_lines(
     message.AssistantThinking(thinking:, redacted:, ..) ->
       case redacted {
         True -> [Line(Reasoning, "redacted")]
-        False -> [
-          Line(Reasoning, case details_expanded {
-            True -> thinking
-            False -> compact(thinking, 140)
-          }),
-        ]
+        False -> [Line(Reasoning, thinking)]
       }
     message.AssistantToolCall(call:) -> {
       let message.ToolCall(name:, arguments:, ..) = call
@@ -5460,6 +5892,7 @@ fn assistant_block_lines(
         ]
         None, None -> [
           Line(ToolCall, tool_call_summary(name, arguments, details_expanded)),
+          ..note_call_lines(name, arguments)
         ]
       }
     }
@@ -5602,9 +6035,14 @@ pub fn tool_call_summary(
     "agent_note", json.Object(fields) ->
       "agent_note"
       <> option_text(string_field(fields, "key"), " · ")
-      <> case list.key_find(fields, "value") {
-        Ok(value) -> " = " <> compact(json.to_string(value), 90)
-        Error(Nil) -> ""
+      <> case details_expanded {
+        True -> "\n" <> json.to_string(arguments)
+        False -> ""
+      }
+    "remember", json.Object(_) ->
+      case details_expanded {
+        True -> "remember\n" <> json.to_string(arguments)
+        False -> "remember · durable note"
       }
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
@@ -5953,7 +6391,9 @@ pub fn output_rate_label(rate: Option(Int)) -> String {
 }
 
 pub fn usage_summary(usage: message.Usage) -> String {
-  "in "
+  "Total est $"
+  <> money(usage.cost.total)
+  <> " · in "
   <> tokens(usage.input)
   <> " · out "
   <> tokens(usage.output)
@@ -5961,8 +6401,15 @@ pub fn usage_summary(usage: message.Usage) -> String {
   <> tokens(usage.cache_read)
   <> "/"
   <> tokens(usage.cache_write)
-  <> " · $"
-  <> float.to_string(usage.cost.total)
+}
+
+// Currency is display data. Round once to cents before splitting the whole
+// and fractional parts, so binary floating point tails never reach the footer.
+fn money(value: Float) -> String {
+  let cents = int.max(0, float.round(value *. 100.0))
+  int.to_string(cents / 100)
+  <> "."
+  <> string.pad_start(int.to_string(cents % 100), 2, "0")
 }
 
 fn update_key(key: keys.Key, model: Model) -> Model {
@@ -6120,8 +6567,8 @@ fn update_agent_inspector(key: keys.Key, model: Model, selected: Int) -> Model {
 }
 
 fn update_main_key(key: keys.Key, model: Model) -> Model {
-  case model.diff_view, model.worktree.focus, key {
-    DiffVisible, _, keys.Ctrl("d") ->
+  case diff_shown(model), model.worktree.focus, key {
+    True, _, keys.Ctrl("d") ->
       Model(
         ..model,
         worktree: worktree_view.State(
@@ -6132,7 +6579,7 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
           },
         ),
       )
-    DiffVisible, worktree_view.Navigator, _ -> update_diff_key(key, model)
+    True, worktree_view.Navigator, _ -> update_diff_key(key, model)
     _, _, _ -> update_palette_key(key, model)
   }
 }
@@ -6238,7 +6685,6 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
       Model(
         ..model,
         notes_open: False,
-        diff_view: DiffHidden,
         note_board: None,
         scroll_offset: 0,
         repaint_phase: !model.repaint_phase,
@@ -6279,7 +6725,10 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.Home, False, False ->
       Model(..model, input: text_area.move_to_line_start(model.input))
     keys.End, False, False ->
-      Model(..model, input: text_area.move_to_line_end(model.input))
+      case text_area.value(model.input) == "" && model.scroll_offset > 0 {
+        True -> scroll_transcript(model, False, model.rendered_row_count)
+        False -> Model(..model, input: text_area.move_to_line_end(model.input))
+      }
     keys.Alt(character), False, False -> interrupt_and_insert(model, character)
     keys.Char(character), False, False -> {
       let editor = text_area.textarea_new() |> text_area.with_max_lines(1)
@@ -6299,12 +6748,13 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
 // offset is measured backward from the newest wrapped row, so moving toward
 // the present clamps at zero and resumes tail following.
 // A key while a selection is on screen: Escape only dismisses it, the way it
-// closes any other surface before it reaches the interrupt; every other key
-// dismisses it and is then handled as usual.
+// closes any other surface before it reaches the interrupt. Detail expansion
+// retains the chosen cells; editing and navigation dismiss the selection.
 fn update_key_over_selection(key: keys.Key, model: Model) -> Model {
   case model.selection, key {
     Some(_), keys.Escape ->
-      Model(..model, selection: None, notice: "selection cleared")
+      Model(..clear_selection(model), notice: "selection cleared")
+    Some(_), keys.Ctrl("g") -> update_key(key, model)
     Some(_), _ | None, _ -> update_key(key, clear_selection(model))
   }
 }
@@ -6346,7 +6796,7 @@ fn cancel_pending(model: Model, reason: String) -> Model {
 }
 
 fn clear_selection(model: Model) -> Model {
-  Model(..model, selection: None)
+  Model(..model, selection: None, selection_frame: None)
 }
 
 // A press starts over: whatever was highlighted is replaced by a fresh
@@ -6357,6 +6807,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
       Model(
         ..model,
         selection: None,
+        selection_frame: None,
         diff_scroll_offset: 0,
         worktree: worktree_view.State(
           ..model.worktree,
@@ -6366,7 +6817,11 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
       )
       |> invalidate_transcript
     None ->
-      Model(..model, selection: Some(selection.start(hit_area(model, at), at)))
+      Model(
+        ..model,
+        selection: Some(selection.start(hit_area(model, at), at)),
+        selection_frame: Some(frame_on_display(model)),
+      )
   }
 }
 
@@ -6390,9 +6845,15 @@ fn finish_selection(model: Model, at: geometry.Position) -> Model {
     Some(selected) -> {
       let selected = selection.extend(selected, at)
       case selection.is_click(selected) {
-        True -> Model(..model, selection: None)
+        True -> Model(..model, selection: None, selection_frame: None)
         False -> {
-          let text = selection.text(frame_on_display(model), selected)
+          let text =
+            selection.text(
+              option.lazy_unwrap(model.selection_frame, fn() {
+                frame_on_display(model)
+              }),
+              selected,
+            )
           write_clipboard(model.clipboard, text)
           Model(
             ..model,
@@ -6456,28 +6917,92 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
 }
 
 fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
-  let scroll_offset =
+  let offset =
     scroll_offset(model.scroll_offset, older, rows)
     |> bounded_scroll_offset(
       model.rendered_row_count,
       transcript_viewport_height(model),
     )
-  Model(..model, scroll_offset:, notice: case scroll_offset == 0 {
-    True -> "following output"
-    False -> "scrollback"
-  })
+  let model =
+    Model(..model, scroll_offset: offset, notice: case offset == 0 {
+      True -> "following output"
+      False -> "scrollback · End returns to latest (empty prompt)"
+    })
+  case model.help_open || model.notes_open, model.captured {
+    True, _ | _, None -> model
+    False, Some(#(cut, view)) -> {
+      case offset == 0 && !older {
+        True ->
+          apply_cut(Model(..model, scrollback: history_view.empty()), cut, view)
+        False -> {
+          let history = history_view.freeze(model.scrollback)
+          let history = case
+            older
+            && offset + transcript_viewport_height(model)
+            >= model.rendered_row_count - 10
+          {
+            True ->
+              history_view.older(
+                history,
+                history_view.branch(history, view).unloaded,
+              )
+            False -> history
+          }
+          service_history(Model(..model, scrollback: history))
+        }
+      }
+    }
+  }
 }
 
-// Page keys inspect the explicitly opened changes. Wheel input instead names
-// a surface by position, so the conversation remains readable alongside it.
+// History shares the existing correlated read lane. A busy lane leaves one
+// demand pending without blocking input, spawning a worker, or opening a socket.
+fn service_history(model: Model) -> Model {
+  case history_view.range(model.scrollback), model.channel {
+    Some(#(after, before)), Some(channel) -> {
+      case session_channel.history(channel, after, before) {
+        Error(_) -> model
+        Ok(channel) ->
+          Model(
+            ..model,
+            channel: Some(channel),
+            scrollback: history_view.sent(model.scrollback, before),
+          )
+      }
+    }
+    _, _ -> model
+  }
+}
+
+fn receive_history(
+  model: Model,
+  window: snapshot.Window,
+  before: Int,
+  after: Int,
+) -> Model {
+  case model.captured {
+    None -> model
+    Some(#(cut, view)) -> {
+      let history =
+        history_view.accept(model.scrollback, window, before, after, view)
+      let model = apply_cut(Model(..model, scrollback: history), cut, view)
+      Model(..model, render_revision: model.render_revision + 1)
+    }
+  }
+}
+
+// Page keys follow the reading surface's focus. The default side pane never
+// takes scrollback keys from a person typing in the conversation composer.
 fn scroll_reading_panel(
   model: Model,
   direction: ScrollDirection,
   rows: Int,
 ) -> Model {
-  case model.diff_view {
-    DiffVisible -> scroll_diff(model, direction, rows)
-    DiffHidden -> scroll_transcript(model, direction == Older, rows)
+  case
+    main_shows_diff(model) || model.worktree.focus == worktree_view.Navigator
+  {
+    True -> scroll_diff(model, direction, rows)
+    False -> scroll_transcript(model, direction == Older, rows)
   }
 }
 
@@ -6800,7 +7325,6 @@ fn submit_text(model: Model) -> Model {
         ..cleared,
         help_open: True,
         notes_open: False,
-        diff_view: DiffHidden,
         note_board: None,
         scroll_offset: 0,
         repaint_phase: !cleared.repaint_phase,
@@ -6813,6 +7337,8 @@ fn submit_text(model: Model) -> Model {
         records: [],
         record_rows: [],
         record_line_cache: dict.new(),
+        compact_call_cache: dict.new(),
+        compact_entry_cache: dict.new(),
         pending_records: [],
         record_cache_valid: False,
         // `/clear` empties the local view, and an echo is part of that view
@@ -6896,7 +7422,6 @@ fn submit_text(model: Model) -> Model {
           ..cleared,
           help_open: False,
           notes_open: True,
-          diff_view: DiffHidden,
           scroll_offset: 0,
           repaint_phase: !cleared.repaint_phase,
           notice: "agent notes",
@@ -8276,9 +8801,9 @@ fn render_queue_draft(buf, screen, state: queue_editor.State) {
 /// ```
 @internal
 pub fn open_diff(model: Model) -> Model {
-  case model.diff_view {
-    DiffVisible -> Model(..model, diff_view: DiffHidden)
-    DiffHidden ->
+  case diff_shown(model) {
+    True -> Model(..model, diff_view: DiffHidden)
+    False ->
       refresh_worktree(
         Model(
           ..model,
@@ -8288,6 +8813,17 @@ pub fn open_diff(model: Model) -> Model {
           notes_open: False,
         ),
       )
+  }
+  |> invalidate_transcript
+  |> invalidate_frame
+}
+
+// Cuts and width transitions request at most one pending refresh. No timer or
+// background Git loop is needed when the workspace and conversation are idle.
+fn request_visible_worktree(model: Model) -> Model {
+  case model.peer, diff_shown(model) {
+    Attached(_), True -> refresh_worktree(model)
+    Attached(_), False | Preview, _ | Replaying, _ | Disconnected, _ -> model
   }
 }
 
@@ -8310,13 +8846,13 @@ fn refresh_worktree(model: Model) -> Model {
 }
 
 fn service_worktree_read(model: Model) -> Model {
-  case model.channel, model.worktree.refresh {
-    Some(channel), worktree_view.Requested ->
+  case model.channel, model.worktree.refresh, model.worktree.awaiting {
+    Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
         True -> send_frame(model, protocol.worktree_diff(model.next_id))
         False -> model
       }
-    _, _ -> model
+    _, _, _ -> model
   }
 }
 
@@ -8543,6 +9079,7 @@ fn receive_jobs(model: Model, board: live_jobs.Board) -> Model {
           Model(
             ..model,
             jobs: Some(board),
+            jobs_observed_ms: Some(model.monotonic_time_ms()),
             jobs_awaiting: None,
             jobs_request: None,
             jobs_notice: "Live jobs observed separately from operation completion",
@@ -8560,7 +9097,10 @@ fn completion_card(model: Model) -> List(Line) {
     Some(summary) -> [
       Line(
         System,
-        "Latest operation: "
+        case active_strand_live(model) {
+          True -> "Previous operation: "
+          False -> "Latest operation: "
+        }
           <> completion_summary.brief(summary)
           <> case summary.coverage {
           completion_summary.Unavailable -> " · operation details unavailable"
@@ -8572,8 +9112,7 @@ fn completion_card(model: Model) -> List(Line) {
         }
           <> " · /summary for details",
       ),
-      Line(System, queue_count_line(model)),
-      Line(System, jobs_brief(model)),
+      Line(System, completion_summary.edit_totals(summary)),
     ]
   }
 }
@@ -8600,9 +9139,13 @@ fn jobs_brief(model: Model) -> String {
     Some(board) if board.strand == model.active_strand ->
       "Live jobs: "
       <> int.to_string(board.total)
-      <> " · observed at "
-      <> int.to_string(board.observed_at_ms)
-      <> " ms"
+      <> case model.jobs_observed_ms {
+        Some(observed) ->
+          " · refreshed "
+          <> live_jobs.duration(model.last_frame_ms - observed)
+          <> " ago"
+        None -> " · at last refresh"
+      }
     Some(_) -> "Live jobs unavailable for this strand; /summary refreshes"
     None -> model.jobs_notice
   }
@@ -8616,11 +9159,63 @@ fn summary_lines(model: Model) -> List(String) {
     Some(summary) -> completion_summary.lines(summary)
   }
   let jobs = case model.jobs {
-    Some(board) if board.strand == model.active_strand -> live_jobs.lines(board)
+    Some(board) if board.strand == model.active_strand -> [
+      jobs_brief(model),
+      ..list.drop(live_jobs.lines(board), 1)
+    ]
     Some(_) -> ["Live jobs unavailable for this strand; r refreshes"]
     None -> [model.jobs_notice]
   }
-  list.append(completed, ["", queue_count_line(model), "", ..jobs])
+  list.append(completed, [
+    "",
+    usage_summary(model.usage),
+    "Cumulative tokens: uncached input "
+      <> tokens(model.usage.input)
+      <> " · cache read "
+      <> tokens(model.usage.cache_read)
+      <> " · cache write "
+      <> tokens(model.usage.cache_write)
+      <> " · output "
+      <> tokens(model.usage.output)
+      <> " (includes reasoning)",
+    context_usage_line(model),
+    "",
+    queue_count_line(model),
+    "",
+    ..jobs
+  ])
+}
+
+// Context belongs to one measured provider request. Session usage accumulates
+// every request and strand, so it can never stand in for this number.
+fn context_usage_line(model: Model) -> String {
+  let records = case model.captured {
+    Some(#(cut, view)) ->
+      snapshot_view.branch(view, cut.window, model.active_strand).records
+    None -> model.records
+  }
+  let measured =
+    records
+    |> list.find_map(fn(record) {
+      case record.entry {
+        entry.MessageEntry(message: message.AssistantMessage(usage:, ..), ..)
+          if usage.total_tokens > 0
+        -> Ok(usage)
+        _ -> Error(Nil)
+      }
+    })
+  case measured {
+    Ok(usage) ->
+      "Context at last measured request: "
+      <> tokens(usage.input + usage.cache_read + usage.cache_write)
+      <> " input tokens (including cache); output "
+      <> tokens(usage.output)
+      <> case usage.reasoning {
+        Some(count) -> " (includes " <> tokens(count) <> " reasoning)"
+        None -> ""
+      }
+    Error(Nil) -> "Context: no measured request loaded for this strand"
+  }
 }
 
 fn update_summary_key(key: keys.Key, model: Model) -> Model {
@@ -8646,7 +9241,9 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
       let inner = panel_inner(screen)
       let lines =
         summary_lines(model)
-        |> list.map(fn(text) { span.line_plain(text_hygiene.multiline(text)) })
+        |> list.flat_map(fn(text) {
+          markdown.render(text_hygiene.multiline(text))
+        })
         |> markdown.wrap_lines(inner.size.width)
       let offset =
         int.min(
@@ -8673,7 +9270,7 @@ fn diff_patch_height(model: Model) -> Int {
 
 fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
   use <- bool.guard(
-    model.diff_view != DiffVisible
+    !diff_shown(model)
       || model.queue_editor.surface != queue_editor.Closed
       || model.summary_surface != queue_editor.Closed,
     None,

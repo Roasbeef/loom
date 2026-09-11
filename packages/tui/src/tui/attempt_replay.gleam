@@ -44,6 +44,9 @@ pub type Change {
   /// A subsequent response belongs to the still-current attempt.
   Update(update: session_channel.Update)
 
+  /// A validated recorded history request owns the subsequent page reply.
+  RequestedHistory(before_seq: Int)
+
   /// A local replacement failure does not replace the visible attachment.
   Rejected(reason: String)
 }
@@ -155,7 +158,15 @@ fn advance(state: State, id: attempt.Id, event) {
   case state.current, state.candidate {
     Some(Lane(id: found, ..) as lane), _ if found == id -> {
       use #(lane, updates) <- result.map(advance_lane(lane, event))
-      #(State(..state, current: Some(lane)), list.map(updates, Update))
+      let changes = list.map(updates, Update)
+      let changes = case event {
+        attempt.Issued(
+          _,
+          attempt.Request(selection: attempt.HistoryRange(_, before), ..),
+        ) -> [RequestedHistory(before), ..changes]
+        _ -> changes
+      }
+      #(State(..state, current: Some(lane)), changes)
     }
     _, Some(Lane(id: found, ..) as lane) if found == id -> {
       use #(lane, _) <- result.map(advance_lane(lane, event))

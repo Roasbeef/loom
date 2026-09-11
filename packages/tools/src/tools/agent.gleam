@@ -1498,7 +1498,11 @@ pub fn wait_tool(agency: Agency) -> Tool {
       <> "want to join in one call: they are waited together against one "
       <> "deadline, not one after another. A handle that has not settled "
       <> "when the deadline expires comes back pending, which is an answer, "
-      <> "not a failure — call again or do other work first.",
+      <> "not a failure — call again or do other work first. "
+      <> "Example: {\"handles\":[\"<handle returned by agent_spawn>\"],\"within_ms\":1000}. "
+      <> "The handles value is a JSON array, not a string containing JSON. "
+      <> "Unconfirmed cancellation means cleanup was not proved; it does not "
+      <> "establish a provider outage. Do not respawn while cleanup is unconfirmed.",
     prompt_snippet: Some(
       "`agent_wait` joins a list of handles against one deadline.",
     ),
@@ -1531,12 +1535,20 @@ pub fn wait_tool(agency: Agency) -> Tool {
 }
 
 fn run_wait(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
-  use texts <- tool.with_arg(tool.optional_string_list(args, "handles"))
+  use texts <- tool.with_arg(
+    tool.optional_string_list(args, "handles")
+    |> result.map_error(fn(reason) {
+      reason
+      <> "; use \"handles\": [\"<returned handle>\"] as an array, not a quoted JSON string"
+    }),
+  )
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   let texts = option.unwrap(texts, [])
   use <- bool.guard(
     when: texts == [],
-    return: tool.failure("invalid arguments: `handles` must not be empty"),
+    return: tool.failure(
+      "invalid arguments: `handles` must be a nonempty array, for example {\"handles\":[\"<returned handle>\"]}",
+    ),
   )
 
   // `texts` is model-supplied and not otherwise bounded, so a caller
@@ -1804,7 +1816,10 @@ pub fn note_tool(agency: Agency) -> Tool {
       <> "states a result schema, the key `"
       <> result_note_key
       <> "` is where your final structured result goes, and it is checked "
-      <> "against that schema before it is written.",
+      <> "against that schema before it is written. Update an existing progress "
+      <> "or plan cell as work changes, distinguishing completed, pending, and "
+      <> "blocked work. Separate observed errors from suspected causes; keep "
+      <> "unverified explanations explicitly uncertain.",
     prompt_snippet: Some(
       "`agent_note` leaves one durable cell on the shared blackboard, under "
       <> "your own name, notifying nobody.",

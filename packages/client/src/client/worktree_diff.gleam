@@ -17,6 +17,7 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
+import client/codemode
 import client/daemon/transfer
 import core/clock
 import core/ids
@@ -207,7 +208,7 @@ pub fn capture(wiring: Wiring) -> Result(Board, Error) {
   use #(capture, status) <- result.try(run_git(
     capture,
     [
-      "status", "--porcelain=v1", "-z", "--untracked-files=all",
+      "status", "--porcelain=v1", "-z", "--untracked-files=no",
       "--ignore-submodules=dirty", "--", ".",
     ],
     status_byte_limit,
@@ -238,6 +239,8 @@ fn capture_repository(
   use Nil <- result.try(complete(prefix))
   use prefix <- result.try(line_value(prefix.stdout))
   use identities <- result.try(parse_status(status.stdout, prefix))
+  use #(capture, untracked) <- result.try(capture_untracked(capture, prefix))
+  let identities = list.append(identities, untracked)
   use #(capture, head) <- result.try(run_git(
     capture,
     ["rev-parse", "--verify", "--quiet", "HEAD"],
@@ -260,6 +263,46 @@ fn capture_repository(
   )
   let board = Board(observed_at_ms, repository, [], total, total, Complete)
   Ok(fit_board(board, files))
+}
+
+// Tool homes and build caches belong to Loom's generated directories. Exclude
+// only their untracked contents before Git enumerates them: filtering a huge
+// status afterwards would already have spent the observation's byte budget.
+// Tracked files still come from ordinary status, even under these directories.
+fn capture_untracked(capture: Capture, prefix: String) {
+  use #(capture, output) <- result.try(run_git(
+    capture,
+    [
+      "ls-files",
+      "--others",
+      "--exclude-standard",
+      "--full-name",
+      "-z",
+      "--exclude=" <> codemode.work_directory <> "/",
+      "--exclude=" <> codemode.blob_directory <> "/",
+      "--",
+      ".",
+    ],
+    status_byte_limit,
+  ))
+  use Nil <- result.try(successful(output))
+  use Nil <- result.try(complete(output))
+  use text <- result.try(
+    bit_array.to_string(output.stdout) |> result.replace_error(InvalidOutput),
+  )
+  case text {
+    "" -> Ok(#(capture, []))
+    _ -> {
+      use <- bool.guard(!string.ends_with(text, "\u{0}"), Error(InvalidOutput))
+      use identities <- result.try(
+        text
+        |> string.drop_end(1)
+        |> string.split("\u{0}")
+        |> list.try_map(fn(path) { status_identity("?? " <> path, prefix) }),
+      )
+      Ok(#(capture, identities))
+    }
+  }
 }
 
 fn comparison(output: Output) -> Result(#(Repository, String), Error) {

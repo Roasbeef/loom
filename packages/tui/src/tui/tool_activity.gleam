@@ -7,6 +7,7 @@
 //// this projection and shows every original message, including reasoning.
 
 import core/entry
+import core/ids
 import core/message
 import core/register
 import gleam/dict.{type Dict}
@@ -29,6 +30,8 @@ pub type Item {
 /// One invocation, which remains distinct even when arguments repeat.
 pub type Call {
   Call(
+    /// Durable owner disambiguates identical or reused provider call IDs.
+    source: ids.EntryId,
     /// The original call, including the provider-assigned identity.
     invocation: message.ToolCall,
     /// The complete result, or absence when this window has no result yet.
@@ -169,7 +172,10 @@ fn collect_assistant(
       // Before the first tool, however, it is ordinary narrative history.
       case calls, group.order {
         [], [] -> boundary(items, group, value)
-        _, _ -> list.fold(calls, #(items, group), collect_call)
+        _, _ ->
+          list.fold(calls, #(items, group), fn(acc, call) {
+            collect_call(acc, value.id, call)
+          })
       }
     }
   }
@@ -178,26 +184,35 @@ fn collect_assistant(
 // Provider call ids can be reused by a later response. End the visual group
 // at reuse so one dictionary can never overwrite an earlier invocation.
 // This also leaves malformed duplicate ids visible rather than dropping text.
-fn collect_call(acc: #(List(Item), Group), invocation: message.ToolCall) {
+fn collect_call(
+  acc: #(List(Item), Group),
+  source: ids.EntryId,
+  invocation: message.ToolCall,
+) {
   let #(items, group) = acc
   case dict.has_key(group.calls, invocation.id) {
-    False -> #(items, add_call(group, invocation))
-    True -> #(flush(items, group), add_call(Group([], dict.new()), invocation))
+    False -> #(items, add_call(group, source, invocation))
+    True -> #(
+      flush(items, group),
+      add_call(Group([], dict.new()), source, invocation),
+    )
   }
 }
 
 fn has_prose(block) {
   case block {
     message.AssistantText(text:, ..) -> text != ""
-    message.AssistantThinking(..) | message.AssistantToolCall(_) -> False
+    message.AssistantThinking(thinking:, redacted:, ..) ->
+      !redacted && thinking != ""
+    message.AssistantToolCall(_) -> False
   }
 }
 
-fn add_call(group: Group, invocation: message.ToolCall) {
+fn add_call(group: Group, source: ids.EntryId, invocation: message.ToolCall) {
   let message.ToolCall(id:, ..) = invocation
   Group(
     order: [id, ..group.order],
-    calls: dict.insert(group.calls, id, Call(invocation, None)),
+    calls: dict.insert(group.calls, id, Call(source, invocation, None)),
   )
 }
 

@@ -100,7 +100,7 @@ pub fn real_broker_bash_echo_test() {
           let outcome = run_echo(broker_actor, workspace)
           broker.stop(broker_actor)
           exec.shutdown(helper)
-          assert outcome.is_error == False
+          assert outcome.is_error == False as string.inspect(outcome)
           let assert [message.ToolResultText(text:, text_signature: _)] =
             outcome.content
           assert string.contains(text, "hello")

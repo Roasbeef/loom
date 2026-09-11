@@ -1075,3 +1075,24 @@ pub fn a_join_without_a_schema_renders_exactly_what_it_did_before_test() {
       ]),
     )
 }
+
+pub fn wait_explains_how_to_repair_a_quoted_json_array_test() {
+  let handle = agent.Handle(strand: "sub:a", operation: an_op(5))
+  let encoded =
+    json.to_string(json.Array([json.String(agent.handle_to_string(handle))]))
+  let outcome =
+    run(
+      "agent_wait",
+      ctx_for("main", "t", 0),
+      echoing_agency(),
+      json.Object([
+        #("handles", json.String(encoded)),
+      ]),
+    )
+  assert outcome.is_error
+  assert string.contains(
+    text_of(outcome),
+    "as an array, not a quoted JSON string",
+  )
+  assert string.contains(text_of(outcome), "\"handles\": [")
+}

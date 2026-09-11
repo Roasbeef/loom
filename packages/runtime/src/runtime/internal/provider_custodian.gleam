@@ -218,6 +218,7 @@ type Request {
     consumer: Pid,
     consumer_monitor: Monitor,
     drain: Drain,
+    context: stream.FailureObservation,
   )
 }
 
@@ -396,7 +397,7 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
     Cancelling, Serving(request:), Inner(event: stream.Settled(..) as terminal)
     | Cancelling, Serving(request:), Inner(event: stream.Failed(..) as terminal)
     -> {
-      deliver(request, terminal)
+      deliver(request, stream.contextual_event(terminal, request.context))
       sm.transition(to: Draining, data:)
     }
 
@@ -517,6 +518,13 @@ fn admit(
       consumer: startup.consumer,
       consumer_monitor:,
       drain:,
+      context: effects.failure_observation(
+        startup.spec,
+        stream.RuntimeSource,
+        stream.CancellationRequested,
+        effects.provider_timeout_ms(startup.surface),
+        cancel_grace_ms,
+      ),
     ))
   let selector = request_selector(inner, stop, consumer_monitor, drain)
 
@@ -664,7 +672,13 @@ fn abandon(request: Request, data: Data) -> sm.Next(Phase, Data, Msg) {
 
 // Cancellation crossed this boundary and was never acknowledged.
 fn unconfirmed(request: Request, data: Data) -> sm.Next(Phase, Data, Msg) {
-  deliver(request, stream.Failed(error: stream.CancellationUnconfirmed))
+  deliver(
+    request,
+    stream.contextual_event(
+      stream.Failed(error: stream.CancellationUnconfirmed),
+      request.context,
+    ),
+  )
   sm.transition(to: Draining, data:)
 }
 

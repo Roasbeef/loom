@@ -28,6 +28,8 @@ import core/message.{
   Errored,
 }
 import gleam/erlang/process
+import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import machine/operation.{type ReplayPolicy, type StructuralPreparation}
 import machine/planner.{
@@ -86,6 +88,49 @@ pub type RequestSpec {
     /// fills this from `Hooks.compaction_note`; every other request
     /// spec carries none because no other request has a note to carry.
     notes: List(String),
+  )
+}
+
+/// Captures local request identity and bounds without inspecting prompt content.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // effects.failure_observation(spec, stream.RuntimeSource, stream.RequestDeadline, 1000, 2000)
+/// ```
+@internal
+pub fn failure_observation(
+  spec: RequestSpec,
+  source: stream.FailureSource,
+  cause: stream.FailureCause,
+  timeout: Int,
+  grace: Int,
+) -> stream.FailureObservation {
+  let #(attempt, request_id) = case spec {
+    GenerationRequest(operation:, step_id:, attempt:, ..) -> #(
+      attempt,
+      ids.op_id_to_string(operation) <> "/" <> step_id,
+    )
+    PollRequest(operation:, step_id:, poll:, ..) -> #(
+      poll,
+      ids.op_id_to_string(operation) <> "/" <> step_id,
+    )
+    SummaryRequest(operation:, task_id:, attempt:, request_index:, ..) -> #(
+      attempt,
+      ids.op_id_to_string(operation)
+        <> "/"
+        <> task_id
+        <> "/"
+        <> int.to_string(request_index),
+    )
+  }
+  stream.FailureObservation(
+    source,
+    cause,
+    Some(attempt),
+    Some(timeout),
+    Some(grace),
+    Some(request_id),
   )
 }
 
@@ -515,9 +560,20 @@ pub fn settle_failure(
   configuration: StrandConfiguration,
   now: Int,
 ) -> AgentMessage {
-  let raw_stop_reason = case retry.classify(error) {
-    retry.Retryable(backoff_hint_ms: _) -> Some("retryable")
-    retry.Terminal -> Some("terminal")
+  // The failed response carries the provider's minimum delay across the
+  // durable settlement boundary; classification alone would discard it.
+  let #(raw_stop_reason, hint_fields) = case retry.classify(error) {
+    retry.Retryable(backoff_hint_ms: hint) -> #(Some("retryable"), case hint {
+      Some(delay) -> [#("retry_after_ms", json.Int(delay))]
+      None -> []
+    })
+    retry.Terminal -> #(Some("terminal"), [])
+  }
+  let diagnostics = case
+    list.append(hint_fields, stream.context_diagnostics(error))
+  {
+    [] -> None
+    fields -> Some(json.Object(fields))
   }
   AssistantMessage(
     content: [],
@@ -526,7 +582,7 @@ pub fn settle_failure(
     model: configuration.model.model_id,
     response_model: None,
     response_id: None,
-    diagnostics: None,
+    diagnostics:,
     usage: zero_usage(),
     stop_reason: Errored,
     deferred: None,

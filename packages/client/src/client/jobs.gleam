@@ -1230,7 +1230,9 @@ fn mint(generator: ids.Generator) -> Result(#(JobId, ids.Generator), Refusal) {
 }
 
 fn argv(command: String) -> List(String) {
-  ["bash", "-lc", command]
+  // Foreground and background commands use the same environment and exit
+  // semantics. Login startup would replace the session's discovered PATH.
+  ["bash", "-o", "pipefail", "-c", command]
 }
 
 // The cell's absence is the claim. `expected: None` commits only while

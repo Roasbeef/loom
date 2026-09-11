@@ -446,7 +446,7 @@ fn exit_reason_text(reason: process.ExitReason) -> String {
   case reason {
     process.Normal -> "normal"
     process.Killed -> "killed"
-    process.Abnormal(_) -> "abnormal"
+    process.Abnormal(reason) -> ffi_transport.exit_diagnostic(reason)
   }
 }
 

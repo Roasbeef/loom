@@ -2,12 +2,12 @@
 ╭ transcript / main ────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │◇ attached to session loom-rec-1788512865                                                                                          │
 │                                                                                                                                   │
-│› Reply with exactly this sentence and nothing else: The recording works.                                                          │
 │                                                                                                                                   │
-│◆ The recording works.                                                                                                             │
+│› User                                                                                                                             │
+│Reply with exactly this sentence and nothing else: The recording works.                                                            │
 │                                                                                                                                   │
 │                                                                                                                                   │
-│                                                                                                                                   │
+│◆ Agent The recording works.                                                                                                       │
 │                                                                                                                                   │
 │                                                                                                                                   │
 │                                                                                                                                   │
@@ -37,4 +37,4 @@
 │                                                                                                                                   │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  replay                                                                                                                 gemini-flash
- in 17k · out 4 · cache 0/0 · $0.0                                                                    0 live / 1 agents · main: done
+ Total est $0.00 · in 17k · out 4 · cache 0/0                                                         0 live / 1 agents · main: done

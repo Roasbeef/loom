@@ -9,6 +9,22 @@
 //// program never sees, and every test substitutes in-process functions
 //// for them, so the boot logic stays pure and testable without a socket.
 
+import gleam/dynamic.{type Dynamic}
+
+/// Formats a bounded exception reason inside the satellite VM.
+///
+/// The monitor's stack is omitted; the failed value and source location make
+/// a code-mode assertion actionable without expanding an arbitrary term.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_transport.exit_diagnostic(reason)
+/// ```
+@external(erlang, "cap_ffi", "exit_diagnostic")
+@internal
+pub fn exit_diagnostic(reason: Dynamic) -> String
+
 /// An open AF_UNIX stream socket. External type, never `Dynamic`: it names
 /// the Erlang `gen_tcp` socket without exposing its structure to Gleam.
 pub type Socket

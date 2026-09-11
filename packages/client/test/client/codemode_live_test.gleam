@@ -1643,7 +1643,6 @@ fn rig_protecting(
       protected:,
       mounts: codemode.toolchain_mounts(toolchain),
     )
-    |> serve.admitting_user_toolchains(serve.home_directory())
     |> serve.merging_mounts
   let assert Ok(pool) =
     exec.start_pool(size: 3, spawn: fn() {

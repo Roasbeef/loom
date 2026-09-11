@@ -131,7 +131,9 @@ pub fn request(state: State, owner: String) -> State {
     True -> state
     False -> new()
   }
-  use <- bool.guard(retained.awaiting != None, retained)
+
+  // A file can change while an observation is in flight. Keep one dirty bit
+  // behind it, so the completed older observation cannot lose that refresh.
   State(
     ..retained,
     owner:,
@@ -183,9 +185,7 @@ pub fn receive(state: State, owner: String, event: Event) -> State {
         board: Some(board),
         awaiting: None,
         selected: retained_selection(state, board),
-        message: "Observed at "
-          <> int.to_string(board.observed_at_ms)
-          <> " ms · r refreshes in file navigation",
+        message: "Last workspace observation · r refreshes in file navigation",
       )
   }
 }

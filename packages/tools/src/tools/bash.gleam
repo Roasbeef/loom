@@ -1,11 +1,10 @@
 //// The `bash` tool: a shell command through the broker's jailed
 //// executor.
 ////
-//// Each call builds a `CallSpec` — `["bash", "-lc", command]` in the
+//// Each call builds a `CallSpec` — `bash -o pipefail -c` in the
 //// workspace, the caller's allowlist-constructed environment, and
 //// policy-shaped requirements of workspace write, system paths
-//// readable, and whatever network the session base allows (**off**
-//// unless an operator's `[tools]` table opened it) — and clears it
+//// readable, and whatever network the session base allows — and clears it
 //// through the broker seam
 //// with `RefuseNarrowed`: if the session base does not cover the
 //// requirements, the call settles in-band as a structured policy
@@ -108,8 +107,10 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
   tool.Tool(
     name: "bash",
     description: "Run a shell command in the sandboxed workspace. The "
-      <> "command runs as `bash -lc` with the workspace as the working "
-      <> "directory and no network access. With `mode: \"background\"` the "
+      <> "command runs as `bash -o pipefail -c` in the workspace using "
+      <> "the session's PATH and network policy. A failed command before "
+      <> "a pipe remains a failed pipeline; inspect its output before "
+      <> "claiming tests passed. With `mode: \"background\"` the "
       <> "command is started as a background job instead: the call returns "
       <> "a job id straight away and the command keeps running after it, so "
       <> "use it for a long build or something you want to watch. Read a "
@@ -337,7 +338,10 @@ fn call_spec(
     grants: ctx.grants,
     response: broker.RefuseNarrowed,
     demand: ctx.demand,
-    argv: ["bash", "-lc", command],
+    // Login startup rewrites PATH through the host's system profile. The
+    // session already supplies the intended environment; pipefail also keeps
+    // `go test | tail` from reporting the successful tail as a passing test.
+    argv: ["bash", "-o", "pipefail", "-c", command],
     env: ctx.env,
     cwd: ctx.workspace,
     budget: budget.Budget(max_outstanding: 1, deadline_ms: now + timeout),

@@ -17,6 +17,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
+import gleam/string
 
 // --- the blocking inbound "wire" ----------------------------------------
 
@@ -377,4 +378,68 @@ fn split_loop(
       split_loop(bytes, index + 1, size, [one, ..acc])
     }
   }
+}
+
+// A failed pattern retains the actual capability error rather than reducing
+// every abnormal monitor reason to the same unhelpful word.
+pub fn boot_assertion_retains_capability_failure_test() {
+  let booted =
+    boot(fn() {
+      let assert Ok(_) = fs.read("/missing") as "read source before editing"
+      report.text("unreachable")
+    })
+  let assert Ok(_) = process.receive(booted.sent, 2000)
+    as "the program reaches its real capability call"
+  process.send(
+    booted.wire,
+    WirePush(cap_error(0, "not_found", "missing source")),
+  )
+  let assert Ok(outcome) = process.receive(booted.outcomes, 2000)
+    as "the monitored failure produces an outcome"
+  let assert Ok(detail) = wire.string_field(errored_body(outcome), "message")
+    as "the outcome includes its diagnostic"
+  assert string.contains(detail, "program crashed:")
+  assert string.contains(detail, "read source before editing")
+  assert string.contains(detail, "not_found")
+  assert string.contains(detail, "/missing")
+  assert string.length(detail) < 2200
+}
+
+fn cap_error(id: Int, code: String, detail: String) -> BitArray {
+  frame(
+    id,
+    "cap_result",
+    wire.args([
+      #("ok", msgpack.BoolValue(False)),
+      #(
+        "error",
+        wire.args([
+          #("code", msgpack.StringValue(code)),
+          #("msg", msgpack.StringValue(detail)),
+        ]),
+      ),
+    ]),
+  )
+}
+
+// Large exception values must not turn a small error response into a copy of
+// the submitted program's heap or the entire failed capability payload.
+pub fn boot_assertion_diagnostic_is_bounded_test() {
+  let booted =
+    boot(fn() {
+      let assert Ok(_) = fs.read("/failed") as "read failed"
+      report.text("unreachable")
+    })
+  let assert Ok(_) = process.receive(booted.sent, 2000)
+    as "the capability request was sent"
+  process.send(
+    booted.wire,
+    WirePush(cap_error(0, "custom_failure", string.repeat("long detail ", 5000))),
+  )
+  let assert Ok(outcome) = process.receive(booted.outcomes, 2000)
+    as "large failure still settles"
+  let assert Ok(detail) = wire.string_field(errored_body(outcome), "message")
+    as "the bounded failure is readable"
+  assert string.contains(detail, "custom_failure")
+  assert string.length(detail) < 2200
 }

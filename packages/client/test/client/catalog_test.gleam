@@ -682,14 +682,12 @@ pub fn a_tools_table_is_allowed_at_the_top_level_test() {
     as "a [tools] table must not be refused by the top-level key check"
 }
 
-pub fn absent_tools_table_is_offline_with_nothing_added_test() {
-  // The absence of the table and an explicit `network = "off"` are one
-  // value, which is the whole point of `default_tools`.
+pub fn absent_tools_table_permits_network_without_inheriting_secrets_test() {
   assert catalog.parse_tools(minimal) == Ok(catalog.default_tools())
   assert catalog.parse_tools(minimal)
     == Ok(
       catalog.ToolsConfig(
-        network: catalog.ToolNetworkOff,
+        network: catalog.ToolNetworkFull,
         env: [],
         set: [],
         path: [],
@@ -697,7 +695,7 @@ pub fn absent_tools_table_is_offline_with_nothing_added_test() {
     )
 }
 
-pub fn the_example_catalogue_keeps_the_jail_offline_test() {
+pub fn the_example_catalogue_uses_the_development_default_test() {
   let assert Ok(text) = simplifile.read(example_path)
     as "the committed example catalogue must be readable"
   assert catalog.parse_tools(text) == Ok(catalog.default_tools())

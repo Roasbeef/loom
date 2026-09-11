@@ -74,7 +74,7 @@ pub fn bash_call_spec_shape_test() {
       command_args("echo hi"),
     )
   let spec = recorded_spec(recorded)
-  assert spec.argv == ["bash", "-lc", "echo hi"]
+  assert spec.argv == ["bash", "-o", "pipefail", "-c", "echo hi"]
   assert spec.cwd == workspace
   assert spec.step_id == "step-1"
   assert spec.response == broker.RefuseNarrowed

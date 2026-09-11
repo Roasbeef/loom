@@ -658,3 +658,115 @@ pub fn threshold_context_overflow_still_drains_test() {
   // A drained run never had its compaction gate touched.
   assert settings.compaction.enabled == True
 }
+
+pub fn provider_retry_hint_persists_the_minimum_wait_test() {
+  let world = start_run("respect the provider retry delay")
+  let now = scenario.now(world)
+  let assert message.AssistantMessage(..) as failure =
+    fixture.assistant_error("rate limited", True)
+    as "The fixture returns a failed assistant response."
+  let failure =
+    message.AssistantMessage(
+      ..failure,
+      diagnostics: Some(json.Object([#("retry_after_ms", json.Int(5000))])),
+    )
+  let assert Ok(#(world, _)) =
+    scenario.step_writes(
+      world,
+      ObservedAssistantSettled(fixture.settled(failure), None),
+      opts(),
+    )
+    as "The failed response and retry deadline commit together."
+  let assert Ok(RunState(
+    phase: Assistant(GenerationRetryWait(not_before:, ..)),
+    ..,
+  )) = scenario.read_op_state(world.store, world.op.id)
+    as "Recovery reads the persisted retry deadline."
+  assert not_before == now + 5000
+
+  // Reloading just before the deadline still waits; reaching it permits the
+  // next attempt without recomputing or shortening the provider's bound.
+  let assert Ok(#(_, planner.Wait(until:))) =
+    scenario.step(World(..world, now: not_before - 1), NoObservation, opts())
+    as "No replacement request starts before the provider's minimum wait."
+  assert until == planner.RetryNotBefore(not_before)
+  let assert Ok(#(_, Transition(..))) =
+    scenario.step(World(..world, now: not_before), NoObservation, opts())
+    as "The deadline releases the next retry."
+}
+
+pub fn malformed_or_short_retry_hints_do_not_shorten_policy_test() {
+  list.each(
+    [
+      None,
+      Some(json.Object([#("retry_after_ms", json.Int(1))])),
+      Some(json.Object([#("retry_after_ms", json.Int(-500))])),
+      Some(json.Object([#("retry_after_ms", json.String("5000"))])),
+      Some(json.Array([])),
+    ],
+    fn(diagnostics) {
+      let world = start_run("keep the configured retry floor")
+      let now = scenario.now(world)
+      let assert message.AssistantMessage(..) as failure =
+        fixture.assistant_error("rate limited", True)
+        as "The fixture returns a failed assistant response."
+      let failure = message.AssistantMessage(..failure, diagnostics:)
+      let assert Ok(#(world, _)) =
+        scenario.step_writes(
+          world,
+          ObservedAssistantSettled(fixture.settled(failure), None),
+          opts(),
+        )
+        as "The configured wait is persisted."
+      let assert Ok(RunState(
+        phase: Assistant(GenerationRetryWait(not_before:, ..)),
+        ..,
+      )) = scenario.read_op_state(world.store, world.op.id)
+        as "The retry deadline survives the store codec."
+      assert not_before == now + 100
+    },
+  )
+}
+
+pub fn summary_retry_hint_uses_the_same_minimum_wait_test() {
+  let #(world, options) = threshold_compaction_generating("retry summary")
+  let assert Ok(#(world, _)) =
+    scenario.step_writes(world, ObservedResolution(ModelResolved), options)
+    as "The summary route resolves."
+  let assert Ok(#(world, _)) = scenario.step(world, NoObservation, options)
+    as "The first summary request starts."
+  let assert Ok(#(world, _)) =
+    scenario.step_writes(
+      world,
+      ObservedSummaryReturned(fixture.usage_of(3000, 200)),
+      options,
+    )
+    as "The first summary request settles its usage."
+  let now = scenario.now(world)
+  let assert Ok(#(world, _)) =
+    scenario.step_writes(
+      world,
+      ObservedSummaryProgress(SummaryFailed(
+        error: OperationError(
+          code: "summary_failed",
+          message: "rate limited",
+          details: Some(json.Object([#("retry_after_ms", json.Int(5000))])),
+        ),
+        retryable: True,
+      )),
+      options,
+    )
+    as "Summary retries preserve the provider's minimum wait."
+  let assert Ok(RunState(
+    phase: Compacting(
+      structural: operation.Generating(
+        generation: operation.SummaryRetryWait(not_before:, ..),
+        ..,
+      ),
+      ..,
+    ),
+    ..,
+  )) = scenario.read_op_state(world.store, world.op.id)
+    as "Recovery reads the summary retry deadline."
+  assert not_before == now + 5000
+}

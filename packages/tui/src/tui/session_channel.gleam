@@ -53,6 +53,9 @@ pub type Update {
     trigger: Capture,
   )
 
+  /// An independently validated older page; never advances the live cursor.
+  HistoryPage(window: snapshot.Window, before_seq: Int, after_seq: Int)
+
   /// Exact decisions only; never a replacement conversation cut.
   LookedUp(records: List(approval.Review), missing: List(String))
 
@@ -141,6 +144,7 @@ type Intent {
   Read
   Mutation
   Lookup(ids: List(String))
+  History(after_seq: Int, before_seq: Int)
 }
 
 type Outbound {
@@ -161,9 +165,15 @@ type Refresh {
   Idle
 }
 
+type Projection {
+  Conversation
+  Decisions(List(String))
+  OlderPage(after_seq: Int, before_seq: Int)
+}
+
 type Phase {
   AwaitingBegin
-  Receiving(snapshot.Transfer, Option(List(String)))
+  Receiving(snapshot.Transfer, Projection)
   AwaitingReply(name: String, intent: Intent)
   Ready
   Closed
@@ -414,8 +424,12 @@ pub fn in_flight(channel: Channel) -> Bool {
 pub fn mutation_available(channel: Channel) -> Bool {
   let available = case channel.phase {
     Ready -> True
-    AwaitingBegin | Receiving(_, None) -> synchronized(channel)
-    Receiving(_, Some(_)) | AwaitingReply(..) | Closed -> False
+    AwaitingBegin
+    | Receiving(..)
+    | AwaitingReply(_, Read)
+    | AwaitingReply(_, Lookup(_))
+    | AwaitingReply(_, History(..)) -> synchronized(channel)
+    AwaitingReply(_, Mutation) | Closed -> False
   }
   can_mutate(channel) && available && channel.queued == None
 }
@@ -613,7 +627,7 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
         })
       {
         Error(reason) -> fail(channel, reason)
-        Ok(transfer) -> #(credit(channel, transfer, None), [])
+        Ok(transfer) -> #(credit(channel, transfer, Conversation), [])
       }
     }
     AwaitingReply(_, Lookup(ids)), session_wire.Begin(body) -> {
@@ -630,7 +644,47 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
         )
       {
         Error(reason) -> fail(channel, reason)
-        Ok(transfer) -> #(credit(channel, transfer, Some(ids)), [])
+        Ok(transfer) -> #(credit(channel, transfer, Decisions(ids)), [])
+      }
+    }
+    AwaitingReply(_, History(after, before)), session_wire.Begin(body) -> {
+      let started = {
+        use _ <- result.try(matching_window(body, "history"))
+        snapshot.begin(
+          body,
+          channel.expected,
+          channel.attachment,
+          snapshot.empty(),
+          after + 1,
+        )
+      }
+      case started {
+        Error(reason) -> fail(channel, reason)
+        Ok(transfer) -> #(
+          credit(channel, transfer, OlderPage(after, before)),
+          [],
+        )
+      }
+    }
+    Receiving(transfer, OlderPage(after, before)), session_wire.End(body) -> {
+      let completed = {
+        use cut <- result.try(snapshot.finish(transfer, body))
+        use <- bool.guard(
+          list.any(cut.window.items, fn(item) {
+            snapshot.sequence(item) <= after
+            || snapshot.sequence(item) >= before
+          }),
+          Error("history page exceeds requested range"),
+        )
+        Ok(cut.window)
+      }
+      case completed {
+        Error(reason) -> fail(channel, reason)
+        Ok(window) ->
+          send_queued(
+            Channel(..channel, phase: Ready, refresh_at: channel.timestamp()),
+            [HistoryPage(window, before, after)],
+          )
       }
     }
     Receiving(transfer, lookup), session_wire.Chunk(body) ->
@@ -638,7 +692,7 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
         Error(reason) -> fail(channel, reason)
         Ok(transfer) -> #(credit(channel, transfer, lookup), [])
       }
-    Receiving(transfer, Some(ids)), session_wire.End(body) -> {
+    Receiving(transfer, Decisions(ids)), session_wire.End(body) -> {
       let resolved = {
         use cut <- result.try(snapshot.finish(transfer, body))
         use #(cells, missing) <- result.try(snapshot_view.lookup(cut, ids))
@@ -654,7 +708,7 @@ fn apply_reply(channel: Channel, reply: session_wire.Reply) {
           )
       }
     }
-    Receiving(transfer, None), session_wire.End(body) ->
+    Receiving(transfer, Conversation), session_wire.End(body) ->
       case
         snapshot.finish(transfer, body)
         |> result.try(fn(cut) {
@@ -835,6 +889,7 @@ fn fail(channel: Channel, reason: String) {
     ]
     AwaitingReply(_, Read)
     | AwaitingReply(_, Lookup(_))
+    | AwaitingReply(_, History(..))
     | AwaitingBegin
     | Receiving(..)
     | Ready
@@ -922,6 +977,8 @@ pub fn replay_issued(
           Error("recorded catch-up cursor does not match the adopted cut")
       }
     Ready, attempt.Decisions(ids) -> lookup(channel, ids)
+    Ready, attempt.HistoryRange(after, before) ->
+      history(channel, after, before)
     Ready, attempt.NoSelection ->
       admit(channel, session_wire.command(1, request.kind, []))
       |> result.map(fn(admitted) { admitted.0 })
@@ -968,6 +1025,41 @@ pub fn lookup(channel: Channel, ids: List(String)) -> Result(Channel, String) {
     _, None -> Ok(Channel(..channel, queued: Some(outbound)))
     _, Some(_) -> Error("one read is already queued")
   }
+}
+
+/// Reads at most one hundred older sequence positions on the existing lane.
+///
+/// The bounds are exclusive. The result cannot replace live metadata or the
+/// catch-up cursor, and a busy lane leaves the request with its caller.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.history(channel, 100, 201)
+/// ```
+@internal
+pub fn history(
+  channel: Channel,
+  after: Int,
+  before: Int,
+) -> Result(Channel, String) {
+  use <- bool.guard(
+    after < 0 || before <= after || before - after > 101,
+    Error("history requires a range of at most one hundred sequences"),
+  )
+  use <- bool.guard(
+    !ready_for_read(channel),
+    Error("conversation read lane is busy"),
+  )
+  use outbound <- result.try(
+    outbound(
+      session_wire.command(1, "history", [
+        #("after_seq", json.Int(after)),
+        #("before_seq", json.Int(before)),
+      ]),
+    ),
+  )
+  Ok(send(channel, Outbound(..outbound, intent: History(after, before))))
 }
 
 // Every transition back to `Ready` passes through here, so this is the one
@@ -1030,6 +1122,7 @@ fn send(channel: Channel, outbound: Outbound) {
     <> outbound.suffix
   let selection = case outbound.intent {
     Lookup(ids) -> attempt.Decisions(ids)
+    History(after, before) -> attempt.HistoryRange(after, before)
     Read | Mutation -> attempt.NoSelection
   }
   let next =

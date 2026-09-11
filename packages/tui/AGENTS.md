@@ -11,6 +11,49 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- Completion patch totals are accumulated before the 32-result/path display
+  limit, using the complete already-bounded fs_edit patch. `edit_count` and
+  `edit_delta` therefore survive display truncation and later history eviction.
+  They remain captured file-tool mutation counts, not workspace Git totals.
+- A valid history transfer may exceed its local eight-MiB retention budget.
+  Its retained suffix is accepted, and `evicted_through` supplies the next older
+  interval so evicted ancestors are revisited. Read replies never adopt metadata.
+  One prompt may wait behind an authenticated read; a sent mutation still blocks
+  another mutation until its reply. Neither path resends an uncertain command.
+
+- `tui/history_view.State` owns bounded presentation history separately from
+  the latest authoritative cut. Live captures retain at most 600 descriptors
+  and 16 MiB. Scrolling freezes the selected ancestry endpoint; `history` reads
+  exclusive intervals of at most 100 sequence positions on the existing channel.
+  Older replies cannot replace metadata or advance the catch-up cursor. Paging
+  retains proved ancestry so unrelated reviewer traffic cannot evict a missing
+  parent's endpoint. The newer end is evicted when paging backward past the
+  cache bound. End with an empty composer returns to the latest captured leaf.
+- `tui/transcript_anchor.Row` identifies a durable entry and its source block
+  or tool call. Wrapped row offsets relocate the reading position through
+  incoming output, older pages, detail changes and width changes. Equal text
+  never substitutes for identity. A mouse selection retains one bounded frame
+  and holds its pane on the original cells until dismissal or resize.
+- `session_channel.HistoryPage` has an independent projection lane; exact
+  bounds and attachment identity are checked before presentation. The recorded
+  `attempt.HistoryRange` restores request ownership during replay. Attachment
+  replacement clears a different session's history; same-session reconnect
+  preserves the reading endpoint without reusing mutation authority.
+- User messages have a shaded, labelled block. Agent prose and reasoning have
+  explicit labels; non-redacted reasoning remains visible in compact mode.
+  Compact tool rows retain every call while folding arguments and results.
+  The wide changes pane opens automatically, leaves the composer focused, and
+  remembers explicit dismissal. One requested refresh survives an in-flight
+  worktree observation.
+- Confirmed session deletion sends `StopSession` once, waits through `weft/poll`
+  for the daemon's saved/reserved observation, then sends `DeleteSession` once.
+  Unconfirmed cleanup, a replacement incarnation, or an uncertain reply keeps
+  the registration. The picker runs this within its existing managed job.
+- Usage labels distinguish cumulative totals from input context at the latest
+  measured request. Reasoning is a subset of output. Job ages and remaining
+  deadlines use the server's shared clock domain; refresh age uses only the
+  terminal's local receipt clock.
+
 - `tui/skills.Page` decodes the attached daemon's paged skill commands.
   `Model.skills` is presentation metadata, cleared with attachment replacement.
   `command.suggestions_with_skills` keeps built-ins authoritative and completes
@@ -31,8 +74,12 @@ that tree separately from the self-contained server.
   remain distinct so a settled entry cannot duplicate its streamed answer.
   Wrapped durable rows are cached by strand, width, and detail mode. Expanded
   history appends pending records; compact groups rebuild their projection
-  and reuse wrapped rows keyed by the complete speaker/text line. Width changes
-  discard layout hints, and each rebuild retains only the current projection.
+  and reuse wrapped rows keyed by the complete speaker/text line. Compact
+  presentation caches the complete call/outcome and narrative/owner values,
+  avoiding repeated sanitization before the wrapping cache can be consulted.
+  Width changes discard layout hints; each rebuild retains only current calls
+  and entries. Scroll anchors are created when reading older output begins,
+  then relocated across changes; following live output does no anchor work.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
   `Invalid` — and three that are not terminal applications at all,
   `Forward`, `Replay` and `Sessions`.
@@ -149,7 +196,8 @@ that tree separately from the self-contained server.
   both — and `session_selector.without` drops the row on the daemon's
   confirmation rather than re-listing, which would move every other row
   under the cursor. A refusal reaches the footer as an error and the page is
-  left alone.
+  left alone. The confirmation explicitly includes stopping the selected session
+  before deletion; the job remains asynchronous while cleanup settles.
 - `tui/attachment.Status` owns one provisional replacement. A deadline-bounded
   Weft task publishes its socket to terminal-owned subjects. The terminal
   validates the initial cut, acknowledges it, observes task completion and
@@ -260,7 +308,7 @@ that tree separately from the self-contained server.
 - **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
   `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`,
   standalone `compact`, `schedules`, `schedule_cancel`, `snapshot_next`,
-  `catch_up`, `escalations_get`, `approve`, and `deny`.
+  `catch_up`, `history`, `escalations_get`, `approve`, and `deny`.
 - **Live events in**: correlated `snapshot_begin`, `snapshot_chunk`,
   `snapshot_end`, `mutation_outcome` (`admitted`, `committed` or `queued`),
   bounded auxiliary snapshots, and errors. Unknown tags, wrong versions and
@@ -784,3 +832,23 @@ the same rows, and row *n* means the same thing in both.
   the catalogue and role-routing state shown by `/model`.
 - [`docs/performance.md`](../../docs/performance.md) defines the measurement
   workloads, BEAM tools, and optimization evidence standard.
+
+### Reviewer and completion evidence
+
+`reviewer_status` projects current operation phases and pending-input receipts
+from the authoritative cut. It retains only a 160-character task excerpt per
+captured live operation, keyed by operation and strand; a successor cannot
+inherit the old task. Up to three reviewers stay visible above the composer,
+including beside the automatic wide diff, with an overflow count directing the
+operator to `/agents`. Missing prompt history and missing queue metadata remain
+explicitly unavailable. Receipt never claims incorporation into reviewer work.
+
+Notes distinguish a session advancing after their last read from a value
+written before the current operation's acceptance. Neither fact proves a plan
+is wrong; the panel labels the observation and offers a refresh. Completion
+shows the designated final answer and captured file-tool paths. Successful
+`fs_edit` patches supply recorded added/removed line counts for that operation,
+separate from the worktree's Git totals; repeated edits count each mutation,
+and shell-only changes have no fabricated file-tool attribution. The summary
+also separates cumulative uncached/cache/output counts from the latest measured
+request's input context. Reasoning remains a subset of output.

@@ -9,6 +9,7 @@ import broker/broker
 import broker/budget
 import broker/exec
 import broker/policy
+import client/catalog
 import client/codemode
 import client/daemon/transfer
 import client/serve
@@ -279,21 +280,22 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
         )
         as "the fixture materializes the protected store as production boot does"
 
+      // Keep ancestor repositories outside this fixture's readable scope.
+      // Host reads would let the empty workspace discover the CI checkout.
+      let base = serve.base_policy_for(workspace, catalog.WorkspaceReads)
+
       // Apple ships the real Git executable with Xcode; /usr/bin/git is a
       // launcher whose discovery needs unrelated host preferences. Admit only
       // the installed developer usr tree and put its real binary first.
       let developer_usr = "/Applications/Xcode.app/Contents/Developer/usr"
       let #(base, path) = case simplifile.is_directory(developer_usr) {
         Ok(True) -> #(
-          policy.SandboxPolicy(..serve.base_policy(workspace), readable_roots: [
+          policy.SandboxPolicy(..base, readable_roots: [
             developer_usr,
           ]),
           developer_usr <> "/bin:/usr/bin:/bin:/usr/local/bin",
         )
-        Ok(False) | Error(_) -> #(
-          serve.base_policy(workspace),
-          "/usr/local/bin:/usr/bin:/bin",
-        )
+        Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
       }
       let clock = clock.from_function(bootstrap.system_time_ms)
       let assert Ok(#(pool, broker)) =
@@ -325,4 +327,43 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
       assert exec.close_pool(pool, waiting: 5000) == Ok(Nil)
     }
   }
+}
+
+// Generated caches must not spend the worktree's file or byte budget. A user
+// who deliberately tracks a file in the same directory still sees its edits.
+pub fn untracked_runtime_caches_do_not_hide_tracked_changes_test() {
+  use wiring <- with_fixture("runtime-caches")
+  setup(wiring, ["init", "--quiet"])
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(wiring.workspace <> "/.codemode/cache")
+    as "the generated cache directory exists"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(wiring.workspace <> "/.blobs")
+    as "the generated blob directory exists"
+  write(wiring, ".codemode/tracked.txt", "before\n")
+  setup(wiring, ["add", "--", "."])
+  setup(wiring, [
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    "tracked fixture",
+  ])
+  write(wiring, ".codemode/tracked.txt", "after\n")
+  write(wiring, "new-source.txt", "real source\n")
+  int.range(from: 1, to: 80, with: Nil, run: fn(_, index) {
+    write(wiring, ".codemode/cache/" <> int.to_string(index), "cache\n")
+  })
+  write(wiring, ".blobs/generated", "blob\n")
+  let assert Ok(board) = worktree_diff.capture(wiring)
+    as "generated files cannot displace source changes"
+  assert board.total == 2
+  assert board.omitted == 0
+  assert string.contains(file(board, ".codemode/tracked.txt").patch, "+after")
+  assert string.contains(file(board, "new-source.txt").patch, "+real source")
 }

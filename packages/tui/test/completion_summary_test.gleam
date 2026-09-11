@@ -152,7 +152,10 @@ pub fn predecessor_result_keeps_boundary_when_successor_is_in_same_cut_test() {
       "edit",
       "fs_edit",
       summary.Succeeded,
-      path("new.gleam"),
+      json.Object([
+        #("path", json.String("new.gleam")),
+        #("diff", json.String("@@ -1,1 +1,2 @@\n-old\n+new\n+extra")),
+      ]),
     )
   let checked =
     tool(
@@ -180,15 +183,25 @@ pub fn predecessor_result_keeps_boundary_when_successor_is_in_same_cut_test() {
   let result = latest(observed, "main")
   assert result.coverage == summary.Complete
   assert result.edits == ["new.gleam"]
+  assert summary.edit_totals(result)
+    == "Turn file-tool edits: 1 paths · recorded +2/−1"
   assert result.tools
     == [
-      summary.ToolOutcome("edit", "fs_edit", summary.Succeeded, None, None),
+      summary.ToolOutcome(
+        "edit",
+        "fs_edit",
+        summary.Succeeded,
+        None,
+        None,
+        Some(#(2, 1)),
+      ),
       summary.ToolOutcome(
         "checks",
         "bash",
         summary.Failed,
         Some("make test"),
         Some(7),
+        None,
       ),
     ]
   assert list.contains(summary.lines(result), "bash failed; exit 7: make test")
@@ -315,4 +328,119 @@ pub fn strand_retention_is_bounded_test() {
   assert summary.latest(observed, "strand-1") == None
   assert latest(observed, "strand-40").operation
     == ids.op_id_to_string(op_id(40))
+}
+
+pub fn written_artifact_and_final_report_survive_missing_start_metadata_test() {
+  let call =
+    assistant(1, None, [invocation("write", "fs_write", path("review.md"))])
+  let written =
+    tool(
+      2,
+      Some(entry_id(1)),
+      "write",
+      "fs_write",
+      summary.Succeeded,
+      path("review.md"),
+    )
+  let report =
+    assistant(3, Some(entry_id(2)), [
+      message.AssistantText(
+        "## Outcome\n\nReview saved in review.md.\n\nTests were not run.",
+        None,
+      ),
+    ])
+  let result =
+    snapshot_view.Cell(
+      register.StrandLastResult,
+      "main",
+      4,
+      codec.encode_last_result(operation.RunLastResult(
+        op_id(10),
+        Some(entry_id(3)),
+        completed(),
+        Some(entry_id(3)),
+      )),
+    )
+  let complete =
+    summary.new()
+    |> summary.observe([meta(10, "main", None)], [])
+    |> summary.observe([result], [report, written, call])
+    |> latest("main")
+  assert complete.edits == ["review.md"]
+  assert string.contains(
+    string.join(summary.lines(complete), "\n"),
+    "Tests were not run.",
+  )
+
+  // Reconnecting after completion can still identify the designated answer,
+  // without claiming all earlier commands or edits belong to this operation.
+  let reopened =
+    summary.observe(summary.new(), [result], [report]) |> latest("main")
+  assert reopened.coverage == summary.Unavailable
+  assert reopened.edits == []
+  assert reopened.final_assistant == complete.final_assistant
+}
+
+pub fn turn_totals_precede_patch_and_tool_display_limits_test() {
+  let patch =
+    string.repeat(" context retained in the patch\n", 30)
+    <> "-old\n+new\n+extra"
+  let calls =
+    list.repeat(Nil, 66)
+    |> list.index_map(fn(_, index) { index + 1 })
+    |> list.map(fn(n) {
+      let name = case n <= 33 {
+        True -> "fs_edit"
+        False -> "fs_read"
+      }
+      invocation(int.to_string(n), name, path(int.to_string(n)))
+    })
+  let first = assistant(1, None, calls)
+  let results =
+    list.repeat(Nil, 66)
+    |> list.index_map(fn(_, index) { index + 1 })
+    |> list.map(fn(n) {
+      let name = case n <= 33 {
+        True -> "fs_edit"
+        False -> "fs_read"
+      }
+      tool(
+        n + 1,
+        Some(entry_id(n)),
+        int.to_string(n),
+        name,
+        summary.Succeeded,
+        json.Object([
+          #("path", json.String(int.to_string(n))),
+          #("diff", json.String(patch)),
+        ]),
+      )
+    })
+  let captured =
+    summary.new()
+    |> summary.observe([meta(100, "main", None)], [])
+    |> summary.observe(
+      [terminal(100, "main", Some(entry_id(67)), completed())],
+      [first, ..results],
+    )
+    |> latest("main")
+  assert captured.coverage == summary.Complete
+  assert list.length(captured.edits) == 32
+  assert list.length(captured.tools) == 32
+  assert list.all(captured.tools, fn(tool) { tool.name == "fs_read" })
+  assert summary.edit_totals(captured)
+    == "Turn file-tool edits: 33 paths · recorded +66/−33"
+  let preserved =
+    summary.new()
+    |> summary.observe([meta(100, "main", None)], [])
+    |> summary.observe(
+      [terminal(100, "main", Some(entry_id(67)), completed())],
+      [first, ..results],
+    )
+    |> summary.observe(
+      [terminal(100, "main", Some(entry_id(67)), completed())],
+      [],
+    )
+    |> latest("main")
+  assert preserved == captured
 }

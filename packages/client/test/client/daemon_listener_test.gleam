@@ -289,6 +289,14 @@ pub fn daemon_listener_rejects_legacy_route_and_competing_root_test() {
 }
 
 pub fn daemon_listener_cli_and_workspace_domains_test() {
+  let assert Error(_) = entrypoint.parse(["--read-scope", "workspce"])
+    as "a misspelled restriction must not enable host reads"
+  let assert Error(_) = entrypoint.parse(["--network", "of"])
+    as "a misspelled restriction must not enable network access"
+  let assert Error(_) = entrypoint.parse(["--read-scope"])
+    as "a missing restriction argument must be refused"
+  let assert Error(_) = entrypoint.parse(["--network"])
+    as "a missing network argument must be refused"
   let assert Error(_) = entrypoint.parse(["--session", "old.db"])
     as "per-session CLI is not a compatibility mode"
   let assert Error(_) = entrypoint.parse(["--bind", "0.0.0.0:9000"])

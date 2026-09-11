@@ -1290,3 +1290,279 @@ pub fn recorded_auxiliary_refusals_replay_in_their_original_command_slots_test()
     }
   })
 }
+
+// Feed an older entry through the real credited transfer, with metadata sampled
+// later than the live cut. That newer metadata must remain outside adoption.
+fn older_page_events(row: entry.Entry, before: Int) {
+  list.map(settled_catch_up(row, 4), fn(event) {
+    case event {
+      attempt.Issued(id, attempt.Request(4, "catch_up", _)) ->
+        attempt.Issued(
+          id,
+          attempt.Request(4, "history", attempt.HistoryRange(0, before)),
+        )
+      attempt.Received(id, connection.Incoming(raw)) -> {
+        let assert Ok(json.Object(fields)) = json.parse(raw)
+          as "the fixture contains a protocol envelope"
+        let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+          as "every transfer event has a body"
+        let body = case list.key_find(fields, "event") {
+          Ok(json.String("snapshot_begin")) ->
+            list.key_set(body, "window", json.String("history"))
+          Ok(json.String("snapshot_chunk")) -> {
+            case list.key_find(body, "kind") {
+              Ok(json.String("entry")) ->
+                list.key_set(body, "record_seq", json.Int(row.seq))
+              _ -> body
+            }
+          }
+          _ -> body
+        }
+        attempt.Received(
+          id,
+          connection.Incoming(
+            json.to_string(
+              json.Object(list.key_set(fields, "body", json.Object(body))),
+            ),
+          ),
+        )
+      }
+      _ -> event
+    }
+  })
+}
+
+pub fn history_page_cannot_replace_live_metadata_or_catch_up_cursor_test() {
+  let channel =
+    session_channel.replay_with_clock(
+      snapshot.Expected("A", "epoch", "incarnation"),
+      fn() { 0 },
+    )
+  let #(ready, _) = read_channel(channel, events(1, "A"))
+  let row =
+    entry.MessageEntry(
+      ids.mint_entry(ids.generator(clock.fixed(1000), 765)).0,
+      None,
+      5,
+      1000,
+      message.UserMessage([message.UserText("older text", None)], 1000, None),
+      False,
+    )
+  let #(completed, updates) = read_channel(ready, older_page_events(row, 10))
+  let assert [session_channel.HistoryPage(window, 10, 0)] = updates
+    as "historical metadata never becomes a Captured update"
+  let assert [snapshot.Loaded(found, _)] = window.items
+    as "the page contains the exact older entry"
+  assert found == row
+  let assert Ok(_) =
+    session_channel.replay_issued(
+      completed,
+      attempt.Request(8, "catch_up", attempt.Cursor(10)),
+    )
+    as "reconciliation resumes from the live cut, not the page's newer sample"
+  let assert Error(_) =
+    session_channel.replay_issued(
+      completed,
+      attempt.Request(8, "catch_up", attempt.Cursor(11)),
+    )
+    as "a historical response cannot advance the live cursor"
+  let #(failed, updates) = read_channel(ready, older_page_events(row, 5))
+  let assert [session_channel.Failed(_)] = updates
+    as "an entry at the exclusive upper boundary rejects the entire page"
+  assert !session_channel.ready_for_read(failed)
+  let selector =
+    attempt.Issued(
+      attempt.Id(1),
+      attempt.Request(4, "history", attempt.HistoryRange(0, 10)),
+    )
+  assert attempt.decode(json.Object(attempt.encode(selector))) == Ok(selector)
+}
+
+pub fn recorded_history_request_reaches_the_same_visible_ancestry_test() {
+  let row =
+    entry.MessageEntry(
+      ids.mint_entry(ids.generator(clock.fixed(1000), 876)).0,
+      None,
+      5,
+      1000,
+      message.UserMessage(
+        [message.UserText("OLDER_RECORDED_HISTORY", None)],
+        1000,
+        None,
+      ),
+      False,
+    )
+  let initial =
+    events_with_identity(
+      1,
+      "A",
+      string.replace(catch_up_metadata(row), "\"seq\":10", "\"seq\":1"),
+      "Alice",
+      "operator",
+    )
+  let source =
+    list.append(initial, [
+      attempt.Adopted(attempt.Id(1)),
+      ..older_page_events(row, 10)
+    ])
+  let run = replay_run(source)
+  assert run.final.replay_error == None
+  let assert [record] = run.final.records
+    as "the recorded request owns its historical page"
+  assert record.entry == row
+  let assert Ok(last) = list.last(run.frames) as "the history page was painted"
+  assert string.contains(frame.buffer_to_text(last), "OLDER_RECORDED_HISTORY")
+}
+
+pub fn prompt_waits_behind_automatic_read_without_losing_draft_test() {
+  let channel =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, _) = read_channel(channel, events(1, "A"))
+  let assert Ok(reading) =
+    session_channel.replay_issued(
+      ready,
+      attempt.Request(4, "worktree_diff", attempt.NoSelection),
+    )
+    as "automatic worktree inspection owns the single read lane"
+  let #(waiting, disposition) =
+    session_channel.submit(
+      reading,
+      protocol.prompt(900, "main", "first prompt"),
+    )
+  assert disposition == session_channel.Waiting("prompt")
+  assert session_channel.has_unsent(waiting)
+  let #(sent, updates) =
+    session_channel.receive(
+      waiting,
+      frame(
+        4,
+        "error",
+        json.Object([
+          #("code", json.String("unavailable")),
+          #("message", json.String("fixture observation unavailable")),
+        ]),
+      ),
+    )
+  assert list.any(updates, fn(update) {
+    update == session_channel.Submission(session_channel.Sent("prompt", 5))
+  })
+  assert !session_channel.has_unsent(sent)
+}
+
+pub fn valid_large_history_page_retains_suffix_without_closing_channel_test() {
+  let channel =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(ready, _) = read_channel(channel, events(1, "A"))
+  let rows =
+    list.repeat(Nil, 9)
+    |> list.index_map(fn(_, index) { index + 1 })
+    |> list.map(fn(n) {
+      entry.MessageEntry(
+        ids.mint_entry(ids.generator(clock.fixed(1000), n)).0,
+        None,
+        n,
+        1000,
+        message.UserMessage(
+          [message.UserText(string.repeat("x", 1_048_576), None)],
+          1000,
+          None,
+        ),
+        False,
+      )
+    })
+  let assert Ok(first) = list.first(rows)
+    as "nine entries exceed the local byte cap"
+  let opening = list.take(older_page_events(first, 10), 4)
+  let #(receiving, _) = read_channel(ready, opening)
+  let #(received, index) =
+    list.fold(rows, #(receiving, 1), fn(acc, row) {
+      let data = json.to_string(codec.encode_entry(row))
+      let pieces = split_history_data(data, [])
+      list.fold(pieces, #(acc.0, acc.1, 0), fn(part, piece) {
+        let request = part.1 + 5
+        let chunks =
+          credited_piece(
+            request,
+            "1:4",
+            part.1,
+            "entry",
+            ids.entry_id_to_string(row.id),
+            json.Int(row.seq),
+            piece,
+          )
+        let adjusted =
+          list.map(chunks, fn(event) {
+            case event {
+              attempt.Received(id, connection.Incoming(raw)) -> {
+                let assert Ok(json.Object(fields)) = json.parse(raw)
+                  as "fixture envelope is valid"
+                let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+                  as "fixture chunk has body"
+                let body =
+                  body
+                  |> list.key_set(
+                    "total_bytes",
+                    json.Int(string.byte_size(data)),
+                  )
+                  |> list.key_set("offset", json.Int(part.2))
+                attempt.Received(
+                  id,
+                  connection.Incoming(
+                    json.to_string(
+                      json.Object(list.key_set(
+                        fields,
+                        "body",
+                        json.Object(body),
+                      )),
+                    ),
+                  ),
+                )
+              }
+              _ -> event
+            }
+          })
+        let #(channel, updates) = read_channel(part.0, adjusted)
+        assert updates == []
+        #(channel, part.1 + 1, part.2 + string.byte_size(piece))
+      })
+      |> fn(done) { #(done.0, done.1) }
+    })
+  let request = index + 5
+  let assert Ok(ending) =
+    session_channel.replay_issued(
+      received,
+      attempt.Request(request, "snapshot_next", attempt.Credit("1:4", index)),
+    )
+    as "the retained suffix still grants transfer credit"
+  let #(completed, updates) =
+    session_channel.receive(
+      ending,
+      frame(
+        request,
+        "snapshot_end",
+        json.Object([
+          #("snapshot_id", json.String("1:4")),
+          #("index", json.Int(index)),
+          #("next_seq", json.Int(11)),
+          #("more_after", json.Null),
+        ]),
+      ),
+    )
+  let assert [session_channel.HistoryPage(window, 10, 0)] = updates
+    as "local retention is not a protocol failure"
+  assert window.bytes <= snapshot.window_limit
+  assert window.evicted_through != None
+  assert list.length(window.items) < 9
+  assert session_channel.ready_for_read(completed)
+}
+
+fn split_history_data(data, collected) {
+  case string.byte_size(data) <= 16_384 {
+    True -> list.reverse([data, ..collected])
+    False ->
+      split_history_data(string.drop_start(data, 16_384), [
+        string.slice(data, 0, 16_384),
+        ..collected
+      ])
+  }
+}

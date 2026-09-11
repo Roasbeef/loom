@@ -125,7 +125,7 @@ pub fn grep_call_spec_shape_test() {
   assert spec.response == broker.RefuseNarrowed
   // Read-only requirements: nothing writable.
   assert spec.requirements.writable_roots == []
-  assert spec.requirements.readable_roots == [workspace]
+  assert spec.requirements.readable_roots == spec.base_policy.readable_roots
   assert spec.budget.deadline_ms == now + grep.timeout_ms
 }
 
@@ -140,6 +140,56 @@ pub fn grep_path_scopes_search_test() {
     )
   let spec = recorded_spec(recorded)
   assert list.last(spec.argv) == Ok("/work/src")
+}
+
+pub fn native_search_preserves_lookup_without_shell_credentials_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace:,
+      filesystem:,
+      now:,
+      script: [fake_broker.exited(code: 1, stdout_bytes: 0)],
+      recorded:,
+    )
+  let base =
+    policy.SandboxPolicy(
+      ..ctx.base_policy,
+      env_allow: ["PATH", "GH_TOKEN"],
+      mounts: [
+        policy.Mount(
+          path: "/installed/search",
+          access: policy.MountReadWrite,
+          requirement: policy.MountOptional,
+        ),
+      ],
+    )
+  let _outcome =
+    grep.tool().run(
+      tool.Ctx(..ctx, base_policy: base, env: [
+        #("PATH", "/installed/search/bin:/usr/bin:/bin"),
+        #("GH_TOKEN", "fixture-secret"),
+      ]),
+      pattern_args("todo"),
+    )
+  let spec = recorded_spec(recorded)
+  let #(final, narrowings) = policy.compose(base, spec.requirements, [])
+
+  // The composed policy is the helper's authority, not the wider context.
+  assert final.env_allow == ["PATH"]
+  assert narrowings == []
+  assert spec.env == [#("PATH", "/installed/search/bin:/usr/bin:/bin")]
+  assert final.writable_roots == []
+  assert final.network == policy.NetworkOff
+  assert final.mounts
+    == [
+      policy.Mount(
+        path: "/installed/search",
+        access: policy.MountReadOnly,
+        requirement: policy.MountOptional,
+      ),
+    ]
 }
 
 pub fn grep_path_escape_rejected_test() {

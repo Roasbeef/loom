@@ -66,6 +66,7 @@ pub type RetryPolicy {
 ///
 pub fn classify(error: ProviderError) -> RetryClass {
   case error {
+    stream.WithContext(inner, _) -> classify(inner)
     ProviderCancelled -> Terminal
     CancellationUnconfirmed -> Terminal
     DrainProofLost -> Terminal

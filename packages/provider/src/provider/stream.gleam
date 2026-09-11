@@ -28,6 +28,7 @@
 //// are ephemeral display data and never prove anything about settlement.
 
 import core/corruption.{type CorruptionReport}
+import core/json
 import core/message.{type AgentMessage, type Usage, AssistantMessage, Pending}
 import gleam/bit_array
 import gleam/erlang/process.{
@@ -137,6 +138,9 @@ pub fn message(settled: SettledAssistantMessage) -> AgentMessage {
 /// `NoSecret.secret_name` is the *name* of the missing secret, never a
 /// value.
 pub type ProviderError {
+  /// Local observations preserve the initiating event through bounded cleanup.
+  WithContext(error: ProviderError, context: FailureContext)
+
   /// The request owner accepted an explicit cancellation before settlement.
   ProviderCancelled
 
@@ -180,6 +184,236 @@ pub type ProviderError {
   NoSecret(provider: String, secret_name: String)
 }
 
+/// The local boundary which observed a provider failure.
+pub type FailureSource {
+  /// The HTTP attempt owner.
+  AttemptSource
+
+  /// The fallback route owner.
+  GatewaySource
+
+  /// The client observer relay.
+  RelaySource
+
+  /// The runtime effect or its immediate custodian.
+  RuntimeSource
+}
+
+/// The event which began termination, independently of subsequent drain proof.
+pub type FailureCause {
+  /// An outer runtime received the explicit stop signal.
+  ExplicitStop
+
+  /// Cancellation arrived without evidence of its upstream initiator.
+  CancellationRequested
+
+  /// This boundary's configured request deadline fired.
+  RequestDeadline
+
+  /// The consumer process exited.
+  ConsumerExit
+
+  /// The provider produced a terminal response.
+  TerminalResponse
+
+  /// A transport or forwarding owner exited before settlement.
+  TransportExit
+}
+
+/// Bounded local facts; no request body, URL, headers, or credentials belong here.
+pub type FailureObservation {
+  FailureObservation(
+    /// The boundary which can attest to these facts.
+    source: FailureSource,
+    /// The event observed before cancellation and drain waiting.
+    cause: FailureCause,
+    /// One-based attempt number within this boundary, when known.
+    attempt: Option(Int),
+    /// Configured request deadline, when known.
+    request_timeout_ms: Option(Int),
+    /// Configured cancellation grace, when known.
+    cancellation_timeout_ms: Option(Int),
+    /// Existing local request identity, bounded and scrubbed at publication.
+    request_id: Option(String),
+  )
+}
+
+/// At most one observation per local boundary, outermost first.
+pub type FailureContext {
+  FailureContext(observations: List(FailureObservation))
+}
+
+/// Removes contextual envelopes without changing failure classification.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert stream.underlying_error(stream.ProviderCancelled) == stream.ProviderCancelled
+/// ```
+pub fn underlying_error(error: ProviderError) -> ProviderError {
+  case error {
+    WithContext(error, _) -> underlying_error(error)
+    bare -> bare
+  }
+}
+
+/// Adds one locally observed event and normalizes to one bounded envelope.
+///
+/// An outer observation replaces a less informed observation from the same
+/// boundary; callers retain the initiating observation through cleanup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // stream.with_context(error, observation)
+/// ```
+pub fn with_context(
+  error: ProviderError,
+  observation: FailureObservation,
+) -> ProviderError {
+  // A forwarding observation cannot erase a cancellation already seen at
+  // this boundary. A more precise outer deadline or stop can replace it.
+  let observation = case observation.cause {
+    TerminalResponse ->
+      list.find(failure_context(error), fn(prior) {
+        prior.source == observation.source
+      })
+      |> result.unwrap(observation)
+    _ -> observation
+  }
+  let observations =
+    failure_context(error)
+    |> list.filter(fn(prior) { prior.source != observation.source })
+  WithContext(
+    underlying_error(error),
+    FailureContext(list.take(
+      [
+        FailureObservation(
+          ..observation,
+          request_id: option.then(observation.request_id, fn(id) {
+            case string.byte_size(id) <= 128 {
+              True -> Some(id)
+              False -> None
+            }
+          }),
+        ),
+        ..observations
+      ],
+      4,
+    )),
+  )
+}
+
+/// Reads at most four observations from an error, including older wrappers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert stream.failure_context(stream.ProviderCancelled) == []
+/// ```
+pub fn failure_context(error: ProviderError) -> List(FailureObservation) {
+  case error {
+    WithContext(inner, FailureContext(observations)) ->
+      list.fold(
+        list.append(observations, failure_context(inner)),
+        [],
+        fn(kept, observation) {
+          case
+            list.any(kept, fn(prior: FailureObservation) {
+              prior.source == observation.source
+            })
+          {
+            True -> kept
+            False -> list.take(list.append(kept, [observation]), 4)
+          }
+        },
+      )
+    _ -> []
+  }
+}
+
+/// Adds context to a failed terminal without changing successful responses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // stream.contextual_event(terminal, observation)
+/// ```
+pub fn contextual_event(
+  event: StreamEvent,
+  observation: FailureObservation,
+) -> StreamEvent {
+  case event {
+    Failed(error) -> Failed(with_context(error, observation))
+    Delta(_) | Settled(..) -> event
+  }
+}
+
+/// Encodes only local failure facts into the existing diagnostic JSON field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert stream.context_diagnostics(stream.ProviderCancelled) == []
+/// ```
+pub fn context_diagnostics(
+  error: ProviderError,
+) -> List(#(String, json.JsonValue)) {
+  case failure_context(error) {
+    [] -> []
+    observations -> [
+      #(
+        "provider_failure",
+        json.Array(
+          list.map(observations, fn(value) {
+            json.Object([
+              #("source", json.String(source_name(value.source))),
+              #("cause", json.String(cause_name(value.cause))),
+              #("attempt", optional_int(value.attempt)),
+              #("request_timeout_ms", optional_int(value.request_timeout_ms)),
+              #(
+                "cancellation_timeout_ms",
+                optional_int(value.cancellation_timeout_ms),
+              ),
+              #("request_id", case value.request_id {
+                Some(id) -> json.String(id)
+                None -> json.Null
+              }),
+            ])
+          }),
+        ),
+      ),
+    ]
+  }
+}
+
+fn optional_int(value) {
+  case value {
+    Some(number) -> json.Int(number)
+    None -> json.Null
+  }
+}
+
+fn source_name(source) {
+  case source {
+    AttemptSource -> "attempt"
+    GatewaySource -> "gateway"
+    RelaySource -> "relay"
+    RuntimeSource -> "runtime"
+  }
+}
+
+fn cause_name(cause) {
+  case cause {
+    ExplicitStop -> "explicit stop"
+    CancellationRequested -> "cancellation requested"
+    RequestDeadline -> "request deadline"
+    ConsumerExit -> "consumer exit"
+    TerminalResponse -> "terminal response"
+    TransportExit -> "transport exit"
+  }
+}
+
 /// Renders an error as one human-readable line for in-band error results
 /// and logs. Redaction-safe by construction: it only prints what the
 /// error carries, and errors never carry secrets.
@@ -193,6 +427,20 @@ pub type ProviderError {
 ///
 pub fn describe_error(error: ProviderError) -> String {
   case error {
+    WithContext(inner, FailureContext(observations)) -> {
+      let meaningful =
+        list.filter(observations, fn(value) { value.cause != TerminalResponse })
+      let suffix = case meaningful {
+        [first, ..] ->
+          " ("
+          <> source_name(first.source)
+          <> ": "
+          <> cause_name(first.cause)
+          <> ")"
+        [] -> ""
+      }
+      describe_error(inner) <> suffix
+    }
     ProviderCancelled -> "provider request was cancelled"
     CancellationUnconfirmed -> "provider cancellation could not be confirmed"
     DrainProofLost -> "provider ownership ended without proof of drain"
@@ -896,13 +1144,13 @@ pub type AttemptOutcome {
   AttemptTerminal(terminal: StreamEvent)
 
   /// Cancellation was acknowledged before another terminal won the race.
-  AttemptCancelled
+  AttemptCancelled(context: FailureObservation)
 
   /// Cancellation began, but no terminal acknowledged it within the grace.
-  AttemptCancellationUnconfirmed
+  AttemptCancellationUnconfirmed(context: FailureObservation)
 
   /// The transport owner died without proving its descendants drained.
-  AttemptDrainProofLost
+  AttemptDrainProofLost(context: FailureObservation)
 
   /// The process which could consume deltas exited, so the attempt was drained.
   ConsumerGone
@@ -995,11 +1243,23 @@ pub fn run_tracked(
   consumer consumer: Pid,
   within timeout: Int,
 ) -> AttemptOutcome {
+  let context =
+    FailureObservation(
+      AttemptSource,
+      TerminalResponse,
+      None,
+      Some(timeout),
+      Some(100),
+      None,
+    )
   let http_events = process.new_subject()
   let http.Transport(prepare_streaming:) = transport
   case prepare_streaming(request, http_events) {
     Error(reason) -> {
-      AttemptTerminal(Failed(TransportFailed("start failed: " <> reason)))
+      AttemptTerminal(contextual_event(
+        Failed(TransportFailed("start failed: " <> reason)),
+        FailureObservation(..context, cause: TransportExit),
+      ))
     }
     Ok(http.PreparedRequest(running:, begin:)) -> {
       // Publication precedes admission at the transport seam itself. There is
@@ -1027,6 +1287,7 @@ pub fn run_tracked(
         machine,
         machine.init,
         deliver,
+        context,
         response_bytes: 0,
       )
     }
@@ -1042,48 +1303,56 @@ fn run_loop(
   machine: ResponseMachine(state),
   state: state,
   deliver: fn(Delta) -> Nil,
+  context: FailureObservation,
   response_bytes response_bytes: Int,
 ) -> AttemptOutcome {
   case process.selector_receive_forever(selector) {
-    DeadlineExpired ->
+    DeadlineExpired -> {
+      let context = FailureObservation(..context, cause: RequestDeadline)
       finish_outcome(
         deadline_timer,
         case stop_attempt(running, consumer_monitor, transport_monitor) {
           Drained ->
-            AttemptTerminal(
+            AttemptTerminal(contextual_event(
               Failed(TransportFailed(
                 reason: "timed out waiting for the provider",
               )),
-            )
-          TimedOut -> AttemptCancellationUnconfirmed
-          ProofLost -> AttemptDrainProofLost
+              context,
+            ))
+          TimedOut -> AttemptCancellationUnconfirmed(context)
+          ProofLost -> AttemptDrainProofLost(context)
         },
       )
-    Cancelled ->
+    }
+    Cancelled -> {
+      let context = FailureObservation(..context, cause: CancellationRequested)
       finish_outcome(
         deadline_timer,
         case stop_attempt(running, consumer_monitor, transport_monitor) {
-          Drained -> AttemptCancelled
-          TimedOut -> AttemptCancellationUnconfirmed
-          ProofLost -> AttemptDrainProofLost
+          Drained -> AttemptCancelled(context)
+          TimedOut -> AttemptCancellationUnconfirmed(context)
+          ProofLost -> AttemptDrainProofLost(context)
         },
       )
+    }
     ConsumerExited(down: _) -> {
       let _stopped = stop_attempt(running, consumer_monitor, transport_monitor)
       finish_outcome(deadline_timer, ConsumerGone)
     }
     TransportExited(down:) -> {
+      let context = FailureObservation(..context, cause: TransportExit)
       process.demonitor_process(consumer_monitor)
       process.demonitor_process(transport_monitor)
       finish_outcome(deadline_timer, case drain_outcome(down) {
         Drained ->
-          AttemptTerminal(
+          AttemptTerminal(contextual_event(
             Failed(TransportFailed(
               reason: "provider transport stopped before a terminal response",
             )),
-          )
-        TimedOut -> AttemptCancellationUnconfirmed
-        ProofLost -> AttemptDrainProofLost
+            context,
+          ))
+        TimedOut -> AttemptCancellationUnconfirmed(context)
+        ProofLost -> AttemptDrainProofLost(context)
       })
     }
     Http(http.ResponseStatus(status:, headers:)) ->
@@ -1096,6 +1365,7 @@ fn run_loop(
         machine,
         machine.on_status(state, status, headers),
         deliver,
+        context,
         response_bytes:,
       )
     Http(http.ResponseChunk(chunk:)) ->
@@ -1108,6 +1378,7 @@ fn run_loop(
         machine,
         state,
         deliver,
+        context,
         response_bytes:,
         chunk:,
       )
@@ -1124,13 +1395,15 @@ fn run_loop(
       finish_outcome(
         deadline_timer,
         case finish_attempt(consumer_monitor, transport_monitor) {
-          Drained -> AttemptTerminal(terminal)
-          TimedOut -> AttemptCancellationUnconfirmed
-          ProofLost -> AttemptDrainProofLost
+          Drained -> AttemptTerminal(contextual_event(terminal, context))
+          TimedOut -> AttemptCancellationUnconfirmed(context)
+          ProofLost -> AttemptDrainProofLost(context)
         },
       )
     }
     Http(http.RequestFailed(reason:)) -> {
+      let context = FailureObservation(..context, cause: TransportExit)
+
       // Mirrors on_end: a machine that has already settled (acc.done)
       // answers with no events, so this default only fires pre-settlement.
       let terminal = case forward(machine.on_failure(state, reason), deliver) {
@@ -1140,9 +1413,9 @@ fn run_loop(
       finish_outcome(
         deadline_timer,
         case finish_attempt(consumer_monitor, transport_monitor) {
-          Drained -> AttemptTerminal(terminal)
-          TimedOut -> AttemptCancellationUnconfirmed
-          ProofLost -> AttemptDrainProofLost
+          Drained -> AttemptTerminal(contextual_event(terminal, context))
+          TimedOut -> AttemptCancellationUnconfirmed(context)
+          ProofLost -> AttemptDrainProofLost(context)
         },
       )
     }
@@ -1162,6 +1435,7 @@ fn run_chunk(
   machine: ResponseMachine(state),
   state: state,
   deliver: fn(Delta) -> Nil,
+  context: FailureObservation,
   response_bytes response_bytes: Int,
   chunk chunk: BitArray,
 ) -> AttemptOutcome {
@@ -1172,8 +1446,8 @@ fn run_chunk(
         deadline_timer,
         case stop_attempt(running, consumer_monitor, transport_monitor) {
           Drained -> AttemptTerminal(response_too_large())
-          TimedOut -> AttemptCancellationUnconfirmed
-          ProofLost -> AttemptDrainProofLost
+          TimedOut -> AttemptCancellationUnconfirmed(context)
+          ProofLost -> AttemptDrainProofLost(context)
         },
       )
     False -> {
@@ -1183,9 +1457,9 @@ fn run_chunk(
           finish_outcome(
             deadline_timer,
             case stop_attempt(running, consumer_monitor, transport_monitor) {
-              Drained -> AttemptTerminal(terminal)
-              TimedOut -> AttemptCancellationUnconfirmed
-              ProofLost -> AttemptDrainProofLost
+              Drained -> AttemptTerminal(contextual_event(terminal, context))
+              TimedOut -> AttemptCancellationUnconfirmed(context)
+              ProofLost -> AttemptDrainProofLost(context)
             },
           )
         None ->
@@ -1198,6 +1472,7 @@ fn run_chunk(
             machine,
             state,
             deliver,
+            context,
             response_bytes:,
           )
       }

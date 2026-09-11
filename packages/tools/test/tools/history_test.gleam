@@ -510,3 +510,16 @@ pub fn exact_inline_json_preserves_fences_and_literal_escape_sequences_test() {
     as "an inline result must carry its complete JSON representation"
   assert json.parse(encoded) == Ok(value)
 }
+
+pub fn a_missing_search_query_returns_a_corrective_example_test() {
+  let outcome = run(unreachable(), [])
+  assert outcome.is_error
+  assert string.contains(
+    text_of(outcome),
+    "search requires {\"query\":\"words to find\"}",
+  )
+  assert string.contains(
+    text_of(outcome),
+    "action=read with session and entry IDs",
+  )
+}

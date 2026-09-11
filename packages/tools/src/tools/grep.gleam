@@ -13,6 +13,7 @@
 import broker/broker
 import broker/budget
 import broker/exec
+import broker/policy
 import core/clock
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -170,6 +171,21 @@ fn call_spec(
       list.flat_map(globs, fn(glob) { ["--glob", glob] }),
       [root],
     ])
+
+  // Native execution needs the same executable lookup as a shell. The
+  // generic read policy has no environment, so its meet used to erase PATH
+  // before stage 2 could find rg. Search carries only PATH, never the shell's
+  // credentials, and admits installed dependencies with read-only access.
+  let environment = list.filter(ctx.env, fn(pair) { pair.0 == "PATH" })
+  let requirements =
+    policy.SandboxPolicy(
+      ..tool.read_requirements(ctx.workspace),
+      readable_roots: ctx.base_policy.readable_roots,
+      env_allow: list.map(environment, fn(pair) { pair.0 }),
+      mounts: list.map(ctx.base_policy.mounts, fn(mount) {
+        policy.Mount(..mount, access: policy.MountReadOnly)
+      }),
+    )
   broker.CallSpec(
     op_id: ctx.op_id,
     step_id: ctx.step_id,
@@ -180,12 +196,12 @@ fn call_spec(
     // the network for; `rg` reads files, and least privilege says the
     // requirement stays off whatever the base allows. The meet makes the
     // off side win, so this pins the search offline on every host.
-    requirements: tool.read_requirements(ctx.workspace),
+    requirements:,
     grants: ctx.grants,
     response: broker.RefuseNarrowed,
     demand: ctx.demand,
     argv:,
-    env: ctx.env,
+    env: environment,
     cwd: ctx.workspace,
     budget: budget.Budget(
       max_outstanding: max_concurrent_searches,

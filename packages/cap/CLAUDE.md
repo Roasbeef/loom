@@ -37,6 +37,12 @@ satellite. The capability language beneath them is identical; what
 differs is where a node's authority comes from, which is the invariants
 below.
 
+The disposable runtime and resident hooks render abnormal worker exits through
+one bounded satellite-local formatter. Gleam assertion messages, failed values
+and source locations survive as ordinary failure text; monitor stacks are
+omitted. The failed value has its own formatting budget so unrelated metadata
+cannot hide the capability error. This does not grant the program a new effect.
+
 ## Key Types
 
 - `cap/report.{Outcome, Value}` — `Completed(value)` /
