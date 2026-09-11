@@ -43,12 +43,12 @@
 import client/jobs
 import client/jobseam
 import client/jobstate
-import client/jobtail
 import codemode/workspace
 import core/ids.{type OpId}
 import gleam/list
 import gleam/result
 import tools/job
+import tools/tail
 import tools/tool.{type Ctx}
 
 /// The `job_*` tools' seam over one door.
@@ -220,7 +220,7 @@ pub fn listed(from: jobs.Listed) -> job.Listed {
   )
 }
 
-fn streamed(from: jobtail.Since) -> job.Streamed {
+fn streamed(from: tail.Since) -> job.Streamed {
   job.Streamed(bytes: from.bytes, cursor: from.cursor, dropped: from.dropped)
 }
 

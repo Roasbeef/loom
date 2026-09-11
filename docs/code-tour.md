@@ -197,7 +197,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:3001`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:3159`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -614,7 +614,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:751`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2216`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2324`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -642,7 +642,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:3995`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:4153`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -724,7 +724,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1567`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:1167`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1192`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -732,10 +732,10 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:974`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:998`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:454`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:510`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a

@@ -291,6 +291,7 @@ fn wiring_config(
   let base = serve.protecting_index(policy.workspace_default(workspace), index)
   Ok(
     wiring.Config(
+      observe_output: wiring.unobserved(),
       gateway: routed_gateway(),
       role: model.Main,
       facts: fn(_identity) { Error(Nil) },
@@ -591,6 +592,7 @@ fn a_ctx() -> tool.Ctx {
     blob_root: workspace <> "/.blobs",
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
   )
 }
 

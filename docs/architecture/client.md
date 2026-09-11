@@ -783,6 +783,18 @@ to the hub on the way past. The hub broadcasts them to subscribed
 connections as `stream_delta` events with `ephemeral: true`, no seq, no
 replay, wholly superseded by the settled `entry` for the same operation.
 
+A running tool call's output takes a different route to the same kind of
+frame (`protocol-change/031`). The tool collector shows an observer the
+bounded rolling window of each stream after every chunk; `client/serve`
+supplies `gateway.tool_output_observer`, which publishes the window on the
+event bus as `ToolOutput` under the session's canonical id; the hub joins
+that one topic and pushes each event to subscribed connections as
+`tool_output`. The frame is a snapshot rather than a fragment — the whole
+window every time, at most 4 KiB — so a client replaces what it shows for
+`{op, step, source_index, stream}` and a dropped frame costs nothing. The bus rather than
+the hub's named subject is what lets a hub on another node, or a remote
+client, join the feed where it could not reach a subject.
+
 The relay is also an ownership boundary, split deliberately into three small
 processes. A minimal public custodian owns the returned handle but performs no
 provider or callback work. It releases the guard only after that public witness

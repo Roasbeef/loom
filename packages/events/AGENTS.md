@@ -21,11 +21,21 @@ WP-K.
   They render to `id:`- and `name:`-prefixed strings, disjoint by
   construction, so a caller-supplied name can never land on — or
   impersonate — an identified session's group.
-- `events/bus.{Topic, Event, Published}` — six topics (`Entries`,
-  `Operations`, `Usage`, `Strands`, `Escalations`, `Commits`) and the
-  deliberately thin events on them; `Published(session, event)` is what a
-  subscriber selects, so a subscriber joined to several sessions can tell
-  them apart.
+- `events/bus.{Topic, Event, Published}` — seven topics: six hint topics
+  (`Entries`, `Operations`, `Usage`, `Strands`, `Escalations`, `Commits`)
+  with deliberately thin events on them, and `Outputs`, whose `ToolOutput(strand,
+  op, step, source_index, call_id, stream, tail, total_bytes)` is the bounded rolling window of a
+  running tool call's output (`protocol-change/031`) — display state of the
+  same standing as `OpTransition`'s phase label, complete in every event
+  so a subscriber replaces rather than appends. `OutputStream` (`Stdout` |
+  `Stderr`) mirrors the broker's type because this package may not import
+  it. `Published(session, event)` is what a subscriber selects, so a
+  subscriber joined to several sessions can tell them apart.
+- `events/bus.{all_topics, hint_topics, subscribe_all, subscribe_hints}` —
+  `subscribe_all` joins all seven; `subscribe_hints` joins the six hint
+  topics and is what a pull-driven subscriber (the projection driver)
+  takes, so a chatty build does not wake it once per 32 KiB chunk to find
+  nothing new in the store.
 - `events/bus.bridge` — the adoption seam: turns any subscription-shaped
   event source into bus publishes without this package importing the
   runtime (the composition layer writes the mapping closure, since it is
@@ -76,8 +86,11 @@ WP-K.
   generated module imports at runtime), `gleam_erlang` + `gleam_otp`.
   `session` is declared in `gleam.toml` — the spec DAG's `K → A,B,C` — but
   nothing in `src` imports it today.
-- **Depended on by**: `client` — the gateway subscribes to the bus for
-  live hints, and `client/history` is the search service's one consumer:
+- **Depended on by**: `client` — `client/serve` is the one production
+  publisher (`gateway.tool_output_observer` publishes `ToolOutput` on the
+  `Outputs` topic, entered through the idempotent `bus.start`), the
+  gateway joins `Outputs` under network delivery and every topic as the
+  host fixture, and `client/history` is the search service's one consumer:
   a named holder actor owning one `Search`, synced from the runtime
   writer's post-commit publication and queried by the `history_search`
   tool (issue #28, memory stage M1).
@@ -115,11 +128,14 @@ WP-K.
   a deletable projection beside a session file and repairing it means removing
   it.
 
-- **Events are hints; pulls are truth.** An event never carries content
-  and is never applied as data — it only prompts a catch-up pull from the
-  durable store. Drop any subset of events and every read model still
-  converges on the next hint, sync, or restart; the lost-event tests
-  assert exactly that.
+- **Events are hints; pulls are truth.** An event never carries durable
+  content and is never applied as data — it only prompts a catch-up pull
+  from the durable store. Drop any subset of events and every read model
+  still converges on the next hint, sync, or restart; the lost-event tests
+  assert exactly that. `ToolOutput` keeps the rule by carrying display
+  state only: the whole bounded window every time, so a lost event is
+  restated by the next, and the durable tool result is the truth once the
+  call settles.
 - **A projection is rebuildable and carries no authority.** `apply` is
   pure and total, folding unknown shapes as no-ops, so folding the same
   changes in the same order from `initial` always yields the same state —

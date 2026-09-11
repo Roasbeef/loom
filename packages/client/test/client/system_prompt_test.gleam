@@ -754,6 +754,7 @@ fn op_id() -> ids.OpId {
 
 fn wiring_config(system: Option(String)) -> wiring.Config {
   wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: dead_gateway(),
     role: model.Main,
     facts: fn(_identity) { Error(Nil) },

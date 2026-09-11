@@ -90,6 +90,28 @@ pub type Update {
     text: String,
   )
 
+  /// One pushed tail of a running tool call's output. A snapshot of the
+  /// window rather than a fragment, so the renderer replaces what it holds
+  /// for `{operation, step, source_index, stream}` instead of appending.
+  ToolStreamed(
+    /// The strand whose call is printing.
+    strand: String,
+    /// The operation the call belongs to.
+    operation: String,
+    /// The step within the operation.
+    step: String,
+    /// The call's index within its step.
+    source_index: Int,
+    /// Provider call identity echoed by its durable result.
+    call_id: String,
+    /// `stdout` or `stderr`.
+    stream: String,
+    /// The whole retained window, sanitized later.
+    text: String,
+    /// How many bytes the stream has carried in all.
+    total_bytes: Int,
+  )
+
   /// One commit notice this lane received, whatever it went on to do with
   /// it. A notice for a sequence already held issues nothing, and a notice
   /// whose catch-up the idle refresh had already started paints under
@@ -532,6 +554,31 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
         Streamed(strand:, operation:, generation:, kind:, text:),
       ],
     )
+
+    // A running call's tail is the same kind of thing as a delta — live
+    // display state the daemon pushed and no cut will ever carry — so it
+    // takes the same route to the renderer and touches nothing else.
+    protocol.ToolOutput(
+      strand:,
+      operation:,
+      step:,
+      source_index:,
+      call_id:,
+      stream:,
+      text:,
+      total_bytes:,
+    ) -> #(channel, [
+      ToolStreamed(
+        strand:,
+        operation:,
+        step:,
+        source_index:,
+        call_id:,
+        stream:,
+        text:,
+        total_bytes:,
+      ),
+    ])
 
     // A pushed error reports a failure the daemon had on this terminal's
     // behalf — a held prompt that could not be admitted when its turn came.

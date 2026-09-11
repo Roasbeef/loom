@@ -1729,6 +1729,7 @@ fn live_ctx(
     blob_root: workspace <> "/.blobs",
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
   )
 }
 

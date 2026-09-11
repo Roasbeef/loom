@@ -26,6 +26,7 @@ import core/ids
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import simplifile
+import tools/tool
 
 const t = 1_700_000_000_000
 
@@ -237,6 +238,7 @@ fn prepare_seed(seed_root: String) -> Nil {
 
 fn build_config(seed_root: String) -> build.BuildConfig {
   build.BuildConfig(
+    observe: tool.ignore_output(),
     broker: idle_broker(),
     seed_root:,
     gleam_path: "/usr/local/bin/gleam",

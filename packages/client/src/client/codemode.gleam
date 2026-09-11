@@ -2658,6 +2658,7 @@ pub fn build_config(
     env: [#("PATH", config.toolchain_path)],
     dependencies: compile.default_dependencies(),
     timeout_ms: config.build_timeout_ms,
+    observe: request.observe_output,
   )
 }
 

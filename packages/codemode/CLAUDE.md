@@ -271,7 +271,11 @@ session and sends it many invocations.
 - `codemode/build.BuildConfig` — the production `Builder`: `gleam build
   --warnings-as-errors` inside a network-off jail, then the flattened
   `.beam` set and its content address. Carries no operation, step,
-  budget or grants.
+  budget or grants. Its `observe` seam is shown the build's rolling
+  output tail after every chunk (`tools/tool.collect_observed`); the
+  `code_mode` tool passes its `Ctx.observe_output` through
+  `Request.observe_output`, so a compile streams the compiler's lines to a
+  watching terminal the way a `bash` call does (`protocol-change/031`).
 - `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
   the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
   own `{op_id, step_id}`. Its `host_mounts` field carries the filesystem

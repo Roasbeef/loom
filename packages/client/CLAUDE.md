@@ -34,7 +34,7 @@ catalogue without opening runtimes. Explicit admission invokes
 - `provider_relay` retains its initiating deadline, cancellation receipt, or
   observer exit in `Relay.context` through the existing cancellation and proof
   states. Startup refusal records cancellation receipt too. Forwarded failures
-  retain protocol 028 context; no diagnostic can certify owner retirement.
+  retain protocol 031 context; no diagnostic can certify owner retirement.
 
 - Failed or stopped Agency waits preserve their terminal outcome and expose
   saved observations as explicitly labelled partial reports. A missing final
@@ -261,10 +261,15 @@ catalogue without opening runtimes. Explicit admission invokes
   `Error(Nil)` when no hub incarnation is bound; the WebSocket transport
   closes that attachment rather than retaining an invented connection ID.
 - `client/gateway.{commit_forwarder, supervised_commit_forwarder,
-  tap_provider}` — the two composition-layer seams: the runtime writer's
-  post-commit publication becomes a pull hint, and an injected
-  `effects.ProviderSurface` is wrapped so provider deltas tee to the hub
-  while the runtime's effect process consumes the stream unchanged. The
+  tap_provider, tool_output_observer, with_bus}` — the composition-layer
+  seams: the runtime writer's post-commit publication becomes a pull
+  hint; an injected `effects.ProviderSurface` is wrapped so provider
+  deltas tee to the hub while the runtime's effect process consumes the
+  stream unchanged; and `tool_output_observer(bus, session)` is the
+  `wiring.Config.observe_output` resolver that publishes each running
+  call's output window on the bus as `ToolOutput` under the session's
+  canonical id, which the hub — given the same bus by `with_bus` — pushes
+  to subscribed peers as `tool_output` (`protocol-change/031`). The
   wrapper forwards explicit cancellation and monitors that effect process;
   either cancellation or consumer death tears down the inner handle. The
   forwarder binds a reclaimable Weft reference address. The writer's
@@ -1204,21 +1209,15 @@ catalogue without opening runtimes. Explicit admission invokes
   *immediately preceding* slot's fired-mark is missing, never by
   comparing the current time against a boundary computed from that same
   current time, which is always trivially on-time by construction.
-- `client/jobtail.{Tail, Since, new, push, since, received}` — a pure,
-  bounded rolling window over one stream with a monotone byte cursor. No
-  process, no I/O. `push` drops from the front past the capacity;
-  `since(cursor)` answers with what arrived after the cursor, the cursor
-  to ask with next, and how many bytes fell out of the window in
-  between — so a reader that fell behind is *told* rather than handed a
-  plausible-looking window. Both edges respect UTF-8, and the subtle
-  half is the trailing one: a slice ending mid-character holds those
-  bytes back for the next poll, but "ends mid-character" and "is not
-  UTF-8 at all" look identical to a decoder asked about a whole slice,
-  so the question is asked of the last character's *lead byte* instead.
-  A lead whose character does not fit waits; a byte that leads no
-  character is binary output and goes out as it is, because a tail that
-  could not tell the two apart would answer every poll of a
-  binary-output job with nothing, forever.
+- `tools/tail.{Tail, Since, new, push, since, received}` — the pure,
+  bounded rolling window over one stream with a monotone byte cursor that
+  the job runner holds per stream. It lived here as `client/jobtail` until
+  the foreground tool collector needed the same primitive
+  (`protocol-change/031`); `packages/tools/CLAUDE.md` now documents it.
+  What the runner relies on is unchanged: `since(cursor)` tells a reader
+  that fell behind how much it missed rather than handing it a
+  plausible-looking window, and binary output goes out rather than being
+  held back forever waiting for a character boundary.
 - `client/jobs.{JobsPolicy, Request, Started, Cursors, Polled,
   Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
@@ -1229,7 +1228,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `client/extension/hosts`, and one weft runner per job. The actor owns
   the durable `job/<id>` record, the per-strand ceiling of four, and the
   closures that cancel and write stdin; the runner owns the jailed
-  execution, the two `client/jobtail` windows and the staging files.
+  execution, the two `tools/tail` windows and the staging files.
   **The runner and not the actor calls the broker**, and two clauses of
   the broker's contract force it: `clear_call` waits out a full helper
   pool in the *caller's* process, so an actor that cleared would stop
@@ -2096,10 +2095,10 @@ build plane masks them where the jail can build the mask.
   `events/bus` subscriptions, and `tap_provider`'s wrapper. The hub's bus
   subscription is keyed by the session's **canonical id**
   (`bus.key(of: api.session_id(runtime))`), never by the caller-supplied
-  display name; `client/serve` supplies no bus, so nothing exercises it
-  today, but a host whose hint sources are not all its own writer needs
-  the key that identified publishers actually use
-  (`protocol-change/008`).
+  display name (`protocol-change/008`). Under network delivery the hub
+  joins the `Outputs` topic alone and turns each `ToolOutput` into a
+  pushed `tool_output` frame without pulling; every other `BusHint` is a
+  pull. The host fixture joins every topic.
 - `history.Message` — `Pull` (a cast: a commit landed, go sync),
   `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
   limit, scope, reply)` (a call, from the tool seam), and `Stop`.
@@ -2250,13 +2249,18 @@ build plane masks them where the jail can build the mask.
   phase still converges — overlap and gaps are resolved by seq dedup, as
   the protocol already requires.
 - **The writer's post-commit publication is production's hint source,
-  and `serve` supplies no bus** (issue #8's aside, decided). A
-  one-session server's writer and hub share a VM, so
-  `commit_forwarder` already carries every commit; adding a bus
-  subscription would trigger the same pull twice. `Options.bus` remains
-  for a host whose hints are not all its own writer's — a projection, a
-  second node's session, telemetry — which is what `events/bus.bridge`
-  exists to feed.
+  and the hub joins no hint topic under network delivery** (issue #8's
+  aside, decided). A one-session server's writer and hub share a VM, so
+  `commit_forwarder` already carries every commit; a bus subscription to
+  the hint topics would trigger the same pull twice. `serve` does supply
+  a bus since `protocol-change/031`, for the one topic that is not a
+  hint: `Outputs`, the rolling tails of running tool calls, published by
+  `gateway.tool_output_observer` from the effect wiring and relayed as
+  `tool_output` frames. The scope is entered with the idempotent
+  `bus.start` because one daemon assembles many sessions. The host
+  fixture still joins every topic, which is the shape a host whose hints
+  are not all its own writer's — a projection, a second node's session,
+  telemetry — takes, with `events/bus.bridge` as the seam that feeds it.
 - **Live materialization is a pull, never an apply.** Both the writer's
   post-commit publication and any bus publication merely trigger a pull
   from storage above the hub's high-water seq; a lost hint costs latency,

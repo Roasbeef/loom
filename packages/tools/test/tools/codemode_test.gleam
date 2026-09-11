@@ -14,6 +14,7 @@
 import broker/broker.{type CallEvent, type CallSpec, type Refusal}
 import broker/escalation
 import broker/exec
+import broker/framing
 import broker/policy
 import core/clock
 import core/ids.{type OpId}
@@ -52,6 +53,7 @@ fn ctx_for(step: String) -> Ctx {
     blob_root: workspace <> "/.blobs",
     clear_call: dead_broker,
     raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
   )
 }
 
@@ -1254,4 +1256,27 @@ pub fn an_execution_with_nothing_refused_never_asks_test() {
     )
   assert !outcome.is_error
   assert drained(asked, []) == []
+}
+
+pub fn request_carries_the_callers_output_observer_test() {
+  // The hermetic build is the longest jailed stage a terminal waits on,
+  // so the request must hand the tool's observer down to it rather than
+  // leaving the build to watch nothing.
+  let observed = process.new_subject()
+  let ctx =
+    tool.Ctx(..ctx_for("turn-1:tools"), observe_output: fn(observed_tail) {
+      process.send(observed, observed_tail)
+    })
+  let request =
+    codemode.request(
+      echoing(),
+      ctx,
+      "pub fn main() {}",
+      option.None,
+      on: codemode.WorkspaceSeam,
+    )
+  let seen =
+    tool.OutputTail(stream: framing.Stdout, tail: "compiling", total_bytes: 9)
+  request.observe_output(seen)
+  assert process.receive(observed, 100) == Ok(seen)
 }

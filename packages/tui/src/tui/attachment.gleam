@@ -378,8 +378,9 @@ fn apply_updates(candidate: Candidate, updates) {
     // notice says the same thing about durable state and is dropped for the
     // same reason: the candidate's own capture is already fetching it. The
     // adopted lane, not this one, is where notices are worth counting.
-    [channel.Streamed(..), ..rest] | [channel.Noticed(_), ..rest] ->
-      apply_updates(candidate, rest)
+    [channel.Streamed(..), ..rest]
+    | [channel.ToolStreamed(..), ..rest]
+    | [channel.Noticed(_), ..rest] -> apply_updates(candidate, rest)
     [channel.Auxiliary(_), ..]
     | [channel.RequestRefused(..), ..]
     | [channel.Submission(_), ..]

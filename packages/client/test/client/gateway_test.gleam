@@ -19,6 +19,7 @@ import core/json
 import core/message
 import core/register
 import core/tx
+import events/bus
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -151,13 +152,33 @@ fn start_harness_full(
   registry: Option(tool.Registry),
   schedules: Option(scheduleadmin.Admin),
 ) -> Harness {
-  start_harness_reserved(catalogue, registry, schedules, None, SettlingProvider)
+  start_harness_reserved(
+    catalogue,
+    registry,
+    schedules,
+    None,
+    SettlingProvider,
+    None,
+  )
+}
+
+// The host whose hub listens on an event bus, so a tail published there
+// can be watched arriving at the attached client as a pushed frame.
+fn start_harness_on_bus(events_bus: bus.Bus) -> Harness {
+  start_harness_reserved(
+    None,
+    None,
+    None,
+    None,
+    SettlingProvider,
+    Some(events_bus),
+  )
 }
 
 /// Builds the same scripted gateway against a daemon-reserved canonical ID.
 @internal
 pub fn reserved_fixture(id: ids.SessionId) -> Harness {
-  start_harness_reserved(None, None, None, Some(id), SettlingProvider)
+  start_harness_reserved(None, None, None, Some(id), SettlingProvider, None)
 }
 
 // The provider a harness runs its runs against. The default settles the
@@ -176,6 +197,7 @@ fn start_harness_reserved(
   schedules,
   reserved,
   provider: Provider,
+  on_bus: Option(bus.Bus),
 ) -> Harness {
   let assert Ok(session) =
     session.open_memory(clock.stepping(from: 1_756_000_000_000, by: 3))
@@ -300,6 +322,10 @@ fn start_harness_reserved(
   }
   let options = case schedules {
     Some(admin) -> gateway.with_schedules(options, admin)
+    None -> options
+  }
+  let options = case on_bus {
+    Some(events_bus) -> gateway.with_bus(options, events_bus)
     None -> options
   }
   let assert Ok(_started) = case reserved {
@@ -766,6 +792,126 @@ fn subscribe(harness: Harness) -> Nil {
   let assert protocol.SnapshotEvent(protocol.FullSnapshot(..)) = envelope.event
     as "subscribe must reply with a full snapshot"
   Nil
+}
+
+// --- running tool output ---------------------------------------------------
+
+/// `protocol-change/031`: a tail published on the session's `Outputs`
+/// topic reaches a subscribed peer as a pushed `tool_output` frame — no
+/// `reply_to`, no `seq`, the whole window as published — keyed by the
+/// runtime's canonical session id on both sides.
+pub fn tool_output_on_the_bus_is_pushed_to_subscribed_peers_test() {
+  let events_bus = bus.start()
+  let harness = start_harness_on_bus(events_bus)
+  subscribe(harness)
+  let #(op, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 1), seed: 11))
+  bus.publish(
+    events_bus,
+    session: bus.key(of: api.session_id(harness.runtime)),
+    event: bus.ToolOutput(
+      strand: "sub:1",
+      op:,
+      step: "step-2",
+      source_index: 1,
+      call_id: "call-sub-1",
+      stream: bus.Stderr,
+      tail: "warning: unused\n",
+      total_bytes: 16,
+    ),
+  )
+  let envelope = next_tool_output(harness, 8)
+  assert envelope.reply_to == None
+  assert envelope.seq == None
+  assert envelope.event
+    == protocol.ToolOutputEvent(
+      strand: "sub:1",
+      op: ids.op_id_to_string(op),
+      step: "step-2",
+      source_index: 1,
+      call_id: "call-sub-1",
+      stream: protocol.Stderr,
+      tail: "warning: unused\n",
+      total_bytes: 16,
+    )
+}
+
+/// The production hub is a *network* hub, and it joins `Outputs` alone —
+/// so the branch the host fixture above does not reach is the one the
+/// shipped daemon runs. A network socket subscribes, a tail is published
+/// under the canonical key, and the socket is pushed the frame with no
+/// `reply_to` and no `seq`; a hub that had joined the wrong topic, or none,
+/// would push nothing here.
+pub fn a_network_hub_pushes_tool_output_from_its_outputs_subscription_test() {
+  let events_bus = bus.start()
+  let harness =
+    start_harness_reserved(
+      None,
+      None,
+      None,
+      Some(network_fixture_id()),
+      SettlingProvider,
+      Some(events_bus),
+    )
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let #(op, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 1), seed: 12))
+  bus.publish(
+    events_bus,
+    session: bus.key(of: api.session_id(harness.runtime)),
+    event: bus.ToolOutput(
+      strand: "main",
+      op:,
+      step: "step-1",
+      source_index: 0,
+      call_id: "call-main-1",
+      stream: bus.Stdout,
+      tail: "compiling core\n",
+      total_bytes: 15,
+    ),
+  )
+  let envelope = next_on(inbox)
+  assert envelope.reply_to == None
+  assert envelope.seq == None
+  assert envelope.event
+    == protocol.ToolOutputEvent(
+      strand: "main",
+      op: ids.op_id_to_string(op),
+      step: "step-1",
+      source_index: 0,
+      call_id: "call-main-1",
+      stream: protocol.Stdout,
+      tail: "compiling core\n",
+      total_bytes: 15,
+    )
+
+  // Nothing follows the frame. This proves the tail arrived alone rather
+  // than that no pull happened — a pull over an unchanged store would
+  // also push nothing — but the frame's exact shape above already does
+  // the load-bearing work: only the `ToolOutput` arm can produce it.
+  assert process.receive(inbox, within: 100) == Error(Nil)
+}
+
+// The first `tool_output` frame, skipping whatever the subscribe left
+// behind it on the shared sink; `remaining` bounds the skip.
+fn next_tool_output(
+  harness: Harness,
+  remaining: Int,
+) -> protocol.EventEnvelope {
+  let envelope = next(harness)
+  case envelope.event, remaining > 0 {
+    protocol.ToolOutputEvent(..), _ -> envelope
+    _, True -> next_tool_output(harness, remaining - 1)
+    _, False -> panic as "a pushed tool_output frame must arrive"
+  }
 }
 
 // --- who is attached -------------------------------------------------------
@@ -3103,6 +3249,7 @@ fn parked_network_harness(gate: Subject(GateMessage)) -> Harness {
     None,
     Some(network_fixture_id()),
     ScriptedProvider(parked_provider(gate)),
+    None,
   )
 }
 

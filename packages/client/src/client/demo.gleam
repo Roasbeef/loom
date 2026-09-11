@@ -1327,6 +1327,7 @@ fn compaction_wiring(
     |> result.map_error(contributions.collision_message),
   )
   Ok(wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: demo_gateway(),
     role: model.Main,
     // No catalogue in the demo: every identity takes the fallback

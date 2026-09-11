@@ -130,6 +130,7 @@ fn memory_session() -> session.Session {
 fn config(base_policy: policy.SandboxPolicy) -> wiring.Config {
   let workspace = workspace()
   wiring.Config(
+    observe_output: wiring.unobserved(),
     gateway: routed_gateway(),
     role: model.Main,
     facts: entry_facts,

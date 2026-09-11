@@ -94,8 +94,8 @@ numeric gap does not by itself mean an event was lost.
 Source: (`client/gateway.gleam:103-108`).
 
 `snapshot`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`,
-`stream_delta`, `mutation_outcome`, `presence` and `error` carry no
-`seq`.
+`stream_delta`, `tool_output`, `mutation_outcome`, `presence` and `error`
+carry no `seq`.
 
 ### 1.5 Forward compatibility
 
@@ -1076,7 +1076,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1422-1430`).
+`wrong_session`. Source: (`client/gateway.gleam:1538-1430`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:851`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:876`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1338,7 +1338,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4667-4632`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4825-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -1676,8 +1676,8 @@ Over the authenticated session transport a client sees:
 - mutation replies: `mutation_outcome`;
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
   `queued_input`, `live_jobs`, or pending `worktree_diff`;
-- pushed frames: `committed`, `stream_delta`, `presence`, `snapshot`
-  with mode `config` or final `worktree_diff`, and `error`;
+- pushed frames: `committed`, `stream_delta`, `tool_output`, `presence`,
+  `snapshot` with mode `config` or final `worktree_diff`, and `error`;
 - refusals: `error` with `reply_to`.
 
 `snapshot` with mode `full`, `resume` or `strands`, and the durable
@@ -2278,14 +2278,44 @@ The code set is open. A client MUST display an unknown code rather than
 closing the connection. Section 7 lists every code the current server
 produces.
 
+### 5.18 `tool_output`
+
+```json
+{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","source_index":0,"ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `strand` | string | required | Strand whose tool call is printing. |
+| `op` | string | required | Operation the call belongs to. |
+| `step` | string | required | Step within the operation; one call batch. |
+| `source_index` | integer | required | The call's index within its step; every call of a batch shares `{op, step}`, so this tells two printing calls apart. |
+| `ephemeral` | boolean | required | Always `true`. |
+| `stream` | string | required | `stdout` or `stderr`. |
+| `tail` | string | required | The whole retained window of that stream after its latest chunk. |
+| `total_bytes` | integer | required | Bytes the stream has carried in all. |
+
+The rolling tail of a tool call that is still running
+([protocol 031](../protocol-change/031-tool-output-stream.md)). Pushed
+unsolicited to every subscribed connection while the call runs; never
+persisted, never seq'd, never replayed; wholly superseded by the settled
+tool-result `entry` for the same `op`. Unlike a `stream_delta` the frame
+is a snapshot and not a fragment: `tail` is at most 4096 bytes, begins
+and ends on a UTF-8 character boundary, and is empty when the window
+holds bytes that are not text. A client MUST replace what it shows for
+`{op, step, source_index, stream}` rather than append, which is also what makes a
+dropped frame cost nothing the next one does not restate. `total_bytes`
+beside a short `tail` is how a client tells a window that is the whole
+output from one that is its last few kilobytes.
+
 ---
 
 ## 6. Pushed frames and client obligations
 
 ### 6.1 What may arrive uncorrelated
 
-On the session endpoint: `committed`, `stream_delta`, `presence`,
-`snapshot` with mode `config`, and `error`.
+On the session endpoint: `committed`, `stream_delta`, `tool_output`,
+`presence`, `snapshot` with mode `config`, and `error`.
 Source: (`client/protocol.gleam:475-482`).
 
 On the control endpoint: `hello`, once, before anything else.
@@ -2464,6 +2494,7 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Held normal inputs per strand | 4 | `prompt`, `prompt_content`, `follow_up` |
 | Held priority inputs per strand | 4 | `steer` |
 | Stream delta text | 24576 bytes | `stream_delta` |
+| Tool output tail | 4096 bytes per stream | `tool_output.tail` |
 | Escalation preview | 2048 bytes | `escalation.preview` |
 | Session listing page | 60000 bytes | `sessions.list` |
 | Simultaneous connections | 64 | The daemon |
@@ -2726,7 +2757,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2756`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2865`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**

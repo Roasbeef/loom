@@ -134,6 +134,7 @@ fn request_widened(
     env: [#("PATH", "/usr/bin")],
     within_ms: 60_000,
     grants:,
+    observe_output: tool.ignore_output(),
   )
 }
 
@@ -754,6 +755,7 @@ fn ctx_for(workspace: String) -> tool.Ctx {
     blob_root: workspace <> "/.blobs",
     clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
   )
 }
 

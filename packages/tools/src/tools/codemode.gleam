@@ -222,6 +222,11 @@ pub type Request {
     /// and folding grants into `base_policy` would be a second widening
     /// path that also reaches the hermetic build.
     grants: List(Grant),
+    /// Who watches the execution's jailed stages print while they run.
+    /// The tool's own `Ctx.observe_output`, carried so the hermetic build
+    /// — a long compile with nothing else to show — streams its tail to
+    /// a watching terminal the way a `bash` call does (issue #186).
+    observe_output: fn(tool.OutputTail) -> Nil,
   )
 }
 
@@ -960,6 +965,7 @@ pub fn request(
     demand: ctx.demand,
     env: ctx.env,
     grants: ctx.grants,
+    observe_output: ctx.observe_output,
     within_ms: int.clamp(
       option.unwrap(within_ms, mode.default_within_ms),
       min: 1,

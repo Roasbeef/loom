@@ -24,7 +24,11 @@ An event on the bus never carries the thing that changed. It carries an id,
 a seq, and sometimes a display label, and it means only *go look*. Every
 read model converges by scanning the store from a cursor it persisted
 itself, so an event that never arrives costs a subscriber some latency and
-nothing else. Drop every event and each read model still converges on its
+nothing else. The one topic that carries text — `Outputs`, the rolling tail
+of a running tool call — keeps the rule by carrying display state of the
+same standing as a phase label: a bounded window a terminal draws and
+nothing acts on, complete in every event, superseded by the durable tool
+result when the call settles (`protocol-change/031`). Drop every event and each read model still converges on its
 next hint, its next explicit sync, or its next restart; the package's
 lost-event tests publish a hint for one commit in three and assert that the
 projection ends equal to a rebuild from zero.
@@ -57,7 +61,7 @@ local ETS speed. The session key is a caller-supplied string — `core`
 defines no session-id type, and the gateway's canonical identifier is still
 an open question recorded in `docs/spec-gaps.md`.
 
-There are six topics and six event shapes, one shape per topic:
+There are seven topics and seven event shapes, one shape per topic:
 
 | Topic | Event | Carries |
 |---|---|---|
@@ -67,6 +71,7 @@ There are six topics and six event shapes, one shape per topic:
 | `Strands` | `StrandResult(strand)` | the strand's name |
 | `Escalations` | `Escalation(op, description)` | an operation id and display text |
 | `Commits` | `Committed(seqs, ts)` | the seqs one transaction consumed |
+| `Outputs` | `ToolOutput(strand, op, step, source_index, call_id, stream, tail, total_bytes)` | a running call's bounded output window |
 
 Three of these shadow a register, and in each case the register is the
 truth. `phase` is a word to put in a progress line, not a machine state —
@@ -77,8 +82,16 @@ to show a human; the durable escalation record under the reserved
 `StrandResult` names the strand that settled and never its result. A
 subscriber that reads any of these as data has already lost.
 
+Six of the seven are hints that durable state moved; `Outputs` is a live
+display feed, and the two are joined differently. `hint_topics` names the
+six and `subscribe_hints` joins them, which is what a pull-driven
+subscriber wants: a projection driver joined to `Outputs` as well would be
+woken once per 32 KiB chunk of every running command to find nothing new
+in the store. `subscribe_all` still means all seven, and is what the host
+fixture hub takes.
+
 Because each event belongs to exactly one topic, a process subscribed to
-all six receives each event once. Subscribing joins the *calling* process,
+all seven receives each event once. Subscribing joins the *calling* process,
 and `pg` cleans the membership up through its own monitor when that process
 dies. `subscriber_count` is an ETS lookup, good for a test or a diagnostic
 and never for a decision, since membership moves underneath it.
@@ -114,17 +127,24 @@ is the composition layer's problem, not a solved one.
 
 ### Who is on the bus today
 
-The client gateway subscribes to every topic of its session, discards each
-payload, and uses the arrival to pull from storage above its own high-water
-seq. A projection driver configured with `FromBus` does the same. Those are
-the only subscribers.
+The shipped daemon's gateway joins the `Outputs` topic of its session and
+relays each `ToolOutput` to every subscribed connection as a pushed
+`tool_output` frame (`protocol-change/031`). It joins nothing else under
+network delivery: its commit hints arrive from the runtime writer through
+`gateway.commit_forwarder`, and a bus subscription to the hint topics would
+make the same pull happen twice per commit. The host fixture hub joins
+every topic, discards each hint's payload, and uses the arrival to pull
+from storage above its own high-water seq; a projection driver configured
+with `FromBus` joins the six hint topics and does the same.
 
-There is no production publisher. `client/serve` wires the gateway's hints
-straight from the runtime writer through `gateway.commit_forwarder`, and
-`gateway.default_options` sets `bus: None`. The bridge exists, and it is
-tested, but no composition has yet run the writer's publication through it.
-The bus as built is a working mechanism with one live consumer path and
-no live producer.
+The one production publisher is the effect wiring. `client/serve` supplies
+`gateway.tool_output_observer` as `wiring.Config.observe_output`, and the
+tool collector (`tools/tool.collect_observed`) shows it the bounded rolling
+window of each output stream after every chunk it folds; the observer
+publishes the window under the session's canonical key. Nothing publishes
+a hint yet: the bridge exists and is tested, but no composition has run the
+writer's publication through it, so the hint half of the bus is still a
+working mechanism with consumers and no producer.
 
 The bus inherits `pg`'s ambience. `bus.start` is public and idempotent, and
 any process on the node can join any session's groups or publish forged

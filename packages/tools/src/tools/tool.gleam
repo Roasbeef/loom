@@ -13,10 +13,12 @@
 ////
 //// `Ctx` carries every effect seam a tool may touch: the workspace
 //// root, the injected clock, a `FileSystem` record of functions, the
-//// blob-overflow directory, and the broker seam (`clear_call`) through
-//// which every jailed execution flows. Production wires the seams to
-//// simplifile and a live `broker.Broker` (`broker_runner`); tests wire
-//// fakes and the tools cannot tell the difference.
+//// blob-overflow directory, the broker seam (`clear_call`) through
+//// which every jailed execution flows, and the observer
+//// (`observe_output`) a running execution's output tail is shown to.
+//// Production wires the seams to simplifile, a live `broker.Broker`
+//// (`broker_runner`) and the event bus; tests wire fakes and the tools
+//// cannot tell the difference.
 ////
 //// The registry is a name → `Tool` lookup; dispatching an unknown name
 //// yields the ordinary in-band unavailable-tool error result (pi §3.8:
@@ -40,7 +42,9 @@ import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
+import tools/tail.{type Tail}
 
 /// Whether a tool execution that crashed mid-flight may be re-executed
 /// on recovery (pi §3.8: the `replay` field committed with
@@ -258,7 +262,57 @@ pub type Ctx {
     /// other than `clear_call`, and says what the host decided about it.
     /// `no_raise()` for a host with no escalation plane.
     raise_refusal: fn(RaisedRefusal) -> Escalated,
+    /// The observation seam: shown the rolling tail of a running
+    /// execution's output after every chunk, so a terminal can watch a
+    /// command while it runs rather than after (issue #186). Production
+    /// publishes it on the event bus; `ignore_output()` for a host with
+    /// nobody watching, and for tests that are about something else.
+    observe_output: fn(OutputTail) -> Nil,
   )
+}
+
+/// What one stream of a running execution looks like right now.
+///
+/// Every value is a complete snapshot rather than a fragment: `tail` is
+/// the whole retained window as it stands after the latest chunk, so an
+/// observer replaces what it shows and a dropped observation costs
+/// nothing the next one does not restate. That is the property that
+/// lets the production observer be a lossy bus publish. `total_bytes`
+/// counts everything the stream has carried, which is how a reader
+/// tells a window that *is* the output from one that is its last few
+/// kilobytes.
+pub type OutputTail {
+  OutputTail(
+    /// Which of the execution's two streams this is.
+    stream: framing.OutputStream,
+    /// The retained window, at most `tail_bytes` long, beginning and
+    /// ending on a character boundary. Empty when the window holds bytes
+    /// that are not UTF-8: a binary stream has no text to show, and the
+    /// byte count beside it still says the command is producing output.
+    tail: String,
+    /// How many bytes the stream has carried in total.
+    total_bytes: Int,
+  )
+}
+
+/// How many bytes of each stream a running execution's tail retains
+/// between observations. Four kilobytes is a terminal's worth of recent
+/// lines; the bound is what keeps a chatty build from turning the
+/// display feed into a second copy of its whole log.
+pub const tail_bytes = 4096
+
+/// An observer that watches nothing: every chunk still folds into the
+/// collected result, and no tail leaves the collector. The default for a
+/// host with no terminal attached, and for tests about something else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.ignore_output()(observed) == Nil
+/// ```
+///
+pub fn ignore_output() -> fn(OutputTail) -> Nil {
+  fn(_observed) { Nil }
 }
 
 /// Whether the run this call belongs to carries on after the reply is
@@ -922,53 +976,147 @@ pub type Collected {
 /// each receive by `waiting` milliseconds. `Error(Nil)` means the
 /// broker broke its exactly-one-settlement contract within the window —
 /// callers should cancel and settle as an in-band failure.
+///
+/// Nothing watches the stream while it runs; a caller with a `Ctx` to
+/// hand its observer over uses `collect_observed`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.collect_events(events, waiting: timeout + settle_grace_ms)
+/// ```
+///
 pub fn collect_events(
   events: Subject(CallEvent),
   waiting timeout: Int,
 ) -> Result(Collected, Nil) {
-  collect_loop(events, timeout, [], [], False, False)
+  collect_observed(events, waiting: timeout, observe: ignore_output())
+}
+
+/// `collect_events`, showing `observe` each stream's rolling tail after
+/// every chunk it folds. The tail is bounded at `tail_bytes` per stream
+/// whatever the call prints, and the observation is made before the next
+/// receive, so a watching terminal sees a chunk as soon as the collector
+/// does rather than when the call settles — which is the whole distance
+/// between "the build is running" and a blank screen for two minutes
+/// (issue #186).
+///
+/// The observer runs on the collecting process and inside its receive
+/// window, so it must be cheap and must not block: the production one
+/// is a fire-and-forget bus publish.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool.collect_observed(events, waiting:, observe: ctx.observe_output)
+/// ```
+///
+pub fn collect_observed(
+  events: Subject(CallEvent),
+  waiting timeout: Int,
+  observe observe: fn(OutputTail) -> Nil,
+) -> Result(Collected, Nil) {
+  let tails =
+    Tails(
+      stdout: tail.new(capacity: tail_bytes),
+      stderr: tail.new(capacity: tail_bytes),
+    )
+  collect_loop(events, timeout, observe, Gathering([], [], False, False, tails))
+}
+
+// The two rolling windows a collector shows its observer.
+type Tails {
+  Tails(stdout: Tail, stderr: Tail)
+}
+
+// Everything the collector holds between chunks: both streams' chunks in
+// arrival order (reversed), whether the helper has truncated either at
+// its output cap, and the bounded windows the observer is shown.
+type Gathering {
+  Gathering(
+    stdout: List(BitArray),
+    stderr: List(BitArray),
+    stdout_truncated: Bool,
+    stderr_truncated: Bool,
+    tails: Tails,
+  )
 }
 
 fn collect_loop(
   events: Subject(CallEvent),
   timeout: Int,
-  stdout: List(BitArray),
-  stderr: List(BitArray),
-  stdout_truncated: Bool,
-  stderr_truncated: Bool,
+  observe: fn(OutputTail) -> Nil,
+  gathering: Gathering,
 ) -> Result(Collected, Nil) {
   case process.receive(events, timeout) {
-    Ok(broker.CallOutput(stream:, data:, total_bytes: _, truncated:)) ->
-      case stream {
-        framing.Stdout ->
-          collect_loop(
-            events,
-            timeout,
-            [data, ..stdout],
-            stderr,
-            stdout_truncated || truncated,
-            stderr_truncated,
-          )
-        framing.Stderr ->
-          collect_loop(
-            events,
-            timeout,
-            stdout,
-            [data, ..stderr],
-            stdout_truncated,
-            stderr_truncated || truncated,
-          )
-      }
+    // One chunk: fold it, then show the observer the window it made
+    // before waiting for the next. A chunk observed after the next
+    // receive would arrive a chunk late at every terminal.
+    Ok(broker.CallOutput(stream:, data:, total_bytes: _, truncated:)) -> {
+      let gathering = absorb(gathering, stream, data, truncated)
+      observe(observed(gathering.tails, stream))
+      collect_loop(events, timeout, observe, gathering)
+    }
+
     Ok(broker.CallSettled(outcome:)) ->
       Ok(Collected(
-        stdout: bit_array.concat(list.reverse(stdout)),
-        stderr: bit_array.concat(list.reverse(stderr)),
-        stdout_truncated:,
-        stderr_truncated:,
+        stdout: bit_array.concat(list.reverse(gathering.stdout)),
+        stderr: bit_array.concat(list.reverse(gathering.stderr)),
+        stdout_truncated: gathering.stdout_truncated,
+        stderr_truncated: gathering.stderr_truncated,
         outcome:,
       ))
     Error(Nil) -> Error(Nil)
   }
+}
+
+// One chunk into its stream's chunk list and rolling window. The
+// truncation flag is sticky: the helper reports it on the chunk that hit
+// the cap, and the collected result must still say so at settlement.
+fn absorb(
+  gathering: Gathering,
+  stream: framing.OutputStream,
+  data: BitArray,
+  truncated: Bool,
+) -> Gathering {
+  let tails = gathering.tails
+  case stream {
+    framing.Stdout ->
+      Gathering(
+        ..gathering,
+        stdout: [data, ..gathering.stdout],
+        stdout_truncated: gathering.stdout_truncated || truncated,
+        tails: Tails(..tails, stdout: tail.push(tails.stdout, data)),
+      )
+    framing.Stderr ->
+      Gathering(
+        ..gathering,
+        stderr: [data, ..gathering.stderr],
+        stderr_truncated: gathering.stderr_truncated || truncated,
+        tails: Tails(..tails, stderr: tail.push(tails.stderr, data)),
+      )
+  }
+}
+
+// The observation for one stream as its window stands now.
+//
+// `since(_, 0)` asks for everything the window still holds: the front
+// was trimmed onto a character boundary by `push` and the slice stops at
+// the last complete character, so a UTF-8 stream always converts. A
+// window that does not convert holds bytes that are not text, and the
+// honest display is no text with a byte count that keeps moving.
+fn observed(tails: Tails, stream: framing.OutputStream) -> OutputTail {
+  let window = case stream {
+    framing.Stdout -> tails.stdout
+    framing.Stderr -> tails.stderr
+  }
+  OutputTail(
+    stream:,
+    tail: tail.since(window, 0).bytes
+      |> bit_array.to_string
+      |> result.unwrap(""),
+    total_bytes: tail.received(window),
+  )
 }
 
 // --- rendering refusals and failures as data -----------------------------

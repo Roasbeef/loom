@@ -165,6 +165,32 @@ pub type Stream {
   )
 }
 
+/// The rolling tail of one output stream of a tool call that is still
+/// running, as the daemon last pushed it (`protocol-change/031`).
+///
+/// It is kept apart from `Stream` because the two grow differently: a
+/// stream is appended to fragment by fragment, while a tail is *replaced*
+/// whole on every frame, keyed by `{strand, operation, step, source_index,
+/// call_id, stream}`. The daemon bounds `text` at a few kilobytes and this terminal keeps one
+/// tail per key, so however long a command runs the region stays the size
+/// of the last frame. It is cleared with the strand's streams — on an
+/// entry landing and on the operation reaching `done` — and a capture
+/// drops it once that call's durable result is visible. A fixed global cap
+/// also bounds tails whose matching capture was missed or evicted.
+@internal
+pub type ToolTail {
+  ToolTail(
+    strand: String,
+    operation: String,
+    step: String,
+    source_index: Int,
+    call_id: String,
+    stream: String,
+    text: String,
+    total_bytes: Int,
+  )
+}
+
 /// The modal surface that owns focus, if any.
 @internal
 pub type Overlay {
@@ -603,6 +629,7 @@ pub type Model {
     /// Transient rows captured when leaving the live tail. Durable history has
     /// its own frozen ancestry; this keeps in-flight reasoning stationary too.
     reading_lines: Option(List(Line)),
+    tool_tails: List(ToolTail),
     scroll_offset: Int,
     render_revision: Int,
     rendered_revision: Int,
@@ -929,6 +956,7 @@ pub fn new_model_with_clock(
     activity_elapsed_s: 0,
     streams: [],
     reading_lines: None,
+    tool_tails: [],
     scroll_offset: 0,
     render_revision: 0,
     rendered_revision: -1,
@@ -1588,6 +1616,7 @@ fn live_base(base: Model) -> Model {
     strands: [],
     records: [],
     streams: [],
+    tool_tails: [],
     transcript: [],
     current_model: "unconfigured",
     agent_summary: agents.summary([]),
@@ -3501,6 +3530,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         inspecting_approval: None,
         records: [],
         streams: [],
+        tool_tails: [],
         models: [],
         skills: [],
         current_model: "loading…",
@@ -4071,6 +4101,7 @@ fn transient_lines(model: Model) -> List(Line) {
     model.active_strand,
     model.details_expanded,
   )
+  |> list.append(tool_tail_lines(model))
   |> list.append(pending_input_lines(model))
 }
 
@@ -4211,6 +4242,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           session: cut.attachment.expected.session,
           records: [],
           streams: [],
+          tool_tails: [],
           interrupt: None,
           submitting: None,
           // The new attachment's cut replaces the transcript wholesale, and
@@ -4340,6 +4372,29 @@ pub fn apply_channel_update(
         model,
         protocol.StreamDelta(strand:, operation:, generation:, kind:, text:),
       )
+    session_channel.ToolStreamed(
+      strand:,
+      operation:,
+      step:,
+      source_index:,
+      call_id:,
+      stream:,
+      text:,
+      total_bytes:,
+    ) ->
+      apply_event(
+        model,
+        protocol.ToolOutput(
+          strand:,
+          operation:,
+          step:,
+          source_index:,
+          call_id:,
+          stream:,
+          text:,
+          total_bytes:,
+        ),
+      )
 
     // A prompt aimed at a busy strand used to come back as a conflict, with
     // the draft still the operator's problem. The daemon now holds it and
@@ -4404,6 +4459,7 @@ pub fn apply_channel_update(
           peer: after_close(model.peer),
           scrollback: history_view.cancel(model.scrollback),
           streams: [],
+          tool_tails: [],
           queue_editor: queue_editor.refused(
             model.queue_editor,
             "Disconnected; draft retained",
@@ -4577,6 +4633,21 @@ fn render_cut(
       && { stream.generation != "" || operation == Ok(stream.operation) }
       && !snapshot_view.has_result(view, active, stream.operation)
     })
+
+  // A captured tool-result names the exact provider call, so one completed
+  // call can retire without removing its still-running peers. The operation's
+  // last-result register remains the fallback when the bounded history window
+  // no longer retains that entry.
+  let live_tails =
+    list.filter(model.tool_tails, fn(tail) {
+      !snapshot_view.has_tool_result(
+        view,
+        cut.window,
+        tail.strand,
+        tail.call_id,
+      )
+      && !snapshot_view.has_result(view, tail.strand, tail.operation)
+    })
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -4602,6 +4673,7 @@ fn render_cut(
     usage: view.usage,
     current_model: current_model,
     streams: live,
+    tool_tails: live_tails,
     interrupt: reconcile_interrupt(model.interrupt, view.operations),
     queued: case view.pending_inputs {
       Some(_) -> []
@@ -4881,6 +4953,7 @@ fn adopt_session(
     submitting: None,
     streams: [],
     reading_lines: None,
+    tool_tails: [],
     scroll_offset: 0,
     rendered_revision: -1,
     rendered_row_count: 0,
@@ -4969,7 +5042,12 @@ fn handle_presentation_message(
       |> invalidate_frame
     connection.Closed(reason) ->
       append_error(
-        Model(..model, peer: after_close(model.peer), streams: []),
+        Model(
+          ..model,
+          peer: after_close(model.peer),
+          streams: [],
+          tool_tails: [],
+        ),
         "connection closed: " <> reason,
       )
       |> mark_activity
@@ -4997,6 +5075,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         usage:,
         records: list.reverse(entries),
         streams: [],
+        tool_tails: [],
         record_rows: [],
         record_line_cache: dict.new(),
         compact_call_cache: dict.new(),
@@ -5100,6 +5179,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ..model,
           records: [record, ..model.records],
           streams: clear_streams(model.streams, strand),
+          tool_tails: retire_recorded_tail(model.tool_tails, record),
           pending_records: case strand == model.active_strand {
             True -> [record, ..model.pending_records]
             False -> model.pending_records
@@ -5171,12 +5251,52 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             True -> clear_streams(model.streams, strand)
             False -> model.streams
           },
+          tool_tails: case phase == "done" {
+            True -> clear_tails(model.tool_tails, strand)
+            False -> model.tool_tails
+          },
           notice: strand <> ": " <> phase,
         )
       let settled = settle_interrupt(updated, strand, phase)
       case phase == "done" && strand == model.active_strand {
         True -> invalidate_transcript(settled)
         False -> settled
+      }
+    }
+
+    // A tail replaces the one it supersedes rather than joining a list:
+    // the frame carries the whole window, so the newest is the only one
+    // worth drawing, and the region cannot grow with the command's output.
+    protocol.ToolOutput(
+      strand:,
+      operation:,
+      step:,
+      source_index:,
+      call_id:,
+      stream:,
+      text:,
+      total_bytes:,
+    ) -> {
+      let updated =
+        Model(
+          ..model,
+          tool_tails: receive_tail(
+            model.tool_tails,
+            ToolTail(
+              strand:,
+              operation:,
+              step:,
+              source_index:,
+              call_id:,
+              stream:,
+              text:,
+              total_bytes:,
+            ),
+          ),
+        )
+      case strand == model.active_strand {
+        True -> invalidate_transcript(updated)
+        False -> updated
       }
     }
     protocol.UsageChanged(usage: settled) -> {
@@ -5241,6 +5361,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.StreamDelta(..)
+    | protocol.ToolOutput(..)
     | protocol.OperationChanged(..)
     | protocol.UsageChanged(..)
     | protocol.EscalationPending(..)
@@ -5463,6 +5584,117 @@ fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
         Error(_) -> newest_suffix(bytes, from + 1, attempts - 1)
       }
     }
+  }
+}
+
+// The tails this strand's calls are printing, newest frame winning per
+// `{strand, operation, step, source_index, call_id, stream}`. Order is kept stable — a
+// replaced tail keeps its place and a new key goes to the end — so two
+// streams of one command do not swap positions on screen every time one
+// of them speaks.
+fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
+  let same_key = fn(tail: ToolTail) {
+    tail.strand == incoming.strand
+    && tail.operation == incoming.operation
+    && tail.step == incoming.step
+    && tail.source_index == incoming.source_index
+    && tail.call_id == incoming.call_id
+    && tail.stream == incoming.stream
+  }
+  case list.any(tails, same_key) {
+    True ->
+      list.map(tails, fn(tail) {
+        case same_key(tail) {
+          True -> incoming
+          False -> tail
+        }
+      })
+    False ->
+      case list.length(tails) >= max_tool_tails {
+        True -> list.append(list.drop(tails, 1), [incoming])
+        False -> list.append(tails, [incoming])
+      }
+  }
+}
+
+fn clear_tails(tails: List(ToolTail), strand: String) -> List(ToolTail) {
+  list.filter(tails, fn(tail) { tail.strand != strand })
+}
+
+fn retire_recorded_tail(
+  tails: List(ToolTail),
+  record: protocol.EntryRecord,
+) -> List(ToolTail) {
+  let protocol.EntryRecord(strand:, entry:) = record
+  case entry {
+    entry.MessageEntry(
+      message: message.ToolResultMessage(tool_call_id:, ..),
+      ..,
+    ) ->
+      list.filter(tails, fn(tail) {
+        tail.strand != strand || tail.call_id != tool_call_id
+      })
+    _ -> tails
+  }
+}
+
+/// How many lines of a running command's tail the transcript shows. The
+/// daemon's window is a few kilobytes; a terminal wants the last screenful
+/// of lines from it, not the whole window pushing the composer away.
+pub const tail_lines_shown = 8
+
+/// Maximum distinct stream tails retained across every strand and call.
+/// Exact durable reconciliation normally removes a tail first; this bound
+/// covers a client which misses enough captures to evict the matching result.
+pub const max_tool_tails = 128
+
+/// What the transcript draws for the active strand's running tool calls:
+/// one `ToolResult` line per stream, headed by the stream's name and how
+/// much it has carried, followed by the last `tail_lines_shown` lines of
+/// its window. A tail whose text is empty — a binary stream, or a command
+/// that has printed nothing to that stream yet — draws its heading alone,
+/// so the reader still sees that the command is alive and how much it has
+/// written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.tool_tail_lines(model)
+/// //   == [tui.Line(tui.ToolResult, "stdout · 31 B so far\ncompiling core")]
+/// ```
+@internal
+pub fn tool_tail_lines(model: Model) -> List(Line) {
+  model.tool_tails
+  |> list.filter(fn(tail) { tail.strand == model.active_strand })
+  |> list.map(fn(tail) {
+    let heading =
+      tail.stream <> " · " <> byte_count(tail.total_bytes) <> " so far"
+    let shown =
+      tail.text
+      |> string.trim_end
+      |> string.split("\n")
+      |> list.filter(fn(line) { line != "" })
+      |> last_lines(tail_lines_shown)
+    Line(ToolResult, string.join([heading, ..shown], "\n"))
+  })
+}
+
+// The last `count` of `lines`, in order.
+fn last_lines(lines: List(String), count: Int) -> List(String) {
+  let extra = list.length(lines) - count
+  case extra > 0 {
+    True -> list.drop(lines, extra)
+    False -> lines
+  }
+}
+
+// A byte count a reader can take in at a glance: bytes up to a kilobyte,
+// whole kibibytes past it. The number tells the reader the window is a
+// tail of something larger, which is all the precision it needs.
+fn byte_count(bytes: Int) -> String {
+  case bytes < 1024 {
+    True -> int.to_string(bytes) <> " B"
+    False -> int.to_string(bytes / 1024) <> " KiB"
   }
 }
 

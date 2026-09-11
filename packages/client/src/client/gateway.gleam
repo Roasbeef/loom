@@ -133,6 +133,7 @@
 //// lives entirely in the composition seam — the runtime is untouched.
 
 import broker/escalation as broker_escalation
+import broker/framing
 import broker/internal/call
 import broker/policy.{type Grant}
 import client/catalog
@@ -272,14 +273,17 @@ pub type Options {
     session_id: String,
     runtime: api.Runtime,
     recent_entries: Int,
-    /// An extra hint source. `None` is the production answer and
-    /// `client/serve` supplies none: a one-session server's writer sits
-    /// in the same VM as its hub, so `commit_forwarder` already carries
-    /// every commit's hint, and a bus subscription would only make the
-    /// same pull happen twice. The field stays for the host the bus was
-    /// designed for — one whose hint sources are *not* all its own
-    /// writer (a projection, a second node's session, telemetry) — and
-    /// `events/bus.bridge` is the seam that feeds it.
+    /// The event bus the hub listens on. A network hub joins only the
+    /// `Outputs` topic — the rolling tails of running tool calls, which
+    /// reach every subscribed peer as pushed `tool_output` frames
+    /// (`protocol-change/031`) — because a one-session server's writer
+    /// sits in the same VM as its hub, so `commit_forwarder` already
+    /// carries every commit's hint and a second hint source would make
+    /// the same pull happen twice. The host fixture joins every topic,
+    /// which is what a host whose hint sources are *not* all its own
+    /// writer needs, with `events/bus.bridge` as the seam that feeds it.
+    /// `None` is a hub that pushes no tool output; `client/serve`
+    /// supplies the bus the effect wiring publishes on.
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
@@ -366,6 +370,21 @@ pub fn with_live_jobs(
 ///
 pub fn with_catalog(options: Options, catalog: catalog.Catalog) -> Options {
   Options(..options, catalog: Some(catalog))
+}
+
+/// Supplies the event bus the hub relays running tool output from. Pass
+/// the very bus the effect wiring's `tool_output_observer` publishes on:
+/// both sides key by the runtime's canonical session id, and a tail
+/// published on another bus reaches no peer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.default_options("sess-01", runtime) |> gateway.with_bus(bus)
+/// ```
+///
+pub fn with_bus(options: Options, events_bus: bus.Bus) -> Options {
+  Options(..options, bus: Some(events_bus))
 }
 
 /// Supplies the tool registry `set_config`'s `active_tools` validates
@@ -689,8 +708,8 @@ fn start_with_delivery(
   delivery: Delivery,
 ) {
   actor.new_with_initialiser(5000, fn(subject) {
-    let selector = case delivery, options.bus {
-      HostOnly, Some(bus) -> {
+    let selector = case options.bus {
+      Some(events_bus) -> {
         // Keyed by the session's *canonical* id, never by the
         // caller-supplied display name. The two key spaces are disjoint
         // by construction (`protocol-change/008`), so a hub keyed by
@@ -699,19 +718,23 @@ fn start_with_delivery(
         // where a file-derived name collides with nothing to notice it.
         // `Options.session_id` stays the protocol's `session` field: a
         // display name, and only that.
-        //
-        // `client/serve` supplies no bus, so nothing exercises this
-        // today; it is correct for the host the field exists for — one
-        // whose hint sources are not all its own writer.
-        bus.subscribe_all(
-          bus,
-          session: bus.key(of: api.session_id(options.runtime)),
-        )
+        let key = bus.key(of: api.session_id(options.runtime))
+
+        // Which topics depends on who else is telling this hub things.
+        // The host fixture takes them all: it is the host whose hint
+        // sources are not all its own writer. A network hub's commit
+        // hints already arrive through `commit_forwarder`, so it joins
+        // the `Outputs` feed alone — joining the hint topics too would
+        // make the same pull happen twice per commit.
+        case delivery {
+          HostOnly -> bus.subscribe_all(events_bus, session: key)
+          Network -> bus.subscribe(events_bus, session: key, topic: bus.Outputs)
+        }
         process.new_selector()
         |> process.select(subject)
         |> bus.select_published(BusHint)
       }
-      Network, _ | HostOnly, None ->
+      None ->
         process.new_selector()
         |> process.select(subject)
     }
@@ -995,6 +1018,61 @@ pub fn tap_provider(
       provider_relay.prepare(surface, spec, observe_provider(name, spec))
     },
   )
+}
+
+/// The production observer for a running tool call's output — the seam
+/// `client/wiring.Config.observe_output` takes. Each tail is published on
+/// the bus as `ToolOutput` under the session's canonical id, where the
+/// hub's `Outputs` subscription turns it into a pushed `tool_output`
+/// frame for every subscribed peer (`protocol-change/031`).
+///
+/// The session id is read once per run rather than once per chunk: it is
+/// a register read, and a tool runs only after the runtime has minted it,
+/// so in production the read succeeds and the per-chunk observer is one
+/// `pg` lookup and a send. A session that somehow has no id yet is
+/// observed by nobody, never published under a forged key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.Config(
+/// //   ..config,
+/// //   observe_output: gateway.tool_output_observer(bus, opened),
+/// // )
+/// ```
+///
+pub fn tool_output_observer(
+  events_bus: bus.Bus,
+  opened: session.Session,
+) -> fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
+  fn(run: effects.ToolRun) {
+    let message.ToolCall(id: call_id, ..) = run.call
+    case session.id(opened) {
+      Ok(Some(id)) -> {
+        let key = bus.key(of: id)
+        fn(observed: tool.OutputTail) {
+          bus.publish(
+            events_bus,
+            session: key,
+            event: bus.ToolOutput(
+              strand: run.strand,
+              op: run.operation,
+              step: run.step_id,
+              source_index: run.source_index,
+              call_id:,
+              stream: case observed.stream {
+                framing.Stdout -> bus.Stdout
+                framing.Stderr -> bus.Stderr
+              },
+              tail: observed.tail,
+              total_bytes: observed.total_bytes,
+            ),
+          )
+        }
+      }
+      Ok(None) | Error(_) -> tool.ignore_output()
+    }
+  }
 }
 
 // Constructing the callback from the durable operation id in one place keeps
@@ -1313,6 +1391,36 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Network -> continue(remove_connection(state, connection))
       }
     CommitHint -> continue(pull_and_broadcast(revalidate_all(state)))
+
+    // A running command's tail is display state and not a hint: nothing
+    // in the store moved, so there is nothing to pull, and the frame
+    // leaves on the path a provider delta takes (`protocol-change/031`).
+    BusHint(published: bus.Published(
+      event: bus.ToolOutput(
+        strand:,
+        op:,
+        step:,
+        source_index:,
+        call_id:,
+        stream:,
+        tail:,
+        total_bytes:,
+      ),
+      ..,
+    )) -> {
+      broadcast_tool_output(
+        state,
+        strand,
+        op,
+        step,
+        source_index,
+        call_id,
+        stream,
+        tail,
+        total_bytes,
+      )
+      continue(state)
+    }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
@@ -2264,6 +2372,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.PresenceEvent(..)
     | protocol.InputQueueChanged
     | protocol.StreamDeltaEvent(..)
+    | protocol.ToolOutputEvent(..)
     | protocol.CommittedEvent(..)
     | protocol.ErrorEvent(..)
     | protocol.UnknownEvent(..) -> single_live_strand(state)
@@ -2931,17 +3040,7 @@ fn broadcast_delta(
   delta: Option(stream.Delta),
 ) -> Nil {
   let op_text = ids.op_id_to_string(operation)
-  let strand = case
-    dict.to_list(state.live)
-    |> list.find(fn(pair) { pair.1 == op_text })
-  {
-    Ok(#(strand, _)) -> strand
-    Error(Nil) ->
-      case session.op_meta(state.runtime.session, operation) {
-        Ok(Some(session.Cell(value:, ..))) -> value.strand
-        _ -> single_live_strand(state)
-      }
-  }
+  let strand = strand_of_operation(state, operation)
   let event = case delta {
     Some(stream.TextDelta(index: _, text:)) ->
       protocol.StreamDeltaEvent(
@@ -2988,6 +3087,65 @@ fn broadcast_delta(
         arguments_fragment: None,
       )
   }
+  push_to_subscribed(state, event)
+}
+
+// The rolling tail of a running tool call, to every subscribed peer
+// (`protocol-change/031`). Unlike a delta the text needs no clipping
+// here: the collector already bounded it at `tools/tool.tail_bytes`, a
+// sixth of the preview bound a pushed frame is held to.
+fn broadcast_tool_output(
+  state: State,
+  strand: String,
+  operation: OpId,
+  step: String,
+  source_index: Int,
+  call_id: String,
+  stream: bus.OutputStream,
+  tail: String,
+  total_bytes: Int,
+) -> Nil {
+  push_to_subscribed(
+    state,
+    protocol.ToolOutputEvent(
+      strand:,
+      op: ids.op_id_to_string(operation),
+      step:,
+      source_index:,
+      call_id:,
+      stream: case stream {
+        bus.Stdout -> protocol.Stdout
+        bus.Stderr -> protocol.Stderr
+      },
+      tail:,
+      total_bytes:,
+    ),
+  )
+}
+
+// The strand a provider operation runs on, for a pushed delta that does not
+// carry one. Tool output carries its authoritative `ToolRun.strand` through
+// the bus instead of using this presentation fallback.
+fn strand_of_operation(state: State, operation: OpId) -> String {
+  let op_text = ids.op_id_to_string(operation)
+  case
+    dict.to_list(state.live)
+    |> list.find(fn(pair) { pair.1 == op_text })
+  {
+    Ok(#(strand, _)) -> strand
+    Error(Nil) ->
+      case session.op_meta(state.runtime.session, operation) {
+        Ok(Some(session.Cell(value:, ..))) -> value.strand
+        _ -> single_live_strand(state)
+      }
+  }
+}
+
+// One unsolicited frame to every subscribed connection, under either
+// delivery. `deliver` re-checks each peer's authority as the frame
+// leaves, which is what makes a push a second way out of the hub without
+// being a second, unchecked one (`protocol-change/018`).
+fn push_to_subscribed(state: State, event: WireEvent) -> Nil {
   let frame =
     protocol.encode_event(EventEnvelope(reply_to: None, seq: None, event:))
   dict.each(state.connections, fn(_id, link: Connection) {

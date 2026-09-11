@@ -12,8 +12,11 @@ import gleam/list
 import gleam/option.{None, Some}
 import machine/codec as machine_codec
 import machine/strand
+import tui
+import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
+import tui_test/pushed
 
 fn author(name) {
   json.Object([
@@ -235,4 +238,106 @@ pub fn snapshot_view_rejects_duplicate_cells_and_registers_outside_cut_test() {
     snapshot_view.decode(snapshot.Captured(..captured, next_seq: 1))
     as "a register sequence cannot be at or after the capture cursor"
   Nil
+}
+
+pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
+  let #(main_result, generator) =
+    ids.mint_entry(ids.generator(clock.fixed(1000), 1))
+  let #(peer_result, _) = ids.mint_entry(generator)
+  let result = fn(id, call_id) {
+    entry.MessageEntry(
+      id,
+      None,
+      1,
+      1000,
+      message.ToolResultMessage(
+        call_id,
+        "bash",
+        [message.ToolResultText("done", None)],
+        None,
+        None,
+        None,
+        False,
+        1000,
+      ),
+      False,
+    )
+  }
+  let window =
+    snapshot.Window(
+      [
+        snapshot.Loaded(result(main_result, "call-main"), 100),
+        snapshot.Loaded(result(peer_result, "call-peer"), 100),
+      ],
+      200,
+      None,
+    )
+  let cells =
+    list.append(
+      config_cells(
+        json.String(ids.entry_id_to_string(main_result)),
+        "Alice",
+        "first",
+      ),
+      [
+        cell(
+          register.StrandConfig,
+          "sub:1",
+          machine_codec.encode_configuration(
+            strand.StrandConfiguration(
+              strand.ModelIdentity("provider", "first"),
+              strand.ThinkingOff,
+              [],
+            ),
+          ),
+        ),
+        cell(
+          register.StrandLeaf,
+          "sub:1",
+          json.String(ids.entry_id_to_string(peer_result)),
+        ),
+        cell(
+          register.StrandState,
+          "sub:1",
+          machine_codec.encode_strand_state(strand.StrandState(None, [])),
+        ),
+      ],
+    )
+  let assert Ok(view) = snapshot_view.decode(cut(metadata(cells), window))
+    as "both strand branches decode"
+  assert snapshot_view.has_tool_result(view, window, "main", "call-main")
+  assert !snapshot_view.has_tool_result(view, window, "main", "call-peer")
+    as "another strand's result cannot retire this tail"
+  assert snapshot_view.has_tool_result(view, window, "sub:1", "call-peer")
+  assert !snapshot_view.has_tool_result(view, window, "sub:1", "call-main")
+
+  // A network client may learn about these results only through a capture.
+  // Reconciliation must retire the inactive strand and only the completed
+  // call on main, leaving a live peer in the same operation untouched.
+  let tail = fn(strand, call_id, source_index) {
+    tui.ToolTail(
+      strand:,
+      operation: "shared-operation",
+      step: "step-1",
+      source_index:,
+      call_id:,
+      stream: "stdout",
+      text: call_id,
+      total_bytes: 1,
+    )
+  }
+  let model =
+    tui.Model(..pushed.attached(), tool_tails: [
+      tail("main", "call-main", 0),
+      tail("main", "call-running", 1),
+      tail("sub:1", "call-peer", 0),
+    ])
+    |> tui.apply_channel_update(session_channel.Captured(
+      cut(metadata(cells), window),
+      view,
+      session_channel.Refreshed,
+    ))
+  assert list.map(model.tool_tails, fn(tail) { #(tail.strand, tail.call_id) })
+    == [#("main", "call-running")]
+    as "capture retirement is exact and applies beyond the active strand"
 }

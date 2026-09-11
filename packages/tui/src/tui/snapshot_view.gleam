@@ -6,10 +6,10 @@
 //// are decoded together so a metadata-only catch-up changes one coherent view.
 
 import core/codec
-import core/entry.{type Entry}
+import core/entry.{type Entry, MessageEntry}
 import core/ids
 import core/json
-import core/message.{type Origin, type Usage}
+import core/message.{type Origin, type Usage, ToolResultMessage}
 import core/origin
 import core/register
 import gleam/bool
@@ -699,4 +699,29 @@ pub fn has_result(view: View, strand: String, current: String) -> Bool {
       ids.op_id_to_string(id) == current
     Error(Nil) -> False
   }
+}
+
+/// Reports whether the retained branch contains the durable result for one
+/// provider tool-call identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_view.has_tool_result(view, window, "main", "call-1")
+/// ```
+pub fn has_tool_result(
+  view: View,
+  window: snapshot.Window,
+  strand: String,
+  call_id: String,
+) -> Bool {
+  let Branch(records:, ..) = branch(view, window, strand)
+  list.any(records, fn(record) {
+    let protocol.EntryRecord(entry:, ..) = record
+    case entry {
+      MessageEntry(message: ToolResultMessage(tool_call_id:, ..), ..) ->
+        tool_call_id == call_id
+      _ -> False
+    }
+  })
 }
