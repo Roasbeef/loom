@@ -152,8 +152,8 @@ pushed delivery.
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:2933`). Both paths call
-`check_binding` (`client/gateway.gleam:2043`) immediately before the
+through `deliver` (`client/gateway.gleam:2940`). Both paths call
+`check_binding` (`client/gateway.gleam:2050`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -232,8 +232,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4229`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2316`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:4237`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2323`) after `state.live` has
 been refreshed from the registers and before any frame leaves. Only the
 head of a queue is submitted (`drain_strand`,
 `client/gateway.gleam:3548`), since the writer would reject a second

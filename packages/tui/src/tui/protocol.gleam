@@ -180,6 +180,8 @@ pub type Event {
     /// The call's index within its step, which tells two printing calls
     /// of one batch apart.
     source_index: Int,
+    /// Provider call identity echoed by its durable result.
+    call_id: String,
     /// `stdout` or `stderr`; open-set, shown verbatim.
     stream: String,
     /// The whole retained window of the stream, sanitized later.
@@ -755,6 +757,7 @@ fn decode_tool_output(body: JsonValue) -> Result(Event, String) {
   use operation <- result.try(required_string(fields, "op"))
   use step <- result.try(required_string(fields, "step"))
   use source_index <- result.try(required_int(fields, "source_index"))
+  use call_id <- result.try(required_string(fields, "call_id"))
   use stream <- result.try(required_string(fields, "stream"))
   use text <- result.try(required_string(fields, "tail"))
   use total_bytes <- result.try(required_int(fields, "total_bytes"))
@@ -763,6 +766,7 @@ fn decode_tool_output(body: JsonValue) -> Result(Event, String) {
     operation:,
     step:,
     source_index:,
+    call_id:,
     stream:,
     text:,
     total_bytes:,

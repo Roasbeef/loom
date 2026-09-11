@@ -502,6 +502,7 @@ pub type Event {
     op: String,
     step: String,
     source_index: Int,
+    call_id: String,
     stream: OutputStream,
     tail: String,
     total_bytes: Int,
@@ -1114,6 +1115,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
       op:,
       step:,
       source_index:,
+      call_id:,
       stream:,
       tail:,
       total_bytes:,
@@ -1124,6 +1126,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         #("op", json.String(op)),
         #("step", json.String(step)),
         #("source_index", json.Int(source_index)),
+        #("call_id", json.String(call_id)),
         #("ephemeral", json.Bool(True)),
         #("stream", json.String(stream_to_string(stream))),
         #("tail", json.String(tail)),
@@ -1486,6 +1489,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use op <- result.try(required_string(fields, "op"))
       use step <- result.try(required_string(fields, "step"))
       use source_index <- result.try(required_int(fields, "source_index"))
+      use call_id <- result.try(required_string(fields, "call_id"))
       use stream_text <- result.try(required_string(fields, "stream"))
       use stream <- result.try(case stream_text {
         "stdout" -> Ok(Stdout)
@@ -1499,6 +1503,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
         op:,
         step:,
         source_index:,
+        call_id:,
         stream:,
         tail:,
         total_bytes:,

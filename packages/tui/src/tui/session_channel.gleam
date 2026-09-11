@@ -102,6 +102,8 @@ pub type Update {
     step: String,
     /// The call's index within its step.
     source_index: Int,
+    /// Provider call identity echoed by its durable result.
+    call_id: String,
     /// `stdout` or `stderr`.
     stream: String,
     /// The whole retained window, sanitized later.
@@ -561,6 +563,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
       operation:,
       step:,
       source_index:,
+      call_id:,
       stream:,
       text:,
       total_bytes:,
@@ -570,6 +573,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
         operation:,
         step:,
         source_index:,
+        call_id:,
         stream:,
         text:,
         total_bytes:,

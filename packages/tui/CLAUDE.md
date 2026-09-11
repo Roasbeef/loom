@@ -165,11 +165,12 @@ that tree separately from the self-contained server.
 - `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
-  `ToolOutput(strand, operation, step, stream, text, total_bytes)` is the
+  `ToolOutput(strand, operation, step, source_index, call_id, stream, text,
+  total_bytes)` is the
   pushed rolling tail of a running tool call (`protocol-change/031`);
   `session_channel.ToolStreamed` carries it through the adopted lane and
   `tui.ToolTail` is what the model keeps — one per `{strand, operation,
-  step, source_index, stream}`, replaced whole on every frame, drawn by
+  step, source_index, call_id, stream}`, replaced whole on every frame, drawn by
   `tui.tool_tail_lines` as one `ToolResult` line under the live region:
   the stream's name and byte count so far, then the last
   `tail_lines_shown` lines of the window.
@@ -759,13 +760,13 @@ that tree separately from the self-contained server.
   pushed history. Older recordings retain operation-only reconciliation.
 - **A tool tail is replaced, never appended.** A `tool_output` frame
   carries the whole bounded window of one stream, so the model keeps one
-  `ToolTail` per `{strand, operation, step, source_index, stream}` and the newest frame
+  `ToolTail` per `{strand, operation, step, source_index, call_id, stream}` and the newest frame
   is the only one worth drawing; the region is the size of the last frame
   however long the command runs, and a dropped frame costs nothing. Tails
   clear with the strand's streams — on an entry landing and on the
-  operation reaching `done` — and a capture drops one once the durable
-  result for its operation is in view, by the evidence that retires a
-  stream. Another strand's tail is kept but not drawn.
+  operation reaching `done` — and a capture drops one once that exact
+  `call_id` has a durable tool result in its strand. A global 128-tail cap
+  bounds missed or evicted captures. Another strand's tail is kept but not drawn.
 - **A live stream is bounded, and its text is owned.** `Stream` carries the
   bytes its fragments weigh, and past twice `tui.live_stream_limit` — 24 KiB,
   the same clip the snapshot preview takes — the fragments collapse into one

@@ -40,7 +40,7 @@ shows, so a dropped observation costs nothing the next one does not
 restate, and the production observer may be a lossy publish.
 
 **2. The bus gains an `Outputs` topic carrying `ToolOutput`.**
-`ToolOutput(strand, op, step, source_index, stream, tail, total_bytes)` is the first bus event
+`ToolOutput(strand, op, step, source_index, call_id, stream, tail, total_bytes)` is the first bus event
 carrying text rather than an id, and the bus rule — events are hints,
 pulls are truth — survives it because the payload is display state of the
 same standing as `OpTransition`'s phase label: something to put on a
@@ -64,7 +64,7 @@ topics too would make the same pull happen twice per commit — and turns
 each `ToolOutput` into:
 
 ```json
-{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","source_index":0,"ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
+{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","source_index":0,"call_id":"call-7","ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
 ```
 
 | Field | Type | Presence | Meaning |
@@ -73,6 +73,7 @@ each `ToolOutput` into:
 | `op` | string | required | Operation the call belongs to. |
 | `step` | string | required | Step within the operation; one call batch. |
 | `source_index` | integer | required | The call's index within its step; tells two printing calls of one batch apart. |
+| `call_id` | string | required | Provider tool-call identity, matched to the durable tool result. |
 | `ephemeral` | boolean | required | Always `true`. |
 | `stream` | string | required | `stdout` or `stderr`. |
 | `tail` | string | required | The whole retained window of that stream after its latest chunk. |
@@ -82,16 +83,18 @@ No `reply_to`, no `seq`, never persisted, never replayed; pushed
 unsolicited to every subscribed connection while the call runs, through
 the same per-delivery authority re-check every pushed frame passes
 (`protocol-change/018`). Wholly superseded by the settled tool-result
-`entry` for the same `op`. The tail needs no clipping at the hub: the
+`entry` for the same `strand` and `call_id`. The tail needs no clipping at the hub: the
 collector's 4 KiB bound is a sixth of the 24 KiB preview bound a pushed
 frame is held to.
 
 **5. The terminal replaces, never appends.** `tui` keeps one `ToolTail`
-per `{strand, operation, step, source_index, stream}`, replaced whole on every frame, so
+per `{strand, operation, step, source_index, call_id, stream}`, replaced whole on every frame, so
 the region stays the size of the last frame however long a command runs.
 Tails clear with the strand's streams — on an entry landing and on the
-operation reaching `done` — and a capture drops one once the durable
-result for its operation is in view. The transcript draws each tail as one
+operation reaching `done` — and a capture drops one once that call's durable
+tool result is in view. This exact identity keeps one completed call from
+retiring a still-running peer in the same operation. A 128-tail global cap
+bounds clients which miss or evict the matching capture. The transcript draws each tail as one
 result line under the live region: the stream's name and byte count so
 far, then the last eight lines of the window.
 

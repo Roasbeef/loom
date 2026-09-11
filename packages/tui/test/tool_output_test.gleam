@@ -13,6 +13,7 @@
 import core/json
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import tui
 import tui/connection
@@ -34,6 +35,7 @@ fn output(
         #("op", json.String(operation)),
         #("step", json.String(step)),
         #("source_index", json.Int(0)),
+        #("call_id", json.String("call-1")),
         #("ephemeral", json.Bool(True)),
         #("stream", json.String(stream)),
         #("tail", json.String(text)),
@@ -67,6 +69,7 @@ pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
         operation: "op-1",
         step: "step-1",
         source_index: 0,
+        call_id: "call-1",
         stream: "stdout",
         text: "compiling core\ncompiling tools\n",
         total_bytes: 31,
@@ -153,6 +156,7 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
             #("op", json.String("op-9")),
             #("step", json.String("step-1")),
             #("source_index", json.Int(0)),
+            #("call_id", json.String("call-9")),
             #("stream", json.String("stdout")),
             #("tail", json.String("elsewhere")),
             #("total_bytes", json.Int(9)),
@@ -178,6 +182,7 @@ pub fn two_calls_in_one_step_keep_separate_tails_test() {
           #("op", json.String("op-1")),
           #("step", json.String("step-1")),
           #("source_index", json.Int(index)),
+          #("call_id", json.String("call-" <> int.to_string(index))),
           #("stream", json.String("stdout")),
           #("tail", json.String(text)),
           #("total_bytes", json.Int(1)),
@@ -192,4 +197,28 @@ pub fn two_calls_in_one_step_keep_separate_tails_test() {
     |> tui.accept_connection_message(call(0, "aa"))
   assert list.map(model.tool_tails, fn(tail) { #(tail.source_index, tail.text) })
     == [#(0, "aa"), #(1, "b")]
+}
+
+pub fn missed_captures_cannot_grow_tail_retention_without_bound_test() {
+  let model =
+    list.repeat(Nil, tui.max_tool_tails + 1)
+    |> list.index_map(fn(_nil, index) { index })
+    |> list.fold(pushed.attached(), fn(model, index) {
+      tui.accept_connection_message(
+        model,
+        output(
+          "op-" <> int.to_string(index),
+          "step-1",
+          "stdout",
+          int.to_string(index),
+          1,
+        ),
+      )
+    })
+  assert list.length(model.tool_tails) == tui.max_tool_tails
+  let assert [oldest, ..rest] = model.tool_tails
+  assert oldest.operation == "op-1"
+    as "the oldest observation is evicted when the global bound is full"
+  assert list.last(rest) |> result.map(fn(tail) { tail.operation })
+    == Ok("op-" <> int.to_string(tui.max_tool_tails))
 }

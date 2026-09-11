@@ -50,8 +50,8 @@ now retains it until the authenticated read completes.
 
 ### Streaming tool output and its verification
 
-Issue #186 is addressed by PR #348, in eight commits that separate the shared
-tail, event bus, collector, client, terminal, protocol, code-mode, and
+Issue #186 is addressed by PR #348, in a commit stack that separates the
+shared tail, event bus, collector, client, terminal, protocol, code-mode, and
 call-identity changes. `tools/tail` is the rolling-tail primitive
 background jobs already had, moved down from `client/jobtail` so the
 foreground collector could share it. `tools/tool.collect_observed` shows
@@ -63,24 +63,17 @@ keeps the projection driver off it. `client/serve` becomes the bus's first
 production publisher through `gateway.tool_output_observer`, the hub joins
 `Outputs` alone under network delivery and pushes each event as
 `tool_output`, and the terminal keeps one `ToolTail` per
-`{strand, operation, step, source_index, stream}`, replaced whole per frame.
+`{strand, operation, step, source_index, call_id, stream}`, replaced whole per
+frame and retired by the matching durable tool result.
 
-Verified locally on the branch before the rebase: `make lint` at zero errors
-for every package; every package gate green on its own — host, core,
-session, machine, prompt, telemetry, runtime, provider, broker, mcp, tools,
-cap, ext, codemode, events, client, conformance, lint and the Go sandbox —
-and `make doc-check` clean. Three tests miss in the container the branch was
-built in and were not weakened.
-`tui` `stream_bounds_test.a_long_live_stream_is_bounded_in_what_the_terminal_keeps_test`
-misses its drain-rate floor of 2000 deltas per second at about 1,900, and
-misses it identically on the commit before the terminal change; the memory
-bounds in the same test hold.
-`storage/snapshot_test.metadata_byte_limit_includes_keys_and_reference_payloads_test`
-answers `read_timed_out` before `MetadataTooLarge` inside a full package run,
-fails the same way at `main`, and passes run alone; `storage` carries no change
-on the branch. `client/daemon_soak_test`'s atom baseline drifted by four in
-one full run and held on a full rerun and alone. All three are the container's
-speed, and all three are what the hosted gate exists to settle.
+An independent review found that pushed entry and operation notices may be
+dropped before the network session channel, so clearing tails only from those
+notices could retain completed calls. Each output frame now carries the
+provider call identity used by its durable result. A capture retires that exact
+call on any strand while leaving live peers alone, and a 128-tail cap bounds a
+client whose matching capture was missed or evicted. The rebased tree passes
+the full local `make check`, including native helper checks, every package,
+the Go sandbox, `make doc-check`, and house lint at zero enforced errors.
 
 ## What to do next
 

@@ -1046,6 +1046,7 @@ pub fn tool_output_observer(
   opened: session.Session,
 ) -> fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
   fn(run: effects.ToolRun) {
+    let message.ToolCall(id: call_id, ..) = run.call
     case session.id(opened) {
       Ok(Some(id)) -> {
         let key = bus.key(of: id)
@@ -1058,6 +1059,7 @@ pub fn tool_output_observer(
               op: run.operation,
               step: run.step_id,
               source_index: run.source_index,
+              call_id:,
               stream: case observed.stream {
                 framing.Stdout -> bus.Stdout
                 framing.Stderr -> bus.Stderr
@@ -1399,6 +1401,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         op:,
         step:,
         source_index:,
+        call_id:,
         stream:,
         tail:,
         total_bytes:,
@@ -1411,6 +1414,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         op,
         step,
         source_index,
+        call_id,
         stream,
         tail,
         total_bytes,
@@ -3096,6 +3100,7 @@ fn broadcast_tool_output(
   operation: OpId,
   step: String,
   source_index: Int,
+  call_id: String,
   stream: bus.OutputStream,
   tail: String,
   total_bytes: Int,
@@ -3107,6 +3112,7 @@ fn broadcast_tool_output(
       op: ids.op_id_to_string(operation),
       step:,
       source_index:,
+      call_id:,
       stream: case stream {
         bus.Stdout -> protocol.Stdout
         bus.Stderr -> protocol.Stderr

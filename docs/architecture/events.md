@@ -71,7 +71,7 @@ There are seven topics and seven event shapes, one shape per topic:
 | `Strands` | `StrandResult(strand)` | the strand's name |
 | `Escalations` | `Escalation(op, description)` | an operation id and display text |
 | `Commits` | `Committed(seqs, ts)` | the seqs one transaction consumed |
-| `Outputs` | `ToolOutput(strand, op, step, source_index, stream, tail, total_bytes)` | a running call's bounded output window |
+| `Outputs` | `ToolOutput(strand, op, step, source_index, call_id, stream, tail, total_bytes)` | a running call's bounded output window |
 
 Three of these shadow a register, and in each case the register is the
 truth. `phase` is a word to put in a progress line, not a machine state —

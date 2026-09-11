@@ -171,12 +171,12 @@ pub type Stream {
 /// It is kept apart from `Stream` because the two grow differently: a
 /// stream is appended to fragment by fragment, while a tail is *replaced*
 /// whole on every frame, keyed by `{strand, operation, step, source_index,
-/// stream}`. The
-/// daemon bounds `text` at a few kilobytes and this terminal keeps one
+/// call_id, stream}`. The daemon bounds `text` at a few kilobytes and this terminal keeps one
 /// tail per key, so however long a command runs the region stays the size
 /// of the last frame. It is cleared with the strand's streams — on an
 /// entry landing and on the operation reaching `done` — and a capture
-/// drops it once the durable result for its operation is visible.
+/// drops it once that call's durable result is visible. A fixed global cap
+/// also bounds tails whose matching capture was missed or evicted.
 @internal
 pub type ToolTail {
   ToolTail(
@@ -184,6 +184,7 @@ pub type ToolTail {
     operation: String,
     step: String,
     source_index: Int,
+    call_id: String,
     stream: String,
     text: String,
     total_bytes: Int,
@@ -4376,6 +4377,7 @@ pub fn apply_channel_update(
       operation:,
       step:,
       source_index:,
+      call_id:,
       stream:,
       text:,
       total_bytes:,
@@ -4387,6 +4389,7 @@ pub fn apply_channel_update(
           operation:,
           step:,
           source_index:,
+          call_id:,
           stream:,
           text:,
           total_bytes:,
@@ -4631,13 +4634,19 @@ fn render_cut(
       && !snapshot_view.has_result(view, active, stream.operation)
     })
 
-  // A tail outlives its frames only until the call it belongs to has a
-  // durable result in view; a capture that shows one retires the tail the
-  // same way it retires a stream, and by the same evidence.
+  // A captured tool-result names the exact provider call, so one completed
+  // call can retire without removing its still-running peers. The operation's
+  // last-result register remains the fallback when the bounded history window
+  // no longer retains that entry.
   let live_tails =
     list.filter(model.tool_tails, fn(tail) {
-      tail.strand != active
-      || !snapshot_view.has_result(view, active, tail.operation)
+      !snapshot_view.has_tool_result(
+        view,
+        cut.window,
+        tail.strand,
+        tail.call_id,
+      )
+      && !snapshot_view.has_result(view, tail.strand, tail.operation)
     })
   Model(
     ..model,
@@ -5170,7 +5179,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ..model,
           records: [record, ..model.records],
           streams: clear_streams(model.streams, strand),
-          tool_tails: clear_tails(model.tool_tails, strand),
+          tool_tails: retire_recorded_tail(model.tool_tails, record),
           pending_records: case strand == model.active_strand {
             True -> [record, ..model.pending_records]
             False -> model.pending_records
@@ -5263,6 +5272,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       operation:,
       step:,
       source_index:,
+      call_id:,
       stream:,
       text:,
       total_bytes:,
@@ -5277,6 +5287,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
               operation:,
               step:,
               source_index:,
+              call_id:,
               stream:,
               text:,
               total_bytes:,
@@ -5577,7 +5588,7 @@ fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
 }
 
 // The tails this strand's calls are printing, newest frame winning per
-// `{operation, step, source_index, stream}`. Order is kept stable — a
+// `{strand, operation, step, source_index, call_id, stream}`. Order is kept stable — a
 // replaced tail keeps its place and a new key goes to the end — so two
 // streams of one command do not swap positions on screen every time one
 // of them speaks.
@@ -5587,6 +5598,7 @@ fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
     && tail.operation == incoming.operation
     && tail.step == incoming.step
     && tail.source_index == incoming.source_index
+    && tail.call_id == incoming.call_id
     && tail.stream == incoming.stream
   }
   case list.any(tails, same_key) {
@@ -5597,7 +5609,11 @@ fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
           False -> tail
         }
       })
-    False -> list.append(tails, [incoming])
+    False ->
+      case list.length(tails) >= max_tool_tails {
+        True -> list.append(list.drop(tails, 1), [incoming])
+        False -> list.append(tails, [incoming])
+      }
   }
 }
 
@@ -5605,10 +5621,32 @@ fn clear_tails(tails: List(ToolTail), strand: String) -> List(ToolTail) {
   list.filter(tails, fn(tail) { tail.strand != strand })
 }
 
+fn retire_recorded_tail(
+  tails: List(ToolTail),
+  record: protocol.EntryRecord,
+) -> List(ToolTail) {
+  let protocol.EntryRecord(strand:, entry:) = record
+  case entry {
+    entry.MessageEntry(
+      message: message.ToolResultMessage(tool_call_id:, ..),
+      ..,
+    ) ->
+      list.filter(tails, fn(tail) {
+        tail.strand != strand || tail.call_id != tool_call_id
+      })
+    _ -> tails
+  }
+}
+
 /// How many lines of a running command's tail the transcript shows. The
 /// daemon's window is a few kilobytes; a terminal wants the last screenful
 /// of lines from it, not the whole window pushing the composer away.
 pub const tail_lines_shown = 8
+
+/// Maximum distinct stream tails retained across every strand and call.
+/// Exact durable reconciliation normally removes a tail first; this bound
+/// covers a client which misses enough captures to evict the matching result.
+pub const max_tool_tails = 128
 
 /// What the transcript draws for the active strand's running tool calls:
 /// one `ToolResult` line per stream, headed by the stream's name and how

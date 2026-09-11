@@ -142,6 +142,7 @@ pub type Event {
     op: OpId,
     step: String,
     source_index: Int,
+    call_id: String,
     stream: OutputStream,
     tail: String,
     total_bytes: Int,
