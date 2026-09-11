@@ -41,6 +41,11 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
     as "the tool home must exist"
   let assert Ok(Nil) = simplifile.create_directory_all(temp)
     as "the tool temporary directory must exist"
+
+  // Production boot creates the protected store before any read-only tool
+  // starts. A read-only jail cannot create the missing mask mount point.
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.blobs")
+    as "the protected store must exist before native search starts"
   write(workspace <> "/go.mod", "module developerfixture\n\ngo 1.26\n")
   write(
     workspace <> "/sum.go",
