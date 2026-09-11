@@ -152,6 +152,8 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
       env: serve.session_environment(workspace, None),
       demand: exec.PlatformEnforcement,
       clock: wall,
+      session_id: "hookrunner-fixture",
+      transcript_path: workspace <> "/session.db",
     ),
     helper,
   )

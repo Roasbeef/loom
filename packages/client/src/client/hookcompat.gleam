@@ -241,7 +241,17 @@ pub type Matcher {
 /// Classifies a matcher string the way the contract's table says
 /// Claude does. Total: every string classifies to one of the three
 /// variants, so both parsers share one reading of the field.
-fn classify_matcher(raw: String) -> Matcher {
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hookcompat.All == hookcompat.classify_matcher("")
+/// assert hookcompat.Exact(["Edit", "Write"])
+///   == hookcompat.classify_matcher("Edit|Write")
+/// assert hookcompat.Regex("mcp__.*") == hookcompat.classify_matcher("mcp__.*")
+/// ```
+///
+pub fn classify_matcher(raw: String) -> Matcher {
   case raw {
     "" | "*" -> All
     _ ->

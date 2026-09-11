@@ -113,6 +113,15 @@ pub type Context {
     demand: EnforcementDemand,
     /// The wall clock, for budget deadlines.
     clock: Clock,
+    /// The session's subscribe name, the identity the contract's
+    /// payloads carry as `session_id`.
+    session_id: String,
+    /// The session's durable file, the honest answer to the
+    /// contract's `transcript_path`: the conversation lives in this
+    /// SQLite database, and a hook expecting JSONL finds none in it.
+    /// The parity matrix records the difference rather than inventing
+    /// a transcript the harness does not keep.
+    transcript_path: String,
   )
 }
 
