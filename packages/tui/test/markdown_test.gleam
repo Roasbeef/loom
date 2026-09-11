@@ -164,3 +164,17 @@ fn line_text(line: span.Line) -> String {
   })
   |> string.concat
 }
+
+// Literal fences inside patches must never hide later rows or their colors.
+pub fn direct_patch_keeps_tabs_fences_and_change_styles_test() {
+  let rows = markdown.diff("-\told\n+\tnew\n ```\n unchanged")
+  assert visible_text(rows) == "│ -    old\n│ +    new\n│  ```\n│  unchanged"
+  let parts = list.flat_map(rows, fn(row) { row.spans })
+  let assert Ok(removed) =
+    list.find(parts, fn(part) { part.content == "-    old" })
+    as "the removed source survives"
+  let assert Ok(added) =
+    list.find(parts, fn(part) { part.content == "+    new" })
+    as "the added source survives"
+  assert removed.style != added.style
+}

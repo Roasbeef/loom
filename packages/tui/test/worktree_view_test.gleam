@@ -31,6 +31,7 @@ fn board(id, files) {
     list.length(files),
     0,
     "complete",
+    worktree_view.Committed("Session commits unavailable", "", "complete"),
   )
 }
 
@@ -82,7 +83,7 @@ pub fn refresh_retains_raw_path_identity_and_missing_path_returns_all_test() {
     )
   assert reordered.selected == 1
   assert list.first(worktree_view.patches(reordered))
-    == Ok("b name · text · complete")
+    == Ok(worktree_view.PatchHeading("b name · text · complete"))
   let absent =
     reordered
     |> worktree_view.request("owner")
@@ -437,4 +438,71 @@ pub fn unrelated_correlated_and_pushed_errors_do_not_cancel_a_worktree_observati
     as "the independent capture still adopts its final response"
   assert observation.request_id == observation_id
   assert model.worktree.awaiting == None
+}
+
+// Commit navigation remains selected even when current file status changes.
+pub fn committed_patches_are_navigable_in_a_clean_worktree_test() {
+  let observation = board(8, [])
+  let observation =
+    worktree_view.Board(
+      ..observation,
+      committed: worktree_view.Committed(
+        "Commits since session start",
+        "commit abc\n+added",
+        "limited",
+      ),
+    )
+  let loaded =
+    worktree_view.receive(waiting(8), "owner", worktree_view.Ready(observation))
+  assert worktree_view.labels(loaded)
+    == ["All files (0)", "Commits since session start"]
+  let selected = worktree_view.State(..loaded, selected: 1)
+  assert worktree_view.patches(selected)
+    == [
+      worktree_view.PatchHeading("Commits since session start"),
+      worktree_view.PatchBody("commit abc\n+added"),
+      worktree_view.PatchHeading(
+        "Commit patches truncated by the display limit",
+      ),
+    ]
+  let refreshed =
+    selected
+    |> worktree_view.request("owner")
+    |> worktree_view.sent(9)
+    |> worktree_view.receive(
+      "owner",
+      worktree_view.Ready(board(9, [file("new", "patch")])),
+    )
+  assert refreshed.selected == 2
+}
+
+// New hosts add committed data without making old ready boards invalid.
+pub fn committed_wire_extension_is_bounded_and_optional_test() {
+  let assert json.Object(fields) = raw_ready(8)
+    as "the fixture is a ready board"
+  let extension = fn(patch) {
+    json.Object([
+      #(
+        "committed",
+        json.Object([
+          #("message", json.String("Commits since session start")),
+          #("patch", json.String(patch)),
+          #("extent", json.String("complete")),
+        ]),
+      ),
+      ..fields
+    ])
+  }
+  let assert Ok(worktree_view.Ready(decoded)) =
+    worktree_view.decode(extension("+added"))
+    as "the new optional field reaches the commit view"
+  assert decoded.committed.patch == "+added"
+  let assert Ok(worktree_view.Ready(legacy)) =
+    worktree_view.decode(raw_ready(8))
+    as "old hosts remain readable"
+  assert string.contains(legacy.committed.message, "unavailable")
+  let assert Error(_) =
+    worktree_view.decode(extension(string.repeat("x", 4097)))
+    as "oversized commit streams cannot enter retained display state"
+  Nil
 }

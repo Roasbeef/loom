@@ -47,6 +47,20 @@ pub type Board {
     omitted: Int,
     /// Whether the observation exhausted a bound.
     extent: String,
+    /// Optional newer-host committed view; older hosts supply an unavailable notice.
+    committed: Committed,
+  )
+}
+
+/// Session-scoped commit headers and patches, separate from current file status.
+pub type Committed {
+  Committed(
+    /// Availability and commit-count scope supplied by the host.
+    message: String,
+    /// Bounded literal unified patches.
+    patch: String,
+    /// Whether the patch stream is an excerpt.
+    extent: String,
   )
 }
 
@@ -239,7 +253,27 @@ fn decode_board(fields, id) {
       || dict.size(distinct) != list.length(files),
     Error("inconsistent worktree observation"),
   )
-  Ok(Board(id, observed, repository, files, total, omitted, extent))
+  use committed <- result.try(decode_committed(fields))
+  Ok(Board(id, observed, repository, files, total, omitted, extent, committed))
+}
+
+fn decode_committed(fields) {
+  case list.key_find(fields, "committed") {
+    Error(Nil) ->
+      Ok(Committed("Session commits unavailable from this host", "", "complete"))
+    Ok(value) -> {
+      use fields <- result.try(object(value))
+      use message <- result.try(text(fields, "message"))
+      use patch <- result.try(text(fields, "patch"))
+      use extent <- result.try(text(fields, "extent"))
+      use <- bool.guard(
+        string.byte_size(patch) > 4096
+          || !list.contains(["complete", "limited"], extent),
+        Error("invalid committed observation"),
+      )
+      Ok(Committed(message, patch, extent))
+    }
+  }
 }
 
 fn decode_file(value) {
@@ -274,15 +308,34 @@ fn decode_file(value) {
 pub fn labels(state: State) -> List(String) {
   case state.board {
     None -> ["All captured edits"]
-    Some(board) -> [
-      "All files (" <> int.to_string(board.total) <> ")",
-      ..list.map(board.files, fn(file) {
-        text_hygiene.single_line(
-          file.index_status <> file.worktree_status <> " " <> file.path,
-        )
-      })
-    ]
+    Some(board) ->
+      list.append(
+        [
+          "All files (" <> int.to_string(board.total) <> ")",
+          ..list.map(board.files, fn(file) {
+            text_hygiene.single_line(
+              file.index_status <> file.worktree_status <> " " <> file.path,
+            )
+          })
+        ],
+        ["Commits since session start"],
+      )
   }
+}
+
+/// Separates file labels from patch bytes before terminal styling.
+pub type PatchRow {
+  /// A filename, repository notice, or observation boundary.
+  PatchHeading(
+    /// A label rather than source or Markdown content.
+    text: String,
+  )
+
+  /// Unified patch content rendered without Markdown interpretation.
+  PatchBody(
+    /// Literal unified-patch bytes, sanitized only at terminal rendering.
+    text: String,
+  )
 }
 
 /// Projects only the selected patch, with per-file and whole-view limitations.
@@ -292,41 +345,60 @@ pub fn labels(state: State) -> List(String) {
 /// ```gleam
 /// worktree_view.patches(worktree_view.new())
 /// ```
-pub fn patches(state: State) -> List(String) {
+pub fn patches(state: State) -> List(PatchRow) {
   case state.board {
     None -> []
     Some(board) -> {
+      use <- bool.guard(
+        state.selected == list.length(board.files) + 1,
+        committed_rows(board.committed),
+      )
       let files = case state.selected {
         0 -> board.files
         n -> list.drop(board.files, n - 1) |> list.take(1)
       }
       let header = case board.repository {
-        "not_repository" -> ["Workspace is not a Git repository"]
+        "not_repository" -> [PatchHeading("Workspace is not a Git repository")]
         _ -> []
       }
       let details =
         list.flat_map(files, fn(file) {
           [
-            text_hygiene.single_line(file.path)
+            PatchHeading(
+              text_hygiene.single_line(file.path)
               <> " · "
               <> file.kind
               <> " · "
               <> file.extent,
-            text_hygiene.multiline(file.patch),
+            ),
+            PatchBody(file.patch),
           ]
         })
       list.append(
         header,
         list.append(details, [
-          "Observation "
-          <> board.extent
-          <> " · "
-          <> int.to_string(board.omitted)
-          <> " files omitted",
+          PatchHeading(
+            "Observation "
+            <> board.extent
+            <> " · "
+            <> int.to_string(board.omitted)
+            <> " files omitted",
+          ),
         ]),
       )
     }
   }
+}
+
+fn committed_rows(committed: Committed) -> List(PatchRow) {
+  [
+    PatchHeading(text_hygiene.single_line(committed.message)),
+    PatchBody(committed.patch),
+    PatchHeading(case committed.extent {
+      "limited" -> "Commit patches truncated by the display limit"
+      _ -> ""
+    }),
+  ]
 }
 
 fn object(value) {
@@ -353,6 +425,10 @@ fn number(fields, name) {
 fn retained_selection(state: State, board: Board) -> Int {
   case state.board, state.selected {
     Some(previous), index if index > 0 -> {
+      use <- bool.guard(
+        index == list.length(previous.files) + 1,
+        list.length(board.files) + 1,
+      )
       let selected = previous.files |> list.drop(index - 1) |> list.first
       case selected {
         Ok(file) ->

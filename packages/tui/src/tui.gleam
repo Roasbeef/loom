@@ -94,6 +94,10 @@ pub type Speaker {
   ToolCall
   ToolResult
   ToolDetail
+
+  /// Literal patch content, rendered without interpreting Markdown fences.
+  ToolPatch
+
   ToolFailure
   Failure
 }
@@ -2384,7 +2388,7 @@ fn render_line(line: Line) -> List(span.Line) {
     Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
-    ToolDetail -> #("  ", theme.quiet_text())
+    ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
     ToolFailure -> #("└ × ", theme.danger_text())
     Failure -> #("! error  ", theme.danger_text())
   }
@@ -2415,6 +2419,7 @@ fn render_line(line: Line) -> List(span.Line) {
       ..markdown.render(line.text)
       |> prefix_rendered_lines(mark, mark_style)
     ]
+    ToolPatch -> markdown.diff(line.text)
     ToolDetail ->
       markdown.render(line.text)
       |> prefix_rendered_lines(mark, mark_style)
@@ -2434,7 +2439,13 @@ fn render_line(line: Line) -> List(span.Line) {
       })
       |> list.append(case line.speaker {
         ToolCall | ToolResult | ToolFailure -> []
-        System | User | Reasoning | Failure | Assistant | ToolDetail -> [
+        System
+        | User
+        | Reasoning
+        | Failure
+        | Assistant
+        | ToolDetail
+        | ToolPatch -> [
           span.line_plain(""),
         ]
       })
@@ -5733,8 +5744,11 @@ fn note_call_lines(name: String, arguments: json.JsonValue) -> List(Line) {
 fn diff_content(model: Model) -> List(Line) {
   case model.worktree.board {
     Some(_) ->
-      list.map(worktree_view.patches(model.worktree), fn(text) {
-        Line(ToolResult, text)
+      list.map(worktree_view.patches(model.worktree), fn(row) {
+        case row {
+          worktree_view.PatchHeading(text) -> Line(System, text)
+          worktree_view.PatchBody(text) -> Line(ToolPatch, text)
+        }
       })
     None -> [
       Line(System, model.worktree.message),
@@ -5767,7 +5781,7 @@ fn captured_diff_content(model: Model) -> List(Line) {
                 string_field(fields, "path")
                   |> option.unwrap("edited file"),
               ),
-              Line(ToolDetail, "```diff\n" <> diff <> "\n```"),
+              Line(ToolPatch, diff),
             ]
           }
         _ -> []
@@ -6170,7 +6184,7 @@ fn edit_result_lines(
       }
       [
         Line(ToolResult, "fs_edit · " <> compact(summary, 120)),
-        Line(ToolDetail, "```diff\n" <> shown <> "\n```"),
+        Line(ToolPatch, shown),
       ]
     }
     None -> [Line(ToolResult, "fs_edit · " <> compact(summary, 120))]

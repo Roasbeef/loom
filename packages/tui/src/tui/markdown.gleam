@@ -198,6 +198,26 @@ fn diff_span(line: String) -> span.Span {
   code_span(CodePart(line, kind))
 }
 
+/// Renders patch bytes directly, keeping indentation and addition/removal colors.
+/// File contents cannot terminate a Markdown fence because no parser runs here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = markdown.diff("-old\n+new")
+/// ```
+pub fn diff(patch: String) -> List(span.Line) {
+  patch
+  |> text_hygiene.multiline
+  |> string.split("\n")
+  |> list.map(fn(line) {
+    span.line_new([
+      span.span_styled("│ ", theme.signal_bold()),
+      diff_span(line),
+    ])
+  })
+}
+
 fn gleam_parts(
   characters: List(String),
   accumulated: List(CodePart),
