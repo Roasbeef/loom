@@ -4,125 +4,76 @@ Read this first for current work, settled boundaries, and remaining acceptance
 criteria. Rewrite it after the next body of work. Detailed review and test
 accounts belong in their own documents.
 
-Re-baselined September 10, 2026 against merged PR #343 (`822c5c8b`) and the
-UX implementation and native follow-ups through `dadecfce`, plus the etui
-dependency update described below. PR #343 is merged and #335 is closed.
-PR #344 carries the UX work on `codex/ux-followthrough`. Merge authorization
-was given on September 10; its live PR state and the exact commit's Linux
-signoff establish integration status. Local checks do not substitute for that
-required signoff.
+Re-baselined September 10, 2026 against merged PR #344 (`329002f1`) and the
+local Markdown-skills implementation through `5626d1b5` on
+`codex/skill-discovery`. GitHub merge,
+run and issue states were checked again for this edition. The skill change has
+local verification and review; it has not been pushed or given Linux signoff.
 
 ## Where the tree is
 
 | Body of work | Current state |
 |---|---|
-| Human controls | Priority steering, ordinary queued turns, and operation-bound Escape are in the baseline. Bare `/queue` now fetches and edits complete held input by identity and revision. |
-| Changes pane | `/diff` observes the attached workspace through jailed Git, including net staged/unstaged and untracked changes. File navigation, explicit refresh, wide side pane, and narrow fallback are implemented. |
-| Completion | The latest card and `/summary` report captured operation outcomes, edits, and actual tool/command results, with current queue counts and a separate live-job observation. |
-| Rendering | The existing settled-layout cache and independent conversation/diff scrolling remain. No new performance claim is made for the additional views. |
-| Gate recovery | PR #343 is merged; #335 was closed with its existing acceptance evidence. The direct `make replay-simulation SIM_SEED=n` target remains available. |
-| Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their own open issues. |
+| Human controls | Priority steering, queued-input editing, operation-bound Escape, worktree diffs, and completion summaries are merged in #344. |
+| Terminal input | The etui `ff80e0e` pin preserves the earlier fork stack and delivers Ctrl+s on macOS. #345 tracks upstreaming all eight remaining commits. |
+| Markdown skills | Shared daemon discovery, YAML validation, paged slash completion, explicit activation, and model-selected loading are implemented locally. |
+| Remaining acceptance | Sustained-output selection, the broader reconnect/held-tool/queue scenario, SDK builds, latency distributions and daemon memory measurements retain their own acceptance. |
+| Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules and memory-off observations remain open. |
 
 ### What the previous edition got wrong
 
-The previous handoff still directed the next session to merge #343 and close
-#335. Both actions completed on September 10. It also described file navigation,
-worktree diffs, queued-input editing, and completion summaries as unimplemented.
-Those flows are now implemented and locally exercised together. The remaining
-acceptance list below does not silently inherit success from those tests.
+The previous edition still directed the next session to merge #344 and described
+final-head hosted checks and Linux signoff as pending. The PR merged normally at
+23:12:22 UTC on September 10 into `329002f1`. Hosted run `34538600106`, attempt 2,
+passed at `f17e7465`; that same head passed `signoff/linux` in 456 seconds,
+including all six lanes, eleven enforcement checks and the strict skip census.
+These results establish the UX baseline, not the new skills change.
 
-### Current verification
+### Skill behavior and verification
 
-All local gate stages passed, using the initial full gate and the affected and
-remaining stages after integration fixes. Final results include 1,531 client
-tests, 310 TUI tests, 77 conformance tests, and 127 lint-package tests. Native
-helper format, vet, build, and tests passed. The native terminal was rebuilt,
-and its real-daemon fixture passed. House-rule lint reports zero errors and
-649 warnings; documentation checks report zero errors with existing warnings.
-The initial failures and their repairs are recorded in the review below.
+[Markdown skills](skills.md) describes locations, invocation flags, refresh and
+limits. Discovery deduplicates symbolic aliases and validates frontmatter with
+`glaml`. The terminal gets metadata from the attached daemon. The model gets
+names and descriptions in `load_skill`; selecting a skill supplies the captured
+full document. Explicit `/name arguments` expands before queue admission.
 
-Opt-in shipped bootstrap fixtures were not enabled, and real code-mode build
-fixtures reported their absent seed. Those skips are not shipped acceptance or
-Linux signoff. The new joined Git/queue/job scenario ran without a skip.
+The installed user library loaded 34 documents without warnings: 33 permit
+slash invocation and 30 permit model selection. One installed document required
+quoting its description because an unquoted colon made it invalid YAML; that
+repair preserved its description and instruction body. No skill scripts were
+executed by discovery.
 
-The focused backend tests cover queue revision conflicts, admission races,
-original-author restrictions, retained images, reused request IDs, real jailed
-Git, observation cancellation, and the live-job roster. The wire conformance
-suite checks 48 fixtures. Terminal regressions cover namespace-safe drafts,
-uncertain saves, async worktree correlation, unrelated errors, file identity,
-scrolling across resize, and partial or unavailable completion evidence.
+The new `loaded_skills_complete_and_reach_the_model` fixture runs a real daemon,
+websocket and terminal loop with a deterministic provider and virtual display.
+It completes a slash command with Tab, submits arguments, modifies the source
+file after capture, and proves the captured manual instructions reach the
+provider. It then selects another skill through an actual `load_skill` call.
+Unselected bodies are absent from earlier requests and present only after
+activation. The resulting conversation retains both selected documents. This
+fixture runs without a prerequisite skip; it does not test an external model
+network or every native terminal layout.
 
-The joined `joined_queue_worktree_and_completion_drive` test passed with a real
-daemon, websocket, terminal model, broker, and Git repository. Five exact
-provider requests exercise a successful edit, actual bash exit 7, a live
-background job, and the next turn consuming the exact edited multiline prompt.
-The terminal also selects external and untracked Git changes. The provider is
-a deterministic fixture and the display backend is virtual; this does not prove
-an external provider network or every interactive terminal layout.
+The package gates passed across the initial full check and a continuation after
+Hex API rate limiting interrupted dependency resolution. The continuation
+passed 16 host, 1535 client, 315 terminal, 77 conformance and 127 lint-package
+tests, plus the native helper format, vet, build and tests. The final whitespace
+fix has focused client and joined end-to-end reruns. House-rule lint and the
+documentation gate are recorded with the review in
+[the skill review](review/markdown-skills.md). No single uninterrupted full-gate
+success or remote skills CI result is claimed.
 
-One independent review found four reachable integration errors: a live-job
-read classified as a mutation, a duplicate synchronous worktree reply, queue
-identity reuse across sessions, and unrelated errors clearing pending views.
-Each was corrected and covered. See [the review](review/ux-followthrough.md).
-
-A later direct native run exposed a missed worktree patch-cache invalidation.
-Keyboard selection, mouse selection, and delivered observations now invalidate
-that projection, and the cache records its actual board and selection. Native
-160-by-48 and 100-by-30 checks and the strengthened joined fixture passed.
-The same run found that etui retained terminal flow control on this macOS host,
-consuming the editor's Ctrl+s shortcut. The fork now clears `IXON` after entering
-raw mode, and both Loom pins use `ff80e0e`. It retains all seven commits beneath
-the previous `702a884` pin. The rebuilt native client saved an exact multiline
-queued prompt with Ctrl+s and delivered it to the next provider request, starting
-from an ordinary terminal with flow control enabled. No pane adjustment was
-needed. [Issue #345](https://github.com/Roasbeef/loom/issues/345) tracks upstreaming
-the complete remaining eight-commit fork stack.
-
-The prior head's shipped live-delivery and multiplayer CI fixtures required
-all answers within one viewport. They now inspect real scrolled history while
-retaining the original ordered-record and author assertions. Both opt-in tests
-passed locally against a newly built lean server release. GitHub run
-`34530464675` at `dadecfce` then passed both platform bootstrap lanes and the
-macOS gate, but its Linux client job failed one approval/effect display fixture
-(1,530 passed). That fixture passes in a focused local rerun; fresh CI must
-establish the dependency update's status.
-
-The etui update passed all 312 TUI tests, the joined queue/worktree/completion
-fixture, native shipment build, and documentation checks. Its own fork passed
-891 Erlang and 844 JavaScript tests, JavaScript smoke, and the real PTY regression
-for Ctrl+s delivery and normal/SIGKILL/SIGINT terminal restoration. The PTY test
-fails against the old fork source. One independent review found no actionable
-issue in this terminal change.
-
-The next hosted run, `34535424119` at `c923b92c`, passed the Linux client
-suite but its aggregate gate reported two undeclared enforcement skips: joined
-terminal observations and worktree observation. Both fixtures now have hard
-runs in the delegated Linux jail and macOS end-to-end jobs, each followed by
-a census that permits no skip. Only the ordinary Linux runner declares those
-prerequisite skips. All seven focused tests and the strict census passed locally
-on macOS. Final-head hosted checks and the required Linux signoff are recorded
-on PR #344; the merge gate remains the repository's `scripts/signoff.sh`.
-
-The first signoff at `8d4811ea` exposed three fixture assumptions: the queue
-save waited for a transient notice, approval scrolling stopped before later
-layout updates, and a non-repository fixture omitted the protected blob store
-that production boot creates. The fixtures now observe retained save state,
-continue navigation within the original deadline, and prepare that directory.
-The joined and approval fixtures each passed five isolated macOS runs; all six
-worktree tests passed. A shared code-mode helper build now publishes through a
-unique adjacent staging file and atomic rename. All 280 seeded code-mode tests
-passed without skips, and 64 concurrent Linux builds and controlled failure
-checks passed. The original build race did not reproduce in the stress probe.
-Two older lifecycle failures each passed five isolated Linux runs; their
-full-suite cause remains unresolved. The final-head signoff must pass before
-merge, including those tests and the complete skip census.
+Real code-mode fixtures reported their absent seed, and opt-in shipped bootstrap
+fixtures were not enabled. Their package results are not shipped acceptance.
+One independent review found a trailing-whitespace mismatch between terminal
+recognition and server expansion, and a malformed-flag test that reached the
+wrong error. Both were corrected and the reviewer confirmed no open findings.
 
 ## What to do next
 
-1. **Confirm the UX integration state.** Inspect PR #344 and continue from
-   its merged head once the required checks and Linux signoff pass. The owner
-   explicitly authorized this merge. **Exit:** the PR is merged through the
-   normal gate and its resulting commit is recorded on GitHub.
+1. **Integrate Markdown skills when requested.** The current feature is local
+   on `codex/skill-discovery`. **Exit:** publish the reviewed commits, pass the
+   exact head's hosted checks and required Linux signoff, then merge through
+   the normal gate. The earlier #344 merge authorization covered that PR.
 
 2. **Finish the remaining video acceptance.** Exercise reading and selection
    under sustained output across layouts, the joined reconnect/held-tool/multiple
@@ -130,18 +81,19 @@ merge, including those tests and the complete skip census.
    latency distributions and owner-attributed daemon memory plateau separately.
    **Exit:** the [acceptance accounting](design-notes/developer-experience-execution.md#acceptance-still-open-from-the-video-review)
    has direct evidence for each selected flow. The source-splitting survey
-   remains report-only; no broad module refactor is part of this work.
+   remains report-only.
 
 3. **Keep release dependencies explicit.** **#247** owns the SQLite binding;
    **#241** hosted macOS latency; **#246** the shipped authority/fault/pressure
    matrix; **#244** schedules and timer recovery; **#245** memory-off evidence.
-   All were open at this audit. **Exit:** each issue's own acceptance on the
+   All remain open at this audit. **Exit:** each issue's own acceptance on the
    final dependency set.
 
 4. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
    re-resolution; **#296** bundled ERTS in jailed PATH; **#286** refused extension
-   visibility; **#283** idle helper retirement. **Exit:** reproduce the specific
-   symptom before changing its owner. History-index issue **#324** remains closed.
+   visibility; **#283** idle helper retirement; **#345** the etui fork stack.
+   **Exit:** reproduce the specific symptom before changing its owner.
+   History-index issue **#324** remains closed.
 
 ## Rulings already made
 
@@ -190,12 +142,18 @@ to `broker.abort_step`; operation-wide abort keeps its separate meaning in
 [016](../protocol-change/016-record-human-origin.md), and
 [020](../protocol-change/020-minimal-jail-root.md) own activation, origin, and
 minimal roots. Explicit toolchain/support mounts remain configuration choices.
-This work does not modify the owner's installed configuration.
+Skill discovery uses the configured daemon home; it does not grant access to referenced resources.
 
 **Portable decisions and process ownership keep their boundaries.**
 `core`, `machine`, and `prompt` remain free of I/O and external functions.
 Process machinery follows [the Weft mapping](weft.md); the existing library
 supplies observation cancellation without a new Weft API.
+
+**Skill metadata precedes instructions.** [Protocol 027](../protocol-change/027-markdown-skills.md)
+shares one captured catalogue between the terminal and model. The model sees
+names and descriptions until `load_skill` selects a document. Explicit slash
+invocation captures that document before queue admission. Invocation flags
+control the two entry points; loading grants no new tool permissions.
 
 **Only the gate posts Linux signoff.** `scripts/signoff.sh` owns the verdict
 for a pushed commit. Never post success by hand or treat an older commit's
@@ -222,10 +180,11 @@ None of these is unfinished work somebody forgot.
 ```sh
 make check
 make doc-check
+bash scripts/test.sh host --match skill_test
+bash scripts/test.sh client --match skills_test
+bash scripts/test.sh client --match loaded_skills_complete_and_reach_the_model
+bash scripts/test.sh tui --match skills_test
 bash scripts/test.sh client --match joined_queue_worktree_and_completion_drive
-bash scripts/test.sh client --match domain_observation_test
-bash scripts/test.sh tui --match queue_editor_test
-bash scripts/test.sh tui --match worktree_view_test
 make replay-simulation SIM_SEED=33
 ```
 
