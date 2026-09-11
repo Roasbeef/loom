@@ -178,3 +178,24 @@ pub fn notes_distinguish_read_freshness_from_turn_age_test() {
   assert !string.contains(text(fresh), "Pending: inspect queue")
   assert string.contains(text(fresh), "Done: inspected queue")
 }
+
+// Agent notes can carry structured JSON inside the tool's string value.
+pub fn wrapped_note_objects_render_compact_hierarchy_test() {
+  let document =
+    json.Object([
+      #("test_result", json.String("Passed")),
+      #(
+        "evidence",
+        json.Object([
+          #("parent_run", json.String("Expected failure")),
+          #("fixed_run", json.String("Passed")),
+        ]),
+      ),
+    ])
+  let wrapped = json.String(json.to_string(document)) |> json.to_string
+  let rendered = notes_view.readable(wrapped)
+  assert rendered
+    == "- **Test result**: Passed\n- **Evidence**\n  - **Parent run**: Expected failure\n  - **Fixed run**: Passed"
+  assert notes_view.readable("\"ordinary prose\"") == "ordinary prose"
+  assert notes_view.readable("{incomplete") == "{incomplete"
+}

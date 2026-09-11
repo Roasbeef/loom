@@ -1843,7 +1843,10 @@ fn finish_control(model: Model, result) {
     Some(Ok(PageLoaded(page, selected))) ->
       Model(
         ..model,
-        overlay: DaemonSelector(session_selector.new(page, selected)),
+        overlay: DaemonSelector(session_selector.new(
+          session_selector.prioritize(page, model.workspace.path),
+          selected,
+        )),
         notice: "Enter opens the highlighted session · n creates · d deletes",
       )
       |> invalidate_frame
@@ -2524,6 +2527,16 @@ fn note_turn_relation(seq: Int, model: Model) -> String {
   }
 }
 
+// Raw inspection keeps the JSON representation but gives its structure rows.
+// Excerpts never enter this path because a cut value may not parse completely.
+fn raw_note_line(text: String) -> Line {
+  case json.parse(text) {
+    Ok(value) ->
+      Line(ToolDetail, "```json\n" <> pretty_json(value, 0) <> "\n```")
+    Error(_) -> Line(ToolResult, text)
+  }
+}
+
 fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
   let active_strand = model.active_strand
   case board.strand == active_strand {
@@ -2551,7 +2564,8 @@ fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
                 <> extent,
             ),
             case model.details_expanded, note.extent {
-              True, _ | False, notes_view.Excerpt -> Line(ToolResult, note.text)
+              _, notes_view.Excerpt -> Line(ToolResult, note.text)
+              True, notes_view.Complete -> raw_note_line(note.text)
               False, notes_view.Complete ->
                 Line(ToolDetail, notes_view.readable(note.text))
             },

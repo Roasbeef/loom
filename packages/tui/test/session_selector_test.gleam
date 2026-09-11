@@ -145,3 +145,28 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
     buffer.get_cell(third, geometry.Position(text.cell_width(before), selected))
   assert cell.style == theme.overlay_signal()
 }
+
+// Directory ranking must not confuse sibling prefixes or lose the current ID.
+pub fn session_picker_prefers_workspace_and_preserves_group_order_test() {
+  let rows =
+    [
+      #("other", "/work/project-old"),
+      #("child", "/work/project/sub"),
+      #("same-one", "/work/project"),
+      #("parent", "/work"),
+      #("same-two", "/work/project/"),
+      #("distant", "/elsewhere"),
+    ]
+    |> list.map(fn(pair) {
+      protocol.Session(pair.0, pair.1, pair.0, 1, protocol.RecoveryBlocked)
+    })
+  let page =
+    protocol.Page(7, rows, None)
+    |> session_selector.prioritize("/work/project/")
+  assert list.map(page.sessions, fn(row) { row.session_id })
+    == ["same-one", "same-two", "child", "parent", "other", "distant"]
+  let state = session_selector.new(page, "other")
+  assert state.selected == 4
+  assert state.current == "other"
+  assert state.page.revision == 7
+}
