@@ -2697,7 +2697,7 @@ fn assemble_in(
   // not compose). Sessions are kept apart by key, not by scope. Its one
   // production traffic today is the rolling tail of a running tool call,
   // published by the observer below and relayed by the hub as pushed
-  // `tool_output` frames (`protocol-change/030`).
+  // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
   let built =
     wiring.build_effects(wiring.Config(

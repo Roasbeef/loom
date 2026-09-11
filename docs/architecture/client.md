@@ -784,7 +784,7 @@ connections as `stream_delta` events with `ephemeral: true`, no seq, no
 replay, wholly superseded by the settled `entry` for the same operation.
 
 A running tool call's output takes a different route to the same kind of
-frame (`protocol-change/030`). The tool collector shows an observer the
+frame (`protocol-change/031`). The tool collector shows an observer the
 bounded rolling window of each stream after every chunk; `client/serve`
 supplies `gateway.tool_output_observer`, which publishes the window on the
 event bus as `ToolOutput` under the session's canonical id; the hub joins

@@ -34,7 +34,7 @@ catalogue without opening runtimes. Explicit admission invokes
 - `provider_relay` retains its initiating deadline, cancellation receipt, or
   observer exit in `Relay.context` through the existing cancellation and proof
   states. Startup refusal records cancellation receipt too. Forwarded failures
-  retain protocol 030 context; no diagnostic can certify owner retirement.
+  retain protocol 031 context; no diagnostic can certify owner retirement.
 
 - Failed or stopped Agency waits preserve their terminal outcome and expose
   saved observations as explicitly labelled partial reports. A missing final
@@ -269,7 +269,7 @@ catalogue without opening runtimes. Explicit admission invokes
   `wiring.Config.observe_output` resolver that publishes each running
   call's output window on the bus as `ToolOutput` under the session's
   canonical id, which the hub — given the same bus by `with_bus` — pushes
-  to subscribed peers as `tool_output` (`protocol-change/030`). The
+  to subscribed peers as `tool_output` (`protocol-change/031`). The
   wrapper forwards explicit cancellation and monitors that effect process;
   either cancellation or consumer death tears down the inner handle. The
   forwarder binds a reclaimable Weft reference address. The writer's
@@ -1213,7 +1213,7 @@ catalogue without opening runtimes. Explicit admission invokes
   bounded rolling window over one stream with a monotone byte cursor that
   the job runner holds per stream. It lived here as `client/jobtail` until
   the foreground tool collector needed the same primitive
-  (`protocol-change/030`); `packages/tools/CLAUDE.md` now documents it.
+  (`protocol-change/031`); `packages/tools/CLAUDE.md` now documents it.
   What the runner relies on is unchanged: `since(cursor)` tells a reader
   that fell behind how much it missed rather than handing it a
   plausible-looking window, and binary output goes out rather than being
@@ -2253,7 +2253,7 @@ build plane masks them where the jail can build the mask.
   aside, decided). A one-session server's writer and hub share a VM, so
   `commit_forwarder` already carries every commit; a bus subscription to
   the hint topics would trigger the same pull twice. `serve` does supply
-  a bus since `protocol-change/030`, for the one topic that is not a
+  a bus since `protocol-change/031`, for the one topic that is not a
   hint: `Outputs`, the rolling tails of running tool calls, published by
   `gateway.tool_output_observer` from the effect wiring and relayed as
   `tool_output` frames. The scope is entered with the idempotent

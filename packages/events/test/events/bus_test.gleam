@@ -77,6 +77,7 @@ pub fn tool_output_has_its_own_topic_test() {
     ids.mint_op(ids.generator(clock.fixed(at: 1), seed: 3))
   let event =
     bus.ToolOutput(
+      strand: "main",
       op:,
       step: "step-1",
       source_index: 0,
@@ -216,6 +217,7 @@ pub fn topic_of_covers_every_event_test() {
     == bus.Escalations
   assert bus.topic_of(Committed(seqs: [], ts: 0)) == bus.Commits
   assert bus.topic_of(bus.ToolOutput(
+      strand: "main",
       op:,
       step: "s",
       source_index: 1,

@@ -796,7 +796,7 @@ fn subscribe(harness: Harness) -> Nil {
 
 // --- running tool output ---------------------------------------------------
 
-/// `protocol-change/030`: a tail published on the session's `Outputs`
+/// `protocol-change/031`: a tail published on the session's `Outputs`
 /// topic reaches a subscribed peer as a pushed `tool_output` frame — no
 /// `reply_to`, no `seq`, the whole window as published — keyed by the
 /// runtime's canonical session id on both sides.
@@ -810,6 +810,7 @@ pub fn tool_output_on_the_bus_is_pushed_to_subscribed_peers_test() {
     events_bus,
     session: bus.key(of: api.session_id(harness.runtime)),
     event: bus.ToolOutput(
+      strand: "sub:1",
       op:,
       step: "step-2",
       source_index: 1,
@@ -823,7 +824,7 @@ pub fn tool_output_on_the_bus_is_pushed_to_subscribed_peers_test() {
   assert envelope.seq == None
   assert envelope.event
     == protocol.ToolOutputEvent(
-      strand: "main",
+      strand: "sub:1",
       op: ids.op_id_to_string(op),
       step: "step-2",
       source_index: 1,
@@ -865,6 +866,7 @@ pub fn a_network_hub_pushes_tool_output_from_its_outputs_subscription_test() {
     events_bus,
     session: bus.key(of: api.session_id(harness.runtime)),
     event: bus.ToolOutput(
+      strand: "main",
       op:,
       step: "step-1",
       source_index: 0,

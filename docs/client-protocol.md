@@ -2296,7 +2296,7 @@ produces.
 | `total_bytes` | integer | required | Bytes the stream has carried in all. |
 
 The rolling tail of a tool call that is still running
-([protocol 030](../protocol-change/030-tool-output-stream.md)). Pushed
+([protocol 031](../protocol-change/031-tool-output-stream.md)). Pushed
 unsolicited to every subscribed connection while the call runs; never
 persisted, never seq'd, never replayed; wholly superseded by the settled
 tool-result `entry` for the same `op`. Unlike a `stream_delta` the frame

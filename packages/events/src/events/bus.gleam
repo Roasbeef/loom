@@ -138,6 +138,7 @@ pub type Event {
   /// of one batch shares `{op, step}`, so it is the coordinate that keeps
   /// two printing calls from replacing each other's window.
   ToolOutput(
+    strand: String,
     op: OpId,
     step: String,
     source_index: Int,

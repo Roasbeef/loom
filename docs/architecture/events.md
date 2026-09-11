@@ -28,7 +28,7 @@ nothing else. The one topic that carries text — `Outputs`, the rolling tail
 of a running tool call — keeps the rule by carrying display state of the
 same standing as a phase label: a bounded window a terminal draws and
 nothing acts on, complete in every event, superseded by the durable tool
-result when the call settles (`protocol-change/030`). Drop every event and each read model still converges on its
+result when the call settles (`protocol-change/031`). Drop every event and each read model still converges on its
 next hint, its next explicit sync, or its next restart; the package's
 lost-event tests publish a hint for one commit in three and assert that the
 projection ends equal to a rebuild from zero.
@@ -71,7 +71,7 @@ There are seven topics and seven event shapes, one shape per topic:
 | `Strands` | `StrandResult(strand)` | the strand's name |
 | `Escalations` | `Escalation(op, description)` | an operation id and display text |
 | `Commits` | `Committed(seqs, ts)` | the seqs one transaction consumed |
-| `Outputs` | `ToolOutput(op, step, stream, tail, total_bytes)` | a running call's bounded output window |
+| `Outputs` | `ToolOutput(strand, op, step, source_index, stream, tail, total_bytes)` | a running call's bounded output window |
 
 Three of these shadow a register, and in each case the register is the
 truth. `phase` is a word to put in a progress line, not a machine state —
@@ -129,7 +129,7 @@ is the composition layer's problem, not a solved one.
 
 The shipped daemon's gateway joins the `Outputs` topic of its session and
 relays each `ToolOutput` to every subscribed connection as a pushed
-`tool_output` frame (`protocol-change/030`). It joins nothing else under
+`tool_output` frame (`protocol-change/031`). It joins nothing else under
 network delivery: its commit hints arrive from the runtime writer through
 `gateway.commit_forwarder`, and a bus subscription to the hint topics would
 make the same pull happen twice per commit. The host fixture hub joins

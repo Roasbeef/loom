@@ -4,19 +4,14 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Re-baselined September 11, 2026 against merged main `ab01a239` and the local
-`tui/readable-scrollback` follow-up. PR #347 merged after its exact head
-`a760eb92` passed the complete hosted workflow (`34585964823`). The follow-up
-is published as draft PR #349. The expanded reading follow-up has passed the
-TUI package gate with 357 tests and the client package gate with 1,545 tests.
-Both package lints and the documentation gate pass. An independent review found
-one missing merge-patch mode; its correction has a passing native Git regression.
-Hosted run `34641215883` passed Linux but exposed an asynchronous lock-release
-assumption in the macOS bootstrap fixture. The fixture now uses its existing
-bounded acquisition helper; an omitted-release mutation still fails. The
-[reading follow-up review](review/readable-scrollback-review.md) records the
-repair and independent review. Updated hosted checks and Linux signoff remain
-the final gates for the published head.
+Re-baselined September 11, 2026 against merged main `d12e8f7e` and the
+streaming-tool-output branch for issue #186. PR #349 is merged at that base;
+its exact head `3cf47e56` passed all required hosted checks and Linux signoff.
+PR #348 is rebased onto it. A review of the combined tree found and corrected
+one output-attribution gap: the event bus now carries the dispatching tool
+run's authoritative strand instead of asking the gateway to infer one from
+live presentation state. Local and hosted verification of the rebased head
+remain the final gates before merge.
 
 ## Where the tree is
 
@@ -25,8 +20,7 @@ the final gates for the published head.
 | Human controls | Queue editing, priority steering, worktree observations, and completion summaries are merged in #344. |
 | Markdown skills | #346 is merged in `3ce454e6`; discovery, explicit activation, paged completion, and model-selected loading are shipped in the base. |
 | UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
-| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
-| Streaming tool output | A running `bash` or `grep` call's rolling output tail reaches the terminal while it runs: collector observer, `Outputs` bus topic, pushed `tool_output` frame, one `ToolTail` per stream drawn under the call ([protocol 030](../protocol-change/030-tool-output-stream.md), issue #186). PR #348, not yet merged. |
+| Streaming tool output | A running `bash` or `grep` call's rolling output tail reaches the terminal while it runs: collector observer, `Outputs` bus topic, pushed `tool_output` frame, one `ToolTail` per stream drawn under the call ([protocol 031](../protocol-change/031-tool-output-stream.md), issue #186). PR #348, not yet merged. |
 | Local verification | One full `make check` passed: 4,191 Gleam tests, native helper checks, prelude verification, and house-rule lint. Installed native acceptance and matched measurements are recorded in the linked reports. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
@@ -56,8 +50,9 @@ now retains it until the authenticated read completes.
 
 ### Streaming tool output and its verification
 
-Issue #186 is closed by PR #348, in six commits that each compile and pass
-their package gates alone. `tools/tail` is the rolling-tail primitive
+Issue #186 is addressed by PR #348, in eight commits that separate the shared
+tail, event bus, collector, client, terminal, protocol, code-mode, and
+call-identity changes. `tools/tail` is the rolling-tail primitive
 background jobs already had, moved down from `client/jobtail` so the
 foreground collector could share it. `tools/tool.collect_observed` shows
 `Ctx.observe_output` the whole bounded window (4 KiB, character boundaries,
@@ -91,7 +86,7 @@ speed, and all three are what the hosted gate exists to settle.
 
 1. **Land streaming tool output.** PR #348 carries
    `claude/github-issue-186-yv2c5p` against `main`, referencing #186 and
-   [protocol 030](../protocol-change/030-tool-output-stream.md). **Exit:**
+   [protocol 031](../protocol-change/031-tool-output-stream.md). **Exit:**
    hosted macOS and Linux checks and Linux signoff pass on its head, then
    merge through the normal gate. Follow-ups that are *not* part of the
    exit: a job's output on the same feed (the runner already holds the
@@ -194,7 +189,7 @@ unconfirmed cleanup remains terminal. Retry-After reaches persisted machine
 retries; configured role fallback retains its existing immediate scheduling.
 
 **Running tool output is display state on the bus, not a hint.**
-[Protocol 029](../protocol-change/030-tool-output-stream.md) carries a
+[Protocol 031](../protocol-change/031-tool-output-stream.md) carries a
 running call's bounded output window as the `Outputs` topic's `ToolOutput`
 and the pushed `tool_output` frame. Every event and frame is the whole
 window, so receivers replace rather than append and loss costs nothing;

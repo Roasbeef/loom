@@ -276,7 +276,7 @@ pub type Options {
     /// The event bus the hub listens on. A network hub joins only the
     /// `Outputs` topic — the rolling tails of running tool calls, which
     /// reach every subscribed peer as pushed `tool_output` frames
-    /// (`protocol-change/030`) — because a one-session server's writer
+    /// (`protocol-change/031`) — because a one-session server's writer
     /// sits in the same VM as its hub, so `commit_forwarder` already
     /// carries every commit's hint and a second hint source would make
     /// the same pull happen twice. The host fixture joins every topic,
@@ -1024,7 +1024,7 @@ pub fn tap_provider(
 /// `client/wiring.Config.observe_output` takes. Each tail is published on
 /// the bus as `ToolOutput` under the session's canonical id, where the
 /// hub's `Outputs` subscription turns it into a pushed `tool_output`
-/// frame for every subscribed peer (`protocol-change/030`).
+/// frame for every subscribed peer (`protocol-change/031`).
 ///
 /// The session id is read once per run rather than once per chunk: it is
 /// a register read, and a tool runs only after the runtime has minted it,
@@ -1054,6 +1054,7 @@ pub fn tool_output_observer(
             events_bus,
             session: key,
             event: bus.ToolOutput(
+              strand: run.strand,
               op: run.operation,
               step: run.step_id,
               source_index: run.source_index,
@@ -1391,9 +1392,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // A running command's tail is display state and not a hint: nothing
     // in the store moved, so there is nothing to pull, and the frame
-    // leaves on the path a provider delta takes (`protocol-change/030`).
+    // leaves on the path a provider delta takes (`protocol-change/031`).
     BusHint(published: bus.Published(
       event: bus.ToolOutput(
+        strand:,
         op:,
         step:,
         source_index:,
@@ -1405,6 +1407,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     )) -> {
       broadcast_tool_output(
         state,
+        strand,
         op,
         step,
         source_index,
@@ -3084,11 +3087,12 @@ fn broadcast_delta(
 }
 
 // The rolling tail of a running tool call, to every subscribed peer
-// (`protocol-change/030`). Unlike a delta the text needs no clipping
+// (`protocol-change/031`). Unlike a delta the text needs no clipping
 // here: the collector already bounded it at `tools/tool.tail_bytes`, a
 // sixth of the preview bound a pushed frame is held to.
 fn broadcast_tool_output(
   state: State,
+  strand: String,
   operation: OpId,
   step: String,
   source_index: Int,
@@ -3099,7 +3103,7 @@ fn broadcast_tool_output(
   push_to_subscribed(
     state,
     protocol.ToolOutputEvent(
-      strand: strand_of_operation(state, operation),
+      strand:,
       op: ids.op_id_to_string(operation),
       step:,
       source_index:,
@@ -3113,11 +3117,9 @@ fn broadcast_tool_output(
   )
 }
 
-// The strand an operation runs on, for a pushed frame that has to name
-// one. `state.live` is the cheap answer while the operation is open; the
-// durable meta cell answers for one a pull has already retired; and a
-// hub with a single live strand names it when neither does, so a frame
-// is never dropped for want of a label.
+// The strand a provider operation runs on, for a pushed delta that does not
+// carry one. Tool output carries its authoritative `ToolRun.strand` through
+// the bus instead of using this presentation fallback.
 fn strand_of_operation(state: State, operation: OpId) -> String {
   let op_text = ids.op_id_to_string(operation)
   case

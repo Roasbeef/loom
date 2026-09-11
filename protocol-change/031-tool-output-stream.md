@@ -1,4 +1,4 @@
-# protocol-change/030 — running tool output as a pushed `tool_output` frame
+# protocol-change/031 — running tool output as a pushed `tool_output` frame
 
 **Status**: ACCEPTED 2026-09-11 · **Affects**: Part 1.3 session protocol
 v2 (event envelope: one new pushed event), the `events/bus` topic set ·
@@ -40,7 +40,7 @@ shows, so a dropped observation costs nothing the next one does not
 restate, and the production observer may be a lossy publish.
 
 **2. The bus gains an `Outputs` topic carrying `ToolOutput`.**
-`ToolOutput(op, step, stream, tail, total_bytes)` is the first bus event
+`ToolOutput(strand, op, step, source_index, stream, tail, total_bytes)` is the first bus event
 carrying text rather than an id, and the bus rule — events are hints,
 pulls are truth — survives it because the payload is display state of the
 same standing as `OpTransition`'s phase label: something to put on a

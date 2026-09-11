@@ -249,7 +249,7 @@ necessarily parseable alone).
 
 `{strand, op, step, source_index, ephemeral: true, stream:
 "stdout"|"stderr", tail, total_bytes}` — the rolling tail of a running tool call's output
-(`protocol-change/030`): `ephemeral` always `true`, never persisted,
+(`protocol-change/031`): `ephemeral` always `true`, never persisted,
 never seq'd, never replayed, pushed unsolicited to every subscribed
 connection while the call runs. `tail` is the whole retained window of
 one stream after its latest chunk — at most 4 KiB, beginning and ending

@@ -23,9 +23,9 @@ WP-K.
   impersonate — an identified session's group.
 - `events/bus.{Topic, Event, Published}` — seven topics: six hint topics
   (`Entries`, `Operations`, `Usage`, `Strands`, `Escalations`, `Commits`)
-  with deliberately thin events on them, and `Outputs`, whose `ToolOutput(op,
-  step, stream, tail, total_bytes)` is the bounded rolling window of a
-  running tool call's output (`protocol-change/030`) — display state of the
+  with deliberately thin events on them, and `Outputs`, whose `ToolOutput(strand,
+  op, step, source_index, stream, tail, total_bytes)` is the bounded rolling window of a
+  running tool call's output (`protocol-change/031`) — display state of the
   same standing as `OpTransition`'s phase label, complete in every event
   so a subscriber replaces rather than appends. `OutputStream` (`Stdout` |
   `Stderr`) mirrors the broker's type because this package may not import

@@ -166,7 +166,7 @@ that tree separately from the self-contained server.
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
   `ToolOutput(strand, operation, step, stream, text, total_bytes)` is the
-  pushed rolling tail of a running tool call (`protocol-change/030`);
+  pushed rolling tail of a running tool call (`protocol-change/031`);
   `session_channel.ToolStreamed` carries it through the adopted lane and
   `tui.ToolTail` is what the model keeps — one per `{strand, operation,
   step, source_index, stream}`, replaced whole on every frame, drawn by
