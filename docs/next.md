@@ -25,6 +25,8 @@ the final gates for the published head.
 | Human controls | Queue editing, priority steering, worktree observations, and completion summaries are merged in #344. |
 | Markdown skills | #346 is merged in `3ce454e6`; discovery, explicit activation, paged completion, and model-selected loading are shipped in the base. |
 | UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
+| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
+| Streaming tool output | A running `bash` or `grep` call's rolling output tail reaches the terminal while it runs: collector observer, `Outputs` bus topic, pushed `tool_output` frame, one `ToolTail` per stream drawn under the call ([protocol 030](../protocol-change/030-tool-output-stream.md), issue #186). PR #348, not yet merged. |
 | Local verification | One full `make check` passed: 4,191 Gleam tests, native helper checks, prelude verification, and house-rule lint. Installed native acceptance and matched measurements are recorded in the linked reports. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
@@ -52,13 +54,49 @@ remaining production finding. The native fixture separately exposed a prompt
 refused behind automatic inspection; the existing one-unsent-command mechanism
 now retains it until the authenticated read completes.
 
+### Streaming tool output and its verification
+
+Issue #186 is closed by PR #348, in six commits that each compile and pass
+their package gates alone. `tools/tail` is the rolling-tail primitive
+background jobs already had, moved down from `client/jobtail` so the
+foreground collector could share it. `tools/tool.collect_observed` shows
+`Ctx.observe_output` the whole bounded window (4 KiB, character boundaries,
+empty for non-UTF-8) of each stream after every chunk; `collect_events` is
+unchanged for the callers with no observer. `events/bus` gains the `Outputs`
+topic and `ToolOutput`, the first bus event carrying text; `subscribe_hints`
+keeps the projection driver off it. `client/serve` becomes the bus's first
+production publisher through `gateway.tool_output_observer`, the hub joins
+`Outputs` alone under network delivery and pushes each event as
+`tool_output`, and the terminal keeps one `ToolTail` per
+`{strand, operation, step, stream}`, replaced whole per frame.
+
+Verified locally on the branch before the rebase: `make lint` at zero errors
+for every package; every package gate green on its own — host, core,
+session, machine, prompt, telemetry, runtime, provider, broker, mcp, tools,
+cap, ext, codemode, events, client, conformance, lint and the Go sandbox —
+and `make doc-check` clean. Three tests miss in the container the branch was
+built in and were not weakened.
+`tui` `stream_bounds_test.a_long_live_stream_is_bounded_in_what_the_terminal_keeps_test`
+misses its drain-rate floor of 2000 deltas per second at about 1,900, and
+misses it identically on the commit before the terminal change; the memory
+bounds in the same test hold.
+`storage/snapshot_test.metadata_byte_limit_includes_keys_and_reference_payloads_test`
+answers `read_timed_out` before `MetadataTooLarge` inside a full package run,
+fails the same way at `main`, and passes run alone; `storage` carries no change
+on the branch. `client/daemon_soak_test`'s atom baseline drifted by four in
+one full run and held on a full rerun and alone. All three are the container's
+speed, and all three are what the hosted gate exists to settle.
+
 ## What to do next
 
-1. **Validate the reading follow-up.** Draft PR #349 is on
-   `tui/readable-scrollback`. **Exit:** hosted checks and Linux signoff on its
-   published head. The [reading follow-up review](review/readable-scrollback-review.md)
-   records the local evidence and merge-patch correction. Preserve running user sessions; the compiled candidate does
-   not replace an already-running client or daemon.
+1. **Land streaming tool output.** PR #348 carries
+   `claude/github-issue-186-yv2c5p` against `main`, referencing #186 and
+   [protocol 030](../protocol-change/030-tool-output-stream.md). **Exit:**
+   hosted macOS and Linux checks and Linux signoff pass on its head, then
+   merge through the normal gate. Follow-ups that are *not* part of the
+   exit: a job's output on the same feed (the runner already holds the
+   same `tools/tail` windows; publishing them is one more observer), and
+   the hint half of the bus, which still has no producer.
 
 2. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,
@@ -154,6 +192,16 @@ is redacted before persistence, classification uses the underlying error, and
 unconfirmed cleanup remains terminal. Retry-After reaches persisted machine
 retries; configured role fallback retains its existing immediate scheduling.
 
+**Running tool output is display state on the bus, not a hint.**
+[Protocol 029](../protocol-change/030-tool-output-stream.md) carries a
+running call's bounded output window as the `Outputs` topic's `ToolOutput`
+and the pushed `tool_output` frame. Every event and frame is the whole
+window, so receivers replace rather than append and loss costs nothing;
+the durable tool result stays the truth. Pull-driven subscribers join
+`subscribe_hints`, never `subscribe_all`. The route is the bus rather than
+the hub's named subject so a remote client or another node's hub can join
+it.
+
 **History retention is a payload bound.** Older pages retain at most 600 entry
 descriptors and 16 MiB of encoded payload. Source identity anchors the viewport;
 selected transcript cells remain frozen while live metadata progresses. Compact
@@ -189,6 +237,12 @@ bash scripts/test.sh provider --match failure_context
 bash scripts/test.sh runtime --match retry_hint
 bash scripts/test.sh tui --match history_view
 bash scripts/test.sh tui --match completion_summary
+bash scripts/test.sh tools --match bash_test
+bash scripts/test.sh events --match bus_test
+bash scripts/test.sh client --match tool_output
+bash scripts/test.sh client --match protocol_conformance
+bash scripts/test.sh tui --match tool_output_test
+bash scripts/test.sh tui --match stream_bounds
 ```
 
 The full local gate ran with the real native helper and prepared code-mode

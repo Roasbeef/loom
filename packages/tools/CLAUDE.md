@@ -76,8 +76,29 @@ can repair from.
   (`read`, `write`, `create_directory_all`, `is_file`, `read_link`, and
   `rename` — the last for the atomic staging the blob store needs),
   `blob_root`, `clear_call` — the broker seam every jailed execution
-  flows through — and `raise_refusal`, the other door onto the same
-  escalation plane.
+  flows through — `raise_refusal`, the other door onto the same
+  escalation plane, and `observe_output`, the seam a running execution's
+  rolling output tail is shown to after every chunk (issue #186).
+- `tools/tool.{OutputTail, tail_bytes, ignore_output, collect_observed}` —
+  the observation seam. `collect_observed` is `collect_events` showing
+  `observe` each stream's window after every `CallOutput` it folds;
+  `OutputTail(stream, tail, total_bytes)` is that observation, the *whole*
+  retained window (at most `tail_bytes`, 4 KiB, on character boundaries,
+  empty for bytes that are not UTF-8) rather than the chunk, so an
+  observer replaces what it shows and a dropped observation costs nothing
+  the next one does not restate. `ignore_output()` is the default seam.
+  `bash` and `grep` hand `ctx.observe_output` over; production wires it to
+  the event bus (`client/gateway.tool_output_observer`).
+- `tools/tail.{Tail, Since, new, push, since, received}` — a pure, bounded
+  rolling window over one output stream with a monotone byte cursor,
+  shared by the foreground collector above and the background job runner
+  in `client/jobs` (it moved here from `client/jobtail`). `push` drops
+  from the front past the capacity; `since(cursor)` answers with what
+  arrived after the cursor, the cursor to ask with next, and how many
+  bytes fell out in between. Both edges respect UTF-8, and the trailing
+  edge asks the last character's *lead byte* whether it is incomplete or
+  simply not UTF-8, so binary output is passed through rather than held
+  back forever.
 - `tools/tool.{RaisedRefusal, Escalated, no_raise}` — the raise seam a
   tool knocks on when it met a policy refusal somewhere `clear_call` is
   not. `RaisedRefusal` carries the broker's structured `Denial` (whose
@@ -278,7 +299,9 @@ can repair from.
 - **Depended on by**: `codemode` (the capability router renders a
   `tool.Collected` into a `cap_result`, which is why `tools` cannot
   import it back and `tools/codemode` mirrors its vocabulary instead),
-  `client` (`client/wiring` builds the per-call `Ctx`
+  `client` (`client/wiring` builds the per-call `Ctx` and resolves its
+  `observe_output` per run; `client/jobs` holds two `tools/tail` windows
+  per job
   and dispatches through the registry; `client/agency` fills the
   `agent.Agency` record, `client/codemode` fills the `CodeMode` record,
   and `client/jobtools` fills the `job.Jobs` record, and `client/contributions` registers all five families; `client/history` fills

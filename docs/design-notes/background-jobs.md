@@ -159,7 +159,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:120-127`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:343`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:351`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong
@@ -395,7 +395,7 @@ registers, and `Cut.cells` is namespace and key addressed
 (`storage/snapshot.gleam:149`), so the TUI's cut decoder can count
 `job/*` cells without a type change; poll results are tool results and
 already visible. `live_phase` cannot express *n* jobs because it is
-derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:3834`),
+derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:3966`),
 and we do not bend it: an idle strand with two jobs shows idle, with a
 job count beside it once the renderer grows one. A live `job_output`
 event and a jobs panel are follow-ups that #186 and #240 already own,

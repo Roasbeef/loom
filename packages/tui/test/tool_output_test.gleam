@@ -1,5 +1,5 @@
 //// What the terminal keeps of a running command's output, and how it
-//// draws it (`protocol-change/029`).
+//// draws it (`protocol-change/030`).
 ////
 //// A `tool_output` frame is a snapshot of one stream's window and not a
 //// fragment of it, so the properties worth pinning are the ones that

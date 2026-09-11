@@ -276,7 +276,7 @@ pub type Options {
     /// The event bus the hub listens on. A network hub joins only the
     /// `Outputs` topic — the rolling tails of running tool calls, which
     /// reach every subscribed peer as pushed `tool_output` frames
-    /// (`protocol-change/028`) — because a one-session server's writer
+    /// (`protocol-change/030`) — because a one-session server's writer
     /// sits in the same VM as its hub, so `commit_forwarder` already
     /// carries every commit's hint and a second hint source would make
     /// the same pull happen twice. The host fixture joins every topic,
@@ -1024,7 +1024,7 @@ pub fn tap_provider(
 /// `client/wiring.Config.observe_output` takes. Each tail is published on
 /// the bus as `ToolOutput` under the session's canonical id, where the
 /// hub's `Outputs` subscription turns it into a pushed `tool_output`
-/// frame for every subscribed peer (`protocol-change/028`).
+/// frame for every subscribed peer (`protocol-change/030`).
 ///
 /// The session id is read once per run rather than once per chunk: it is
 /// a register read, and a tool runs only after the runtime has minted it,
@@ -1390,7 +1390,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
     // A running command's tail is display state and not a hint: nothing
     // in the store moved, so there is nothing to pull, and the frame
-    // leaves on the path a provider delta takes (`protocol-change/028`).
+    // leaves on the path a provider delta takes (`protocol-change/030`).
     BusHint(published: bus.Published(
       event: bus.ToolOutput(op:, step:, stream:, tail:, total_bytes:),
       ..,
@@ -3068,7 +3068,7 @@ fn broadcast_delta(
 }
 
 // The rolling tail of a running tool call, to every subscribed peer
-// (`protocol-change/028`). Unlike a delta the text needs no clipping
+// (`protocol-change/030`). Unlike a delta the text needs no clipping
 // here: the collector already bounded it at `tools/tool.tail_bytes`, a
 // sixth of the preview bound a pushed frame is held to.
 fn broadcast_tool_output(

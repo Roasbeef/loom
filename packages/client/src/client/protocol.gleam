@@ -491,7 +491,7 @@ pub type Event {
   )
 
   /// The rolling tail of a running tool call's output (`ephemeral`
-  /// always true on the wire; `protocol-change/028`). `tail` is the
+  /// always true on the wire; `protocol-change/030`). `tail` is the
   /// whole retained window of one stream after its latest chunk, so a
   /// receiver replaces what it shows for `{op, step, stream}` rather
   /// than appending, and a dropped frame costs nothing the next one does

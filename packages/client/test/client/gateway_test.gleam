@@ -796,7 +796,7 @@ fn subscribe(harness: Harness) -> Nil {
 
 // --- running tool output ---------------------------------------------------
 
-/// `protocol-change/029`: a tail published on the session's `Outputs`
+/// `protocol-change/030`: a tail published on the session's `Outputs`
 /// topic reaches a subscribed peer as a pushed `tool_output` frame — no
 /// `reply_to`, no `seq`, the whole window as published — keyed by the
 /// runtime's canonical session id on both sides.

@@ -94,7 +94,7 @@ gateway also pushes three things:
   check per peer.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
-binary. It starts one `commit_forwarder` (`client/gateway.gleam:955`) per
+binary. It starts one `commit_forwarder` (`client/gateway.gleam:978`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
 `tap_provider(tap_preview_provider(...))` (`client/serve.gleam:2725`), so
@@ -152,8 +152,8 @@ pushed delivery.
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:2831`). Both paths call
-`check_binding` (`client/gateway.gleam:1942`) immediately before the
+through `deliver` (`client/gateway.gleam:2917`). Both paths call
+`check_binding` (`client/gateway.gleam:2027`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -198,7 +198,7 @@ prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
 `client/gateway.gleam:3486`). The queue is gateway memory and holds four
-prompts per strand (`held_per_strand`, `client/gateway.gleam:651`). A
+prompts per strand (`held_per_strand`, `client/gateway.gleam:670`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
 
@@ -232,8 +232,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4079`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2215`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:4211`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2300`) after `state.live` has
 been refreshed from the registers and before any frame leaves. Only the
 head of a queue is submitted (`drain_strand`,
 `client/gateway.gleam:3548`), since the writer would reject a second
@@ -276,7 +276,7 @@ absent field as the mark of a push. A frame that does carry `reply_to` is
 still matched against the outstanding request, so a stale or forged
 correlation still fails closed. A push belongs to no request: it consumes
 no credit, allocates no identity, and cannot fail the lane
-(`apply_pushed`, `tui/session_channel.gleam:501`).
+(`apply_pushed`, `tui/session_channel.gleam:518`).
 
 ```mermaid
 stateDiagram-v2
@@ -304,7 +304,7 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`tui/session_channel.gleam:1069`) starts the catch-up at the
+`send_queued` (`tui/session_channel.gleam:1101`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in `tick`
 (`tui/session_channel.gleam:732`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
@@ -317,7 +317,7 @@ before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
 
 Because a notice may correctly do nothing, the lane reports every one it
-reads as `Noticed` (`tui/session_channel.gleam:96`) before deciding what
+reads as `Noticed` (`tui/session_channel.gleam:117`) before deciding what
 to do with it, and the model counts those arrivals (`tui.gleam:365`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer. The other pushed

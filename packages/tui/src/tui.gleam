@@ -166,7 +166,7 @@ pub type Stream {
 }
 
 /// The rolling tail of one output stream of a tool call that is still
-/// running, as the daemon last pushed it (`protocol-change/028`).
+/// running, as the daemon last pushed it (`protocol-change/030`).
 ///
 /// It is kept apart from `Stream` because the two grow differently: a
 /// stream is appended to fragment by fragment, while a tail is *replaced*

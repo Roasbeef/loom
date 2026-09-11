@@ -165,6 +165,14 @@ that tree separately from the self-contained server.
 - `tui/protocol.Event` is the client-owned view of the frozen
   ClientGateway event union. Entry bodies cross the existing total
   `core/codec` decoder rather than growing a second durability codec.
+  `ToolOutput(strand, operation, step, stream, text, total_bytes)` is the
+  pushed rolling tail of a running tool call (`protocol-change/030`);
+  `session_channel.ToolStreamed` carries it through the adopted lane and
+  `tui.ToolTail` is what the model keeps — one per `{strand, operation,
+  step, stream}`, replaced whole on every frame, drawn by
+  `tui.tool_tail_lines` as one `ToolResult` line under the live region:
+  the stream's name and byte count so far, then the last
+  `tail_lines_shown` lines of the window.
 - `tui/connection.Connection` is a thin typed adapter over `host/websocket`.
   The shared host transport owns Stratus and deadline-bounded handshake
   startup. The terminal owns the destination inbox. After handshake, the
@@ -347,7 +355,8 @@ that tree separately from the self-contained server.
 - **Pushed frames in**: an envelope with no `reply_to` is a push. `committed`
   (with its sequence in the envelope) is a notice that moves a catch-up
   earlier; `presence` and `attachment` are the same trigger; `stream_delta`
-  is the live answer in order; a pushed `error` is a daemon-side failure
+  is the live answer in order; `tool_output` is a running command's tail,
+  whole each time; a pushed `error` is a daemon-side failure
   reported without closing the socket. An event name this client does not
   know is dropped. A daemon that predates live delivery pushes none of
   these, and the terminal behaves exactly as it did.
@@ -748,6 +757,15 @@ that tree separately from the self-contained server.
   An absent or unrelated latest result is not retirement evidence.
   Captured previews are rendered from the current cut and never appended to
   pushed history. Older recordings retain operation-only reconciliation.
+- **A tool tail is replaced, never appended.** A `tool_output` frame
+  carries the whole bounded window of one stream, so the model keeps one
+  `ToolTail` per `{strand, operation, step, stream}` and the newest frame
+  is the only one worth drawing; the region is the size of the last frame
+  however long the command runs, and a dropped frame costs nothing. Tails
+  clear with the strand's streams — on an entry landing and on the
+  operation reaching `done` — and a capture drops one once the durable
+  result for its operation is in view, by the evidence that retires a
+  stream. Another strand's tail is kept but not drawn.
 - **A live stream is bounded, and its text is owned.** `Stream` carries the
   bytes its fragments weigh, and past twice `tui.live_stream_limit` — 24 KiB,
   the same clip the snapshot preview takes — the fragments collapse into one
