@@ -52,6 +52,7 @@ fn ctx_for(step: String) -> Ctx {
     blob_root: workspace <> "/.blobs",
     clear_call: dead_broker,
     raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
   )
 }
 

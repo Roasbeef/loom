@@ -133,6 +133,7 @@ fn run_echo(
       blob_root: workspace <> "/.blobs",
       clear_call: tool.broker_runner(broker: broker_actor, waiting: 10_000),
       raise_refusal: tool.no_raise(),
+      observe_output: tool.ignore_output(),
     )
   bash.tool(job.unavailable()).run(
     ctx,

@@ -125,7 +125,11 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   )
   call.stdin(<<>>, True)
   use collected <- tool.or_outcome(
-    tool.collect_events(events, waiting: timeout_ms + settle_grace_ms),
+    tool.collect_observed(
+      events,
+      waiting: timeout_ms + settle_grace_ms,
+      observe: ctx.observe_output,
+    ),
     fn(_nil) {
       call.cancel()
       tool.failure("the sandbox did not settle the search within its window")

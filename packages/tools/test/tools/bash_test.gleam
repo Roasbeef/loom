@@ -1,6 +1,7 @@
 import broker/broker
 import broker/escalation
 import broker/exec
+import broker/framing
 import broker/policy
 import core/json
 import core/message
@@ -246,6 +247,168 @@ pub fn bash_chunks_concatenate_in_order_test() {
       command_args("echo"),
     )
   assert string.contains(first_text(outcome), "one two three")
+}
+
+// --- the observer -------------------------------------------------------
+
+// A `Ctx` whose observer records every tail it is shown, so a test can
+// see what a watching terminal would have seen and when.
+fn observing_ctx(
+  script: List(broker.CallEvent),
+  recorded: process.Subject(fake_broker.Recorded),
+  observed: process.Subject(tool.OutputTail),
+) -> tool.Ctx {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let ctx = fake_broker.ctx(workspace:, filesystem:, now:, script:, recorded:)
+  tool.Ctx(..ctx, observe_output: fn(observed_tail) {
+    process.send(observed, observed_tail)
+  })
+}
+
+pub fn bash_shows_the_observer_each_chunk_as_it_lands_test() {
+  // Two stdout chunks and one on stderr. The observer must be shown the
+  // window three times — once per chunk, not once at settlement — and
+  // each observation is the *whole* window so far, not the chunk alone:
+  // that is what lets a terminal that missed one observation still show
+  // the right thing on the next.
+  let recorded = process.new_subject()
+  let observed = process.new_subject()
+  let ctx =
+    observing_ctx(
+      [
+        fake_broker.stdout("compiling core\n"),
+        fake_broker.stderr("warning: unused\n"),
+        fake_broker.stdout("compiling tools\n"),
+        fake_broker.exited(code: 0, stdout_bytes: 31),
+      ],
+      recorded,
+      observed,
+    )
+  let outcome = bash.tool(job.unavailable()).run(ctx, command_args("make"))
+  assert outcome.is_error == False
+
+  let assert Ok(first) = process.receive(observed, 1000)
+  assert first
+    == tool.OutputTail(
+      stream: framing.Stdout,
+      tail: "compiling core\n",
+      total_bytes: 15,
+    )
+  let assert Ok(second) = process.receive(observed, 1000)
+  assert second
+    == tool.OutputTail(
+      stream: framing.Stderr,
+      tail: "warning: unused\n",
+      total_bytes: 16,
+    )
+  let assert Ok(third) = process.receive(observed, 1000)
+  assert third
+    == tool.OutputTail(
+      stream: framing.Stdout,
+      tail: "compiling core\ncompiling tools\n",
+      total_bytes: 31,
+    )
+
+  // Settlement is not an observation: the durable result carries the
+  // whole output, and a fourth tail would be a duplicate of the third.
+  assert process.receive(observed, 50) == Error(Nil)
+}
+
+pub fn bash_observes_output_before_settlement_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let recorded = process.new_subject()
+  let observed = process.new_subject()
+  let gate = process.new_subject()
+  let finished = process.new_subject()
+  let ctx =
+    fake_broker.held_settlement_ctx(
+      workspace:,
+      filesystem:,
+      now:,
+      recorded:,
+      gate:,
+    )
+    |> fn(ctx) {
+      tool.Ctx(..ctx, observe_output: fn(tail) { process.send(observed, tail) })
+    }
+
+  process.spawn_unlinked(fn() {
+    process.send(
+      finished,
+      bash.tool(job.unavailable()).run(ctx, command_args("make")),
+    )
+  })
+
+  // The call cannot finish until its gate is released, so receiving this tail
+  // first proves that the observer is fed during execution.
+  let assert Ok(tail) = process.receive(observed, 1000)
+    as "the running call must publish its first output chunk"
+  assert tail
+    == tool.OutputTail(
+      stream: framing.Stdout,
+      tail: "still running\n",
+      total_bytes: 14,
+    )
+  assert process.receive(finished, 0) == Error(Nil)
+    as "the observed call is still waiting for settlement"
+
+  let assert Ok(release) = process.receive(gate, 1000)
+    as "the settlement holder must publish its release subject"
+  process.send(release, Nil)
+  let assert Ok(outcome) = process.receive(finished, 1000)
+    as "the released call must settle"
+  assert outcome.is_error == False
+}
+
+pub fn bash_observer_sees_a_bounded_tail_of_a_long_stream_test() {
+  // A stream longer than the window: the observer is shown the *last*
+  // `tail_bytes` of it, the count says how much there really was, and
+  // the collected result is still the whole output.
+  let recorded = process.new_subject()
+  let observed = process.new_subject()
+  let line = string.repeat("x", 1023) <> "\n"
+  let ctx =
+    observing_ctx(
+      [
+        fake_broker.stdout(string.repeat(line, 3)),
+        fake_broker.stdout(string.repeat(line, 3)),
+        fake_broker.exited(code: 0, stdout_bytes: 6144),
+      ],
+      recorded,
+      observed,
+    )
+  let outcome = bash.tool(job.unavailable()).run(ctx, command_args("yes"))
+  assert outcome.is_error == False
+  let assert Ok(_first) = process.receive(observed, 1000)
+  let assert Ok(second) = process.receive(observed, 1000)
+  assert second.total_bytes == 6144
+  assert string.byte_size(second.tail) == tool.tail_bytes
+  assert string.ends_with(second.tail, line)
+}
+
+pub fn bash_observer_is_shown_no_text_for_binary_output_test() {
+  // Bytes that are not UTF-8 have no text to show; the observation still
+  // says the stream is moving, and the collected result carries the bytes.
+  let recorded = process.new_subject()
+  let observed = process.new_subject()
+  let ctx =
+    observing_ctx(
+      [
+        broker.CallOutput(
+          stream: framing.Stdout,
+          data: <<0xff, 0xfe, 0xfd>>,
+          total_bytes: 0,
+          truncated: False,
+        ),
+        fake_broker.exited(code: 0, stdout_bytes: 3),
+      ],
+      recorded,
+      observed,
+    )
+  let _outcome = bash.tool(job.unavailable()).run(ctx, command_args("cat"))
+  let assert Ok(seen) = process.receive(observed, 1000)
+  assert seen
+    == tool.OutputTail(stream: framing.Stdout, tail: "", total_bytes: 3)
 }
 
 pub fn bash_no_output_test() {

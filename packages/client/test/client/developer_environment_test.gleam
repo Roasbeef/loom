@@ -115,6 +115,7 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
       blob_root: workspace <> "/.blobs",
       clear_call: tool.broker_runner(broker: owner, waiting: 10_000),
       raise_refusal: tool.no_raise(),
+      observe_output: tool.ignore_output(),
     )
 
   // Native search must use the same installed rg as the shell. Its own

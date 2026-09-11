@@ -1046,6 +1046,7 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
     blob_root: config.blob_root,
     clear_call: escalating_runner(config, run),
     raise_refusal: raising_seam(config, run),
+    observe_output: tool.ignore_output(),
   )
 }
 

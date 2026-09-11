@@ -272,7 +272,11 @@ fn foreground(
   // stdin terminate instead of hanging.
   call.stdin(<<>>, True)
   use collected <- tool.or_outcome(
-    tool.collect_events(events, waiting: timeout + settle_grace_ms),
+    tool.collect_observed(
+      events,
+      waiting: timeout + settle_grace_ms,
+      observe: ctx.observe_output,
+    ),
     fn(_nil) {
       call.cancel()
       tool.failure("the sandbox did not settle the command within its window")

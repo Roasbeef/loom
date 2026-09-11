@@ -73,6 +73,39 @@ pub fn silent_ctx(
   })
 }
 
+/// A `Ctx` that emits one stdout chunk immediately and holds settlement
+/// until its returned release subject is signalled. Tests use this to
+/// distinguish a live observation from output reported only after a call has
+/// finished.
+pub fn held_settlement_ctx(
+  workspace workspace: String,
+  filesystem filesystem: tool.FileSystem,
+  now now: Int,
+  recorded recorded: Subject(Recorded),
+  gate gate: Subject(Subject(Nil)),
+) -> Ctx {
+  base_ctx(workspace, filesystem, now, fn(spec, events) {
+    process.send(recorded, Spec(spec:))
+    process.send(events, stdout("still running\n"))
+
+    // Settlement stays unreachable until the test releases it, while the
+    // tool's collector remains free to consume and publish the first chunk.
+    process.spawn_unlinked(fn() {
+      let release = process.new_subject()
+      process.send(gate, release)
+      let assert Ok(Nil) = process.receive(release, 1000)
+        as "the test must release the held settlement"
+      process.send(events, exited(code: 0, stdout_bytes: 14))
+    })
+    Ok(
+      tool.RunningCall(
+        stdin: fn(data, eof) { process.send(recorded, Stdin(data:, eof:)) },
+        cancel: fn() { process.send(recorded, Cancelled) },
+      ),
+    )
+  })
+}
+
 fn base_ctx(
   workspace: String,
   filesystem: tool.FileSystem,
@@ -97,6 +130,7 @@ fn base_ctx(
     blob_root: workspace <> "/.blobs",
     clear_call:,
     raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
   )
 }
 
