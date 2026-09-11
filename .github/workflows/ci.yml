@@ -410,6 +410,12 @@ jobs:
           chmod +x bin/* packages/sandbox/loom-exec
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
+      - name: Install developer fixture tools
+        if: matrix.bucket == 'client'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+
       - name: make check (${{ matrix.bucket }})
         # Set for every bucket, as the old single job set it for the whole
         # of `make check`: more than one package reads it (the client's
