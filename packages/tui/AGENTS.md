@@ -11,6 +11,18 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- Reading mode remains frozen at offset zero until an explicit return to live
+  output. Older-page demand follows the visible boundary, including pages
+  containing only other strands. Expanded tool results reuse the compact
+  invocation's source identity through `Call.result_source`.
+- Bracketed inline paste inserts at the editor cursor, retaining both sides of
+  an existing draft. Historical note digests and message bodies use readable
+  nested text; Ctrl-G expands their complete content. Markdown wrapping keeps
+  leading indentation on continuation rows.
+- Successful `context_remaining` calls retain a compact measurement row. The
+  remaining budget names the checkpoint when enabled and the context limit
+  otherwise. Older results without structured details retain their text.
+
 - Compact successful `fs_edit` rows include a 24-line inline patch preview;
   expanded history uses the same patch projection with the complete result.
   Failed edits and older results without a diff retain their summaries.
