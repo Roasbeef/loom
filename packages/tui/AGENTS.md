@@ -161,6 +161,21 @@ that tree separately from the self-contained server.
   the open `--record` file, held in the `Model` because the inbox is drained
   inside `update_tick` and there is no other point at which both a websocket
   message and the recording are in scope.
+- `tui/herdr` is the Herdr multiplexer integration, compiled in because this
+  terminal is a single binary with no hook directory for Herdr's installer
+  to drop a script into. `configure` gates on `HERDR_ENV=1` plus
+  `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, the same three variables every
+  scriptable-host adapter reads. `state_for` maps the model onto the pane's
+  state — a pending approval is `blocked`, any live strand phase is
+  `working`, a settled operation is `done` — and the reducer hands the
+  publisher the settlement as a consumed flag, because a strand is idle
+  before and after and the table alone cannot see the transition. Reports
+  are `pane.report_agent` and `pane.report_agent_session` over the pane's
+  unix socket, sequenced from the launch clock, sent only on change by a
+  dedicated unlinked reporter process, retried once and then dropped: the
+  terminal's own session always wins over a pane report. The one external
+  is `tui/internal/ffi_herdr.exchange`, a deadline-bounded `gen_tcp`
+  unix-domain round trip, because no stdlib or weft surface opens one.
 - `tui/frame` renders a `Buffer` as rows of text, folding a wide glyph's
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what
