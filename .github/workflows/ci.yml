@@ -410,11 +410,16 @@ jobs:
           chmod +x bin/* packages/sandbox/loom-exec
           find build -type f -name 'entrypoint.sh' -exec chmod +x {} +
 
-      - name: Install developer fixture tools
+      # The developer fixture checks both host and restricted read views.
+      # Restricted reads need bwrap's mount namespace, as in the jail job.
+      - name: Install developer fixture tools and jail
         if: matrix.bucket == 'client'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ripgrep
+          sudo apt-get install -y --no-install-recommends ripgrep bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: make check (${{ matrix.bucket }})
         # Set for every bucket, as the old single job set it for the whole
