@@ -164,6 +164,27 @@ pub type Event {
     text: String,
   )
 
+  /// The rolling tail of one output stream of a tool call that is still
+  /// running. Unlike a `StreamDelta` this is a snapshot and not a
+  /// fragment: the renderer replaces what it shows for
+  /// `{operation, step, stream}`, so a dropped frame costs nothing the
+  /// next one does not restate, and the settled tool-result entry
+  /// supersedes it wholly.
+  ToolOutput(
+    /// The strand whose call is printing.
+    strand: String,
+    /// The operation the call belongs to.
+    operation: String,
+    /// The step within the operation; one call batch.
+    step: String,
+    /// `stdout` or `stderr`; open-set, shown verbatim.
+    stream: String,
+    /// The whole retained window of the stream, sanitized later.
+    text: String,
+    /// How many bytes the stream has carried in all.
+    total_bytes: Int,
+  )
+
   /// A durable entry the daemon has committed and this terminal has not
   /// fetched. The notice carries no record: the sequence is what makes the
   /// terminal issue its catch-up now instead of at the idle refresh.
@@ -470,6 +491,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ConfigSnapshot(_)
     | EntryAdded(_)
     | StreamDelta(..)
+    | ToolOutput(..)
     | Committed(..)
     | MetadataChanged
     | OperationChanged(..)
@@ -549,6 +571,7 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "snapshot" -> decode_snapshot(body)
     "entry" -> result.map(decode_entry_record(body), EntryAdded)
     "stream_delta" -> decode_delta(body)
+    "tool_output" -> decode_tool_output(body)
     "op_transition" -> decode_operation(body)
     "usage" -> decode_usage(body)
     "escalation" -> decode_escalation(body)
@@ -721,6 +744,17 @@ fn decode_delta(body: JsonValue) -> Result(Event, String) {
     _ -> option.unwrap(text, "")
   }
   Ok(StreamDelta(strand:, operation:, generation:, kind:, text: content))
+}
+
+fn decode_tool_output(body: JsonValue) -> Result(Event, String) {
+  use fields <- result.try(object_fields(body, "tool_output body"))
+  use strand <- result.try(required_string(fields, "strand"))
+  use operation <- result.try(required_string(fields, "op"))
+  use step <- result.try(required_string(fields, "step"))
+  use stream <- result.try(required_string(fields, "stream"))
+  use text <- result.try(required_string(fields, "tail"))
+  use total_bytes <- result.try(required_int(fields, "total_bytes"))
+  Ok(ToolOutput(strand:, operation:, step:, stream:, text:, total_bytes:))
 }
 
 fn decode_operation(body: JsonValue) -> Result(Event, String) {
