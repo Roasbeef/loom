@@ -663,3 +663,42 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
   })
     as "Ctrl+g retains the call whose long output the reader was inspecting"
 }
+
+pub fn aborted_turns_show_stopped_with_expandable_diagnostics_test() {
+  let #(placed, body) = original(1)
+  let assert entry.MessageEntry(..) = placed as "the fixture is a message"
+  let assert message.AssistantMessage(..) = body
+    as "the fixture is an assistant"
+  let diagnostic =
+    "provider cancellation could not be confirmed (runtime: explicit stop)"
+  let stopped =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(
+        ..body,
+        content: [],
+        stop_reason: message.Aborted,
+        error_message: Some(diagnostic),
+      ),
+    )
+  let #(compact, shown) = model() |> received(stopped) |> painted
+  assert string.contains(shown, "Stopped")
+  assert !string.contains(shown, diagnostic)
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "Stopped")
+  assert string.contains(expanded, diagnostic)
+  let failed =
+    entry.MessageEntry(
+      ..placed,
+      message: message.AssistantMessage(
+        ..body,
+        content: [],
+        stop_reason: message.Errored,
+        error_message: Some(diagnostic),
+      ),
+    )
+  let #(_, failure) = model() |> received(failed) |> painted
+  assert string.contains(failure, diagnostic)
+  assert !string.contains(failure, "Stopped")
+}

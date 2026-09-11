@@ -4091,7 +4091,12 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   let id = ids.entry_id_to_string(value.id)
   case value {
     entry.MessageEntry(
-      message: message.AssistantMessage(content:, error_message:, ..),
+      message: message.AssistantMessage(
+        content:,
+        error_message:,
+        stop_reason:,
+        ..,
+      ),
       ..,
     ) -> {
       let blocks =
@@ -4103,10 +4108,14 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
           }
           #(key, assistant_block_lines(block, details))
         })
-      case error_message {
-        Some(reason) ->
-          list.append(blocks, [#(id <> "/error", [Line(Failure, reason)])])
-        None -> blocks
+      let terminal =
+        assistant_terminal_lines(stop_reason, error_message, case details {
+          True -> notes_view.Complete
+          False -> notes_view.Excerpt
+        })
+      case terminal {
+        [] -> blocks
+        _ -> list.append(blocks, [#(id <> "/terminal", terminal)])
       }
     }
     _ -> [#(id, entry_lines(value, details, owner))]
@@ -6199,19 +6208,45 @@ fn message_lines(
         },
       ),
     ]
-    message.AssistantMessage(content:, error_message:, ..) -> {
+    message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
       let lines =
         list.flat_map(content, assistant_block_lines(_, details_expanded))
-      case error_message {
-        Some(reason) -> list.append(lines, [Line(Failure, reason)])
-        None -> lines
-      }
+      list.append(
+        lines,
+        assistant_terminal_lines(
+          stop_reason,
+          error_message,
+          case details_expanded {
+            True -> notes_view.Complete
+            False -> notes_view.Excerpt
+          },
+        ),
+      )
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
       tool_result_lines(tool_name, content, details, is_error, details_expanded)
     message.CustomMessage(schema:, payload:) -> [
       Line(System, schema <> " · " <> json.to_string(payload)),
     ]
+  }
+}
+
+// The durable stop reason distinguishes a user abort from a failed turn.
+// Runtime publication already waits for provider drain; a retained diagnostic
+// describes its acknowledgement, not an operation that is still running.
+fn assistant_terminal_lines(
+  reason: message.StopReason,
+  diagnostic: Option(String),
+  extent: notes_view.Extent,
+) -> List(Line) {
+  case reason, diagnostic, extent {
+    message.Aborted, Some(text), notes_view.Complete -> [
+      Line(System, "Stopped"),
+      Line(ToolDetail, text),
+    ]
+    message.Aborted, _, _ -> [Line(System, "Stopped")]
+    _, Some(text), _ -> [Line(Failure, text)]
+    _, None, _ -> []
   }
 }
 
