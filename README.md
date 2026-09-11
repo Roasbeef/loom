@@ -577,6 +577,14 @@ workspace or the operator, so standing operator instructions are
 distinguishable from a project's. Every one of these reads warns and
 continues — an oversize, unreadable or absent file never stops a boot.
 
+**Markdown skills.** The daemon discovers `SKILL.md` libraries under
+`~/.agents/skills` and `~/.claude/skills`, with compatibility aliases described
+in [the skills guide](docs/skills.md). The terminal completes loaded skill
+names with Tab. The model initially sees names and descriptions, then calls
+`load_skill` to load a selected document. `/skill-name arguments` activates it
+explicitly. Invocation flags control visibility; skill instructions do not
+change tool permissions.
+
 **Code mode** is registered only when the host has a Gleam compiler, an
 emulator, and a build seed whose dependency table matches the compile
 service's. A release carries all three; a checkout registers it once

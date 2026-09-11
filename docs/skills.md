@@ -23,6 +23,28 @@ that runtime refreshes files. Existing sessions retain their active tool names;
 start a new session to receive newly introduced tools such as `load_skill`.
 There is no filesystem watcher.
 
+## A minimal skill
+
+Create `~/.agents/skills/explain-change/SKILL.md`:
+
+```markdown
+---
+name: explain-change
+description: Explain a code change and its validation to a reviewer.
+argument-hint: "[change or question]"
+---
+Explain $ARGUMENTS from the source and available test results. State the
+behavior before and after, and distinguish evidence from assumptions.
+```
+
+After starting a new session runtime, type `/explain-ch` and press Tab. Add
+arguments and submit, for example `/explain-change the queue editor`.
+The model can also select this skill automatically from its description.
+
+To make a skill explicit-only, add `disable-model-invocation: true`. To permit
+model selection while hiding its slash command, add `user-invocable: false`.
+These are independent settings.
+
 ## Progressive disclosure
 
 The model initially sees only the available names and descriptions in the

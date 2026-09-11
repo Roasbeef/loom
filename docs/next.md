@@ -6,9 +6,8 @@ accounts belong in their own documents.
 
 Re-baselined September 10, 2026 against merged PR #344 (`329002f1`) and the
 local Markdown-skills implementation through `5626d1b5` on
-`codex/skill-discovery`. GitHub merge,
-run and issue states were checked again for this edition. The skill change has
-local verification and review; it has not been pushed or given Linux signoff.
+`codex/skill-discovery`. GitHub merge, run and issue states were checked again
+for this edition. The skill change has local verification and review; it has not been pushed or given Linux signoff.
 
 ## Where the tree is
 
@@ -70,10 +69,10 @@ wrong error. Both were corrected and the reviewer confirmed no open findings.
 
 ## What to do next
 
-1. **Integrate Markdown skills when requested.** The current feature is local
-   on `codex/skill-discovery`. **Exit:** publish the reviewed commits, pass the
-   exact head's hosted checks and required Linux signoff, then merge through
-   the normal gate. The earlier #344 merge authorization covered that PR.
+1. **Integrate Markdown skills.** Publication and merge after successful gates
+   were authorized on September 10. **Exit:** open the PR from
+   `codex/skill-discovery`, pass its exact head's macOS and Linux hosted checks
+   and required Linux signoff, then merge through the normal gate.
 
 2. **Finish the remaining video acceptance.** Exercise reading and selection
    under sustained output across layouts, the joined reconnect/held-tool/multiple
@@ -142,7 +141,8 @@ to `broker.abort_step`; operation-wide abort keeps its separate meaning in
 [016](../protocol-change/016-record-human-origin.md), and
 [020](../protocol-change/020-minimal-jail-root.md) own activation, origin, and
 minimal roots. Explicit toolchain/support mounts remain configuration choices.
-Skill discovery uses the configured daemon home; it does not grant access to referenced resources.
+Skill discovery uses the configured daemon home; it does not grant access to
+referenced resources.
 
 **Portable decisions and process ownership keep their boundaries.**
 `core`, `machine`, and `prompt` remain free of I/O and external functions.
