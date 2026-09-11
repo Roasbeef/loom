@@ -11,6 +11,7 @@
 
 -module(cap_ffi).
 -export([
+    exit_diagnostic/1,
     put_channel/1,
     get_channel/0,
     put_owner/1,
@@ -26,6 +27,29 @@
 
 -define(KEY, {cap, channel}).
 -define(OWNER_KEY, {cap, channel_owner}).
+
+%% The monitored process is the submitted program. Keep its assertion value
+%% and location, omitting the stack and bounding both traversal and output.
+exit_diagnostic({Reason, Stack}) when is_list(Stack) ->
+    exit_diagnostic(Reason);
+exit_diagnostic(Reason) ->
+    case Reason of
+        #{gleam_error := Kind} ->
+            Message = diagnostic_term(maps:get(message, Reason, Kind), 512),
+            Value = diagnostic_term(maps:get(value, Reason, Kind), 1200),
+            Location = diagnostic_term({maps:get(file, Reason, undefined),
+                maps:get(line, Reason, undefined)}, 256),
+            <<Message/binary, " value: ", Value/binary,
+                " at ", Location/binary>>;
+        _ -> diagnostic_term(Reason, 2048)
+    end.
+
+%% Format each useful field separately so map iteration cannot consume the
+%% depth budget before reaching the failed value.
+diagnostic_term(Term, Limit) ->
+    unicode:characters_to_binary(
+        io_lib:format("~0tP", [Term, 24], [{chars_limit, Limit}])
+    ).
 
 %% Store the channel term. Overwrites any prior value; the boot module
 %% guards a kept-alive re-install through `install_exclusive`, which
