@@ -232,16 +232,15 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4237`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2323`) after `state.live` has
-been refreshed from the registers and before any frame leaves. Only the
-head of a queue is submitted (`drain_strand`,
-`client/gateway.gleam:3548`), since the writer would reject a second
-prompt on the strand it has just opened. A `StrandBusy` at drain time
-keeps the head in place for the next transition. Any other refusal
-belongs to that prompt alone: the prompt is dropped and the submitter
-receives a pushed `error`. The next held prompt is then tried at once,
-because nothing else will transition an idle strand.
+`drain_idle_strands` (`client/gateway.gleam:4369`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2234`) after `state.live` has
+been refreshed from the registers and before any frame leaves. Ordinarily only
+the head is submitted. An explicit abort marks the existing `HeldQueue` as
+`AllHeld`; `drain_strand` (`client/gateway.gleam:4381`) then passes its complete
+message list to one runtime admission. A `StrandBusy` refusal retains the items
+and mode. Another refusal is reported to every affected submitter before the
+rejected batch retires. An empty queue retains no drain intent. Natural
+completion and steer-triggered cancellation continue to drain one head.
 
 ```mermaid
 stateDiagram-v2
