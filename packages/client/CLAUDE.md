@@ -2019,6 +2019,61 @@ an install is under the extensions root. `state_root` is the third: the
 daemon's credentials sit one directory above the extensions root and the
 build plane masks them where the jail can build the mask.
 
+## Imported hooks
+
+The Claude-compatible hook layer (issue #350) is six modules, one
+question each, and one composition point in `serve`:
+
+- `client/hookcompat` — the model both accepted formats decode into: the
+  Claude settings JSON verbatim and the native `[[hooks.Event]]` TOML.
+  Both parsers are total with worded errors; unknown handler *fields* are
+  ignored (Claude ignores them), an unknown event or handler type is a
+  refusal. `merge` concatenates in the caller's precedence order and
+  never replaces; `to_toml` renders the native shape losslessly for the
+  converter; `hash` digests the model canonically for the trust record;
+  `notes` reports unsupported kinds and no-moment events at load time
+  rather than loading them silently.
+- `client/hookrunner` — one imported command hook as one jailed
+  process through `broker.clear_call`, the worktree observation's own
+  pattern: `sh -c` shell form or `args` exec form, the event JSON on stdin
+  closed after, the handler's `timeout` seconds as the wall limit and
+  the budget deadline, a timed-out run reporting `WallCancelled` with no
+  output for the caller to read a decision out of. The environment is the
+  session's (`session_environment` plus `CLAUDE_PROJECT_DIR`), the cwd is
+  the workspace, and the jail is the session's base policy — never a
+  grant the hook could widen.
+- `client/hookdecisions` — a finished outcome read back as the decision
+  the pinned contract (`docs/design-notes/claude-hooks-contract.md`)
+  specifies, per event: exit 2's block, the `hookSpecificOutput` field
+  set guarded by its `hookEventName`, plain-stdout context on the four
+  context-carrying events, and the 10,000-character cap.
+- `client/hookwire` — the event boundary: the matcher classification
+  (exact lists versus unanchored regex by the contract's character
+  rule), the payload's common fields, the Loom↔Claude tool-name mapping
+  (`bash`→`Bash`, `fs_write`→`Write`, …) applied to matching only, and
+  the verdict combination rules — first deny wins, a rewrite survives
+  only when nothing harder landed.
+- `client/hookserve` — source loading with per-source trust (`client/hooktrust`)
+  and the composed gates: `tool_gate` at the clearance, `tool_feedback` at
+  the result fold, `session_context` at run start, `compaction_note` at
+  the summarizer, `stop_gate` at the run-end boundary. `wire` wraps a
+  session's `Effects` the way the native extension bus's `wire` does, so
+  both layers coexist; the Stop gate's consecutive-continuation cap is
+  counted in a small `weft/actor` because the `run_end` slot is a plain
+  function that can keep no state of its own.
+- `client/hooktrust` — the recorded, hash-pinned trust a non-managed
+  source needs before it runs: one JSON record per source under the
+  trust root, so a changed file re-enters review. The operator's
+  user-level settings are trusted on first sight; a project file asks
+  first.
+
+`serve.with_imported_hooks` is the one composition point, called after
+`with_extension_hooks` so an imported hook's verdict lands after the
+native bus's and the harness's own clearance — one authority story.
+A session with no imported sources composes nothing. The parity
+matrix is `docs/architecture/hooks-compat.md`; the fixtures are
+`docs/fixtures/hooks-compat/`.
+
 ## Relationships
 
 - **Depends on**: `host` (shared daemon OS bootstrap and WebSocket transport),
