@@ -187,6 +187,9 @@ pub type Command {
   /// Reads the bounded live job roster of one strand.
   LiveJobsGet(strand: String)
 
+  /// Observes one strand's context without running hooks or a model.
+  ContextGet(strand: String)
+
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
 
@@ -256,6 +259,9 @@ pub type Snapshot {
 
   /// Live job rows captured from the jobs actor.
   LiveJobsSnapshot(board: JsonValue)
+
+  /// Bounded asynchronous context accounting.
+  ContextSnapshot(board: JsonValue)
 
   /// Complete editable text and revision of one transient held input.
   QueuedInputSnapshot(board: JsonValue)
@@ -719,6 +725,10 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       "create_strand",
       object_of([#("name", option.map(name, json.String))]),
     )
+    ContextGet(strand:) -> #(
+      "context",
+      json.Object([#("strand", json.String(strand))]),
+    )
     WorktreeDiffGet -> #("worktree_diff", json.Object([]))
     LiveJobsGet(strand:) -> #(
       "live_jobs",
@@ -963,6 +973,11 @@ fn decode_command_body(
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
       Ok(LiveJobsGet(strand:))
+    }
+    "context" -> {
+      use fields <- result.try(body_fields(body))
+      use strand <- result.try(required_string(fields, "strand"))
+      Ok(ContextGet(strand:))
     }
     "models" -> Ok(ListModels)
     "skills" -> {
@@ -1212,6 +1227,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       ])
     WorktreeDiffSnapshot(board:) ->
       json.Object([#("mode", json.String("worktree_diff")), #("board", board)])
+    ContextSnapshot(board:) ->
+      json.Object([#("mode", json.String("context")), #("board", board)])
     LiveJobsSnapshot(board:) ->
       json.Object([#("mode", json.String("live_jobs")), #("board", board)])
     QueuedInputSnapshot(board:) ->
@@ -1743,6 +1760,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         |> result.replace_error("missing worktree_diff board"),
       )
       Ok(SnapshotEvent(WorktreeDiffSnapshot(board:)))
+    }
+    "context" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing context board"),
+      )
+      Ok(SnapshotEvent(ContextSnapshot(board:)))
     }
     "live_jobs" -> {
       use board <- result.try(

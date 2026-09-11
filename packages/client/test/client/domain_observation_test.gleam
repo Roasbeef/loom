@@ -120,7 +120,12 @@ fn final_frame(socket: Socket, id: Int) -> json.JsonValue {
               reply_to: None,
               event: protocol.SnapshotEvent(protocol.WorktreeDiffSnapshot(board)),
               ..,
-            )) ->
+            ))
+            | Ok(protocol.EventEnvelope(
+                reply_to: None,
+                event: protocol.SnapshotEvent(protocol.ContextSnapshot(board)),
+                ..,
+              )) ->
               case field(board, "request_id") == json.Int(id) {
                 True -> poll.Done(board)
                 False -> poll.Retry
@@ -309,11 +314,66 @@ fn no_observation(inbox: Subject(String), id: Int, remaining: Int) -> Bool {
             Ok(protocol.EventEnvelope(
               event: protocol.SnapshotEvent(protocol.WorktreeDiffSnapshot(board)),
               ..,
-            )) ->
+            ))
+            | Ok(protocol.EventEnvelope(
+                event: protocol.SnapshotEvent(protocol.ContextSnapshot(board)),
+                ..,
+              )) ->
               field(board, "request_id") != json.Int(id)
               && no_observation(inbox, id, remaining - 1)
             _ -> no_observation(inbox, id, remaining - 1)
           }
       }
   }
+}
+
+pub fn context_is_an_ordinary_read_and_shares_bounded_observation_slots_test() {
+  let runtime = runtime()
+  let started = process.new_subject()
+  let capture = fn() {
+    let release = process.new_subject()
+    process.send(started, release)
+    let assert Ok(Nil) = process.receive(release, 5000)
+      as "the fixture releases its read worker"
+    Ok(json.Object([#("strand", json.String("main"))]))
+  }
+  let options =
+    gateway.default_options("context-observations", runtime)
+    |> gateway.with_context(fn(_) { capture() })
+    |> gateway.with_worktree_diff(capture)
+  let assert Ok(hub) = gateway.start(options, addresses.new())
+    as "the shared observation gateway starts"
+  let observer =
+    attach(
+      hub.data,
+      runtime,
+      "context-observer",
+      access.Participant(access.Observer),
+    )
+  let owner = attach(hub.data, runtime, "context-owner", access.Owner)
+  let third = attach(hub.data, runtime, "context-third", access.Owner)
+  let assert protocol.SnapshotEvent(protocol.ContextSnapshot(pending)) =
+    request(observer, 30, protocol.ContextGet("main"))
+    as "an observer can inspect the context it can read"
+  assert field(pending, "status") == json.String("pending")
+  let assert Ok(release_context) = process.receive(started, 1000)
+    as "context runs outside the gateway handler"
+  let assert protocol.ErrorEvent(code: "busy", ..) =
+    request(observer, 31, protocol.ContextGet("main"))
+    as "one context worker occupies this connection's only slot"
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    request(observer, 32, protocol.WorktreeDiffGet)
+    as "ordinary context access does not widen workspace access"
+  let assert protocol.SnapshotEvent(protocol.WorktreeDiffSnapshot(_)) =
+    request(owner, 33, protocol.WorktreeDiffGet)
+    as "worktree reads occupy the same worker pool"
+  let assert Ok(release_worktree) = process.receive(started, 1000)
+    as "the second shared slot starts"
+  let assert protocol.ErrorEvent(code: "busy", ..) =
+    request(third, 34, protocol.ContextGet("main"))
+    as "mixed observers cannot exceed the global bound"
+  process.send(release_context, Nil)
+  assert field(final_frame(observer, 30), "status") == json.String("ready")
+  process.send(release_worktree, Nil)
+  assert field(final_frame(owner, 33), "status") == json.String("ready")
 }

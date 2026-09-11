@@ -2322,6 +2322,17 @@ build plane masks them where the jail can build the mask.
   literal identities; at most 24 files and 40,960 encoded board bytes are
   retained, with omitted files and partial patches explicit. The pinned HEAD
   and subsequent filesystem reads form an observation, not an atomic snapshot.
+- **Current context is a server observation.** `ContextGet(strand)` captures
+  `StrandConfig` and `StrandLeaf` together, then projects the immutable branch
+  through its latest compaction. `client/context_view` prices the pinned prompt,
+  active unique tool definitions, and projected messages. A usable provider
+  total already includes static components; `runtime/hooks.context_tokens`
+  adds only newer message estimates. Carried pre-compaction usage is excluded.
+  The separate compaction count preserves the existing policy's message-only
+  fallback. This ordinary session read shares the worktree observer's managed
+  worker slots and deadline, but does not grant worktree authority. It returns
+  at most 48,000 encoded board bytes, with complete category totals and explicit
+  detail omission. No model, hooks, instruction discovery, or billing scan runs.
 - **Live-job observations use the existing lifecycle owner.** `LiveJobs` asks
   the session jobs actor for nonterminal records owned by one strand. The actor
   folds its existing dictionary, retains at most `max_jobs_per_strand` rows,

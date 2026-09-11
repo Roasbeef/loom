@@ -68,6 +68,12 @@ pub type Command {
   /// Inspect the latest completed operation and separately observed live jobs.
   Summary
 
+  /// Inspect current context totals.
+  Context
+
+  /// Inspect current context totals and individual items.
+  ContextAll
+
   /// Toggle expanded reasoning and tool detail.
   Details
 
@@ -228,6 +234,8 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/rename", "rename the current session", True),
     Suggestion("/notes", "browse agent notes", False),
     Suggestion("/diff", "observe current worktree changes", False),
+    Suggestion("/context", "inspect current context usage", False),
+    Suggestion("/contextall", "inspect context items", False),
     Suggestion("/summary", "inspect the latest completed operation", False),
     Suggestion("/details", "toggle reasoning and tool detail", False),
     Suggestion("/effort", "set the active strand's reasoning level", True),
@@ -297,6 +305,8 @@ pub fn parse(input: String) -> Command {
     "/notes" -> Notes
     "/diff" -> Diff
     "/summary" -> Summary
+    "/context" -> Context
+    "/context all" | "/contextall" -> ContextAll
     "/details" -> Details
     "/effort" -> MissingArgument("effort")
     "/compact" -> Compact
@@ -382,6 +392,8 @@ pub fn help_text() -> String {
   <> "/sessions         switch locally managed sessions\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"
+  <> "/context          inspect current context usage\n"
+  <> "/context all      expand context item estimates\n"
   <> "/diff             observe current worktree changes\n"
   <> "/details          toggle reasoning and tool detail\n"
   <> "/effort <level>   set reasoning: off, minimal, low, medium, high, xhigh, max\n"

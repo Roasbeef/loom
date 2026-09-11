@@ -48,13 +48,13 @@ fn roundtrip_event(file: String) -> Nil {
 // list while its file stays on disk — which is the one that silently
 // loses coverage.
 const command_fixtures = [
-  "cmd_abort.json", "cmd_approve.json", "cmd_approve_all.json",
-  "cmd_catch_up.json", "cmd_compact.json", "cmd_create_strand.json",
-  "cmd_deny.json", "cmd_follow_up.json", "cmd_fork.json", "cmd_models.json",
-  "cmd_navigate.json", "cmd_prompt.json", "cmd_prompt_content.json",
-  "cmd_schedule_cancel.json", "cmd_schedules.json", "cmd_set_config.json",
-  "cmd_set_config_model.json", "cmd_steer.json", "cmd_subscribe.json",
-  "cmd_subscribe_resume.json", "cmd_queued_input.json",
+  "cmd_context.json", "cmd_abort.json", "cmd_approve.json",
+  "cmd_approve_all.json", "cmd_catch_up.json", "cmd_compact.json",
+  "cmd_create_strand.json", "cmd_deny.json", "cmd_follow_up.json",
+  "cmd_fork.json", "cmd_models.json", "cmd_navigate.json", "cmd_prompt.json",
+  "cmd_prompt_content.json", "cmd_schedule_cancel.json", "cmd_schedules.json",
+  "cmd_set_config.json", "cmd_set_config_model.json", "cmd_steer.json",
+  "cmd_subscribe.json", "cmd_subscribe_resume.json", "cmd_queued_input.json",
   "cmd_edit_queued_input.json", "cmd_worktree_diff.json", "cmd_live_jobs.json",
 ]
 
@@ -71,6 +71,7 @@ const event_fixtures = [
   "event_snapshot_queued_input.json", "event_snapshot_worktree_pending.json",
   "event_snapshot_worktree_ready.json", "event_snapshot_worktree_failed.json",
   "event_snapshot_live_jobs.json", "event_tool_output.json",
+  "event_snapshot_context_pending.json",
 ]
 
 pub fn command_fixtures_roundtrip_test() {
@@ -99,7 +100,7 @@ pub fn corpus_is_complete_test() {
     list.append(command_fixtures, event_fixtures)
     |> list.sort(string.compare)
   assert covered == json_files
-  assert list.length(json_files) == 49
+  assert list.length(json_files) == 51
 }
 
 // --- strictness and tolerance ----------------------------------------------
