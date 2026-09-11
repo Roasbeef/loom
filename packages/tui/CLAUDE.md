@@ -11,6 +11,20 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- `Model.reading_lines` retains one bounded transient projection when scrolling
+  above the live tail. Incoming streams continue collecting without changing
+  that projection; returning to the bottom releases it. Durable history keeps
+  its existing frozen ancestry and row anchors. The composer border provides
+  a clickable jump action that preserves an unsent draft; End also returns to
+  the tail when the composer is empty.
+- `tui/file_read_view` removes recognized edit digests and hashline anchors
+  only from successful file-read presentation. Line numbers and source text
+  remain; stored results and model-facing edit prerequisites are unchanged.
+  Terminal hygiene expands tabs to four spaces while keeping other controls
+  inert. Markdown equality operators remain visible instead of coloring the
+  prose between two comparisons. Completion details remain in `/summary`,
+  without automatic operation and edit-total rows beneath the transcript.
+
 - Completion patch totals are accumulated before the 32-result/path display
   limit, using the complete already-bounded fs_edit patch. `edit_count` and
   `edit_delta` therefore survive display truncation and later history eviction.

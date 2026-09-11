@@ -4,10 +4,11 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Re-baselined September 10, 2026 against merged main `3ce454e6` and the local UX
-polish commits through `429c66c6`. Source, local gates, and the relevant
-GitHub merge, run, and issue states were checked for this edition. The candidate
-has not been pushed; the hosted results below establish its base only.
+Re-baselined September 11, 2026 against merged main `ab01a239` and the local
+`tui/readable-scrollback` follow-up. PR #347 merged after its exact head
+`a760eb92` passed the complete hosted workflow (`34585964823`). The follow-up
+has passed the TUI package gate with 349 tests and an independent review;
+its publication and hosted checks remain pending.
 
 ## Where the tree is
 
@@ -15,7 +16,7 @@ has not been pushed; the hosted results below establish its base only.
 |---|---|
 | Human controls | Queue editing, priority steering, worktree observations, and completion summaries are merged in #344. |
 | Markdown skills | #346 is merged in `3ce454e6`; discovery, explicit activation, paged completion, and model-selected loading are shipped in the base. |
-| UX polish | General developer defaults, actionable tool failures, partial reviewer recovery, failure context, bounded history, automatic wide diff, selection, and current-state presentation are implemented locally. |
+| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. |
 | Local verification | One full `make check` passed: 4,191 Gleam tests, native helper checks, prelude verification, and house-rule lint. Installed native acceptance and matched measurements are recorded in the linked reports. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
@@ -45,10 +46,10 @@ now retains it until the authenticated read completes.
 
 ## What to do next
 
-1. **Validate and publish the UX candidate when requested.** The work remains
-   local on `codex/ux-polish`. **Exit:** review the acceptance and resource
-   reports, then run hosted checks and required Linux signoff on the exact
-   published head before normal merge. Local results do not replace that gate.
+1. **Publish and validate the reading follow-up.** Work is on
+   `tui/readable-scrollback`. **Exit:** hosted checks and Linux signoff on its
+   published head. Preserve running user sessions; the compiled candidate does
+   not replace an already-running client or daemon.
 
 2. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,
