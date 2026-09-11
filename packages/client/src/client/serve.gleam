@@ -66,6 +66,7 @@ import client/scheduleseam
 import client/scratch
 import client/secrets
 import client/server
+import client/skill_tool
 import client/system_prompt
 import client/wiring
 import client/worktree_diff
@@ -87,6 +88,7 @@ import gleam/otp/supervision
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/skill
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
@@ -2568,6 +2570,12 @@ fn assemble_in(
         fallback: settings.context_window,
       )
     })
+  let skills = skill.discover(skill.directories(settings.home))
+  list.each(skill.warnings(skills), fn(warning) {
+    log.warn(logger, "skill.warning", [
+      field.text(key: "detail", value: warning),
+    ])
+  })
   use tool_registry <- result.try(
     list.append(
       contributions.built_in(
@@ -2584,7 +2592,13 @@ fn assemble_in(
       // not what makes an extension unable to shadow `bash` — but the
       // collision message names the *second* claimant as the thing to
       // remove, and the newcomer is the extension.
-      list.map(extensions, fn(registration) { registration.contribution }),
+      [
+        contributions.Contribution(
+          contributions.BuiltIn,
+          skill_tool.tools(skills),
+        ),
+        ..list.map(extensions, fn(registration) { registration.contribution })
+      ],
     )
     // The operator's deactivations, applied to the built-ins before the
     // names are claimed. This is the whole of how an extension's tool
@@ -2883,6 +2897,7 @@ fn assemble_in(
             })
             |> hub.with_catalog(settings.catalog)
             |> hub.with_registry(tool_registry)
+            |> hub.with_skills(skills)
             |> hub.with_code_mode_issue(case toolchain {
               Error(reason) -> Some(reason)
               Ok(_) ->

@@ -22,6 +22,13 @@ catalogue without opening runtimes. Explicit admission invokes
 
 ## Key Types
 
+- `client/skills` serves metadata pages from the assembly's immutable
+  `host/skill.Catalogue` and expands selected skills before prompt admission.
+  `client/skill_tool.tools` contributes `load_skill` through the existing
+  built-in contribution and deactivation path. Its definition advertises only
+  names and descriptions; its result discloses the selected complete document.
+  `gateway.Options.skills` carries the same capture to the human ingress.
+
 - Daemon control `RenameSession` calls `manager.rename`, whose `Rename` message
   reauthenticates owner and daemon epoch before `catalogue.rename` in the same
   serialized dispatch. Its reply is a `View`; no runtime is opened or stopped.
@@ -2061,6 +2068,12 @@ build plane masks them where the jail can build the mask.
 
 ## Traffic
 
+- `protocol.ListSkills(offset)` is a subscribed read available to observers.
+  `SkillsSnapshot(board)` returns bounded consecutive metadata rows with a next
+  cursor. Explicit slash text still uses existing prompt/content/steer/follow-up
+  commands. Expansion precedes held-input custody, so later file changes and
+  queue draining cannot replace the captured instructions or original author.
+
 - **Actor messages**: `gateway.Message` — `Attach(sink, reply)` (a call,
   returning the connection id), `Detach(connection)`,
   `FromClient(connection, text)`, `CommitHint`, `BusHint(published)`, and
@@ -2146,6 +2159,12 @@ build plane masks them where the jail can build the mask.
   through the real registry; a rename here must update those callers.
 
 ## Invariants
+
+- Markdown skills are assembled from the daemon's configured home, not a
+  terminal's filesystem. Metadata reads never disclose bodies. Automatic tool
+  dispatch honors `disable-model-invocation`, while slash invocation honors
+  `user-invocable`; neither path changes broker policy. Existing sessions retain
+  their configured active tool names, including deliberate deactivations.
 
 - **A linked git worktree widens the session base to its git directories.**
   `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a

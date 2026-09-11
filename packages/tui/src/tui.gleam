@@ -504,6 +504,8 @@ pub type Model {
     note_board: Option(notes_view.Board),
     overlay: Overlay,
     models: List(protocol.ModelInfo),
+    /// Slash commands loaded by the currently attached daemon.
+    skills: List(command.Suggestion),
     current_model: String,
     workspace: workspace.Context,
     strands: List(protocol.Strand),
@@ -852,6 +854,7 @@ pub fn new_model_with_clock(
     note_board: None,
     overlay: NoOverlay,
     models: demo_models(),
+    skills: [],
     current_model: "baseten-kimi-k3",
     workspace: project,
     strands:,
@@ -1441,6 +1444,7 @@ pub fn replay_steps(
       // catalogue snapshot must show the empty selector the live client
       // showed, not four invented entries.
       models: [],
+      skills: [],
       session: "replay",
       strands: [],
       agent_summary: agents.summary([]),
@@ -1537,6 +1541,7 @@ fn live_base(base: Model) -> Model {
     peer: Disconnected,
     session: "",
     models: [],
+    skills: [],
     strands: [],
     records: [],
     streams: [],
@@ -3023,7 +3028,8 @@ fn render_command_palette(
   body: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  let suggestions = command.suggestions(text_area.value(model.input))
+  let suggestions =
+    command.suggestions_with_skills(text_area.value(model.input), model.skills)
   case suggestions, model.overlay {
     [], _
     | _, ModelSelector(_)
@@ -3232,6 +3238,7 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         records: [],
         streams: [],
         models: [],
+        skills: [],
         current_model: "loading…",
         active_strand: "main",
         scroll_offset: 0,
@@ -3816,6 +3823,7 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
           queued: [],
           awaiting_outcome: None,
           models: [],
+          skills: [],
           next_id: 1,
           record_cache_valid: False,
           scroll_offset: 0,
@@ -4421,6 +4429,7 @@ fn adopt_session(
     transcript: [Line(System, "connecting to session " <> target.session)],
     records: [],
     models: [],
+    skills: [],
     queued: [],
     awaiting_outcome: None,
     current_model: "loading…",
@@ -4566,6 +4575,25 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       let summary = agents.summary(strands)
       Model(..model, strands:, agent_summary: summary, notice: summary)
     }
+    protocol.SkillsSnapshot(page:) -> {
+      let previous = case page.offset {
+        0 -> []
+        _ -> model.skills
+      }
+      case page.offset == list.length(previous) {
+        False ->
+          append_error(model, "skill catalogue page arrived out of order")
+        True -> {
+          let loaded =
+            Model(..model, skills: list.append(previous, page.commands))
+          case page.next {
+            None -> loaded
+            Some(offset) ->
+              send_frame(loaded, protocol.skills(loaded.next_id, offset))
+          }
+        }
+      }
+    }
     protocol.ModelsSnapshot(models:) -> {
       let overlay = case model.overlay {
         ModelSelector(selector) ->
@@ -4586,6 +4614,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         overlay:,
         notice: int.to_string(list.length(models)) <> " models loaded",
       )
+      |> send_frame(protocol.skills(model.next_id, 0))
     }
     protocol.SchedulesSnapshot(schedules:) -> append_schedules(model, schedules)
     protocol.ConfigSnapshot(model_name:) ->
@@ -4758,6 +4787,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
+    | protocol.SkillsSnapshot(..)
     | protocol.NotesSnapshot(..)
     | protocol.QueuedInputSnapshot(..)
     | protocol.WorktreeSnapshot(..)
@@ -6108,7 +6138,8 @@ fn update_main_key(key: keys.Key, model: Model) -> Model {
 }
 
 fn update_palette_key(key: keys.Key, model: Model) -> Model {
-  let suggestions = command.suggestions(text_area.value(model.input))
+  let suggestions =
+    command.suggestions_with_skills(text_area.value(model.input), model.skills)
   case suggestions, command_palette_escape(key), key {
     [_, ..], True, _ ->
       Model(
@@ -6560,13 +6591,21 @@ pub fn anchored_scroll_offset(offset: Int, before: Int, after: Int) -> Int {
 }
 
 fn submit(model: Model) -> Model {
-  case mutation_refusal(model, command.parse(text_area.value(model.input))) {
+  case
+    mutation_refusal(
+      model,
+      command.parse_with_skills(text_area.value(model.input), model.skills),
+    )
+  {
     Some(reason) -> append_error(model, reason)
     None -> {
       // This marker scopes the synchronous encoder call and, only if queued,
       // the later send. The draft itself never leaves its existing fields.
       let prepared = case
-        mutating_submission(model, command.parse(text_area.value(model.input))),
+        mutating_submission(
+          model,
+          command.parse_with_skills(text_area.value(model.input), model.skills),
+        ),
         model.peer
       {
         True, Attached(_) ->
@@ -6749,7 +6788,7 @@ fn submit_text(model: Model) -> Model {
     Some(OverlaySubmission) | None ->
       Model(..cleared, attachments: [], submission_mode: PromptNext)
   }
-  case command.parse(input) {
+  case command.parse_with_skills(input, model.skills) {
     command.Empty ->
       case model.attachments {
         [] -> cleared
@@ -6925,7 +6964,7 @@ fn submit_text(model: Model) -> Model {
 // the run settles, so an image prompt goes out and comes back `queued`.
 fn submit_with_images(model: Model) -> Model {
   let input = text_area.value(model.input)
-  case command.parse(input) {
+  case command.parse_with_skills(input, model.skills) {
     command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
     command.QueueInspect | command.Diff | command.Summary -> submit_text(model)
     command.Help

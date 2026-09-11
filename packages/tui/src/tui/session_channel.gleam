@@ -533,6 +533,7 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
     | protocol.ModelsSnapshot(..)
+    | protocol.SkillsSnapshot(..)
     | protocol.NotesSnapshot(..)
     | protocol.QueuedInputSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
@@ -723,6 +724,7 @@ fn matching_presentation(name, intent, event) {
   case name, intent, event {
     _, _, protocol.ServerError(..) -> True
     "models", Read, protocol.ModelsSnapshot(_) -> True
+    "skills", Read, protocol.SkillsSnapshot(_) -> True
     "notes", Read, protocol.NotesSnapshot(_) -> True
     "queued_input", Read, protocol.QueuedInputSnapshot(_) -> True
     "worktree_diff", Read, protocol.WorktreeSnapshot(_) -> True
@@ -1073,6 +1075,7 @@ fn outbound(frame: String) {
     json.String(name) -> {
       let intent = case name {
         "models"
+        | "skills"
         | "schedules"
         | "notes"
         | "queued_input"

@@ -146,6 +146,7 @@ import client/protocol.{
 import client/provider_relay
 import client/schedule
 import client/scheduleadmin
+import client/skills
 import client/wiring
 import core/clock
 import core/codec as core_codec
@@ -167,6 +168,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
+import host/skill
 import machine/acceptance
 import machine/codec as machine_codec
 import machine/operation
@@ -281,6 +283,8 @@ pub type Options {
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
     registry: Option(Registry),
+    /// Skills captured by this daemon, shared with the model load tool.
+    skills: skill.Catalogue,
     /// Boot diagnostic when code mode could not be registered.
     code_mode_issue: Option(String),
     schedules: Option(scheduleadmin.Admin),
@@ -314,6 +318,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     bus: None,
     catalog: None,
     registry: None,
+    skills: skill.empty(),
     code_mode_issue: None,
     schedules: None,
     effect_abort: None,
@@ -562,6 +567,8 @@ type State {
     catalog: Option(catalog.Catalog),
     // The tool registry, when the host configured one.
     registry: Option(Registry),
+    /// Skills captured by this daemon, shared with the model load tool.
+    skills: skill.Catalogue,
     // The original boot diagnostic, not a guessed missing executable.
     code_mode_issue: Option(String),
     // The operator's scheduling door, when this host has one.
@@ -735,6 +742,7 @@ fn start_with_delivery(
         effect_abort: options.effect_abort,
         catalog: options.catalog,
         registry: options.registry,
+        skills: options.skills,
         code_mode_issue: options.code_mode_issue,
         schedules: options.schedules,
       )
@@ -1454,6 +1462,7 @@ fn network_command(
     | protocol.Compact(..)
     | protocol.CreateStrand(..)
     | protocol.ListModels
+    | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
     | protocol.LiveJobsGet(..)
     | protocol.NotesGet(..)
@@ -2179,6 +2188,7 @@ fn read_only(command: Command) {
     | protocol.History(..)
     | protocol.EscalationsGet(..)
     | protocol.ListModels
+    | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
     | protocol.LiveJobsGet(..)
     | protocol.NotesGet(..)
@@ -3416,6 +3426,24 @@ fn run_command(
     protocol.CreateStrand(name:), Subscribed ->
       create_strand(state, connection, id, name)
     protocol.ListModels, Subscribed -> list_models(state, connection, id)
+    protocol.ListSkills(offset), Subscribed -> {
+      use board <- or_reply(
+        skills.page(state.skills, offset)
+          |> result.map_error(fn(reason) {
+            #(protocol.code_bad_request, reason)
+          }),
+        state,
+        connection,
+        id,
+      )
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.SkillsSnapshot(board)),
+      )
+      state
+    }
     protocol.NotesGet(strand), Subscribed ->
       read_notes(state, connection, id, strand)
     protocol.SetConfig(strand:, config:), Subscribed ->
@@ -3930,6 +3958,13 @@ fn prompt_message(
   prompt: AgentMessage,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
+  use prompt <- or_reply(
+    skills.expand_message(state.skills, prompt)
+      |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
+    state,
+    connection,
+    id,
+  )
 
   // Durable retirement can precede its commit hint in this mailbox. A new
   // normal prompt must join existing custody even when the runtime is already
@@ -4462,7 +4497,13 @@ fn steer(
   text: String,
 ) -> State {
   use <- known_strand(state, connection, id, strand)
-  let message = user_message(state, connection, text)
+  use message <- or_reply(
+    skills.expand_message(state.skills, user_message(state, connection, text))
+      |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
+    state,
+    connection,
+    id,
+  )
   hold_prompt(state, connection, id, strand, message, SteerNext)
 }
 
@@ -6008,4 +6049,15 @@ fn describe_api_error(
 ///
 pub fn is_alive(gateway: Gateway) -> Bool {
   address.lookup(gateway.name) |> result.is_ok
+}
+
+/// Supplies the immutable skills captured at daemon startup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_skills(options, catalogue)
+/// ```
+pub fn with_skills(options: Options, catalogue: skill.Catalogue) -> Options {
+  Options(..options, skills: catalogue)
 }

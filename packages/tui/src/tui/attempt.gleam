@@ -279,6 +279,7 @@ fn decode_selection(kind, fields) {
     }
     "subscribe"
     | "models"
+    | "skills"
     | "notes"
     | "queued_input"
     | "edit_queued_input"

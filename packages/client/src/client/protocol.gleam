@@ -175,6 +175,9 @@ pub type Command {
   /// Request the model catalogue; answered by a `models` snapshot.
   ListModels
 
+  /// Reads one bounded page of operator-invocable skill metadata.
+  ListSkills(offset: Int)
+
   /// Reads a bounded, current blackboard view for one strand.
   NotesGet(strand: String)
 
@@ -241,6 +244,9 @@ pub type Snapshot {
 
   /// The model catalogue (the `models` command's reply).
   ModelsSnapshot(models: List(ModelInfo))
+
+  /// A bounded skill catalogue page, without instruction bodies.
+  SkillsSnapshot(board: JsonValue)
 
   /// Current note values and their captured revision, bounded for display.
   NotesSnapshot(board: JsonValue)
@@ -691,6 +697,10 @@ fn command_body(command: Command) -> #(String, JsonValue) {
       json.Object([#("strand", json.String(strand))]),
     )
     ListModels -> #("models", json.Object([]))
+    ListSkills(offset) -> #(
+      "skills",
+      json.Object([#("offset", json.Int(offset))]),
+    )
     NotesGet(strand:) -> #(
       "notes",
       json.Object([#("strand", json.String(strand))]),
@@ -927,6 +937,10 @@ fn decode_command_body(
       Ok(LiveJobsGet(strand:))
     }
     "models" -> Ok(ListModels)
+    "skills" -> {
+      use fields <- result.try(body_fields(body))
+      result.map(required_int(fields, "offset"), ListSkills)
+    }
     "notes" -> {
       use fields <- result.try(body_fields(body))
       use strand <- result.try(required_string(fields, "strand"))
@@ -1138,6 +1152,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
         #("mode", json.String("models")),
         #("models", json.Array(list.map(models, encode_model_info))),
       ])
+    SkillsSnapshot(board:) ->
+      json.Object([#("mode", json.String("skills")), #("board", board)])
     NotesSnapshot(board:) ->
       json.Object([
         #("mode", json.String("notes")),
@@ -1622,6 +1638,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         Ok(_) -> Error("models must be an array")
       })
       Ok(SnapshotEvent(ModelsSnapshot(models:)))
+    }
+    "skills" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing skills board"),
+      )
+      Ok(SnapshotEvent(SkillsSnapshot(board:)))
     }
     "notes" -> {
       use board <- result.try(

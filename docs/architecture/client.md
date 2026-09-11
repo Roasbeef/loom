@@ -61,6 +61,20 @@ the daemon is already live. An absent file leaves the configuration reference
 empty and retains the daemon's runtime defaults. Configuration lookup failure
 is reported before retaining a creation key, so it cannot strand a local retry.
 
+### Skill discovery and activation
+
+Each session assembly captures the daemon user's Markdown skill libraries through
+`host/skill`. The gateway and model tool share that capture. A remote terminal
+fetches only command metadata through the paged `skills` read; it never substitutes
+its own local library. New attachments clear old completion rows.
+
+The model sees available names and descriptions in `load_skill`, then receives
+the full document only after selecting it. Explicit slash invocation expands at
+the gateway before prompt or steer admission, preserving the original author and
+other content blocks. Neither path executes embedded shell text or changes tool
+permissions. See [skills](../skills.md) and
+[protocol 027](../../protocol-change/027-markdown-skills.md).
+
 ### The authenticated v2 boundary
 
 The loopback listener serves `/v2/control` and

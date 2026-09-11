@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:841`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:851`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1338,7 +1338,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4626-4632`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4667-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2691,7 +2691,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2746`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2756`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**
