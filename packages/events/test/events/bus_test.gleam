@@ -1,6 +1,7 @@
 //// Bus semantics: typed per-session topic delivery, isolation, legal
 //// loss, and the writer-bridge seam.
 
+import core/clock
 import core/ids.{type Seq}
 import events/bus.{Committed, EntryAdded, Published}
 import gleam/erlang/process
@@ -64,9 +65,39 @@ pub fn subscribe_all_receives_every_topic_once_test() {
   bus.subscribe_all(bus, session:)
   let event = Committed(seqs: [9], ts: 9)
   bus.publish(bus, session:, event:)
-  // Delivered exactly once even though we are in all six groups.
+  // Delivered exactly once even though we are in all seven groups.
   assert receive_published(500) == Ok(Published(session:, event:))
   assert receive_published(50) == Error(Nil)
+}
+
+pub fn tool_output_has_its_own_topic_test() {
+  let bus = bus.start()
+  let session = bus.unidentified_key(name: "bus-tool-output")
+  let #(op, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 1), seed: 3))
+  let event =
+    bus.ToolOutput(
+      op:,
+      step: "step-1",
+      stream: bus.Stdout,
+      tail: "compiling…\n",
+      total_bytes: 11,
+    )
+  assert bus.topic_of(event) == bus.Outputs
+
+  // A hint subscriber never sees a tail: the display feed is outside
+  // `subscribe_hints`, so a projection driver is not woken once per
+  // 32 KiB chunk of a chatty build to find nothing new in the store.
+  bus.subscribe_hints(bus, session:)
+  bus.publish(bus, session:, event:)
+  assert receive_published(50) == Error(Nil)
+
+  // A subscriber that asked for the feed gets the whole window as
+  // published — the event *is* the display state, not a fragment of it.
+  bus.subscribe(bus, session:, topic: bus.Outputs)
+  bus.publish(bus, session:, event:)
+  assert receive_published(500) == Ok(Published(session:, event:))
+  bus.unsubscribe(bus, session:, topic: bus.Outputs)
 }
 
 pub fn publish_without_subscribers_is_legal_test() {
@@ -183,6 +214,14 @@ pub fn topic_of_covers_every_event_test() {
   assert bus.topic_of(bus.Escalation(op:, description: "network widen"))
     == bus.Escalations
   assert bus.topic_of(Committed(seqs: [], ts: 0)) == bus.Commits
+  assert bus.topic_of(bus.ToolOutput(
+      op:,
+      step: "s",
+      stream: bus.Stderr,
+      tail: "",
+      total_bytes: 0,
+    ))
+    == bus.Outputs
 }
 
 /// The writer adoption seam: anything subscription-shaped can be mapped

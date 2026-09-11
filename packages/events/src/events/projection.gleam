@@ -344,7 +344,7 @@ pub fn start(
   actor.new_with_initialiser(5000, fn(subject) {
     let selector = case options.hints {
       FromBus(bus:, session:) -> {
-        bus.subscribe_all(bus, session:)
+        bus.subscribe_hints(bus, session:)
         process.new_selector()
         |> process.select(subject)
         |> bus.select_published(fn(_published) { Hinted })

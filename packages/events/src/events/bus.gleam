@@ -9,6 +9,17 @@
 //// pulling from storage (`scan_*` from a persisted high-water seq — see
 //// `events/projection`); the bus only makes convergence prompt.
 ////
+//// One topic carries text rather than an id, and the rule survives it.
+//// `Outputs` carries `ToolOutput`: the rolling tail of a jailed command
+//// that is still running (issue #186), a bounded window a terminal
+//// *displays*, keyed by the operation and step it belongs to. It is the
+//// same kind of payload as `OpTransition`'s phase label — something to
+//// put on a screen, never something to act on — and every event of it
+//// is a complete snapshot of the window rather than a fragment, so
+//// dropping any prefix of the stream loses nothing the next event does
+//// not restate. The truth is the durable tool result the call commits
+//// when it settles; the tail is what there is to show until then.
+////
 //// Groups are keyed `#(session, topic)` inside one node-global scope,
 //// so lookups are local-speed ETS reads and per-session isolation needs
 //// no per-session processes. Cross-node fan-out (clustered `pg`) is
@@ -45,7 +56,10 @@ pub opaque type Bus {
 
 /// The typed topics of a session's event stream. One event belongs to
 /// exactly one topic (`topic_of`), so a subscriber joined to several
-/// topics never receives duplicates.
+/// topics never receives duplicates. Six are hints that durable state
+/// moved; `Outputs` is the one live display feed, and a subscriber that
+/// wants only hints joins the six with `subscribe_hints` rather than
+/// `subscribe_all`.
 pub type Topic {
   /// Entry appends (`EntryAdded`).
   Entries
@@ -64,12 +78,29 @@ pub type Topic {
 
   /// Whole-commit notifications (`Committed`).
   Commits
+
+  /// Rolling output tails of running tool calls (`ToolOutput`).
+  Outputs
+}
+
+/// Which of a jailed call's two output streams a tail belongs to.
+///
+/// A mirror of `broker/framing.OutputStream`, declared here because this
+/// package sits below the broker in the dependency graph and may not
+/// import it. The composition layer maps between the two at the one
+/// point it publishes; nothing else in the tree should ever hold both.
+pub type OutputStream {
+  /// The command's standard output.
+  Stdout
+
+  /// The command's standard error.
+  Stderr
 }
 
 /// One event on a session's stream. Payloads are deliberately thin —
-/// ids and seqs, never content — because an event is only a hint that
-/// something changed; the durable store is read for the truth. Losing
-/// any event is legal.
+/// ids, seqs and display text, never durable content — because an event
+/// is only a hint that something changed; the durable store is read for
+/// the truth. Losing any event is legal.
 pub type Event {
   /// An entry was appended. Hint: re-scan entries from your high-water.
   EntryAdded(id: EntryId, seq: Seq)
@@ -93,6 +124,22 @@ pub type Event {
   /// coarsest hint — what the runtime writer's post-commit publication
   /// maps onto (see `bridge`).
   Committed(seqs: List(Seq), ts: Int)
+
+  /// A running tool call printed something. `tail` is the bounded
+  /// rolling window of one stream as it stands after the latest chunk —
+  /// the whole window every time, so a subscriber replaces what it shows
+  /// rather than appending, and a missed event costs nothing the next
+  /// one does not carry. `total_bytes` is how much the stream has
+  /// carried in all, which is what tells a reader the window is a tail
+  /// and not the whole output. The durable tool result is the truth;
+  /// this is display text for the interval before it exists.
+  ToolOutput(
+    op: OpId,
+    step: String,
+    stream: OutputStream,
+    tail: String,
+    total_bytes: Int,
+  )
 }
 
 /// One delivered event: the session it belongs to plus the event, so a
@@ -180,6 +227,7 @@ pub fn topic_of(event: Event) -> Topic {
     StrandResult(..) -> Strands
     Escalation(..) -> Escalations
     Committed(..) -> Commits
+    ToolOutput(..) -> Outputs
   }
 }
 
@@ -188,10 +236,27 @@ pub fn topic_of(event: Event) -> Topic {
 /// ## Examples
 ///
 /// ```gleam
-/// assert list.length(bus.all_topics()) == 6
+/// assert list.length(bus.all_topics()) == 7
 /// ```
 ///
 pub fn all_topics() -> List(Topic) {
+  [Entries, Operations, Usage, Strands, Escalations, Commits, Outputs]
+}
+
+/// The six topics whose events say that durable state moved — every
+/// topic but `Outputs`. A read model converges by pulling on these
+/// and has nothing to pull on a tail, so this is the list a projection
+/// driver joins; joining the display feed as well would wake it once per
+/// output chunk of every running command to find nothing new in the
+/// store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.length(bus.hint_topics()) == 6
+/// ```
+///
+pub fn hint_topics() -> List(Topic) {
   [Entries, Operations, Usage, Strands, Escalations, Commits]
 }
 
@@ -293,19 +358,29 @@ pub fn subscribe(
 /// ```
 ///
 pub fn subscribe_all(bus: Bus, session session: SessionKey) -> Nil {
-  subscribe_all_loop(bus, session, all_topics())
+  subscribe_topics(bus, session, all_topics())
 }
 
-fn subscribe_all_loop(
-  bus: Bus,
-  session: SessionKey,
-  topics: List(Topic),
-) -> Nil {
+/// Subscribes the calling process to the six hint topics of one session
+/// and not to the `Outputs` feed — see `hint_topics` for why a
+/// pull-driven subscriber wants exactly this set.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bus.subscribe_hints(bus, session: bus.key(of: id))
+/// ```
+///
+pub fn subscribe_hints(bus: Bus, session session: SessionKey) -> Nil {
+  subscribe_topics(bus, session, hint_topics())
+}
+
+fn subscribe_topics(bus: Bus, session: SessionKey, topics: List(Topic)) -> Nil {
   case topics {
     [] -> Nil
     [topic, ..rest] -> {
       subscribe(bus, session:, topic:)
-      subscribe_all_loop(bus, session, rest)
+      subscribe_topics(bus, session, rest)
     }
   }
 }
