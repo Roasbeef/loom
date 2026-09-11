@@ -5711,6 +5711,13 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
           |> compact(110),
       ),
     ]
+    Some(message.ToolResultMessage(
+      is_error: False,
+      details: Some(json.Object(fields)),
+      ..,
+    ))
+      if call.invocation.name == "fs_edit"
+    -> [Line(ToolCall, "✓ " <> summary), ..edit_patch_lines(fields, False)]
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
     ]
@@ -6149,8 +6156,10 @@ fn tool_result_lines(
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
-    "fs_edit", False, Some(json.Object(fields)) ->
-      edit_result_lines(fields, result, details_expanded)
+    "fs_edit", False, Some(json.Object(fields)) -> [
+      Line(ToolResult, "fs_edit · " <> compact(result, 120)),
+      ..edit_patch_lines(fields, details_expanded)
+    ]
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -6171,9 +6180,8 @@ fn tool_result_lines(
 // first stretch of the diff is enough to recognise the edit; expanded,
 // the whole of it. Details without a diff (an older record) fall back to
 // the summary alone.
-fn edit_result_lines(
+fn edit_patch_lines(
   fields: List(#(String, json.JsonValue)),
-  summary: String,
   details_expanded: Bool,
 ) -> List(Line) {
   case string_field(fields, "diff") {
@@ -6182,12 +6190,9 @@ fn edit_result_lines(
         True -> diff
         False -> program_preview(diff, 24)
       }
-      [
-        Line(ToolResult, "fs_edit · " <> compact(summary, 120)),
-        Line(ToolPatch, shown),
-      ]
+      [Line(ToolPatch, shown)]
     }
-    None -> [Line(ToolResult, "fs_edit · " <> compact(summary, 120))]
+    None -> []
   }
 }
 

@@ -502,3 +502,72 @@ pub fn replacement_history_releases_compact_presentation_caches_test() {
   assert dict.is_empty(replaced.compact_call_cache)
   assert dict.is_empty(replaced.compact_entry_cache)
 }
+
+// Receiving the successful result must replace the cached pending row with a
+// patch in ordinary transcript mode, without opening the separate diff pane.
+pub fn successful_edits_show_inline_patches_in_compact_history_test() {
+  let details =
+    Some(json.Object([#("diff", json.String("-\told\n+\tnew\n ```"))]))
+  let #(pending, _) =
+    model() |> received(call(1, "edit", "fs_edit", args())) |> painted
+  let #(completed, visible) =
+    pending
+    |> received(outcome(2, "edit", False, details))
+    |> painted
+  assert !completed.details_expanded
+  assert completed.diff_view == tui.DiffAutomatic
+  assert string.contains(visible, "✓ fs_edit · src/file.gleam")
+  assert string.contains(visible, "-    old")
+  assert string.contains(visible, "+    new")
+  assert string.contains(visible, "```")
+  assert !string.contains(visible, "awaiting result")
+  let #(_, failed) =
+    model()
+    |> received(call(1, "edit", "fs_edit", args()))
+    |> received(outcome(2, "edit", True, details))
+    |> painted
+  assert !string.contains(failed, "+    new")
+}
+
+pub fn compact_inline_patch_is_bounded_and_expansion_reveals_the_rest_test() {
+  let patch = string.repeat("+preview row\n", 25) <> "+FULL_PATCH_END"
+  let details = Some(json.Object([#("diff", json.String(patch))]))
+  let #(compact, visible) =
+    model()
+    |> received(call(1, "edit", "fs_edit", args()))
+    |> received(outcome(2, "edit", False, details))
+    |> painted
+  assert string.contains(visible, "+preview row")
+  assert !string.contains(visible, "FULL_PATCH_END")
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "FULL_PATCH_END")
+}
+
+// Pasted source travels through the user-message renderer, not Markdown code
+// rendering. Display normalization must preserve its stanzas and indentation.
+pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
+  let source =
+    "Please review:\n\n\tif peer == nil {\n\t\treturn\n\t}\n\n\tcontinueWork()"
+  let original =
+    model()
+    |> tui.accept_connection_message(
+      connection.Incoming(gateway.user_entry("main", source, 1)),
+    )
+  let #(_, visible) = painted(original)
+  assert string.contains(visible, "       if peer == nil {")
+  assert string.contains(visible, "           return")
+  assert string.contains(visible, "       continueWork()")
+  assert !string.contains(visible, "�")
+  let rows =
+    visible
+    |> string.split("\n")
+    |> list.index_map(fn(line, index) { #(index, line) })
+  let assert Ok(#(closing, _)) =
+    list.find(rows, fn(row) { string.contains(row.1, "       }") })
+    as "the pasted closing brace has its own row"
+  let assert Ok(#(continuation, _)) =
+    list.find(rows, fn(row) { string.contains(row.1, "       continueWork()") })
+    as "the next stanza is visible"
+  assert continuation == closing + 2
+}

@@ -110,8 +110,15 @@ pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
 fn is_code_row(line: span.Line) -> Bool {
   let span.Line(spans:, ..) = line
   list.any(spans, fn(value) {
-    let span.Span(content:, style:, ..) = value
-    content == "│ " && style == theme.signal_bold()
+    let span.Span(content:, style: row_style, ..) = value
+
+    // User rows have a three-space gutter. Additional leading whitespace is
+    // source indentation; word wrapping would collapse it and its alignment.
+    { content == "│ " && row_style == theme.signal_bold() }
+    || {
+      row_style == style.new(theme.paper, theme.user_background, style.none())
+      && string.starts_with(content, "    ")
+    }
   })
 }
 
