@@ -178,3 +178,17 @@ pub fn direct_patch_keeps_tabs_fences_and_change_styles_test() {
     as "the added source survives"
   assert removed.style != added.style
 }
+
+pub fn nested_list_indentation_survives_word_wrapping_test() {
+  let rows =
+    markdown.render(
+      "- **Done**\n  - built first module with a long explanation\n  - tested second module\n- **Next**\n  - publish",
+    )
+    |> markdown.wrap_lines(24)
+    |> list.map(line_text)
+  assert list.contains(rows, "• Done")
+  assert list.contains(rows, "  • built first module")
+  assert list.contains(rows, "  with a long")
+  assert list.contains(rows, "  explanation")
+  assert list.contains(rows, "  • publish")
+}

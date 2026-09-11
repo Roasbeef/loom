@@ -572,6 +572,28 @@ pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
   assert continuation == closing + 2
 }
 
+pub fn messages_show_readable_recipient_and_complete_expanded_body_test() {
+  let body =
+    "## Review request\n\nPlease check the ownership boundary.\n\n"
+    <> string.repeat("- A detailed requirement\n", 14)
+    <> "FINAL REQUIREMENT"
+  let arguments =
+    json.Object([
+      #("to", json.String("sub:main/reviewer-0123456789abcdef")),
+      #("message", json.String(body)),
+    ])
+  let pending = model() |> received(call(1, "send", "agent_send", arguments))
+  let #(compact, shown) = painted(pending)
+  assert string.contains(shown, "Message to sub:main/reviewer-0123456789abcdef")
+  assert string.contains(shown, "Review request")
+  assert string.contains(shown, "Please check the ownership boundary.")
+  assert !string.contains(shown, "{\"to\"")
+  assert !string.contains(shown, "FINAL REQUIREMENT")
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "FINAL REQUIREMENT")
+}
+
 pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test() {
   let populated =
     list.fold(

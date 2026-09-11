@@ -101,9 +101,26 @@ pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
       list.flat_map(lines, fn(line) {
         case is_code_row(line) {
           True -> [line]
-          False -> span.wrap_line(line, width)
+          False -> wrap_indented(line, width)
         }
       })
+  }
+}
+
+// The word wrapper discards leading separators. Restore the list gutter on
+// every wrapped row so nested notes retain their hierarchy at narrow widths.
+fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
+  let text =
+    line.spans |> list.map(fn(value) { value.content }) |> string.concat
+  let leading = string.length(text) - string.length(string.trim_start(text))
+  let indent = int.min(leading, int.max(0, width - 1))
+  case indent, line.spans {
+    0, _ | _, [] -> span.wrap_line(line, width)
+    _, [first, ..] -> {
+      let prefix = span.Span(..first, content: string.repeat(" ", indent))
+      span.wrap_line(line, width - indent)
+      |> list.map(fn(row) { span.Line(..row, spans: [prefix, ..row.spans]) })
+    }
   }
 }
 

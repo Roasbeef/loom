@@ -2533,7 +2533,7 @@ fn refresh_notes(model: Model) -> Model {
 
 fn notes_content(model: Model) -> span.Text {
   case model.note_board {
-    None -> historical_notes_content(model.records, model.active_strand)
+    None -> historical_notes_content(model)
     Some(board) -> current_notes_content(board, model)
   }
 }
@@ -2630,15 +2630,12 @@ fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
   }
 }
 
-fn historical_notes_content(
-  records: List(protocol.EntryRecord),
-  active_strand: String,
-) -> span.Text {
+fn historical_notes_content(model: Model) -> span.Text {
   let latest =
-    records
+    model.records
     |> list.find_map(fn(record) {
       let protocol.EntryRecord(strand:, entry:) = record
-      case strand == active_strand, entry {
+      case strand == model.active_strand, entry {
         True, entry.MessageEntry(message: value, ..) ->
           agent_notes_payload(value) |> option.to_result(Nil)
         _, _ -> Error(Nil)
@@ -2650,11 +2647,14 @@ fn historical_notes_content(
     Some(payload) ->
       transcript_content([
         Line(System, "historical run-start digest · r to fetch current notes"),
-        Line(Assistant, "```agent-notes\n" <> payload <> "\n```"),
+        case model.details_expanded {
+          True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
+          False -> Line(ToolDetail, notes_view.historical(payload))
+        },
       ])
     None ->
       transcript_content([
-        Line(System, "no agent notes are available for " <> active_strand),
+        Line(System, "no agent notes are available for " <> model.active_strand),
       ])
   }
 }
@@ -6000,6 +6000,17 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     ))
       if call.invocation.name == "fs_edit"
     -> [Line(ToolCall, "✓ " <> summary), ..edit_patch_lines(fields, False)]
+    Some(message.ToolResultMessage(
+      is_error: False,
+      content: content,
+      details: details,
+      ..,
+    ))
+      if call.invocation.name == "context_remaining"
+    -> [
+      Line(ToolCall, "✓ " <> summary),
+      ..tool_result_lines("context_remaining", content, details, False, False)
+    ]
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
     ]
@@ -6009,21 +6020,49 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
   }
   list.append(
     rows,
-    note_call_lines(call.invocation.name, call.invocation.arguments),
+    note_call_lines(
+      call.invocation.name,
+      call.invocation.arguments,
+      notes_view.Excerpt,
+    ),
   )
 }
 
 // Notes are useful output, even when ordinary tool details are collapsed.
 // Known note tools expose their value; arbitrary tool JSON keeps its own schema.
-fn note_call_lines(name: String, arguments: json.JsonValue) -> List(Line) {
+fn note_call_lines(
+  name: String,
+  arguments: json.JsonValue,
+  extent: notes_view.Extent,
+) -> List(Line) {
   let value = case name, arguments {
     "agent_note", json.Object(fields) -> list.key_find(fields, "value")
     "remember", json.Object(fields) -> list.key_find(fields, "note")
+    "agent_send", json.Object(fields) -> list.key_find(fields, "message")
     _, _ -> Error(Nil)
   }
   case value {
-    Ok(value) -> [Line(ToolDetail, notes_view.readable(json.to_string(value)))]
+    Ok(value) -> {
+      let body = notes_view.readable(json.to_string(value))
+      let body = case name, extent {
+        "agent_send", notes_view.Excerpt -> message_excerpt(body)
+        _, _ -> body
+      }
+      [Line(ToolDetail, body)]
+    }
     Error(Nil) -> []
+  }
+}
+
+// A message preview preserves Markdown paragraphs; expansion exposes the
+// complete body from the same immutable call arguments.
+fn message_excerpt(body: String) -> String {
+  let lines = string.split(body, "\n")
+  case list.drop(lines, 12) {
+    [] -> body
+    _ ->
+      string.join(list.take(lines, 12), "\n")
+      <> "\n\n… Ctrl+g shows the complete message"
   }
 }
 
@@ -6237,7 +6276,10 @@ fn assistant_block_lines(
         ]
         None, None -> [
           Line(ToolCall, tool_call_summary(name, arguments, details_expanded)),
-          ..note_call_lines(name, arguments)
+          ..note_call_lines(name, arguments, case details_expanded {
+            True -> notes_view.Complete
+            False -> notes_view.Excerpt
+          })
         ]
       }
     }
@@ -6361,6 +6403,12 @@ pub fn tool_call_summary(
         None ->
           generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
+    "agent_send", json.Object(fields) ->
+      case string_field(fields, "to") {
+        Some(recipient) -> "Message to " <> recipient
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
+      }
     "agent_wait", json.Object(fields) ->
       case list.key_find(fields, "handles") {
         Ok(json.Array(handles)) ->
@@ -6391,6 +6439,7 @@ pub fn tool_call_summary(
       }
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
+    "context_remaining", json.Object(_) -> "context remaining"
     _, _ -> generic_tool_call(name, json.to_string(arguments), details_expanded)
   }
 }
@@ -6442,6 +6491,11 @@ fn tool_result_lines(
       Line(ToolResult, "fs_edit · " <> compact(result, 120)),
       ..edit_patch_lines(fields, details_expanded)
     ]
+    "context_remaining", False, Some(json.Object(fields)) ->
+      context_remaining_result_lines(fields, result, case details_expanded {
+        True -> notes_view.Complete
+        False -> notes_view.Excerpt
+      })
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -6454,6 +6508,77 @@ fn tool_result_lines(
         False -> tool_name <> " · " <> compact(result, 120)
       }),
     ]
+  }
+}
+
+// The tool's prose is guidance for the model. The transcript already has the
+// measured fields, so show the operator the compact arithmetic instead.
+fn context_remaining_result_lines(
+  fields: List(#(String, json.JsonValue)),
+  fallback: String,
+  extent: notes_view.Extent,
+) -> List(Line) {
+  case context_remaining_summary(fields) {
+    Some(summary) ->
+      case extent {
+        notes_view.Excerpt -> [Line(ToolResult, summary)]
+        notes_view.Complete -> [
+          Line(ToolResult, summary),
+          Line(ToolDetail, context_remaining_boundary(fields)),
+        ]
+      }
+    None -> [
+      Line(ToolResult, case extent {
+        notes_view.Complete -> "context_remaining\n" <> fallback
+        notes_view.Excerpt -> "context_remaining · " <> compact(fallback, 120)
+      }),
+    ]
+  }
+}
+
+fn context_remaining_summary(
+  fields: List(#(String, json.JsonValue)),
+) -> Option(String) {
+  use window <- option.then(int_field(fields, "window"))
+  use used <- option.then(int_field(fields, "used_tokens"))
+  use capacity <- option.then(int_field(fields, "context_window"))
+  use remaining <- option.then(int_field(fields, "remaining_tokens"))
+  let boundary = case int_field(fields, "checkpoint_at") {
+    Some(_) -> " until checkpoint"
+    None -> " before context limit"
+  }
+  Some(
+    "context remaining · window "
+    <> int.to_string(window)
+    <> " · "
+    <> "~"
+    <> tokens(used)
+    <> " / "
+    <> tokens(capacity)
+    <> " used · ~"
+    <> tokens(remaining)
+    <> boundary,
+  )
+}
+
+fn context_remaining_boundary(
+  fields: List(#(String, json.JsonValue)),
+) -> String {
+  let checkpoint = case int_field(fields, "checkpoint_at") {
+    Some(value) -> "checkpoint at " <> tokens(value)
+    None -> "no checkpoint"
+  }
+  let notes = int_field(fields, "notes") |> option.unwrap(0)
+  checkpoint <> " · " <> int.to_string(notes) <> " saved notes"
+}
+
+fn int_field(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Option(Int) {
+  case list.key_find(fields, name) {
+    Ok(json.Int(value)) -> Some(value)
+    _ -> None
   }
 }
 
