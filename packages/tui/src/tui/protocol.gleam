@@ -15,6 +15,7 @@ import gleam/result
 import tui/live_jobs
 import tui/notes_view
 import tui/queue_editor
+import tui/skills
 import tui/worktree_view
 
 /// One strand from a snapshot.
@@ -112,6 +113,9 @@ pub type Event {
     /// Every model the server exposes to this session.
     models: List(ModelInfo),
   )
+
+  /// A bounded page of daemon-owned skill commands.
+  SkillsSnapshot(page: skills.Page)
 
   /// A current blackboard read, separate from the historical transcript.
   NotesSnapshot(board: notes_view.Board)
@@ -454,6 +458,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
   use event <- result.try(decode_version(text, 2))
   case event {
     ModelsSnapshot(_)
+    | SkillsSnapshot(_)
     | NotesSnapshot(_)
     | QueuedInputSnapshot(_)
     | WorktreeSnapshot(_)
@@ -569,6 +574,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     }
     "strands" -> result.map(decode_strands(fields), StrandsSnapshot)
     "models" -> result.map(decode_models(fields), ModelsSnapshot)
+    "skills" -> {
+      use board <- result.try(required_value(fields, "board"))
+      skills.decode(board) |> result.map(SkillsSnapshot)
+    }
     "notes" -> {
       use board <- result.try(required_value(fields, "board"))
       notes_view.decode(board) |> result.map(NotesSnapshot)
@@ -978,4 +987,15 @@ pub fn worktree_diff(id: Int) -> String {
 /// ```
 pub fn live_jobs(id: Int, strand: String) -> String {
   command(id, "live_jobs", [#("strand", json.String(strand))])
+}
+
+/// Requests one page of loaded skill commands from the attached daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.skills(7, 0)
+/// ```
+pub fn skills(id: Int, offset: Int) -> String {
+  command(id, "skills", [#("offset", json.Int(offset))])
 }

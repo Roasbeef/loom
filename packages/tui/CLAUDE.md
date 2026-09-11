@@ -11,6 +11,12 @@ that tree separately from the self-contained server.
 
 ## Key Types
 
+- `tui/skills.Page` decodes the attached daemon's paged skill commands.
+  `Model.skills` is presentation metadata, cleared with attachment replacement.
+  `command.suggestions_with_skills` keeps built-ins authoritative and completes
+  loaded names; `parse_with_skills` classifies them as prompts before mutation
+  admission, including draft retention on observer or unavailable attachments.
+
 - `command.Rename` sends control `RenameSession` for the attached identity.
   The existing `CatalogueRequest` worker sends the mutation once, then reloads
   the first page and opens the selector with the current ID highlighted. The
@@ -245,6 +251,11 @@ that tree separately from the self-contained server.
   server state or authority into the terminal process.
 
 ## Traffic
+
+- After model discovery, the terminal requests `skills` metadata pages through
+  the normal correlated read slot. Bodies stay server-owned. Tab or Enter
+  completes a selected skill name with argument space; submission sends the
+  existing prompt command and the daemon expands the selected instructions.
 
 - **Commands out**: `subscribe`, `prompt`, `prompt_content`, `models`,
   `set_config`, `abort`, `steer`, `follow_up`, branch-scope `fork`,

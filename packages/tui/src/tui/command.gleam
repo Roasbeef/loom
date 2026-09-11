@@ -399,3 +399,55 @@ pub fn help_text() -> String {
   <> "/clear            clear this local transcript\n"
   <> "/quit             leave the client"
 }
+
+/// Completes built-ins and the attached daemon's loaded skills.
+///
+/// Built-ins retain their names when a skill claims the same command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert command.suggestions_with_skills("hello", []) == []
+/// ```
+pub fn suggestions_with_skills(
+  input: String,
+  skills: List(Suggestion),
+) -> List(Suggestion) {
+  let built_in = suggestions(input)
+  let word = string.trim_start(input)
+  case string.starts_with(word, "/") && !string.contains(word, " ") {
+    True ->
+      list.append(
+        built_in,
+        list.filter(skills, fn(skill) {
+          string.starts_with(skill.command, word)
+          && case parse(skill.command) {
+            Unknown(_) -> True
+            _ -> False
+          }
+        }),
+      )
+    False -> built_in
+  }
+}
+
+/// Recognizes loaded skill commands as ordinary prompt submissions.
+///
+/// This classification happens before mutation admission, so observers and
+/// occupied command slots retain the same draft as any other prompt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert command.parse_with_skills("/missing", []) == command.Unknown("missing")
+/// ```
+pub fn parse_with_skills(input: String, skills: List(Suggestion)) -> Command {
+  case parse(input) {
+    Unknown(name) as unknown ->
+      case list.any(skills, fn(skill) { skill.command == "/" <> name }) {
+        True -> Prompt(input)
+        False -> unknown
+      }
+    other -> other
+  }
+}

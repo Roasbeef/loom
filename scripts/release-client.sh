@@ -102,7 +102,7 @@ cat > "$WORK/rebar.config" <<EOF
 EOF
 
 echo "==> assembling the release (rebar3 relx)"
-( cd "$WORK" && rebar3 release >/dev/null )
+( cd "$WORK" && rebar3 release )
 mkdir -p "$REL_ROOT"
 mv "$WORK/_build/default/rel/loom_client" "$REL"
 rm -rf "$WORK"

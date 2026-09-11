@@ -10,6 +10,12 @@ callers own launch timing, authentication policy, and application messages.
 
 ## Key Types
 
+- `host/skill.Catalogue` captures canonical skill documents and discovery
+  warnings. Each `Skill` keeps its name, description, argument hint, invocation
+  modes, source path, body and complete document together. `discover` suppresses
+  directory/file aliases and reports distinct name collisions; `expand` discloses
+  the complete captured document only at activation, with bounded substitution.
+
 - `host/bootstrap.LaunchLock` holds the original lock-helper port.
   `try_launch_lock` acquires it, `lock_monitor` observes its death, and
   `release_launch_lock` closes it. The calling process owns its lifetime.
@@ -38,7 +44,8 @@ callers own launch timing, authentication policy, and application messages.
 
 ## Relationships
 
-- **Depends on**: `core/json` for the bounded total endpoint codec;
+- **Depends on**: `glaml`/`yamerl` for YAML skill frontmatter and `gleam_regexp`
+  for Unicode skill names; `core/json` for the bounded total endpoint codec;
   `gleam_stdlib` for typed results; `gleam_erlang` for the whole of
   `gleam/erlang/process` that `host/websocket` runs on — monitors, selectors,
   links, trapped exits — and for the lock monitor type; `gleam_http` and
@@ -81,6 +88,11 @@ callers own launch timing, authentication policy, and application messages.
 
 ## Invariants
 
+- Skill discovery reads at most 256 direct entries per configured location and
+  64 KiB per document. Metadata and body share one capture; model context gets
+  only selection metadata until invocation. No skill frontmatter or shell
+  snippet executes in the host, and expansion grants no tool permissions.
+
 - The lock owner must outlive readiness. Port loss can release the kernel
   lock even if a pathname still exists; the pathname alone proves nothing.
 - Darwin uses `lockf -k` to preserve one inode across releases. Competing
@@ -117,6 +129,8 @@ callers own launch timing, authentication policy, and application messages.
   limits; moving the transport does not establish a new memory bound.
 
 ## Deep Docs
+
+- [Skills](../../docs/skills.md) describes discovery and progressive disclosure.
 
 - [Client architecture](../../docs/architecture/client.md) explains local startup.
 - [Root CLAUDE.md](../../CLAUDE.md) contains repository rules and the doc graph.

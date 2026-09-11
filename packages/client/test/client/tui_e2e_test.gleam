@@ -1615,3 +1615,192 @@ fn ux_stage(
     False -> Error(message)
   }
 }
+
+// This crosses discovery, alias deduplication, paged metadata, real terminal
+// completion, immutable invocation, model selection and the provider boundary.
+pub fn loaded_skills_complete_and_reach_the_model_test_() -> EunitTest {
+  Timeout(90 / gleeunit_timeout_scale, skill_drive)
+}
+
+fn skill_drive() -> Nil {
+  let test_root =
+    "build/tui-skills-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let home = absolute(test_root) <> "/home"
+  let library = home <> "/.claude/skills"
+  assert simplifile.create_directory_all(test_root <> "/work") == Ok(Nil)
+  assert simplifile.create_directory_all(home <> "/.agents") == Ok(Nil)
+  assert simplifile.create_directory_all(library <> "/check-flow") == Ok(Nil)
+  assert simplifile.create_directory_all(library <> "/auto-check") == Ok(Nil)
+  assert simplifile.create_symlink(library, home <> "/.agents/skills")
+    == Ok(Nil)
+  let explicit_path = library <> "/check-flow/SKILL.md"
+  assert simplifile.write(
+      explicit_path,
+      "---\nname: check-flow\ndescription: Explicit flow checks\nargument-hint: \"[subject]\"\ndisable-model-invocation: true\n---\nMANUAL-CAPTURED instructions for $ARGUMENTS.\n",
+    )
+    == Ok(Nil)
+  assert simplifile.write(
+      library <> "/auto-check/SKILL.md",
+      "---\nname: auto-check\ndescription: Automatically inspect a flow\nuser-invocable: false\n---\nAUTO-CAPTURED instructions for $ARGUMENTS.\n",
+    )
+    == Ok(Nil)
+  let requests = process.new_subject()
+  let base = settings_at(test_root)
+  let settings =
+    serve.Settings(
+      ..base,
+      home: Some(home),
+      gateway: catalog.gateway(
+        scripted_catalog(),
+        transport: skill_transport(requests),
+        secrets: secret.from_list([#("ACME_KEY", "tui-e2e-key")]),
+        clock: clock.fixed(at: 0),
+      ),
+    )
+  let assert Ok(booted) = boot(settings) as "the skill fixture daemon boots"
+  let address =
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v2/control"
+  let outcome = case
+    tui_driver.start(address, booted.served.token, booted.session_id)
+  {
+    Error(reason) -> Error(string.inspect(reason))
+    Ok(driver) -> {
+      let outcome = skill_turns(driver.data, explicit_path)
+      tui_driver.stop(driver.data)
+      outcome
+    }
+  }
+  let persisted = snapshot_text(booted)
+  shutdown(booted)
+  case outcome {
+    Error(reason) -> io.println_error(reason)
+    Ok(Nil) -> Nil
+  }
+  assert outcome == Ok(Nil) as string.inspect(outcome)
+  assert string.contains(
+    persisted,
+    "MANUAL-CAPTURED instructions for the queue.",
+  )
+  assert string.contains(persisted, "AUTO-CAPTURED instructions for runtime.")
+  assert !string.contains(persisted, "CHANGED-AFTER-DISCOVERY")
+  let assert Ok(first) = process.receive(requests, 1000)
+    as "the explicit provider request was observed"
+  assert string.contains(first, "MANUAL-CAPTURED instructions for the queue.")
+  assert string.contains(first, "Automatically inspect a flow")
+  assert !string.contains(first, "AUTO-CAPTURED")
+    as "discovery advertises metadata without spending context on an unselected body"
+  let assert Ok(json.Object(request_fields)) = json.parse(first)
+    as "the provider request is structured JSON"
+  let assert Ok(advertised_tools) = list.key_find(request_fields, "tools")
+    as "the real provider receives registered tool definitions"
+  assert !string.contains(
+    json.to_string(advertised_tools),
+    "Explicit flow checks",
+  )
+    as "manual-only metadata is absent from automatic discovery"
+  let assert Ok(second) = process.receive(requests, 1000)
+    as "the automatic selection reaches the provider"
+  assert !string.contains(second, "AUTO-CAPTURED")
+    as "the body remains absent until the model calls load_skill"
+  let assert Ok(third) = process.receive(requests, 1000)
+    as "the loaded tool result reaches the provider"
+  assert string.contains(third, "AUTO-CAPTURED instructions for runtime.")
+  assert simplifile.delete(test_root) == Ok(Nil)
+}
+
+fn skill_turns(driver, explicit_path: String) -> Result(Nil, String) {
+  use ready <- result.try(
+    ux_await(driver, "loaded skills", fn(sample) {
+      writable(sample) && list.length(sample.model.skills) == 1
+    }),
+  )
+  use Nil <- result.try(
+    case list.map(ready.model.skills, fn(row) { row.command }) {
+      ["/check-flow"] -> Ok(Nil)
+      _ -> Error("the alias duplicated a skill or a hidden command was exposed")
+    },
+  )
+  use Nil <- result.try(
+    simplifile.write(explicit_path, "CHANGED-AFTER-DISCOVERY")
+    |> result.map_error(string.inspect),
+  )
+  let completed =
+    tui_driver.play(driver, [backend.Paste("/check-f"), backend.KeyPress("tab")])
+  use Nil <- result.try(case textarea.value(completed.model.input) {
+    "/check-flow " -> Ok(Nil)
+    other ->
+      Error("Tab did not complete the loaded skill: " <> string.inspect(other))
+  })
+  let _sent =
+    tui_driver.play(
+      driver,
+      list.append(
+        string.to_graphemes("the queue") |> list.map(backend.KeyPress),
+        [backend.KeyPress("enter")],
+      ),
+    )
+  use _ <- result.try(
+    ux_await(driver, "explicit skill result", fn(sample) {
+      writable(sample) && string.contains(sample.frame, "manual-skill-loaded")
+    }),
+  )
+  let _sent =
+    tui_driver.play(driver, [
+      backend.Paste("choose the inspection skill"),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "automatic skill result", fn(sample) {
+      writable(sample)
+      && string.contains(sample.frame, "automatic-skill-loaded")
+    }),
+  )
+  Ok(Nil)
+}
+
+fn skill_transport(requests: process.Subject(String)) -> http.Transport {
+  provider_test.transport(fn(request, events) {
+    process.send(requests, request.body)
+    let response = case
+      string.contains(request.body, "choose the inspection skill")
+    {
+      True ->
+        case
+          string.contains(
+            request.body,
+            "AUTO-CAPTURED instructions for runtime.",
+          )
+        {
+          True -> sse_transcript("automatic-skill-loaded")
+          False ->
+            ux_tool_sse(
+              "load-selected-skill",
+              "load_skill",
+              json.Object([
+                #("name", json.String("auto-check")),
+                #("arguments", json.String("runtime")),
+              ]),
+            )
+        }
+      False ->
+        case
+          string.contains(
+            request.body,
+            "MANUAL-CAPTURED instructions for the queue.",
+          )
+        {
+          True -> sse_transcript("manual-skill-loaded")
+          False -> sse_transcript("skill-instructions-missing")
+        }
+    }
+    process.send(
+      events,
+      http.ResponseStatus(200, [#("content-type", "text/event-stream")]),
+    )
+    process.send(events, http.ResponseChunk(bit_array.from_string(response)))
+    process.send(events, http.ResponseEnd)
+  })
+}

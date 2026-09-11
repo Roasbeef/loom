@@ -245,7 +245,7 @@ principal's authority over the target session. Three authorities exist.
 Source: (`client/gateway.gleam:1892-1898`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
-`history`, `escalations_get`, `models`, `notes`, `live_jobs`, `queued_input`,
+`history`, `escalations_get`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
 `worktree_diff` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
@@ -1282,7 +1282,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:841`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:851`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1338,7 +1338,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4626-4632`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4667-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -1631,6 +1631,32 @@ operation is independent of the strand's current operation. The existing jobs
 actor returns at most four rows. An unavailable actor is an error rather than
 an empty roster. See [protocol 026](../protocol-change/026-live-jobs-observation.md).
 
+#### 4.9.20 `skills`
+
+This subscribed read takes an integer `offset`, starting at zero. Observers
+may request it. The reply is `snapshot` mode `skills`, with a `board` containing
+`offset`, `skills`, and `next`. Each row has `name`, `description`, and
+`argument_hint`; no instruction body is included. Rows are sorted by name and
+include only skills that permit explicit invocation.
+
+```json
+{"v":2,"id":30,"cmd":"skills","body":{"offset":0}}
+{"v":2,"reply_to":30,"event":"snapshot","body":{"mode":"skills","board":{"offset":0,"skills":[{"name":"explain-change","description":"Explain a code change to a reviewer.","argument_hint":"[change]"}],"next":null}}}
+```
+
+The encoded row array fits 48,000 bytes. `next` is null when complete; otherwise
+it equals `offset` plus the returned row count and advances strictly. Request
+that offset to continue. An offset outside zero through the visible count is
+`bad_request`. An empty library returns an empty final page. Clients clear the
+catalogue when replacing their session attachment.
+
+Explicit `/name arguments` uses the existing prompt commands. A recognized
+skill expands before admission, preserving the message origin and remaining
+content blocks. Hidden skills refuse explicit invocation; unknown slash text
+remains ordinary input for clients with their own command language. See
+[protocol 027](../protocol-change/027-markdown-skills.md) for capture, invocation
+flags and expansion limits.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -1639,7 +1665,7 @@ Over the authenticated session transport a client sees:
 
 - transfer frames: `snapshot_begin`, `snapshot_chunk`, `snapshot_end`;
 - mutation replies: `mutation_outcome`;
-- auxiliary replies: `snapshot` with mode `models`, `schedules`, `notes`,
+- auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
   `queued_input`, `live_jobs`, or pending `worktree_diff`;
 - pushed frames: `committed`, `stream_delta`, `presence`, `snapshot`
   with mode `config` or final `worktree_diff`, and `error`;
@@ -1661,7 +1687,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `notes`, `schedules`, `queued_input`, `worktree_diff` or `live_jobs`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff` or `live_jobs`. |
 
 Source: (`client/protocol.gleam:1448-1517`).
 
@@ -1671,7 +1697,7 @@ Mode `resume` carries `next_seq` only. Mode `strands` carries a full
 replacement `strands` list. Mode `config` carries `config`. Mode
 `models` carries `models`. Mode `notes` carries `board` (section 4.9.16).
 Mode `schedules` carries `schedules`. Modes `queued_input`, `worktree_diff`,
-and `live_jobs` carry `board` (sections 4.9.17 through 4.9.19).
+`live_jobs` and `skills` carry `board` (sections 4.9.17 through 4.9.20).
 Source: (`client/protocol.gleam:1013-1050`).
 
 ```json
@@ -2691,7 +2717,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2746`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2756`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**
