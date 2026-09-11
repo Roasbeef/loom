@@ -138,6 +138,13 @@ pub type BuildConfig {
     dependencies: List(Dependency),
     /// How long the build itself may take.
     timeout_ms: Int,
+    /// Who is shown the build's rolling output tail after every chunk
+    /// (`tools/tool.collect_observed`). A compile is the longest jailed
+    /// stage a terminal waits on with nothing else to draw, so the
+    /// `code_mode` tool passes its `Ctx.observe_output` here and the
+    /// compiler's own lines reach the screen while it runs;
+    /// `tool.ignore_output()` for a build nobody is watching.
+    observe: fn(tool.OutputTail) -> Nil,
   )
 }
 
@@ -352,7 +359,11 @@ fn collect_build(
   events: Subject(broker.CallEvent),
 ) -> Built {
   case
-    tool.collect_events(events, waiting: config.timeout_ms + settle_margin_ms)
+    tool.collect_observed(
+      events,
+      waiting: config.timeout_ms + settle_margin_ms,
+      observe: config.observe,
+    )
   {
     Error(Nil) -> build_unsettled()
     Ok(collected) ->

@@ -96,7 +96,8 @@ speed, and all three are what the hosted gate exists to settle.
    merge through the normal gate. Follow-ups that are *not* part of the
    exit: a job's output on the same feed (the runner already holds the
    same `tools/tail` windows; publishing them is one more observer), and
-   the hint half of the bus, which still has no producer.
+   the hint half of the bus, which still has no producer. The code-mode
+   build already streams through the same seam.
 
 2. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,

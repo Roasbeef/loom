@@ -163,7 +163,8 @@ can repair from.
   vocabulary crossing that seam, mirroring `codemode/vet`,
   `codemode/compile`, `codemode/satellite` and `cap/report` rather than
   importing them. `Request.seam` is the resolved seam the execution is
-  judged and routed under. `RunFailure` is the one deliberate narrowing:
+  judged and routed under; `Request.observe_output` is the caller's
+  `Ctx.observe_output`, carried so the hermetic build can stream its tail. `RunFailure` is the one deliberate narrowing:
   eight `satellite.RunError` variants become the four that read
   differently to a model, with the pipeline's reason text carried
   verbatim.

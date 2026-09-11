@@ -134,6 +134,7 @@ fn request_widened(
     env: [#("PATH", "/usr/bin")],
     within_ms: 60_000,
     grants:,
+    observe_output: tool.ignore_output(),
   )
 }
 

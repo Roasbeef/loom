@@ -18,6 +18,7 @@ import core/ids
 import gleam/list
 import gleam/string
 import simplifile
+import tools/tool
 
 const t = 1_700_000_000_000
 
@@ -66,6 +67,7 @@ fn build_phase() -> identity.PhaseIdentity {
 
 fn config(seed_root: String) -> build.BuildConfig {
   build.BuildConfig(
+    observe: tool.ignore_output(),
     broker: idle_broker(),
     seed_root:,
     gleam_path: "/usr/local/bin/gleam",

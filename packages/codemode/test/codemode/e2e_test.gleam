@@ -42,6 +42,7 @@ import gleam/list
 import gleam/string
 import simplifile
 import support/rig.{type Prerequisites, type Rig}
+import tools/tool
 
 // What the jailed `/bin/echo` prints, and therefore what the program's
 // structured outcome must carry back through three trust boundaries.
@@ -598,6 +599,7 @@ fn exec_config(
       dependencies: compile.default_dependencies(),
       generated: [],
       build: build.builder(build.BuildConfig(
+        observe: tool.ignore_output(),
         broker: live.broker,
         seed_root: prerequisites.seed_root,
         gleam_path: prerequisites.gleam_path,

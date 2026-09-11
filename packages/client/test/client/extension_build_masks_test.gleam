@@ -47,6 +47,7 @@ import core/clock
 import gleam/list
 import gleam/string
 import simplifile
+import tools/tool
 
 const t = 1_700_000_000_000
 
@@ -143,6 +144,7 @@ fn build_requirements(
 ) -> policy.SandboxPolicy {
   build.build_requirements(
     build.BuildConfig(
+      observe: tool.ignore_output(),
       broker: idle_broker(),
       seed_root: root <> "/seed",
       gleam_path: "/usr/local/bin/gleam",

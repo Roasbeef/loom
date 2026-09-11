@@ -115,9 +115,15 @@ settled result already, and `total_bytes` beside a 4 KiB window says the
 window is a tail without a flag. A `Bool` field would also have met the
 no-naked-`Bool` rule. Omitted.
 
-**Show `grep` output too.** `grep` clears through the same seam and hands
-its observer over for consistency; a long search shows its tail like a
-long build. No separate cost.
+**Show `grep` and the code-mode build too.** `grep` clears through the
+same seam and hands its observer over for consistency; a long search
+shows its tail like a long build. The hermetic `gleam build` behind
+`code_mode` is the longest jailed stage a terminal waits on with nothing
+else to draw, so `tools/codemode.Request` carries the tool's observer and
+`codemode/build.BuildConfig.observe` hands it to the build's collector;
+the compiler's own lines stream under the `code_mode` call. The launch
+and satellite round-trips stay collapsed: they have no user-facing
+output. No separate cost beyond one more field on each record.
 
 **What it costs.** One more pushed frame kind every client must tolerate
 (unknown names already decode to data). One `pg` lookup and a send per

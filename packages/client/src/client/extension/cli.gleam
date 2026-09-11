@@ -51,6 +51,7 @@ import gleam/result
 import gleam/string
 import provider/secret
 import simplifile
+import tools/tool
 
 /// The usage text every flag error carries.
 pub const usage = "usage: loom ext <command>
@@ -382,6 +383,7 @@ pub fn build_for(
 ) -> install.Build {
   let builder =
     build.builder(build.BuildConfig(
+      observe: tool.ignore_output(),
       broker: plane.broker,
       seed_root: plane.toolchain.seed_root,
       gleam_path: plane.toolchain.gleam_path,

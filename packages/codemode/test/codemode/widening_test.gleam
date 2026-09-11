@@ -30,6 +30,7 @@ import gleam/string
 import support/fake_helper
 import support/satellite_peer.{type PeerCtx}
 import support/scratch
+import tools/tool
 
 const t = 1_700_000_000_000
 
@@ -290,6 +291,7 @@ fn started_broker() -> broker.Broker {
 
 fn build_config() -> build.BuildConfig {
   build.BuildConfig(
+    observe: tool.ignore_output(),
     broker: started_broker(),
     seed_root: "/seed",
     gleam_path: "/usr/bin/gleam",

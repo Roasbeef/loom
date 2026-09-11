@@ -33,6 +33,7 @@ import support/addresses
 import tools/blob
 import tools/codemode as codemode_tool
 import tools/fs
+import tools/tool
 
 // --- fs.read ------------------------------------------------------------------
 
@@ -622,6 +623,7 @@ fn request_over(root: String) -> codemode_tool.Request {
     env: [#("PATH", "/usr/bin")],
     within_ms: 60_000,
     grants: [],
+    observe_output: tool.ignore_output(),
   )
 }
 
