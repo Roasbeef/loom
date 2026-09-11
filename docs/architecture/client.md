@@ -791,7 +791,7 @@ event bus as `ToolOutput` under the session's canonical id; the hub joins
 that one topic and pushes each event to subscribed connections as
 `tool_output`. The frame is a snapshot rather than a fragment — the whole
 window every time, at most 4 KiB — so a client replaces what it shows for
-`{op, step, stream}` and a dropped frame costs nothing. The bus rather than
+`{op, step, source_index, stream}` and a dropped frame costs nothing. The bus rather than
 the hub's named subject is what lets a hub on another node, or a remote
 client, join the feed where it could not reach a subject.
 

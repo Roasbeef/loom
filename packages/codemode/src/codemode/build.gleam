@@ -111,7 +111,10 @@ const tmp_env = "TMPDIR"
 /// Deliberately carries no operation, step or budget: those reach the
 /// build as the `PhaseIdentity` the pipeline derived from the execution's
 /// one `ExecIdentity`, so a caller cannot configure the build to clear
-/// under coordinates of its own (`codemode/identity`).
+/// under coordinates of its own (`codemode/identity`). The one thing
+/// that does arrive carrying the call's coordinates is `observe`, and it
+/// reaches no clearance: the closure keys the output it publishes for a
+/// display, nothing more.
 pub type BuildConfig {
   BuildConfig(
     /// The running broker the build is dispatched through.

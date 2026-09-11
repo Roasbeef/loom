@@ -79,6 +79,7 @@ pub fn tool_output_has_its_own_topic_test() {
     bus.ToolOutput(
       op:,
       step: "step-1",
+      source_index: 0,
       stream: bus.Stdout,
       tail: "compiling…\n",
       total_bytes: 11,
@@ -217,6 +218,7 @@ pub fn topic_of_covers_every_event_test() {
   assert bus.topic_of(bus.ToolOutput(
       op:,
       step: "s",
+      source_index: 1,
       stream: bus.Stderr,
       tail: "",
       total_bytes: 0,

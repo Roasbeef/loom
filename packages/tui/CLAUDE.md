@@ -169,7 +169,7 @@ that tree separately from the self-contained server.
   pushed rolling tail of a running tool call (`protocol-change/030`);
   `session_channel.ToolStreamed` carries it through the adopted lane and
   `tui.ToolTail` is what the model keeps — one per `{strand, operation,
-  step, stream}`, replaced whole on every frame, drawn by
+  step, source_index, stream}`, replaced whole on every frame, drawn by
   `tui.tool_tail_lines` as one `ToolResult` line under the live region:
   the stream's name and byte count so far, then the last
   `tail_lines_shown` lines of the window.
@@ -759,7 +759,7 @@ that tree separately from the self-contained server.
   pushed history. Older recordings retain operation-only reconciliation.
 - **A tool tail is replaced, never appended.** A `tool_output` frame
   carries the whole bounded window of one stream, so the model keeps one
-  `ToolTail` per `{strand, operation, step, stream}` and the newest frame
+  `ToolTail` per `{strand, operation, step, source_index, stream}` and the newest frame
   is the only one worth drawing; the region is the size of the last frame
   however long the command runs, and a dropped frame costs nothing. Tails
   clear with the strand's streams — on an entry landing and on the

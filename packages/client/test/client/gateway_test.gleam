@@ -812,6 +812,7 @@ pub fn tool_output_on_the_bus_is_pushed_to_subscribed_peers_test() {
     event: bus.ToolOutput(
       op:,
       step: "step-2",
+      source_index: 1,
       stream: bus.Stderr,
       tail: "warning: unused\n",
       total_bytes: 16,
@@ -825,6 +826,7 @@ pub fn tool_output_on_the_bus_is_pushed_to_subscribed_peers_test() {
       strand: "main",
       op: ids.op_id_to_string(op),
       step: "step-2",
+      source_index: 1,
       stream: protocol.Stderr,
       tail: "warning: unused\n",
       total_bytes: 16,
@@ -865,6 +867,7 @@ pub fn a_network_hub_pushes_tool_output_from_its_outputs_subscription_test() {
     event: bus.ToolOutput(
       op:,
       step: "step-1",
+      source_index: 0,
       stream: bus.Stdout,
       tail: "compiling core\n",
       total_bytes: 15,
@@ -878,6 +881,7 @@ pub fn a_network_hub_pushes_tool_output_from_its_outputs_subscription_test() {
       strand: "main",
       op: ids.op_id_to_string(op),
       step: "step-1",
+      source_index: 0,
       stream: protocol.Stdout,
       tail: "compiling core\n",
       total_bytes: 15,

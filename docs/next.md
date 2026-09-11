@@ -68,7 +68,7 @@ keeps the projection driver off it. `client/serve` becomes the bus's first
 production publisher through `gateway.tool_output_observer`, the hub joins
 `Outputs` alone under network delivery and pushes each event as
 `tool_output`, and the terminal keeps one `ToolTail` per
-`{strand, operation, step, stream}`, replaced whole per frame.
+`{strand, operation, step, source_index, stream}`, replaced whole per frame.
 
 Verified locally on the branch before the rebase: `make lint` at zero errors
 for every package; every package gate green on its own — host, core,

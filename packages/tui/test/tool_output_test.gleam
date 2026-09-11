@@ -33,6 +33,7 @@ fn output(
         #("strand", json.String("main")),
         #("op", json.String(operation)),
         #("step", json.String(step)),
+        #("source_index", json.Int(0)),
         #("ephemeral", json.Bool(True)),
         #("stream", json.String(stream)),
         #("tail", json.String(text)),
@@ -65,6 +66,7 @@ pub fn a_later_frame_replaces_the_tail_of_its_stream_test() {
         strand: "main",
         operation: "op-1",
         step: "step-1",
+        source_index: 0,
         stream: "stdout",
         text: "compiling core\ncompiling tools\n",
         total_bytes: 31,
@@ -150,6 +152,7 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
             #("strand", json.String("sub:1")),
             #("op", json.String("op-9")),
             #("step", json.String("step-1")),
+            #("source_index", json.Int(0)),
             #("stream", json.String("stdout")),
             #("tail", json.String("elsewhere")),
             #("total_bytes", json.Int(9)),
@@ -159,4 +162,34 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
     )
   assert list.length(model.tool_tails) == 1
   assert tui.tool_tail_lines(model) == []
+}
+
+pub fn two_calls_in_one_step_keep_separate_tails_test() {
+  // Every call of a batch shares `{operation, step}`; the source index is
+  // what keeps a `grep` and a `bash` running side by side from replacing
+  // each other's window on every chunk.
+  let call = fn(index: Int, text: String) {
+    pushed.push([
+      #("event", json.String("tool_output")),
+      #(
+        "body",
+        json.Object([
+          #("strand", json.String("main")),
+          #("op", json.String("op-1")),
+          #("step", json.String("step-1")),
+          #("source_index", json.Int(index)),
+          #("stream", json.String("stdout")),
+          #("tail", json.String(text)),
+          #("total_bytes", json.Int(1)),
+        ]),
+      ),
+    ])
+  }
+  let model =
+    pushed.attached()
+    |> tui.accept_connection_message(call(0, "a"))
+    |> tui.accept_connection_message(call(1, "b"))
+    |> tui.accept_connection_message(call(0, "aa"))
+  assert list.map(model.tool_tails, fn(tail) { #(tail.source_index, tail.text) })
+    == [#(0, "aa"), #(1, "b")]
 }

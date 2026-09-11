@@ -92,7 +92,7 @@ pub type Update {
 
   /// One pushed tail of a running tool call's output. A snapshot of the
   /// window rather than a fragment, so the renderer replaces what it holds
-  /// for `{operation, step, stream}` instead of appending.
+  /// for `{operation, step, source_index, stream}` instead of appending.
   ToolStreamed(
     /// The strand whose call is printing.
     strand: String,
@@ -100,6 +100,8 @@ pub type Update {
     operation: String,
     /// The step within the operation.
     step: String,
+    /// The call's index within its step.
+    source_index: Int,
     /// `stdout` or `stderr`.
     stream: String,
     /// The whole retained window, sanitized later.
@@ -558,11 +560,20 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
       strand:,
       operation:,
       step:,
+      source_index:,
       stream:,
       text:,
       total_bytes:,
     ) -> #(channel, [
-      ToolStreamed(strand:, operation:, step:, stream:, text:, total_bytes:),
+      ToolStreamed(
+        strand:,
+        operation:,
+        step:,
+        source_index:,
+        stream:,
+        text:,
+        total_bytes:,
+      ),
     ])
 
     // A pushed error reports a failure the daemon had on this terminal's

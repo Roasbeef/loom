@@ -170,7 +170,8 @@ pub type Stream {
 ///
 /// It is kept apart from `Stream` because the two grow differently: a
 /// stream is appended to fragment by fragment, while a tail is *replaced*
-/// whole on every frame, keyed by `{strand, operation, step, stream}`. The
+/// whole on every frame, keyed by `{strand, operation, step, source_index,
+/// stream}`. The
 /// daemon bounds `text` at a few kilobytes and this terminal keeps one
 /// tail per key, so however long a command runs the region stays the size
 /// of the last frame. It is cleared with the strand's streams — on an
@@ -182,6 +183,7 @@ pub type ToolTail {
     strand: String,
     operation: String,
     step: String,
+    source_index: Int,
     stream: String,
     text: String,
     total_bytes: Int,
@@ -4373,6 +4375,7 @@ pub fn apply_channel_update(
       strand:,
       operation:,
       step:,
+      source_index:,
       stream:,
       text:,
       total_bytes:,
@@ -4383,6 +4386,7 @@ pub fn apply_channel_update(
           strand:,
           operation:,
           step:,
+          source_index:,
           stream:,
           text:,
           total_bytes:,
@@ -5258,6 +5262,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       strand:,
       operation:,
       step:,
+      source_index:,
       stream:,
       text:,
       total_bytes:,
@@ -5267,7 +5272,15 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
           ..model,
           tool_tails: receive_tail(
             model.tool_tails,
-            ToolTail(strand:, operation:, step:, stream:, text:, total_bytes:),
+            ToolTail(
+              strand:,
+              operation:,
+              step:,
+              source_index:,
+              stream:,
+              text:,
+              total_bytes:,
+            ),
           ),
         )
       case strand == model.active_strand {
@@ -5564,14 +5577,16 @@ fn newest_suffix(bytes: BitArray, from: Int, attempts: Int) -> String {
 }
 
 // The tails this strand's calls are printing, newest frame winning per
-// `{operation, step, stream}`. Order is kept stable — a replaced tail keeps
-// its place and a new key goes to the end — so two streams of one command
-// do not swap positions on screen every time one of them speaks.
+// `{operation, step, source_index, stream}`. Order is kept stable — a
+// replaced tail keeps its place and a new key goes to the end — so two
+// streams of one command do not swap positions on screen every time one
+// of them speaks.
 fn receive_tail(tails: List(ToolTail), incoming: ToolTail) -> List(ToolTail) {
   let same_key = fn(tail: ToolTail) {
     tail.strand == incoming.strand
     && tail.operation == incoming.operation
     && tail.step == incoming.step
+    && tail.source_index == incoming.source_index
     && tail.stream == incoming.stream
   }
   case list.any(tails, same_key) {

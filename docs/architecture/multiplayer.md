@@ -152,8 +152,8 @@ pushed delivery.
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:2601`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:2917`). Both paths call
-`check_binding` (`client/gateway.gleam:2027`) immediately before the
+through `deliver` (`client/gateway.gleam:2933`). Both paths call
+`check_binding` (`client/gateway.gleam:2043`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -232,8 +232,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:4211`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2300`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:4229`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:2316`) after `state.live` has
 been refreshed from the registers and before any frame leaves. Only the
 head of a queue is submitted (`drain_strand`,
 `client/gateway.gleam:3548`), since the writer would reject a second
@@ -304,7 +304,7 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`tui/session_channel.gleam:1101`) starts the catch-up at the
+`send_queued` (`tui/session_channel.gleam:1112`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in `tick`
 (`tui/session_channel.gleam:732`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number

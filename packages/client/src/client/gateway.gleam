@@ -1056,6 +1056,7 @@ pub fn tool_output_observer(
             event: bus.ToolOutput(
               op: run.operation,
               step: run.step_id,
+              source_index: run.source_index,
               stream: case observed.stream {
                 framing.Stdout -> bus.Stdout
                 framing.Stderr -> bus.Stderr
@@ -1392,10 +1393,25 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // in the store moved, so there is nothing to pull, and the frame
     // leaves on the path a provider delta takes (`protocol-change/030`).
     BusHint(published: bus.Published(
-      event: bus.ToolOutput(op:, step:, stream:, tail:, total_bytes:),
+      event: bus.ToolOutput(
+        op:,
+        step:,
+        source_index:,
+        stream:,
+        tail:,
+        total_bytes:,
+      ),
       ..,
     )) -> {
-      broadcast_tool_output(state, op, step, stream, tail, total_bytes)
+      broadcast_tool_output(
+        state,
+        op,
+        step,
+        source_index,
+        stream,
+        tail,
+        total_bytes,
+      )
       continue(state)
     }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
@@ -3075,6 +3091,7 @@ fn broadcast_tool_output(
   state: State,
   operation: OpId,
   step: String,
+  source_index: Int,
   stream: bus.OutputStream,
   tail: String,
   total_bytes: Int,
@@ -3085,6 +3102,7 @@ fn broadcast_tool_output(
       strand: strand_of_operation(state, operation),
       op: ids.op_id_to_string(operation),
       step:,
+      source_index:,
       stream: case stream {
         bus.Stdout -> protocol.Stdout
         bus.Stderr -> protocol.Stderr

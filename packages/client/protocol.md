@@ -247,17 +247,19 @@ necessarily parseable alone).
 
 ### `tool_output`
 
-`{strand, op, step, ephemeral: true, stream: "stdout"|"stderr", tail,
-total_bytes}` — the rolling tail of a running tool call's output
+`{strand, op, step, source_index, ephemeral: true, stream:
+"stdout"|"stderr", tail, total_bytes}` — the rolling tail of a running tool call's output
 (`protocol-change/030`): `ephemeral` always `true`, never persisted,
 never seq'd, never replayed, pushed unsolicited to every subscribed
 connection while the call runs. `tail` is the whole retained window of
 one stream after its latest chunk — at most 4 KiB, beginning and ending
 on a character boundary, empty for output that is not UTF-8 — so a
-client *replaces* what it shows for `{op, step, stream}` rather than
-appending, and a dropped frame costs nothing the next one does not
-restate. `total_bytes` is how much the stream has carried in all, which
-is what tells a client the window is a tail and not the whole output.
+client *replaces* what it shows for `{op, step, source_index, stream}`
+rather than appending, and a dropped frame costs nothing the next one
+does not restate. `source_index` is the call's index within its step,
+which is what keeps two printing calls of one batch apart.
+`total_bytes` is how much the stream has carried in all, which is what
+tells a client the window is a tail and not the whole output.
 Wholly superseded by the settled tool-result `entry` for the same `op`.
 
 ### `usage`

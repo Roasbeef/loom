@@ -167,9 +167,9 @@ pub type Event {
   /// The rolling tail of one output stream of a tool call that is still
   /// running. Unlike a `StreamDelta` this is a snapshot and not a
   /// fragment: the renderer replaces what it shows for
-  /// `{operation, step, stream}`, so a dropped frame costs nothing the
-  /// next one does not restate, and the settled tool-result entry
-  /// supersedes it wholly.
+  /// `{operation, step, source_index, stream}`, so a dropped frame costs
+  /// nothing the next one does not restate, and the settled tool-result
+  /// entry supersedes it wholly.
   ToolOutput(
     /// The strand whose call is printing.
     strand: String,
@@ -177,6 +177,9 @@ pub type Event {
     operation: String,
     /// The step within the operation; one call batch.
     step: String,
+    /// The call's index within its step, which tells two printing calls
+    /// of one batch apart.
+    source_index: Int,
     /// `stdout` or `stderr`; open-set, shown verbatim.
     stream: String,
     /// The whole retained window of the stream, sanitized later.
@@ -751,10 +754,19 @@ fn decode_tool_output(body: JsonValue) -> Result(Event, String) {
   use strand <- result.try(required_string(fields, "strand"))
   use operation <- result.try(required_string(fields, "op"))
   use step <- result.try(required_string(fields, "step"))
+  use source_index <- result.try(required_int(fields, "source_index"))
   use stream <- result.try(required_string(fields, "stream"))
   use text <- result.try(required_string(fields, "tail"))
   use total_bytes <- result.try(required_int(fields, "total_bytes"))
-  Ok(ToolOutput(strand:, operation:, step:, stream:, text:, total_bytes:))
+  Ok(ToolOutput(
+    strand:,
+    operation:,
+    step:,
+    source_index:,
+    stream:,
+    text:,
+    total_bytes:,
+  ))
 }
 
 fn decode_operation(body: JsonValue) -> Result(Event, String) {

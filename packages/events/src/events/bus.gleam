@@ -12,13 +12,14 @@
 //// One topic carries text rather than an id, and the rule survives it.
 //// `Outputs` carries `ToolOutput`: the rolling tail of a jailed command
 //// that is still running (issue #186), a bounded window a terminal
-//// *displays*, keyed by the operation and step it belongs to. It is the
-//// same kind of payload as `OpTransition`'s phase label — something to
-//// put on a screen, never something to act on — and every event of it
-//// is a complete snapshot of the window rather than a fragment, so
-//// dropping any prefix of the stream loses nothing the next event does
-//// not restate. The truth is the durable tool result the call commits
-//// when it settles; the tail is what there is to show until then.
+//// *displays*, keyed by the operation, step and call it belongs to. It
+//// is the same kind of payload as `OpTransition`'s phase label —
+//// something to put on a screen, never something to act on — and every
+//// event of it is a complete snapshot of the window rather than a
+//// fragment, so dropping any prefix of the stream loses nothing the
+//// next event does not restate. The truth is the durable tool result
+//// the call commits when it settles; the tail is what there is to show
+//// until then.
 ////
 //// Groups are keyed `#(session, topic)` inside one node-global scope,
 //// so lookups are local-speed ETS reads and per-session isolation needs
@@ -133,9 +134,13 @@ pub type Event {
   /// carried in all, which is what tells a reader the window is a tail
   /// and not the whole output. The durable tool result is the truth;
   /// this is display text for the interval before it exists.
+  /// `source_index` is the call's own index within its step: every call
+  /// of one batch shares `{op, step}`, so it is the coordinate that keeps
+  /// two printing calls from replacing each other's window.
   ToolOutput(
     op: OpId,
     step: String,
+    source_index: Int,
     stream: OutputStream,
     tail: String,
     total_bytes: Int,

@@ -64,7 +64,7 @@ topics too would make the same pull happen twice per commit — and turns
 each `ToolOutput` into:
 
 ```json
-{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
+{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","source_index":0,"ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
 ```
 
 | Field | Type | Presence | Meaning |
@@ -72,6 +72,7 @@ each `ToolOutput` into:
 | `strand` | string | required | Strand whose call is printing. |
 | `op` | string | required | Operation the call belongs to. |
 | `step` | string | required | Step within the operation; one call batch. |
+| `source_index` | integer | required | The call's index within its step; tells two printing calls of one batch apart. |
 | `ephemeral` | boolean | required | Always `true`. |
 | `stream` | string | required | `stdout` or `stderr`. |
 | `tail` | string | required | The whole retained window of that stream after its latest chunk. |
@@ -86,7 +87,7 @@ collector's 4 KiB bound is a sixth of the 24 KiB preview bound a pushed
 frame is held to.
 
 **5. The terminal replaces, never appends.** `tui` keeps one `ToolTail`
-per `{strand, operation, step, stream}`, replaced whole on every frame, so
+per `{strand, operation, step, source_index, stream}`, replaced whole on every frame, so
 the region stays the size of the last frame however long a command runs.
 Tails clear with the strand's streams — on an entry landing and on the
 operation reaching `done` — and a capture drops one once the durable

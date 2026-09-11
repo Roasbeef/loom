@@ -1076,7 +1076,7 @@ single strand's chain. Source: (`client/gateway.gleam:1353-1356`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:1515-1430`).
+`wrong_session`. Source: (`client/gateway.gleam:1531-1430`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -1338,7 +1338,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4799-4632`).
+   is `stale_approval`. Source: (`client/gateway.gleam:4817-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).
@@ -2281,7 +2281,7 @@ produces.
 ### 5.18 `tool_output`
 
 ```json
-{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
+{"v":2,"event":"tool_output","body":{"strand":"main","op":"op-1","step":"step-3","source_index":0,"ephemeral":true,"stream":"stdout","tail":"compiling core","total_bytes":14}}
 ```
 
 | Field | Type | Presence | Meaning |
@@ -2289,6 +2289,7 @@ produces.
 | `strand` | string | required | Strand whose tool call is printing. |
 | `op` | string | required | Operation the call belongs to. |
 | `step` | string | required | Step within the operation; one call batch. |
+| `source_index` | integer | required | The call's index within its step; every call of a batch shares `{op, step}`, so this tells two printing calls apart. |
 | `ephemeral` | boolean | required | Always `true`. |
 | `stream` | string | required | `stdout` or `stderr`. |
 | `tail` | string | required | The whole retained window of that stream after its latest chunk. |
@@ -2302,7 +2303,7 @@ tool-result `entry` for the same `op`. Unlike a `stream_delta` the frame
 is a snapshot and not a fragment: `tail` is at most 4096 bytes, begins
 and ends on a UTF-8 character boundary, and is empty when the window
 holds bytes that are not text. A client MUST replace what it shows for
-`{op, step, stream}` rather than append, which is also what makes a
+`{op, step, source_index, stream}` rather than append, which is also what makes a
 dropped frame cost nothing the next one does not restate. `total_bytes`
 beside a short `tail` is how a client tells a window that is the whole
 output from one that is its last few kilobytes.
@@ -2756,7 +2757,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:2842`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:2858`) and `navigating`
    (`client/gateway.gleam:2538`).
 
 9. **The spec's control command list is incomplete.**

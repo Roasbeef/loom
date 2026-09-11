@@ -493,13 +493,15 @@ pub type Event {
   /// The rolling tail of a running tool call's output (`ephemeral`
   /// always true on the wire; `protocol-change/030`). `tail` is the
   /// whole retained window of one stream after its latest chunk, so a
-  /// receiver replaces what it shows for `{op, step, stream}` rather
-  /// than appending, and a dropped frame costs nothing the next one does
-  /// not restate. Wholly superseded by the settled tool-result `entry`.
+  /// receiver replaces what it shows for `{op, step, source_index,
+  /// stream}` rather than appending, and a dropped frame costs nothing
+  /// the next one does not restate. Wholly superseded by the settled
+  /// tool-result `entry`.
   ToolOutputEvent(
     strand: String,
     op: String,
     step: String,
+    source_index: Int,
     stream: OutputStream,
     tail: String,
     total_bytes: Int,
@@ -1107,12 +1109,21 @@ fn event_body(event: Event) -> #(String, JsonValue) {
         #("arguments_fragment", option.map(arguments_fragment, json.String)),
       ]),
     )
-    ToolOutputEvent(strand:, op:, step:, stream:, tail:, total_bytes:) -> #(
+    ToolOutputEvent(
+      strand:,
+      op:,
+      step:,
+      source_index:,
+      stream:,
+      tail:,
+      total_bytes:,
+    ) -> #(
       "tool_output",
       json.Object([
         #("strand", json.String(strand)),
         #("op", json.String(op)),
         #("step", json.String(step)),
+        #("source_index", json.Int(source_index)),
         #("ephemeral", json.Bool(True)),
         #("stream", json.String(stream_to_string(stream))),
         #("tail", json.String(tail)),
@@ -1474,6 +1485,7 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       use strand <- result.try(required_string(fields, "strand"))
       use op <- result.try(required_string(fields, "op"))
       use step <- result.try(required_string(fields, "step"))
+      use source_index <- result.try(required_int(fields, "source_index"))
       use stream_text <- result.try(required_string(fields, "stream"))
       use stream <- result.try(case stream_text {
         "stdout" -> Ok(Stdout)
@@ -1482,7 +1494,15 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
       })
       use tail <- result.try(required_string(fields, "tail"))
       use total_bytes <- result.try(required_int(fields, "total_bytes"))
-      Ok(ToolOutputEvent(strand:, op:, step:, stream:, tail:, total_bytes:))
+      Ok(ToolOutputEvent(
+        strand:,
+        op:,
+        step:,
+        source_index:,
+        stream:,
+        tail:,
+        total_bytes:,
+      ))
     }
     "usage" -> {
       use fields <- result.try(body_fields(body))
