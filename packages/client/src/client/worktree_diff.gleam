@@ -69,6 +69,36 @@ pub type Wiring {
   )
 }
 
+/// The durable comparison point captured before this session's runtime starts.
+pub type Start {
+  /// A validated full object ID, retained across later activations.
+  Revision(
+    /// The full hexadecimal object identity.
+    revision: String,
+  )
+
+  /// The repository had no commits before the first turn.
+  Empty
+
+  /// No trustworthy starting point was recorded.
+  Unavailable(
+    /// Why the session cannot establish a historical comparison point.
+    reason: String,
+  )
+}
+
+/// A bounded commit patch stream with an explicit availability description.
+pub type Committed {
+  Committed(
+    /// Scope or the reason that scope could not be established.
+    message: String,
+    /// Literal commit headers and unified patches.
+    patch: String,
+    /// Whether bytes were omitted from this stream.
+    extent: Extent,
+  )
+}
+
 /// Whether the repository has a committed comparison base.
 pub type Repository {
   /// A pinned HEAD commit supplies the original contents.
@@ -128,6 +158,8 @@ pub type Board {
   Board(
     /// Unix milliseconds at the start of observation, not a filesystem revision.
     observed_at_ms: Int,
+    /// Repository commits after the durable session baseline.
+    committed: Committed,
     /// Whether HEAD, an empty original, or no repository was observed.
     repository: Repository,
     /// Files retained within both the count and encoded-byte ceilings.
@@ -195,6 +227,22 @@ type Identity {
 /// // worktree_diff.capture(session_wiring)
 /// ```
 pub fn capture(wiring: Wiring) -> Result(Board, Error) {
+  capture_since(wiring, Unavailable("Session starting revision unavailable"))
+}
+
+/// Captures worktree files and commits from the session's durable baseline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_diff.capture_since(wiring, recorded_start)
+/// ```
+pub fn capture_since(wiring: Wiring, start: Start) -> Result(Board, Error) {
+  let #(observed_at_ms, capture) = new_capture(wiring)
+  capture_status(capture, start, observed_at_ms)
+}
+
+fn new_capture(wiring: Wiring) -> #(Int, Capture) {
   let #(observed_at_ms, next_clock) = clock.read(wiring.clock)
   let #(op_id, _) = ids.mint_op(ids.generator(next_clock, wiring.entropy()))
   let capture =
@@ -205,6 +253,47 @@ pub fn capture(wiring: Wiring) -> Result(Board, Error) {
       op_id:,
       bytes_left: capture_byte_limit,
     )
+  #(observed_at_ms, capture)
+}
+
+/// Observes the first-activation revision through the same jailed Git path.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // worktree_diff.starting_revision(wiring)
+/// ```
+pub fn starting_revision(wiring: Wiring) -> Start {
+  let #(_, capture) = new_capture(wiring)
+  let observed = {
+    use #(capture, inside) <- result.try(run_git(
+      capture,
+      ["rev-parse", "--is-inside-work-tree"],
+      4096,
+    ))
+    use Nil <- result.try(successful(inside))
+    use #(_, head) <- result.try(run_git(
+      capture,
+      ["rev-parse", "--verify", "--quiet", "HEAD"],
+      4096,
+    ))
+    use Nil <- result.try(complete(head))
+    comparison(head)
+  }
+  case observed {
+    Ok(#(Head, revision)) -> Revision(revision)
+    Ok(#(Unborn, _)) -> Empty
+    Ok(#(NotRepository, _)) ->
+      Unavailable("Workspace was not a repository at session start")
+    Error(error) -> Unavailable(error_message(error))
+  }
+}
+
+fn capture_status(
+  capture: Capture,
+  start: Start,
+  observed_at_ms: Int,
+) -> Result(Board, Error) {
   use #(capture, status) <- result.try(run_git(
     capture,
     [
@@ -218,8 +307,16 @@ pub fn capture(wiring: Wiring) -> Result(Board, Error) {
   // metadata. Other failures, including protected metadata, remain failures.
   case status.code, diagnostic(status.stderr) {
     128, "fatal: not a git repository" <> _ ->
-      Ok(Board(observed_at_ms, NotRepository, [], 0, 0, Complete))
-    _, _ -> capture_repository(capture, status, observed_at_ms)
+      Ok(Board(
+        observed_at_ms,
+        Committed("Workspace is not a Git repository", "", Complete),
+        NotRepository,
+        [],
+        0,
+        0,
+        Complete,
+      ))
+    _, _ -> capture_repository(capture, status, observed_at_ms, start)
   }
 }
 
@@ -227,6 +324,7 @@ fn capture_repository(
   capture: Capture,
   status: Output,
   observed_at_ms: Int,
+  start: Start,
 ) -> Result(Board, Error) {
   use Nil <- result.try(successful(status))
   use Nil <- result.try(complete(status))
@@ -249,6 +347,9 @@ fn capture_repository(
   use Nil <- result.try(complete(head))
   use #(repository, revision) <- result.try(comparison(head))
 
+  let #(capture, committed) =
+    capture_committed(capture, start, repository, revision)
+
   // The status count is exact only because an oversized status was refused.
   // Files beyond this prefix are counted, not silently treated as unchanged.
   let total = list.length(identities)
@@ -261,8 +362,101 @@ fn capture_repository(
       [],
     ),
   )
-  let board = Board(observed_at_ms, repository, [], total, total, Complete)
+  let board =
+    Board(observed_at_ms, committed, repository, [], total, total, Complete)
   Ok(fit_board(board, files))
+}
+
+// A failed history read is an explicit unavailable section. The shared deadline
+// still prevents subsequent file reads from running beyond the observation.
+// On failure, reserve both possible calls' full stdout/stderr allowances because
+// an error does not return their partially consumed capture accounting.
+fn capture_committed(
+  capture: Capture,
+  start: Start,
+  repository: Repository,
+  head: String,
+) -> #(Capture, Committed) {
+  case start, repository {
+    Unavailable(reason), _ -> #(
+      capture,
+      Committed(string.slice(reason, 0, 512), "", Complete),
+    )
+    _, Unborn -> #(
+      capture,
+      Committed("No commits since session start", "", Complete),
+    )
+    _, NotRepository -> #(
+      capture,
+      Committed("Workspace is not a Git repository", "", Complete),
+    )
+    _, Head -> {
+      case committed_patch(capture, start, head) {
+        Ok(value) -> value
+        Error(error) -> #(
+          Capture(
+            ..capture,
+            bytes_left: int.max(0, capture.bytes_left - 16_384),
+          ),
+          Committed(
+            "Committed changes unavailable: "
+              <> string.slice(error_message(error), 0, 512),
+            "",
+            Complete,
+          ),
+        )
+      }
+    }
+  }
+}
+
+fn committed_patch(
+  capture: Capture,
+  start: Start,
+  head: String,
+) -> Result(#(Capture, Committed), Error) {
+  use #(capture, range) <- result.try(commit_range(capture, start, head))
+
+  // A merge may add resolution bytes present in neither parent. Compare its
+  // first parent explicitly so a clean worktree cannot hide those changes.
+  use #(capture, output) <- result.try(run_git(
+    capture,
+    [
+      "log", "--max-count=24", "--format=commit %h%n%s", "-p",
+      "--diff-merges=first-parent", "--no-ext-diff", "--no-textconv",
+      "--no-color", "--no-renames", "--relative", "--ignore-submodules=dirty",
+      "--submodule=short", range, "--", ".",
+    ],
+    4096,
+  ))
+  use Nil <- result.try(successful(output))
+  use patch <- result.try(patch_text(output.stdout, output.extent))
+  let message = case patch {
+    "" -> "No commits since session start"
+    _ -> "Commits since session start · latest 24 at most"
+  }
+  Ok(#(capture, Committed(message, patch, output.extent)))
+}
+
+fn commit_range(
+  capture: Capture,
+  start: Start,
+  head: String,
+) -> Result(#(Capture, String), Error) {
+  case start {
+    Empty -> Ok(#(capture, head))
+    Unavailable(reason) -> Error(Refused(reason))
+    Revision(base) -> {
+      use <- bool.guard(!valid_revision(base), Error(InvalidOutput))
+      use #(capture, ancestor) <- result.try(run_git(
+        capture,
+        ["merge-base", "--is-ancestor", base, head],
+        4096,
+      ))
+      use Nil <- result.try(successful(ancestor))
+      Ok(#(capture, base <> ".." <> head))
+    }
+  }
 }
 
 // Tool homes and build caches belong to Loom's generated directories. Exclude
@@ -744,6 +938,14 @@ fn board_extent(board: Board) -> Board {
 pub fn to_json(board: Board) -> json.JsonValue {
   json.Object([
     #("source", json.String("git")),
+    #(
+      "committed",
+      json.Object([
+        #("message", json.String(board.committed.message)),
+        #("patch", json.String(board.committed.patch)),
+        #("extent", json.String(extent_text(board.committed.extent))),
+      ]),
+    ),
     #("observed_at_ms", json.Int(board.observed_at_ms)),
     #(
       "repository",

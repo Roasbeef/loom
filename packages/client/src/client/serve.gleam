@@ -66,6 +66,7 @@ import client/scheduleseam
 import client/scratch
 import client/secrets
 import client/server
+import client/session_git
 import client/skill_tool
 import client/system_prompt
 import client/wiring
@@ -2634,6 +2635,25 @@ fn assemble_in(
     field.text(key: "names", value: string.join(tool.names(tool_registry), ",")),
   ])
 
+  // The first activation records HEAD before recovered or new model work can
+  // commit. The boot owner still holds the store alone; the runtime writer is
+  // started below. Later activations reuse this exact durable baseline.
+  let worktree_wiring =
+    worktree_diff.Wiring(
+      workspace: settings.workspace,
+      broker: broker_actor,
+      base_policy:,
+      clock:,
+      demand: settings.demand,
+      env: environment,
+      entropy:,
+    )
+  use git_start <- result.try(
+    session_git.prepare(opened, settings.session_id, settings.workspace, fn() {
+      worktree_diff.starting_revision(worktree_wiring)
+    }),
+  )
+
   // The system prompt, before the open, because `wiring.Config` needs
   // the string and `api.open` is what stands the writer up. The pinned
   // cells are therefore read straight off the store here — legal, nothing
@@ -2896,15 +2916,7 @@ fn assemble_in(
         hub.start(
           hub.default_options(settings.session_id, runtime)
             |> hub.with_worktree_diff(fn() {
-              worktree_diff.capture(worktree_diff.Wiring(
-                workspace: settings.workspace,
-                broker: broker_actor,
-                base_policy:,
-                clock:,
-                demand: settings.demand,
-                env: environment,
-                entropy:,
-              ))
+              worktree_diff.capture_since(worktree_wiring, git_start)
               |> result.map(worktree_diff.to_json)
               |> result.map_error(worktree_diff.error_message)
             })

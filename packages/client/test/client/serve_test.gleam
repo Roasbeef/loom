@@ -128,9 +128,9 @@ fn settings_under(root: String) -> serve.Settings {
     token_path: root <> "/session.db.token",
     workspace: root <> "/work",
     base_policy: serve.base_policy(root <> "/work"),
-    // Never spawned: nothing in this test runs a tool, and the pool
-    // spawns helpers lazily at first checkout.
-    helper_path: "/bin/sh",
+    // First activation observes Git before model work, so even this fixture
+    // needs a helper that speaks the protocol and proves retirement.
+    helper_path: absolute("../sandbox/loom-exec"),
     helper_pool_size: 2,
     session_id: "session",
     demand: exec.BestEffort,

@@ -216,6 +216,8 @@ fn settings(
   file: String,
   gateway: provider_gateway.Gateway,
 ) -> serve.Settings {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the fixture locates its protocol-speaking helper"
   serve.Settings(
     secrets: secret.env(),
     secret_failures: [],
@@ -226,7 +228,7 @@ fn settings(
     token_path: root <> "/" <> file <> ".token",
     workspace: root <> "/work",
     base_policy: serve.base_policy(root <> "/work"),
-    helper_path: "/bin/sh",
+    helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: file,
     demand: exec.BestEffort,
