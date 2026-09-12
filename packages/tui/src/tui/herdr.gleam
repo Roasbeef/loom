@@ -47,8 +47,17 @@ const attempt_timeout_ms = 500
 
 const retry_timeout_ms = 1500
 
-/// One report in flight is enough: state reports supersede each other, so
-/// a queued change waits for the current exchange rather than stacking.
+/// The pane config and the process that carries reports to the pane's
+/// daemon.
+///
+/// Reports are delivered in arrival order: `handle` runs one exchange at a
+/// time, and each exchange carries its own deadline, paid on this dedicated
+/// unlinked process rather than on the terminal loop. `publish_herdr`
+/// enqueues one report per state or session change, so what waits in the
+/// mailbox is a list of real transitions and not a stream of repeats.
+/// Against a dead socket every report pays its full deadline before the
+/// next one starts, so the queue can fall behind the screen; that is the
+/// price of in-order delivery, and the terminal waits on none of it.
 pub opaque type Reporter {
   Reporter(config: Config, inner: actor.Started(Subject(Message)))
 }
@@ -78,6 +87,19 @@ pub type PaneState {
   Done
 }
 
+/// Whether an operation settled since the last report.
+///
+/// A settled operation is the one transition the strand table cannot show:
+/// the strand is idle before the operation and idle again after it, so the
+/// reducer records the transition here and the publisher consumes it.
+pub type Settlement {
+  /// An operation reached its `done` phase since the last publish.
+  Settled
+
+  /// No operation settled since the last publish.
+  Unsettled
+}
+
 /// The last report sent, so the loop publishes only on a change. The
 /// session id rides along because a session switch at the same state is
 /// still a new report: resume must follow the new session.
@@ -87,19 +109,17 @@ pub type Publication {
 
 /// What the reporter is asked to do.
 pub type Message {
-  /// Report a state transition. Superseded by a later `Report`; `Shutdown`
-  /// beats everything, because the pane is going away.
+  /// Report a state transition. Delivered in arrival order, behind any
+  /// report already queued; nothing here supersedes an earlier report,
+  /// because Herdr drops a report that arrives out of sequence on its own
+  /// side.
   Report(state: PaneState, session: String, message: String)
 
-  /// Report the session identity without a state claim. Sent when the
-  /// terminal first attaches and on every switch, so a pane opened onto an
-  /// idle session still resumes correctly.
+  /// Report the session identity without a state claim. Sent on the first
+  /// publish, so a pane opened onto an idle session still resumes. A later
+  /// session switch does not repeat it: the `Report` that follows the
+  /// switch carries the new `agent_session_id` itself.
   Announce(session: String)
-
-  /// Stop reporting. The process exits; the socket was already closed by
-  /// Stop reporting. The process exits; the socket was already closed by
-  /// the exchange that completed or timed out.
-  Shutdown
 }
 
 /// The reporter's own state: the config it was born with and the sequence
@@ -146,7 +166,9 @@ pub fn configure(started_ms: Int) -> Option(Config) {
 /// pane cannot disagree with the operator's own screen: a pending approval
 /// is blocked, a strand with a live phase is working, and an operation
 /// that just settled is done. Approval wins over liveness because the
-/// strand is waiting on the operator, whatever the last phase said.
+/// strand is waiting on the operator, whatever the last phase said, and
+/// liveness wins over a settlement because the operation that settled is
+/// over while the live one is not.
 ///
 /// ## Examples
 ///
@@ -154,14 +176,14 @@ pub fn configure(started_ms: Int) -> Option(Config) {
 /// herdr.state_for(
 ///   [protocol.Strand(id: "main", name: None, live_phase: Some("tool"))],
 ///   [],
-///   False,
+///   herdr.Unsettled,
 /// )
 /// // -> Working
 /// ```
 pub fn state_for(
   strands: List(Strand),
   approvals: List(approval.Review),
-  settled: Bool,
+  settled: Settlement,
 ) -> PaneState {
   let pending =
     list.any(approvals, fn(review) { review.status == approval.Pending })
@@ -169,8 +191,8 @@ pub fn state_for(
   case pending, live, settled {
     True, _, _ -> Blocked
     False, True, _ -> Working
-    False, False, True -> Done
-    False, False, False -> Idle
+    False, False, Settled -> Done
+    False, False, Unsettled -> Idle
   }
 }
 
@@ -193,9 +215,9 @@ pub fn changed(last: Option(Publication), next: Publication) -> Bool {
   }
 }
 
-/// Starts the reporter for one pane. Unlinked: a failed socket must never
-/// take the terminal down, and the terminal exiting normally leaves the
-/// reporter to drain its queue on its own short deadlines.
+/// Starts the reporter for one pane. Unlinked, so a failed socket can
+/// never take the terminal down; it holds nothing between exchanges and
+/// runs until the VM exits, which is also how it stops.
 ///
 /// ## Examples
 ///
@@ -238,21 +260,11 @@ pub fn announce(reporter: Option(Reporter), session: String) -> Nil {
   }
 }
 
-/// Stops the reporter. Called from the terminal's shutdown path only.
-pub fn shutdown(reporter: Option(Reporter)) -> Nil {
-  case reporter {
-    None -> Nil
-    Some(reporter) -> process.send(reporter.inner.data, Shutdown)
-  }
-}
-
 fn handle(
   state: ReporterState,
   message: Message,
 ) -> actor.Next(ReporterState, Message) {
   case message {
-    Shutdown -> actor.stop()
-
     // The sequence advances on the attempt, not the delivery: a dropped
     // report leaves a gap, and Herdr's reordering guard reads the gap as
     // "something was lost", which is the truth.

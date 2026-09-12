@@ -168,14 +168,16 @@ that tree separately from the self-contained server.
   scriptable-host adapter reads. `state_for` maps the model onto the pane's
   state — a pending approval is `blocked`, any live strand phase is
   `working`, a settled operation is `done` — and the reducer hands the
-  publisher the settlement as a consumed flag, because a strand is idle
-  before and after and the table alone cannot see the transition. Reports
-  are `pane.report_agent` and `pane.report_agent_session` over the pane's
-  unix socket, sequenced from the launch clock, sent only on change by a
-  dedicated unlinked reporter process, retried once and then dropped: the
-  terminal's own session always wins over a pane report. The one external
-  is `tui/internal/ffi_herdr.exchange`, a deadline-bounded `gen_tcp`
-  unix-domain round trip, because no stdlib or weft surface opens one.
+  publisher the settlement as a `herdr.Settlement` the publish consumes,
+  because a strand is idle before and after and the table alone cannot see
+  the transition. Reports are `pane.report_agent` and
+  `pane.report_agent_session` over the pane's unix socket, sequenced from
+  the launch clock, sent only on change by a dedicated unlinked reporter
+  process that delivers them in arrival order, each retried once and then
+  dropped: the terminal's own session always wins over a pane report. The
+  one external is `tui/internal/ffi_herdr.exchange`, a deadline-bounded
+  `gen_tcp` unix-domain round trip, because no stdlib or weft surface opens
+  one.
 - `tui/frame` renders a `Buffer` as rows of text, folding a wide glyph's
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what

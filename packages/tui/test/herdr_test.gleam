@@ -37,22 +37,30 @@ fn pending_review() -> approval.Review {
 }
 
 pub fn derive_blocked_beats_working_test() {
-  herdr.state_for([live_strand()], [pending_review()], False)
+  herdr.state_for([live_strand()], [pending_review()], herdr.Unsettled)
   |> should.equal(herdr.Blocked)
 }
 
 pub fn derive_working_when_live_test() {
-  herdr.state_for([live_strand()], [], False)
+  herdr.state_for([live_strand()], [], herdr.Unsettled)
+  |> should.equal(herdr.Working)
+}
+
+pub fn derive_working_beats_unconsumed_settlement_test() {
+  // A settlement that has not been published yet does not outrank a live
+  // strand: the operation that settled is over, and the pane must show the
+  // one that is running now rather than the one that finished.
+  herdr.state_for([live_strand()], [], herdr.Settled)
   |> should.equal(herdr.Working)
 }
 
 pub fn derive_done_on_settled_test() {
-  herdr.state_for([idle_strand()], [], True)
+  herdr.state_for([idle_strand()], [], herdr.Settled)
   |> should.equal(herdr.Done)
 }
 
 pub fn derive_idle_when_quiet_test() {
-  herdr.state_for([idle_strand()], [], False)
+  herdr.state_for([idle_strand()], [], herdr.Unsettled)
   |> should.equal(herdr.Idle)
 }
 

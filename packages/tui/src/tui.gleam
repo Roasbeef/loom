@@ -687,11 +687,11 @@ pub type Model {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
-    /// A `done` report for a just-settled operation, consumed by the next
-    /// publish. The reducer sets the flag; the publisher reads and clears
-    /// it, which is what keeps a transient transition out of the state the
-    /// frame derives from.
-    herdr_settled: Bool,
+    /// Whether an operation settled since the last Herdr publish. The
+    /// reducer records the settlement; the publisher reads it and resets it
+    /// to `Unsettled`, which is what keeps a transient transition out of
+    /// the state the frame derives from.
+    herdr_settled: herdr.Settlement,
   )
 }
 
@@ -998,7 +998,7 @@ pub fn new_model_with_clock(
     recorder: None,
     herdr_reporter: None,
     herdr_published: None,
-    herdr_settled: False,
+    herdr_settled: herdr.Unsettled,
     selection: None,
     selection_frame: None,
     clipboard: NoClipboard,
@@ -3527,11 +3527,13 @@ fn start_herdr_reporter(model: Model) -> Model {
 // The report derives from the same fields the frame does, so the pane
 // cannot tell the operator something the screen disagrees with. A
 // session switch is reported even at an unchanged state, because the
-// session id is what `herdr session` resume keys on; and the first
-// publish announces the session without a state claim, which is what
-// lets a pane opened onto an idle session still resume. Publishing on
-// every event is deliberately cheap: the comparison is two fields and
-// the send is one message to a local process.
+// session id is what `herdr session` resume keys on. Only the first
+// publish announces the session without a state claim, which is what lets
+// a pane opened onto an idle session still resume; a later switch needs no
+// announcement of its own, because the report it sends carries the new
+// session id. Publishing on every event is deliberately cheap: the
+// comparison is two fields and the send is one message to a local
+// process.
 fn publish_herdr(model: Model) -> Model {
   case model.herdr_reporter {
     None -> model
@@ -3543,14 +3545,18 @@ fn publish_herdr(model: Model) -> Model {
           session: model.session,
         )
       case herdr.changed(model.herdr_published, next) {
-        False -> Model(..model, herdr_settled: False)
+        False -> Model(..model, herdr_settled: herdr.Unsettled)
         True -> {
           case model.herdr_published {
             None -> herdr.announce(model.herdr_reporter, model.session)
             Some(_) -> Nil
           }
           herdr.report(model.herdr_reporter, next.state, next.session, "")
-          Model(..model, herdr_published: Some(next), herdr_settled: False)
+          Model(
+            ..model,
+            herdr_published: Some(next),
+            herdr_settled: herdr.Unsettled,
+          )
         }
       }
     }
@@ -5421,6 +5427,18 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         "assistant" -> generation_clock(model, strand)
         _other -> model.generation_started_ms
       }
+
+      // A settled operation is the one transition Herdr's pane state cannot
+      // derive from the strand table alone: the strand is idle before and
+      // after, so the reducer records it here and the publisher consumes it.
+      // An unconsumed settlement survives this event, because the publish
+      // that would have reported it may not have run yet.
+      let herdr_settled = case model.herdr_settled, phase {
+        herdr.Settled, _already -> herdr.Settled
+        herdr.Unsettled, "done" -> herdr.Settled
+        herdr.Unsettled, _other -> herdr.Unsettled
+      }
+
       let updated =
         Model(
           ..model,
@@ -5436,11 +5454,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             True -> clear_tails(model.tool_tails, strand)
             False -> model.tool_tails
           },
-          // A settled operation is the one transition Herdr's pane state
-          // cannot derive from the strand table alone: the strand is idle
-          // before and after, so the reducer hands it to the publisher as a
-          // flag rather than as model state.
-          herdr_settled: model.herdr_settled || phase == "done",
+          herdr_settled:,
           notice: strand <> ": " <> phase,
         )
       let settled = settle_interrupt(updated, strand, phase)

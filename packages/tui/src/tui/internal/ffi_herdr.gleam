@@ -13,8 +13,8 @@
 
 /// Performs one request/response exchange over a unix-domain socket.
 ///
-/// Uses OTP `gen_tcp` with `{ifaddr, {local, Path}}`, which is the only
-/// unix-domain transport OTP exposes. Sends `payload`, waits up to
+/// Connects OTP `gen_tcp` to the address `{local, Path}`, which is the
+/// only unix-domain transport OTP exposes. Sends `payload`, waits up to
 /// `timeout_ms` for one reply, closes the socket, and answers the reply.
 /// A failed connect, a timeout, or a close before any byte is the same
 /// `Error` to the caller, because the report is best-effort and the only

@@ -69,17 +69,18 @@ describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
 
 %% One request/response exchange with the Herdr client daemon over a
-%% unix-domain socket. gen_tcp with `{ifaddr, {local, Path}}' is the only
-%% unix-domain transport OTP exposes, and the deadline on each phase is the
-%% whole reason the reporter exists: a connect to a stale socket path must
-%% cost the caller at most the timeout, so connect, send and receive each
+%% unix-domain socket. A `{local, Path}' address is the only unix-domain
+%% transport OTP exposes, and the deadline on each phase is the whole
+%% reason the reporter exists: a connect to a stale socket path must cost
+%% the caller at most the timeout, so connect, send and receive each
 %% carry one rather than trusting a kernel default. The reply is bounded at
 %% one line — the daemon answers a report with a short acknowledgement and
 %% nothing else — and a close before any byte is an error, because the only
 %% answer the reporter acts on is that the daemon did not take the report.
 herdr_exchange(Path, Payload, TimeoutMs) ->
-    %% XX
-    %% as well makes gen_tcp bind it twice and refuse with eaddrinuse.
+    %% The socket address goes in the positional Address argument alone.
+    %% Passing `{ifaddr, {local, Path}}' in the options as well makes
+    %% gen_tcp bind it twice and refuse with eaddrinuse.
     Address = {local, unicode:characters_to_list(Path)},
     case gen_tcp:connect(Address, 0,
         [binary, {packet, line}, {active, false}], TimeoutMs) of
