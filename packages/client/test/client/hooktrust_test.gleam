@@ -5,6 +5,8 @@
 
 import client/hookcompat.{Source, UserSettings}
 import client/hooktrust
+import client/internal/ffi_os
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -13,7 +15,6 @@ import simplifile
 // The scratch directory every test writes under. Cleaned at the start
 // of each test rather than the end, so a failed run leaves its state
 // for inspection and a rerun starts fresh.
-const root = "build/hooktrust-test"
 
 // Two fixtures that differ in one handler's command, so their hashes
 // differ and the trust verdict can be observed to flip.
@@ -21,11 +22,19 @@ const fixture_a = "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[
 
 const fixture_b = "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"lint2.sh\"}]}]}}"
 
-fn fresh_dir() {
+// Every filesystem test gets a directory of its own. The parallel runner
+// executes a module's tests at once, and a shared root that each test
+// deletes on exit lets one test erase a record another has just written;
+// the Linux gate caught scan returning one record where two were saved.
+// The unique counter restarts with the VM, so a stale tree from an earlier
+// run is removed before the directory is made.
+fn fresh_dir() -> String {
+  let root =
+    "build/hooktrust-test-" <> int.to_string(ffi_os.unique_positive_integer())
   let _cleared = simplifile.delete_all([root])
   let assert Ok(Nil) = simplifile.create_directory_all(root)
     as "the test root must be creatable"
-  Nil
+  root
 }
 
 fn config_a() {
@@ -47,7 +56,7 @@ fn source() {
 // --- round trip -------------------------------------------------------------
 
 pub fn a_record_round_trips_through_save_and_load_test() {
-  fresh_dir()
+  let root = fresh_dir()
   let path = root <> "/user-settings.json"
   let record =
     hooktrust.Record(
@@ -67,7 +76,7 @@ pub fn a_record_round_trips_through_save_and_load_test() {
 // --- the verdict ------------------------------------------------------------
 
 pub fn check_is_trusted_after_trust_and_reviews_after_a_change_test() {
-  fresh_dir()
+  let root = fresh_dir()
   let path = root <> "/user-settings.json"
   let config = config_a()
 
@@ -90,7 +99,7 @@ pub fn check_is_trusted_after_trust_and_reviews_after_a_change_test() {
 // --- revoke -----------------------------------------------------------------
 
 pub fn revoke_deletes_the_record_and_absent_revoke_succeeds_test() {
-  fresh_dir()
+  let root = fresh_dir()
   let path = root <> "/user-settings.json"
   let assert Ok(Nil) = hooktrust.trust(path, config_a(), 1_700_000_000_000)
     as "trust must record before revoke"
@@ -116,7 +125,7 @@ fn result_is_error(result: Result(a, String)) -> Bool {
 // --- scan -------------------------------------------------------------------
 
 pub fn scan_lists_two_records_and_skips_a_malformed_one_test() {
-  fresh_dir()
+  let root = fresh_dir()
   let path_a = root <> "/user-settings.json"
   let path_b = root <> "/project-settings.json"
   let assert Ok(Nil) = hooktrust.trust(path_a, config_a(), 1_700_000_000_000)
