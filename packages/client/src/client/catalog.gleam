@@ -28,6 +28,7 @@
 //// context_window = 200000
 //// max_output_tokens = 32000
 //// thinking = "off"                   # off|low|medium|high|unsupported
+//// vision = false                     # optional; reads image blocks? default false
 ////
 //// [models.<name>.pricing]            # optional; US dollars per million
 //// input = 3.00                       # tokens, the unit providers publish
@@ -148,7 +149,31 @@ pub type CatalogModel {
     /// What the endpoint charges, if the operator wrote it down. `None`
     /// is an unpriced model, whose usage records keep a zero cost.
     pricing: Option(pricing.Pricing),
+    /// Whether the endpoint reads image blocks (`vision` in the
+    /// catalogue, default `TextOnly`).
+    vision: ImageReading,
   )
+}
+
+/// Whether a catalogue entry's endpoint reads images at all.
+///
+/// Two variants rather than a `Bool` field because the polarity of a
+/// boolean is a thing every reader must carry in their head; a name
+/// reads at the case arm (`ReadsImages` cannot be got backwards).
+///
+/// `vision = false` is the default for a reason: an image sent to a
+/// model that cannot read it is silently accepted by the wire and
+/// silently ignored or refused by the provider, so the harness must
+/// route or refuse before dispatch. Only an operator who has confirmed
+/// the endpoint actually accepts image blocks (issue #358: GLM-5.3
+/// does not, GLM-5.3-Flash does) declares `vision = true`.
+pub type ImageReading {
+  /// The endpoint reads image blocks.
+  ReadsImages
+
+  /// The endpoint does not read images; image-bearing requests must
+  /// route through the `vision` chain or be refused at admission.
+  TextOnly
 }
 
 /// One configured MCP server: the stdio process code mode reaches as
@@ -377,7 +402,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking", "pricing",
+      "max_output_tokens", "thinking", "pricing", "vision",
     ],
     place,
   ))
@@ -413,6 +438,21 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     Error(message) -> Error(message)
   })
   use pricing <- result.try(parse_pricing(fields, place))
+
+  // `vision` is the one capability the request path routes on (issue
+  // #358): whether an entry reads image blocks decides whether an
+  // image-bearing request is admitted there, re-routed through the
+  // `vision` chain, or refused. Absent means `TextOnly` rather than
+  // `ReadsImages`, because the failure the default protects against —
+  // an image silently ignored by a text-only endpoint — is invisible on
+  // the wire, while the failure of the honest default is a worded
+  // refusal an operator can act on.
+  use vision <- result.try(case dict.get(fields, "vision") {
+    Ok(tom.Bool(True)) -> Ok(ReadsImages)
+    Ok(tom.Bool(False)) -> Ok(TextOnly)
+    Ok(_other) -> Error(place <> ".vision must be true or false")
+    Error(Nil) -> Ok(TextOnly)
+  })
   Ok(CatalogModel(
     name:,
     dialect:,
@@ -423,6 +463,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     max_output_tokens:,
     thinking:,
     pricing:,
+    vision:,
   ))
 }
 

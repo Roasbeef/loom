@@ -571,6 +571,7 @@ fn scripted_catalog() -> catalog.Catalog {
         max_output_tokens: 4096,
         thinking: model.ThinkingOff,
         pricing: None,
+        vision: catalog.TextOnly,
       ),
     ],
     roles: [#(model.Main, ["acme"])],
