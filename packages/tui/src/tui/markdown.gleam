@@ -107,8 +107,11 @@ pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
   }
 }
 
-// The word wrapper discards leading separators. Restore the list gutter on
-// every wrapped row so nested notes retain their hierarchy at narrow widths.
+// The word wrapper discards leading separators, so the source line's own
+// leading indentation is re-applied to every row it returns, the first row
+// included. Wrapping happens at the narrowed width, which is what keeps a
+// nested note's hierarchy aligned instead of letting continuations fall back
+// to the left margin.
 fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
   let text =
     line.spans |> list.map(fn(value) { value.content }) |> string.concat
@@ -118,8 +121,18 @@ fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
     0, _ | _, [] -> span.wrap_line(line, width)
     _, [first, ..] -> {
       let prefix = span.Span(..first, content: string.repeat(" ", indent))
+
+      // A whitespace-only source line wraps to one empty row. The prefix
+      // inherits the first span's style, so gutter cells on such a row would
+      // paint that style's background as a short bar where the reader expects
+      // a blank line. There is nothing to align, so it is left empty.
       span.wrap_line(line, width - indent)
-      |> list.map(fn(row) { span.Line(..row, spans: [prefix, ..row.spans]) })
+      |> list.map(fn(row) {
+        case list.all(row.spans, fn(value) { value.content == "" }) {
+          True -> row
+          False -> span.Line(..row, spans: [prefix, ..row.spans])
+        }
+      })
     }
   }
 }

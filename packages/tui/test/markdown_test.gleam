@@ -192,3 +192,15 @@ pub fn nested_list_indentation_survives_word_wrapping_test() {
   assert list.contains(rows, "  explanation")
   assert list.contains(rows, "  • publish")
 }
+
+// The indent is re-applied as a span copied from the row's first span, so on
+// a row with no text those cells would paint that span's background as a
+// short bar where the source had a blank line.
+pub fn a_blank_indented_row_wraps_without_a_painted_gutter_test() {
+  let rows =
+    [span.line_plain("    "), span.line_plain("    indented prose")]
+    |> markdown.wrap_lines(20)
+    |> list.map(line_text)
+  assert list.contains(rows, "")
+  assert list.contains(rows, "    indented prose")
+}
