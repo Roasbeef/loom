@@ -15,7 +15,7 @@ user's queued instructions do not all reach the immediate replacement request.
 When an authenticated `abort` addresses a live operation, mark that strand's
 existing held queue to drain as one batch after the operation retires. Preserve
 every held `UserMessage` as a separate message, including its full content,
-images, timestamp, and recorded author. Preserve the existing queue order:
+images, and recorded author. Preserve the existing queue order:
 steers first, then ordinary turns, FIFO within each priority.
 
 The queue owns its drain mode. An empty queue has no pending batch intent;
