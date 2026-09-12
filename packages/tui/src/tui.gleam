@@ -3505,8 +3505,15 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 // A refused start is silent by design: the reporter is a convenience for
 // the pane around the terminal, and the session must never learn it
 // exists by failing.
+//
+// The sequence seed is the wall clock rather than `model.monotonic_time_ms`,
+// which every other timing in the loop uses. Herdr's `seq` is an unsigned
+// integer, and the BEAM monotonic clock is an arbitrary-offset counter that
+// is negative on this platform, so a monotonic seed would make the daemon
+// reject every report. Seeding from the wall clock also puts a reporter
+// restarted in the same pane above the last sequence Herdr saw.
 fn start_herdr_reporter(model: Model) -> Model {
-  case herdr.configure(model.monotonic_time_ms()) {
+  case herdr.configure(host_bootstrap.system_time_ms()) {
     None -> model
     Some(config) ->
       case herdr.start(config) {
@@ -3518,31 +3525,35 @@ fn start_herdr_reporter(model: Model) -> Model {
 
 // Reports the pane state to Herdr when — and only when — it changed.
 //
+// Nothing is published before a session is attached. The terminal reaches
+// this function at the session picker, where `model.session` is still
+// empty, and a report carrying an empty `agent_session_id` names no
+// session for `herdr session` to resume.
+//
 // The report derives from the same fields the frame does, so the pane
-// cannot tell the operator something the screen disagrees with. A
-// session switch is reported even at an unchanged state, because the
-// session id is what `herdr session` resume keys on. Only the first
-// publish announces the session without a state claim, which is what lets
-// a pane opened onto an idle session still resume; a later switch needs no
-// announcement of its own, because the report it sends carries the new
-// session id. Publishing on every event is deliberately cheap: the
-// comparison is two fields and the send is one message to a local
-// process.
+// cannot tell the operator something the screen disagrees with. A session
+// switch is reported even at an unchanged state, because the session id is
+// what resume keys on, and the switch re-announces: the announcement
+// follows the session identity, so it is sent when that identity first
+// becomes known and again every time it moves. Publishing on every event
+// is deliberately cheap: the comparison is two fields and the send is one
+// message to a local process.
 fn publish_herdr(model: Model) -> Model {
-  case model.herdr_reporter {
-    None -> model
-    Some(_) -> {
+  case model.herdr_reporter, model.session {
+    None, _ -> model
+    Some(_), "" -> model
+    Some(_), session -> {
       let next =
         herdr.Publication(
           state: herdr.state_for(model.strands, model.approvals),
-          session: model.session,
+          session:,
         )
       case herdr.changed(model.herdr_published, next) {
         False -> model
         True -> {
-          case model.herdr_published {
-            None -> herdr.announce(model.herdr_reporter, model.session)
-            Some(_) -> Nil
+          case herdr.announces(model.herdr_published, next) {
+            True -> herdr.announce(model.herdr_reporter, session)
+            False -> Nil
           }
           herdr.report(model.herdr_reporter, next.state, next.session, "")
           Model(..model, herdr_published: Some(next))

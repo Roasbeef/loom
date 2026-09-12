@@ -5,11 +5,12 @@
 //// integrated agent inherits three environment variables
 //// (`HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`), and the agent
 //// reports its lifecycle as newline-delimited JSON requests over that
-//// unix socket: `pane.report_agent_session` when the session identity is
-//// known, then `pane.report_agent` as the agent moves between working,
-//// blocked and idle. `herdr session` resume keys off the reported session
-//// id, which Loom already has as a first-class value — the attached
-//// session id itself.
+//// unix socket: `pane.report_agent_session` when the session identity
+//// first becomes known and again on every switch, then `pane.report_agent`
+//// as the agent moves between working, blocked and idle. `herdr session`
+//// resume keys off the reported session id, which Loom already has as a
+//// first-class value — the attached session id itself. Until a session is
+//// attached there is no identity to report, and nothing is sent at all.
 ////
 //// This terminal is a self-contained binary with no hook directory for
 //// Herdr's installer to drop a script into, so the adapter is compiled in
@@ -71,8 +72,14 @@ pub type Config {
     pane_id: String,
     /// The unix socket the pane's client daemon listens on.
     socket_path: String,
-    /// Process start time in milliseconds, the seed of the monotonic
-    /// report sequence Herdr uses to drop reordered reports.
+    /// Wall-clock process start time in milliseconds, the seed of the
+    /// ascending report sequence Herdr uses to drop reordered reports.
+    ///
+    /// It has to be the wall clock. Herdr types `seq` as an unsigned
+    /// integer with a minimum of zero, and the BEAM monotonic clock is an
+    /// arbitrary-offset counter that is negative on this platform, so a
+    /// monotonic seed makes every report fail validation at the pane's
+    /// daemon. `config_for` refuses a negative seed for that reason.
     started_ms: Int,
   )
 }
@@ -110,10 +117,12 @@ pub type Message {
   /// side.
   Report(state: PaneState, session: String, message: String)
 
-  /// Report the session identity without a state claim. Sent on the first
-  /// publish, so a pane opened onto an idle session still resumes. A later
-  /// session switch does not repeat it: the `Report` that follows the
-  /// switch carries the new `agent_session_id` itself.
+  /// Report the session identity without a state claim. Sent when the
+  /// session identity first becomes known — so a pane opened onto an idle
+  /// session still resumes — and again on every switch, because `herdr
+  /// session` resume keys off the announced id and a switch moves it.
+  /// Nothing is announced while no session is attached: an empty
+  /// `agent_session_id` names no session to resume.
   Announce(session: String)
 }
 
@@ -129,7 +138,8 @@ type ReporterState {
 /// The gate is the same one every adapter applies: `HERDR_ENV` is exactly
 /// "1" and both the socket path and the pane id are present. Anything
 /// less — a partial export, a different value — is not a Herdr pane, and
-/// the reporter never starts.
+/// the reporter never starts. `started_ms` must be wall-clock
+/// milliseconds; `config_for` applies that half of the gate.
 ///
 /// ## Examples
 ///
@@ -145,13 +155,42 @@ pub fn configure(started_ms: Int) -> Option(Config) {
         bootstrap.getenv("HERDR_PANE_ID")
       {
         Ok(socket_path), Ok(pane_id) ->
-          case socket_path != "" && pane_id != "" {
-            True -> Some(Config(pane_id:, socket_path:, started_ms:))
-            False -> None
-          }
+          config_for(pane_id:, socket_path:, started_ms:)
         _, _ -> None
       }
     _ -> None
+  }
+}
+
+/// Answers the pane config for three launch values, or `None` when they
+/// cannot produce a valid report.
+///
+/// This is the whole of the boundary check, separated from the environment
+/// read so it is a pure function the tests drive. A blank pane id or socket
+/// path is a partial export rather than a pane. A negative `started_ms` is
+/// the monotonic clock reaching a parameter that wants the wall clock:
+/// Herdr's `seq` is an unsigned integer, so every report seeded from it
+/// would be rejected by the pane's daemon, and a config that can only
+/// produce invalid reports is not a Herdr pane.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.config_for(
+///   pane_id: "pane-7",
+///   socket_path: "/tmp/herdr.sock",
+///   started_ms: -576_460_751_285,
+/// )
+/// // -> None
+/// ```
+pub fn config_for(
+  pane_id pane_id: String,
+  socket_path socket_path: String,
+  started_ms started_ms: Int,
+) -> Option(Config) {
+  case pane_id != "" && socket_path != "" && started_ms >= 0 {
+    True -> Some(Config(pane_id:, socket_path:, started_ms:))
+    False -> None
   }
 }
 
@@ -208,6 +247,31 @@ pub fn changed(last: Option(Publication), next: Publication) -> Bool {
     Some(previous) ->
       previous.state != next.state || previous.session != next.session
     None -> True
+  }
+}
+
+/// Whether this publication has to announce the session before its report.
+///
+/// `pane.report_agent_session` is the call `herdr session` resume keys off,
+/// so the announcement follows the session id rather than the first
+/// publish: it is sent when the identity first becomes known and again
+/// whenever it moves. A publication with no session attached announces
+/// nothing, because an empty `agent_session_id` names no session to resume.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.announces(
+///   Some(herdr.Publication(herdr.Idle, "a")),
+///   herdr.Publication(herdr.Idle, "b"),
+/// )
+/// // -> True
+/// ```
+pub fn announces(last: Option(Publication), next: Publication) -> Bool {
+  case next.session, last {
+    "", _ -> False
+    _, None -> True
+    _, Some(previous) -> previous.session != next.session
   }
 }
 

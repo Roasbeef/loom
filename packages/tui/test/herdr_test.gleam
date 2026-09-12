@@ -1,7 +1,9 @@
-//// Pins the Herdr pane contract this terminal speaks: the env gate, the
-//// derivation from the terminal's own lifecycle signals, the change rule
-//// that keeps the socket quiet, and the exact bytes of both wire calls.
+//// Pins the Herdr pane contract this terminal speaks: the launch gate and
+//// the sequence seed it admits, the derivation from the terminal's own
+//// lifecycle signals, the change and announcement rules that decide what
+//// reaches the socket, and the exact bytes of both wire calls.
 
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -156,4 +158,95 @@ pub fn encode_escapes_untrusted_text_test() {
     <> "\"agent\":\"loom\",\"seq\":2,\"state\":\"idle\","
     <> "\"agent_session_id\":\"se\\\"ss\",\"message\":\"line\\none\"}}\n",
   )
+}
+
+pub fn a_negative_seed_is_not_a_herdr_pane_test() {
+  // The environment values are present, so this is the gate on the seed
+  // alone. A negative `started_ms` is the BEAM monotonic clock reaching a
+  // parameter that wants the wall clock; Herdr types `seq` as an unsigned
+  // integer, so a config seeded from it could only ever produce reports the
+  // pane's daemon rejects, and there is nothing to report from.
+  herdr.config_for(
+    pane_id: "pane-7",
+    socket_path: "/tmp/herdr-client.sock",
+    started_ms: -576_460_751_285,
+  )
+  |> should.equal(None)
+
+  herdr.config_for(
+    pane_id: "pane-7",
+    socket_path: "/tmp/herdr-client.sock",
+    started_ms: 1_789_193_617_870,
+  )
+  |> should.equal(
+    Some(herdr.Config(
+      pane_id: "pane-7",
+      socket_path: "/tmp/herdr-client.sock",
+      started_ms: 1_789_193_617_870,
+    )),
+  )
+}
+
+pub fn every_report_carries_a_non_negative_seq_test() {
+  // `start` seeds the reporter's counter from `started_ms` and `handle`
+  // advances it before each attempt, so the first report on the wire is
+  // seed + 1. Both calls put that number in `params.seq`, which Herdr's
+  // request schema types as a uint64 with a minimum of zero.
+  let started_ms = 1_789_193_617_870
+  let assert Some(config) =
+    herdr.config_for(
+      pane_id: "pane-7",
+      socket_path: "/tmp/herdr-client.sock",
+      started_ms:,
+    )
+    as "a wall-clock seed is a valid pane config"
+
+  let first = started_ms + 1
+
+  { first >= 0 }
+  |> should.be_true
+
+  [
+    herdr.encode_announce(config, first, "sess-1"),
+    herdr.encode_report(config, first, herdr.Working, "sess-1", ""),
+  ]
+  |> list.each(fn(line) {
+    line
+    |> string.contains("\"seq\":" <> int.to_string(first))
+    |> should.be_true
+
+    line
+    |> string.contains("\"seq\":-")
+    |> should.be_false
+  })
+}
+
+pub fn nothing_is_announced_without_a_session_test() {
+  // The first publish happens at the session picker, where no session is
+  // attached yet; an empty `agent_session_id` names nothing to resume.
+  herdr.announces(None, herdr.Publication(herdr.Idle, ""))
+  |> should.be_false
+}
+
+pub fn announced_when_the_session_becomes_known_test() {
+  herdr.announces(None, herdr.Publication(herdr.Idle, "s1"))
+  |> should.be_true
+}
+
+pub fn a_state_change_alone_does_not_announce_test() {
+  herdr.announces(
+    Some(herdr.Publication(herdr.Idle, "s1")),
+    herdr.Publication(herdr.Working, "s1"),
+  )
+  |> should.be_false
+}
+
+pub fn a_session_switch_announces_again_test() {
+  // Resume keys off the announced id, so the identity that moved has to be
+  // announced again rather than ridden along on the state report.
+  herdr.announces(
+    Some(herdr.Publication(herdr.Idle, "s1")),
+    herdr.Publication(herdr.Idle, "s2"),
+  )
+  |> should.be_true
 }

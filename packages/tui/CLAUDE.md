@@ -173,10 +173,19 @@ that tree separately from the self-contained server.
   operation reaches the `done` phase, so a finished operation is already
   "no live strand", and Herdr derives its own `done` from an idle report on
   a tab nobody has looked at since. Reports are `pane.report_agent` and
-  `pane.report_agent_session` over the pane's unix socket, sequenced from
-  the launch clock, sent only on change by a dedicated unlinked reporter
-  process that delivers them in arrival order, each retried once and then
-  dropped: the terminal's own session always wins over a pane report. The
+  `pane.report_agent_session` over the pane's unix socket, sent only on
+  change by a dedicated unlinked reporter process that delivers them in
+  arrival order, each retried once and then dropped: the terminal's own
+  session always wins over a pane report. Two rules decide what reaches the
+  socket, and both are pure functions the tests pin. `announces` says the
+  session identity is announced when it first becomes known and again on
+  every switch, because `herdr session` resume keys off the announced id;
+  nothing at all is published while no session is attached, which is the
+  state the session picker is in. `config_for` refuses a `started_ms` below
+  zero: the sequence is seeded from the wall clock, `seq` is an unsigned
+  integer in Herdr's request schema, and the BEAM monotonic clock is an
+  arbitrary-offset counter that is negative on macOS, so a monotonic seed
+  would make the daemon reject every report. The
   one external is `tui/internal/ffi_herdr.exchange`, a deadline-bounded
   `gen_tcp` unix-domain round trip, because no stdlib or weft surface opens
   one.
