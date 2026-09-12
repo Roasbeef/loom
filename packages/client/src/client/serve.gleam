@@ -137,6 +137,7 @@ import weft/registry as address
 // process is attributed the same way a native hook satellite's is.
 fn with_imported_hooks(
   built: effects.Effects,
+  opened: session.Session,
   settings: Settings,
   clock: Clock,
   environment: List(#(String, String)),
@@ -194,8 +195,13 @@ fn with_imported_hooks(
   })
   case serving.wiring.config.entries {
     [] -> built
-    _ ->
-      case hookserve.wire(built, serving, clock) {
+    _ -> {
+      // Imported `Stop` hooks are asked at the primary's run ends only;
+      // the advisor and every subagent finish their runs without them.
+      let stops = fn(operation) {
+        notes.strand_of(opened, operation) == Ok(advisor.primary)
+      }
+      case hookserve.wire(built, serving, clock, stops) {
         Ok(composed) -> composed
         Error(reason) -> {
           log.warn(logger, "hooks.unavailable", [
@@ -204,6 +210,7 @@ fn with_imported_hooks(
           built
         }
       }
+    }
   }
 }
 
@@ -3009,6 +3016,7 @@ fn assemble_in(
   let effects_record =
     with_imported_hooks(
       effects_record,
+      opened,
       settings,
       clock,
       environment,
