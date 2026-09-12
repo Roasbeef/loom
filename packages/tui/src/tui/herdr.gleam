@@ -77,27 +77,22 @@ pub type Config {
   )
 }
 
-/// The state one pane report carries. The set is Herdr's; `Working` is
-/// any live strand, `Blocked` is a pending approval, and `Done` is the
-/// settled transition Herdr's registry understands that `Idle` does not.
+/// The state one pane report carries. The reportable set is Herdr's
+/// `PaneAgentState`, and it is closed: `idle`, `working` and `blocked`,
+/// beside an `unknown` that is Herdr's own marker for a pane it could not
+/// classify rather than a claim an agent makes. `Working` is any live
+/// strand, `Blocked` is a pending approval, and everything else is `Idle`.
+///
+/// There is deliberately no `Done`. Herdr's `done` belongs to the status
+/// Herdr reports back about a pane, not to the state an agent reports in:
+/// Herdr derives it from an idle report on a tab nobody has looked at
+/// since. A report carrying `"done"` fails the enum and the pane's daemon
+/// rejects the request, so a settled operation reports `idle` and Herdr
+/// decides whether that idle counts as done.
 pub type PaneState {
   Idle
   Working
   Blocked
-  Done
-}
-
-/// Whether an operation settled since the last report.
-///
-/// A settled operation is the one transition the strand table cannot show:
-/// the strand is idle before the operation and idle again after it, so the
-/// reducer records the transition here and the publisher consumes it.
-pub type Settlement {
-  /// An operation reached its `done` phase since the last publish.
-  Settled
-
-  /// No operation settled since the last publish.
-  Unsettled
 }
 
 /// The last report sent, so the loop publishes only on a change. The
@@ -162,13 +157,17 @@ pub fn configure(started_ms: Int) -> Option(Config) {
 
 /// Maps the terminal's own lifecycle signals onto Herdr's pane state.
 ///
-/// The three inputs are the same three the frame renders from, so the
-/// pane cannot disagree with the operator's own screen: a pending approval
-/// is blocked, a strand with a live phase is working, and an operation
-/// that just settled is done. Approval wins over liveness because the
-/// strand is waiting on the operator, whatever the last phase said, and
-/// liveness wins over a settlement because the operation that settled is
-/// over while the live one is not.
+/// Both inputs are ones the frame renders from, so the pane cannot
+/// disagree with the operator's own screen: a pending approval is blocked
+/// and a strand with a live phase is working. Approval wins over liveness
+/// because the strand is waiting on the operator, whatever the last phase
+/// said.
+///
+/// A settled operation needs no input of its own. The reducer clears a
+/// strand's `live_phase` when its operation reaches the `done` phase, so
+/// an operation that just finished is exactly "no live strand", which is
+/// the `Idle` this answers with. Herdr turns that idle into its own `done`
+/// when the tab has gone unseen.
 ///
 /// ## Examples
 ///
@@ -176,23 +175,20 @@ pub fn configure(started_ms: Int) -> Option(Config) {
 /// herdr.state_for(
 ///   [protocol.Strand(id: "main", name: None, live_phase: Some("tool"))],
 ///   [],
-///   herdr.Unsettled,
 /// )
 /// // -> Working
 /// ```
 pub fn state_for(
   strands: List(Strand),
   approvals: List(approval.Review),
-  settled: Settlement,
 ) -> PaneState {
   let pending =
     list.any(approvals, fn(review) { review.status == approval.Pending })
   let live = list.any(strands, fn(strand) { strand.live_phase != None })
-  case pending, live, settled {
-    True, _, _ -> Blocked
-    False, True, _ -> Working
-    False, False, Settled -> Done
-    False, False, Unsettled -> Idle
+  case pending, live {
+    True, _ -> Blocked
+    False, True -> Working
+    False, False -> Idle
   }
 }
 
@@ -363,6 +359,5 @@ fn state_name(state: PaneState) -> String {
     Idle -> "idle"
     Working -> "working"
     Blocked -> "blocked"
-    Done -> "done"
   }
 }

@@ -687,11 +687,6 @@ pub type Model {
     herdr_reporter: Option(herdr.Reporter),
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
-    /// Whether an operation settled since the last Herdr publish. The
-    /// reducer records the settlement; the publisher reads it and resets it
-    /// to `Unsettled`, which is what keeps a transient transition out of
-    /// the state the frame derives from.
-    herdr_settled: herdr.Settlement,
   )
 }
 
@@ -998,7 +993,6 @@ pub fn new_model_with_clock(
     recorder: None,
     herdr_reporter: None,
     herdr_published: None,
-    herdr_settled: herdr.Unsettled,
     selection: None,
     selection_frame: None,
     clipboard: NoClipboard,
@@ -3538,25 +3532,20 @@ fn publish_herdr(model: Model) -> Model {
   case model.herdr_reporter {
     None -> model
     Some(_) -> {
-      let settled = model.herdr_settled
       let next =
         herdr.Publication(
-          state: herdr.state_for(model.strands, model.approvals, settled),
+          state: herdr.state_for(model.strands, model.approvals),
           session: model.session,
         )
       case herdr.changed(model.herdr_published, next) {
-        False -> Model(..model, herdr_settled: herdr.Unsettled)
+        False -> model
         True -> {
           case model.herdr_published {
             None -> herdr.announce(model.herdr_reporter, model.session)
             Some(_) -> Nil
           }
           herdr.report(model.herdr_reporter, next.state, next.session, "")
-          Model(
-            ..model,
-            herdr_published: Some(next),
-            herdr_settled: herdr.Unsettled,
-          )
+          Model(..model, herdr_published: Some(next))
         }
       }
     }
@@ -5428,17 +5417,6 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         _other -> model.generation_started_ms
       }
 
-      // A settled operation is the one transition Herdr's pane state cannot
-      // derive from the strand table alone: the strand is idle before and
-      // after, so the reducer records it here and the publisher consumes it.
-      // An unconsumed settlement survives this event, because the publish
-      // that would have reported it may not have run yet.
-      let herdr_settled = case model.herdr_settled, phase {
-        herdr.Settled, _already -> herdr.Settled
-        herdr.Unsettled, "done" -> herdr.Settled
-        herdr.Unsettled, _other -> herdr.Unsettled
-      }
-
       let updated =
         Model(
           ..model,
@@ -5454,7 +5432,6 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
             True -> clear_tails(model.tool_tails, strand)
             False -> model.tool_tails
           },
-          herdr_settled:,
           notice: strand <> ": " <> phase,
         )
       let settled = settle_interrupt(updated, strand, phase)

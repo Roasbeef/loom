@@ -166,11 +166,13 @@ that tree separately from the self-contained server.
   to drop a script into. `configure` gates on `HERDR_ENV=1` plus
   `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, the same three variables every
   scriptable-host adapter reads. `state_for` maps the model onto the pane's
-  state — a pending approval is `blocked`, any live strand phase is
-  `working`, a settled operation is `done` — and the reducer hands the
-  publisher the settlement as a `herdr.Settlement` the publish consumes,
-  because a strand is idle before and after and the table alone cannot see
-  the transition. Reports are `pane.report_agent` and
+  state over the three values Herdr's `PaneAgentState` lets an agent report:
+  a pending approval is `blocked`, any live strand phase is `working`, and
+  everything else — a settled operation included — is `idle`. There is no
+  `done` to report: the reducer clears a strand's `live_phase` when its
+  operation reaches the `done` phase, so a finished operation is already
+  "no live strand", and Herdr derives its own `done` from an idle report on
+  a tab nobody has looked at since. Reports are `pane.report_agent` and
   `pane.report_agent_session` over the pane's unix socket, sequenced from
   the launch clock, sent only on change by a dedicated unlinked reporter
   process that delivers them in arrival order, each retried once and then

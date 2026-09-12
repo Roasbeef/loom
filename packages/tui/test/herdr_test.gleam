@@ -2,7 +2,9 @@
 //// derivation from the terminal's own lifecycle signals, the change rule
 //// that keeps the socket quiet, and the exact bytes of both wire calls.
 
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit/should
 import tui/approval
 import tui/herdr
@@ -37,31 +39,60 @@ fn pending_review() -> approval.Review {
 }
 
 pub fn derive_blocked_beats_working_test() {
-  herdr.state_for([live_strand()], [pending_review()], herdr.Unsettled)
+  herdr.state_for([live_strand()], [pending_review()])
   |> should.equal(herdr.Blocked)
 }
 
 pub fn derive_working_when_live_test() {
-  herdr.state_for([live_strand()], [], herdr.Unsettled)
+  herdr.state_for([live_strand()], [])
   |> should.equal(herdr.Working)
-}
-
-pub fn derive_working_beats_unconsumed_settlement_test() {
-  // A settlement that has not been published yet does not outrank a live
-  // strand: the operation that settled is over, and the pane must show the
-  // one that is running now rather than the one that finished.
-  herdr.state_for([live_strand()], [], herdr.Settled)
-  |> should.equal(herdr.Working)
-}
-
-pub fn derive_done_on_settled_test() {
-  herdr.state_for([idle_strand()], [], herdr.Settled)
-  |> should.equal(herdr.Done)
 }
 
 pub fn derive_idle_when_quiet_test() {
-  herdr.state_for([idle_strand()], [], herdr.Unsettled)
+  herdr.state_for([idle_strand()], [])
   |> should.equal(herdr.Idle)
+}
+
+pub fn derive_idle_after_an_operation_settles_test() {
+  // The reducer clears a strand's `live_phase` when its operation reaches
+  // the `done` phase, so a settled operation is indistinguishable from one
+  // that never ran, and the pane reports `idle` for both. That equality is
+  // the whole of the settled case: Herdr is the side that turns an idle on
+  // an unseen tab into its own `done`, and an agent that tried to report
+  // `done` itself would fail the enum the daemon validates against.
+  let settled = herdr.state_for([idle_strand()], [])
+  let never_ran = herdr.state_for([], [])
+
+  settled
+  |> should.equal(herdr.Idle)
+
+  settled
+  |> should.equal(never_ran)
+}
+
+pub fn every_reported_state_is_one_herdr_accepts_test() {
+  // Herdr's `PaneAgentState` is closed over idle, working and blocked —
+  // `unknown` is Herdr's own marker for a pane it could not classify — and
+  // the pane daemon rejects a `pane.report_agent` carrying anything else.
+  // Pinning the encoding of every variant here is what keeps a reintroduced
+  // `Done`, or a renamed arm, from reaching the wire unnoticed.
+  [
+    #(herdr.Idle, "idle"),
+    #(herdr.Working, "working"),
+    #(herdr.Blocked, "blocked"),
+  ]
+  |> list.each(fn(pair) {
+    let #(state, name) = pair
+    let line = herdr.encode_report(config(), 11, state, "sess-1", "")
+
+    line
+    |> string.contains("\"state\":\"" <> name <> "\"")
+    |> should.be_true
+
+    line
+    |> string.contains("\"done\"")
+    |> should.be_false
+  })
 }
 
 pub fn changed_on_first_publish_test() {
