@@ -129,10 +129,12 @@ import broker/broker.{type Broker}
 import broker/escalation.{type Denial}
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
+import client/catalog
 import client/checkpoint
 import client/escalate.{type Escalations}
 import client/grants
 import client/notes
+import client/vision
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/message.{type AgentMessage}
@@ -149,7 +151,9 @@ import machine/planner.{
   type ModelResolution, type RequestAdmission, type StructuralVerdict, Admitted,
   ModelResolved, ModelUnresolved, VerdictDeclined, VerdictSupplied,
 }
-import machine/strand.{type ModelIdentity, type StrandConfiguration}
+import machine/strand.{
+  type ModelIdentity, type StrandConfiguration, ModelIdentity,
+}
 import provider/gateway.{type Gateway}
 import provider/model.{
   type ProviderRequest, type RequestTarget, type ResolvedModel, type Role,
@@ -195,7 +199,8 @@ pub type Config {
     /// route accounted for honestly: admission, the compaction threshold,
     /// and an off-route dispatch target all read the switched-to entry's
     /// own window and ceiling rather than the main chain head's.
-    facts: fn(ModelIdentity) -> Result(#(ResolvedModel, String), Nil),
+    facts: fn(ModelIdentity) ->
+      Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
     /// The system prompt sent with every generation, if any.
     system: Option(String),
     /// The adapter api to capture for an identity `facts` does not know
@@ -566,16 +571,29 @@ pub fn resolution(
 // which is what keeps a session with a moved route running rather than
 // admitting requests against numbers nobody stands behind.
 type ModelFacts {
-  ModelFacts(api: String, context_window: Int, max_output_tokens: Int)
+  ModelFacts(
+    api: String,
+    context_window: Int,
+    max_output_tokens: Int,
+    reading: catalog.ImageReading,
+  )
 }
 
+// The fallback reading is `ReadsImages`, not `TextOnly`: an identity
+// the catalogue does not know was switched to by an operator or
+// seeded from an environment the catalogue never described, and the
+// honest default for a *known* entry (`TextOnly`, which refuses
+// rather than silently dropping an image) would break such a strand's
+// image turns on a fact nobody stated. Routing consults the positive
+// declarations the catalogue actually made.
 fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
   case config.facts(identity) {
-    Ok(#(resolved, api)) ->
+    Ok(#(resolved, api, reading)) ->
       ModelFacts(
         api:,
         context_window: resolved.context_window,
         max_output_tokens: resolved.max_output_tokens,
+        reading:,
       )
     Error(Nil) -> fallback_facts(config)
   }
@@ -588,6 +606,7 @@ fn fallback_facts(config: Config) -> ModelFacts {
     api: config.api,
     context_window: config.fallback_context_window,
     max_output_tokens: config.fallback_max_output_tokens,
+    reading: catalog.ReadsImages,
   )
 }
 
@@ -628,7 +647,8 @@ fn strand_identity(session: Session, strand: String) -> Option(ModelIdentity) {
 ///
 pub fn strand_window(
   session: Session,
-  facts: fn(ModelIdentity) -> Result(#(ResolvedModel, String), Nil),
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
   strand: String,
   fallback fallback: Int,
 ) -> Int {
@@ -636,7 +656,7 @@ pub fn strand_window(
     strand_identity(session, strand)
     |> option.then(fn(identity) { option.from_result(facts(identity)) })
   {
-    Some(#(resolved, _api)) -> resolved.context_window
+    Some(#(resolved, _api, _reading)) -> resolved.context_window
     None -> fallback
   }
 }
@@ -648,14 +668,79 @@ pub fn strand_window(
 // handle is validated against (ORCH-L4) — and all three are properties of
 // the identity *this attempt* will reach, which a boot-time answer cannot
 // know for a strand that switched models since.
+//
+// The fourth question is the vision rule (issue #358): an
+// image-bearing request from a strand whose model cannot read images
+// is admitted against the *vision head's* facts — the identity this
+// attempt will actually reach — and refused in band when no usable
+// vision route resolves. The image classification reads the strand's
+// durable projection, the same place the threshold and overflow hooks
+// decide from, so a decision taken before a crash is taken again after
+// it. A store that will not answer classifies as imageless: a read
+// that fails must not strand the conversation (the `strand_facts`
+// rule above).
 fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
-  let facts = model_facts(config, query.configuration.model)
-  Admitted(
-    stream_options: query.stream_options,
-    intended_output_limit: facts.max_output_tokens,
-    context_window: facts.context_window,
-    api: facts.api,
-  )
+  let identity = query.configuration.model
+  let facts = model_facts(config, identity)
+  case
+    image_bearing(config, query.operation) && facts.reading == catalog.TextOnly
+  {
+    False ->
+      Admitted(
+        stream_options: query.stream_options,
+        intended_output_limit: facts.max_output_tokens,
+        context_window: facts.context_window,
+        api: facts.api,
+      )
+    True -> admit_image_bearing(config, query, identity, facts)
+  }
+}
+
+// The admission for an image-bearing request a strand's own model
+// cannot read: through the vision chain when one resolves and its
+// head reads images, or refused in band. The head's facts — not the
+// strand's — are what the request is admitted against, because they
+// are the facts of the identity the request will actually reach. The
+// unused `facts` argument names the arm the caller already took.
+fn admit_image_bearing(
+  config: Config,
+  query: effects.AdmissionQuery,
+  identity: ModelIdentity,
+  _facts: ModelFacts,
+) -> RequestAdmission {
+  case gateway.resolve(config.gateway, model.Vision) {
+    Error(_missing) -> vision.no_route_refusal(identity)
+    Ok(head) ->
+      case config.facts(identity_of(head)) {
+        Ok(#(_resolved, _api, catalog.TextOnly)) ->
+          vision.blind_route_refusal(head)
+        _ -> {
+          let head_facts = model_facts(config, identity_of(head))
+          Admitted(
+            stream_options: query.stream_options,
+            intended_output_limit: head_facts.max_output_tokens,
+            context_window: head_facts.context_window,
+            api: head_facts.api,
+          )
+        }
+      }
+  }
+}
+
+// The identity a resolved model dispatches to, back on the seam's own
+// terms: `Config.facts` is keyed by the durable identity shape.
+fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
+  ModelIdentity(provider: resolved.provider, model_id: resolved.model_id)
+}
+
+// Whether the newest user message on this operation's strand
+// projection carries an image.
+fn image_bearing(config: Config, operation: OpId) -> Bool {
+  case notes.strand_of(config.session, operation) {
+    Error(Nil) -> False
+    Ok(strand) ->
+      vision.image_bearing(hooks.project(config.session, strand).messages)
+  }
 }
 
 // A handle whose single event is an in-band, terminally-classified
@@ -705,13 +790,39 @@ pub fn provider_request(
         tools: [],
         max_output_tokens: None,
       )
-    effects.GenerationRequest(configuration:, context:, ..) ->
-      generation_request(
-        config,
-        configuration,
-        context,
-        request_target(config, configuration),
-      )
+    effects.GenerationRequest(configuration:, context:, ..) -> {
+      // The vision rule's dispatch half (issue #358): the request's
+      // own content, not the strand's pinned model, decides the target
+      // when the two disagree about images. An image-bearing request
+      // from a text-only model dispatches through the `vision` chain —
+      // admitted there already, so an unresolvable chain here means
+      // the registry moved between admission and dispatch, and the
+      // ordinary target plus placeholders below is the honest fallback.
+      // Every other request to a text-only identity has its images
+      // placeholdered, because an image the model cannot read is
+      // invalid input on any turn, not just the newest one.
+      let reading = model_facts(config, configuration.model).reading
+      let routed = case
+        reading == catalog.TextOnly && vision.image_bearing(context)
+      {
+        True -> vision_route(config, configuration)
+        False -> None
+      }
+      case routed {
+        Some(target) ->
+          generation_request(config, configuration, context, target)
+        None ->
+          generation_request(
+            config,
+            configuration,
+            case reading {
+              catalog.TextOnly -> vision.placeholdered(context)
+              catalog.ReadsImages -> context
+            },
+            request_target(config, configuration),
+          )
+      }
+    }
 
     // A poll never walks a chain: the handle it would fetch belongs to
     // the identity that minted it. See `resolved_target`.
@@ -777,6 +888,27 @@ pub fn request_target(
         thinking: Some(thinking_level(configuration.thinking_level)),
       )
     Error(Nil) -> resolved_target(config, configuration)
+  }
+}
+
+// The vision chain's target for one image-bearing request, or `None`
+// when no usable chain resolves. The thinking overlay is the strand's
+// own per-turn level, carried onto every target the walk attempts,
+// exactly as `request_target` carries it for the strand's own route: a
+// turn that raised its reasoning budget reaches the vision model with
+// the same budget it would have reached its own with.
+fn vision_route(
+  config: Config,
+  configuration: StrandConfiguration,
+) -> Option(RequestTarget) {
+  case gateway.resolve(config.gateway, model.Vision) {
+    Ok(_head) ->
+      Some(
+        vision.routed_target(
+          thinking: Some(thinking_level(configuration.thinking_level)),
+        ),
+      )
+    Error(_missing) -> None
   }
 }
 

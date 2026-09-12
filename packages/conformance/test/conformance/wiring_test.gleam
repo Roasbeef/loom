@@ -7,6 +7,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/catalog
 import client/escalate
 import client/grants
 import client/wiring
@@ -89,11 +90,11 @@ fn off_route_model() -> model.ResolvedModel {
 // catalogue does not know.
 fn entry_facts(
   identity: strand.ModelIdentity,
-) -> Result(#(model.ResolvedModel, String), Nil) {
+) -> Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
   list.key_find(
     [
-      #("loom-1", #(routed_model(), "acme-api")),
-      #("loom-0", #(off_route_model(), off_route_api)),
+      #("loom-1", #(routed_model(), "acme-api", catalog.ReadsImages)),
+      #("loom-0", #(off_route_model(), off_route_api, catalog.TextOnly)),
     ],
     identity.model_id,
   )
