@@ -1,4 +1,4 @@
-//// A settle changes a line's text, never the transcript's height.
+//// A successful settle changes a line's text, never the transcript's height.
 ////
 //// Two regions of the transcript used to be drawn once while they were
 //// live and again, at a different size, once the daemon had committed
@@ -17,6 +17,11 @@
 //// than on either of the functions that build the rows, because the
 //// behaviour is about the frame and has to survive a change to how the
 //// rows are assembled.
+////
+//// The rule is about growth that carries no information, so it is scoped to
+//// a result the reader does not have to see. A failing call still costs the
+//// rows its failure draws, and the test below pins that number rather than
+//// claiming zero.
 
 import core/json
 import etui/backend
@@ -29,9 +34,14 @@ import tui/connection
 import tui/workspace
 import tui_test/gateway
 
-// Ninety columns is wide enough that neither digest wraps, so a row count
-// is a count of transcript entries and not of wrapping decisions.
+// Ninety columns leaves every fixture row inside the pane, so a row count
+// here is a count of transcript entries and not of wrapping decisions. The
+// narrow width below is where the digest's own clipping is exercised.
 const width = 90
+
+// Narrow enough that a real opening line cannot fit beside the mark and the
+// expand hint, which together cost thirty-four cells.
+const narrow_width = 40
 
 fn model() -> tui.Model {
   let base =
@@ -51,6 +61,10 @@ fn laid_out(model: tui.Model) -> tui.Model {
 
 fn rows(model: tui.Model) -> Int {
   laid_out(model).rendered_row_count
+}
+
+fn rows_at(model: tui.Model, columns: Int) -> Int {
+  tui.update(backend.Resize(columns, 40), model).rendered_row_count
 }
 
 fn expanded(model: tui.Model) -> tui.Model {
@@ -193,4 +207,80 @@ pub fn a_live_digest_counts_lines_and_a_settled_one_quotes_its_opening_test() {
   assert tui.settled_reasoning_digest("\n\nFirst.\nSecond.")
     == "First." <> tui.expand_hint
     as "the opening line is the first one with text in it"
+}
+
+// The transcript before either live region has anything in it, which is what
+// a row count is measured against.
+fn quiet() -> tui.Model {
+  model()
+  |> received(gateway.full_snapshot("demo"))
+  |> received(gateway.user_entry("main", "explain it", 1))
+}
+
+// Reasoning routinely opens with a whole sentence, and the mark and the
+// expand hint cost thirty-four cells before any of it is drawn. A limit on
+// the digest text alone therefore only moves the width at which the row
+// wraps; what holds the height is that the row is clipped to the pane and
+// the wrapper is told to leave it alone.
+fn long_reasoning() -> String {
+  string.repeat("deliberating at length ", 9) <> "\nand then a second line"
+}
+
+pub fn a_long_opening_line_still_settles_into_one_row_test() {
+  let base = quiet()
+  let live =
+    received(base, gateway.stream_delta("main", "thinking", long_reasoning()))
+  let durable =
+    received(live, gateway.thinking_entry("main", long_reasoning(), 2))
+
+  assert string.length(long_reasoning()) > 200
+    as "premise: the opening line is far wider than the pane"
+  assert rows_at(live, narrow_width) == rows_at(base, narrow_width) + 1
+    as "a live digest is one row on a pane it cannot fit"
+  assert rows_at(durable, narrow_width) == rows_at(base, narrow_width) + 1
+    as "a settled digest is one row on a pane it cannot fit"
+}
+
+// A redacted block is the third digest shape: the provider withheld the
+// text, so there is nothing for `Ctrl+G` to reveal and the row is the same
+// one row in both modes.
+pub fn redacted_reasoning_is_one_row_in_both_modes_test() {
+  let base = quiet()
+  let durable = received(base, gateway.redacted_thinking_entry("main", 2))
+  assert rows(durable) == rows(base) + 1
+    as "a redacted block collapses to one row"
+  assert rows(expanded(durable)) == rows(expanded(base)) + 1
+    as "expanding a redacted block cannot reveal what was withheld"
+}
+
+// The height rule is about growth that carries no information, not about
+// suppressing a result. A failing call settles into its failure summary plus
+// the result text under it, and that is exactly what it costs; pinning the
+// number keeps the claim honest as the failure row's shape changes.
+pub fn a_failing_tool_settles_by_exactly_its_failure_rows_test() {
+  let live = running()
+  let failed =
+    received(live, gateway.tool_result_entry("main", "exit status 1", 3))
+  assert rows(settled(live)) == rows(live)
+    as "premise: a successful settle is still height-neutral"
+  assert rows(failed) == rows(live) + 1
+    as "a failing settle costs exactly the rows its failure draws"
+}
+
+// The digest bypasses the Markdown renderer, so a line that only opens a
+// construct would reach the reader as punctuation standing in for a whole
+// block of reasoning. Both shapes are common openers in model output.
+pub fn a_settled_digest_skips_a_fence_and_sheds_its_markers_test() {
+  assert tui.settled_reasoning_digest("```gleam\nlet value = 1\n```")
+    == "let value = 1" <> tui.expand_hint
+    as "a fence delimiter is not an opening line"
+  assert tui.settled_reasoning_digest("## Plan\n\nthen the work")
+    == "Plan" <> tui.expand_hint
+    as "a heading's marker is shed, not quoted"
+  assert tui.settled_reasoning_digest("> quoted\n")
+    == "quoted" <> tui.expand_hint
+    as "a quotation marker is shed too"
+  assert tui.settled_reasoning_digest("###\nthe real opening")
+    == "the real opening" <> tui.expand_hint
+    as "a line of markers alone falls through to the next candidate"
 }

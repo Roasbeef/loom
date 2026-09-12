@@ -2441,7 +2441,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     User -> #("› ", theme.signal_bold())
     Assistant -> #("◆ Agent  ", theme.current_bold())
     Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
-    ReasoningDigest -> #("∴ Reasoning · ", theme.quiet_text())
+    ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
@@ -2482,12 +2482,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     // collapsed settled row are the same row with different words in it.
     // So it is drawn literally, with no blank above or below it and no
     // Markdown pass which could answer a stray fence with a second row.
-    ReasoningDigest -> [
-      span.line_new([
-        span.span_styled(mark, mark_style),
-        span.span_plain(text_hygiene.single_line(line.text)),
-      ]),
-    ]
+    ReasoningDigest -> [digest_row(line.text, mark, mark_style, width)]
 
     ToolDetail ->
       markdown.render(line.text, width - string.length(mark))
@@ -2520,6 +2515,36 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
         ]
       })
   }
+}
+
+// One row, whatever the pane is. Clipping rather than wrapping is what makes
+// the height invariant hold at every width: bounding the digest text by a
+// character count only moves the width at which it wraps, because the mark
+// and the expand hint are a further thirty-four cells the count knows nothing
+// about. The hint is the part a reader acts on, so the opening line gives up
+// cells for it; when the pane cannot hold even the hint, the whole body is
+// clipped and the hint goes with it rather than crowding out the words.
+fn digest_row(
+  text: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> span.Line {
+  let body = text_hygiene.single_line(text)
+  let room = width - text.cell_width(mark)
+  let #(opening, hint) = case string.ends_with(body, expand_hint) {
+    True -> #(string.drop_end(body, string.length(expand_hint)), expand_hint)
+    False -> #(body, "")
+  }
+  let for_opening = room - text.cell_width(hint)
+  let clipped = case for_opening > 0 {
+    True -> text.truncate(opening, for_opening, "…") <> hint
+    False -> text.truncate(body, room, "…")
+  }
+  span.line_new([
+    span.span_styled(mark, mark_style),
+    span.span_plain(clipped),
+  ])
 }
 
 fn prefix_rendered_lines(
@@ -5881,15 +5906,23 @@ pub const max_tool_tails = 128
 /// What the transcript draws for the active strand's running tool calls,
 /// which with details collapsed is nothing at all.
 ///
-/// A settle changes a line's text and never the transcript's height. The
-/// durable projection already gives a running call one row — its summary
-/// followed by `· awaiting result` — and the result replaces that row one
-/// for one. Drawing the command's output window beside it would add a
-/// heading and up to `tail_lines_shown` more rows and take them away again
-/// two hundred milliseconds later, which is what made the transcript jump
-/// by eight rows on every tool call of a turn and back. The window is
-/// detail, so `Ctrl+g` is where it belongs, alongside the expanded result
-/// the settle will draw in its place.
+/// A tool call that succeeds settles without changing the transcript's
+/// height. The durable projection already gives a running call one row — its
+/// summary followed by `· awaiting result` — and a plain successful result
+/// replaces that row one for one. Drawing the command's output window beside
+/// it would add a heading and up to `tail_lines_shown` more rows and take
+/// them away again two hundred milliseconds later, which is what made the
+/// transcript jump by eight rows on every tool call of a turn and back. The
+/// window is detail, so `Ctrl+g` is where it belongs, alongside the expanded
+/// result the settle will draw in its place.
+///
+/// A result which carries something a reader has to see still costs the rows
+/// it needs: a failure draws its summary and the result text under it, and
+/// `fs_edit` and `context_remaining` draw their own rows. Suppressing those
+/// would be trading the reader's information for a smooth scroll, which is
+/// the wrong way round. What this removes is the growth that carried no
+/// information — the window that appeared and vanished within a few hundred
+/// milliseconds.
 ///
 /// Expanded, the window is one `ToolResult` line per stream, headed by the
 /// stream's name and how much it has carried, followed by the last
@@ -6078,7 +6111,8 @@ fn stream_lines(
 // code paths a few hundred milliseconds apart — this one from the stream
 // the provider is still writing, the other from the record the daemon has
 // committed — so the two functions below are deliberately the same shape.
-// Collapsed, each is exactly one `ReasoningDigest` row, and the settle
+// Collapsed, each is exactly one `ReasoningDigest` row — clipped to the pane
+// rather than wrapped, so the count holds at every width — and the settle
 // therefore changes the row's words and not the transcript's height.
 fn live_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
   case extent {
@@ -6125,8 +6159,13 @@ pub fn live_reasoning_digest(text: String) -> String {
 ///
 /// The block no longer moves, so the reader can be given something to
 /// decide on: its opening line, clipped, and the key that opens the rest.
-/// A block of only blank lines has no opening line, and falls back to its
-/// own text so the row is never empty.
+/// The row bypasses the Markdown renderer, so a line that only opens a
+/// construct — a fence, or a heading's or a quotation's marker — would reach
+/// the reader as punctuation standing in for a whole block of reasoning. A
+/// fence line is skipped and the markers are stripped, leaving the first
+/// line that actually says something. A block of only blank lines and
+/// markers has no such line, and falls back to its own text so the row is
+/// never empty.
 ///
 /// ## Examples
 ///
@@ -6134,21 +6173,43 @@ pub fn live_reasoning_digest(text: String) -> String {
 /// assert tui.settled_reasoning_digest("First.\n\nSecond.")
 ///   == "First.  [Ctrl+G to expand]"
 /// ```
+///
+/// ```gleam
+/// assert tui.settled_reasoning_digest("## Plan")
+///   == "Plan  [Ctrl+G to expand]"
+/// ```
 @internal
 pub fn settled_reasoning_digest(text: String) -> String {
   let opening =
     text
     |> string.split("\n")
-    |> list.find(fn(line) { string.trim(line) != "" })
+    |> list.filter_map(digest_opening_line)
+    |> list.first
     |> result.unwrap(text)
   compact(opening, reasoning_digest_limit) <> expand_hint
 }
 
+// Whether one source line can open a digest, and what it reads as if it can.
+// A blank line and a fence delimiter say nothing on their own; a heading or
+// quotation marker says something only about the line that carries it, so it
+// is shed and the remainder is judged again — a line of markers alone falls
+// through to the next candidate.
+fn digest_opening_line(line: String) -> Result(String, Nil) {
+  let trimmed = string.trim(line)
+  case trimmed {
+    "" -> Error(Nil)
+    "```" <> _ | "~~~" <> _ -> Error(Nil)
+    "#" <> rest | ">" <> rest -> digest_opening_line(rest)
+    body -> Ok(body)
+  }
+}
+
 /// How much of a settled reasoning block's opening line a digest keeps.
 ///
-/// Short enough that the mark, the digest and the expand hint together fit
-/// one row of a narrow terminal, which is the property that makes a
-/// collapsed block cost exactly one row.
+/// A budget for the reader's attention, not for the layout: about a line of
+/// prose is as much as a collapsed row should ask anyone to read. The row
+/// holds its single row because it is clipped to the pane, so this limit
+/// only decides how much of the opening line a wide terminal shows.
 pub const reasoning_digest_limit = 64
 
 /// How the transcript names the key that opens a collapsed row, in the

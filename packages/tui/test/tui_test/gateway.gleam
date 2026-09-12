@@ -140,6 +140,23 @@ pub fn thinking_entry(strand: String, thinking: String, seq: Int) -> String {
   )
 }
 
+/// One durable assistant turn of reasoning the provider withheld. There is
+/// no text behind the marker, so expanding it can only show the marker
+/// again.
+pub fn redacted_thinking_entry(strand: String, seq: Int) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([
+      message.AssistantThinking(
+        thinking: "",
+        redacted: True,
+        thinking_signature: None,
+      ),
+    ]),
+  )
+}
+
 /// One durable tool result which succeeded, the shape that settles a
 /// running call without adding a failure row beside it.
 pub fn tool_result_ok_entry(strand: String, text: String, seq: Int) -> String {

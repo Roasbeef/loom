@@ -111,6 +111,17 @@ const code_gutter = "▎ "
 // The gutter drawn down the left of a block quote.
 const quote_gutter = "│ "
 
+// The mark that opens a collapsed reasoning digest row.
+//
+// The digest is the one row whose height is a stated invariant: its live and
+// its settled form have to occupy exactly one row so that a settle changes
+// words and not the transcript's height. Its caller lays it out against the
+// pane width itself, so `wrap_lines` has to recognise it and leave it alone.
+// Row kinds are read off the glyphs the renderer emitted, which is why the
+// glyph run naming that row is declared here beside the other gutters rather
+// than in the caller that draws it.
+pub const digest_mark = "∴ Reasoning · "
+
 // The narrowest a grid column may become. Below three cells a wrapped word
 // makes no progress against the punctuation around it, so a grid that cannot
 // give every column this much is abandoned for the record form instead.
@@ -120,8 +131,10 @@ const min_column = 3
 ///
 /// `width` is the number of cells the rows will occupy, and only the table
 /// grid consults it: a grid wider than that is narrowed, and one that cannot
-/// be narrowed far enough falls back to a labelled record per source row. A
-/// width of zero or less means no constraint, for a caller that never wraps.
+/// be narrowed far enough falls back to a labelled record per source row.
+/// A width of zero or less is no room rather than no constraint — every way
+/// a caller reaches it subtracts a prefix from a pane that was already
+/// narrow — so a grid given nothing to spend takes the record form too.
 ///
 /// ## Examples
 ///
@@ -257,14 +270,21 @@ fn do_split_at_gutter(
 // both were the same character in two colours.
 fn row_kind(line: span.Line) -> RowKind {
   let span.Line(spans:, ..) = line
-  let grid = list.any(spans, is_grid_span)
   let code = list.any(spans, fn(value) { value.content == code_gutter })
+  let grid = list.any(spans, is_grid_span)
+  let digest = list.any(spans, fn(value) { value.content == digest_mark })
   let shaded = list.any(spans, is_user_body_span)
-  case grid, code, shaded {
-    True, _, _ -> FixedRow
-    False, True, _ -> CodeRow
-    False, False, True -> FixedRow
-    False, False, False -> FlowingRow
+
+  // The code gutter is tested first because a grid glyph is a single
+  // character and a tokenised code row emits every punctuation character as
+  // its own span, so a box-drawn diagram inside a fence produces a span that
+  // is exactly the grid's vertical bar. Reading that row as a grid row would
+  // cost it both its hard wrap and its continuation gutter. The converse
+  // cannot happen: a grid row never carries the code gutter.
+  case code, grid, digest, shaded {
+    True, _, _, _ -> CodeRow
+    _, True, _, _ | _, _, True, _ | _, _, _, True -> FixedRow
+    False, False, False, False -> FlowingRow
   }
 }
 
@@ -311,12 +331,17 @@ fn render_block(
       })
       |> prepend_code_language(lang)
       |> trailing_blank
-    BlockQuote(blocks:) ->
+    BlockQuote(blocks:) -> {
+      // A quote's bar costs two cells of every row it covers, and quotes
+      // nest, so the inner width is floored at one: a block measured against
+      // a width of zero or less would have no room at all to lay itself out.
+      let inner = int.max(1, width - 2)
       alert_of(blocks)
       |> result.map(fn(found) {
-        render_alert(document, found.0, found.1, width - 2)
+        render_alert(document, found.0, found.1, inner)
       })
-      |> result.lazy_unwrap(fn() { render_quote(document, blocks, width - 2) })
+      |> result.lazy_unwrap(fn() { render_quote(document, blocks, inner) })
+    }
     BulletList(items:, ..) -> render_list(document, items, None, width)
     OrderedList(items:, start:, ..) ->
       render_list(document, items, Some(unwrap(start, 1)), width)
@@ -694,8 +719,11 @@ fn render_list(
 
     // The marker is a prefix on every row of the item, so anything measured
     // inside it, a table above all, has that many fewer cells to work with.
+    // Floored at one for the same reason a nested quote is.
+    let inner = int.max(1, width - string.length(marker))
+
     blocks
-    |> list.flat_map(render_block(document, _, width - string.length(marker)))
+    |> list.flat_map(render_block(document, _, inner))
     |> trim_trailing_blank
     |> prefix_lines([span.span_styled(marker, theme.signal_bold())], [
       span.span_plain(string.repeat(" ", string.length(marker))),
@@ -753,7 +781,13 @@ fn table_lines(
   let frame = 3 * columns + 1
   let natural = measure_columns([headings, ..body], columns)
   let total = list.fold(natural, frame, int.add)
-  case width <= 0 || total <= width {
+
+  // A width of zero or less reaches here from a prefix that consumed the
+  // whole pane, so it is the narrowest case rather than an exemption from
+  // measuring. Letting it through would draw the grid at its natural width
+  // and, because grid rows are fixed rows, leave the wrapper no way to bring
+  // it back inside the pane.
+  case total <= width {
     True -> grid_lines(headings, body, alignments, natural)
     False ->
       narrowed_lines(
@@ -1323,9 +1357,14 @@ fn prepend_code_language(
   language: Option(String),
 ) -> List(span.Line) {
   case language {
+    // The label is part of the block, so it opens with the block's own
+    // gutter. It used to open with a box corner, one glyph away from the one
+    // the table grid draws and therefore a row the grid classifier could be
+    // taught to misread; the gutter says the same thing and cannot be
+    // confused with a grid.
     Some(value) -> [
       span.line_new([
-        span.span_styled("┌ ", theme.signal_bold()),
+        span.span_styled(code_gutter, theme.signal_bold()),
         span.span_styled(value, theme.quiet_text()),
       ]),
       ..lines

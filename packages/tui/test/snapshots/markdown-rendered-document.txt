@@ -13,6 +13,6 @@ Inline code_span, bold, and struck text.
 ▌ Warning
   Ship nothing on a red gate.
 
-┌ gleam
+▎ gleam
 ▎ pub fn main() -> Nil
 

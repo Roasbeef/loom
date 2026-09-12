@@ -562,13 +562,22 @@ that tree separately from the self-contained server.
 
 ## Invariants
 
-- **A settle never changes the transcript's height in compact mode.** A live
-  region and the durable projection that replaces it occupy the same number
-  of wrapped rows, so a reader following the tail sees text change and not
-  the transcript grow and shrink under them. The two regions this covers are
-  a running tool call — whose output window is detail, drawn only with
-  details expanded — and a reasoning block, whose live and settled forms are
-  both one `ReasoningDigest` row when collapsed.
+- **A successful settle never changes the transcript's height in compact
+  mode.** A live region and the durable projection that replaces it occupy
+  the same number of wrapped rows, so a reader following the tail sees text
+  change and not the transcript grow and shrink under them. The two regions
+  this covers are a running tool call — whose output window is detail, drawn
+  only with details expanded — and a reasoning block, whose live and settled
+  forms are both one `ReasoningDigest` row when collapsed. A result the
+  reader has to see still costs the rows it needs: a failure adds its result
+  text under the failure summary, and `fs_edit` and `context_remaining` draw
+  their own rows. What the rule removes is growth that carried no
+  information.
+- **A collapsed reasoning digest is one row at every width.** The row is
+  clipped to the pane rather than wrapped, and `markdown.wrap_lines`
+  recognises it by `markdown.digest_mark` and leaves it fixed. A character
+  limit on the digest text alone would only move the width at which the mark
+  and the expand hint pushed it onto a second row.
 - **Reasoning is collapsed unless details are expanded.** A digest is drawn
   literally rather than through the Markdown renderer, so a fence or a list
   marker in the model's own prose cannot turn a one-row indicator into

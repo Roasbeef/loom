@@ -176,6 +176,24 @@ pub fn a_grid_wider_than_the_terminal_wraps_its_cells_test() {
   assert list.length(rows) > 5
 }
 
+// The boundary between the two forms, from the grid's side. Three columns
+// cost ten cells of border, so at width nineteen the budget is exactly nine,
+// which is three columns of the three cells a column must have. One cell
+// narrower is the record form; this width is the last grid.
+pub fn a_grid_at_exactly_the_minimum_budget_still_draws_test() {
+  let rows =
+    markdown.render(
+      "| | Committed | Your version |\n|---|---|---|\n| Transport | fire-and-forget | cancellable handle |",
+      19,
+    )
+    |> list.map(line_text)
+    |> list.filter(fn(row) { row != "" })
+  let assert [top, ..] = rows as "the grid opens with a border"
+  assert string.starts_with(top, "┌")
+    as "at the minimum budget the grid is still drawn"
+  list.map(rows, text.cell_width) |> list.unique |> should.equal([19])
+}
+
 // Below three cells a column cannot hold a word, so the grid is abandoned for
 // the labelled record form, which needs no horizontal budget at all.
 pub fn a_grid_that_cannot_be_narrowed_falls_back_to_records_test() {
@@ -452,4 +470,47 @@ pub fn a_blank_indented_row_wraps_without_a_painted_gutter_test() {
     |> list.map(line_text)
   assert list.contains(rows, "")
   assert list.contains(rows, "    indented prose")
+}
+
+// A grid glyph is a single character and the Gleam tokeniser emits every
+// punctuation character as its own span, so a box-drawn diagram inside a
+// fence produces a span that is exactly the grid's vertical bar. Classifying
+// that row as a grid row would cost it both its hard wrap and its
+// continuation gutter, which is the clipping the row kinds exist to avoid.
+pub fn a_box_glyph_inside_a_fence_stays_a_code_row_test() {
+  let rows =
+    markdown.render("```gleam\nroot │ left │ right │ leaf\n```", 20)
+    |> markdown.wrap_lines(20)
+    |> list.map(line_text)
+    |> list.filter(fn(row) { string.starts_with(row, "▎ ") })
+  assert list.length(rows) > 1
+    as "a code row wider than the pane is hard-wrapped, not clipped"
+  list.each(rows, fn(row) {
+    assert text.cell_width(row) <= 20
+  })
+}
+
+// Four cells with two quote bars around it leaves the table exactly nothing.
+// Every way a caller reaches a width of zero or less subtracts a prefix from
+// a pane that was already narrow, so it means no room rather than no
+// constraint. A grid let through on the other reading would be drawn at its
+// natural width and, being a fixed row, would stay there.
+pub fn a_table_nested_in_quotes_narrows_instead_of_overrunning_test() {
+  let rendered =
+    markdown.render(
+      "> > | Rule | Name |\n> > |---|---|\n> > | R0 | unparseable source |",
+      4,
+    )
+  let records = list.map(rendered, line_text)
+  assert list.all(records, fn(row) { !string.contains(row, "┌") })
+    as "a grid with nothing to spend falls back to the record form"
+  assert list.any(records, fn(row) { string.contains(row, "Rule: R0") })
+    as "the record form still carries the source row"
+
+  // The record rows are flowing rows, so the wrapper can bring them inside
+  // the pane. A grid drawn here would be a fixed row and would stay wide.
+  markdown.wrap_lines(rendered, 4)
+  |> list.each(fn(row) {
+    assert text.cell_width(line_text(row)) <= 4
+  })
 }
