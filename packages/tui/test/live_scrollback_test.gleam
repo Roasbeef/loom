@@ -81,3 +81,47 @@ pub fn clicking_the_visible_jump_hint_preserves_a_draft_test() {
     as "jumping to the bottom does not submit or discard the draft"
   assert resumed.selection == None
 }
+
+// The frame cache is keyed on the screen rectangle alone, so a model edited
+// by record update has to be driven through an event before its own frame is
+// the one drawn.
+fn border_text(model: tui.Model) -> String {
+  let drawn = tui.update(backend.Resize(90, 24), model)
+  let #(buffer, _) = tui.view(drawn, geometry.rect_new(0, 0, 90, 24))
+  frame.buffer_to_text(buffer)
+}
+
+// The prompt border is where an offline terminal learns that its typing is
+// still safe, so that instruction outranks every other title the border could
+// carry. A socket that closes mid-interrupt does not clear the interrupt, so
+// the two titles do compete for real.
+pub fn a_disconnected_terminal_names_its_retained_draft_first_test() {
+  let base =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+  let offline = tui.Model(..base, peer: tui.Disconnected)
+  assert string.contains(
+    border_text(offline),
+    "Disconnected · /sessions to reconnect · draft retained",
+  )
+
+  let interrupting =
+    tui.Model(
+      ..offline,
+      interrupt: Some(tui.Interrupt(base.active_strand, None, None)),
+    )
+  assert string.contains(
+    border_text(interrupting),
+    "Disconnected · /sessions to reconnect · draft retained",
+  )
+    as "a pending interrupt does not outrank the reconnect instruction"
+  assert !string.contains(border_text(interrupting), "interrupting · enter")
+
+  // The same pending interrupt on a live terminal still names itself, so the
+  // guard rather than the fixture produced the two assertions above.
+  let live = tui.Model(..interrupting, peer: tui.Preview)
+  assert string.contains(border_text(live), "interrupting · enter")
+}

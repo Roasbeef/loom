@@ -664,40 +664,64 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
     as "Ctrl+g retains the call whose long output the reader was inspecting"
 }
 
-pub fn aborted_turns_show_stopped_with_expandable_diagnostics_test() {
-  let #(placed, body) = original(1)
+// Rewrites the fixture entry as a settled assistant turn with a chosen stop
+// reason and diagnostic. A clean abort commits no diagnostic, so every `Some`
+// passed here stands for a stop the harness could not establish.
+fn settled(placed, body, reason, diagnostic) {
   let assert entry.MessageEntry(..) = placed as "the fixture is a message"
   let assert message.AssistantMessage(..) = body
     as "the fixture is an assistant"
+  entry.MessageEntry(
+    ..placed,
+    message: message.AssistantMessage(
+      ..body,
+      content: [],
+      stop_reason: reason,
+      error_message: diagnostic,
+    ),
+  )
+}
+
+pub fn aborted_turns_show_stopped_above_an_unconfirmed_diagnostic_test() {
+  let #(placed, body) = original(1)
   let diagnostic =
     "provider cancellation could not be confirmed (runtime: explicit stop)"
-  let stopped =
-    entry.MessageEntry(
-      ..placed,
-      message: message.AssistantMessage(
-        ..body,
-        content: [],
-        stop_reason: message.Aborted,
-        error_message: Some(diagnostic),
-      ),
-    )
+  let stopped = settled(placed, body, message.Aborted, Some(diagnostic))
   let #(compact, shown) = model() |> received(stopped) |> painted
   assert string.contains(shown, "Stopped")
-  assert !string.contains(shown, diagnostic)
+  assert string.contains(shown, diagnostic)
+    as "an unconfirmed stop is not hidden behind ctrl+g"
   let #(_, expanded) =
     compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
   assert string.contains(expanded, "Stopped")
   assert string.contains(expanded, diagnostic)
-  let failed =
-    entry.MessageEntry(
-      ..placed,
-      message: message.AssistantMessage(
-        ..body,
-        content: [],
-        stop_reason: message.Errored,
-        error_message: Some(diagnostic),
-      ),
-    )
+
+  // Orphan recovery settles a restarted turn as Aborted with the planner's
+  // warning. The provider may still be generating, so the collapsed frame
+  // must name that as plainly as the expanded one does.
+  let interrupted =
+    "interrupted: the preceding content is the latest committed partial; "
+    <> "newer live output may be missing and the external outcome is unknown"
+  let orphaned = settled(placed, body, message.Aborted, Some(interrupted))
+  let #(recovered, recovery) = model() |> received(orphaned) |> painted
+
+  // The warning is wider than the transcript pane, so the assertion names the
+  // longest run of it that a single painted row can hold.
+  let opening = "interrupted: the preceding content is the latest committed"
+  assert string.contains(recovery, "Stopped")
+  assert string.contains(recovery, opening)
+    as "orphan recovery's warning survives the collapsed projection"
+  let #(_, recovery_expanded) =
+    recovered |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(recovery_expanded, opening)
+
+  // A user abort the harness did confirm carries no diagnostic at all.
+  let clean = settled(placed, body, message.Aborted, None)
+  let #(_, quiet) = model() |> received(clean) |> painted
+  assert string.contains(quiet, "Stopped")
+  assert !string.contains(quiet, "could not be confirmed")
+
+  let failed = settled(placed, body, message.Errored, Some(diagnostic))
   let #(_, failure) = model() |> received(failed) |> painted
   assert string.contains(failure, diagnostic)
   assert !string.contains(failure, "Stopped")

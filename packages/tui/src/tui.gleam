@@ -3744,14 +3744,19 @@ fn invalidate_frame(model: Model) -> Model {
   Model(..model, frame_revision: model.frame_revision + 1)
 }
 
-// Terminal polling still produces idle ticks so the websocket inbox can be
-// drained, but those ticks must not compare or wrap the durable transcript.
-// Event handlers increment a scalar revision at the mutation boundary, which
-// keeps an idle cache check constant-time regardless of session length.
+// Reading mode owns the endpoint even at offset zero, so a frozen viewport at
+// the tail is not the live tail: returning to live output is an explicit
+// gesture rather than a consequence of scrolling back down to the newest row.
+// The offset covers the converse, a viewport lifted off the tail before any
+// endpoint was frozen.
 fn reading_history(model: Model) -> Bool {
   model.scrollback.mode == history_view.Reading || model.scroll_offset > 0
 }
 
+// Terminal polling still produces idle ticks so the websocket inbox can be
+// drained, but those ticks must not compare or wrap the durable transcript.
+// Event handlers increment a scalar revision at the mutation boundary, which
+// keeps an idle cache check constant-time regardless of session length.
 fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
@@ -4008,6 +4013,10 @@ fn record_anchors_for(
     True -> {
       // The compact projection owns call/result association, including reused
       // provider IDs. Borrow that association rather than guessing it again.
+      // The rewritten result block deliberately carries the call block's own
+      // anchor id, which is what lets a compact row relocate into expanded
+      // output; `transcript_anchor.relocate` resolves the resulting tie to the
+      // result block, so the worst drift is one call block's height.
       let results =
         entries
         |> tool_activity.project
@@ -4108,11 +4117,7 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
           }
           #(key, assistant_block_lines(block, details))
         })
-      let terminal =
-        assistant_terminal_lines(stop_reason, error_message, case details {
-          True -> notes_view.Complete
-          False -> notes_view.Excerpt
-        })
+      let terminal = assistant_terminal_lines(stop_reason, error_message)
       case terminal {
         [] -> blocks
         _ -> list.append(blocks, [#(id <> "/terminal", terminal)])
@@ -6018,7 +6023,13 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
       if call.invocation.name == "context_remaining"
     -> [
       Line(ToolCall, "✓ " <> summary),
-      ..tool_result_lines("context_remaining", content, details, False, False)
+      ..tool_result_lines(
+        "context_remaining",
+        content,
+        details,
+        is_error: False,
+        details_expanded: False,
+      )
     ]
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
@@ -6211,17 +6222,7 @@ fn message_lines(
     message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
       let lines =
         list.flat_map(content, assistant_block_lines(_, details_expanded))
-      list.append(
-        lines,
-        assistant_terminal_lines(
-          stop_reason,
-          error_message,
-          case details_expanded {
-            True -> notes_view.Complete
-            False -> notes_view.Excerpt
-          },
-        ),
-      )
+      list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
       tool_result_lines(tool_name, content, details, is_error, details_expanded)
@@ -6231,22 +6232,25 @@ fn message_lines(
   }
 }
 
-// The durable stop reason distinguishes a user abort from a failed turn.
-// Runtime publication already waits for provider drain; a retained diagnostic
-// describes its acknowledgement, not an operation that is still running.
+// The durable stop reason distinguishes a user abort from a failed turn. A
+// clean abort commits no diagnostic at all, so an `Aborted` message that
+// carries one names a stop the harness could not establish: an unconfirmed
+// provider cancellation, a lost drain proof, or an orphaned response settled
+// across a restart. The provider may still be generating in all three, so the
+// text stays visible at both extents. It is dim detail rather than the failure
+// style because it describes the provider, not a failed turn.
 fn assistant_terminal_lines(
   reason: message.StopReason,
   diagnostic: Option(String),
-  extent: notes_view.Extent,
 ) -> List(Line) {
-  case reason, diagnostic, extent {
-    message.Aborted, Some(text), notes_view.Complete -> [
+  case reason, diagnostic {
+    message.Aborted, Some(text) -> [
       Line(System, "Stopped"),
       Line(ToolDetail, text),
     ]
-    message.Aborted, _, _ -> [Line(System, "Stopped")]
-    _, Some(text), _ -> [Line(Failure, text)]
-    _, None, _ -> []
+    message.Aborted, None -> [Line(System, "Stopped")]
+    _, Some(text) -> [Line(Failure, text)]
+    _, None -> []
   }
 }
 
@@ -6284,6 +6288,17 @@ fn user_block_text(block: message.UserBlock) -> String {
   }
 }
 
+// Both questions have the same two answers: whether a row carries a whole
+// value or a cut of it. The daemon's truncation flag already names them and
+// the row builders below take that type, so the Ctrl+g state is converted to
+// it here rather than at each call site.
+fn details_extent(details_expanded: Bool) -> notes_view.Extent {
+  case details_expanded {
+    True -> notes_view.Complete
+    False -> notes_view.Excerpt
+  }
+}
+
 fn assistant_block_lines(
   block: message.AssistantBlock,
   details_expanded: Bool,
@@ -6311,10 +6326,7 @@ fn assistant_block_lines(
         ]
         None, None -> [
           Line(ToolCall, tool_call_summary(name, arguments, details_expanded)),
-          ..note_call_lines(name, arguments, case details_expanded {
-            True -> notes_view.Complete
-            False -> notes_view.Excerpt
-          })
+          ..note_call_lines(name, arguments, details_extent(details_expanded))
         ]
       }
     }
@@ -6511,8 +6523,8 @@ fn tool_result_lines(
   tool_name: String,
   content: List(message.ToolResultBlock),
   details: Option(json.JsonValue),
-  is_error: Bool,
-  details_expanded: Bool,
+  is_error is_error: Bool,
+  details_expanded details_expanded: Bool,
 ) -> List(Line) {
   let result = content |> list.map(tool_result_text) |> string.join("\n")
   let result = case tool_name, is_error {
@@ -6527,10 +6539,11 @@ fn tool_result_lines(
       ..edit_patch_lines(fields, details_expanded)
     ]
     "context_remaining", False, Some(json.Object(fields)) ->
-      context_remaining_result_lines(fields, result, case details_expanded {
-        True -> notes_view.Complete
-        False -> notes_view.Excerpt
-      })
+      context_remaining_result_lines(
+        fields,
+        result,
+        details_extent(details_expanded),
+      )
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -7474,9 +7487,16 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
 // fewer rows than one screen. Continue the bounded demand until older rows
 // exist above this viewport. A busy lane keeps Wanted for the next event;
 // the user does not need another wheel gesture to retry the same read.
+//
+// The guard repeats the two scalars `history_view.older` itself tests. This
+// runs on every terminal event, including idle ticks, and the ancestry
+// projection below walks the whole retained window to produce an argument a
+// pending or exhausted request would discard.
 fn request_history_for_view(model: Model) -> Model {
   use <- bool.guard(
     model.scrollback.mode != history_view.Reading
+      || model.scrollback.request != history_view.Quiet
+      || model.scrollback.before_seq <= 1
       || model.help_open
       || model.notes_open
       || model.scroll_offset + transcript_viewport_height(model)
