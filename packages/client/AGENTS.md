@@ -628,7 +628,12 @@ catalogue without opening runtimes. Explicit admission invokes
   in the primary's branch as ordinary user messages and come back in the next
   slice labelled `advisor (your earlier advice):` and
   `advisor (your earlier nudges):`, because unlabelled they would read to
-  the advisor as operator instructions. The module is pure — no store, no
+  the advisor as operator instructions. A frame is recognized by its header
+  *and* its footer, so an operator quoting a verdict back keeps their own
+  attribution, and `advice_message` makes the body frame-safe — either
+  advice token occurring inside it has its brackets replaced with
+  parentheses — so model-written text cannot close the frame early and
+  continue in the operator's voice. The module is pure — no store, no
   process, no clock — and borrows `notes.{clip, byte_size, fence_safe}`
   rather than keeping a second copy of the byte arithmetic and the fence
   defence.
@@ -2371,10 +2376,17 @@ across one operation a `Stop` block holds open.
   their configured active tool names, including deliberate deactivations.
 
 - **The advisor actor is the only writer of `advisor/feed/cursor` and
-  `advisor/guard`.** Both are `fact.custom` cells under a harness-owned
-  prefix, and nothing model-facing can name them: the only fact write a
-  model reaches is the Agency blackboard, which prefixes every key with
-  `agent/` and the calling strand's own name. The cursor advances only
+  `advisor/guard`.** Both are `fact.custom` cells under
+  `api.advisor_fact_prefix`, a reserved corner of the namespace: the
+  ordinary `put_fact` refuses the prefix and `facts` hides it, so the
+  actor writes through `put_reserved_fact` and reads back with the plain
+  `fact`. Forging either therefore takes two independent failures rather
+  than one, because the fact write a model reaches is the Agency
+  blackboard and that composes every key from `agent/` and the calling
+  strand's own name. The cursor is the cell that matters: a large integer
+  written under it would move the reviewer past everything the primary
+  will ever append, and the symptom would be a quiet advisor rather than
+  an error anybody sees. The cursor advances only
   after a feed has been committed onto the advisor's branch, or when a
   scan found entries that all rendered to nothing — a stretch of custom
   rows would otherwise be rescanned and re-skipped at every run end
@@ -2387,8 +2399,14 @@ across one operation a `Stop` block holds open.
   not make that check: the driver resolves `run_end` before the run closes,
   so the advisor still reads as busy at exactly the moment its review
   finishes, and a catch-up that yielded to that would never catch up on
-  anything. The stretch itself terminates the loop instead — a scan that
-  finds nothing past the cursor sends nothing.
+  anything. What gates it instead is a debt: a coalesced feed sets
+  `Memory.owed`, and a review end with nothing owed sends nothing. Without
+  the debt the catch-up would send any delta past the cursor, and since
+  the primary appends throughout its own run, every advisor run end would
+  find something, feed it and be asked again — one inference per tool
+  round trip against a primary that has not decided anything yet. The debt
+  lives in the actor's heap, not in a cell: a restart that forgets one
+  delays a review to the primary's next run end.
 - **The strand driver never waits on a review.** The advisor's `run_end`
   hook casts and returns the inner answer; nothing about a feed — the
   branch scan, the render, the send, the durable writes — runs on the

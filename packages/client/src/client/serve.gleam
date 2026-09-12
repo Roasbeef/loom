@@ -1154,6 +1154,12 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
 // routes no `advisor` role. An unrouted role is the ordinary case rather
 // than a failure, so `MissingIdentity` becomes absence here instead of
 // halting a boot over a strand the operator never asked for.
+//
+// The error is discarded because it carries nothing a caller could act
+// on: `resolve` answers `MissingIdentity` and nothing else, and the one
+// case worth a word — a catalogue that routes the role to models this
+// gateway cannot serve — is a question about the catalogue rather than
+// about the error. `advisor_unresolved` asks it where there is a logger.
 fn advisor_settings(
   gateway: provider_gateway.Gateway,
   config: catalog.AdvisorConfig,
@@ -1171,6 +1177,34 @@ fn advisor_settings(
     )
   })
   |> option.from_result
+}
+
+/// Whether the catalogue routes an advisor that resolved to nothing.
+///
+/// `boot` warns on this and starts no advisor. It separates the two
+/// silences an operator cannot otherwise tell apart: a catalogue with no
+/// `[roles] advisor` line, which is the ordinary posture and deserves no
+/// output, and one that routes the role to a chain the gateway cannot
+/// serve, which is a configuration mistake whose only symptom is a
+/// reviewer that never says anything.
+///
+/// The question is asked of the catalogue rather than of the gateway's
+/// error because `resolve` reports only that an identity is missing,
+/// which is the same answer for both cases.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.advisor_unresolved(catalogue, settings.advisor)
+/// ```
+///
+@internal
+pub fn advisor_unresolved(
+  catalogue: catalog.Catalog,
+  settings: Option(advisor.Settings),
+) -> Bool {
+  option.is_none(settings)
+  && result.is_ok(list.key_find(catalogue.roles, catalog.advisor_role))
 }
 
 // A comma-separated tool list from the environment. Blank entries are
@@ -2677,6 +2711,21 @@ fn assemble_in(
   // never the command's output.
   log_secret_failures(settings.secret_failures, logger)
 
+  // A routed advisor the gateway could not resolve is the same class of
+  // event, and the same treatment: one warned line, and a session that
+  // runs without a reviewer rather than a boot that refuses.
+  case advisor_unresolved(settings.catalog, settings.advisor) {
+    False -> Nil
+    True ->
+      log.warn(logger, "advisor.unresolved", [
+        field.text(
+          key: "reason",
+          value: "the [roles] advisor chain names no model this host can"
+            <> " serve; the session runs with no advisor",
+        ),
+      ])
+  }
+
   // A configured name the host has not set is one warned line and not a
   // boot failure: the operator learns it here, and the tool that wanted
   // it says so in band when it runs.
@@ -2992,11 +3041,19 @@ fn assemble_in(
           clock,
         )
         // The advisor's three slots go on after the harness's own
-        // digests and before the extension bus: its run-end cast has to
-        // see a run that every earlier layer has finished with, and its
-        // standing instructions have to lead the advisor's request, so
-        // an extension's `context` fold still gets the last word on the
-        // primary's.
+        // digests and before the extension bus, so that its standing
+        // instructions lead the advisor's request and an extension's
+        // `context` fold still gets the last word on the primary's.
+        //
+        // Its run-end cast is *first* rather than last, and deliberately
+        // so: the slot casts and then calls the inner one, because the
+        // driver must not wait on a review and a cast placed after the
+        // inner call would still not wait for it. So the advisor's
+        // notification can overtake a later layer's follow-up. Nothing
+        // rests on the ordering — the cast carries only an operation id,
+        // the actor reads the branch itself, and a follow-up appended by
+        // a later layer is picked up by the next feed, one run boundary
+        // behind.
         |> with_advisor(advisor_wiring),
     )
 

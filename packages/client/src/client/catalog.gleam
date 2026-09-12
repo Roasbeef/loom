@@ -1329,10 +1329,13 @@ fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
 /// The `[advisor]` table: what the advisor strand may read with, and how
 /// long a delivered block quiets the next one.
 ///
-/// Constructor invariants: `tools` names built-in tools and never
-/// `advise` itself, which the harness registers for the advisor whatever
-/// this says — a strand that could not answer a feed would have no
-/// reason to exist. `block_cooldown_runs` is not negative.
+/// Constructor invariants: `block_cooldown_runs` is not negative.
+///
+/// `tools` names built-in tools, and naming `advise` among them changes
+/// nothing: the harness registers it for the advisor whatever this says,
+/// and `advisor.active_tools` prepends and deduplicates, so the name is
+/// accepted rather than refused — a strand that could not answer a feed
+/// would have no reason to exist.
 pub type AdvisorConfig {
   AdvisorConfig(
     /// Tools the advisor strand is registered with besides `advise`, in

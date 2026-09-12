@@ -107,8 +107,8 @@ pub const feed_footer = "[end feed. Review it and answer with exactly one advise
 /// The first line of an advice message delivered to the primary.
 ///
 /// `render` keys the `advisor (your earlier advice):` label off this exact
-/// line, and `is_advice` off it alone, so the header is the recognition
-/// token and not decoration.
+/// line and its footer together, and `is_advice` off the same pair, so
+/// both lines are recognition tokens and neither is decoration.
 pub const advice_header = "[advice from the advisor]"
 
 /// The last line of an advice message.
@@ -250,20 +250,28 @@ fn label_nudges(text: String) -> String {
   }
 }
 
-// The body between the advice header and footer, or nothing when the first
-// line is not the header.
+// The body between the advice header and footer, or nothing when the text
+// does not carry both.
+//
+// Both tokens are required because this decides attribution, and the
+// harness always writes both: `advice_message` appends the footer after
+// the body, and the byte caps in this module bound a slice rather than a
+// frame, so nothing here can cut one off. A turn that carries the header
+// alone is somebody quoting a verdict — an operator pasting one back to
+// ask about it — and labelling that as the advisor's own words would be
+// the misattribution the label exists to prevent.
 fn advice_body(text: String) -> Option(String) {
   case string.split_once(text, "\n") {
-    Ok(#(first, rest)) if first == advice_header -> Some(strip_footer(rest))
+    Ok(#(first, rest)) if first == advice_header -> framed(rest)
     Ok(_other) -> None
     Error(Nil) -> None
   }
 }
 
-fn strip_footer(body: String) -> String {
+fn framed(body: String) -> Option(String) {
   case string.split_once(body, "\n" <> advice_footer) {
-    Ok(#(before, _after)) -> before
-    Error(Nil) -> body
+    Ok(#(before, _after)) -> Some(before)
+    Error(Nil) -> None
   }
 }
 
@@ -528,6 +536,13 @@ pub fn feed_message(slice: Slice, now: Int) -> AgentMessage {
 /// comes back around in the next slice, and what tells the primary that the
 /// body is a review rather than an order.
 ///
+/// The body is made frame-safe first, for the reason a nudge is made
+/// fence-safe: it is model-written text whose own input is a rendering of
+/// whatever the primary read, so a file or a command output can put the
+/// closing line into an advisor's mouth. A body that carried the footer
+/// verbatim would close the frame early, and everything after it would
+/// reach the primary as unframed text in the operator's voice.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -535,7 +550,29 @@ pub fn feed_message(slice: Slice, now: Int) -> AgentMessage {
 /// ```
 ///
 pub fn advice_message(text: String, now: Int) -> AgentMessage {
-  user_message(advice_header <> "\n" <> text <> "\n" <> advice_footer, now)
+  user_message(
+    advice_header <> "\n" <> frame_safe(text) <> "\n" <> advice_footer,
+    now,
+  )
+}
+
+// Breaks either frame token where it occurs inside a body, leaving it
+// readable, the way `notes.fence_safe` breaks a backtick run.
+//
+// One pass is enough here, unlike a fence: the replacement carries
+// neither bracket, so it cannot combine with surrounding text to spell
+// the literal again. A fence's replacement is itself made of backticks,
+// which is why that one has to repeat.
+fn frame_safe(text: String) -> String {
+  text
+  |> string.replace(each: advice_header, with: unframed(advice_header))
+  |> string.replace(each: advice_footer, with: unframed(advice_footer))
+}
+
+fn unframed(token: String) -> String {
+  let inside = token |> string.drop_start(1) |> string.drop_end(1)
+
+  "(" <> inside <> ")"
 }
 
 /// Frames queued nudges as the user message folded into the primary's next
@@ -569,7 +606,8 @@ pub fn nudges_message(nudges: List(String), now: Int) -> AgentMessage {
   user_message(text, now)
 }
 
-/// Whether `message` is an advice frame, by its first line alone.
+/// Whether `message` is an advice frame, by its header line and its
+/// footer together.
 ///
 /// ## Examples
 ///

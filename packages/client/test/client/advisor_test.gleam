@@ -12,6 +12,7 @@
 
 import client/advisor
 import client/advisorguard
+import client/agency
 import core/clock
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId}
@@ -32,11 +33,13 @@ import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/hooks
+import runtime/lineage
 import session/session.{type Session}
 import storage/storage
 import support/addresses
 import telemetry/log
 import tools/advise
+import tools/agent
 import weft/registry as address
 
 // --- the run-start slot ----------------------------------------------------
@@ -265,6 +268,10 @@ pub fn a_busy_advisor_is_not_fed_again_test() {
 // driver resolves `run_end` before the run closes, so the advisor still
 // reads as busy at exactly the moment its review is finishing; a feed
 // that yielded to that would never catch up on anything.
+//
+// The debt is what the catch-up answers, so the primary's run end has to
+// be coalesced away first: that skipped feed is the thing being caught
+// up on.
 pub fn the_advisors_own_run_end_catches_up_test() {
   let assert Ok(rig) = a_rig() as "the advisor rig must open"
   let assert Ok(_accepted) =
@@ -280,7 +287,10 @@ pub fn the_advisors_own_run_end_catches_up_test() {
 
   let assert Ok(subject) = address.lookup(rig.name)
     as "the advisor actor must be registered"
+  process.send(subject, advisor.PrimaryRunEnded(operation: an_op_id(2)))
+  let _skipped = settle(subject)
   assert cursor(rig.runtime) == None
+
   process.send(subject, advisor.AdvisorRunEnded(operation: an_op_id(4)))
   let _drained = settle(subject)
 
@@ -289,6 +299,31 @@ pub fn the_advisors_own_run_end_catches_up_test() {
   // observable that says it was sent: nothing else writes that cell, and
   // a send that failed leaves it alone.
   assert cursor(rig.runtime) != None
+  stop(rig)
+}
+
+// A review that ended with nothing owed reviews nothing, even though the
+// primary's branch has moved.
+//
+// Without the debt the catch-up would send any delta past the cursor,
+// and the primary appends assistant turns and tool results throughout
+// its own run — so every advisor run end would find something, send it,
+// and be asked again when that review ended. The loop would sustain
+// itself for as long as the primary kept working, at one inference per
+// iteration against a primary that has not decided anything yet.
+pub fn an_idle_review_end_does_not_poll_the_primary_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  process.send(subject, advisor.AdvisorRunEnded(operation: an_op_id(4)))
+  let _quiet = settle(subject)
+
+  assert advisor_texts(rig.opened) == []
+  assert cursor(rig.runtime) == None
   stop(rig)
 }
 
@@ -429,6 +464,47 @@ pub fn the_primarys_run_end_drives_the_feed_test() {
     as "the primary's run end must have fed the advisor"
   assert string.contains(fed, "write the migration")
   stop(rig)
+}
+
+// --- the isolation the design rests on -------------------------------------
+
+// The advisor is made with `create_idle_strand` and never through the
+// Agency, so it has no lineage cell. That absence is what the whole
+// design rests on: the ledger is the only thing `agent_send` consults
+// before one strand may address another, and it is what `strand.roster`
+// lists, so a primary cannot argue its reviewer out of a verdict and is
+// never prompted to reason about a strand it has no business managing.
+pub fn the_advisor_is_outside_the_lineage_ledger_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+
+  let assert Ok(cells) =
+    api.reserved_facts(rig.runtime, prefix: lineage.key_prefix)
+    as "the lineage ledger must be readable"
+  assert !list.any(cells, fn(cell) {
+    cell.0 == lineage.register_key(advisor.strand)
+  })
+
+  // And the seam that reads that ledger refuses the name, which is the
+  // property the absent cell is there to produce.
+  let name = addresses.new()
+  let config = agency.default_config(name, clock.fixed(at: 1000))
+  let assert Ok(_holder) = agency.start(config, rig.runtime)
+    as "the agency holder must start"
+  let seam = agency.seam(config)
+
+  assert seam.send(a_caller(advisor.primary), advisor.strand, "reconsider")
+    == Error(agent.NotAddressable(strand: advisor.strand))
+  stop(rig)
+}
+
+fn a_caller(strand: String) -> agent.Caller {
+  agent.Caller(
+    strand:,
+    operation: an_op_id(41),
+    step_id: "turn-1:tools",
+    source_index: 0,
+    minter: agent.ToolCall,
+  )
 }
 
 // --- the rig ---------------------------------------------------------------

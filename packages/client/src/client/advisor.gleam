@@ -57,14 +57,31 @@
 //// `AdvisorRunEnded` exists: the skipped delta would otherwise wait for
 //// the primary to run again, which on an idle session is never.
 ////
+//// The catch-up is owed rather than offered. A skipped feed records a
+//// debt in `Memory.owed`, and the advisor's own run end feeds only when
+//// one is outstanding. Without the debt the catch-up would send *any*
+//// delta past the cursor, and the primary is appending assistant turns
+//// and tool results throughout its own run — so every advisor run end
+//// would find something new, send it, and be asked again when that
+//// review ended. That loop sustains itself for as long as the primary
+//// keeps working and costs one inference per iteration against a
+//// primary that has not decided anything yet, which is the per-step
+//// review the feed's per-run cadence exists to refuse.
+////
 //// # The two cells
 ////
 //// `cursor_key` holds the newest seq the advisor has been shown and
 //// `guard_key` holds the emission guard. This actor is their only
-//// writer. They live under a harness-owned prefix: the only model-facing
-//// fact write in this tree is the Agency blackboard, which prefixes
-//// every key with `agent/` and the calling strand's own name, so no tool
-//// can name either cell. Both are read lazily on the first message
+//// writer, and both sit under `api.advisor_fact_prefix`, a reserved
+//// corner of `fact.custom`: `put_fact` refuses the prefix and `facts`
+//// hides it, so the writes go through `put_reserved_fact`. Two
+//// independent failures are therefore needed to forge either, because
+//// the model-facing fact write is the Agency blackboard and that
+//// composes every key from `agent/` and the calling strand's own name.
+//// The cursor is the cell that reservation is really for: a large
+//// integer written under it moves the reviewer past everything the
+//// primary will ever append, and the symptom is a quiet advisor rather
+//// than an error anybody sees. Both are read lazily on the first message
 //// rather than at start, because the runtime is borrowed from a holder
 //// that may not be up yet when a supervisor starts this actor.
 
@@ -105,11 +122,16 @@ pub const primary = "main"
 
 /// The cell holding the newest seq of the primary's branch the advisor
 /// has been shown.
-pub const cursor_key = "advisor/feed/cursor"
+///
+/// Composed from `api.advisor_fact_prefix` rather than spelled out, so
+/// that the key and the reservation cannot drift apart: a literal that
+/// fell outside the reserved prefix would still compile and would be
+/// refused at runtime by the very door this actor writes through.
+pub const cursor_key = api.advisor_fact_prefix <> "feed/cursor"
 
 /// The cell holding the emission guard, as `advisorguard.encode` writes
-/// it.
-pub const guard_key = "advisor/guard"
+/// it. Composed from the reserved prefix for the reason `cursor_key` is.
+pub const guard_key = api.advisor_fact_prefix <> "guard"
 
 /// How long the primary's run-start hook waits for the pending nudges.
 ///
@@ -117,6 +139,17 @@ pub const guard_key = "advisor/guard"
 /// generous; the number exists because the wait happens on the strand
 /// driver, where an unbounded call would hold up a run behind an actor
 /// that is busy scanning a branch.
+///
+/// The drain is not two-phase, and the loss that follows is accepted
+/// rather than prevented. The actor clears the queue and writes the
+/// guard cell before it replies, so nudges drained into a run start that
+/// then times out here — or into an admission transaction that does not
+/// commit — are gone. A claim-then-confirm protocol would close that
+/// window at the cost of a second round trip on the driver process and a
+/// third guard state to reason about, which is more machinery than a
+/// dropped nit is worth: a lost nudge costs the primary one piece of
+/// advice it was never going to be required to take, and the advisor
+/// raises the point again at the next run end if it still holds.
 pub const pending_timeout_ms = 500
 
 /// How long an `advise` call waits for its verdict to be judged.
@@ -132,9 +165,11 @@ pub const judge_timeout_ms = 10_000
 ///
 /// A bound on the read rather than on the render: `advisorslice` caps
 /// the bytes it produces, but the scan itself must not walk an
-/// afternoon's branch after a long coalescing gap. Whatever the cap
-/// leaves behind is skipped rather than queued, since the cursor
-/// advances to the newest entry the scan saw.
+/// afternoon's branch after a long coalescing gap. The limit applies
+/// after the `OldestFirst` ordering, so the cap returns the *oldest*
+/// entries past the cursor and the cursor advances to the newest of
+/// those — what the cap leaves behind is deferred to the next feed
+/// rather than skipped.
 pub const scan_limit = 512
 
 // --- what the host supplies ------------------------------------------------
@@ -205,9 +240,9 @@ pub type Message {
   PrimaryRunEnded(operation: OpId)
 
   /// A run on the advisor finished. Feeds it whatever accumulated while
-  /// it was reviewing, and does not touch the run clock — the cooldown
-  /// is measured in the primary's runs, so a chatty advisor cannot
-  /// shorten its own window.
+  /// it was reviewing *if a feed was coalesced away while it ran*, and
+  /// does not touch the run clock — the cooldown is measured in the
+  /// primary's runs, so a chatty advisor cannot shorten its own window.
   AdvisorRunEnded(operation: OpId)
 
   /// One `advise` call, arriving from the tool. `strand` is the caller's
@@ -223,10 +258,23 @@ pub type Message {
   TakePending(reply: Subject(List(String)))
 }
 
-// What the actor remembers between messages: the guard and the feed
-// cursor, which are the two cells and nothing else.
+// What the actor remembers between messages: the two cells, and whether
+// a feed the advisor was too busy to take is still owed to it.
 type Memory {
-  Memory(guard: advisorguard.Guard, cursor: Option(Seq))
+  Memory(guard: advisorguard.Guard, cursor: Option(Seq), owed: Owed)
+}
+
+// Whether a primary run end was coalesced away and its delta is still
+// owed to the advisor.
+//
+// It is deliberately not persisted. The debt is derived state that
+// exists to gate one catch-up, and the durable cursor already says which
+// stretch has been shown; a restart that forgets a debt delays one
+// review to the primary's next run end, which is the same cost as the
+// lost cast the actor already tolerates.
+type Owed {
+  NothingOwed
+  FeedOwed
 }
 
 // Whether the durable cells have been read yet. A freshly started actor
@@ -242,12 +290,31 @@ type State {
   State(wiring: Wiring, policy: advisorguard.Policy, recall: Recall)
 }
 
-// Which run boundary is asking for a feed. The two differ in one place
-// only — whether an advisor that looks busy is left alone — and that
-// difference is load-bearing enough to be a type rather than a flag.
+// Which run boundary is asking for a feed. The two differ in what makes
+// a feed owed, and that difference is load-bearing enough to be a type
+// rather than a flag.
+//
+// A review end is asked *before* the advisor's run closes — the driver
+// resolves `run_end` while `current_operation` is still set — so the
+// busy check the primary's occasion makes would skip every catch-up
+// there will ever be. The outstanding debt is the test that occasion
+// makes instead.
 type Occasion {
   PrimaryFinished
   ReviewFinished
+}
+
+// What one run boundary owes the advisor, once the occasion and the
+// remembered debt have been read together.
+type Owing {
+  // Send a feed now.
+  FeedNow
+
+  // Skip, and remember that the primary's delta is still owed.
+  Coalesce
+
+  // Skip, and nothing is owed.
+  Quiet
 }
 
 // --- the standing instructions ---------------------------------------------
@@ -409,6 +476,7 @@ fn recall(state: State, runtime: Runtime) -> Memory {
       Memory(
         guard: read_guard(state, runtime),
         cursor: read_cursor(state, runtime),
+        owed: NothingOwed,
       )
   }
 }
@@ -487,13 +555,17 @@ fn store_cursor(
   Memory(..memory, cursor: Some(cursor))
 }
 
+// The write goes through the reserved door because the ordinary one
+// refuses this prefix. The reads above stay on the plain `fact`, which
+// never consulted the reservation and is how every other owner of a
+// reserved namespace reads its own cells back.
 fn write_cell(
   state: State,
   runtime: Runtime,
   key: String,
   payload: JsonValue,
 ) -> Nil {
-  case api.put_fact(runtime, key, payload) {
+  case api.put_reserved_fact(runtime, key, payload) {
     Ok(Nil) -> Nil
 
     Error(error) ->
@@ -513,8 +585,51 @@ fn feed(
   operation: OpId,
   occasion: Occasion,
 ) -> State {
-  let attempted = attempt_feed(state, runtime, memory, operation, occasion)
-  remembering(state, result.unwrap(attempted, memory))
+  case owing(state.wiring.session, memory, occasion) {
+    // The advisor is mid-review, so the stretch the primary just
+    // appended waits for one larger slice. Recording the debt is what a
+    // later review end acts on.
+    Coalesce -> remembering(state, Memory(..memory, owed: FeedOwed))
+
+    // A review ended with nothing owed, so there is nothing to catch up
+    // on. Feeding here would poll a primary that is still mid-run, once
+    // per advisor round trip.
+    Quiet -> remembering(state, memory)
+
+    FeedNow -> {
+      // The debt is cleared as the feed is attempted rather than as it
+      // lands. A send that fails leaves the cursor where it was, so the
+      // primary's next run end offers the same stretch again; there is
+      // nothing a review end could usefully catch up on, because a feed
+      // that never arrived starts no review to end.
+      let memory = Memory(..memory, owed: NothingOwed)
+      let attempted = attempt_feed(state, runtime, memory, operation)
+      remembering(state, result.unwrap(attempted, memory))
+    }
+  }
+}
+
+// Whether this run boundary owes the advisor a feed.
+//
+// The two occasions ask different questions. A primary run end offers
+// whatever is past the cursor unless the advisor is busy; a review end
+// offers only a delta that a busy advisor caused to be skipped, because
+// the primary appends throughout its own run and an ungated catch-up
+// would review it one tool round trip at a time.
+fn owing(opened: Session, memory: Memory, occasion: Occasion) -> Owing {
+  case occasion {
+    PrimaryFinished ->
+      case reviewing(opened) {
+        True -> Coalesce
+        False -> FeedNow
+      }
+
+    ReviewFinished ->
+      case memory.owed {
+        FeedOwed -> FeedNow
+        NothingOwed -> Quiet
+      }
+  }
 }
 
 // Every step that answers "nothing to review" answers `Error(Nil)`, and
@@ -524,13 +639,7 @@ fn attempt_feed(
   runtime: Runtime,
   memory: Memory,
   operation: OpId,
-  occasion: Occasion,
 ) -> Result(Memory, Nil) {
-  use <- bool.guard(
-    when: coalesced(occasion, state.wiring.session),
-    return: Error(Nil),
-  )
-
   use leaf <- result.try(primary_leaf(state.wiring.session))
   let entries = new_entries(state.wiring.session, leaf, memory.cursor)
   use newest <- result.try(newest_seq(entries))
@@ -572,25 +681,6 @@ fn deliver_feed(
       ])
       Error(Nil)
     }
-  }
-}
-
-// Whether this feed is skipped because the advisor is still reviewing.
-//
-// Coalescing is the whole of the backpressure design: an advisor with a
-// run already open is left alone, and the stretch it has not seen waits
-// for one larger slice instead of joining a queue of small ones.
-fn coalesced(occasion: Occasion, opened: Session) -> Bool {
-  case occasion {
-    PrimaryFinished -> reviewing(opened)
-
-    // The advisor's own run end is asked *before* the run closes — the
-    // driver resolves `run_end` while `current_operation` is still set —
-    // so asking whether it is busy here would skip every catch-up there
-    // will ever be. The stretch itself is the terminator instead: a scan
-    // that finds nothing new past the cursor sends nothing, and a feed
-    // delivered onto the closing run lands as a steer it consumes next.
-    ReviewFinished -> False
   }
 }
 

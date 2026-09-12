@@ -6,6 +6,7 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import client/advisor
 import client/catalog
 import client/codemode
 import client/daemon/domain as domain_service
@@ -87,6 +88,40 @@ fn scripted_catalog() -> catalog.Catalog {
     ],
     roles: [#(model.Main, ["acme"])],
     mcp_servers: [],
+  )
+}
+
+// An advisor the operator routed and the gateway could not resolve is
+// the one silence worth a line.
+//
+// The three postures an operator can be in are separated here because
+// two of them look identical from the outside — no advisor ever says
+// anything — and only one is a mistake. A catalogue with no `[roles]
+// advisor` line is the ordinary posture and deserves no output; a
+// catalogue that routes the role to a chain this host cannot serve is a
+// typo whose only other symptom is a reviewer that never speaks.
+pub fn a_routed_but_unresolvable_advisor_is_reported_test() {
+  let routed =
+    catalog.Catalog(..scripted_catalog(), roles: [
+      #(model.Main, ["acme"]),
+      #(catalog.advisor_role, ["typo-model"]),
+    ])
+
+  assert serve.advisor_unresolved(routed, None)
+
+  // Not routed at all, and not resolved: silence is the right answer.
+  assert !serve.advisor_unresolved(scripted_catalog(), None)
+
+  // Routed and resolved: the wiring exists, so there is nothing to say.
+  assert !serve.advisor_unresolved(routed, Some(an_advisor()))
+}
+
+fn an_advisor() -> advisor.Settings {
+  advisor.Settings(
+    model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
+    thinking: machine_strand.ThinkingOff,
+    tools: [],
+    block_cooldown_runs: 2,
   )
 }
 
