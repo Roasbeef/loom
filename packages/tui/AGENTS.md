@@ -161,6 +161,34 @@ that tree separately from the self-contained server.
   the open `--record` file, held in the `Model` because the inbox is drained
   inside `update_tick` and there is no other point at which both a websocket
   message and the recording are in scope.
+- `tui/herdr` is the Herdr multiplexer integration, compiled in because this
+  terminal is a single binary with no hook directory for Herdr's installer
+  to drop a script into. `configure` gates on `HERDR_ENV=1` plus
+  `HERDR_SOCKET_PATH` and `HERDR_PANE_ID`, the same three variables every
+  scriptable-host adapter reads. `state_for` maps the model onto the pane's
+  state over the three values Herdr's `PaneAgentState` lets an agent report:
+  a pending approval is `blocked`, any live strand phase is `working`, and
+  everything else — a settled operation included — is `idle`. There is no
+  `done` to report: the reducer clears a strand's `live_phase` when its
+  operation reaches the `done` phase, so a finished operation is already
+  "no live strand", and Herdr derives its own `done` from an idle report on
+  a tab nobody has looked at since. Reports are `pane.report_agent` and
+  `pane.report_agent_session` over the pane's unix socket, sent only on
+  change by a dedicated unlinked reporter process that delivers them in
+  arrival order, each retried once and then dropped: the terminal's own
+  session always wins over a pane report. Two rules decide what reaches the
+  socket, and both are pure functions the tests pin. `announces` says the
+  session identity is announced when it first becomes known and again on
+  every switch, because `herdr session` resume keys off the announced id;
+  nothing at all is published while no session is attached, which is the
+  state the session picker is in. `config_for` refuses a `started_ms` below
+  zero: the sequence is seeded from the wall clock, `seq` is an unsigned
+  integer in Herdr's request schema, and the BEAM monotonic clock is an
+  arbitrary-offset counter that is negative on macOS, so a monotonic seed
+  would make the daemon reject every report. The
+  one external is `tui/internal/ffi_herdr.exchange`, a deadline-bounded
+  `gen_tcp` unix-domain round trip, because no stdlib or weft surface opens
+  one.
 - `tui/frame` renders a `Buffer` as rows of text, folding a wide glyph's
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what

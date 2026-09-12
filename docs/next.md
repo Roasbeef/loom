@@ -68,7 +68,7 @@ after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
 
 1. **Land the native Herdr integration.** PR #354 on `herdr` teaches the
    terminal to report its lifecycle (`pane.report_agent_session`, then
-   `pane.report_agent` across idle/working/blocked/done) over the Herdr unix
+   `pane.report_agent` across idle/working/blocked) over the Herdr unix
    socket, gated by `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID`. The adapter
    is compiled in rather than installed, because the terminal is a single binary
    with no plugin directory. One new FFI, `tui/internal/ffi_herdr.exchange`, a

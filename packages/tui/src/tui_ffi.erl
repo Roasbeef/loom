@@ -4,7 +4,8 @@
 %% identity and launch are shared with the daemon and live in
 %% `host_bootstrap_ffi`, which `host/bootstrap` declares directly; nothing
 %% here forwards to it.
--export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1]).
+-export([silence_logger/0, run_forwarding/2, halt/1, read_console_reply/1,
+    herdr_exchange/3]).
 
 silence_logger() ->
     ok = logger:set_primary_config(level, none),
@@ -66,3 +67,38 @@ read_console_reply(PromptBinary) ->
 
 describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~p", [Reason])).
+
+%% One request/response exchange with the Herdr client daemon over a
+%% unix-domain socket. A `{local, Path}' address is the only unix-domain
+%% transport OTP exposes, and the deadline on each phase is the whole
+%% reason the reporter exists: a connect to a stale socket path must cost
+%% the caller at most the timeout, so connect, send and receive each
+%% carry one rather than trusting a kernel default. The reply is bounded at
+%% one line — the daemon answers a report with a short acknowledgement and
+%% nothing else — and a close before any byte is an error, because the only
+%% answer the reporter acts on is that the daemon did not take the report.
+herdr_exchange(Path, Payload, TimeoutMs) ->
+    %% The socket address goes in the positional Address argument alone.
+    %% Passing `{ifaddr, {local, Path}}' in the options as well makes
+    %% gen_tcp bind it twice and refuse with eaddrinuse.
+    Address = {local, unicode:characters_to_list(Path)},
+    case gen_tcp:connect(Address, 0,
+        [binary, {packet, line}, {active, false}], TimeoutMs) of
+        {ok, Socket} ->
+            Result = exchange_on(Socket, Payload, TimeoutMs),
+            gen_tcp:close(Socket),
+            Result;
+        {error, Reason} ->
+            {error, describe(Reason)}
+    end.
+
+exchange_on(Socket, Payload, TimeoutMs) ->
+    case gen_tcp:send(Socket, Payload) of
+        ok ->
+            case gen_tcp:recv(Socket, 0, TimeoutMs) of
+                {ok, Reply} -> {ok, Reply};
+                {error, Reason} -> {error, describe(Reason)}
+            end;
+        {error, Reason} ->
+            {error, describe(Reason)}
+    end.

@@ -59,6 +59,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/file_read_view
 import tui/frame
+import tui/herdr
 import tui/history_view
 import tui/image_drop
 import tui/internal/ffi_terminal
@@ -680,6 +681,12 @@ pub type Model {
     selection_frame: Option(buffer.Buffer),
     /// Whether a finished selection reaches the terminal's clipboard.
     clipboard: Clipboard,
+    /// The Herdr pane reporter, when this terminal runs inside one. Held
+    /// in the model for the same reason the recorder is: the publish runs
+    /// where the lifecycle events just landed, which is inside `update`.
+    herdr_reporter: Option(herdr.Reporter),
+    /// The pane state and session last reported, so only a change sends.
+    herdr_published: Option(herdr.Publication),
   )
 }
 
@@ -984,6 +991,8 @@ pub fn new_model_with_clock(
     activity_revision: 0,
     quiet_for_ms: quiet_after_ms,
     recorder: None,
+    herdr_reporter: None,
+    herdr_published: None,
     selection: None,
     selection_frame: None,
     clipboard: NoClipboard,
@@ -1042,6 +1051,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
   // loop shares stdout with something that is not one.
   let initial =
     open_recording(Model(..launched, clipboard: TerminalClipboard), record)
+    |> start_herdr_reporter
+
   let _ =
     app.run_buffered_cursor_adaptive(
       default.new_with_options(backend.Options(mouse: True, paste: True)),
@@ -3481,9 +3492,75 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     False -> updated
   }
   let updated = sync_context(model, updated)
-  refresh_render_cache(model, updated)
+  let published = publish_herdr(updated)
+  refresh_render_cache(model, published)
   |> request_history_for_view
   |> refresh_frame_cache(frame_boundary(event))
+}
+
+// Starts the Herdr pane reporter when the launch environment carries a
+// pane. Started here rather than in `main` so the launchers that are not
+// terminal applications — `ext`, `replay`, `sessions` — never grow a
+// process, and so the model the loop runs is the only one that owns it.
+// A refused start is silent by design: the reporter is a convenience for
+// the pane around the terminal, and the session must never learn it
+// exists by failing.
+//
+// The sequence seed is the wall clock rather than `model.monotonic_time_ms`,
+// which every other timing in the loop uses. Herdr's `seq` is an unsigned
+// integer, and the BEAM monotonic clock is an arbitrary-offset counter that
+// is negative on this platform, so a monotonic seed would make the daemon
+// reject every report. Seeding from the wall clock also puts a reporter
+// restarted in the same pane above the last sequence Herdr saw.
+fn start_herdr_reporter(model: Model) -> Model {
+  case herdr.configure(host_bootstrap.system_time_ms()) {
+    None -> model
+    Some(config) ->
+      case herdr.start(config) {
+        Ok(reporter) -> Model(..model, herdr_reporter: Some(reporter))
+        Error(_) -> model
+      }
+  }
+}
+
+// Reports the pane state to Herdr when — and only when — it changed.
+//
+// Nothing is published before a session is attached. The terminal reaches
+// this function at the session picker, where `model.session` is still
+// empty, and a report carrying an empty `agent_session_id` names no
+// session for `herdr session` to resume.
+//
+// The report derives from the same fields the frame does, so the pane
+// cannot tell the operator something the screen disagrees with. A session
+// switch is reported even at an unchanged state, because the session id is
+// what resume keys on, and the switch re-announces: the announcement
+// follows the session identity, so it is sent when that identity first
+// becomes known and again every time it moves. Publishing on every event
+// is deliberately cheap: the comparison is two fields and the send is one
+// message to a local process.
+fn publish_herdr(model: Model) -> Model {
+  case model.herdr_reporter, model.session {
+    None, _ -> model
+    Some(_), "" -> model
+    Some(_), session -> {
+      let next =
+        herdr.Publication(
+          state: herdr.state_for(model.strands, model.approvals),
+          session:,
+        )
+      case herdr.changed(model.herdr_published, next) {
+        False -> model
+        True -> {
+          case herdr.announces(model.herdr_published, next) {
+            True -> herdr.announce(model.herdr_reporter, session)
+            False -> Nil
+          }
+          herdr.report(model.herdr_reporter, next.state, next.session, "")
+          Model(..model, herdr_published: Some(next))
+        }
+      }
+    }
+  }
 }
 
 // Ticks and resizes flush; everything a person or a terminal can produce in a
@@ -5350,6 +5427,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         "assistant" -> generation_clock(model, strand)
         _other -> model.generation_started_ms
       }
+
       let updated =
         Model(
           ..model,

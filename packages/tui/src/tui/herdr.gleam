@@ -1,0 +1,427 @@
+//// Best-effort agent-state reporting to a Herdr multiplexer, when the
+//// terminal was launched inside one of its panes.
+////
+//// Herdr keeps a closed registry of agent integrations; a pane running an
+//// integrated agent inherits three environment variables
+//// (`HERDR_ENV=1`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID`), and the agent
+//// reports its lifecycle as newline-delimited JSON requests over that
+//// unix socket: `pane.report_agent_session` when the session identity
+//// first becomes known and again on every switch, then `pane.report_agent`
+//// as the agent moves between working, blocked and idle. `herdr session`
+//// resume keys off the reported session id, which Loom already has as a
+//// first-class value — the attached session id itself. Until a session is
+//// attached there is no identity to report, and nothing is sent at all.
+////
+//// This terminal is a self-contained binary with no hook directory for
+//// Herdr's installer to drop a script into, so the adapter is compiled in
+//// and gated at runtime by the same three variables. Every other
+//// integration's adapter is fire-and-forget, and this one keeps the rule:
+//// the reporter is a dedicated process, each exchange carries a deadline,
+//// a failed delivery is retried once and then dropped, and nothing here
+//// can stall or fail the terminal's own connection to the daemon.
+////
+//// The module is split so the loop-facing half is pure: `state_for` maps the
+//// model onto the pane state and `encode_*` build the wire bytes, which
+//// the tests pin, while the reporter process and the socket exchange are
+//// the only effects.
+
+import core/json
+import gleam/erlang/process.{type Subject}
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import host/bootstrap
+import tui/approval
+import tui/internal/ffi_herdr
+import tui/protocol.{type Strand}
+import weft/actor
+
+/// The wire tag Herdr's resume planner matches this integration on.
+const source = "herdr:loom"
+
+/// The agent label reported beside it.
+const agent = "loom"
+
+/// A failed delivery is retried once with a longer deadline, the pattern
+/// every scriptable-host adapter uses.
+const attempt_timeout_ms = 500
+
+const retry_timeout_ms = 1500
+
+/// The pane config and the process that carries reports to the pane's
+/// daemon.
+///
+/// Reports are delivered in arrival order: `handle` runs one exchange at a
+/// time, and each exchange carries its own deadline, paid on this dedicated
+/// unlinked process rather than on the terminal loop. `publish_herdr`
+/// enqueues one report per state or session change, so what waits in the
+/// mailbox is a list of real transitions and not a stream of repeats.
+/// Against a dead socket every report pays its full deadline before the
+/// next one starts, so the queue can fall behind the screen; that is the
+/// price of in-order delivery, and the terminal waits on none of it.
+pub opaque type Reporter {
+  Reporter(config: Config, inner: actor.Started(Subject(Message)))
+}
+
+/// The pane a reporter serves. The three values are exactly the three
+/// environment variables, held as one record so the gate is "was there a
+/// config", never three separate presence checks.
+pub type Config {
+  Config(
+    /// Herdr's own pane identifier, echoed back on every report.
+    pane_id: String,
+    /// The unix socket the pane's client daemon listens on.
+    socket_path: String,
+    /// Wall-clock process start time in milliseconds, the seed of the
+    /// ascending report sequence Herdr uses to drop reordered reports.
+    ///
+    /// It has to be the wall clock. Herdr types `seq` as an unsigned
+    /// integer with a minimum of zero, and the BEAM monotonic clock is an
+    /// arbitrary-offset counter that is negative on this platform, so a
+    /// monotonic seed makes every report fail validation at the pane's
+    /// daemon. `config_for` refuses a negative seed for that reason.
+    started_ms: Int,
+  )
+}
+
+/// The state one pane report carries. The reportable set is Herdr's
+/// `PaneAgentState`, and it is closed: `idle`, `working` and `blocked`,
+/// beside an `unknown` that is Herdr's own marker for a pane it could not
+/// classify rather than a claim an agent makes. `Working` is any live
+/// strand, `Blocked` is a pending approval, and everything else is `Idle`.
+///
+/// There is deliberately no `Done`. Herdr's `done` belongs to the status
+/// Herdr reports back about a pane, not to the state an agent reports in:
+/// Herdr derives it from an idle report on a tab nobody has looked at
+/// since. A report carrying `"done"` fails the enum and the pane's daemon
+/// rejects the request, so a settled operation reports `idle` and Herdr
+/// decides whether that idle counts as done.
+pub type PaneState {
+  Idle
+  Working
+  Blocked
+}
+
+/// The last report sent, so the loop publishes only on a change. The
+/// session id rides along because a session switch at the same state is
+/// still a new report: resume must follow the new session.
+pub type Publication {
+  Publication(state: PaneState, session: String)
+}
+
+/// What the reporter is asked to do.
+pub type Message {
+  /// Report a state transition. Delivered in arrival order, behind any
+  /// report already queued; nothing here supersedes an earlier report,
+  /// because Herdr drops a report that arrives out of sequence on its own
+  /// side.
+  Report(state: PaneState, session: String, message: String)
+
+  /// Report the session identity without a state claim. Sent when the
+  /// session identity first becomes known — so a pane opened onto an idle
+  /// session still resumes — and again on every switch, because `herdr
+  /// session` resume keys off the announced id and a switch moves it.
+  /// Nothing is announced while no session is attached: an empty
+  /// `agent_session_id` names no session to resume.
+  Announce(session: String)
+}
+
+/// The reporter's own state: the config it was born with and the sequence
+/// number of the last report it attempted.
+type ReporterState {
+  ReporterState(config: Config, seq: Int)
+}
+
+/// Reads the launch environment and answers the pane config when this
+/// terminal is running under Herdr.
+///
+/// The gate is the same one every adapter applies: `HERDR_ENV` is exactly
+/// "1" and both the socket path and the pane id are present. Anything
+/// less — a partial export, a different value — is not a Herdr pane, and
+/// the reporter never starts. `started_ms` must be wall-clock
+/// milliseconds; `config_for` applies that half of the gate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Outside a Herdr pane there is nothing to configure.
+/// // herdr.configure(1_700_000_000_000) == None
+/// ```
+pub fn configure(started_ms: Int) -> Option(Config) {
+  case bootstrap.getenv("HERDR_ENV") {
+    Ok("1") ->
+      case
+        bootstrap.getenv("HERDR_SOCKET_PATH"),
+        bootstrap.getenv("HERDR_PANE_ID")
+      {
+        Ok(socket_path), Ok(pane_id) ->
+          config_for(pane_id:, socket_path:, started_ms:)
+        _, _ -> None
+      }
+    _ -> None
+  }
+}
+
+/// Answers the pane config for three launch values, or `None` when they
+/// cannot produce a valid report.
+///
+/// This is the whole of the boundary check, separated from the environment
+/// read so it is a pure function the tests drive. A blank pane id or socket
+/// path is a partial export rather than a pane. A negative `started_ms` is
+/// the monotonic clock reaching a parameter that wants the wall clock:
+/// Herdr's `seq` is an unsigned integer, so every report seeded from it
+/// would be rejected by the pane's daemon, and a config that can only
+/// produce invalid reports is not a Herdr pane.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.config_for(
+///   pane_id: "pane-7",
+///   socket_path: "/tmp/herdr.sock",
+///   started_ms: -576_460_751_285,
+/// )
+/// // -> None
+/// ```
+pub fn config_for(
+  pane_id pane_id: String,
+  socket_path socket_path: String,
+  started_ms started_ms: Int,
+) -> Option(Config) {
+  case pane_id != "" && socket_path != "" && started_ms >= 0 {
+    True -> Some(Config(pane_id:, socket_path:, started_ms:))
+    False -> None
+  }
+}
+
+/// Maps the terminal's own lifecycle signals onto Herdr's pane state.
+///
+/// Both inputs are ones the frame renders from, so the pane cannot
+/// disagree with the operator's own screen: a pending approval is blocked
+/// and a strand with a live phase is working. Approval wins over liveness
+/// because the strand is waiting on the operator, whatever the last phase
+/// said.
+///
+/// A settled operation needs no input of its own. The reducer clears a
+/// strand's `live_phase` when its operation reaches the `done` phase, so
+/// an operation that just finished is exactly "no live strand", which is
+/// the `Idle` this answers with. Herdr turns that idle into its own `done`
+/// when the tab has gone unseen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.state_for(
+///   [protocol.Strand(id: "main", name: None, live_phase: Some("tool"))],
+///   [],
+/// )
+/// // -> Working
+/// ```
+pub fn state_for(
+  strands: List(Strand),
+  approvals: List(approval.Review),
+) -> PaneState {
+  let pending =
+    list.any(approvals, fn(review) { review.status == approval.Pending })
+  let live = list.any(strands, fn(strand) { strand.live_phase != None })
+  case pending, live {
+    True, _ -> Blocked
+    False, True -> Working
+    False, False -> Idle
+  }
+}
+
+/// Whether a derived state differs from the last one published.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.changed(
+///   Some(herdr.Publication(herdr.Idle, "a")),
+///   herdr.Publication(herdr.Idle, "b"),
+/// )
+/// // -> True
+/// ```
+pub fn changed(last: Option(Publication), next: Publication) -> Bool {
+  case last {
+    Some(previous) ->
+      previous.state != next.state || previous.session != next.session
+    None -> True
+  }
+}
+
+/// Whether this publication has to announce the session before its report.
+///
+/// `pane.report_agent_session` is the call `herdr session` resume keys off,
+/// so the announcement follows the session id rather than the first
+/// publish: it is sent when the identity first becomes known and again
+/// whenever it moves. A publication with no session attached announces
+/// nothing, because an empty `agent_session_id` names no session to resume.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.announces(
+///   Some(herdr.Publication(herdr.Idle, "a")),
+///   herdr.Publication(herdr.Idle, "b"),
+/// )
+/// // -> True
+/// ```
+pub fn announces(last: Option(Publication), next: Publication) -> Bool {
+  case next.session, last {
+    "", _ -> False
+    _, None -> True
+    _, Some(previous) -> previous.session != next.session
+  }
+}
+
+/// Starts the reporter for one pane. Unlinked, so a failed socket can
+/// never take the terminal down; it holds nothing between exchanges and
+/// runs until the VM exits, which is also how it stops.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(config) = option.to_result(herdr.configure(now), "no pane")
+/// let assert Ok(reporter) = herdr.start(config)
+/// ```
+pub fn start(config: Config) -> Result(Reporter, actor.StartError) {
+  case
+    actor.new(ReporterState(config:, seq: config.started_ms))
+    |> actor.on_message(handle)
+    |> actor.unlinked
+    |> actor.start
+  {
+    Ok(started) -> Ok(Reporter(config:, inner: started))
+    Error(reason) -> Error(reason)
+  }
+}
+
+/// Queues a state report. Silent when there is no reporter, which is what
+/// the whole codebase outside a Herdr pane gets.
+pub fn report(
+  reporter: Option(Reporter),
+  state: PaneState,
+  session: String,
+  message: String,
+) -> Nil {
+  case reporter {
+    None -> Nil
+    Some(reporter) ->
+      process.send(reporter.inner.data, Report(state:, session:, message:))
+  }
+}
+
+/// Queues a session announcement without a state claim.
+pub fn announce(reporter: Option(Reporter), session: String) -> Nil {
+  case reporter {
+    None -> Nil
+    Some(reporter) -> process.send(reporter.inner.data, Announce(session:))
+  }
+}
+
+fn handle(
+  state: ReporterState,
+  message: Message,
+) -> actor.Next(ReporterState, Message) {
+  case message {
+    // The sequence advances on the attempt, not the delivery: a dropped
+    // report leaves a gap, and Herdr's reordering guard reads the gap as
+    // "something was lost", which is the truth.
+    Report(state: pane_state, session:, message: note) -> {
+      let seq = state.seq + 1
+      deliver(
+        state.config,
+        encode_report(state.config, seq, pane_state, session, note),
+      )
+      actor.continue(ReporterState(..state, seq:))
+    }
+
+    Announce(session:) -> {
+      let seq = state.seq + 1
+      deliver(state.config, encode_announce(state.config, seq, session))
+      actor.continue(ReporterState(..state, seq:))
+    }
+  }
+}
+
+// One exchange, one retry, then the report is gone. The retry exists
+// because a pane report racing its own daemon's startup is common enough
+// to be worth one second and no more; anything beyond that is the
+// terminal's own session, which always wins.
+fn deliver(config: Config, payload: String) -> Nil {
+  case ffi_herdr.exchange(config.socket_path, payload, attempt_timeout_ms) {
+    Ok(_) -> Nil
+    Error(_) -> {
+      let _ = ffi_herdr.exchange(config.socket_path, payload, retry_timeout_ms)
+      Nil
+    }
+  }
+}
+
+/// Encodes one `pane.report_agent` request as one line of JSON.
+///
+/// ## Examples
+///
+/// ```gleam
+/// herdr.encode_report(config, 7, herdr.Working, "sess-1", "")
+/// ```
+pub fn encode_report(
+  config: Config,
+  seq: Int,
+  state: PaneState,
+  session: String,
+  message: String,
+) -> String {
+  encode(config, seq, "pane.report_agent", [
+    #("state", json.String(state_name(state))),
+    #("agent_session_id", json.String(session)),
+    #("message", case message {
+      "" -> json.Null
+      text -> json.String(text)
+    }),
+  ])
+}
+
+/// Encodes one `pane.report_agent_session` request as one line of JSON.
+pub fn encode_announce(config: Config, seq: Int, session: String) -> String {
+  encode(config, seq, "pane.report_agent_session", [
+    #("agent_session_id", json.String(session)),
+  ])
+}
+
+// The envelope both methods share: a monotonically sequenced request with
+// the pane identity and this integration's tags, newline-terminated the
+// way the daemon frames it.
+fn encode(
+  config: Config,
+  seq: Int,
+  method: String,
+  extra: List(#(String, json.JsonValue)),
+) -> String {
+  json.to_string(
+    json.Object([
+      #("id", json.String(source <> ":" <> int.to_string(seq))),
+      #("method", json.String(method)),
+      #(
+        "params",
+        json.Object([
+          #("pane_id", json.String(config.pane_id)),
+          #("source", json.String(source)),
+          #("agent", json.String(agent)),
+          #("seq", json.Int(seq)),
+          ..extra
+        ]),
+      ),
+    ]),
+  )
+  <> "\n"
+}
+
+fn state_name(state: PaneState) -> String {
+  case state {
+    Idle -> "idle"
+    Working -> "working"
+    Blocked -> "blocked"
+  }
+}
