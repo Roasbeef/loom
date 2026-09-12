@@ -1056,6 +1056,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     // Offline, three names: the jail every session had before the
     // `[tools]` table existed.
     tools: catalog.default_tools(),
+    advisor: None,
   )
 }
 

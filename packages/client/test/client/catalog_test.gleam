@@ -805,3 +805,167 @@ pub fn a_scalar_tools_key_is_refused_test() {
   let assert Error("tools must be a [tools] table" <> _rest) =
     catalog.parse_tools("tools = \"full\"" <> minimal)
 }
+
+// --- the advisor role --------------------------------------------------------
+
+pub fn the_advisor_role_parses_to_a_custom_role_test() {
+  let text = minimal <> "advisor = [\"one\"]\n"
+  let assert Ok(parsed) = catalog.parse(text) as "advisor is a routable role"
+  assert list.key_find(parsed.roles, catalog.advisor_role) == Ok(["one"])
+  assert catalog.advisor_role == model.Custom("advisor")
+}
+
+pub fn the_advisor_role_is_last_in_the_canonical_order_test() {
+  // Role order is independent of the order the TOML dict hands its keys
+  // back, so the advisor's place is a property of the catalogue rather
+  // than of this file's layout.
+  let text = minimal <> "advisor = [\"one\"]\nsummarize = [\"one\"]\n"
+  let assert Ok(parsed) = catalog.parse(text)
+  assert list.map(parsed.roles, fn(route) { route.0 })
+    == [model.Main, model.Summarize, catalog.advisor_role]
+}
+
+pub fn an_unknown_role_names_the_advisor_among_the_routable_ones_test() {
+  let assert Error(reason) = catalog.parse(minimal <> "critic = [\"one\"]\n")
+    as "a role nobody routes must be refused by name"
+  assert string.contains(reason, "roles.critic is not a routable role")
+  assert string.contains(reason, "advisor")
+}
+
+pub fn a_routed_advisor_is_listed_by_the_key_it_was_written_under_test() {
+  // Not `custom:advisor`: an operator reading a listing back should meet
+  // the word they typed in `[roles]`.
+  let text = minimal <> "advisor = [\"one\"]\n"
+  let assert Ok(parsed) = catalog.parse(text)
+  assert catalog.routed_roles(parsed, "one") == ["main", "advisor"]
+  assert catalog.active_roles(parsed, "one") == ["main", "advisor"]
+}
+
+pub fn a_catalogue_without_an_advisor_routes_none_test() {
+  let assert Ok(parsed) = catalog.parse(minimal)
+  assert list.key_find(parsed.roles, catalog.advisor_role) == Error(Nil)
+}
+
+// --- the [advisor] table -----------------------------------------------------
+
+// One table body appended after the minimal catalogue, so each test
+// exercises exactly the body it names.
+fn with_advisor(body: String) -> String {
+  minimal <> "\n[advisor]\n" <> body <> "\n"
+}
+
+pub fn an_advisor_table_is_allowed_at_the_top_level_test() {
+  let assert Ok(_parsed) =
+    catalog.parse(with_advisor("block_cooldown_runs = 1"))
+    as "an [advisor] table must not be refused by the top-level key check"
+}
+
+pub fn an_absent_advisor_table_takes_the_read_only_default_test() {
+  assert catalog.parse_advisor(minimal) == Ok(catalog.default_advisor())
+  assert catalog.parse_advisor(minimal)
+    == Ok(catalog.AdvisorConfig(
+      tools: ["fs_read", "grep"],
+      block_cooldown_runs: 2,
+    ))
+}
+
+pub fn a_full_advisor_table_parses_test() {
+  let text =
+    with_advisor(
+      "tools = [\"fs_read\", \"grep\", \"history_search\"]
+block_cooldown_runs = 5",
+    )
+  assert catalog.parse_advisor(text)
+    == Ok(catalog.AdvisorConfig(
+      tools: ["fs_read", "grep", "history_search"],
+      block_cooldown_runs: 5,
+    ))
+}
+
+pub fn each_absent_advisor_key_falls_back_on_its_own_test() {
+  assert catalog.parse_advisor(with_advisor("block_cooldown_runs = 0"))
+    == Ok(catalog.AdvisorConfig(
+      tools: ["fs_read", "grep"],
+      block_cooldown_runs: 0,
+    ))
+  assert catalog.parse_advisor(with_advisor("tools = [\"grep\"]"))
+    == Ok(catalog.AdvisorConfig(tools: ["grep"], block_cooldown_runs: 2))
+}
+
+pub fn an_empty_advisor_tool_list_is_honoured_test() {
+  // An advisor that only reasons over the feed it was handed is a
+  // posture, not a mistake, so the empty list is not read as absence.
+  assert catalog.parse_advisor(with_advisor("tools = []"))
+    == Ok(catalog.AdvisorConfig(tools: [], block_cooldown_runs: 2))
+}
+
+pub fn an_unknown_advisor_key_is_refused_test() {
+  let assert Error("unknown key `cooldown` in [advisor]" <> _rest) =
+    catalog.parse_advisor(with_advisor("cooldown = 2"))
+}
+
+pub fn a_negative_cooldown_is_refused_rather_than_clamped_test() {
+  let assert Error(reason) =
+    catalog.parse_advisor(with_advisor("block_cooldown_runs = -1"))
+    as "a negative window has no reading, so it must not be clamped"
+  assert string.contains(reason, "must not be negative")
+  assert string.contains(reason, "-1")
+}
+
+pub fn a_mistyped_cooldown_is_refused_test() {
+  let assert Error("advisor.block_cooldown_runs must be an integer") =
+    catalog.parse_advisor(with_advisor("block_cooldown_runs = \"two\""))
+}
+
+pub fn a_mistyped_advisor_tool_list_is_refused_test() {
+  let assert Error("advisor.tools must be an array of tool names") =
+    catalog.parse_advisor(with_advisor("tools = \"grep\""))
+  let assert Error("advisor.tools must be an array of tool names") =
+    catalog.parse_advisor(with_advisor("tools = [1]"))
+  let assert Error("advisor.tools names must be non-empty") =
+    catalog.parse_advisor(with_advisor("tools = [\"\"]"))
+}
+
+pub fn a_scalar_advisor_key_is_refused_test() {
+  // Prefixed rather than appended, for the reason the tools twin is:
+  // `minimal` ends inside its [roles] table.
+  let assert Error("advisor must be an [advisor] table") =
+    catalog.parse_advisor("advisor = 2\n" <> minimal)
+}
+
+// --- the committed advisor examples ------------------------------------------
+
+// Both shipped catalogues that route an advisor are fixtures as well as
+// documentation: an `[advisor]` table that did not parse would be a
+// worked example of a boot that refuses.
+const advisor_example_path = "../../docs/examples/loom-advisor.toml"
+
+const baseten_example_path = "../../docs/examples/loom-baseten.toml"
+
+fn committed(path: String) -> String {
+  let assert Ok(text) = simplifile.read(path)
+    as "a committed example catalogue must be readable"
+  text
+}
+
+pub fn the_advisor_example_pairs_a_fast_main_with_a_slower_advisor_test() {
+  let text = committed(advisor_example_path)
+  let assert Ok(parsed) = catalog.parse(text)
+    as "the committed advisor example must parse"
+  assert parsed.roles
+    == [
+      #(model.Main, ["baseten-glm-5-3-flash"]),
+      #(model.Summarize, ["baseten-glm-5-3-flash"]),
+      #(catalog.advisor_role, ["baseten-glm-5-3"]),
+    ]
+  assert catalog.parse_advisor(text) == Ok(catalog.default_advisor())
+}
+
+pub fn the_baseten_example_routes_an_advisor_test() {
+  let text = committed(baseten_example_path)
+  let assert Ok(parsed) = catalog.parse(text)
+    as "the committed baseten example must parse"
+  assert list.key_find(parsed.roles, catalog.advisor_role)
+    == Ok(["baseten-glm-5-3"])
+  assert catalog.parse_advisor(text) == Ok(catalog.default_advisor())
+}

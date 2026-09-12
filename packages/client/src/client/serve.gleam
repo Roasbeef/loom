@@ -261,6 +261,33 @@ pub type DomainPaths {
   )
 }
 
+/// The advisor strand's resolved identity and policy.
+///
+/// It is a record beside `Settings` rather than four fields inside it
+/// because the four are all-or-nothing: a host either routes an
+/// `advisor` role and gets an identity, a thinking level, a tool set and
+/// a cooldown, or it routes none and gets no advisor at all. Four
+/// optional fields would let three of them be set and make the fourth's
+/// absence a state every reader has to rule out.
+pub type AdvisorSettings {
+  AdvisorSettings(
+    /// The identity the advisor strand is configured with, resolved from
+    /// the `advisor` route the same way `Settings.model` is resolved
+    /// from `main`.
+    model: machine_strand.ModelIdentity,
+    /// How much extended reasoning the advisor's runs ask for, from the
+    /// resolved entry's own `thinking` fact.
+    thinking: machine_strand.ThinkingLevel,
+    /// The built-in tools the advisor strand is registered with, from
+    /// the `[advisor]` table. `advise` is not among them: the harness
+    /// registers it whatever this list says.
+    tools: List(String),
+    /// How many of the primary's runs a delivered block silences the
+    /// next one for, from the `[advisor]` table.
+    block_cooldown_runs: Int,
+  )
+}
+
 /// Everything a boot needs, resolved: flags parsed, defaults filled,
 /// the provider gateway built. `main` assembles this from the command
 /// line and the environment; the smoke test assembles it directly with
@@ -411,6 +438,12 @@ pub type Settings {
     /// jail every session has had until an operator writes otherwise, and
     /// is what the environment-shaped configuration path takes.
     tools: catalog.ToolsConfig,
+    /// The advisor strand's resolved identity and policy, or `None` when
+    /// the catalogue routes no `advisor` role. `None` is the ordinary
+    /// case and starts no advisor at all, the posture `rules` and
+    /// `schedules` take: a server nobody configured an advisor for runs
+    /// exactly the strands it ran before advisors existed.
+    advisor: Option(AdvisorSettings),
   )
 }
 
@@ -830,6 +863,7 @@ pub fn build_domain(
       _tools,
       entries,
       _workspace,
+      _advisor,
     )
   <- result.try(load_config(configuration))
 
@@ -1039,6 +1073,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       tools,
       secret_entries,
       workspace_config,
+      advisor_config,
     )
   <- result.try(load_config(flags.config))
 
@@ -1071,6 +1106,20 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     )
   let secret_store = secrets.store(resolved, beneath: secret.env())
   let clock = clock.from_function(ffi_os.system_time_ms)
+
+  // The gateway is named rather than built inside the literal below,
+  // because the advisor route is resolved through it: the advisor takes
+  // the same fallback walk every other role does, so a chain whose head
+  // names an unregistered provider falls through to the next usable
+  // entry exactly as `main` would.
+  let gateway =
+    catalog.gateway(
+      catalogue,
+      transport: http.httpc_transport(),
+      secrets: secret_store,
+      clock:,
+    )
+
   Ok(Settings(
     session_path:,
     bind_host:,
@@ -1089,12 +1138,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     helper_pool_size:,
     session_id: session_id_of(session_path),
     demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
-    gateway: catalog.gateway(
-      catalogue,
-      transport: http.httpc_transport(),
-      secrets: secret_store,
-      clock:,
-    ),
+    gateway:,
     catalog: catalogue,
     secrets: secret_store,
     secret_failures:,
@@ -1120,7 +1164,31 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       ..tools,
       network: option.unwrap(flags.network, tools.network),
     ),
+    advisor: advisor_settings(gateway, advisor_config),
   ))
+}
+
+// The advisor strand's identity and policy, or `None` when the catalogue
+// routes no `advisor` role. An unrouted role is the ordinary case rather
+// than a failure, so `MissingIdentity` becomes absence here instead of
+// halting a boot over a strand the operator never asked for.
+fn advisor_settings(
+  gateway: provider_gateway.Gateway,
+  config: catalog.AdvisorConfig,
+) -> Option(AdvisorSettings) {
+  provider_gateway.resolve(gateway, catalog.advisor_role)
+  |> result.map(fn(resolved) {
+    AdvisorSettings(
+      model: machine_strand.ModelIdentity(
+        provider: resolved.provider,
+        model_id: resolved.model_id,
+      ),
+      thinking: wiring.strand_thinking_level(resolved.thinking),
+      tools: config.tools,
+      block_cooldown_runs: config.block_cooldown_runs,
+    )
+  })
+  |> option.from_result
 }
 
 // A comma-separated tool list from the environment. Blank entries are
@@ -1261,6 +1329,7 @@ fn load_config(
     catalog.ToolsConfig,
     List(secrets.Entry),
     catalog.WorkspaceConfig,
+    catalog.AdvisorConfig,
   ),
   String,
 ) {
@@ -1276,6 +1345,7 @@ fn load_config(
         catalog.default_tools(),
         [],
         catalog.default_workspace(),
+        catalog.default_advisor(),
       ))
     Some(path) -> {
       use text <- result.try(
@@ -1313,6 +1383,9 @@ fn load_config(
       use workspace_config <- result.try(
         catalog.parse_workspace(text) |> result.map_error(named),
       )
+      use advisor_config <- result.try(
+        catalog.parse_advisor(text) |> result.map_error(named),
+      )
       Ok(#(
         catalogue,
         rule_list,
@@ -1323,6 +1396,7 @@ fn load_config(
         tools,
         secret_entries,
         workspace_config,
+        advisor_config,
       ))
     }
   }
