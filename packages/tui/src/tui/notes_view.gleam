@@ -28,6 +28,35 @@ pub fn readable(text: String) -> String {
   |> text_hygiene.multiline
 }
 
+/// Renders complete cells from a historical run-start digest.
+///
+/// A truncated final cell stays literal and labelled; complete earlier cells
+/// can still be decoded without claiming the digest is a current board.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notes_view.historical("plan = {\"done\": [\"built\"]}")
+/// ```
+@internal
+pub fn historical(payload: String) -> String {
+  payload
+  |> string.split("\n")
+  |> list.map(fn(line) {
+    case string.split_once(line, " = ") {
+      Ok(#(key, value)) -> {
+        let heading = "### " <> field_label(key) <> "\n\n"
+        case json.parse(value) {
+          Ok(_) -> heading <> readable(value)
+          Error(_) -> heading <> "Incomplete historical excerpt:\n\n" <> line
+        }
+      }
+      Error(_) -> line
+    }
+  })
+  |> string.join("\n\n")
+}
+
 // Some note tools accept a JSON document as a string value. Unwrap that
 // document once at the note boundary, rather than exposing escaped JSON.
 fn note_value(value: json.JsonValue) -> json.JsonValue {

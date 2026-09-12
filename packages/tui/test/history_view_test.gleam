@@ -390,3 +390,102 @@ pub fn retained_page_suffix_does_not_skip_evicted_ancestors_test() {
     )
   assert history_view.branch(completed, current).unloaded == None
 }
+
+fn captured_window(items, leaf, next) {
+  snapshot.Captured(
+    snapshot.Attachment(
+      snapshot.Expected("session", "epoch", "incarnation"),
+      "connection",
+      message.Origin("owner", "Owner"),
+      snapshot.Owner,
+    ),
+    next,
+    json.Object([]),
+    window(items),
+    Some(leaf),
+  )
+}
+
+pub fn short_frozen_history_keeps_return_to_live_available_at_zero_offset_test() {
+  let first = captured_window(list.take(entries(10), 5), 6, 11)
+  let initial =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+    |> tui.apply_channel_update(session_channel.Captured(
+      first,
+      view(10),
+      session_channel.Requested,
+    ))
+    |> tui.update(backend.Resize(170, 104), _)
+  let reading = tui.update(backend.MouseScroll(5, 5, True), initial)
+  assert reading.scroll_offset == 0
+    as "the loaded compact history is shorter than the video viewport"
+  assert reading.scrollback.mode == history_view.Reading
+  assert reading.reading_lines != None
+    as "zero offset cannot silently unfreeze the live preview"
+  let later = captured_window(list.take(entries(11), 5), 7, 12)
+  let waiting =
+    tui.apply_channel_update(
+      reading,
+      session_channel.Captured(later, view(11), session_channel.Refreshed),
+    )
+    |> tui.update(backend.Tick, _)
+  assert list.map(waiting.records, fn(record) { record.entry.seq })
+    == [10, 9, 8, 7, 6]
+  let resumed = tui.update(backend.KeyPress("end"), waiting)
+  assert resumed.scrollback.mode == history_view.Live
+  assert resumed.reading_lines == None
+  assert list.any(resumed.records, fn(record) { record.entry.seq == 11 })
+}
+
+pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
+  let all = entries(1200)
+  let assert [snapshot.Loaded(entry.MessageEntry(..) as leaf, size), ..rest] =
+    all
+    as "the fixture has a newest message"
+  let all = [
+    snapshot.Loaded(entry.MessageEntry(..leaf, parent: Some(id(1))), size),
+    ..rest
+  ]
+  let cut = captured_window(list.take(all, 100), 1101, 1201)
+  let initial =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+    |> tui.apply_channel_update(session_channel.Captured(
+      cut,
+      view(1200),
+      session_channel.Requested,
+    ))
+    |> tui.update(backend.Resize(170, 104), _)
+    |> tui.update(backend.MouseScroll(5, 5, True), _)
+  let finished =
+    list.fold(list.repeat(Nil, 11), initial, fn(model, _) {
+      let assert Some(#(after, before)) = history_view.range(model.scrollback)
+        as "one wheel gesture keeps demand alive across unrelated sequence pages"
+      let pending =
+        tui.Model(
+          ..model,
+          scrollback: history_view.sent(model.scrollback, before),
+        )
+      let page =
+        window(
+          list.filter(all, fn(item) {
+            snapshot.sequence(item) > after && snapshot.sequence(item) < before
+          }),
+        )
+      tui.apply_channel_update(
+        pending,
+        session_channel.HistoryPage(page, before, after),
+      )
+      |> tui.update(backend.Tick, _)
+    })
+  assert list.map(finished.records, fn(record) { record.entry.seq })
+    == [1200, 1]
+  assert finished.scrollback.request == history_view.Quiet
+}

@@ -571,3 +571,158 @@ pub fn pasted_user_code_preserves_tabs_and_blank_lines_test() {
     as "the next stanza is visible"
   assert continuation == closing + 2
 }
+
+pub fn messages_show_readable_recipient_and_complete_expanded_body_test() {
+  let body =
+    "## Review request\n\nPlease check the ownership boundary.\n\n"
+    <> string.repeat("- A detailed requirement\n", 14)
+    <> "FINAL REQUIREMENT"
+  let arguments =
+    json.Object([
+      #("to", json.String("sub:main/reviewer-0123456789abcdef")),
+      #("message", json.String(body)),
+    ])
+  let pending = model() |> received(call(1, "send", "agent_send", arguments))
+  let #(compact, shown) = painted(pending)
+  assert string.contains(shown, "Message to sub:main/reviewer-0123456789abcdef")
+  assert string.contains(shown, "Review request")
+  assert string.contains(shown, "Please check the ownership boundary.")
+  assert !string.contains(shown, "{\"to\"")
+  assert !string.contains(shown, "FINAL REQUIREMENT")
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "FINAL REQUIREMENT")
+}
+
+pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test() {
+  let populated =
+    list.fold(
+      list.index_map(list.repeat(Nil, 100), fn(_, index) { index + 1 }),
+      model(),
+      fn(state, index) {
+        let key = "call-" <> int.to_string(index)
+        let result = outcome(index * 2, key, False, None)
+        let assert entry.MessageEntry(
+          message: message.ToolResultMessage(..) as body,
+          ..,
+        ) = result
+          as "the fixture owns a tool result"
+        let result = case index {
+          50 ->
+            entry.MessageEntry(
+              ..result,
+              message: message.ToolResultMessage(..body, content: [
+                message.ToolResultText(
+                  string.repeat("long output line\n", 160),
+                  None,
+                ),
+              ]),
+            )
+          _ -> result
+        }
+        state
+        |> received(call(index * 2 - 1, key, "fs_edit", args()))
+        |> received(result)
+      },
+    )
+  let expanded =
+    populated
+    |> tui.update(backend.Resize(170, 104), _)
+    |> tui.update(backend.KeyPress("ctrl+g"), _)
+    |> tui.update(backend.MouseScroll(5, 5, True), _)
+  let height = tui.hit_area(expanded, geometry.Position(5, 5)).size.height
+  let prefix =
+    expanded.rendered_row_count - list.length(expanded.rendered_anchors)
+  let assert Ok(#(_, index)) =
+    expanded.rendered_anchors
+    |> list.index_map(fn(row, index) { #(row, index) })
+    |> list.find(fn(pair) {
+      case pair.0 {
+        Some(row) ->
+          string.ends_with(row.entry, "/call/call-50") && row.wrapped == 80
+        None -> False
+      }
+    })
+    as "expanded output shares the compact invocation's durable identity"
+  let reading =
+    tui.Model(..expanded, scroll_offset: prefix + index - height + 1)
+  let compact = tui.update(backend.KeyPress("ctrl+g"), reading)
+  let offset =
+    compact.rendered_row_count - list.length(compact.rendered_anchors)
+  let visible =
+    compact.rendered_anchors
+    |> list.index_map(fn(row, index) { #(row, offset + index) })
+    |> list.filter(fn(pair) {
+      pair.1 >= compact.scroll_offset && pair.1 < compact.scroll_offset + height
+    })
+  assert list.any(visible, fn(pair) {
+    case pair.0 {
+      Some(row) -> string.ends_with(row.entry, "/call/call-50")
+      None -> False
+    }
+  })
+    as "Ctrl+g retains the call whose long output the reader was inspecting"
+}
+
+// Rewrites the fixture entry as a settled assistant turn with a chosen stop
+// reason and diagnostic. A clean abort commits no diagnostic, so every `Some`
+// passed here stands for a stop the harness could not establish.
+fn settled(placed, body, reason, diagnostic) {
+  let assert entry.MessageEntry(..) = placed as "the fixture is a message"
+  let assert message.AssistantMessage(..) = body
+    as "the fixture is an assistant"
+  entry.MessageEntry(
+    ..placed,
+    message: message.AssistantMessage(
+      ..body,
+      content: [],
+      stop_reason: reason,
+      error_message: diagnostic,
+    ),
+  )
+}
+
+pub fn aborted_turns_show_stopped_above_an_unconfirmed_diagnostic_test() {
+  let #(placed, body) = original(1)
+  let diagnostic =
+    "provider cancellation could not be confirmed (runtime: explicit stop)"
+  let stopped = settled(placed, body, message.Aborted, Some(diagnostic))
+  let #(compact, shown) = model() |> received(stopped) |> painted
+  assert string.contains(shown, "Stopped")
+  assert string.contains(shown, diagnostic)
+    as "an unconfirmed stop is not hidden behind ctrl+g"
+  let #(_, expanded) =
+    compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(expanded, "Stopped")
+  assert string.contains(expanded, diagnostic)
+
+  // Orphan recovery settles a restarted turn as Aborted with the planner's
+  // warning. The provider may still be generating, so the collapsed frame
+  // must name that as plainly as the expanded one does.
+  let interrupted =
+    "interrupted: the preceding content is the latest committed partial; "
+    <> "newer live output may be missing and the external outcome is unknown"
+  let orphaned = settled(placed, body, message.Aborted, Some(interrupted))
+  let #(recovered, recovery) = model() |> received(orphaned) |> painted
+
+  // The warning is wider than the transcript pane, so the assertion names the
+  // longest run of it that a single painted row can hold.
+  let opening = "interrupted: the preceding content is the latest committed"
+  assert string.contains(recovery, "Stopped")
+  assert string.contains(recovery, opening)
+    as "orphan recovery's warning survives the collapsed projection"
+  let #(_, recovery_expanded) =
+    recovered |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
+  assert string.contains(recovery_expanded, opening)
+
+  // A user abort the harness did confirm carries no diagnostic at all.
+  let clean = settled(placed, body, message.Aborted, None)
+  let #(_, quiet) = model() |> received(clean) |> painted
+  assert string.contains(quiet, "Stopped")
+  assert !string.contains(quiet, "could not be confirmed")
+
+  let failed = settled(placed, body, message.Errored, Some(diagnostic))
+  let #(_, failure) = model() |> received(failed) |> painted
+  assert string.contains(failure, diagnostic)
+  assert !string.contains(failure, "Stopped")
+}

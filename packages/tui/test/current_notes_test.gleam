@@ -20,6 +20,7 @@ import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
 import tui/workspace
+import tui_test/gateway
 
 fn board(revision, text, extent) {
   json.Object([
@@ -198,4 +199,35 @@ pub fn wrapped_note_objects_render_compact_hierarchy_test() {
     == "- **Test result**: Passed\n- **Evidence**\n  - **Parent run**: Expected failure\n  - **Fixed run**: Passed"
   assert notes_view.readable("\"ordinary prose\"") == "ordinary prose"
   assert notes_view.readable("{incomplete") == "{incomplete"
+}
+
+pub fn historical_digest_decodes_complete_cells_before_a_truncated_cell_test() {
+  let payload =
+    "progress = \"{\\\"done\\\":[\\\"Built modules\\\"]}\"\nenv = {\"status\":\"still working\"}\nbig = \"truncated\n[digest truncated at 4096 bytes]"
+  let rendered = notes_view.historical(payload)
+  assert string.contains(rendered, "### Progress")
+  assert string.contains(rendered, "Built modules")
+  assert !string.contains(rendered, "\\\"done")
+  assert string.contains(rendered, "still working")
+  assert string.contains(rendered, "Incomplete historical excerpt")
+  assert string.contains(rendered, "[digest truncated at 4096 bytes]")
+}
+
+pub fn historical_notes_are_readable_compact_and_raw_after_detail_expansion_test() {
+  let payload = "plan = {\"done\":[\"Built modules\"]}"
+  let notes =
+    "Your own notes for strand `main`\n\n```agent-notes\n" <> payload <> "\n```"
+  let assert Ok(protocol.EntryAdded(record)) =
+    protocol.decode_event(gateway.user_entry("main", notes, 1))
+    as "the historical digest travels through the normal entry decoder"
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
+  let compact = tui.Model(..base, notes_open: True, records: [record])
+  assert string.contains(text(compact), "Built modules")
+  assert !string.contains(text(compact), "{\"done\"")
+  let expanded = tui.update(backend.KeyPress("ctrl+g"), compact)
+  assert string.contains(
+    text(expanded),
+    "plan = {\"done\":[\"Built modules\"]}",
+  )
 }

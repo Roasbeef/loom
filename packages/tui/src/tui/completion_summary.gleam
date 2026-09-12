@@ -313,7 +313,8 @@ fn collect(
       let pending = dict.delete(pending, tool_call_id)
       case paired {
         Ok(#(source, call)) if call.name == tool_name -> {
-          let paired = tool_activity.Call(source, call, Some(outcome))
+          let paired =
+            tool_activity.Call(source, call, Some(outcome), Some(value.id))
           let #(path, tool) = extract(paired)
           #(
             pending,

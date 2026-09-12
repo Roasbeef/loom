@@ -2533,7 +2533,7 @@ fn refresh_notes(model: Model) -> Model {
 
 fn notes_content(model: Model) -> span.Text {
   case model.note_board {
-    None -> historical_notes_content(model.records, model.active_strand)
+    None -> historical_notes_content(model)
     Some(board) -> current_notes_content(board, model)
   }
 }
@@ -2630,15 +2630,12 @@ fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
   }
 }
 
-fn historical_notes_content(
-  records: List(protocol.EntryRecord),
-  active_strand: String,
-) -> span.Text {
+fn historical_notes_content(model: Model) -> span.Text {
   let latest =
-    records
+    model.records
     |> list.find_map(fn(record) {
       let protocol.EntryRecord(strand:, entry:) = record
-      case strand == active_strand, entry {
+      case strand == model.active_strand, entry {
         True, entry.MessageEntry(message: value, ..) ->
           agent_notes_payload(value) |> option.to_result(Nil)
         _, _ -> Error(Nil)
@@ -2650,11 +2647,14 @@ fn historical_notes_content(
     Some(payload) ->
       transcript_content([
         Line(System, "historical run-start digest · r to fetch current notes"),
-        Line(Assistant, "```agent-notes\n" <> payload <> "\n```"),
+        case model.details_expanded {
+          True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
+          False -> Line(ToolDetail, notes_view.historical(payload))
+        },
       ])
     None ->
       transcript_content([
-        Line(System, "no agent notes are available for " <> active_strand),
+        Line(System, "no agent notes are available for " <> model.active_strand),
       ])
   }
 }
@@ -3149,8 +3149,12 @@ fn editor_content_width(model: Model) -> Int {
 
 fn input_title(model: Model) -> String {
   use <- bool.guard(
-    model.scroll_offset > 0,
-    " ↓ Output below · click to jump · End with empty prompt ",
+    model.peer == Disconnected,
+    " Disconnected · /sessions to reconnect · draft retained ",
+  )
+  use <- bool.guard(
+    reading_history(model),
+    " ↓ Scrollback · click for latest · End with empty prompt ",
   )
   case
     active_interrupt(model),
@@ -3444,6 +3448,7 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     False -> updated
   }
   refresh_render_cache(model, updated)
+  |> request_history_for_view
   |> refresh_frame_cache(frame_boundary(event))
 }
 
@@ -3739,6 +3744,15 @@ fn invalidate_frame(model: Model) -> Model {
   Model(..model, frame_revision: model.frame_revision + 1)
 }
 
+// Reading mode owns the endpoint even at offset zero, so a frozen viewport at
+// the tail is not the live tail: returning to live output is an explicit
+// gesture rather than a consequence of scrolling back down to the newest row.
+// The offset covers the converse, a viewport lifted off the tail before any
+// endpoint was frozen.
+fn reading_history(model: Model) -> Bool {
+  model.scrollback.mode == history_view.Reading || model.scroll_offset > 0
+}
+
 // Terminal polling still produces idle ticks so the websocket inbox can be
 // drained, but those ticks must not compare or wrap the durable transcript.
 // Event handlers increment a scalar revision at the mutation boundary, which
@@ -3746,8 +3760,7 @@ fn invalidate_frame(model: Model) -> Model {
 fn refresh_render_cache(before: Model, after: Model) -> Model {
   let changed =
     after.render_revision != after.rendered_revision
-    || { before.scroll_offset == 0 && after.scroll_offset > 0 }
-    || { before.scroll_offset > 0 && after.scroll_offset == 0 }
+    || reading_history(before) != reading_history(after)
     || before.width != after.width
     || before.agent_rail_visible != after.agent_rail_visible
     || before.details_expanded != after.details_expanded
@@ -3762,9 +3775,9 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
   case changed {
     True -> {
       let width = transcript_width(after)
-      let reading_lines = case after.scroll_offset == 0 {
-        True -> None
-        False ->
+      let reading_lines = case reading_history(after) {
+        False -> None
+        True ->
           case before.reading_lines {
             Some(lines)
               if before.active_strand == after.active_strand
@@ -3783,14 +3796,14 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
       // them for every live fragment repeats the whole durable projection.
       // The first scroll into history captures them before later updates.
       let rendered_anchors = case
-        after.help_open || after.notes_open || after.scroll_offset == 0
+        after.help_open || after.notes_open || !reading_history(after)
       {
         True -> []
         False -> record_anchors_for(cached, width)
       }
-      let anchored = case after.scroll_offset == 0 {
-        True -> 0
-        False ->
+      let anchored = case reading_history(after) {
+        False -> 0
+        True ->
           transcript_anchor.relocate(
             before.rendered_anchors,
             rendered_anchors,
@@ -3997,7 +4010,42 @@ fn record_anchors_for(
     |> list.filter(fn(record) { record.strand == model.active_strand })
     |> list.map(fn(record) { record.entry })
   let blocks = case model.details_expanded {
-    True -> list.flat_map(entries, anchored_entry_blocks(_, model))
+    True -> {
+      // The compact projection owns call/result association, including reused
+      // provider IDs. Borrow that association rather than guessing it again.
+      // The rewritten result block deliberately carries the call block's own
+      // anchor id, which is what lets a compact row relocate into expanded
+      // output; `transcript_anchor.relocate` resolves the resulting tie to the
+      // result block, so the worst drift is one call block's height.
+      let results =
+        entries
+        |> tool_activity.project
+        |> list.flat_map(fn(item) {
+          case item {
+            tool_activity.Narrative(_) -> []
+            tool_activity.Tools(calls) ->
+              list.filter_map(calls, fn(call) {
+                use source <- result.try(option.to_result(
+                  call.result_source,
+                  Nil,
+                ))
+                Ok(#(
+                  ids.entry_id_to_string(source),
+                  ids.entry_id_to_string(call.source)
+                    <> "/call/"
+                    <> call.invocation.id,
+                ))
+              })
+          }
+        })
+        |> dict.from_list
+      list.flat_map(entries, fn(value) {
+        anchored_entry_blocks(value, model)
+        |> list.map(fn(block) {
+          #(dict.get(results, block.0) |> result.unwrap(block.0), block.1)
+        })
+      })
+    }
     False ->
       entries
       |> tool_activity.project
@@ -4052,7 +4100,12 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   let id = ids.entry_id_to_string(value.id)
   case value {
     entry.MessageEntry(
-      message: message.AssistantMessage(content:, error_message:, ..),
+      message: message.AssistantMessage(
+        content:,
+        error_message:,
+        stop_reason:,
+        ..,
+      ),
       ..,
     ) -> {
       let blocks =
@@ -4064,10 +4117,10 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
           }
           #(key, assistant_block_lines(block, details))
         })
-      case error_message {
-        Some(reason) ->
-          list.append(blocks, [#(id <> "/error", [Line(Failure, reason)])])
-        None -> blocks
+      let terminal = assistant_terminal_lines(stop_reason, error_message)
+      case terminal {
+        [] -> blocks
+        _ -> list.append(blocks, [#(id <> "/terminal", terminal)])
       }
     }
     _ -> [#(id, entry_lines(value, details, owner))]
@@ -4131,13 +4184,24 @@ fn paste_unlocked(model: Model, text: String) -> Model {
     Ok(Some(image)) -> add_attachment(model, composer.ImageAttachment(image))
     Ok(None) ->
       case composer.classify(text) {
-        composer.Inline(text) ->
+        composer.Inline(text) -> {
+          // Paste follows the editor's insertion path so an existing draft
+          // and the cursor's suffix remain part of the next prompt.
+          let editor = text_area.textarea_new() |> text_area.with_max_lines(0)
+          let input =
+            list.fold(string.to_graphemes(text), model.input, fn(state, char) {
+              case char {
+                "\n" -> text_area.newline(editor, state)
+                _ -> text_area.insert_char(editor, state, char)
+              }
+            })
           Model(
             ..model,
-            input: text_area.state_from_string(text),
+            input:,
             history_index: 0,
-            history_draft: text,
+            history_draft: text_area.value(input),
           )
+        }
         composer.Compact(attachment) -> add_attachment(model, attachment)
       }
   }
@@ -5950,6 +6014,23 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
     ))
       if call.invocation.name == "fs_edit"
     -> [Line(ToolCall, "✓ " <> summary), ..edit_patch_lines(fields, False)]
+    Some(message.ToolResultMessage(
+      is_error: False,
+      content: content,
+      details: details,
+      ..,
+    ))
+      if call.invocation.name == "context_remaining"
+    -> [
+      Line(ToolCall, "✓ " <> summary),
+      ..tool_result_lines(
+        "context_remaining",
+        content,
+        details,
+        is_error: False,
+        details_expanded: False,
+      )
+    ]
     Some(message.ToolResultMessage(is_error: False, ..)) -> [
       Line(ToolCall, "✓ " <> summary),
     ]
@@ -5959,21 +6040,49 @@ fn activity_call_lines(call: tool_activity.Call) -> List(Line) {
   }
   list.append(
     rows,
-    note_call_lines(call.invocation.name, call.invocation.arguments),
+    note_call_lines(
+      call.invocation.name,
+      call.invocation.arguments,
+      notes_view.Excerpt,
+    ),
   )
 }
 
 // Notes are useful output, even when ordinary tool details are collapsed.
 // Known note tools expose their value; arbitrary tool JSON keeps its own schema.
-fn note_call_lines(name: String, arguments: json.JsonValue) -> List(Line) {
+fn note_call_lines(
+  name: String,
+  arguments: json.JsonValue,
+  extent: notes_view.Extent,
+) -> List(Line) {
   let value = case name, arguments {
     "agent_note", json.Object(fields) -> list.key_find(fields, "value")
     "remember", json.Object(fields) -> list.key_find(fields, "note")
+    "agent_send", json.Object(fields) -> list.key_find(fields, "message")
     _, _ -> Error(Nil)
   }
   case value {
-    Ok(value) -> [Line(ToolDetail, notes_view.readable(json.to_string(value)))]
+    Ok(value) -> {
+      let body = notes_view.readable(json.to_string(value))
+      let body = case name, extent {
+        "agent_send", notes_view.Excerpt -> message_excerpt(body)
+        _, _ -> body
+      }
+      [Line(ToolDetail, body)]
+    }
     Error(Nil) -> []
+  }
+}
+
+// A message preview preserves Markdown paragraphs; expansion exposes the
+// complete body from the same immutable call arguments.
+fn message_excerpt(body: String) -> String {
+  let lines = string.split(body, "\n")
+  case list.drop(lines, 12) {
+    [] -> body
+    _ ->
+      string.join(list.take(lines, 12), "\n")
+      <> "\n\n… Ctrl+g shows the complete message"
   }
 }
 
@@ -6110,19 +6219,38 @@ fn message_lines(
         },
       ),
     ]
-    message.AssistantMessage(content:, error_message:, ..) -> {
+    message.AssistantMessage(content:, error_message:, stop_reason:, ..) -> {
       let lines =
         list.flat_map(content, assistant_block_lines(_, details_expanded))
-      case error_message {
-        Some(reason) -> list.append(lines, [Line(Failure, reason)])
-        None -> lines
-      }
+      list.append(lines, assistant_terminal_lines(stop_reason, error_message))
     }
     message.ToolResultMessage(tool_name:, content:, details:, is_error:, ..) ->
       tool_result_lines(tool_name, content, details, is_error, details_expanded)
     message.CustomMessage(schema:, payload:) -> [
       Line(System, schema <> " · " <> json.to_string(payload)),
     ]
+  }
+}
+
+// The durable stop reason distinguishes a user abort from a failed turn. A
+// clean abort commits no diagnostic at all, so an `Aborted` message that
+// carries one names a stop the harness could not establish: an unconfirmed
+// provider cancellation, a lost drain proof, or an orphaned response settled
+// across a restart. The provider may still be generating in all three, so the
+// text stays visible at both extents. It is dim detail rather than the failure
+// style because it describes the provider, not a failed turn.
+fn assistant_terminal_lines(
+  reason: message.StopReason,
+  diagnostic: Option(String),
+) -> List(Line) {
+  case reason, diagnostic {
+    message.Aborted, Some(text) -> [
+      Line(System, "Stopped"),
+      Line(ToolDetail, text),
+    ]
+    message.Aborted, None -> [Line(System, "Stopped")]
+    _, Some(text) -> [Line(Failure, text)]
+    _, None -> []
   }
 }
 
@@ -6160,6 +6288,17 @@ fn user_block_text(block: message.UserBlock) -> String {
   }
 }
 
+// Both questions have the same two answers: whether a row carries a whole
+// value or a cut of it. The daemon's truncation flag already names them and
+// the row builders below take that type, so the Ctrl+g state is converted to
+// it here rather than at each call site.
+fn details_extent(details_expanded: Bool) -> notes_view.Extent {
+  case details_expanded {
+    True -> notes_view.Complete
+    False -> notes_view.Excerpt
+  }
+}
+
 fn assistant_block_lines(
   block: message.AssistantBlock,
   details_expanded: Bool,
@@ -6187,7 +6326,7 @@ fn assistant_block_lines(
         ]
         None, None -> [
           Line(ToolCall, tool_call_summary(name, arguments, details_expanded)),
-          ..note_call_lines(name, arguments)
+          ..note_call_lines(name, arguments, details_extent(details_expanded))
         ]
       }
     }
@@ -6311,6 +6450,12 @@ pub fn tool_call_summary(
         None ->
           generic_tool_call(name, json.to_string(arguments), details_expanded)
       }
+    "agent_send", json.Object(fields) ->
+      case string_field(fields, "to") {
+        Some(recipient) -> "Message to " <> recipient
+        None ->
+          generic_tool_call(name, json.to_string(arguments), details_expanded)
+      }
     "agent_wait", json.Object(fields) ->
       case list.key_find(fields, "handles") {
         Ok(json.Array(handles)) ->
@@ -6341,6 +6486,7 @@ pub fn tool_call_summary(
       }
     "agent_notes", json.Object(fields) ->
       "agent_notes" <> option_text(string_field(fields, "prefix"), " · ")
+    "context_remaining", json.Object(_) -> "context remaining"
     _, _ -> generic_tool_call(name, json.to_string(arguments), details_expanded)
   }
 }
@@ -6377,8 +6523,8 @@ fn tool_result_lines(
   tool_name: String,
   content: List(message.ToolResultBlock),
   details: Option(json.JsonValue),
-  is_error: Bool,
-  details_expanded: Bool,
+  is_error is_error: Bool,
+  details_expanded details_expanded: Bool,
 ) -> List(Line) {
   let result = content |> list.map(tool_result_text) |> string.join("\n")
   let result = case tool_name, is_error {
@@ -6392,6 +6538,12 @@ fn tool_result_lines(
       Line(ToolResult, "fs_edit · " <> compact(result, 120)),
       ..edit_patch_lines(fields, details_expanded)
     ]
+    "context_remaining", False, Some(json.Object(fields)) ->
+      context_remaining_result_lines(
+        fields,
+        result,
+        details_extent(details_expanded),
+      )
     _, True, _ -> [
       Line(ToolFailure, case details_expanded {
         True -> tool_name <> "\n" <> result
@@ -6404,6 +6556,77 @@ fn tool_result_lines(
         False -> tool_name <> " · " <> compact(result, 120)
       }),
     ]
+  }
+}
+
+// The tool's prose is guidance for the model. The transcript already has the
+// measured fields, so show the operator the compact arithmetic instead.
+fn context_remaining_result_lines(
+  fields: List(#(String, json.JsonValue)),
+  fallback: String,
+  extent: notes_view.Extent,
+) -> List(Line) {
+  case context_remaining_summary(fields) {
+    Some(summary) ->
+      case extent {
+        notes_view.Excerpt -> [Line(ToolResult, summary)]
+        notes_view.Complete -> [
+          Line(ToolResult, summary),
+          Line(ToolDetail, context_remaining_boundary(fields)),
+        ]
+      }
+    None -> [
+      Line(ToolResult, case extent {
+        notes_view.Complete -> "context_remaining\n" <> fallback
+        notes_view.Excerpt -> "context_remaining · " <> compact(fallback, 120)
+      }),
+    ]
+  }
+}
+
+fn context_remaining_summary(
+  fields: List(#(String, json.JsonValue)),
+) -> Option(String) {
+  use window <- option.then(int_field(fields, "window"))
+  use used <- option.then(int_field(fields, "used_tokens"))
+  use capacity <- option.then(int_field(fields, "context_window"))
+  use remaining <- option.then(int_field(fields, "remaining_tokens"))
+  let boundary = case int_field(fields, "checkpoint_at") {
+    Some(_) -> " until checkpoint"
+    None -> " before context limit"
+  }
+  Some(
+    "context remaining · window "
+    <> int.to_string(window)
+    <> " · "
+    <> "~"
+    <> tokens(used)
+    <> " / "
+    <> tokens(capacity)
+    <> " used · ~"
+    <> tokens(remaining)
+    <> boundary,
+  )
+}
+
+fn context_remaining_boundary(
+  fields: List(#(String, json.JsonValue)),
+) -> String {
+  let checkpoint = case int_field(fields, "checkpoint_at") {
+    Some(value) -> "checkpoint at " <> tokens(value)
+    None -> "no checkpoint"
+  }
+  let notes = int_field(fields, "notes") |> option.unwrap(0)
+  checkpoint <> " · " <> int.to_string(notes) <> " saved notes"
+}
+
+fn int_field(
+  fields: List(#(String, json.JsonValue)),
+  name: String,
+) -> Option(Int) {
+  case list.key_find(fields, name) {
+    Ok(json.Int(value)) -> Some(value)
+    _ -> None
   }
 }
 
@@ -7022,7 +7245,7 @@ fn update_conversation_key(key: keys.Key, model: Model) -> Model {
     keys.Home, False, False ->
       Model(..model, input: text_area.move_to_line_start(model.input))
     keys.End, False, False ->
-      case text_area.value(model.input) == "" && model.scroll_offset > 0 {
+      case text_area.value(model.input) == "" && reading_history(model) {
         True -> scroll_transcript(model, False, model.rendered_row_count)
         False -> Model(..model, input: text_area.move_to_line_end(model.input))
       }
@@ -7102,7 +7325,7 @@ fn begin_selection(model: Model, at: geometry.Position) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, _, input_area, _) = layout(screen, model)
   use <- bool.lazy_guard(
-    model.scroll_offset > 0 && at.y == input_area.position.y,
+    reading_history(model) && at.y == input_area.position.y,
     fn() {
       scroll_transcript(clear_selection(model), False, model.rendered_row_count)
     },
@@ -7229,7 +7452,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       transcript_viewport_height(model),
     )
   let model =
-    Model(..model, scroll_offset: offset, notice: case offset == 0 {
+    Model(..model, scroll_offset: offset, notice: case offset == 0 && !older {
       True -> "following output"
       False -> "scrollback · End returns to latest (empty prompt)"
     })
@@ -7257,6 +7480,39 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
         }
       }
     }
+  }
+}
+
+// A page can contain only other strands, and collapsing details can leave
+// fewer rows than one screen. Continue the bounded demand until older rows
+// exist above this viewport. A busy lane keeps Wanted for the next event;
+// the user does not need another wheel gesture to retry the same read.
+//
+// The guard repeats the two scalars `history_view.older` itself tests. This
+// runs on every terminal event, including idle ticks, and the ancestry
+// projection below walks the whole retained window to produce an argument a
+// pending or exhausted request would discard.
+fn request_history_for_view(model: Model) -> Model {
+  use <- bool.guard(
+    model.scrollback.mode != history_view.Reading
+      || model.scrollback.request != history_view.Quiet
+      || model.scrollback.before_seq <= 1
+      || model.help_open
+      || model.notes_open
+      || model.scroll_offset + transcript_viewport_height(model)
+      < model.rendered_row_count - 10,
+    model,
+  )
+  case model.captured {
+    None -> model
+    Some(#(_, view)) ->
+      Model(
+        ..model,
+        scrollback: history_view.older(
+          model.scrollback,
+          history_view.branch(model.scrollback, view).unloaded,
+        ),
+      )
   }
 }
 

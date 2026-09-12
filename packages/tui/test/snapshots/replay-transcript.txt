@@ -3,8 +3,8 @@
 │◇ attached to session demo                                                        │
 │                                                                                  │
 │                                                                                  │
-│› User                                                                            │
-│run the tests                                                                     │
+│ › User                                                                           │
+│   run the tests                                                                  │
 │                                                                                  │
 │◇ tools · 1 call · 1 failed · Ctrl+g expands details                              │
 │                                                                                  │
