@@ -24,6 +24,7 @@ rather than implied, and the Escape cancellation proof-delivery race.
 | Transcript reading and drafts | Merged in #353. A reading viewport is preserved even at offset zero, expanded tool results keep the compact call's anchor, bracketed paste inserts at the cursor without replacing a draft, and an aborted turn renders as Stopped with its diagnostic visible. |
 | Herdr integration | Merged in #354. The terminal reports idle, working and blocked to a Herdr pane over its unix socket, sequenced from the wall clock, announcing the session when its identity is first known and on every switch. `done` is Herdr's own derivation from an idle report on an unseen tab and is never sent. |
 | Imported hooks | Merged in #355 (issue #350, first wave). A Claude Code hook collection loads unchanged from the operator's `~/.claude/settings.json`, trusted on first sight and re-reviewed on change; the composed gates fire at run start, tool clearance (after the harness's own, with a rewrite re-cleared), the result fold, the summarizer, and run end. A committed acceptance fixture boots a real instance and proves each gate fires. |
+| Advisor strand | Merged in #NNN (issue #137, phase 1). A catalogue that routes an `advisor` role gets a second strand beside `main`, created by the harness rather than by the Agency, that reads a rendering of what `main` did since a stored cursor at each of its run ends and answers with one `advise` call: `quiet`, `nudge` folded into `main`'s next run start, or `block` delivered now. An emission guard downgrades a block inside its cooldown and drops advice already given. Unrouted, nothing is created. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
 ### Corrections to the previous edition
@@ -85,13 +86,29 @@ after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
    **Exit:** each as its own PR with a regression and a matrix row moved from
    follow-up to tested.
 
-2. **Land the Herdr-side half.** The Herdr repo needs the `Loom` registry
+2. **Carry the advisor's phase-1 deferrals.** Each is named in
+   `docs/architecture/advisor.md` with what it waits on. The **awaited run-end
+   hard block** — holding the run boundary open until the advisor answers —
+   waits on counts of how often `block` fires and how often the re-wake came
+   too late; the machinery for an awaited run-end key already exists in the
+   assistant path, so this is an evidence question rather than a build one.
+   **Extraction to an extension** waits on two capabilities the satellite does
+   not have: a transcript read on the cap prelude, and an `AgentEnd` hook that
+   carries more than an operation id. A **code-mode `cap/advise`** surface, a
+   **brief override file** in place of today's constant, and **advisor status
+   in the terminal** — the branch is reachable through the strand list, but
+   nothing reports that a review is in flight or when the last verdict landed
+   — are each their own small piece. **Exit:** counts recorded on #137 before
+   the hard block is built; each of the other four as its own PR with a
+   regression.
+
+3. **Land the Herdr-side half.** The Herdr repo needs the `Loom` registry
    variant, the `("herdr:loom", "loom")` resume-plan entry mapping to
    `loom --session <id>`, and the schema enum; the wire contract this tree
    speaks is the one Herdr's schema already defines. **Exit:** a pane opened
    onto a loom session resumes by its announced id.
 
-3. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
+4. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
    commit `Aborted` with "provider cancellation could not be confirmed" even
    though the provider did stop. The smallest fix is in the client provider
    relay: deliver the owner-authored terminal on entry to `ProvingTerminal` and
@@ -101,12 +118,12 @@ after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
    under a delayed-owner-exit fixture. This is a runtime change, separate from
    the UX series.
 
-4. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
+5. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,
    **#244** schedules and timer recovery, and **#245** memory-off evidence.
    **Exit:** each issue's own acceptance on the final dependency set.
 
-5. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
+6. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
    re-resolution, **#296** bundled ERTS in jailed PATH, **#286** refused
    extension visibility, **#283** idle helper retirement, and **#345** the etui
    fork stack. **Exit:** reproduce the specific symptom before changing its
@@ -208,6 +225,26 @@ reporter is a plain in-order queue, deliberately not a superseding one: Herdr
 drops out-of-sequence reports on its side, and the unlinked reporter never
 stalls the terminal.
 
+**The advisor is a peer of main, never an Agency child.** It is created
+through `api.create_idle_strand` rather than through the Agency, so it carries
+no `lineage/` cell: `main` cannot address it, it can address nothing, and
+`strand.roster` does not list it. That absence is the whole of the isolation,
+and it is why the advisor must never be spawned through `cap/strand` or the
+`agent_*` tools. Three consequences are settled with it. The `block` verdict is
+**asynchronous** — the primary is woken with the concern, not held at its run
+boundary — because a hook slot is a synchronous function on the strand driver
+and a provider round trip in one would stop the driver serving `Nudge`,
+`RequestAbort` and `PollTick`; the awaited form is deferred behind counts. The
+**emission guard is harness policy, not prompt instruction**: a cooldown
+counted in the primary's runs and a ring of delivered digests are decisions the
+harness makes and the model is told about afterwards, in its tool result, which
+is the same split the broker draws between what a model may ask for and what it
+is granted. And the advisor's standing brief is **transient**, prepended per
+request through the `context` hook and never stored, so the advisor's own
+compaction cannot lose it and its request head stays byte-stable for the
+provider's prompt cache. `docs/architecture/advisor.md` is the document of
+record.
+
 **Only the gate posts Linux signoff.** `scripts/signoff.sh` owns the verdict
 for a pushed commit. Never post success by hand or treat an older commit's
 signoff as evidence for a changed tree.
@@ -234,7 +271,7 @@ scrolling to the newest row.
 
 None of these is unfinished work somebody forgot.
 
-- **The Escape cancellation proof-delivery race** (item 3 above) has a diagnosed
+- **The Escape cancellation proof-delivery race** (item 4 above) has a diagnosed
   root cause but no fix yet. The #353 presentation stands on its own: it renders
   the retained diagnostic honestly rather than hiding it.
 - **Live daemon CPU attribution** from the September 11 inspection is
@@ -283,6 +320,9 @@ bash scripts/test.sh client --match gateway_test
 bash scripts/test.sh client --match domain_observation
 bash scripts/test.sh client --match protocol_conformance
 bash scripts/test.sh client --match tool_output
+bash scripts/test.sh client --match advisor
+bash scripts/test.sh tools --match advise
+bash scripts/test.sh tui --match advisor_view
 ```
 
 The full local gate ran with the real native helper and prepared code-mode

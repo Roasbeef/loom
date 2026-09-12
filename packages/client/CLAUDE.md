@@ -632,6 +632,25 @@ catalogue without opening runtimes. Explicit admission invokes
   process, no clock — and borrows `notes.{clip, byte_size, fence_safe}`
   rather than keeping a second copy of the byte arithmetic and the fence
   defence.
+- `client/advisorguard.{Verdict, Policy, Guard, Decision, default_policy, new,
+  runs, pending, primary_run_ended, decide, take_pending, encode, decode}` —
+  what one `advise` verdict becomes, as pure data. `decide` applies four
+  rules in order: empty text is dropped, advice whose normalized digest is
+  already in the ring is dropped, a `Block` inside the cooldown window is
+  downgraded to a nudge carrying the reason, and a nudge that does not fit
+  the queue's count or byte cap is dropped. `Quiet` records nothing at all,
+  so a quiet advisor cannot age its own history away. One ring serves both
+  channels, and a drained nudge stays in it: repeating advice the primary
+  has read is the duplicate the ring exists to stop. Identity is the text
+  lowercased with whitespace runs collapsed, SHA-256, truncated to 128
+  bits. `Guard` is opaque because two of its four fields are invariants —
+  `last_block_run` indexes the same clock `runs` carries, and a value past
+  it would make the elapsed arithmetic negative and shut the block channel
+  for the session, which is why `decode` re-checks it. `decode` is lenient
+  about an absent field (it takes the empty guard's value) and strict about
+  a present one of the wrong type. `default_policy` is a two-run cooldown,
+  a ring of thirty-two, and eight nudges or four kilobytes pending; only
+  the cooldown is configurable.
 - `client/advisor.{strand, primary, cursor_key, guard_key, brief, Settings,
   Wiring, Message, start, supervised, hooks, seam, ensure_strand,
   active_tools}` — the actor that joins the two pure halves above to the
@@ -3392,6 +3411,10 @@ their existing unknown-outcome semantics.
 - [packages/prompt/CLAUDE.md](../prompt/CLAUDE.md) — the pure half:
   the pack format, the renderer, the summarization pack, and what
   `Environment` may never grow.
+- [docs/architecture/advisor.md](../../docs/architecture/advisor.md) — the
+  advisor strand: why it is a peer rather than an Agency child, the feed's
+  cadence and its coalescing backpressure, the three verdicts and the guard
+  that rations them, the two cells, and what is deferred.
 - [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
 

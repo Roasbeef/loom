@@ -551,8 +551,11 @@ shared domain services before closing the listener. Its flags:
 `base_url`, `api_key_env`, `model_id`, context and output limits, thinking
 level) plus role → fallback-chain routing. `docs/examples/loom.toml` is the
 commented example — it carries all three dialects, `anthropic`, `openai`
-and `gemini` — and `docs/examples/loom-baseten.toml` wires four
-OpenAI-dialect models with per-role chains. Precedence is flags > config
+and `gemini` — `docs/examples/loom-baseten.toml` wires four
+OpenAI-dialect models with per-role chains, and
+`docs/examples/loom-advisor.toml` is the smallest catalogue that pairs a
+fast primary model with a stronger one reviewing it through the optional
+`advisor` role (`docs/architecture/advisor.md`). Precedence is flags > config
 file > environment > defaults: with `--config` the catalogue is the whole
 model surface, and the launcher supplies `<state-dir>/loom.toml` when the
 flag is absent and that file exists (`~/.loom/loom.toml` by default).

@@ -105,8 +105,9 @@ after the open.
 
 The tool registry is assembled next, and what goes into it is decided
 here rather than at call time: the `agent_*` family when a messaging
-plane was wired, and `code_mode` only if this host has the toolchain and
-the build seed code mode needs (§15). It arrives as a *list of
+plane was wired, `code_mode` only if this host has the toolchain and
+the build seed code mode needs (§15), and `advise` only when the
+catalogue routes an `advisor` role (§14). It arrives as a *list of
 contributions* (`client/contributions.gleam`), each naming who it came
 from — a built-in or a named extension — and
 `contributions.registry` refuses a name two contributions both claim
@@ -1226,6 +1227,20 @@ into service as the other. `docs/architecture/messaging.md` covers the
 four inter-strand patterns and what a forged write under each reserved
 corner would buy.
 
+Not every second strand is a child. If the catalogue routes an `advisor`
+role, `serve` seeds one more strand at boot — through
+`create_idle_strand` (`runtime/api.gleam:1007`) rather than through the
+Agency, so it gets no lineage cell and so is addressable by nobody,
+lists nobody, and is reaped by nobody. At each end of a run on `main` a
+wrapped `run_end` slot casts to `client/advisor`'s actor, which scans
+`main`'s branch past a stored cursor, renders it with `render`
+(`client/advisorslice.gleam:152`), and sends the result to the advisor
+as one framed message. The advisor answers with one `advise` call, and
+an emission guard — `decide` (`client/advisorguard.gleam:265`), not the
+advisor — decides whether that verdict interrupts `main` now, waits for
+its next prompt, or is dropped as something it has already been told.
+`docs/architecture/advisor.md` is the whole of it.
+
 ## 15. Code mode
 
 The other branch off a tool batch is a model that submits a *program*
@@ -1671,7 +1686,7 @@ for the package you are about to change.
 For the planes in depth: `docs/architecture/durability.md`,
 `orchestration.md`, `effects.md`, `client.md`, `messaging.md`,
 `events.md`, `models.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
-`simulation.md`. For
+`advisor.md`, `simulation.md`. For
 intent,
 `docs/loom-design.md`; for the frozen interfaces and normative
 conventions, `docs/loom-implementation-spec.md`; and for every place the

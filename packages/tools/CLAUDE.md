@@ -697,6 +697,10 @@ was asked.
   anchor hash choice, `execution_mode`, workspace-relative requirements,
   the `fs_read` overflow exemption, harness-side filesystem tools, blob-ref
   readability, the timeout ceiling, ripgrep-missing detection.
+- [docs/architecture/advisor.md](../../docs/architecture/advisor.md) — the
+  far side of the `advise` seam: who may call it, what the harness does
+  with each verdict, and the guard that decides whether a block is
+  delivered, downgraded or dropped.
 - [packages/broker/CLAUDE.md](../broker/CLAUDE.md) — the door every jailed
   call goes through.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
