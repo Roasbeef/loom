@@ -2,13 +2,20 @@
 //// attachment and strand changes separate from the command lane, then drive
 //// the inspector through actual terminal input to preserve composer ownership.
 
+import core/clock
+import core/codec
+import core/ids
 import core/json
+import core/message
+import core/register
 import etui/backend
 import etui/geometry
 import etui/widgets/textarea
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import machine/codec as machine_codec
+import machine/strand
 import tui
 import tui/command
 import tui/connection
@@ -16,7 +23,10 @@ import tui/context_view as context
 import tui/frame
 import tui/protocol
 import tui/session_channel
+import tui/snapshot
+import tui/snapshot_view
 import tui/workspace
+import tui/worktree_view
 import tui_test/pushed
 
 fn board(id, strand) {
@@ -269,4 +279,152 @@ pub fn automatic_context_read_preserves_the_session_refusal_notice_test() {
     )
   assert reading.context.request == context.Awaiting(500)
   assert reading.notice == refused.notice
+}
+
+// One captured cell in the shape a metadata fragment carries it.
+fn cell(namespace, key, value) {
+  json.Object([
+    #("namespace", json.String(register.ns_to_string(namespace))),
+    #("key", json.String(key)),
+    #("seq", json.Int(1)),
+    #("value", value),
+  ])
+}
+
+fn cut_metadata(cells) {
+  json.Object([
+    #("cells", json.Array(cells)),
+    #("message_count", json.Int(0)),
+    #(
+      "usage",
+      codec.encode_usage(message.Usage(
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        0,
+        message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      )),
+    ),
+    #(
+      "host_run_settings",
+      json.Object([
+        #("queue_mode", json.String("one_at_a_time")),
+        #("tool_execution", json.String("parallel")),
+        #("origin", json.Null),
+      ]),
+    ),
+    #("peers", json.Array([])),
+  ])
+}
+
+// A terminal holding exactly one captured cut, with the active strand in the
+// supplied live phase. The three inputs are the three the refresh decision
+// reads: the leaf the cut selected, the model the configuration names, and
+// whether an operation is still running on this strand.
+fn observing(
+  leaf: json.JsonValue,
+  model_id: String,
+  phase: option.Option(String),
+) -> tui.Model {
+  let cells = [
+    cell(
+      register.StrandConfig,
+      "main",
+      machine_codec.encode_configuration(
+        strand.StrandConfiguration(
+          strand.ModelIdentity("provider", model_id),
+          strand.ThinkingOff,
+          [],
+        ),
+      ),
+    ),
+    cell(register.StrandLeaf, "main", leaf),
+    cell(
+      register.StrandState,
+      "main",
+      machine_codec.encode_strand_state(strand.StrandState(None, [])),
+    ),
+  ]
+  let captured =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected("session", "epoch", "incarnation"),
+        "tab",
+        message.Origin("principal", "Owner"),
+        snapshot.Operator,
+      ),
+      10,
+      cut_metadata(cells),
+      snapshot.empty(),
+      None,
+    )
+  let assert Ok(view) = snapshot_view.decode(captured)
+    as "the fixture cut is coherent metadata"
+  tui.Model(
+    ..tui.new_model(connection.new_inbox(), workspace.Context("/work", None)),
+    active_strand: "main",
+    strands: [protocol.Strand("main", Some("main"), phase)],
+    captured: Some(#(captured, view)),
+  )
+}
+
+fn entry_leaf(seed: Int) -> json.JsonValue {
+  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(1000), seed))
+  json.String(ids.entry_id_to_string(id))
+}
+
+pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
+  let first = entry_leaf(1)
+  let second = entry_leaf(2)
+  assert first != second as "the two fixture leaves are distinct"
+
+  // A strand with no capture yet has nothing to show, so the first cut is
+  // always worth a read.
+  let idle = observing(first, "first", None)
+  assert tui.context_refresh_due(tui.Model(..idle, captured: None), idle)
+
+  // An entry committed while the operation runs moves the leaf. That is the
+  // transition this refresh deliberately ignores: a thirty-tool turn would
+  // otherwise charge the server sixty branch scans for a footer percentage
+  // nobody reads until the turn ends.
+  let running = observing(first, "first", Some("running tools"))
+  let running_later = observing(second, "first", Some("running tools"))
+  assert !tui.context_refresh_due(running, running_later)
+
+  // The operation reaching `done` is the boundary the footer is read at.
+  let settled = observing(second, "first", None)
+  assert tui.context_refresh_due(running_later, settled)
+
+  // A strand switch and a configuration change each stand on their own, and
+  // a transition that changes none of the four starts nothing.
+  assert tui.context_refresh_due(
+    settled,
+    tui.Model(..settled, active_strand: "fork"),
+  )
+  assert tui.context_refresh_due(settled, observing(second, "second", None))
+  assert !tui.context_refresh_due(settled, settled)
+}
+
+pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {
+  let base = pushed.attached()
+  let pending =
+    tui.Model(
+      ..base,
+      worktree: worktree_view.request(worktree_view.new(), "owner"),
+      context: waiting(8),
+    )
+
+  // Both reads borrow the same bounded server worker. An acknowledged context
+  // read owns it until its final push, so the worktree request stays parked
+  // rather than being refused `busy` on the wire.
+  let held = tui.update(backend.Tick, pending)
+  assert held.worktree.awaiting == None
+  assert held.worktree.refresh == worktree_view.Requested
+
+  let released =
+    tui.update(backend.Tick, tui.Model(..pending, context: context.new()))
+  assert released.worktree.awaiting != None
 }

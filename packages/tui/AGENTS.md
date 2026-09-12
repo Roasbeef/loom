@@ -465,8 +465,11 @@ that tree separately from the self-contained server.
 - **Current context**: `/context` opens aggregate usage and `/context all`
   (also `/contextall`) adds bounded item estimates. `tui/context_view.State`
   retains one attachment and strand's request identity, board, and independent
-  viewport. A newer leaf or configuration coalesces behind the outstanding read;
-  late results cannot replace another request or attachment. The footer keeps
+  viewport. The automatic refresh fires on the first capture, a strand switch,
+  a configuration change, and the settling of the active strand's operation,
+  never on a leaf that moved mid-operation; `/context` always requests a fresh
+  read. A refresh coalesces behind the outstanding read; late results cannot
+  replace another request or attachment. The footer keeps
   `ctx ~N%` ahead of cumulative billing. Missing observations show `ctx —`.
   Context and worktree reads wait for each other's final push before borrowing
   the same server worker slot. An unsupported optional command stays unavailable

@@ -2708,7 +2708,7 @@ fn footer_sections(
             <> " · "
             <> usage_summary(model.usage)
             <> output_rate_label(model.output_rate_tps),
-          footer_usage_cells - 2,
+          footer_usage_limit(model.width),
         )
           <> " ",
         theme.footer_text(),
@@ -2805,6 +2805,30 @@ pub fn footer_status_limit(width: Int) -> Int {
     1 -> floor + width - footer_single_row_cells()
     2 -> int.max(floor, width - footer_usage_cells - 2)
     _ -> int.max(floor, width - 2)
+  }
+}
+
+/// The cells the footer's cumulative usage may take at a terminal width.
+///
+/// On one and two rows the section shares its row with others and the fixed
+/// cap is what keeps the row count decidable from the width alone. On three
+/// rows the usage has the row to itself and that row can be narrower than
+/// the cap, so the cap comes down to the width: at fifty columns a cap of
+/// sixty-eight never fired, and the render buffer clipped the last digit of
+/// `cache 0/0` with no ellipsis to say anything had been dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.footer_usage_limit(213) == 68
+/// assert tui.footer_usage_limit(50) == 48
+/// ```
+@internal
+pub fn footer_usage_limit(width: Int) -> Int {
+  let cap = footer_usage_cells - 2
+  case footer_rows(width) {
+    1 | 2 -> cap
+    _ -> int.min(cap, width - 2)
   }
 }
 
@@ -9955,21 +9979,16 @@ fn apply_request_refused(
   apply_event(updated, protocol.ServerError(code, message))
 }
 
-// Context follows the server's selected leaf and configuration, never scrollback
-// retention. Streaming tokens and unrelated captures do not start another read.
+// Context follows the server's selected configuration and the end of the
+// active strand's operation, never scrollback retention and no longer the
+// leaf. The leaf moves once per committed entry, so a refresh keyed on it
+// cost the server a full branch scan per tool call: a thirty-tool turn ran
+// about sixty of them for a percentage nobody reads until the turn ends.
+// Streaming tokens and unrelated captures start no read.
 fn sync_context(before: Model, after: Model) -> Model {
   let selected =
     context_view.select(after.context, queue_owner(after), after.active_strand)
-  let changed = case before.captured, after.captured {
-    Some(#(_, old)), Some(#(_, current)) ->
-      before.active_strand != after.active_strand
-      || dict.get(old.leaves, before.active_strand)
-      != dict.get(current.leaves, after.active_strand)
-      || dict.get(old.configurations, before.active_strand)
-      != dict.get(current.configurations, after.active_strand)
-    None, Some(_) -> True
-    _, None -> False
-  }
+  let changed = context_refresh_due(before, after)
   let context = case after.peer {
     Attached(_) ->
       case changed {
@@ -9986,6 +10005,39 @@ fn sync_context(before: Model, after: Model) -> Model {
       )
   }
   Model(..after, context:)
+}
+
+/// Whether this model transition is worth another automatic context read.
+///
+/// Four transitions are worth one: the first capture, a strand switch, a
+/// configuration change, and the active strand's operation reaching `done`.
+/// A leaf that moved while that operation is still running is not one of
+/// them, which is what holds a thirty-tool turn to a single observation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.context_refresh_due(before, after)
+/// ```
+@internal
+pub fn context_refresh_due(before: Model, after: Model) -> Bool {
+  case before.captured, after.captured {
+    Some(#(_, old)), Some(#(_, current)) ->
+      before.active_strand != after.active_strand
+      || dict.get(old.configurations, before.active_strand)
+      != dict.get(current.configurations, after.active_strand)
+      || operation_settled(before, after)
+    None, Some(_) -> True
+    _, None -> False
+  }
+}
+
+// The settling edge of the active strand's operation: the phase this terminal
+// already tracks for the agent roster leaves `Some(_)` exactly once per
+// operation, when the server reports `done`. Reading on that edge gives one
+// observation per turn instead of one per committed entry.
+fn operation_settled(before: Model, after: Model) -> Bool {
+  active_strand_live(before) && !active_strand_live(after)
 }
 
 fn service_context_read(model: Model) -> Model {
