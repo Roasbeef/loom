@@ -1,0 +1,18 @@
+Report
+
+Inline code_span, bold, and struck text.
+
+┌──────┬───────────────────────────┬───────┐
+│ Rule │           Name            │ Tier  │
+├──────┼───────────────────────────┼───────┤
+│ R0   │    unparseable source     │ error │
+│ R10  │   comment with no blank   │ error │
+│      │       line above it       │       │
+└──────┴───────────────────────────┴───────┘
+
+▌ Warning
+  Ship nothing on a red gate.
+
+┌ gleam
+▎ pub fn main() -> Nil
+

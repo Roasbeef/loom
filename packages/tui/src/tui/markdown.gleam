@@ -3,23 +3,32 @@
 //// Mork owns parsing. This module is a deliberately small presentation
 //// adapter over its public document tree, emitting styled etui spans without
 //// routing model text through HTML or an ANSI renderer.
+////
+//// Rendering takes the available width because one construct cannot be laid
+//// out without it. A table is a grid whose column widths are decided against
+//// the cells a reader will actually see, and a grid too wide for the terminal
+//// has to be narrowed before it is drawn rather than clipped after. Every
+//// other block ignores the width here and is reflowed by `wrap_lines`, which
+//// is the stage that knows how many cells a prefix has already consumed.
 
 import etui/span
 import etui/style
+import etui/text
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some, unwrap}
+import gleam/result
 import gleam/string
 import mork
 import mork/document.{
-  type Block, type Cell, type Destination, type Document, type Inline,
-  type LinkData, type ListItem, type THead, Absolute, Anchor, Autolink,
-  BlockQuote, BulletList, Cell, Checkbox, Code, CodeSpan, Delim, Document,
-  EmailAutolink, Emphasis, Empty, Footnote, FullImage, FullLink, HardBreak,
-  Heading, Highlight, HtmlBlock, InlineFootnote, InlineHtml, LinkData, ListItem,
-  Newline, OrderedList, Paragraph, RawHtml, RefImage, RefLink, Relative,
-  SoftBreak, Strikethrough, Strong, THead, Table, Text, ThematicBreak,
-  lookup_link,
+  type Alignment, type Block, type Cell, type Destination, type Document,
+  type Inline, type LinkData, type ListItem, type THead, Absolute, Anchor,
+  Autolink, BlockQuote, BulletList, Cell, Center, Checkbox, Code, CodeSpan,
+  Delim, Document, EmailAutolink, Emphasis, Empty, Footnote, FullImage, FullLink,
+  HardBreak, Heading, Highlight, HtmlBlock, InlineFootnote, InlineHtml, Left,
+  LinkData, ListItem, Newline, OrderedList, Paragraph, RawHtml, RefImage,
+  RefLink, Relative, Right, SoftBreak, Strikethrough, Strong, THead, Table, Text,
+  ThematicBreak, lookup_link,
 }
 import tui/text_hygiene
 import tui/theme
@@ -57,14 +66,69 @@ type CodeCharacter {
   PunctuationCharacter
 }
 
+// How a finished row must be treated once the viewport width is known.
+type RowKind {
+  // Preformatted source under a gutter: hard-wrapped at the width with the
+  // gutter repeated, because a word wrapper would collapse its indentation.
+  CodeRow
+
+  // Already laid out against the width, such as a table's grid or a user
+  // block's shaded body. Re-wrapping would destroy the alignment.
+  FixedRow
+
+  // Flowing prose, word-wrapped at the width.
+  FlowingRow
+}
+
+// Whether a record row carries the marker that opens a source row's fields.
+// The two cases differ only in their leading glyph, but a bare `Bool` at the
+// call site would say nothing about which row it names.
+type RecordField {
+  FirstField
+  LaterField
+}
+
+// A GitHub-flavoured alert: a block quote whose first paragraph opens with
+// one of five bracketed markers. Mork does not model these, so the marker is
+// recognised here, on the inlines the quote's first paragraph parsed into.
+type Alert {
+  Note
+  Tip
+  Important
+  Warning
+  Caution
+}
+
+// The gutter drawn down the left of a code block.
+//
+// Code and block quotes were both `│ ` and differed only in hue, which left
+// them indistinguishable in a styleless frame dump and for any reader who
+// cannot separate the two colours. A solid half block reads as a rule rather
+// than a quotation bar, and `row_kind` recognises a code row by this glyph
+// instead of by comparing styles, which a theme change would have broken.
+const code_gutter = "▎ "
+
+// The gutter drawn down the left of a block quote.
+const quote_gutter = "│ "
+
+// The narrowest a grid column may become. Below three cells a wrapped word
+// makes no progress against the punctuation around it, so a grid that cannot
+// give every column this much is abandoned for the record form instead.
+const min_column = 3
+
 /// Parses model markdown and returns wrapped-ready styled terminal lines.
+///
+/// `width` is the number of cells the rows will occupy, and only the table
+/// grid consults it: a grid wider than that is narrowed, and one that cannot
+/// be narrowed far enough falls back to a labelled record per source row. A
+/// width of zero or less means no constraint, for a caller that never wraps.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let lines = markdown.render("**bounded** output")
+/// let lines = markdown.render("**bounded** output", 80)
 /// ```
-pub fn render(markdown: String) -> List(span.Line) {
+pub fn render(markdown: String, width: Int) -> List(span.Line) {
   let safe = text_hygiene.multiline(markdown)
 
   // Chat output is content, not a document envelope. Enable the extensions
@@ -79,19 +143,21 @@ pub fn render(markdown: String) -> List(span.Line) {
     |> mork.autolinks(True)
   let document = mork.parse_with_options(options, safe)
   let Document(blocks:, ..) = document
-  list.flat_map(blocks, render_block(document, _))
+  list.flat_map(blocks, render_block(document, _, width))
 }
 
-/// Wraps flowing Markdown while preserving preformatted code rows.
+/// Wraps flowing Markdown, hard-wrapping code and leaving fixed rows alone.
 ///
-/// Etui's word wrapper intentionally discards leading separators. Code rows
-/// bypass it so indentation remains visible; the terminal renderer clips a
-/// source row that is wider than the available cells.
+/// Etui's word wrapper discards leading separators and collapses runs of
+/// spaces, which would destroy source indentation, so a code row is split on
+/// cell boundaries instead and its gutter is repeated on every continuation.
+/// A table's grid rows were already measured against this width by `render`
+/// and are passed through untouched.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let wrapped = markdown.wrap_lines(markdown.render("one two"), 4)
+/// let wrapped = markdown.wrap_lines(markdown.render("one two", 4), 4)
 /// ```
 @internal
 pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
@@ -99,9 +165,10 @@ pub fn wrap_lines(lines: List(span.Line), width: Int) -> List(span.Line) {
     True -> []
     False ->
       list.flat_map(lines, fn(line) {
-        case is_code_row(line) {
-          True -> [line]
-          False -> wrap_indented(line, width)
+        case row_kind(line) {
+          CodeRow -> wrap_code_row(line, width)
+          FixedRow -> [line]
+          FlowingRow -> wrap_indented(line, width)
         }
       })
   }
@@ -137,28 +204,97 @@ fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
   }
 }
 
-fn is_code_row(line: span.Line) -> Bool {
-  let span.Line(spans:, ..) = line
-  list.any(spans, fn(value) {
-    let span.Span(content:, style: row_style, ..) = value
-
-    // User rows have a three-space gutter. Additional leading whitespace is
-    // source indentation; word wrapping would collapse it and its alignment.
-    { content == "│ " && row_style == theme.signal_bold() }
-    || {
-      row_style == style.new(theme.paper, theme.user_background, style.none())
-      && string.starts_with(content, "    ")
-    }
-  })
+// A code row is everything after the innermost code gutter; the gutter and
+// whatever nesting precedes it is the prefix every continuation row repeats.
+// Splitting on the last gutter span rather than the first is what keeps a
+// fenced block inside a quoted list under both of its outer bars.
+fn wrap_code_row(line: span.Line, width: Int) -> List(span.Line) {
+  let #(prefix, source) = split_at_code_gutter(line.spans)
+  let budget = width - spans_width(prefix)
+  case budget <= 0 {
+    True -> [line]
+    False -> code_rows(source, prefix, budget, [])
+  }
 }
 
-fn render_block(document: Document, block: Block) -> List(span.Line) {
+fn code_rows(
+  source: List(span.Span),
+  prefix: List(span.Span),
+  budget: Int,
+  complete: List(span.Line),
+) -> List(span.Line) {
+  let #(head, tail) = take_span_cells(source, budget, [])
+  let row = span.line_new(list.append(prefix, head))
+  case tail {
+    [] -> list.reverse([row, ..complete])
+    _ -> code_rows(tail, prefix, budget, [row, ..complete])
+  }
+}
+
+fn split_at_code_gutter(
+  spans: List(span.Span),
+) -> #(List(span.Span), List(span.Span)) {
+  do_split_at_gutter(list.reverse(spans), [])
+}
+
+fn do_split_at_gutter(
+  reversed: List(span.Span),
+  source: List(span.Span),
+) -> #(List(span.Span), List(span.Span)) {
+  case reversed {
+    [] -> #([], source)
+    [first, ..rest] ->
+      case first.content == code_gutter {
+        True -> #(list.reverse([first, ..rest]), source)
+        False -> do_split_at_gutter(rest, [first, ..source])
+      }
+  }
+}
+
+// Row kinds are read off the glyphs the renderer itself emitted rather than
+// off style equality. A style sentinel broke silently whenever the palette
+// moved, and it could not tell a code gutter from a quotation bar because
+// both were the same character in two colours.
+fn row_kind(line: span.Line) -> RowKind {
+  let span.Line(spans:, ..) = line
+  let grid = list.any(spans, is_grid_span)
+  let code = list.any(spans, fn(value) { value.content == code_gutter })
+  let shaded = list.any(spans, is_user_body_span)
+  case grid, code, shaded {
+    True, _, _ -> FixedRow
+    False, True, _ -> CodeRow
+    False, False, True -> FixedRow
+    False, False, False -> FlowingRow
+  }
+}
+
+fn is_grid_span(value: span.Span) -> Bool {
+  case value.content {
+    "│" | "┌" | "┬" | "┐" | "├" | "┼" | "┤" | "└" | "┴" | "┘" -> True
+    _ -> False
+  }
+}
+
+// User rows have a three-space gutter painted on a shaded background.
+// Additional leading whitespace is source indentation; word wrapping would
+// collapse it and the alignment it carries.
+fn is_user_body_span(value: span.Span) -> Bool {
+  let span.Span(content:, style: row_style, ..) = value
+  row_style == style.new(theme.paper, theme.user_background, style.none())
+  && string.starts_with(content, "    ")
+}
+
+fn render_block(
+  document: Document,
+  block: Block,
+  width: Int,
+) -> List(span.Line) {
   case block {
+    // Claude Code, and every other terminal renderer a reader is likely to
+    // have seen, marks a heading with weight alone. The bar that used to sit
+    // here said nothing the bold did not and cost two cells of every row.
     Heading(level:, inlines:, ..) ->
       inline_lines(document, inlines, heading_style(level))
-      |> prefix_lines([span.span_styled("▌ ", theme.current_bold())], [
-        span.span_plain("  "),
-      ])
       |> trailing_blank
     Paragraph(inlines:, ..) ->
       inline_lines(document, inlines, style.default_style())
@@ -169,22 +305,22 @@ fn render_block(document: Document, block: Block) -> List(span.Line) {
       |> drop_final_empty
       |> list.map(fn(line) {
         span.line_new([
-          span.span_styled("│ ", theme.signal_bold()),
+          span.span_styled(code_gutter, theme.signal_bold()),
           ..code_spans(lang, line)
         ])
       })
       |> prepend_code_language(lang)
       |> trailing_blank
     BlockQuote(blocks:) ->
-      blocks
-      |> list.flat_map(render_block(document, _))
-      |> prefix_lines([span.span_styled("│ ", theme.current_bold())], [
-        span.span_styled("│ ", theme.current_bold()),
-      ])
-    BulletList(items:, ..) -> render_list(document, items, None)
+      alert_of(blocks)
+      |> result.map(fn(found) {
+        render_alert(document, found.0, found.1, width - 2)
+      })
+      |> result.lazy_unwrap(fn() { render_quote(document, blocks, width - 2) })
+    BulletList(items:, ..) -> render_list(document, items, None, width)
     OrderedList(items:, start:, ..) ->
-      render_list(document, items, Some(unwrap(start, 1)))
-    Table(header:, rows:) -> render_table(document, header, rows)
+      render_list(document, items, Some(unwrap(start, 1)), width)
+    Table(header:, rows:) -> render_table(document, header, rows, width)
     ThematicBreak -> [
       span.line_new([span.span_styled("────────────────", theme.quiet_text())]),
       span.line_plain(""),
@@ -194,6 +330,113 @@ fn render_block(document: Document, block: Block) -> List(span.Line) {
       span.line_plain(""),
     ]
     Empty | Newline -> []
+  }
+}
+
+fn render_quote(
+  document: Document,
+  blocks: List(Block),
+  width: Int,
+) -> List(span.Line) {
+  blocks
+  |> list.flat_map(render_block(document, _, width))
+  |> prefix_lines([span.span_styled(quote_gutter, theme.current_bold())], [
+    span.span_styled(quote_gutter, theme.current_bold()),
+  ])
+}
+
+// An alert is a titled callout, not a quotation, so it drops the quote bar and
+// carries its kind on a heading row instead. The body is indented under that
+// title so the callout reads as one unit even where colour is unavailable.
+fn render_alert(
+  document: Document,
+  alert: Alert,
+  blocks: List(Block),
+  width: Int,
+) -> List(span.Line) {
+  let title =
+    span.line_new([
+      span.span_styled("▌ ", alert_style(alert)),
+      span.span_styled(alert_title(alert), alert_style(alert)),
+    ])
+  let body =
+    blocks
+    |> list.flat_map(render_block(document, _, width))
+    |> prefix_lines([span.span_plain("  ")], [span.span_plain("  ")])
+  [title, ..body]
+}
+
+// Mork parses `[!NOTE]` as three adjacent text inlines, so the marker is
+// matched on that shape and then removed along with the separator that
+// followed it. A quote whose first paragraph does not open this way, or whose
+// marker names no known kind, stays an ordinary quotation.
+fn alert_of(blocks: List(Block)) -> Result(#(Alert, List(Block)), Nil) {
+  case blocks {
+    [
+      Paragraph(inlines: [Text("["), Text(marker), Text("]"), ..rest], ..),
+      ..tail
+    ] -> {
+      use alert <- result.try(alert_kind(marker))
+      Ok(#(alert, alert_body(rest, tail)))
+    }
+    _ -> Error(Nil)
+  }
+}
+
+// A marker alone on its line leaves an empty paragraph behind, which would
+// render as a blank row between the title and the body.
+fn alert_body(rest: List(Inline), tail: List(Block)) -> List(Block) {
+  case drop_leading_break(rest) {
+    [] -> tail
+    inlines -> [Paragraph(raw: "", inlines:), ..tail]
+  }
+}
+
+fn drop_leading_break(inlines: List(Inline)) -> List(Inline) {
+  case inlines {
+    [SoftBreak, ..rest] -> drop_leading_break(rest)
+    [Text(value), ..rest] -> drop_leading_space(value, rest)
+    _ -> inlines
+  }
+}
+
+fn drop_leading_space(value: String, rest: List(Inline)) -> List(Inline) {
+  case string.trim_start(value) {
+    "" -> drop_leading_break(rest)
+    trimmed -> [Text(trimmed), ..rest]
+  }
+}
+
+fn alert_kind(marker: String) -> Result(Alert, Nil) {
+  case string.lowercase(marker) {
+    "!note" -> Ok(Note)
+    "!tip" -> Ok(Tip)
+    "!important" -> Ok(Important)
+    "!warning" -> Ok(Warning)
+    "!caution" -> Ok(Caution)
+    _ -> Error(Nil)
+  }
+}
+
+// The palette has no violet, so `Important` takes the strongest neutral the
+// theme offers rather than borrowing a hue that already means something else.
+fn alert_style(alert: Alert) -> style.Style {
+  case alert {
+    Note -> theme.current_bold()
+    Tip -> theme.success_text()
+    Important -> style.new(theme.paper, style.Default, style.bold())
+    Warning -> theme.signal_bold()
+    Caution -> theme.danger_text()
+  }
+}
+
+fn alert_title(alert: Alert) -> String {
+  case alert {
+    Note -> "Note"
+    Tip -> "Tip"
+    Important -> "Important"
+    Warning -> "Warning"
+    Caution -> "Caution"
   }
 }
 
@@ -249,7 +492,7 @@ pub fn diff(patch: String) -> List(span.Line) {
   |> string.split("\n")
   |> list.map(fn(line) {
     span.line_new([
-      span.span_styled("│ ", theme.signal_bold()),
+      span.span_styled(code_gutter, theme.signal_bold()),
       diff_span(line),
     ])
   })
@@ -439,6 +682,7 @@ fn render_list(
   document: Document,
   items: List(ListItem),
   ordered_start: Option(Int),
+  width: Int,
 ) -> List(span.Line) {
   items
   |> list.index_map(fn(item, index) {
@@ -447,8 +691,11 @@ fn render_list(
       Some(start) -> int.to_string(start + index) <> ". "
       None -> "• "
     }
+
+    // The marker is a prefix on every row of the item, so anything measured
+    // inside it, a table above all, has that many fewer cells to work with.
     blocks
-    |> list.flat_map(render_block(document, _))
+    |> list.flat_map(render_block(document, _, width - string.length(marker)))
     |> trim_trailing_blank
     |> prefix_lines([span.span_styled(marker, theme.signal_bold())], [
       span.span_plain(string.repeat(" ", string.length(marker))),
@@ -458,45 +705,281 @@ fn render_list(
   |> trailing_blank
 }
 
+// A table is the one block whose shape is decided here rather than by the
+// wrapper, because a grid's columns can only be measured once and have to be
+// measured against the width the rows will be drawn in.
 fn render_table(
   document: Document,
   header: List(THead),
   rows: List(List(Cell)),
+  width: Int,
 ) -> List(span.Line) {
-  let headings =
-    header
-    |> list.map(fn(cell) {
-      let THead(inlines:, ..) = cell
-      inline_spans(document, inlines, theme.current_bold())
-      |> trim_span_edges
+  case header {
+    [] -> []
+    _ -> table_lines(document, header, rows, width)
+  }
+}
+
+fn table_lines(
+  document: Document,
+  header: List(THead),
+  rows: List(List(Cell)),
+  width: Int,
+) -> List(span.Line) {
+  let columns = list.length(header)
+  let alignments =
+    list.map(header, fn(cell) {
+      let THead(align:, ..) = cell
+      align
     })
-  rows
-  |> list.flat_map(fn(row) {
-    let cells =
-      list.map(row, fn(cell) {
+  let headings =
+    list.map(header, fn(cell) {
+      let THead(inlines:, ..) = cell
+      inline_spans(document, inlines, theme.current_bold()) |> trim_span_edges
+    })
+  let body =
+    list.map(rows, fn(row) {
+      row
+      |> list.map(fn(cell) {
         let Cell(inlines:, ..) = cell
         inline_spans(document, inlines, style.default_style())
         |> trim_span_edges
       })
-    table_record(headings, cells, True)
+      |> fit_row(columns)
+    })
+
+  // Every column costs a separator plus a space on each side of its content,
+  // and the grid closes with one final separator.
+  let frame = 3 * columns + 1
+  let natural = measure_columns([headings, ..body], columns)
+  let total = list.fold(natural, frame, int.add)
+  case width <= 0 || total <= width {
+    True -> grid_lines(headings, body, alignments, natural)
+    False ->
+      narrowed_lines(
+        headings,
+        body,
+        alignments,
+        natural,
+        width - frame,
+        columns,
+      )
+  }
+}
+
+// Shrinking stops at the point where a column can no longer hold a word. Past
+// that the grid is all border and no content, so the labelled record form,
+// which needs no horizontal budget at all, carries the row instead.
+fn narrowed_lines(
+  headings: List(List(span.Span)),
+  body: List(List(List(span.Span))),
+  alignments: List(Alignment),
+  natural: List(Int),
+  budget: Int,
+  columns: Int,
+) -> List(span.Line) {
+  case budget < columns * min_column {
+    True -> record_lines(headings, body)
+    False ->
+      grid_lines(headings, body, alignments, fit_columns(natural, budget))
+  }
+}
+
+// Mork rejects a source row whose pipe count disagrees with the header, so a
+// ragged row should not reach here; padding and truncating keeps the grid
+// rectangular regardless, because a short row would otherwise silently shift
+// every later column left.
+fn fit_row(
+  cells: List(List(span.Span)),
+  columns: Int,
+) -> List(List(span.Span)) {
+  let taken = list.take(cells, columns)
+  list.append(taken, list.repeat([], columns - list.length(taken)))
+}
+
+// A column is at least one cell wide so that an empty header still draws a
+// column the reader can see and the wrapper always has a budget to spend.
+fn measure_columns(
+  rows: List(List(List(span.Span))),
+  columns: Int,
+) -> List(Int) {
+  list.fold(rows, list.repeat(1, columns), fn(widest, cells) {
+    list.map2(widest, cells, fn(best, cell) { int.max(best, spans_width(cell)) })
+  })
+}
+
+// Max-min fair allocation. Walking the columns narrowest first and handing
+// each one the smaller of its natural width and an equal share of what is
+// left means a narrow column is never padded at a wide column's expense, and
+// the surplus a narrow column does not use flows on to the wider ones.
+fn fit_columns(natural: List(Int), budget: Int) -> List(Int) {
+  let ordered =
+    natural
+    |> list.index_map(fn(width, index) { #(index, width) })
+    |> list.sort(fn(one, other) { int.compare(one.1, other.1) })
+  let #(_, allocated) =
+    list.map_fold(ordered, #(budget, list.length(natural)), fn(state, column) {
+      let #(remaining, count) = state
+      let taken = int.min(column.1, remaining / count)
+      #(#(remaining - taken, count - 1), #(column.0, taken))
+    })
+  allocated
+  |> list.sort(fn(one, other) { int.compare(one.0, other.0) })
+  |> list.map(fn(column) { column.1 })
+}
+
+// Header cells are centred whatever the column's alignment says, which is how
+// GitHub and Claude Code present them: the alignment marker describes the
+// data, and a centred label sits over a right-aligned column without looking
+// like a stray value.
+fn grid_lines(
+  headings: List(List(span.Span)),
+  body: List(List(List(span.Span))),
+  alignments: List(Alignment),
+  widths: List(Int),
+) -> List(span.Line) {
+  let columns =
+    list.map2(widths, alignments, fn(width, alignment) { #(width, alignment) })
+  let centred = list.map(widths, fn(width) { #(width, Center) })
+  list.flatten([
+    [border_line(widths, "┌", "┬", "┐")],
+    cell_lines(headings, centred),
+    [border_line(widths, "├", "┼", "┤")],
+    list.flat_map(body, cell_lines(_, columns)),
+    [border_line(widths, "└", "┴", "┘")],
+    [span.line_plain("")],
+  ])
+}
+
+fn border_line(
+  widths: List(Int),
+  left: String,
+  joint: String,
+  right: String,
+) -> span.Line {
+  let bars =
+    list.index_map(widths, fn(width, index) {
+      let lead = case index {
+        0 -> left
+        _ -> joint
+      }
+      [grid_span(lead), span.span_styled(rule(width + 2), theme.quiet_text())]
+    })
+  span.line_new(list.append(list.flatten(bars), [grid_span(right)]))
+}
+
+fn rule(cells: Int) -> String {
+  string.repeat("─", cells)
+}
+
+fn grid_span(glyph: String) -> span.Span {
+  span.span_styled(glyph, theme.quiet_text())
+}
+
+// One source row becomes as many terminal rows as its tallest cell needs, so
+// a narrowed column wraps inside its own box instead of pushing the grid wide.
+fn cell_lines(
+  cells: List(List(span.Span)),
+  columns: List(#(Int, Alignment)),
+) -> List(span.Line) {
+  let wrapped =
+    list.map2(cells, columns, fn(cell, column) { wrap_cell(cell, column.0) })
+  let height =
+    list.fold(wrapped, 1, fn(tallest, rows) {
+      int.max(tallest, list.length(rows))
+    })
+  wrapped
+  |> list.map(fn(rows) {
+    list.append(rows, list.repeat([], height - list.length(rows)))
+  })
+  |> transpose
+  |> list.map(grid_line(_, columns))
+}
+
+// Cells are measured down their own column but drawn across the row, so the
+// per-cell row lists are turned inside out once every cell has been padded to
+// the tallest of them.
+fn transpose(
+  columns: List(List(List(span.Span))),
+) -> List(List(List(span.Span))) {
+  case list.all(columns, list.is_empty) {
+    True -> []
+    False -> {
+      let heads =
+        list.map(columns, fn(rows) { rows |> list.first |> result.unwrap([]) })
+      [heads, ..transpose(list.map(columns, list.drop(_, 1)))]
+    }
+  }
+}
+
+fn wrap_cell(cell: List(span.Span), width: Int) -> List(List(span.Span)) {
+  span.line_new(cell)
+  |> span.wrap_line(width)
+  |> list.map(fn(row) { clamp_spans(row.spans, width) })
+}
+
+fn grid_line(
+  cells: List(List(span.Span)),
+  columns: List(#(Int, Alignment)),
+) -> span.Line {
+  let body =
+    list.map2(cells, columns, fn(cell, column) {
+      let #(width, alignment) = column
+      list.flatten([
+        [grid_span("│"), span.span_plain(" ")],
+        align_cell(cell, width, alignment),
+        [span.span_plain(" ")],
+      ])
+    })
+  span.line_new(list.append(list.flatten(body), [grid_span("│")]))
+}
+
+fn align_cell(
+  cell: List(span.Span),
+  width: Int,
+  alignment: Alignment,
+) -> List(span.Span) {
+  let slack = int.max(0, width - spans_width(cell))
+  let #(before, after) = case alignment {
+    Left -> #(0, slack)
+    Right -> #(slack, 0)
+    Center -> #(slack / 2, slack - slack / 2)
+  }
+  list.flatten([pad_spans(before), cell, pad_spans(after)])
+}
+
+fn pad_spans(cells: Int) -> List(span.Span) {
+  case cells {
+    0 -> []
+    _ -> [span.span_plain(string.repeat(" ", cells))]
+  }
+}
+
+// Tables in chat are usually comparisons, and a terminal narrow enough to
+// refuse even the minimum grid is too narrow to preserve source columns.
+// Rendering each source row as one labelled record preserves the
+// relationships without horizontal scrolling.
+fn record_lines(
+  headings: List(List(span.Span)),
+  body: List(List(List(span.Span))),
+) -> List(span.Line) {
+  list.flat_map(body, fn(cells) {
+    table_record(headings, cells, FirstField)
     |> list.append([span.line_plain("")])
   })
 }
 
-// Tables in chat are usually comparisons, and terminals are usually too
-// narrow to preserve their source columns. Rendering each source row as one
-// labelled record preserves the relationships without horizontal scrolling.
 fn table_record(
   headings: List(List(span.Span)),
   cells: List(List(span.Span)),
-  first: Bool,
+  field: RecordField,
 ) -> List(span.Line) {
   case headings, cells {
     [], _ | _, [] -> []
     [heading, ..rest_headings], [cell, ..rest_cells] -> {
-      let marker = case first {
-        True -> span.span_styled("▌ ", theme.signal_bold())
-        False -> span.span_plain("  ")
+      let marker = case field {
+        FirstField -> span.span_styled("▌ ", theme.signal_bold())
+        LaterField -> span.span_plain("  ")
       }
       let label = case span_text(heading) {
         "" -> []
@@ -504,7 +987,7 @@ fn table_record(
       }
       [
         span.line_new([marker, ..list.append(label, cell)]),
-        ..table_record(rest_headings, rest_cells, False)
+        ..table_record(rest_headings, rest_cells, LaterField)
       ]
     }
   }
@@ -518,6 +1001,83 @@ fn span_text(spans: List(span.Span)) -> String {
   })
   |> string.concat
   |> string.trim
+}
+
+fn spans_width(spans: List(span.Span)) -> Int {
+  list.fold(spans, 0, fn(total, value) {
+    total + text.cell_width(value.content)
+  })
+}
+
+fn clamp_spans(spans: List(span.Span), width: Int) -> List(span.Span) {
+  let #(head, _) = take_span_cells(spans, width, [])
+  head
+}
+
+// Splitting on cell boundaries rather than on words is what preserves a code
+// row's indentation; the caller supplies the budget already reduced by
+// whatever gutter it intends to repeat.
+fn take_span_cells(
+  spans: List(span.Span),
+  budget: Int,
+  taken: List(span.Span),
+) -> #(List(span.Span), List(span.Span)) {
+  case spans {
+    [] -> #(list.reverse(taken), [])
+    [first, ..rest] -> take_span_cell(first, rest, budget, taken)
+  }
+}
+
+fn take_span_cell(
+  first: span.Span,
+  rest: List(span.Span),
+  budget: Int,
+  taken: List(span.Span),
+) -> #(List(span.Span), List(span.Span)) {
+  let width = text.cell_width(first.content)
+  case width <= budget {
+    True -> take_span_cells(rest, budget - width, [first, ..taken])
+    False -> {
+      let #(head, tail) = split_content(first.content, budget)
+      #(list.reverse([span.Span(..first, content: head), ..taken]), [
+        span.Span(..first, content: tail),
+        ..rest
+      ])
+    }
+  }
+}
+
+fn split_content(content: String, budget: Int) -> #(String, String) {
+  case budget <= 0 {
+    True -> #("", content)
+    False -> take_graphemes(string.to_graphemes(content), budget, [])
+  }
+}
+
+// A positive budget always consumes at least one grapheme. Without that a
+// column one cell wide facing a two-cell glyph would hand the caller an empty
+// row and the same remainder, and the wrapping loop would never terminate.
+fn take_graphemes(
+  graphemes: List(String),
+  budget: Int,
+  taken: List(String),
+) -> #(String, String) {
+  case graphemes {
+    [] -> #(joined(taken), "")
+    [first, ..rest] ->
+      case text.grapheme_cell_width(first) <= budget || taken == [] {
+        True ->
+          take_graphemes(rest, budget - text.grapheme_cell_width(first), [
+            first,
+            ..taken
+          ])
+        False -> #(joined(taken), string.concat(graphemes))
+      }
+  }
+}
+
+fn joined(reversed: List(String)) -> String {
+  reversed |> list.reverse |> string.concat
 }
 
 // CommonMark keeps the padding around pipe-delimited cells. Removing only the
@@ -579,7 +1139,12 @@ fn inline_parts(
 ) -> List(InlinePart) {
   case inline {
     Text(value) -> [Styled(span.span_styled(value, base))]
-    CodeSpan(value) -> [Styled(span.span_styled(value, code_style()))]
+
+    // An inline code span painted in the prose colour with no modifier was
+    // prose as far as the reader was concerned. The cold hue separates a
+    // symbol from the sentence around it without adding a background that
+    // would break up a wrapped paragraph.
+    CodeSpan(value) -> [Styled(span.span_styled(value, theme.inline_code()))]
     Emphasis(children) ->
       nested_parts(document, children, style.add_modifier(base, style.italic()))
     Strong(children) ->
@@ -595,8 +1160,16 @@ fn inline_parts(
         ],
         [Styled(span.span_styled("==", base))],
       )
+
+    // Dim was a poor stand-in: it is also what quiet metadata uses, so struck
+    // text and an aside were the same grey, and an unmatched `~~` run nearby
+    // rendered in the base style and read as the emphasised one.
     Strikethrough(children) ->
-      nested_parts(document, children, style.add_modifier(base, style.dim()))
+      nested_parts(
+        document,
+        children,
+        style.add_modifier(base, style.strikethrough()),
+      )
     FullLink(text:, data:) -> link_parts(document, text, data, base)
     RefLink(text:, label:) ->
       case lookup_link(document, label) {

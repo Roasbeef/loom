@@ -1566,7 +1566,7 @@ pub fn markdown_diff_lines_have_distinct_styles_test() {
     span.Line(spans: [_, span.Span(style: removed, ..)], ..),
     span.Line(spans: [_, span.Span(style: added, ..)], ..),
     ..
-  ] = markdown.render("```diff\n-old\n+new\n```")
+  ] = markdown.render("```diff\n-old\n+new\n```", 80)
 
   assert removed == theme.diff_removed()
   assert added == theme.diff_added()

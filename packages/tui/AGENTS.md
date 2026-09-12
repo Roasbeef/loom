@@ -337,9 +337,18 @@ that tree separately from the self-contained server.
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
 - `tui/markdown` walks Mork's public CommonMark tree and emits etui
-  spans directly. Preformatted rows bypass prose wrapping so source
-  indentation remains visible. It never passes model text through HTML or an
-  ANSI renderer.
+  spans directly. `render(markdown, width)` takes the width the rows will
+  occupy because a table is the one block whose shape must be settled before
+  it is drawn: columns are measured in terminal cells with `etui/text`,
+  narrowed by max-min fair share when the grid is wider than the width, and
+  abandoned for one labelled record per source row only when no column can
+  keep three cells. Callers subtract whatever prefix they will add, since a
+  speaker mark or list marker is cells the grid does not have. Code rows
+  carry a `▎ ` gutter rather than the block quote's `│ `, which is how
+  `wrap_lines` recognises them without comparing styles, and they are
+  hard-wrapped on cell boundaries so source indentation survives. GFM alerts
+  are detected here, not by Mork, on the marker inlines of a quote's first
+  paragraph. It never passes model text through HTML or an ANSI renderer.
 - `tui/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
@@ -657,10 +666,12 @@ that tree separately from the self-contained server.
   codepoints before data reaches etui spans. Newlines survive only where the
   markdown block parser needs them.
 - **Markdown stays structured.** Mork parses CommonMark and the adapter emits
-  etui styles and OSC 8 links. Tables become stacked labelled records so their
-  relationships survive narrow terminals. Fenced Gleam token styling
-  preserves the exact model-authored text; it never acts as a formatter or
-  compiler. No raw model-authored ANSI or HTML is executed.
+  etui styles and OSC 8 links. A table is drawn as a bordered grid measured
+  against the caller's width, and becomes stacked labelled records only where
+  even the minimum grid will not fit, so the relationships survive a narrow
+  terminal either way. Fenced Gleam token styling preserves the exact
+  model-authored text; it never acts as a formatter or compiler. No raw
+  model-authored ANSI or HTML is executed.
 - **Executed programs stay inspectable.** A structured `code_mode.program`
   renders through the fenced Gleam path instead of appearing as escaped JSON.
   The normal view bounds long programs to twelve rows; detail mode reveals the

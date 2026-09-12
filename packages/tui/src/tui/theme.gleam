@@ -63,6 +63,22 @@ pub fn current_bold() -> style.Style {
   style.new(current, style.Default, style.bold())
 }
 
+/// Inline code inside prose: the cold current hue, unbolded.
+///
+/// A code span used to be painted in `paper` with no modifier, which is
+/// exactly the prose style, so a symbol name was indistinguishable from the
+/// sentence around it. The hue separates the two without a background, which
+/// would otherwise break up a wrapped paragraph into shaded fragments.
+///
+/// ## Examples
+///
+/// ```gleam
+/// span.span_styled("next_action", theme.inline_code())
+/// ```
+pub fn inline_code() -> style.Style {
+  style.new(current, style.Default, style.none())
+}
+
 /// A dim annotation style for metadata.
 ///
 /// ## Examples

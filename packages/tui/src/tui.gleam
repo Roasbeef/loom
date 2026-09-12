@@ -2420,13 +2420,13 @@ fn transcript_title(model: Model) -> String {
   <> " "
 }
 
-fn transcript_content(lines: List(Line)) -> span.Text {
+fn transcript_content(lines: List(Line), width: Int) -> span.Text {
   lines
-  |> list.flat_map(render_line)
+  |> list.flat_map(render_line(_, width))
   |> span.text_new
 }
 
-fn render_line(line: Line) -> List(span.Line) {
+fn render_line(line: Line, width: Int) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
@@ -2462,12 +2462,12 @@ fn render_line(line: Line) -> List(span.Line) {
     }
     Assistant | Reasoning -> [
       span.line_plain(""),
-      ..markdown.render(line.text)
+      ..markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     ]
     ToolPatch -> markdown.diff(line.text)
     ToolDetail ->
-      markdown.render(line.text)
+      markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     System | ToolCall | ToolResult | ToolFailure | Failure ->
       line.text
@@ -2548,10 +2548,10 @@ fn refresh_notes(model: Model) -> Model {
   )
 }
 
-fn notes_content(model: Model) -> span.Text {
+fn notes_content(model: Model, width: Int) -> span.Text {
   case model.note_board {
-    None -> historical_notes_content(model)
-    Some(board) -> current_notes_content(board, model)
+    None -> historical_notes_content(model, width)
+    Some(board) -> current_notes_content(board, model, width)
   }
 }
 
@@ -2594,10 +2594,15 @@ fn raw_note_line(text: String) -> Line {
   }
 }
 
-fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
+fn current_notes_content(
+  board: notes_view.Board,
+  model: Model,
+  width: Int,
+) -> span.Text {
   let active_strand = model.active_strand
   case board.strand == active_strand {
-    False -> transcript_content([Line(System, "refresh notes for this strand")])
+    False ->
+      transcript_content([Line(System, "refresh notes for this strand")], width)
     True -> {
       let heading =
         "notes for "
@@ -2638,16 +2643,19 @@ fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
         ]
         False -> []
       }
-      transcript_content([
-        Line(System, heading),
-        Line(System, note_read_status(board, model)),
-        ..list.append(rows, tail)
-      ])
+      transcript_content(
+        [
+          Line(System, heading),
+          Line(System, note_read_status(board, model)),
+          ..list.append(rows, tail)
+        ],
+        width,
+      )
     }
   }
 }
 
-fn historical_notes_content(model: Model) -> span.Text {
+fn historical_notes_content(model: Model, width: Int) -> span.Text {
   let latest =
     model.records
     |> list.find_map(fn(record) {
@@ -2662,17 +2670,26 @@ fn historical_notes_content(model: Model) -> span.Text {
     |> result.unwrap(None)
   case latest {
     Some(payload) ->
-      transcript_content([
-        Line(System, "historical run-start digest · r to fetch current notes"),
-        case model.details_expanded {
-          True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
-          False -> Line(ToolDetail, notes_view.historical(payload))
-        },
-      ])
+      transcript_content(
+        [
+          Line(System, "historical run-start digest · r to fetch current notes"),
+          case model.details_expanded {
+            True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
+            False -> Line(ToolDetail, notes_view.historical(payload))
+          },
+        ],
+        width,
+      )
     None ->
-      transcript_content([
-        Line(System, "no agent notes are available for " <> model.active_strand),
-      ])
+      transcript_content(
+        [
+          Line(
+            System,
+            "no agent notes are available for " <> model.active_strand,
+          ),
+        ],
+        width,
+      )
   }
 }
 
@@ -4075,7 +4092,7 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
         pending
         |> record_lines(model)
         |> fn(projection) { projection.0 }
-        |> transcript_content
+        |> transcript_content(width)
         |> fn(content) { markdown.wrap_lines(content.lines, width) }
         |> list.reverse
       Model(
@@ -4102,7 +4119,7 @@ fn cached_record_lines(
     let rendered =
       dict.get(previous, line)
       |> result.lazy_unwrap(fn() {
-        render_line(line) |> markdown.wrap_lines(width)
+        render_line(line, width) |> markdown.wrap_lines(width)
       })
     #(
       list.append(list.reverse(rendered), rows),
@@ -4191,7 +4208,7 @@ fn record_anchors_for(
       let rendered =
         dict.get(model.record_line_cache, pair.0)
         |> result.lazy_unwrap(fn() {
-          render_line(pair.0) |> markdown.wrap_lines(width)
+          render_line(pair.0, width) |> markdown.wrap_lines(width)
         })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {
@@ -4247,12 +4264,12 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
     True, _ ->
       help_content().lines |> markdown.wrap_lines(width) |> list.reverse
     False, True ->
-      notes_content(model).lines
+      notes_content(model, width).lines
       |> markdown.wrap_lines(width)
       |> list.reverse
     False, False ->
       option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
-      |> transcript_content
+      |> transcript_content(width)
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
       |> list.append(model.record_rows)
@@ -9932,7 +9949,7 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
       let lines =
         summary_lines(model)
         |> list.flat_map(fn(text) {
-          markdown.render(text_hygiene.multiline(text))
+          markdown.render(text_hygiene.multiline(text), inner.size.width)
         })
         |> markdown.wrap_lines(inner.size.width)
       let offset =
@@ -10208,7 +10225,7 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
       let lines =
         context_view.lines(model.context)
         |> list.flat_map(fn(line) {
-          markdown.render(text_hygiene.multiline(line))
+          markdown.render(text_hygiene.multiline(line), inner.size.width)
         })
         |> markdown.wrap_lines(inner.size.width)
       let offset =
