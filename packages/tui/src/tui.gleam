@@ -93,6 +93,15 @@ pub type Speaker {
   User
   Assistant
   Reasoning
+
+  /// One reasoning block stood in for by a single literal row.
+  ///
+  /// The digest bypasses the Markdown renderer, so a fence or a list
+  /// marker inside the model's own prose cannot turn the indicator into
+  /// several rows. That is what lets a reasoning block hold one height
+  /// from its first live fragment through to its settle.
+  ReasoningDigest
+
   ToolCall
   ToolResult
   ToolDetail
@@ -2432,6 +2441,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
     User -> #("› ", theme.signal_bold())
     Assistant -> #("◆ Agent  ", theme.current_bold())
     Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
+    ReasoningDigest -> #("∴ Reasoning · ", theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
@@ -2466,6 +2476,19 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
       |> prefix_rendered_lines(mark, mark_style)
     ]
     ToolPatch -> markdown.diff(line.text)
+
+    // A digest stands in for a whole reasoning block, and the one property
+    // it has to keep is its height: the collapsed live row and the
+    // collapsed settled row are the same row with different words in it.
+    // So it is drawn literally, with no blank above or below it and no
+    // Markdown pass which could answer a stray fence with a second row.
+    ReasoningDigest -> [
+      span.line_new([
+        span.span_styled(mark, mark_style),
+        span.span_plain(text_hygiene.single_line(line.text)),
+      ]),
+    ]
+
     ToolDetail ->
       markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
@@ -2488,6 +2511,7 @@ fn render_line(line: Line, width: Int) -> List(span.Line) {
         System
         | User
         | Reasoning
+        | ReasoningDigest
         | Failure
         | Assistant
         | ToolDetail
@@ -4282,7 +4306,7 @@ fn transient_lines(model: Model) -> List(Line) {
   stream_lines(
     display_streams(model),
     model.active_strand,
-    model.details_expanded,
+    details_extent(model.details_expanded),
   )
   |> list.append(tool_tail_lines(model))
   |> list.append(pending_input_lines(model))
@@ -5854,22 +5878,42 @@ pub const tail_lines_shown = 8
 /// covers a client which misses enough captures to evict the matching result.
 pub const max_tool_tails = 128
 
-/// What the transcript draws for the active strand's running tool calls:
-/// one `ToolResult` line per stream, headed by the stream's name and how
-/// much it has carried, followed by the last `tail_lines_shown` lines of
-/// its window. A tail whose text is empty — a binary stream, or a command
-/// that has printed nothing to that stream yet — draws its heading alone,
-/// so the reader still sees that the command is alive and how much it has
-/// written.
+/// What the transcript draws for the active strand's running tool calls,
+/// which with details collapsed is nothing at all.
+///
+/// A settle changes a line's text and never the transcript's height. The
+/// durable projection already gives a running call one row — its summary
+/// followed by `· awaiting result` — and the result replaces that row one
+/// for one. Drawing the command's output window beside it would add a
+/// heading and up to `tail_lines_shown` more rows and take them away again
+/// two hundred milliseconds later, which is what made the transcript jump
+/// by eight rows on every tool call of a turn and back. The window is
+/// detail, so `Ctrl+g` is where it belongs, alongside the expanded result
+/// the settle will draw in its place.
+///
+/// Expanded, the window is one `ToolResult` line per stream, headed by the
+/// stream's name and how much it has carried, followed by the last
+/// `tail_lines_shown` lines of it. A tail whose text is empty — a binary
+/// stream, or a command that has printed nothing to that stream yet —
+/// draws its heading alone, so the reader still sees that the command is
+/// alive and how much it has written.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.tool_tail_lines(model)
+/// // tui.tool_tail_lines(tui.Model(..model, details_expanded: True))
 /// //   == [tui.Line(tui.ToolResult, "stdout · 31 B so far\ncompiling core")]
 /// ```
 @internal
 pub fn tool_tail_lines(model: Model) -> List(Line) {
+  case details_extent(model.details_expanded) {
+    notes_view.Excerpt -> []
+    notes_view.Complete -> expanded_tool_tail_lines(model)
+  }
+}
+
+// The window itself, once the reader has asked for detail.
+fn expanded_tool_tail_lines(model: Model) -> List(Line) {
   model.tool_tails
   |> list.filter(fn(tail) { tail.strand == model.active_strand })
   |> list.map(fn(tail) {
@@ -6011,7 +6055,7 @@ fn preview_stream(strand: String, sample: snapshot_view.Preview) -> Stream {
 fn stream_lines(
   streams: List(Stream),
   active_strand: String,
-  _details_expanded: Bool,
+  extent: notes_view.Extent,
 ) -> List(Line) {
   streams
   |> list.filter_map(fn(stream) {
@@ -6021,7 +6065,7 @@ fn stream_lines(
       True -> {
         let text = fragments |> list.reverse |> string.concat
         Ok(case kind {
-          "thinking" -> Line(Reasoning, text)
+          "thinking" -> live_reasoning_line(text, extent)
           "tool_call" -> Line(ToolCall, live_tool_call_summary(text))
           _ -> Line(Assistant, text)
         })
@@ -6029,6 +6073,87 @@ fn stream_lines(
     }
   })
 }
+
+// The live and settled forms of one reasoning block are drawn by different
+// code paths a few hundred milliseconds apart — this one from the stream
+// the provider is still writing, the other from the record the daemon has
+// committed — so the two functions below are deliberately the same shape.
+// Collapsed, each is exactly one `ReasoningDigest` row, and the settle
+// therefore changes the row's words and not the transcript's height.
+fn live_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
+  case extent {
+    notes_view.Complete -> Line(Reasoning, text)
+    notes_view.Excerpt -> Line(ReasoningDigest, live_reasoning_digest(text))
+  }
+}
+
+fn settled_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
+  case extent {
+    notes_view.Complete -> Line(Reasoning, text)
+    notes_view.Excerpt -> Line(ReasoningDigest, settled_reasoning_digest(text))
+  }
+}
+
+/// The collapsed stand-in for a reasoning block the provider is still
+/// writing: how much of it has arrived, and nothing of what it says.
+///
+/// An excerpt would be the obvious thing to show and is the wrong one. The
+/// opening words of a block that is still growing are rewritten under the
+/// reader as fragments land, and a line that changes is far harder to
+/// ignore than a counter that climbs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.live_reasoning_digest("one thought") == "1 line so far"
+/// ```
+///
+/// ```gleam
+/// assert tui.live_reasoning_digest("one\ntwo") == "2 lines so far"
+/// ```
+@internal
+pub fn live_reasoning_digest(text: String) -> String {
+  let count = text |> string.split("\n") |> list.length
+  int.to_string(count)
+  <> case count {
+    1 -> " line so far"
+    _ -> " lines so far"
+  }
+}
+
+/// The collapsed stand-in for a reasoning block the daemon has committed.
+///
+/// The block no longer moves, so the reader can be given something to
+/// decide on: its opening line, clipped, and the key that opens the rest.
+/// A block of only blank lines has no opening line, and falls back to its
+/// own text so the row is never empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.settled_reasoning_digest("First.\n\nSecond.")
+///   == "First.  [Ctrl+G to expand]"
+/// ```
+@internal
+pub fn settled_reasoning_digest(text: String) -> String {
+  let opening =
+    text
+    |> string.split("\n")
+    |> list.find(fn(line) { string.trim(line) != "" })
+    |> result.unwrap(text)
+  compact(opening, reasoning_digest_limit) <> expand_hint
+}
+
+/// How much of a settled reasoning block's opening line a digest keeps.
+///
+/// Short enough that the mark, the digest and the expand hint together fit
+/// one row of a narrow terminal, which is the property that makes a
+/// collapsed block cost exactly one row.
+pub const reasoning_digest_limit = 64
+
+/// How the transcript names the key that opens a collapsed row, in the
+/// wording `composer` already uses for a bounded user turn.
+pub const expand_hint = "  [Ctrl+G to expand]"
 
 /// Bounds a partial tool call to its name until durable arguments arrive.
 @internal
@@ -6449,8 +6574,13 @@ fn assistant_block_lines(
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
     message.AssistantThinking(thinking:, redacted:, ..) ->
       case redacted {
-        True -> [Line(Reasoning, "redacted")]
-        False -> [Line(Reasoning, thinking)]
+        // A redacted block has no text behind the marker, so expanding it
+        // would show the same row again. It stays one row in both modes.
+        True -> [Line(ReasoningDigest, "redacted")]
+
+        False -> [
+          settled_reasoning_line(thinking, details_extent(details_expanded)),
+        ]
       }
     message.AssistantToolCall(call:) -> {
       let message.ToolCall(name:, arguments:, ..) = call
