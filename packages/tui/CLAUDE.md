@@ -614,9 +614,32 @@ that tree separately from the self-contained server.
   cache at most once every 16 ms while paced events keep arriving and records
   the rest as `FrameDeferred`; the tick that follows the drained queue flushes
   it, and `paced_poll_timeout` shortens that tick's wait to 8 ms so the final
-  position lands within a frame of the hand stopping. Ticks and resizes always
-  render. The pacing clock is the monotonic clock, seeded at startup because a
-  fresh node's monotonic time is negative.
+  position lands within a frame of the hand stopping. The pacing clock is the
+  monotonic clock, seeded at startup because a fresh node's monotonic time is
+  negative.
+- **A tick is paced by what it carried.** A tick is both the idle event that
+  flushes a deferred frame and the carrier for every stream delta, so
+  `frame_boundary` classifies it by `TickTraffic` rather than by its
+  constructor: a tick that moved the transcript is `Paced` and waits out the
+  frame interval like any other streamed frame, while a tick that moved
+  nothing is a `FlushPoint`, because a deferred frame has no other event
+  waiting to pay it off. A resize always flushes.
+- **The viewport is paced, not teleported.** A provider chunk lands as two to
+  five rows at once. `Model.revealed_rows` is how many of `rendered_rows` the
+  bottom-anchored viewport has shown, and `pace` advances it toward the tail
+  by `pace_rows_per_frame` per rendered frame, in proportion to the backlog
+  once that passes `pace_catch_up_threshold`. Three growths bypass the walk
+  and are adopted whole: a viewport that has revealed nothing has no position
+  to stay continuous with, a shrink must not leave retired rows on screen, and
+  a growth taller than the viewport replaced everything the reader could see.
+  An idle strand holds nothing back, which is what makes a replayed or
+  scripted run settle on the complete frame. Any gesture — key, paste, scroll,
+  click, resize — closes the backlog at once, so the walk never stands between
+  the operator and the tail. While rows remain, `viewport_pacing` reports
+  `ViewportCatchingUp`, which makes the painted frame stale whatever the
+  revision says and holds `terminal_poll_timeout` at the frame interval: the
+  deltas that produced those rows are already drained, so nothing else would
+  wake the loop to finish showing them.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read
@@ -650,7 +673,19 @@ that tree separately from the self-contained server.
   discarded branches and superseded outcome text leave the cache. Session
   adoption, full snapshots and `/clear` empty it. This saves repeated Markdown
   parsing, sanitizing, span tokenization and cell-width calculation; it does
-  not bound the durable history itself. `dev/tui_replay_dev.gleam` validates
+  not bound the durable history itself.
+- **A cache is invalidated by a changed input, not by an event.** A capture
+  arrives four times a second throughout a turn, and most of them move only
+  usage, a phase or a timestamp. `render_cut` therefore compares what the
+  record projection actually reads — the records, the transcript header lines,
+  the active strand and the solo-owner identity — and keeps
+  `record_cache_valid` when all four are unchanged. In compact history a
+  settled record can re-group a tool block, which is a rewrite of rows already
+  projected rather than an append; `tool_activity.regroups` is where that
+  question is answered, and only a record it names forces a rebuild. Prose, a
+  user turn and structural history take the append path, which extends
+  `record_rows` and merges its own hints into the three layout caches rather
+  than replacing them. `dev/tui_replay_dev.gleam` validates
   admitted record counts and failure notices before reporting replay time.
 - **Model text never becomes terminal control traffic.** The text-hygiene
   pass replaces C0/C1, bidirectional, zero-width, variation-selector, and tag
