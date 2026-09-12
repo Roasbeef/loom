@@ -31,7 +31,7 @@
 
 import broker/policy.{type SandboxPolicy}
 import core/json.{type JsonValue}
-import gleam/option.{Some}
+import gleam/option.{None}
 import gleam/result
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
@@ -134,9 +134,12 @@ pub fn tool(advice: Advice) -> Tool {
       <> "inside its cooldown is downgraded to a nudge, and advice the "
       <> "primary has already been given is dropped, so say a thing once. "
       <> "The result tells you which of those happened.",
-    prompt_snippet: Some(
-      "`advise` answers each feed with one verdict: quiet, nudge or block.",
-    ),
+    // No prose index line. The system prompt's available-tools index is
+    // one string for the whole session, so a snippet here would tell the
+    // primary about a tool it is never offered and about a reviewer it
+    // has no business reasoning about. The advisor learns the tool from
+    // its own brief, which is prepended to its requests alone.
+    prompt_snippet: None,
     schema: tool.object_schema(
       [
         #(

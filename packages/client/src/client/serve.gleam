@@ -2884,7 +2884,10 @@ fn assemble_in(
         settings,
         base_policy,
         pool,
-        tool.names(tool_registry),
+        // The prompt is one string for every strand, so the advisor's
+        // own tool is left out of the index the primary reads; the
+        // advisor is told about it by its brief instead.
+        list.filter(tool.names(tool_registry), fn(name) { name != advise.name }),
         tool.snippets(tool_registry),
       )
     }),
