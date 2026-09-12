@@ -377,3 +377,63 @@ pub fn context_is_an_ordinary_read_and_shares_bounded_observation_slots_test() {
   process.send(release_worktree, Nil)
   assert field(final_frame(owner, 33), "status") == json.String("ready")
 }
+
+pub fn a_revoked_connection_never_receives_its_captured_context_test() {
+  let runtime = runtime()
+  let principal = access.Principal("revoked", "Owner", access.OwnerPrincipal)
+  let assert Ok(auth) =
+    actor.new(Ok(#(principal, access.Owner)))
+    |> actor.on_message(fn(state, message) {
+      case message {
+        Probe(reply) -> {
+          process.send(reply, state)
+          actor.continue(state)
+        }
+        Revoke -> actor.continue(Error("owner credential revoked"))
+      }
+    })
+    |> actor.start
+    as "the fixture can revoke authority while the context read is held"
+
+  // The two observation kinds take different authority branches on delivery:
+  // worktree re-checks ownership, context re-checks the subscription. Both
+  // run after the same revalidation, and only the worktree branch was
+  // exercised, so a context board could have been pushed to a connection the
+  // gateway had already retired.
+  let started = process.new_subject()
+  let options =
+    gateway.default_options("context-revocation", runtime)
+    |> gateway.with_context(fn(_strand) {
+      let release = process.new_subject()
+      process.send(started, release)
+      let assert Ok(Nil) = process.receive(release, 5000)
+        as "the fixture releases its captured conversation bytes"
+      Ok(json.Object([#("strand", json.String("main"))]))
+    })
+  let assert Ok(hub) = gateway.start(options, addresses.new())
+    as "the context revocation gateway starts"
+  let owner =
+    attach_checked(hub.data, runtime, principal, access.Owner, fn() {
+      actor.call(auth.data, 1000, Probe)
+    })
+  let assert protocol.SnapshotEvent(protocol.ContextSnapshot(pending)) =
+    request(owner, 41, protocol.ContextGet("main"))
+    as "the context read is admitted before revocation"
+  assert field(pending, "status") == json.String("pending")
+  let assert Ok(release) = process.receive(started, 1000)
+    as "the context worker runs outside the gateway handler"
+  process.send(auth.data, Revoke)
+  let assert Error(_) = actor.call(auth.data, 1000, Probe)
+    as "revocation is ordered before the context board is delivered"
+  process.send(release, Nil)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 1, attempt: fn() {
+      case gateway.attached(hub.data) == 0 {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "delivery revalidation retires the revoked context attachment"
+  assert no_observation(owner.inbox, 41, 100)
+    as "the captured conversation never reaches the revoked connection"
+}

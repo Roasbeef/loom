@@ -29,8 +29,9 @@ category totals or the usage estimate.
 
 Capture the configuration and leaf together, then project the immutable branch
 through its latest compaction. Refuse incomplete or unreadable projections.
-The scan admits at most 4096 entries and eight MiB of encoded entries; these
-limits bound accepted analysis, not allocations already made by the backend.
+The scan admits at most 4096 entries; that limit bounds accepted analysis, not
+allocations already made by the backend. The board's own 47,000-byte budget
+bounds what the reply carries.
 
 `reported_plus_estimate` means the latest usable post-compaction provider total
 plus estimates for subsequent projected messages, reusing runtime accounting.
@@ -51,8 +52,10 @@ input are not reconstructed by this read. No model calls or hooks run.
 
 The TUI adds `/context`, `/context all` (also `/contextall`), and a `ctx ~N%`
 footer label. It refreshes
-after coherent conversation changes and explicit requests, coalesces outstanding
-reads, and keeps observations scoped to attachment and strand. Unknown or failed
+on the first capture, a strand switch, a configuration change, the settling of
+the active strand's operation, and explicit requests; an entry committed while
+the operation runs does not start a read. It coalesces outstanding reads and
+keeps observations scoped to attachment and strand. Unknown or failed
 observations remain unavailable. Details scroll independently of the composer;
 Escape returns without discarding input. Older servers can refuse the optional
 command while the rest of the terminal remains usable.

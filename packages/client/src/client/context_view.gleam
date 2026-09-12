@@ -5,7 +5,6 @@
 //// the observation instead of presenting an empty context.
 
 import client/daemon/transfer
-import core/codec
 import core/json
 import core/message
 import core/register
@@ -90,17 +89,6 @@ pub fn read(
   use <- bool.guard(
     list.drop(entries, 4096) != [],
     Error("context exceeds the 4096-entry inspection limit"),
-  )
-  use _ <- result.try(
-    list.try_fold(entries, 0, fn(used, value) {
-      use size <- result.try(
-        transfer.encoded_size(codec.encode_entry(value), 8_388_608 - used)
-        |> result.replace_error(
-          "context exceeds the eight-MiB inspection limit",
-        ),
-      )
-      Ok(used + size)
-    }),
   )
   let projected = hooks.project_from_scan(entries)
   let items =
