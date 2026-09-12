@@ -6462,24 +6462,25 @@ fn feed_frame(text: String) -> Option(AdvisorMessage) {
   text |> framed_body(feed_header, feed_footer) |> option.map(Feed)
 }
 
-// The body between a header line and its footer, or nothing when the first
-// line is not that header.
+// The body between a header line and its footer, or nothing when the text
+// does not carry both.
+//
+// The server writes both tokens on every frame — the footer is appended
+// after the body, and its byte caps bound a slice rather than a frame — so
+// requiring the pair costs nothing a reader would have seen. What it buys
+// is the case this recognizer exists for: a turn that merely quotes a
+// header, an operator pasting a verdict back to ask about it, stays the
+// operator's own prompt instead of being redrawn as harness speech.
 fn framed_body(text: String, header: String, footer: String) -> Option(String) {
   use #(first, rest) <- option.then(
     text |> string.split_once("\n") |> option.from_result,
   )
   use <- bool.guard(when: first != header, return: None)
 
-  Some(strip_footer(rest, footer))
-}
-
-// A frame whose footer a byte cap cut keeps the body it has. The footer is
-// addressed to the model and its absence changes nothing the operator reads.
-fn strip_footer(body: String, footer: String) -> String {
-  case string.split_once(body, "\n" <> footer) {
-    Ok(#(before, _after)) -> before
-    Error(Nil) -> body
-  }
+  rest
+  |> string.split_once("\n" <> footer)
+  |> option.from_result
+  |> option.map(fn(halves) { halves.0 })
 }
 
 // The bullet lines inside the nudges fence. A fence opened but never closed

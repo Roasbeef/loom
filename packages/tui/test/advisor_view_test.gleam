@@ -105,12 +105,17 @@ pub fn a_feed_frame_is_recognized_on_the_advisors_branch_test() {
 
 /// Attribution is what the recognizer decides, so it takes both tokens.
 ///
-/// Each case here carries one half of a frame: an operator quoting a
-/// verdict back to ask about it, a nudges header with no fence under it,
-/// and the run-start notes digest, which is machine context of a different
-/// kind and has a view of its own.
+/// Each case here carries one half of a frame: an operator opening a turn
+/// with the advice header to ask about a verdict, the same header buried
+/// mid-turn, a nudges header with no fence under it, and the run-start
+/// notes digest, which is machine context of a different kind and has a
+/// view of its own.
 pub fn a_turn_that_is_not_advisor_traffic_is_left_alone_test() {
   assert tui.advisor_payload(user_message("rerun the failing test")) == None
+  assert tui.advisor_payload(user_message(
+      tui.advice_header <> "\nwhat did it mean by this?",
+    ))
+    == None
   assert tui.advisor_payload(user_message(
       "what did it mean by\n" <> tui.advice_header,
     ))
