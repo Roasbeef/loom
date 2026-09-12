@@ -29,6 +29,7 @@ mist = { git = "https://github.com/Roasbeef/mist.git", ref = "65b29375ecefc9a5d5
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.1.0 and < 2.0.0"
 tom = ">= 2.1.0 and < 3.0.0"
+gleam_regexp = ">= 1.1.1 and < 2.0.0"
 
 [dev_dependencies]
 sqlight = ">= 1.0.0 and < 2.0.0"

@@ -77,8 +77,25 @@ after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
    Herdr-side registry change is a separate change in the Herdr repo.
 
 2. **Land the imported-hooks compatibility layer.** PR #355 on
-   `hooks/claude-compat` runs imported Claude Code hooks unchanged. **Exit:**
-   adversarial review, rebase, Linux signoff, merge.
+   `hooks/claude-compat` runs imported Claude Code hooks unchanged (issue
+   #350, first wave): the pinned contract, the design note, the parity matrix,
+   and six client modules. The acceptance case is
+   `packages/client/test/client/hookserve_e2e_test.gleam` — one real session
+   from `serve.open_instance` under a temporary operator home, an unedited
+   user-level collection, and `SessionStart`, `PreToolUse`, `PostToolUse` and
+   `Stop` firing at their own harness moments across an operation one `Stop`
+   block holds open. It replaced a two-step shell demo that nobody could run.
+   **Exit:** adversarial review, rebase, Linux signoff on the exact head
+   including that fixture and the jailed `hookrunner` ones, then merge.
+   The matrix's follow-up rows are the next waves, not part of this exit:
+   - the prompt-admission seam (`UserPromptSubmit`): the harness has no moment
+     where a queued prompt can be inspected or rejected before admission; the
+     decision layer already reads the answers, the gateway slot is missing, and
+     it touches surfaces protocol 024 froze, so it may need a
+     `protocol-change/NNN.md`;
+   - a `loom hooks` CLI (list, trust, revoke, convert over the trust root);
+   - asynchronous hooks, whose natural shape is the job plane with delivery at
+     the next safe point.
 
 3. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
    commit `Aborted` with "provider cancellation could not be confirmed" even
@@ -176,6 +193,17 @@ Process machinery follows [the Weft mapping](weft.md).
 shares one captured catalogue between the terminal and model. The model sees
 names and descriptions until `load_skill` selects a document; loading grants no
 new tool permissions.
+
+**Imported hooks run in the session's jail, and that is accepted.** A
+hook from an imported Claude Code collection runs under the session's policy
+and environment, never with the user's full permissions; `CLAUDE_PROJECT_DIR`
+names the workspace, and `transcript_path` names the SQLite file rather than
+a JSONL transcript. Both differences are recorded in the parity matrix with
+their reasons. A leading `~` is **not** one of them: the hook process runs
+with `HOME` set to the operator's own home, so the shell resolves `~` where
+the operator keeps their scripts, and nothing rewrites the command string. The accepted formats are the Claude JSON
+shape verbatim plus a native `[[hooks.Event]]` TOML layer, sources merged
+rather than replaced, with hash-pinned trust per source.
 
 **Only the gate posts Linux signoff.** `scripts/signoff.sh` owns the verdict
 for a pushed commit. Never post success by hand or treat an older commit's

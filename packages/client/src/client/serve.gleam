@@ -48,6 +48,10 @@ import client/extension/memory as extension_memory
 import client/extension/record as extension_record
 import client/gateway as hub
 import client/history
+import client/hookcompat
+import client/hookrunner
+import client/hookserve
+import client/hookwire
 import client/host
 import client/install
 import client/internal/ffi_os
@@ -120,6 +124,132 @@ import tools/tool
 import weft/actor as owned_actor
 import weft/poll
 import weft/registry as address
+
+// The imported-hook layer: load this session's Claude-compatible
+// sources, keep the trusted ones, and compose their gates. Loading is
+// best-effort with a logged line per skipped source — one broken
+// source never takes the session's hooks down with it, and a session
+// with no sources composes nothing, which is the same as before this
+// existed. The runner context reuses the harness-side coordinates
+// the extension bus already clears under, so an imported hook's
+// process is attributed the same way a native hook satellite's is.
+fn with_imported_hooks(
+  built: effects.Effects,
+  settings: Settings,
+  clock: Clock,
+  environment: List(#(String, String)),
+  base_policy: policy.SandboxPolicy,
+  broker_actor: broker.Broker,
+  logger: Logger,
+  entropy: fn() -> Int,
+) -> effects.Effects {
+  let located = hookserve.locations(settings.home, settings.workspace)
+  let trust_root = option.map(settings.home, fn(home) { home <> "/hooktrust" })
+  let wiring =
+    hookwire.Wiring(
+      config: hookcompat.Config(
+        entries: [],
+        source: hookcompat.Source(label: "none", origin: hookcompat.LoomInline),
+      ),
+      session_id: settings.session_id,
+      transcript_path: settings.session_path,
+      workspace: settings.workspace,
+    )
+  let coordinates =
+    hook_coordinates(settings, base_policy, entropy(), clock, environment)
+  let runner =
+    hookrunner.Context(
+      broker: broker_actor,
+      base_policy: base_policy,
+      op_id: coordinates.op_id,
+      step_id: "imported-hooks",
+      workspace: settings.workspace,
+      env: hook_environment(environment, settings.home, settings.workspace),
+      demand: settings.demand,
+      clock: clock,
+      session_id: settings.session_id,
+      transcript_path: settings.session_path,
+    )
+  let serving = hookserve.load(located, trust_root, wiring, runner)
+  list.each(serving.skipped, fn(skipped) {
+    log.warn(logger, "hooks.source_skipped", [
+      field.ident(key: "path", value: skipped.path),
+      field.text(key: "reason", value: skipped.reason),
+    ])
+  })
+
+  // The load-time findings of the sources that did load: handler kinds
+  // this build parses but does not run, `once` declarations it
+  // ignores, events with no moment. One line each, at boot, is the
+  // whole of the visible-diagnostics story for a collection that loads
+  // without edits — an operator otherwise learns which of their
+  // entries never fire by watching for something that does not happen.
+  list.each(serving.notes, fn(note) {
+    log.info(logger, "hooks.note", [
+      field.ident(key: "source", value: note.source_label),
+      field.text(key: "what", value: note.what),
+    ])
+  })
+  case serving.wiring.config.entries {
+    [] -> built
+    _ ->
+      case hookserve.wire(built, serving, clock) {
+        Ok(composed) -> composed
+        Error(reason) -> {
+          log.warn(logger, "hooks.unavailable", [
+            field.text(key: "reason", value: reason),
+          ])
+          built
+        }
+      }
+  }
+}
+
+/// The environment one imported hook's process runs under: the
+/// session's own, with `HOME` pointed at the operator's home, plus
+/// `CLAUDE_PROJECT_DIR` naming the workspace.
+///
+/// A jailed *tool* gets a workspace-local `HOME`
+/// (`tool_home_directory`) so that what a toolchain writes to its home
+/// stays out of the operator's checkout. An imported hook is the
+/// opposite case. Ten of the sixteen entries in the reference
+/// collection are `~/.claude/hooks/...`, and under Claude that `~` is
+/// the operator's home; a hook whose `HOME` was the jail's would look
+/// for its own script in a directory that has never held one. Moving
+/// the name is also why nothing rewrites the command string: `sh`
+/// expands `~` against whatever `HOME` says, in every position it
+/// expands it, and a rewriter would have agreed with the shell only in
+/// the one position its parser looked at.
+///
+/// `None` is a daemon started with `HOME` unset — `resolve` records
+/// that rather than guessing. There is no home to point at, so the jail
+/// home stands and `~` means it.
+///
+/// `HOME` and `CLAUDE_PROJECT_DIR` are both granted on the session base
+/// (`allowing_imported_hook_env` adds the second; `policy.workspace_default`
+/// already carries the first), because `hookrunner.call_spec` asks for
+/// exactly these keys and `RefuseNarrowed` refuses the whole call over a
+/// name the base withholds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.hook_environment(env, Some("/Users/o"), "/work")
+/// //   // -> [.., #("HOME", "/Users/o"), #("CLAUDE_PROJECT_DIR", "/work")]
+/// ```
+///
+@internal
+pub fn hook_environment(
+  environment: List(#(String, String)),
+  home: Option(String),
+  workspace: String,
+) -> List(#(String, String)) {
+  let based = case home {
+    Some(operator) -> list.key_set(environment, "HOME", operator)
+    None -> environment
+  }
+  list.key_set(based, "CLAUDE_PROJECT_DIR", workspace)
+}
 
 /// Exact domain paths, independent of session filename or admission order.
 pub type DomainPaths {
@@ -2258,13 +2388,7 @@ fn assemble_in(
   // mount the base does not carry is refused by the meet.
   let toolchain = codemode_wiring.discover(settings.codemode_seed)
   let base_policy =
-    protecting_index(settings.base_policy, index_path)
-    |> protecting_memory(memory_store, memory_digest)
-    |> allowing_tool_tmpdir
-    |> under_tools_config(settings.tools)
-    |> widening_linked_worktree(settings.workspace)
-    |> admitting_codemode(toolchain)
-    |> merging_mounts
+    session_base(settings, index_path, memory_store, memory_digest, toolchain)
 
   // Before a directory is made, a lease is taken or a helper is spawned:
   // a base policy the sandbox cannot enforce is a boot failure, not a
@@ -2778,6 +2902,26 @@ fn assemble_in(
   // two layers coexist at all.
   let effects_record =
     with_extension_hooks(effects_record, extensions, opened, clock, logger)
+
+  // The imported-hook compatibility layer goes on last of all, over
+  // the bus-composed record, for the same reason the bus goes on
+  // last over the harness's own slots: a source's Stop hook is asked
+  // after every native follow-up, and its PreToolUse verdict after
+  // the harness's own clearance and any native gate — the ordering
+  // that keeps one authority story. A session with no imported
+  // sources composes nothing, which is the same as before this
+  // existed.
+  let effects_record =
+    with_imported_hooks(
+      effects_record,
+      settings,
+      clock,
+      environment,
+      base_policy,
+      broker_actor,
+      logger,
+      entropy,
+    )
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open_published(
@@ -4083,15 +4227,95 @@ fn absolute_path(path: String, against base: String) -> Result(String, Nil) {
   }
 }
 
-// The policy meet keeps only the environment names the session base
-// allows, and the base allows `PATH` and `HOME` but not `TMPDIR`. The
-// bash tool passes `TMPDIR` (see `session_environment`), so the name is
-// granted on the session base here — the same move the code-mode
-// builder makes on its own derived base, for the same variable.
-fn allowing_tool_tmpdir(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
+/// The whole session base, composed: every protection, every widening,
+/// and every environment name a jailed process of this session is
+/// allowed to carry, in the order they apply.
+///
+/// It is one named function rather than a pipeline inlined in
+/// `assemble_in` because the composition *is* a decision about a value,
+/// and the steps are not independent — `policy.meet` intersects
+/// `env_allow` against this result, so a step left out is not a missing
+/// convenience but every call that wanted the name refused. A test that
+/// can read this back is what notices a step going missing;
+/// `base_policy_fault` is the same argument one table further on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.session_base(settings, index, store, digest, toolchain)
+/// //   .env_allow  // contains "TMPDIR" and "CLAUDE_PROJECT_DIR"
+/// ```
+///
+@internal
+pub fn session_base(
+  settings: Settings,
+  index_path: String,
+  memory_store: String,
+  memory_digest: String,
+  toolchain: Result(codemode_wiring.Toolchain, String),
+) -> policy.SandboxPolicy {
+  protecting_index(settings.base_policy, index_path)
+  |> protecting_memory(memory_store, memory_digest)
+  |> allowing_tool_tmpdir
+  |> allowing_imported_hook_env
+  |> under_tools_config(settings.tools)
+  |> widening_linked_worktree(settings.workspace)
+  |> admitting_codemode(toolchain)
+  |> merging_mounts
+}
+
+/// The policy meet keeps only the environment names the session base
+/// allows, and the base allows `PATH` and `HOME` but not `TMPDIR`. The
+/// bash tool passes `TMPDIR` (see `session_environment`), so the name is
+/// granted on the session base here — the same move the code-mode
+/// builder makes on its own derived base, for the same variable.
+///
+/// Public to this package for the reason `under_tools_config` is: the
+/// composed allowlist is a value a test should be able to read back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.allowing_tool_tmpdir(base).env_allow  // contains "TMPDIR"
+/// ```
+///
+@internal
+pub fn allowing_tool_tmpdir(
+  base: policy.SandboxPolicy,
+) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..base,
     env_allow: list.unique(list.append(base.env_allow, ["TMPDIR"])),
+  )
+}
+
+/// `CLAUDE_PROJECT_DIR` granted on the session base, for the same
+/// reason `allowing_tool_tmpdir` grants `TMPDIR`.
+///
+/// An imported hook's process is cleared with `RefuseNarrowed`, and its
+/// requirements name exactly the keys of the environment
+/// `with_imported_hooks` composes — which carries `CLAUDE_PROJECT_DIR`
+/// because the contract's payload and scripts both expect it. A name in
+/// that environment and not on the base's allowlist is not a missing
+/// variable, it is a refusal of the whole call: `policy.meet` intersects
+/// `env_allow`, `shortfall` reports the narrowing, and the broker turns
+/// that into `PolicyRefused` before any process exists. Granting it here
+/// is what keeps the hook runner's ask a subset of the base.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.allowing_imported_hook_env(base).env_allow
+/// //   // contains "CLAUDE_PROJECT_DIR"
+/// ```
+///
+@internal
+pub fn allowing_imported_hook_env(
+  base: policy.SandboxPolicy,
+) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base,
+    env_allow: list.unique(list.append(base.env_allow, ["CLAUDE_PROJECT_DIR"])),
   )
 }
 
