@@ -61,7 +61,7 @@ model's request, and carries a `lineage/` cell naming its parent. That
 cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
-`ensure_strand` (`client/advisor.gleam:941`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:1028`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1007`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
@@ -123,13 +123,31 @@ further review rather than ten.
 
 That is also why `AdvisorRunEnded` exists: the skipped delta would
 otherwise wait for the primary to run again, which on an idle session is
-never. `coalesced` (`client/advisor.gleam:583`) deliberately does *not*
-make the busy check on that occasion. The strand driver resolves
-`run_end` while `current_operation` is still set, so the advisor still
-reads as busy at exactly the moment its own review finishes, and a
-catch-up that yielded to that could never fire. The stretch itself is
-the terminator instead: a scan that finds nothing new past the cursor
-sends nothing.
+never. `owing` deliberately does *not* make the busy check on that
+occasion. The strand driver resolves `run_end` while
+`current_operation` is still set, so the advisor still reads as busy at
+exactly the moment its own review finishes, and a catch-up that yielded
+to that could never fire.
+
+**The catch-up is owed rather than offered.** A skipped feed records a
+debt in the actor's `Memory.owed`, and a review end feeds only when one
+is outstanding. The gate is what keeps the loop per-run. Without it the
+catch-up would send any delta past the cursor, and the primary appends
+assistant turns and tool results throughout its own run — so every
+advisor run end would find something new, send it, and be asked again
+when that review ended. The loop would sustain itself for as long as the
+primary kept working, at one advisor inference per iteration against a
+primary that has not decided anything yet, which is exactly the per-step
+review the Vocabulary section rules out.
+
+The debt is held in the actor's heap and not in a cell. It is derived
+state that gates one catch-up, the durable cursor already says which
+stretch has been shown, and a restart that forgets a debt delays one
+review to the primary's next run end — the same cost as the lost cast
+the actor already tolerates. It is cleared as a feed is attempted rather
+than as one lands: a send that fails leaves the cursor in place, so the
+primary's next run end offers the same stretch again, and a feed that
+never arrived starts no review to end.
 
 ### What the advisor is shown
 
@@ -203,7 +221,7 @@ decodes the arguments and hands the pair to a single closure on an
 Two things the model does not supply. The first is its own identity:
 `judge` is handed `Ctx.strand`, which the driver set from its own
 durable name, so a verdict cannot be attributed to a strand that did not
-produce it. `judge` (`client/advisor.gleam:657`) refuses any caller
+produce it. `judge` (`client/advisor.gleam:747`) refuses any caller
 whose name is not `advisor`. The second is what a verdict costs.
 
 `decode_verdict` (`tools/advise.gleam:203`) is total and decodes the
@@ -275,7 +293,7 @@ The shipped bounds are `default_policy`
 thirty-two digests, and at most eight nudges or four kilobytes waiting
 for the next run start. Only the cooldown is configurable.
 
-The actor's `decide` (`client/advisor.gleam:681`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:767`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the send
 costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -310,13 +328,21 @@ must not acquire.
 
 Each nudge is made fence-safe before it is written, so a nudge quoting a
 fenced code block cannot close the fence it sits inside and smuggle its
-tail out as prose.
+tail out as prose. Advice is made frame-safe for the same reason: an
+occurrence of either advice token inside the body has its brackets
+replaced with parentheses, so a body that quoted the closing line cannot
+end the frame early and continue as unframed text in the operator's
+voice. The advisor's text is model-written and its input is a rendering
+of whatever the primary read, so a file or a command's output is one
+round of quoting away from the tokens. One replacement pass suffices,
+unlike the fence's: the replacement carries neither bracket, so it
+cannot combine with the surrounding text to spell the literal again.
 
 ## The standing brief
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:263`).
+The constant is `brief` (`client/advisor.gleam:330`).
 
 Three properties follow from the prepend. A durable first message would
 be summarized away by the advisor's own compaction and would sit in the
@@ -342,11 +368,18 @@ orders.
 | The standing brief | Nowhere. Re-applied per request. | Not applicable. |
 | The actor's process state | Its heap, and it is only a cache of the two cells. | Yes, and that costs at most one skipped review. |
 
-The advisor actor is the only writer of both cells. They sit under a
-harness-owned prefix, and nothing model-facing can name them: the only
-fact write a model reaches is the Agency blackboard, which prefixes
-every key with `agent/` and the calling strand's own name, and
-`strand.notes` reads under `agent/` alone.
+The advisor actor is the only writer of both cells, and forging either
+takes two independent failures rather than one. The model-facing fact
+write is the Agency blackboard, which composes every key from `agent/`
+and the calling strand's own name, and `strand.notes` reads under
+`agent/` alone — that is the first lock. The second is the reservation:
+`advisor/` is a reserved corner of `fact.custom`
+(`api.advisor_fact_prefix`), so `put_fact` refuses the prefix outright
+and `facts` hides it, and the actor writes through `put_reserved_fact`
+like every other owner of a reserved namespace. The cursor is the cell
+the reservation is really for: a large integer written under it moves
+the reviewer past everything the primary will ever append, and the
+symptom is a quiet advisor rather than an error anybody sees.
 
 The guard's decoder is deliberately asymmetric about absence and type.
 An absent cell, and an absent field inside a present one, takes the
@@ -394,6 +427,18 @@ costs at most one review.
   reported to the advisor in its tool result.
 - **The advisor's own runs fail.** A provider error or a refused tool
   settles in its own tree the way any strand's does.
+- **A nudge drain is lost.** The run-start drain clears the queue and
+  writes the guard cell before it replies, so nudges drained into a run
+  start whose wait has already expired — or into an admission that does
+  not commit — are gone. This is accepted rather than prevented: the
+  alternative is a claim-then-confirm protocol, a second round trip on
+  the driver process and a third guard state to reason about, which is
+  more machinery than a dropped nit is worth. A lost nudge costs the
+  primary one piece of advice it was never obliged to take, and the
+  advisor raises the point again at the next run end if it still holds.
+  The feed path is deliberately stricter, because a lost feed is a
+  stretch of the primary's work nobody reviews: the cursor advances only
+  on a successful send.
 
 Two waits are bounded, and both are bounded because the caller is a
 place where a dead caller is a run that never settles. The run-start
@@ -427,6 +472,27 @@ such a register, so it appears in the agent rail and its branch is one
 strand switch away. That is deliberate: the isolation is between the two
 models, not between the harness and the person running it.
 
+**An extension** reaches the advisor's runs, and the memory digest does
+too. The extension hook bus is composed over the advisor's three slots,
+so an extension's `context` fold receives and may rewrite the advisor's
+brief, its tool gate is consulted on the `advise` call, and `AgentEnd`
+and usage fire for the advisor's runs beside the primary's. The memory
+digest is not strand-scoped either — `memory.digest_hooks` runs at every
+strand's run start — so the operator's distilled memory is appended to
+the advisor's branch as well. Neither is an accident. An extension is
+installed by the operator and runs with the operator's authority, which
+is the whole extension trust model: a configured extension can already
+rewrite the primary's context and gate the primary's tools, and an
+advisor it could not touch would be a plane outside the operator's
+control rather than a safer one. The memory digest is the same argument
+from the other side — it is the operator's own standing text, and the
+reviewer reading what the operator wants remembered is a feature. What
+neither of them changes is the isolation the design rests on, which is
+between the two *models*: nothing here lets the primary address the
+advisor or read its cells. The one claim to qualify is the brief's, which
+is the only standing instruction *the harness* prepends, not the only
+operator-authored text the advisor ever sees.
+
 ## How the terminal draws it
 
 All three frames are stored as user messages, because a user turn is the
@@ -442,8 +508,14 @@ it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
 the body under the same heading with the frame lines dropped, since
 those address the model rather than the operator. Each frame is
 recognized by its first line *and* its body delimiter, the same
-two-token test the notes envelope makes, so an operator pasting a nudge
-back to ask about it keeps their own attribution.
+two-token test the notes envelope makes, so an operator pasting a
+verdict back to ask about it keeps their own attribution. The server
+writes both tokens on every frame — the footer is appended after the
+body and the byte caps bound a slice rather than a frame — so requiring
+the pair costs nothing a reader would otherwise have seen.
+`client/advisorslice`'s own recognizer takes both tokens for the same
+reason, since a quoted header coming back around in a feed must not be
+labelled as the advisor's earlier words.
 
 The feed frame is covered too, not only the two that land on the
 primary's branch, because the advisor is in the strand list and an
@@ -480,6 +552,19 @@ gateway like every other role, so a chain whose head names an
 unregistered provider falls through to the next usable entry exactly as
 `main` would. A catalogue that does not route it gets a session that
 runs exactly as before.
+
+An existing session keeps the advisor it was created with. `ensure_strand`
+treats `StrandExists` as success, so a reboot restores the strand rather
+than reconciling it, and an edit to `[roles] advisor` or to the
+`[advisor]` table reaches new sessions only. A session whose advisor
+should be reconfigured is a session to start again.
+
+A routed advisor that resolves to nothing is warned about once at boot
+(`advisor.unresolved`) and starts no advisor. The two silences an
+operator cannot otherwise tell apart are a catalogue with no `[roles]
+advisor` line, which is the ordinary posture and says nothing, and one
+that routes the role to a chain this host cannot serve, whose only other
+symptom is a reviewer that never speaks.
 
 `parse_advisor` (`client/catalog.gleam:1391`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is: an unknown key, a
@@ -526,7 +611,10 @@ here rather than left for a reader to find.
   re-skip the same rows at every run end for the rest of the session.
 - **The scan is bounded at 512 entries** (`scan_limit`). The comment
   bounds the render but not the read, and a long coalescing gap would
-  otherwise walk an afternoon's branch.
+  otherwise walk an afternoon's branch. The limit applies after the
+  `OldestFirst` ordering, so the cap returns the oldest entries past the
+  cursor and the cursor advances to the newest of those: what the cap
+  leaves behind is deferred to the next feed rather than skipped.
 - **The duplicate ring remembers queued nudges too**, not only delivered
   blocks, so the same advice cannot arrive once through each channel.
 - **The actor is a supervised child**, not merely unlinked from the
@@ -580,8 +668,10 @@ text, the oldest entries dropped from an overflowing slice, the cursor
 naming the newest entry even when it rendered nothing, a single
 oversized block clipped rather than dropped, compaction and branch
 summaries, earlier advice and nudges coming back labelled, an assistant
-turn quoting the header staying assistant text, and the three frames
-including a nudge that cannot close its own fence.
+turn quoting the header staying assistant text, a user turn that carries
+the header without its footer staying the operator's own, and the three
+frames including a nudge that cannot close its own fence and advice that
+can neither close nor reopen its own.
 
 **`advisor_test`** covers the actor and its hooks against a real session
 store: a foreign strand's run start left alone, an absent actor yielding
@@ -591,9 +681,16 @@ primary's, the run-end answer passed through unchanged, only a
 went through, a refused delivery becoming an error outcome, the tool
 grant, an unregistered `advise` refusing the strand, a primary run end
 feeding the advisor, a busy advisor not fed again, the advisor's own run
-end catching up, an empty branch sending nothing, a caller that is not
-the advisor refused, a block reaching the primary, and a queued nudge
-reaching the primary's next run start.
+end catching up on a feed that was coalesced away, a review end with
+nothing owed polling nothing, an empty branch sending nothing, a caller
+that is not the advisor refused, a block reaching the primary, a queued
+nudge reaching the primary's next run start, and the isolation the whole
+design rests on — no lineage cell for the advisor, and an Agency send
+from the primary to it refused as unaddressable.
+
+**`runtime/api_test`** pins the reservation: `advisor/` is a reserved
+key, both write doors refuse it, and a cell the harness wrote under it
+is absent from the blackboard listing.
 
 **`advise_test`** pins the tool: the decoder's every accepted and
 refused shape, the calling strand and the verdict reaching the seam, one
