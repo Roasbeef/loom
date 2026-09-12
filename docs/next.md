@@ -4,135 +4,148 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Re-baselined September 11, 2026 against merged main `d12e8f7e` and the
-streaming-tool-output branch for issue #186. PR #349 is merged at that base;
-its exact head `3cf47e56` passed all required hosted checks and Linux signoff.
-PR #348 is rebased onto it. A review of the combined tree found and corrected
-one output-attribution gap: the event bus now carries the dispatching tool
-run's authoritative strand instead of asking the gateway to infer one from
-live presentation state. Local and hosted verification of the rebased head
-remain the final gates before merge.
+Re-baselined September 12, 2026 against merged main `7ea66bdb`. The streaming
+tool-output work (#348) and the three-PR UX series (#351, #352, #353) are all
+merged; the previous edition described #348 as pending and predates the series
+entirely. Each of the four merged on a green `signoff/linux` at its exact head:
+#348 at `6a484a4f`, #352 at `178e701f`, #353 at `eff46b43`, #351 at `7ea66bdb`.
+The next bodies of work are the native Herdr integration (#354) and the imported
+Claude-hooks compatibility layer (#355).
 
 ## Where the tree is
 
 | Body of work | Current state |
 |---|---|
 | Human controls | Queue editing, priority steering, worktree observations, and completion summaries are merged in #344. |
-| Markdown skills | #346 is merged in `3ce454e6`; discovery, explicit activation, paged completion, and model-selected loading are shipped in the base. |
-| UX polish | #347 is merged. The local follow-up hides file-read hashes, repairs tab and equality rendering, removes the automatic completion footer, and freezes unfinished output during scrollback with a clickable return action. The expanded follow-up adds colored current patches, structured notes, workspace-first session ordering, and durable session-start commit observations. |
-| Streaming tool output | A running `bash` or `grep` call's rolling output tail reaches the terminal while it runs: collector observer, `Outputs` bus topic, pushed `tool_output` frame, one `ToolTail` per stream drawn under the call ([protocol 031](../protocol-change/031-tool-output-stream.md), issue #186). PR #348, not yet merged. |
-| Local verification | One full `make check` passed: 4,191 Gleam tests, native helper checks, prelude verification, and house-rule lint. Installed native acceptance and matched measurements are recorded in the linked reports. |
+| Markdown skills | #346 is merged; discovery, explicit activation, paged completion, and model-selected loading are shipped. |
+| UX polish | #347 and its reading follow-up #349 are merged. |
+| Streaming tool output | Merged in #348 (`6a484a4f`). A running `bash`/`grep` call's bounded output tail reaches the terminal while it runs: collector observer, `Outputs` bus topic, pushed `tool_output` frame, one `ToolTail` per stream ([protocol 031](../protocol-change/031-tool-output-stream.md), issue #186). |
+| Context usage | Merged in #351. `/context`, `/context all`, and a persistent `ctx ~N%` footer; the server captures the active strand's configuration and immutable history, so the count is independent of scrollback retention ([protocol 030](../protocol-change/030-context-observation.md)). |
+| Escape and held input | Merged in #352. An explicit abort now admits every message held for that strand into one successor run, not just the first ([protocol 032](../protocol-change/032-abort-held-batch.md)). |
+| Transcript reading and drafts | Merged in #353. A reading viewport is preserved even at offset zero, expanded tool results keep the compact call's anchor, bracketed paste inserts at the cursor without replacing a draft, and an aborted turn renders as Stopped with its diagnostic visible. |
+| Herdr integration | PR #354 on branch `herdr`, not yet merged. The terminal reports its lifecycle to a Herdr multiplexer over a unix socket when launched inside a Herdr pane (issue #140). |
+| Imported hooks | PR #355 on branch `hooks/claude-compat`, not yet merged. A compatibility layer that runs imported Claude Code hooks unchanged. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
 ### Corrections to the previous edition
 
-The previous handoff still called for merging the corrected skills release.
-PR #346 merged at 01:06:23 UTC on September 11, with head `3f9aa9b3`, into
-`3ce454e6`. All fifteen required checks and Linux signoff passed on that head;
-main run `34549303602` also passed. The glaml metadata correction remains pinned
-at `084857e`; replacing that fork waits for an upstream release.
+The previous handoff (September 11) was written before #348 merged and called
+for landing it as the next step; it is merged at `6a484a4f`. That edition
+predates the UX series, which was reviewed adversarially, fixed, signed off, and
+merged on September 12. During that series the Escape "cancellation could not be
+confirmed" report was diagnosed: it is a proof-delivery race, not a failed stop
+(see "Deliberately open"). The previous edition's verification block referenced
+tool-output test matches that are now merged; the block below is refreshed.
 
-The previous edition also left sustained-output selection, the joined queue
-and reconnect flow, ordinary SDK access, and local resource attribution open.
-The new [acceptance ledger](review/ux-polish-acceptance.md) records installed
-fixtures for those flows, including actual cgo, authenticated read-only GitHub,
-and batched code-mode results. [The resource report](review/ux-polish-resources.md)
-separates daemon and TUI measurements, correlated receipts, and retained state.
-These deterministic fixtures do not establish external-model reliability,
-physical keypress latency, or a long-duration memory plateau.
+### The UX series and its verification
 
-One independent [review](review/ux-polish-review.md) found three P2 issues in
-older-page acceptance and summary aggregation. All were corrected and covered
-by regressions. A bounded follow-up checked protocol 028 and the fixes with no
-remaining production finding. The native fixture separately exposed a prompt
-refused behind automatic inspection; the existing one-unsent-command mechanism
-now retains it until the authenticated read completes.
+Three PRs landed after one adversarial review each (Opus), every finding
+verified against the code before acting:
 
-### Streaming tool output and its verification
+- **#351 context usage.** The inspector and footer read the server's captured
+  configuration and branch, never presentation state. Review removed a
+  redundant eight-MiB encode guard (the 4096-entry scan and the board's
+  47,000-byte budget already bound the read) and moved the footer refresh from
+  once per committed entry to the operation boundary, so a long turn no longer
+  starts a server-side scan per entry.
+- **#352 held input after abort.** The held queue owns its drain policy as a
+  two-variant type, so an emptied queue drops its batch intent and a later idle
+  transition cannot inherit it. The empty-queue-at-abort arm is deliberate
+  (protocol 032) and pinned by a regression.
+- **#353 transcript reading.** The load-bearing fix: an aborted turn keeps the
+  "Stopped" headline and shows its diagnostic beneath it, because a clean abort
+  carries no diagnostic and the only aborted turns that carry text are the ones
+  the harness could not confirm. The shipped multiplayer fixture no longer
+  asserts on the last-writer-wins `notice` scalar; it observes the refusal by
+  the attempt lifecycle, which survives a render cut.
 
-Issue #186 is addressed by PR #348, in a commit stack that separates the
-shared tail, event bus, collector, client, terminal, protocol, code-mode, and
-call-identity changes. `tools/tail` is the rolling-tail primitive
-background jobs already had, moved down from `client/jobtail` so the
-foreground collector could share it. `tools/tool.collect_observed` shows
-`Ctx.observe_output` the whole bounded window (4 KiB, character boundaries,
-empty for non-UTF-8) of each stream after every chunk; `collect_events` is
-unchanged for the callers with no observer. `events/bus` gains the `Outputs`
-topic and `ToolOutput`, the first bus event carrying text; `subscribe_hints`
-keeps the projection driver off it. `client/serve` becomes the bus's first
-production publisher through `gateway.tool_output_observer`, the hub joins
-`Outputs` alone under network delivery and pushes each event as
-`tool_output`, and the terminal keeps one `ToolTail` per
-`{strand, operation, step, source_index, call_id, stream}`, replaced whole per
-frame and retired by the matching durable tool result.
-
-An independent review found that pushed entry and operation notices may be
-dropped before the network session channel, so clearing tails only from those
-notices could retain completed calls. Each output frame now carries the
-provider call identity used by its durable result. A capture retires that exact
-call on any strand while leaving live peers alone, and a 128-tail cap bounds a
-client whose matching capture was missed or evicted. The rebased tree passes
-the full local `make check`, including native helper checks, every package,
-the Go sandbox, `make doc-check`, and house lint at zero enforced errors.
+Each PR was rebased current, re-signed off green on its exact merged head, and
+verified live against a real provider (GLM 5.3): the context footer and
+inspector with a provider-total update, held input batching into one successor
+after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
 
 ## What to do next
 
-1. **Land streaming tool output.** PR #348 carries
-   `claude/github-issue-186-yv2c5p` against `main`, referencing #186 and
-   [protocol 031](../protocol-change/031-tool-output-stream.md). **Exit:**
-   hosted macOS and Linux checks and Linux signoff pass on its head, then
-   merge through the normal gate. Follow-ups that are *not* part of the
-   exit: a job's output on the same feed (the runner already holds the
-   same `tools/tail` windows; publishing them is one more observer), and
-   the hint half of the bus, which still has no producer. The code-mode
-   build already streams through the same seam.
+1. **Land the native Herdr integration.** PR #354 on `herdr` teaches the
+   terminal to report its lifecycle (`pane.report_agent_session`, then
+   `pane.report_agent` across idle/working/blocked/done) over the Herdr unix
+   socket, gated by `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID`. The adapter
+   is compiled in rather than installed, because the terminal is a single binary
+   with no plugin directory. One new FFI, `tui/internal/ffi_herdr.exchange`, a
+   deadline-bounded `gen_tcp` unix round trip. **Exit:** adversarial review,
+   rebase onto current main, Linux signoff on the exact head, then merge. The
+   Herdr-side registry change is a separate change in the Herdr repo.
 
-2. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
+2. **Land the imported-hooks compatibility layer.** PR #355 on
+   `hooks/claude-compat` runs imported Claude Code hooks unchanged. **Exit:**
+   adversarial review, rebase, Linux signoff, merge.
+
+3. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
+   commit `Aborted` with "provider cancellation could not be confirmed" even
+   though the provider did stop. The smallest fix is in the client provider
+   relay: deliver the owner-authored terminal on entry to `ProvingTerminal` and
+   gate only the relay's own retirement on drain, mirroring the runtime
+   custodian. **Exit:** the two-line relay change, a `protocol-change/010`
+   addendum, and a regression that commits `Aborted` with the confirmed text
+   under a delayed-owner-exit fixture. This is a runtime change, separate from
+   the UX series.
+
+4. **Keep release dependencies explicit.** **#247** owns SQLite, **#241**
    hosted macOS latency, **#246** the shipped authority/fault/pressure matrix,
    **#244** schedules and timer recovery, and **#245** memory-off evidence.
-   **Exit:** each issue's own acceptance on the final dependency set. The short
-   local resource fixture does not close a hosted or long-duration claim.
+   **Exit:** each issue's own acceptance on the final dependency set.
 
-3. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
-   re-resolution, **#296** bundled ERTS in jailed PATH, **#286** refused extension
-   visibility, **#283** idle helper retirement, and **#345** the etui fork stack.
-   **Exit:** reproduce the specific symptom before changing its owner.
-   History-index issue **#324** remains closed.
+5. **Keep maintenance follow-ups narrow.** **#248** tracks dependency
+   re-resolution, **#296** bundled ERTS in jailed PATH, **#286** refused
+   extension visibility, **#283** idle helper retirement, and **#345** the etui
+   fork stack. **Exit:** reproduce the specific symptom before changing its
+   owner.
 
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
 
+**Context inspection reads captured state, never presentation.**
+[Protocol 030](../protocol-change/030-context-observation.md) captures the
+active strand's configuration and immutable history through the bounded
+observation workers and rechecks authority before delivery. The headline reuses
+the latest usable provider total plus estimated newer messages; component counts
+are independent estimates, never summed into a provider total. The read is
+bounded by a 4096-entry scan and a 47,000-byte board. The footer refreshes at
+the operation boundary, not per committed entry; manual `/context` forces a read.
+
+**An explicit abort admits the whole held queue.**
+[Protocol 032](../protocol-change/032-abort-held-batch.md) marks the strand's
+existing held queue to drain as one batch after the aborted operation retires,
+preserving each message's content, images, and author in FIFO-within-priority
+order. An empty queue at abort carries no batch intent, so input typed inside
+the cancellation window keeps the one-head drain. Ordinary completion and
+steering retain their existing ordering.
+
 **Queue edits do not resubmit.** [Protocol 024](../protocol-change/024-edit-queued-input.md)
 keeps FIFO position, priority, author, timestamp, and images while comparing
 held ID and revision in the gateway actor. Only the currently mutable original
-principal can fetch or edit. A stale or drained item conflicts. Unknown saves
-retain a locked draft and require an explicit read in the same session, epoch,
-and incarnation; a new connection alone may reconcile it. Queue lifetime is
-still transient under protocol 018.
+principal can fetch or edit. A stale or drained item conflicts. Queue lifetime
+is transient under protocol 018.
 
 **Worktree observation is owner-scoped and bounded.**
 [Protocol 025](../protocol-change/025-worktree-observation.md) uses the attached
 workspace's final policy and existing broker, demoting filesystem grants to
-reads. The gateway acknowledges pending work and runs Git outside its handler
-through Weft. The final push has no `reply_to`, retains the original request ID,
-and rechecks authority. Omitted files, partial patches, and failed refreshes are
-explicit. A pinned HEAD plus later filesystem reads is not an atomic snapshot.
+reads, running Git outside the handler through Weft, and rechecking authority
+before a push with no `reply_to`. A pinned HEAD plus later reads is not an atomic
+snapshot.
 
 **Committed changes require a durable starting revision.**
-[Protocol 029](../protocol-change/029-session-commit-observation.md) captures HEAD
-before the runtime starts on first activation and keeps it across restarts.
-Legacy sessions and mismatched inherited records remain unavailable. Commit
-patches include merge-resolution bytes, and retain separate count/byte bounds;
-a clean working tree does not imply no commits since session start.
+[Protocol 029](../protocol-change/029-session-commit-observation.md) captures
+HEAD before the runtime starts on first activation and keeps it across restarts.
+A clean working tree does not imply no commits since session start.
 
-**Completion evidence and current jobs have different timestamps.** The
-terminal attributes history only between an observed operation source and its
-result leaf. Missing starts or ancestors remain unavailable or partial.
-[Protocol 026](../protocol-change/026-live-jobs-observation.md) queries the existing
-jobs actor explicitly and includes starting, running, and draining jobs. Ordinary
-conversation refreshes neither scan job history nor invoke Git.
+**Completion evidence and current jobs have different timestamps.**
+[Protocol 026](../protocol-change/026-live-jobs-observation.md) queries the jobs
+actor explicitly. Ordinary conversation refreshes neither scan job history nor
+invoke Git; the terminal attributes history only between an observed operation
+source and its result leaf.
 
 **One daemon, explicit activation.** The
 [execution ruling](design-notes/single-daemon.md#execution-ruling) keeps listing
@@ -143,33 +156,26 @@ identity and one unsent command without retrying uncertain mutations.
 **Original custody evidence decides retirement.**
 [Protocol 014](../protocol-change/014-helper-shutdown-witness.md) retains the
 native port until observed exit. Timeout, closed channels, and late `noproc`
-are not cleanup proof. Domain retirement is recorded in
-[sessions](architecture/sessions.md). Normal code-mode teardown remains scoped
-to `broker.abort_step`; operation-wide abort keeps its separate meaning in
+are not cleanup proof. Normal code-mode teardown remains scoped to
+`broker.abort_step`; operation-wide abort keeps its separate meaning in
 [ADR-005](adr/005-budget-pooling-granularity.md).
 
 **Authority and jail roots remain server-owned.** Protocols
 [015](../protocol-change/015-daemon-control-and-session-attachments.md),
 [016](../protocol-change/016-record-human-origin.md), and
 [020](../protocol-change/020-minimal-jail-root.md) own activation, origin, and
-jail roots. The September 10 addendum to protocol 020 makes host reads and
-tool networking the development default, while workspace writes and protected
-masks remain. Read-scope and network flags independently select lockdown.
-Restricted profiles use discovered code-mode resources and explicit mounts,
-not a language-manager allowlist.
-Skill discovery uses the configured daemon home; it does not grant access to
-referenced resources.
+jail roots. Host reads and tool networking are the development default; workspace
+writes and protected masks remain. Read-scope and network flags independently
+select lockdown.
 
 **Portable decisions and process ownership keep their boundaries.**
 `core`, `machine`, and `prompt` remain free of I/O and external functions.
-Process machinery follows [the Weft mapping](weft.md); the existing library
-supplies observation cancellation without a new Weft API.
+Process machinery follows [the Weft mapping](weft.md).
 
 **Skill metadata precedes instructions.** [Protocol 027](../protocol-change/027-markdown-skills.md)
 shares one captured catalogue between the terminal and model. The model sees
-names and descriptions until `load_skill` selects a document. Explicit slash
-invocation captures that document before queue admission. Invocation flags
-control the two entry points; loading grants no new tool permissions.
+names and descriptions until `load_skill` selects a document; loading grants no
+new tool permissions.
 
 **Only the gate posts Linux signoff.** `scripts/signoff.sh` owns the verdict
 for a pushed commit. Never post success by hand or treat an older commit's
@@ -178,41 +184,54 @@ signoff as evidence for a changed tree.
 **Failure context does not replace drain proof.** [Protocol 028](../protocol-change/028-provider-failure-context.md)
 preserves bounded local causes and request bounds through cancellation. Context
 is redacted before persistence, classification uses the underlying error, and
-unconfirmed cleanup remains terminal. Retry-After reaches persisted machine
-retries; configured role fallback retains its existing immediate scheduling.
+unconfirmed cleanup remains terminal.
 
 **Running tool output is display state on the bus, not a hint.**
-[Protocol 031](../protocol-change/031-tool-output-stream.md) carries a
-running call's bounded output window as the `Outputs` topic's `ToolOutput`
-and the pushed `tool_output` frame. Every event and frame is the whole
-window, so receivers replace rather than append and loss costs nothing;
-the durable tool result stays the truth. Pull-driven subscribers join
-`subscribe_hints`, never `subscribe_all`. The route is the bus rather than
-the hub's named subject so a remote client or another node's hub can join
-it.
+[Protocol 031](../protocol-change/031-tool-output-stream.md) carries a running
+call's bounded output window as the `Outputs` topic's `ToolOutput` and the
+pushed `tool_output` frame. Every event is the whole window, so receivers
+replace rather than append; the durable tool result stays the truth.
 
 **History retention is a payload bound.** Older pages retain at most 600 entry
 descriptors and 16 MiB of encoded payload. Source identity anchors the viewport;
-selected transcript cells remain frozen while live metadata progresses. Compact
-presentation caches rebuild from retained entries and clear on replacement.
-[The acceptance ledger](review/ux-polish-acceptance.md) records the regressions.
+selected transcript cells stay frozen while live metadata progresses. In a
+reading viewport, Reading mode owns the endpoint even at offset zero, so
+returning to live output is an explicit End or click, not a consequence of
+scrolling to the newest row.
 
 ## Deliberately open
 
 None of these is unfinished work somebody forgot.
 
+- **The Escape cancellation proof-delivery race** (item 3 above) has a diagnosed
+  root cause but no fix yet. The #353 presentation stands on its own: it renders
+  the retained diagnostic honestly rather than hiding it.
+- **Live daemon CPU attribution** from the September 11 inspection is
+  unresolved. A read-only native profile found sustained cost in UTF-8/binary
+  construction and garbage collection; the exact Gleam caller is not established,
+  and neither SQLite nor a leak has been shown to be the cause. The session
+  database held only about 5 MiB of entry payloads, which does not account for
+  the resident memory.
+- **Repeated file reads** in the September 11 session were distinct
+  model-authored calls with successful results, not duplicated terminal output.
+  The model omitted the offset, recognized its own loop, then supplied the
+  offset. No tool retry or read-suppression change is warranted.
 - Completion remains latest-wins. A missed operation start or evicted ancestor
   makes captured evidence partial; the terminal does not invent a complete turn.
-- The worktree pane presents bounded observations. It is not an atomic snapshot,
+- The worktree pane presents bounded observations, not an atomic snapshot,
   filesystem watcher, staging interface, or commit action.
-- Provider context identifies locally observed initiators and bounds. It does
-  not infer the remote provider's internal cause. Immediate configured role
-  fallback is distinct from persisted machine retry backoff.
 - **#243** remains the shipped approval-policy question; **#85** remains optional
-  microVM work. Neither is a prerequisite introduced by these UX changes.
-- Background-job retention and conversion remain in the
-  [jobs note](design-notes/background-jobs.md). Closed delivery issues **#240**
-  and **#183** are not reopened by a current roster.
+  microVM work.
+
+## Known flakes
+
+The parallel-runner gate has a small residual flake rate tracked on **#335**
+(closed on its fix but recording recurrences): the `serve_test` provider-wiring
+instance turn and a conformance `run/terminated` seed. Both recurred once on the
+September 12 #351 signoff and cleared on an honest re-run with no code change.
+The rule stands: one re-run plus a note on #335; never re-run until green
+blindly, and never admin-merge past the gate for a code change. History-index
+issue **#324** is closed and fixed.
 
 ## How to verify
 
@@ -221,27 +240,23 @@ make check
 make doc-check
 make codemode-seed
 make release-smoke
-bash scripts/test.sh client --match developer_environment
-bash scripts/test.sh provider --match failure_context
-bash scripts/test.sh runtime --match retry_hint
+bash scripts/test.sh tui --match context_view
+bash scripts/test.sh tui --match tool_activity
 bash scripts/test.sh tui --match history_view
-bash scripts/test.sh tui --match completion_summary
-bash scripts/test.sh tools --match bash_test
-bash scripts/test.sh events --match bus_test
-bash scripts/test.sh client --match tool_output
+bash scripts/test.sh tui --match markdown
+bash scripts/test.sh client --match context_view
+bash scripts/test.sh client --match gateway_test
+bash scripts/test.sh client --match domain_observation
 bash scripts/test.sh client --match protocol_conformance
-bash scripts/test.sh tui --match tool_output_test
-bash scripts/test.sh tui --match stream_bounds
+bash scripts/test.sh client --match tool_output
 ```
 
 The full local gate ran with the real native helper and prepared code-mode
 seed. Platform-specific prerequisites and opt-in shipped bootstrap fixtures keep
 their own coverage; an ordinary package pass does not imply Linux shipment
-acceptance. Native acceptance uses an isolated installation and disposable
-sessions. The owner's active daemon and session remain untouched.
+acceptance. The Linux signoff runs `scripts/signoff.sh` on a pushed head.
 
 **Capture each command's own exit status.** A successful log reader is not a
 successful gate. **Use one build/gate at a time per checkout.** Keep enforced
 code-mode worktrees outside `/tmp`, where the jail replaces sockets with scratch.
-Run resource measurements without overlapping builds. See [execution](execution.md)
-for the remaining operational rules.
+See [execution](execution.md) for the remaining operational rules.
