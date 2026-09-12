@@ -408,7 +408,16 @@ fn project_from_leaf(session: Session, leaf: ids.EntryId) -> Projected {
   }
 }
 
-fn project_from_scan(newest_first: List(entry.Entry)) -> Projected {
+/// Projects an already captured immutable branch through its latest compaction.
+/// This shares the carried-message accounting with read-only observers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hooks.project_from_scan([]) == hooks.uncompacted([])
+/// ```
+@internal
+pub fn project_from_scan(newest_first: List(entry.Entry)) -> Projected {
   let messages = session.project_scan(newest_first)
 
   // The scan stops *inclusively* at the first compaction, so a
@@ -509,6 +518,20 @@ pub fn context_tokens(
     Some(#(index, reported)) ->
       reported + sum(list.drop(fresh, index + 1), estimate)
   }
+}
+
+/// Whether this projection has a provider baseline outside its carried tail.
+/// Inspection uses the same stale-usage exclusion as compaction accounting.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hooks.has_reported_usage(hooks.uncompacted([])) == False
+/// ```
+@internal
+pub fn has_reported_usage(projected: Projected) -> Bool {
+  newest_reported(list.drop(projected.messages, projected.carried), 0, None)
+  != None
 }
 
 // The index and reported total of the newest assistant message carrying

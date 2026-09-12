@@ -646,6 +646,13 @@ extended by the M3 runtime wave.
   the newest compaction, so its size is bounded by the very thing it
   triggers. A memo keyed on the strand leaf's register seq is the
   available fix if it ever shows in a profile.
+- **Read-only context inspection shares the compaction projection.**
+  `hooks.project_from_scan` accepts a newest-first branch stopped inclusively at
+  compaction, so observers can capture their own immutable endpoint without
+  rereading a moving leaf. `hooks.has_reported_usage` uses the same newest
+  positive post-compaction usage as `context_tokens`; it never treats the
+  retained tail's old usage as a new baseline. These helpers add no effects or
+  changes to compaction policy.
 - **A context is counted the way the provider counts it.**
   `context_tokens` takes the newest settled assistant message's
   *provider-reported* usage and estimates only what came after it (pi's

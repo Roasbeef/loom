@@ -584,7 +584,9 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // behalf — a held prompt that could not be admitted when its turn came.
     // The connection is fine, so this is the same auxiliary refusal a
     // correlated error is, and the socket stays open.
-    protocol.ServerError(..) | protocol.WorktreeSnapshot(_) -> #(channel, [
+    protocol.ServerError(..)
+    | protocol.WorktreeSnapshot(_)
+    | protocol.ContextSnapshot(_) -> #(channel, [
       Auxiliary(event),
     ])
 
@@ -829,6 +831,7 @@ fn matching_presentation(name, intent, event) {
     "notes", Read, protocol.NotesSnapshot(_) -> True
     "queued_input", Read, protocol.QueuedInputSnapshot(_) -> True
     "worktree_diff", Read, protocol.WorktreeSnapshot(_) -> True
+    "context", Read, protocol.ContextSnapshot(_) -> True
     "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
@@ -1219,6 +1222,7 @@ fn outbound(frame: String) {
         | "schedules"
         | "notes"
         | "queued_input"
+        | "context"
         | "worktree_diff"
         | "live_jobs" -> Read
         _ -> Mutation

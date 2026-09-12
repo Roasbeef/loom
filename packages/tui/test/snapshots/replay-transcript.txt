@@ -20,5 +20,5 @@
 │                                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
  replay                                                             baseten-kimi-k3
- Total est $0.00 · in 0 · out 0 · cache 0/0
+ ctx — · Total est $0.00 · in 0 · out 0 · cache 0/0
  0 live / 0 agents · streaming text

@@ -462,6 +462,18 @@ that tree separately from the self-contained server.
   is free. Ordinary transcript refreshes do not query job history or run Git.
   `session_channel.RequestRefused` carries the command and actual request ID,
   so an unrelated refusal cannot settle a queue, worktree, or jobs request.
+- **Current context**: `/context` opens aggregate usage and `/context all`
+  (also `/contextall`) adds bounded item estimates. `tui/context_view.State`
+  retains one attachment and strand's request identity, board, and independent
+  viewport. The automatic refresh fires on the first capture, a strand switch,
+  a configuration change, and the settling of the active strand's operation,
+  never on a leaf that moved mid-operation; `/context` always requests a fresh
+  read. A refresh coalesces behind the outstanding read; late results cannot
+  replace another request or attachment. The footer keeps
+  `ctx ~N%` ahead of cumulative billing. Missing observations show `ctx —`.
+  Context and worktree reads wait for each other's final push before borrowing
+  the same server worker slot. An unsupported optional command stays unavailable
+  until attachment replacement. Escape returns without discarding the composer.
 - **Current notes**: `/notes` requests a separate bounded `notes` observation.
   `tui/notes_view` validates values, last-write revisions, capture revision,
   excerpt markers and omitted counts. `r` refreshes the panel without a new

@@ -53,6 +53,7 @@ import tui/command
 import tui/completion_summary
 import tui/composer
 import tui/connection
+import tui/context_view
 import tui/daemon
 import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
@@ -504,6 +505,8 @@ pub type Model {
     queue_editor: queue_editor.State,
     /// Current Git observation and independent file-navigation state.
     worktree: worktree_view.State,
+    /// Server-observed current context and independent inspector state.
+    context: context_view.State,
     /// Attachment-local terminal result provenance.
     completion: completion_summary.State,
     /// Exact attachment which owns the remembered operation boundaries.
@@ -896,6 +899,7 @@ pub fn new_model_with_clock(
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
     worktree: worktree_view.new(),
+    context: context_view.new(),
     completion: completion_summary.new(),
     completion_owner: "",
     summary_surface: queue_editor.Closed,
@@ -2133,6 +2137,8 @@ fn render_frame(
   }
   let #(rendered, cursor) =
     render_summary_surface(rendered, cursor, screen, model)
+  let #(rendered, cursor) =
+    render_context_surface(rendered, cursor, screen, model)
   render_queue_surface(rendered, cursor, screen, model)
 }
 
@@ -2698,8 +2704,11 @@ fn footer_sections(
       span.span_styled(
         " "
           <> compact(
-          usage_summary(model.usage) <> output_rate_label(model.output_rate_tps),
-          footer_usage_cells - 2,
+          context_view.footer(model.context)
+            <> " · "
+            <> usage_summary(model.usage)
+            <> output_rate_label(model.output_rate_tps),
+          footer_usage_limit(model.width),
         )
           <> " ",
         theme.footer_text(),
@@ -2796,6 +2805,30 @@ pub fn footer_status_limit(width: Int) -> Int {
     1 -> floor + width - footer_single_row_cells()
     2 -> int.max(floor, width - footer_usage_cells - 2)
     _ -> int.max(floor, width - 2)
+  }
+}
+
+/// The cells the footer's cumulative usage may take at a terminal width.
+///
+/// On one and two rows the section shares its row with others and the fixed
+/// cap is what keeps the row count decidable from the width alone. On three
+/// rows the usage has the row to itself and that row can be narrower than
+/// the cap, so the cap comes down to the width: at fifty columns a cap of
+/// sixty-eight never fired, and the render buffer clipped the last digit of
+/// `cache 0/0` with no ellipsis to say anything had been dropped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.footer_usage_limit(213) == 68
+/// assert tui.footer_usage_limit(50) == 48
+/// ```
+@internal
+pub fn footer_usage_limit(width: Int) -> Int {
+  let cap = footer_usage_cells - 2
+  case footer_rows(width) {
+    1 | 2 -> cap
+    _ -> int.min(cap, width - 2)
   }
 }
 
@@ -3447,6 +3480,7 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     True -> request_visible_worktree(updated)
     False -> updated
   }
+  let updated = sync_context(model, updated)
   refresh_render_cache(model, updated)
   |> request_history_for_view
   |> refresh_frame_cache(frame_boundary(event))
@@ -3478,7 +3512,9 @@ fn update_tick(model: Model) -> Model {
   let drained = drain_connection(switched, 64)
   let drained =
     tick_channel(
-      service_jobs_read(service_worktree_read(service_queue_read(drained))),
+      service_context_read(
+        service_jobs_read(service_worktree_read(service_queue_read(drained))),
+      ),
     )
   let quiet_for_ms =
     next_quiet_for(
@@ -4159,6 +4195,7 @@ fn transient_lines(model: Model) -> List(Line) {
 }
 
 fn handle_paste(model: Model, text: String) -> Model {
+  use <- bool.guard(model.context.surface != context_view.Hidden, model)
   case model.queue_editor.surface {
     queue_editor.Editor ->
       edit_queue_text(model, fn(input) { insert_queue_paste(input, text) })
@@ -5212,6 +5249,15 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
         None -> model
       }
     protocol.LiveJobsSnapshot(board) -> receive_jobs(model, board)
+    protocol.ContextSnapshot(observation) ->
+      Model(
+        ..model,
+        context: context_view.receive(
+          model.context,
+          queue_owner(model),
+          observation,
+        ),
+      )
     protocol.WorktreeSnapshot(observation) ->
       Model(
         ..model,
@@ -5419,6 +5465,7 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     | protocol.SkillsSnapshot(..)
     | protocol.NotesSnapshot(..)
     | protocol.QueuedInputSnapshot(..)
+    | protocol.ContextSnapshot(..)
     | protocol.WorktreeSnapshot(..)
     | protocol.LiveJobsSnapshot(..)
     | protocol.SchedulesSnapshot(..)
@@ -6933,6 +6980,13 @@ fn money(value: Float) -> String {
 }
 
 fn update_key(key: keys.Key, model: Model) -> Model {
+  case model.context.surface {
+    context_view.Overview | context_view.All -> update_context_key(key, model)
+    context_view.Hidden -> update_key_without_context(key, model)
+  }
+}
+
+fn update_key_without_context(key: keys.Key, model: Model) -> Model {
   case model.queue_editor.surface {
     queue_editor.Inspector | queue_editor.Editor -> update_queue_key(key, model)
     queue_editor.Closed ->
@@ -7572,6 +7626,12 @@ fn scroll_at(
   position: geometry.Position,
   direction: ScrollDirection,
 ) -> Model {
+  use <- bool.lazy_guard(model.context.surface != context_view.Hidden, fn() {
+    scroll_context(model, case direction {
+      Older -> -3
+      Newer -> 3
+    })
+  })
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(_, _, changes) = body_layout(body, model)
@@ -7755,6 +7815,8 @@ fn mutating_submission(model: Model, command: command.Command) -> Bool {
     | command.Diff
     | command.QueueInspect
     | command.Summary
+    | command.Context
+    | command.ContextAll
     | command.Details
     | command.Strand(_)
     | command.Clear
@@ -7990,6 +8052,8 @@ fn submit_text(model: Model) -> Model {
       )
     command.QueueInspect -> open_queue(cleared)
     command.Summary -> open_summary(cleared)
+    command.Context -> open_context(cleared, context_view.Overview)
+    command.ContextAll -> open_context(cleared, context_view.All)
     command.Diff -> open_diff(cleared)
     command.Details -> toggle_details(cleared)
     command.Strand(name) ->
@@ -8052,7 +8116,11 @@ fn submit_with_images(model: Model) -> Model {
   let input = text_area.value(model.input)
   case command.parse_with_skills(input, model.skills) {
     command.Empty | command.Prompt(_) -> send_image_prompt(model, input)
-    command.QueueInspect | command.Diff | command.Summary -> submit_text(model)
+    command.QueueInspect
+    | command.Diff
+    | command.Summary
+    | command.Context
+    | command.ContextAll -> submit_text(model)
     command.Help
     | command.Models
     | command.Model(_)
@@ -8713,6 +8781,8 @@ fn apply_submission(
               request_id: Some(request_id),
             ),
           )
+        "context" ->
+          Model(..model, context: context_view.sent(model.context, request_id))
         "live_jobs" -> Model(..model, jobs_request: Some(request_id))
         "worktree_diff" ->
           Model(
@@ -8734,7 +8804,11 @@ fn apply_submission(
         submitting: submitting,
         pending_submission: None,
         next_id: sent.next_id + 1,
-        notice: command <> " sent",
+        notice: case command {
+          // Automatic observation must not erase a user's command outcome.
+          "context" -> sent.notice
+          _ -> command <> " sent"
+        },
       )
       |> invalidate_frame
     }
@@ -9407,6 +9481,9 @@ fn refresh_worktree(model: Model) -> Model {
 }
 
 fn service_worktree_read(model: Model) -> Model {
+  // Both observations borrow the same server worker slot. An acknowledged
+  // context read still owns it until its final push arrives.
+  use <- bool.guard(context_in_flight(model.context), model)
   case model.channel, model.worktree.refresh, model.worktree.awaiting {
     Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
@@ -9807,7 +9884,8 @@ fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
   use <- bool.guard(
     !diff_shown(model)
       || model.queue_editor.surface != queue_editor.Closed
-      || model.summary_surface != queue_editor.Closed,
+      || model.summary_surface != queue_editor.Closed
+      || model.context.surface != context_view.Hidden,
     None,
   )
   let screen = geometry.rect_new(0, 0, model.width, model.height)
@@ -9858,6 +9936,13 @@ fn apply_request_refused(
   code: String,
   message: String,
 ) -> Model {
+  use <- bool.lazy_guard(command == "context", fn() {
+    Model(
+      ..model,
+      context: context_view.refused(model.context, request_id, code, message),
+    )
+    |> invalidate_frame
+  })
   let reason = code <> ": " <> message
   let updated = case command {
     "queued_input" | "edit_queued_input" ->
@@ -9892,4 +9977,184 @@ fn apply_request_refused(
     _ -> model
   }
   apply_event(updated, protocol.ServerError(code, message))
+}
+
+// Context follows the server's selected configuration and the end of the
+// active strand's operation, never scrollback retention and no longer the
+// leaf. The leaf moves once per committed entry, so a refresh keyed on it
+// cost the server a full branch scan per tool call: a thirty-tool turn ran
+// about sixty of them for a percentage nobody reads until the turn ends.
+// Streaming tokens and unrelated captures start no read.
+fn sync_context(before: Model, after: Model) -> Model {
+  let selected =
+    context_view.select(after.context, queue_owner(after), after.active_strand)
+  let changed = context_refresh_due(before, after)
+  let context = case after.peer {
+    Attached(_) ->
+      case changed {
+        True -> context_view.invalidate(selected)
+        False -> selected
+      }
+    Replaying -> selected
+    Preview | Disconnected ->
+      context_view.State(
+        ..selected,
+        board: None,
+        request: context_view.Idle,
+        notice: "Context observation requires a live connection",
+      )
+  }
+  Model(..after, context:)
+}
+
+/// Whether this model transition is worth another automatic context read.
+///
+/// Four transitions are worth one: the first capture, a strand switch, a
+/// configuration change, and the active strand's operation reaching `done`.
+/// A leaf that moved while that operation is still running is not one of
+/// them, which is what holds a thirty-tool turn to a single observation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.context_refresh_due(before, after)
+/// ```
+@internal
+pub fn context_refresh_due(before: Model, after: Model) -> Bool {
+  case before.captured, after.captured {
+    Some(#(_, old)), Some(#(_, current)) ->
+      before.active_strand != after.active_strand
+      || dict.get(old.configurations, before.active_strand)
+      != dict.get(current.configurations, after.active_strand)
+      || operation_settled(before, after)
+    None, Some(_) -> True
+    _, None -> False
+  }
+}
+
+// The settling edge of the active strand's operation: the phase this terminal
+// already tracks for the agent roster leaves `Some(_)` exactly once per
+// operation, when the server reports `done`. Reading on that edge gives one
+// observation per turn instead of one per committed entry.
+fn operation_settled(before: Model, after: Model) -> Bool {
+  active_strand_live(before) && !active_strand_live(after)
+}
+
+fn service_context_read(model: Model) -> Model {
+  // A worktree acknowledgement releases the command lane, not its worker.
+  // Wait for that observation before borrowing the shared slot for context.
+  use <- bool.guard(model.worktree.awaiting != None, model)
+  case model.channel, model.context.request, model.peer, model.captured {
+    Some(channel), context_view.Requested, Attached(_), Some(_) ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_frame(
+            model,
+            protocol.context(model.next_id, model.active_strand),
+          )
+        False -> model
+      }
+    _, _, _, _ -> model
+  }
+}
+
+/// Opens context inspection while retaining the composer's draft and selection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.open_context(model, context_view.Overview)
+/// ```
+@internal
+pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
+  service_context_read(
+    Model(
+      ..model,
+      context: context_view.State(
+        ..context_view.invalidate(model.context),
+        surface:,
+        scroll: 0,
+      ),
+    ),
+  )
+}
+
+fn update_context_key(key: keys.Key, model: Model) -> Model {
+  let state = model.context
+  case key {
+    keys.Ctrl("c") -> quit(model)
+    keys.Escape ->
+      Model(
+        ..model,
+        context: context_view.State(..state, surface: context_view.Hidden),
+      )
+    keys.Char("r") ->
+      service_context_read(
+        Model(..model, context: context_view.invalidate(state)),
+      )
+    keys.Char("a") ->
+      Model(
+        ..model,
+        context: context_view.State(
+          ..state,
+          scroll: 0,
+          surface: case state.surface {
+            context_view.All -> context_view.Overview
+            context_view.Overview | context_view.Hidden -> context_view.All
+          },
+        ),
+      )
+    keys.Up -> scroll_context(model, -1)
+    keys.Down -> scroll_context(model, 1)
+    keys.PageUp -> scroll_context(model, -10)
+    keys.PageDown -> scroll_context(model, 10)
+    _ -> model
+  }
+}
+
+fn scroll_context(model: Model, delta: Int) -> Model {
+  Model(
+    ..model,
+    context: context_view.State(
+      ..model.context,
+      scroll: int.max(0, model.context.scroll + delta),
+    ),
+  )
+}
+
+fn render_context_surface(buf, cursor, screen, model: Model) {
+  case model.context.surface {
+    context_view.Hidden -> #(buf, cursor)
+    context_view.Overview | context_view.All -> {
+      let inner = panel_inner(screen)
+      let lines =
+        context_view.lines(model.context)
+        |> list.flat_map(fn(line) {
+          markdown.render(text_hygiene.multiline(line))
+        })
+        |> markdown.wrap_lines(inner.size.width)
+      let offset =
+        int.min(
+          model.context.scroll,
+          int.max(0, list.length(lines) - inner.size.height),
+        )
+      let rendered =
+        buffer.buffer_new(screen)
+        |> render_panel_border(
+          screen,
+          " context · Esc: back · r: refresh · a: detail ",
+          theme.signal,
+        )
+        |> paragraph.render_styled(inner, list.drop(lines, offset))
+      #(rendered, Error(Nil))
+    }
+  }
+}
+
+fn context_in_flight(state: context_view.State) -> Bool {
+  case state.request {
+    context_view.Awaiting(_) | context_view.RefreshAfter(_) -> True
+    context_view.Idle | context_view.Requested | context_view.Unavailable ->
+      False
+  }
 }

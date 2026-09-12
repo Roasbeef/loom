@@ -301,6 +301,8 @@ pub type Options {
     worktree_diff: Option(fn() -> Result(JsonValue, String)),
     /// Explicit live job reads, never invoked by ordinary transcript captures.
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
+    /// Bounded context observation, sharing the managed read workers.
+    context: Option(fn(String) -> Result(JsonValue, String)),
   )
 }
 
@@ -328,6 +330,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     effect_abort: None,
     worktree_diff: None,
     live_jobs: None,
+    context: None,
   )
 }
 
@@ -343,6 +346,20 @@ pub fn with_worktree_diff(
   capture: fn() -> Result(JsonValue, String),
 ) -> Options {
   Options(..options, worktree_diff: Some(capture))
+}
+
+/// Supplies the read-only context inspector; no provider or hook runs here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_context(options, read_context)
+/// ```
+pub fn with_context(
+  options: Options,
+  read_context: fn(String) -> Result(JsonValue, String),
+) -> Options {
+  Options(..options, context: Some(read_context))
 }
 
 /// Supplies an explicit bounded live jobs query.
@@ -466,7 +483,7 @@ pub fn with_effect_abort(options: Options, sweep: fn(OpId) -> Nil) -> Options {
 pub opaque type Message {
   Request(connection: Int, text: String, reply: Subject(Result(String, String)))
   MaintainTransfers
-  WorktreeReported(connection: Int, pulled: weft.Pulled(JsonValue, String))
+  ObservationReported(connection: Int, pulled: weft.Pulled(JsonValue, String))
   LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
   Preview(Int, String, String, String, String, Subject(Result(Nil, String)))
   ReleasePreview(Int, Subject(Nil))
@@ -540,9 +557,34 @@ type LivePreview {
 type PendingObservation {
   PendingObservation(
     request: Int,
+    kind: ObservationKind,
     reports: Subject(weft.Pulled(JsonValue, String)),
     phase: ObservationPhase,
   )
+}
+
+// Worktree reads retain owner authority; context exposes session metadata.
+type ObservationKind {
+  WorktreeObservation
+  ContextObservation
+}
+
+fn observation_snapshot(kind: ObservationKind, board: JsonValue) {
+  protocol.SnapshotEvent(case kind {
+    WorktreeObservation -> protocol.WorktreeDiffSnapshot(board)
+    ContextObservation -> protocol.ContextSnapshot(board)
+  })
+}
+
+fn observation_allowed(state: State, connection: Int, kind: ObservationKind) {
+  case kind {
+    WorktreeObservation -> worktree_owner(state, connection)
+    ContextObservation ->
+      case dict.get(state.connections, connection) {
+        Ok(Connection(subscription: Subscribed, ..)) -> True
+        _ -> False
+      }
+  }
 }
 
 type ObservationPhase {
@@ -557,6 +599,8 @@ type State {
     observations: Dict(Int, PendingObservation),
     worktree_diff: Option(fn() -> Result(JsonValue, String)),
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
+    /// Bounded context observation, sharing the managed read workers.
+    context: Option(fn(String) -> Result(JsonValue, String)),
     delivery: Delivery,
     health: Health,
     next_transfer: Int,
@@ -769,6 +813,7 @@ fn start_with_delivery(
         observations: dict.new(),
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
+        context: options.context,
         delivery:,
         health: Reading,
         next_transfer: 1,
@@ -1297,7 +1342,7 @@ fn continue(state: State) -> actor.Next(State, Message) {
       state.selector,
       fn(selector, connection, pending) {
         process.select_map(selector, pending.reports, fn(pulled) {
-          WorktreeReported(connection, pulled)
+          ObservationReported(connection, pulled)
         })
       },
     )
@@ -1306,8 +1351,8 @@ fn continue(state: State) -> actor.Next(State, Message) {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    WorktreeReported(connection:, pulled:) ->
-      continue(worktree_reported(state, connection, pulled))
+    ObservationReported(connection:, pulled:) ->
+      continue(observation_reported(state, connection, pulled))
     LeasePreview(pid, expires, reply) ->
       continue(lease_preview(state, pid, expires, reply))
     Preview(source, operation, generation, kind, text, reply) ->
@@ -1596,6 +1641,7 @@ fn network_command(
     | protocol.ListModels
     | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
+    | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
@@ -2322,6 +2368,7 @@ fn read_only(command: Command) {
     | protocol.ListModels
     | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
+    | protocol.ContextGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
@@ -3282,6 +3329,33 @@ fn begin_worktree(state: State, connection: Int, id: Int) -> State {
     )
     state
   })
+  begin_observation(
+    state,
+    connection,
+    id,
+    WorktreeObservation,
+    state.worktree_diff,
+  )
+}
+
+fn begin_context(
+  state: State,
+  connection: Int,
+  id: Int,
+  strand: String,
+) -> State {
+  use <- known_strand(state, connection, id, strand)
+  let capture = option.map(state.context, fn(read) { fn() { read(strand) } })
+  begin_observation(state, connection, id, ContextObservation, capture)
+}
+
+fn begin_observation(
+  state: State,
+  connection: Int,
+  id: Int,
+  kind: ObservationKind,
+  capture: Option(fn() -> Result(JsonValue, String)),
+) -> State {
   use <- bool.lazy_guard(
     dict.has_key(state.observations, connection)
       || dict.size(state.observations) >= 2,
@@ -3291,12 +3365,12 @@ fn begin_worktree(state: State, connection: Int, id: Int) -> State {
         connection,
         id,
         "busy",
-        "worktree observation is already running",
+        "an observation is already running",
       )
       state
     },
   )
-  case state.worktree_diff, dict.get(state.connections, connection) {
+  case capture, dict.get(state.connections, connection) {
     Some(capture), Ok(link) -> {
       let reports = process.new_subject()
       let run = weft.new([capture]) |> weft.deadline(14_000)
@@ -3305,20 +3379,19 @@ fn begin_worktree(state: State, connection: Int, id: Int) -> State {
         None -> run
       }
       let _relay = weft.start_relayed(run, to: reports)
-      let pending = PendingObservation(id, reports, Capturing)
+      let pending = PendingObservation(id, kind, reports, Capturing)
       send_to(
         state,
         connection,
         EventEnvelope(
           Some(id),
           None,
-          protocol.SnapshotEvent(
-            protocol.WorktreeDiffSnapshot(
-              json.Object([
-                #("status", json.String("pending")),
-                #("request_id", json.Int(id)),
-              ]),
-            ),
+          observation_snapshot(
+            kind,
+            json.Object([
+              #("status", json.String("pending")),
+              #("request_id", json.Int(id)),
+            ]),
           ),
         ),
       )
@@ -3333,14 +3406,14 @@ fn begin_worktree(state: State, connection: Int, id: Int) -> State {
         connection,
         id,
         "unavailable",
-        "worktree observation is unavailable",
+        "observation is unavailable",
       )
       state
     }
   }
 }
 
-fn worktree_reported(
+fn observation_reported(
   state: State,
   connection: Int,
   pulled: weft.Pulled(JsonValue, String),
@@ -3352,7 +3425,14 @@ fn worktree_reported(
         weft.NotYet -> state
         weft.PulledOutcome(outcome:) -> {
           let board = observation_result(pending.request, outcome)
-          let state = push_worktree(state, connection, pending.request, board)
+          let state =
+            push_observation(
+              state,
+              connection,
+              pending.request,
+              pending.kind,
+              board,
+            )
           State(
             ..state,
             observations: dict.insert(
@@ -3366,10 +3446,11 @@ fn worktree_reported(
           let state = case pending.phase {
             Reported -> state
             Capturing ->
-              push_worktree(
+              push_observation(
                 state,
                 connection,
                 pending.request,
+                pending.kind,
                 failed_observation(
                   pending.request,
                   "observation ended without a result",
@@ -3396,14 +3477,14 @@ fn observation_result(
         #("request_id", json.Int(id)),
         ..fields
       ])
-    weft.Completed(..) -> failed_observation(id, "invalid worktree observation")
+    weft.Completed(..) -> failed_observation(id, "invalid observation")
     weft.Failed(error:, ..) -> failed_observation(id, error)
     weft.Abandoned(..) | weft.NeverStarted(..) ->
-      failed_observation(id, "worktree observation was cancelled or timed out")
+      failed_observation(id, "observation was cancelled or timed out")
     weft.Crashed(..)
     | weft.DrainProofLost(..)
     | weft.CancellationUnconfirmed(..) ->
-      failed_observation(id, "worktree observation failed")
+      failed_observation(id, "observation failed")
   }
 }
 
@@ -3420,20 +3501,16 @@ fn failed_observation(id: Int, message: String) -> JsonValue {
 // board retains request identity; reply_to is absent because the synchronous
 // pending acknowledgement already consumed that request capability.
 // Revalidation precedes serialization and delivery checks again.
-fn push_worktree(
+fn push_observation(
   state: State,
   connection: Int,
   id: Int,
+  kind: ObservationKind,
   board: JsonValue,
 ) -> State {
   let state = revalidate(state, connection)
-  use <- bool.guard(!worktree_owner(state, connection), state)
-  let envelope =
-    EventEnvelope(
-      None,
-      None,
-      protocol.SnapshotEvent(protocol.WorktreeDiffSnapshot(board)),
-    )
+  use <- bool.guard(!observation_allowed(state, connection, kind), state)
+  let envelope = EventEnvelope(None, None, observation_snapshot(kind, board))
   case dict.get(state.connections, connection), bounded_response(envelope) {
     Ok(link), Ok(frame) -> deliver(link, frame)
     Ok(link), Error(_) -> {
@@ -3441,11 +3518,12 @@ fn push_worktree(
         EventEnvelope(
           None,
           None,
-          protocol.SnapshotEvent(
-            protocol.WorktreeDiffSnapshot(failed_observation(
+          observation_snapshot(
+            kind,
+            failed_observation(
               id,
-              "worktree response exceeds its byte limit",
-            )),
+              "observation response exceeds its byte limit",
+            ),
           ),
         )
       deliver(link, protocol.encode_event(fallback))
@@ -3568,6 +3646,8 @@ fn run_command(
       follow_up(state, connection, id, strand, text)
     protocol.WorktreeDiffGet, Subscribed ->
       begin_worktree(state, connection, id)
+    protocol.ContextGet(strand:), Subscribed ->
+      begin_context(state, connection, id, strand)
     protocol.LiveJobsGet(strand:), Subscribed ->
       read_live_jobs(state, connection, id, strand)
     protocol.QueuedInputGet(strand:, id: input_id), Subscribed ->

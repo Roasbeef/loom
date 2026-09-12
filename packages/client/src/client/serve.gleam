@@ -33,6 +33,7 @@ import client/agency
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
 import client/distill
@@ -2932,6 +2933,20 @@ fn assemble_in(
               worktree_diff.capture_since(worktree_wiring, git_start)
               |> result.map(worktree_diff.to_json)
               |> result.map_error(worktree_diff.error_message)
+            })
+            |> hub.with_context(fn(strand) {
+              context_view.read(
+                opened,
+                strand,
+                assembled.text,
+                tool_registry,
+                fn(identity) {
+                  facts(identity)
+                  |> result.map(fn(pair) { pair.0.context_window })
+                  |> result.unwrap(settings.context_window)
+                },
+                settings.compaction,
+              )
             })
             |> hub.with_live_jobs(fn(strand) {
               jobs.live_jobs(jobs_name, strand, waiting: 1000)

@@ -58,6 +58,7 @@ mode-`0600` token file beside the session.
 | `create_strand`| `snapshot` (mode `strands`)                |
 | `navigate`     | `snapshot` (mode `strands`)                |
 | `compact`      | `op_transition` (phase `compacting`)       |
+| `context`      | `snapshot` (mode `context`, pending; final pushed) |
 | `models`       | `snapshot` (mode `models`)                 |
 | `set_config`   | `snapshot` (mode `config`)                 |
 | `schedules`    | `snapshot` (mode `schedules`)              |
@@ -171,6 +172,16 @@ once, in seq order**.
   never used and a name already cancelled are the same absence. A
   gateway with no scheduling plane refuses with `unsupported`, never an
   empty success.
+
+### Current context observation
+
+`context` takes `{strand: string}` and requires ordinary session-read authority.
+It acknowledges `{mode: "context", board: {status: "pending", request_id}}`.
+The final pushed board keeps `request_id`, has no `reply_to`, and reports either
+`ready` estimates or an explicit `failed` reason. It shares the worktree read's
+bounded worker pool and deadline. [Protocol 030](../../protocol-change/030-context-observation.md)
+defines the complete board, compaction accounting, and independent component
+estimates. This optional command never invokes a provider or context hook.
 
 ## Event bodies
 

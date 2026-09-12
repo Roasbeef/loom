@@ -12,6 +12,7 @@ import core/message.{type Usage, type UserBlock}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import tui/context_view
 import tui/live_jobs
 import tui/notes_view
 import tui/queue_editor
@@ -125,6 +126,9 @@ pub type Event {
 
   /// A bounded asynchronous Git observation with its actual request identity.
   WorktreeSnapshot(observation: worktree_view.Event)
+
+  /// A request-scoped context observation, independent of retained history.
+  ContextSnapshot(observation: context_view.Event)
 
   /// Current live jobs, observed separately from a completed operation.
   LiveJobsSnapshot(board: live_jobs.Board)
@@ -488,6 +492,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | NotesSnapshot(_)
     | QueuedInputSnapshot(_)
     | WorktreeSnapshot(_)
+    | ContextSnapshot(_)
     | LiveJobsSnapshot(_)
     | SchedulesSnapshot(_)
     | ServerError(..) -> Ok(event)
@@ -613,6 +618,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "live_jobs" -> {
       use board <- result.try(required_value(fields, "board"))
       live_jobs.decode(board) |> result.map(LiveJobsSnapshot)
+    }
+    "context" -> {
+      use board <- result.try(required_value(fields, "board"))
+      context_view.decode(board) |> result.map(ContextSnapshot)
     }
     "worktree_diff" -> {
       use board <- result.try(required_value(fields, "board"))
@@ -1015,6 +1024,17 @@ pub fn edit_queued_input(
     #("expected_revision", json.Int(document.revision)),
     #("text", json.String(text)),
   ])
+}
+
+/// Reads the active projection and model window for one strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.context(8, "main")
+/// ```
+pub fn context(id: Int, strand: String) -> String {
+  command(id, "context", [#("strand", json.String(strand))])
 }
 
 /// Reads one bounded worktree observation without mutating repository state.

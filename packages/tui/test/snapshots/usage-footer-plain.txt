@@ -8,5 +8,5 @@
 │                                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
  /w/demo                                                                        baseten-kimi-k3
- Total est $0.01 · in 1k · out 340 · cache 0/0
+ ctx — · Total est $0.01 · in 1k · out 340 · cache 0/0
  0 live / 0 agents · 1k tokens

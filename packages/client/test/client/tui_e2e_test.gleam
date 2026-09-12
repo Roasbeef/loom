@@ -536,6 +536,44 @@ fn drive(ready: Ready) -> Nil {
   assert string.contains(snapshot_text(booted), assistant_marker)
     as "a fresh subscribe must serve the assistant entry the pane showed"
 
+  // Context is observed by the server and returned without another model call.
+  // The native footer, inspector, and detail toggle share the same board.
+  let _context_footer =
+    must_show(term, "ctx ~", 10_000, "current context never reached the footer")
+  let assert Ok(Nil) = terminal.type_text(term, "/context")
+    as "the context command reaches the native composer"
+  let assert Ok(Nil) = terminal.press(term, "Enter")
+    as "the context command opens its inspector"
+  let context_pane =
+    must_show(
+      term,
+      "CONTEXT USAGE",
+      10_000,
+      "the context inspector never received an observation",
+    )
+  assert string.contains(context_pane, "Provider usage + estimated")
+    as "a completed provider request anchors the displayed context"
+  let assert Ok(Nil) = terminal.press(term, "a")
+    as "the detail toggle expands the bounded inventory"
+  let assert Ok(Nil) = terminal.press(term, "NPage")
+    as "context details scroll independently of the conversation"
+  let _context_items =
+    must_show(
+      term,
+      "ITEM ESTIMATES",
+      10_000,
+      "context item details never painted",
+    )
+  let assert Ok(Nil) = terminal.press(term, "Escape")
+    as "Escape returns to the conversation"
+  let _context_restored =
+    must_show(
+      term,
+      assistant_marker,
+      10_000,
+      "context inspection lost the conversation",
+    )
+
   // 6. A named fork through the slash surface. The authoritative metadata cut
   //    replaces the local "fork queued" notice while preserving the active
   //    strand. Inspect the actual agent list after that cut, so a transient
