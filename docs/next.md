@@ -4,13 +4,12 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Re-baselined September 12, 2026 against merged main `7ea66bdb`. The streaming
-tool-output work (#348) and the three-PR UX series (#351, #352, #353) are all
-merged; the previous edition described #348 as pending and predates the series
-entirely. Each of the four merged on a green `signoff/linux` at its exact head:
-#348 at `6a484a4f`, #352 at `178e701f`, #353 at `eff46b43`, #351 at `7ea66bdb`.
-The next bodies of work are the native Herdr integration (#354) and the imported
-Claude-hooks compatibility layer (#355).
+Re-baselined September 12, 2026 against merged main `87df00a5`. Since the
+previous edition, the native Herdr integration (#354) and the imported
+Claude-hooks compatibility layer (#355) are merged, each on a green
+`signoff/linux` at its exact head: #354 at `759080b0` (main `a39a6a5f`) and
+#355 at `ed6349f1`. The next work is the follow-ups those two left named
+rather than implied, and the Escape cancellation proof-delivery race.
 
 ## Where the tree is
 
@@ -23,8 +22,8 @@ Claude-hooks compatibility layer (#355).
 | Context usage | Merged in #351. `/context`, `/context all`, and a persistent `ctx ~N%` footer; the server captures the active strand's configuration and immutable history, so the count is independent of scrollback retention ([protocol 030](../protocol-change/030-context-observation.md)). |
 | Escape and held input | Merged in #352. An explicit abort now admits every message held for that strand into one successor run, not just the first ([protocol 032](../protocol-change/032-abort-held-batch.md)). |
 | Transcript reading and drafts | Merged in #353. A reading viewport is preserved even at offset zero, expanded tool results keep the compact call's anchor, bracketed paste inserts at the cursor without replacing a draft, and an aborted turn renders as Stopped with its diagnostic visible. |
-| Herdr integration | PR #354 on branch `herdr`, not yet merged. The terminal reports its lifecycle to a Herdr multiplexer over a unix socket when launched inside a Herdr pane (issue #140). |
-| Imported hooks | PR #355 on branch `hooks/claude-compat`, not yet merged. A compatibility layer that runs imported Claude Code hooks unchanged. |
+| Herdr integration | Merged in #354. The terminal reports idle, working and blocked to a Herdr pane over its unix socket, sequenced from the wall clock, announcing the session when its identity is first known and on every switch. `done` is Herdr's own derivation from an idle report on an unseen tab and is never sent. |
+| Imported hooks | Merged in #355 (issue #350, first wave). A Claude Code hook collection loads unchanged from the operator's `~/.claude/settings.json`, trusted on first sight and re-reviewed on change; the composed gates fire at run start, tool clearance (after the harness's own, with a rewrite re-cleared), the result fold, the summarizer, and run end. A committed acceptance fixture boots a real instance and proves each gate fires. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
 ### Corrections to the previous edition
@@ -36,6 +35,17 @@ merged on September 12. During that series the Escape "cancellation could not be
 confirmed" report was diagnosed: it is a proof-delivery race, not a failed stop
 (see "Deliberately open"). The previous edition's verification block referenced
 tool-output test matches that are now merged; the block below is refreshed.
+
+The previous edition listed #354 and #355 as the next work. Both landed after
+adversarial review found defects the original branches' own tests could not
+see. #354 encoded a `done` state Herdr's request schema rejects and seeded its
+sequence from the monotonic clock, which is negative on this platform, so every
+report failed validation; a schema-validated drive through a unix-socket
+listener found both. #355's composition layer had never run: its merged
+configuration never reached the wiring, its environment requirement was never
+granted by the jail, and its trust pin was inert; it is reworked and proven by
+a committed session-level fixture rather than the shell demo it shipped with,
+which could not run.
 
 ### The UX series and its verification
 
@@ -66,36 +76,20 @@ after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
 
 ## What to do next
 
-1. **Land the native Herdr integration.** PR #354 on `herdr` teaches the
-   terminal to report its lifecycle (`pane.report_agent_session`, then
-   `pane.report_agent` across idle/working/blocked) over the Herdr unix
-   socket, gated by `HERDR_ENV`/`HERDR_SOCKET_PATH`/`HERDR_PANE_ID`. The adapter
-   is compiled in rather than installed, because the terminal is a single binary
-   with no plugin directory. One new FFI, `tui/internal/ffi_herdr.exchange`, a
-   deadline-bounded `gen_tcp` unix round trip. **Exit:** adversarial review,
-   rebase onto current main, Linux signoff on the exact head, then merge. The
-   Herdr-side registry change is a separate change in the Herdr repo.
+1. **Finish the imported-hooks layer's follow-ups.** The matrix names them:
+   the `loom hooks trust` command, without which project and local sources can
+   never be approved (the trust module already has `trust`, `revoke` and
+   `scan`; the CLI is surface beside `loom ext`); the prompt-admission seam
+   (`UserPromptSubmit`), which touches surfaces protocol 024 froze and may need
+   a `protocol-change/NNN.md`; and asynchronous hooks on the job plane.
+   **Exit:** each as its own PR with a regression and a matrix row moved from
+   follow-up to tested.
 
-2. **Land the imported-hooks compatibility layer.** PR #355 on
-   `hooks/claude-compat` runs imported Claude Code hooks unchanged (issue
-   #350, first wave): the pinned contract, the design note, the parity matrix,
-   and six client modules. The acceptance case is
-   `packages/client/test/client/hookserve_e2e_test.gleam` — one real session
-   from `serve.open_instance` under a temporary operator home, an unedited
-   user-level collection, and `SessionStart`, `PreToolUse`, `PostToolUse` and
-   `Stop` firing at their own harness moments across an operation one `Stop`
-   block holds open. It replaced a two-step shell demo that nobody could run.
-   **Exit:** adversarial review, rebase, Linux signoff on the exact head
-   including that fixture and the jailed `hookrunner` ones, then merge.
-   The matrix's follow-up rows are the next waves, not part of this exit:
-   - the prompt-admission seam (`UserPromptSubmit`): the harness has no moment
-     where a queued prompt can be inspected or rejected before admission; the
-     decision layer already reads the answers, the gateway slot is missing, and
-     it touches surfaces protocol 024 froze, so it may need a
-     `protocol-change/NNN.md`;
-   - a `loom hooks` CLI (list, trust, revoke, convert over the trust root);
-   - asynchronous hooks, whose natural shape is the job plane with delivery at
-     the next safe point.
+2. **Land the Herdr-side half.** The Herdr repo needs the `Loom` registry
+   variant, the `("herdr:loom", "loom")` resume-plan entry mapping to
+   `loom --session <id>`, and the schema enum; the wire contract this tree
+   speaks is the one Herdr's schema already defines. **Exit:** a pane opened
+   onto a loom session resumes by its announced id.
 
 3. **Fix the Escape cancellation proof-delivery race.** A plain Escape can
    commit `Aborted` with "provider cancellation could not be confirmed" even
@@ -205,6 +199,15 @@ the operator keeps their scripts, and nothing rewrites the command string. The a
 shape verbatim plus a native `[[hooks.Event]]` TOML layer, sources merged
 rather than replaced, with hash-pinned trust per source.
 
+**Herdr reports only the states its request schema accepts.** The reportable
+set is idle, working and blocked; `done` is derived by Herdr from an idle
+report on an unseen tab and is never sent. The report sequence is seeded from
+the wall clock, since the BEAM monotonic clock is an arbitrary-offset counter
+that is negative on this platform and the schema types `seq` as unsigned. The
+reporter is a plain in-order queue, deliberately not a superseding one: Herdr
+drops out-of-sequence reports on its side, and the unlinked reporter never
+stalls the terminal.
+
 **Only the gate posts Linux signoff.** `scripts/signoff.sh` owns the verdict
 for a pushed commit. Never post success by hand or treat an older commit's
 signoff as evidence for a changed tree.
@@ -259,7 +262,10 @@ instance turn and a conformance `run/terminated` seed. Both recurred once on the
 September 12 #351 signoff and cleared on an honest re-run with no code change.
 The rule stands: one re-run plus a note on #335; never re-run until green
 blindly, and never admin-merge past the gate for a code change. History-index
-issue **#324** is closed and fixed.
+issue **#324** is closed and fixed. The provider-wiring instance turn recurred
+once more on the #355 signoff and cleared on the bounded re-run; the same run
+exposed a genuine fixture-hygiene race in `hooktrust_test`, fixed with
+per-test directories, which is the distinction the rule exists to force.
 
 ## How to verify
 
