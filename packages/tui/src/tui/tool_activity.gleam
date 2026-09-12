@@ -117,6 +117,40 @@ fn running_batch(entries: List(entry.Entry), batch: operation.ToolBatch) {
   }
 }
 
+/// Reports whether appending this entry can change rows already projected.
+///
+/// A group is emitted only once `project` knows it is complete, so an entry
+/// that joins or opens one rewrites rows an earlier projection already
+/// produced: a result fills in its call's outcome, and a further call
+/// lengthens the group's heading. Every other entry ends the open group, and
+/// a group flushed by a boundary carries the same rows as one flushed by the
+/// end of the list — which is what lets a caller project such an entry on its
+/// own and append it to what it already had.
+///
+/// A result whose call is outside the window is an ordinary boundary, but
+/// nothing here can tell the two apart without the group, so every result
+/// answers `True`. The cost of that is one rebuild, and the cost of the
+/// other answer would be a stale row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool_activity.regroups(entry.CustomEntry(..)) == False
+/// ```
+pub fn regroups(value: entry.Entry) -> Bool {
+  case value {
+    entry.MessageEntry(
+      message: message.AssistantMessage(content:, error_message: None, ..),
+      ..,
+    ) -> !list.any(content, has_prose)
+    entry.MessageEntry(message: message.ToolResultMessage(..), ..) -> True
+    entry.MessageEntry(..)
+    | entry.CompactionEntry(..)
+    | entry.BranchSummaryEntry(..)
+    | entry.CustomEntry(..) -> False
+  }
+}
+
 fn collect(acc: #(List(Item), Group), value: entry.Entry) {
   let #(items, group) = acc
   case value {

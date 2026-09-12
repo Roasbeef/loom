@@ -455,6 +455,27 @@ const quiet_after_ms = 320
 /// terminal could have drawn.
 const frame_interval_ms = 16
 
+/// How many transcript rows one rendered frame reveals.
+///
+/// One row is what makes a streamed answer read as scrolling rather than as
+/// a sequence of jumps. At the frame interval it is still sixty rows a
+/// second, which is faster than any provider produces them.
+const pace_rows_per_frame = 1
+
+/// The backlog past which a frame reveals more than `pace_rows_per_frame`.
+///
+/// Twenty-four rows at one row a frame is about four hundred milliseconds
+/// of lag. Beyond that the reader is watching output the model already
+/// finished with, which is a worse fault than a slightly larger step.
+const pace_catch_up_threshold = 24
+
+/// How much of a backlog above the threshold one frame takes.
+///
+/// An eighth is a decay rather than a fixed rate: the step shrinks as the
+/// backlog does, so the walk lands back on single rows instead of stopping
+/// dead at the threshold.
+const pace_catch_up_divisor = 8
+
 /// How long a poll waits for more input before a deferred frame is rendered.
 ///
 /// The read only starts once etui's event queue is empty, so this is the gap
@@ -648,6 +669,10 @@ pub type Model {
     rendered_revision: Int,
     rendered_row_count: Int,
     rendered_rows: List(span.Line),
+    /// How many of `rendered_rows` the bottom-anchored viewport has shown.
+    /// Never above `rendered_row_count`; the difference is the backlog the
+    /// pacing walk is working off, and a gesture closes it at once.
+    revealed_rows: Int,
     /// Durable provenance for wrapped rows; transient rows have no anchor.
     rendered_anchors: List(Option(transcript_anchor.Row)),
     record_rows: List(span.Line),
@@ -750,6 +775,55 @@ pub type FrameDecision {
 
   /// Leave the stale frame on screen and render at the next flush point.
   DeferFrame
+}
+
+/// Whether the bottom-anchored transcript has shown every row it holds.
+///
+/// A provider chunk lands as two to five new rows at once. Moving the
+/// viewport by all of them in one frame reads as a jump, so the viewport
+/// keeps its own position and walks toward the newest row a frame at a
+/// time. This says which of the two states that walk is in, and it is the
+/// reason a loop with no socket traffic left must still be woken: the rows
+/// already in the model have not all been shown yet.
+@internal
+pub type ViewportPacing {
+  /// Every rendered row has been revealed; the viewport is at the tail.
+  ViewportSettled
+
+  /// Rows are still being revealed a frame at a time.
+  ViewportCatchingUp
+}
+
+/// What a terminal tick found when it drained the connection.
+///
+/// A tick is both the idle event that flushes a burst's last deferred frame
+/// and the carrier for every stream delta. Those two want opposite pacing,
+/// so the tick reports which one it was rather than being classified by its
+/// event constructor alone.
+@internal
+pub type TickTraffic {
+  /// The tick moved the transcript, so its frame belongs to the stream and
+  /// is paced with every other streamed frame.
+  TranscriptMoved
+
+  /// The tick changed no transcript row. It is the boundary at which an
+  /// earlier burst's deferred frame is rendered.
+  TranscriptQuiet
+}
+
+/// How fast a bottom-anchored viewport catches up with rows it has not shown.
+///
+/// The three bounds answer three different questions, so they are named
+/// rather than folded into one rate. `rows_per_frame` is the ordinary step
+/// and is what makes streaming read as scrolling. `catch_up_threshold` is
+/// the backlog past which a fixed step would leave the reader watching
+/// stale output, so the step grows with the backlog. `snap_above` is the
+/// growth at which there is no continuity left to preserve — a jump larger
+/// than the viewport replaced everything the reader could see — and the
+/// viewport moves to the tail in one frame.
+@internal
+pub type PacePolicy {
+  PacePolicy(rows_per_frame: Int, catch_up_threshold: Int, snap_above: Int)
 }
 
 /// Runs the interactive terminal client.
@@ -982,6 +1056,7 @@ pub fn new_model_with_clock(
     rendered_revision: -1,
     rendered_row_count: 0,
     rendered_rows: [],
+    revealed_rows: 0,
     rendered_anchors: [],
     record_rows: [],
     record_line_cache: dict.new(),
@@ -2379,7 +2454,13 @@ fn render_transcript(
 ) -> buffer.Buffer {
   case main_shows_diff(model) {
     True -> render_diff_view(buf, area, model)
-    False -> render_rows(buf, area, model.rendered_rows, model.scroll_offset)
+    False ->
+      render_rows(
+        buf,
+        area,
+        model.rendered_rows,
+        model.scroll_offset + viewport_backlog(model),
+      )
   }
 }
 
@@ -3559,9 +3640,52 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
   }
   let updated = sync_context(model, updated)
   let published = publish_herdr(updated)
-  refresh_render_cache(model, published)
-  |> request_history_for_view
-  |> refresh_frame_cache(frame_boundary(event))
+
+  // The snap runs after the projection, because a gesture closes the
+  // backlog against the row count this event produced rather than the one
+  // the previous frame was built from.
+  let settled =
+    refresh_render_cache(model, published)
+    |> request_history_for_view
+    |> snap_viewport_for(event)
+  refresh_frame_cache(
+    settled,
+    frame_boundary(event, tick_traffic(model, settled)),
+  )
+}
+
+// A person's gesture owns the viewport outright: pacing exists to smooth
+// output the reader did not ask for, and making a scroll, a key, a paste, a
+// click or a resize wait on it would put the walk in front of the hand. The
+// click matters as much as the key, because the jump hint under a scrolled
+// viewport is a mouse press and it promises the newest row.
+//
+// A tick and a bare mouse move are the two events that ask for nothing. The
+// move is listed with the tick rather than with the other buttons for that
+// reason: hover reporting during a generation would otherwise snap the
+// transcript on every motion event and undo the pacing entirely.
+fn snap_viewport_for(model: Model, event: backend.InputEvent) -> Model {
+  case event {
+    backend.Tick | backend.MouseMove(..) -> model
+    backend.Resize(..)
+    | backend.KeyPress(_)
+    | backend.Paste(_)
+    | backend.MouseScroll(..)
+    | backend.MousePress(..)
+    | backend.MouseRelease(..)
+    | backend.MouseDrag(..) ->
+      Model(..model, revealed_rows: model.rendered_row_count)
+  }
+}
+
+// The transcript revision is bumped at every mutation of the projection's
+// source data and nowhere else, so comparing it across the event is the
+// same question as "did this tick carry a delta, a record or a cut".
+fn tick_traffic(before: Model, after: Model) -> TickTraffic {
+  case after.render_revision != before.render_revision {
+    True -> TranscriptMoved
+    False -> TranscriptQuiet
+  }
 }
 
 // Starts the Herdr pane reporter when the launch environment carries a
@@ -3629,12 +3753,39 @@ fn publish_herdr(model: Model) -> Model {
   }
 }
 
-// Ticks and resizes flush; everything a person or a terminal can produce in a
-// burst is paced. Mouse buttons are listed rather than swept up by a catch-all
-// so a new etui event variant is a compile error here, not a silent default.
-fn frame_boundary(event: backend.InputEvent) -> FrameBoundary {
+/// Classifies one event for frame pacing.
+///
+/// A resize always flushes, because the screen changed shape under the
+/// stale frame. Everything a person or a terminal can produce in a burst is
+/// paced. A tick is decided by what it carried rather than by being a tick:
+/// a tick is both the idle event that flushes a burst's last frame and the
+/// carrier for every stream delta, and the second of those was, until this
+/// split, the one path with the most traffic and no budget at all. A tick
+/// that carried nothing keeps its flushing duty, because a deferred frame
+/// has no other event waiting to pay it off.
+///
+/// Mouse buttons are listed rather than swept up by a catch-all so a new
+/// etui event variant is a compile error here, not a silent default.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.frame_boundary(backend.Tick, tui.TranscriptQuiet)
+///   == tui.FlushPoint
+/// assert tui.frame_boundary(backend.Tick, tui.TranscriptMoved) == tui.Paced
+/// ```
+@internal
+pub fn frame_boundary(
+  event: backend.InputEvent,
+  traffic: TickTraffic,
+) -> FrameBoundary {
   case event {
-    backend.Tick | backend.Resize(..) -> FlushPoint
+    backend.Resize(..) -> FlushPoint
+    backend.Tick ->
+      case traffic {
+        TranscriptQuiet -> FlushPoint
+        TranscriptMoved -> Paced
+      }
     backend.KeyPress(_)
     | backend.Paste(_)
     | backend.MouseScroll(..)
@@ -3785,11 +3936,19 @@ fn advance_activity_indicator(model: Model) -> Model {
 // the queue has drained, renders the final state once.
 fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let freshness = case model.frame_cache {
-    Some(FrameCache(screen: cached_screen, revision:, ..))
-      if cached_screen == screen && revision == model.frame_revision
-    -> FrameCurrent
-    None | Some(_) -> FrameStale
+  let freshness = case viewport_pacing(model) {
+    // Rows the model holds but the viewport has not shown make the painted
+    // frame stale by definition, whatever the revision says. Without this
+    // the walk would stop after one step: revealing a row changes the frame
+    // without changing any of the inputs the revision counts.
+    ViewportCatchingUp -> FrameStale
+    ViewportSettled ->
+      case model.frame_cache {
+        Some(FrameCache(screen: cached_screen, revision:, ..))
+          if cached_screen == screen && revision == model.frame_revision
+        -> FrameCurrent
+        None | Some(_) -> FrameStale
+      }
   }
 
   // The clock is read once per event and only compared against itself, so a
@@ -3798,17 +3957,21 @@ fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
   case frame_decision(boundary, freshness, now - model.last_frame_ms) {
     KeepCachedFrame -> model
     DeferFrame -> Model(..model, frame_debt: FrameDeferred)
-    RenderFrame ->
+    RenderFrame -> {
+      // The step is taken before the frame is built, so the frame that is
+      // cached and the position it was built from are the same moment.
+      let paced = advance_viewport(model)
       Model(
-        ..model,
+        ..paced,
         frame_debt: FrameSettled,
         last_frame_ms: now,
         frame_cache: Some(FrameCache(
           screen:,
-          revision: model.frame_revision,
-          rendered: render_frame(model, screen),
+          revision: paced.frame_revision,
+          rendered: render_frame(paced, screen),
         )),
       )
+    }
   }
 }
 
@@ -3846,6 +4009,103 @@ pub fn frame_decision(
   }
 }
 
+/// Advances a revealed row count one frame's worth toward the newest row.
+///
+/// Walking is for a viewport that already holds a position worth keeping, so
+/// three shapes bypass it. A viewport that has revealed nothing has no such
+/// position: its first projection is the screen the reader has yet to see,
+/// and revealing it a row at a time would animate an arrival rather than a
+/// change. A shrink — a tool tail collapsing, a generation cleared — is
+/// adopted at once, because there is nothing to reveal and holding retired
+/// rows would show text the model no longer has. A growth of `snap_above`
+/// or more replaced everything the viewport could show, so there is no
+/// continuity left to preserve. Everything else is the ordinary case: one
+/// step, enlarged in proportion to the backlog once a fixed step would lag.
+///
+/// The result never passes `target` and never moves away from it, so the
+/// walk terminates for any policy whose `rows_per_frame` is at least one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let policy = tui.PacePolicy(1, 24, 200)
+/// assert tui.pace(10, 15, policy) == 11
+/// assert tui.pace(10, 10, policy) == 10
+/// assert tui.pace(10, 4, policy) == 4
+/// assert tui.pace(0, 15, policy) == 15
+/// ```
+@internal
+pub fn pace(revealed: Int, target: Int, policy: PacePolicy) -> Int {
+  let backlog = target - revealed
+  use <- bool.guard(
+    revealed <= 0 || backlog <= 0 || backlog >= policy.snap_above,
+    target,
+  )
+
+  let step = case backlog > policy.catch_up_threshold {
+    True -> int.max(policy.rows_per_frame, backlog / pace_catch_up_divisor)
+    False -> policy.rows_per_frame
+  }
+  revealed + int.min(step, backlog)
+}
+
+// The snap bound is the viewport rather than a constant: what makes a jump
+// worth smoothing is that the reader can still see where the text came
+// from, and a growth taller than the screen leaves nothing of it.
+fn pace_policy(model: Model) -> PacePolicy {
+  PacePolicy(
+    rows_per_frame: pace_rows_per_frame,
+    catch_up_threshold: pace_catch_up_threshold,
+    snap_above: int.max(1, transcript_viewport_height(model)),
+  )
+}
+
+// Rows held back from the bottom-anchored viewport. Added to the scroll
+// offset, which counts from the same end, this is what walks the view down
+// to the tail a frame at a time.
+fn viewport_backlog(model: Model) -> Int {
+  int.max(0, model.rendered_row_count - model.revealed_rows)
+}
+
+/// Reports whether the viewport still has rows to reveal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.viewport_pacing(model) == tui.ViewportSettled
+/// ```
+@internal
+pub fn viewport_pacing(model: Model) -> ViewportPacing {
+  case viewport_backlog(model) > 0 {
+    True -> ViewportCatchingUp
+    False -> ViewportSettled
+  }
+}
+
+// One step of the walk, taken as the frame it belongs to is rendered. Tying
+// it to the render rather than to the tick is what bounds the shift between
+// two consecutive frames: a tick that renders nothing reveals nothing.
+//
+// An idle strand holds no rows back at all. The walk exists to smooth output
+// that is still arriving, and a viewport lagging a source that has stopped
+// producing shows the reader stale text for no gain. It is also why a
+// replayed or scripted run settles on the complete frame rather than on
+// however far a fixed number of ticks happened to walk.
+fn advance_viewport(model: Model) -> Model {
+  case active_strand_live(model) {
+    False -> Model(..model, revealed_rows: model.rendered_row_count)
+    True ->
+      Model(
+        ..model,
+        revealed_rows: pace(
+          model.revealed_rows,
+          model.rendered_row_count,
+          pace_policy(model),
+        ),
+      )
+  }
+}
+
 /// Returns the active or quiet poll timeout for an inactivity duration.
 @internal
 pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
@@ -3865,14 +4125,24 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
 @internal
 pub fn terminal_poll_timeout(model: Model) -> Int {
   let ordinary = paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
-  case attachment.busy(model.candidate), model.channel {
-    True, _ -> int.min(ordinary, 8)
-    False, Some(channel) ->
-      case session_channel.in_flight(channel) {
-        True -> int.min(ordinary, 8)
-        False -> int.min(ordinary, 250)
+  case viewport_pacing(model) {
+    // A backlog is work the loop owes the screen with nothing left to wake
+    // it: the deltas that produced those rows are already drained. One row
+    // is revealed per rendered frame, so the wait between wakes is the
+    // interval between rows, and the shorter in-flight wait is deliberately
+    // not taken — draining the socket sooner would only lengthen a backlog
+    // the viewport has yet to show.
+    ViewportCatchingUp -> int.min(ordinary, frame_interval_ms)
+    ViewportSettled ->
+      case attachment.busy(model.candidate), model.channel {
+        True, _ -> int.min(ordinary, 8)
+        False, Some(channel) ->
+          case session_channel.in_flight(channel) {
+            True -> int.min(ordinary, 8)
+            False -> int.min(ordinary, 250)
+          }
+        False, None -> ordinary
       }
-    False, None -> ordinary
   }
 }
 
@@ -3993,11 +4263,26 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
           )
           |> option.unwrap(after.scroll_offset)
       }
+
+      // Reading history owns the viewport through the scroll offset, and a
+      // strand or session switch replaced the rows rather than extending
+      // them: neither has a tail to walk toward. Otherwise the count only
+      // needs clamping, since a shrunk projection must not leave the
+      // viewport claiming rows that no longer exist.
+      let revealed_rows = case
+        reading_history(after)
+        || before.active_strand != after.active_strand
+        || before.session != after.session
+      {
+        True -> rendered_row_count
+        False -> int.min(after.revealed_rows, rendered_row_count)
+      }
       Model(
         ..cached,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
         rendered_rows:,
+        revealed_rows:,
         rendered_anchors:,
         scroll_offset: bounded_scroll_offset(
           anchored,
@@ -4104,12 +4389,22 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
 // a changed outcome has a different key and cannot retain its pending label.
 // Expanded append-only history still extends the row list as one small batch.
 fn refresh_record_cache(model: Model, width: Int) -> Model {
+  // Expanded history is append-only, so a pending record there can only add
+  // rows. Compact history groups consecutive calls, and `tool_activity`
+  // answers which records can rewrite a group already projected; the rest —
+  // prose, a user turn, structural history — end the group with the rows it
+  // already had and keep the append path.
+  let regrouped =
+    !model.details_expanded
+    && list.any(model.pending_records, fn(record) {
+      tool_activity.regroups(record.entry)
+    })
   let cache_matches =
     model.record_cache_valid
     && model.record_cache_width == width
     && model.record_cache_strand == model.active_strand
     && model.record_cache_details == model.details_expanded
-    && { model.details_expanded || list.is_empty(model.pending_records) }
+    && !regrouped
   case cache_matches, model.pending_records {
     False, _ -> {
       let previous = case model.record_cache_width == width {
@@ -4137,16 +4432,20 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     }
     True, [] -> model
     True, pending -> {
-      let newest_rows =
-        pending
-        |> record_lines(model)
-        |> fn(projection) { projection.0 }
-        |> transcript_content(width)
-        |> fn(content) { markdown.wrap_lines(content.lines, width) }
-        |> list.reverse
+      let #(lines, calls, narratives) = record_lines(pending, model)
+      let #(newest_rows, appended) =
+        cached_record_lines(lines, width, model.record_line_cache)
+
+      // Every cache here describes the current projection, and the appended
+      // records have just joined it. Merging rather than replacing keeps the
+      // hints for the rows already on screen, which this path never rebuilds;
+      // the release of retired text belongs to the full rebuild.
       Model(
         ..model,
         record_rows: list.append(newest_rows, model.record_rows),
+        record_line_cache: dict.merge(model.record_line_cache, appended),
+        compact_call_cache: dict.merge(model.compact_call_cache, calls),
+        compact_entry_cache: dict.merge(model.compact_entry_cache, narratives),
         pending_records: [],
       )
     }
@@ -4306,6 +4605,16 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   }
 }
 
+// The live tail is a pure function of the lines it projects and the width it
+// wraps to, and most of what invalidates the transcript leaves both alone: a
+// settled record, the quarter-second cut, a worktree observation. Re-deriving
+// it there means parsing the whole accumulated answer again for rows that did
+// not change, which is why the key is the lines themselves and not the
+// revision every one of those events bumps.
+//
+// This is refreshed beside the record cache, and for the same reason:
+// `rendered_rows_for` reads both as already current for the width it was
+// handed, rather than deciding for itself what to rebuild.
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
 fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
@@ -4863,6 +5172,25 @@ fn render_cut(
         history_view.Quiet -> "Scroll up to load older conversation."
       }
   }
+  let transcript = [
+    Line(System, boundary),
+    Line(System, attachment_banner),
+    ..list.append(
+      configuration_lines(view, active),
+      list.append(unconfirmed_lines(model.unconfirmed), approval_lines(reviews)),
+    )
+  ]
+
+  // Everything the record projection reads, so a cut that moved only usage,
+  // phases or timestamps leaves the cache standing. Cuts arrive on a
+  // quarter-second cadence throughout a turn, and invalidating on every one
+  // of them made each a full re-projection of the whole session.
+  let record_cache_valid =
+    model.record_cache_valid
+    && model.active_strand == active
+    && model.records == branch.records
+    && model.transcript == transcript
+    && solo_owner(model.captured) == solo_owner(Some(#(cut, view)))
 
   // Request-scoped pushes outrun captures: a cut may have started before
   // the request that is streaming now. Retain those observations, including
@@ -4924,19 +5252,9 @@ fn render_cut(
       None -> model.queued
     },
     submitting: None,
-    record_cache_valid: False,
+    record_cache_valid:,
     notice: notice,
-    transcript: [
-      Line(System, boundary),
-      Line(System, attachment_banner),
-      ..list.append(
-        configuration_lines(view, active),
-        list.append(
-          unconfirmed_lines(model.unconfirmed),
-          approval_lines(reviews),
-        ),
-      )
-    ],
+    transcript:,
   )
   |> invalidate_transcript
   // A completed cut can make the operation idle before the next animation
@@ -5202,6 +5520,7 @@ fn adopt_session(
     rendered_revision: -1,
     rendered_row_count: 0,
     rendered_rows: [],
+    revealed_rows: 0,
     rendered_anchors: [],
     record_rows: [],
     record_line_cache: dict.new(),
