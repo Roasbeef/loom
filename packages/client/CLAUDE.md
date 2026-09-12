@@ -613,6 +613,25 @@ catalogue without opening runtimes. Explicit admission invokes
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
+- `client/advisorslice.{Bounds, Slice, default_bounds, render, feed_message,
+  advice_message, nudges_message, is_advice, advice_header, advice_footer,
+  feed_header, feed_footer, nudges_header, nudges_fence}` — what the advisor
+  strand is shown of the primary's branch, and the frames that carry text
+  both ways. `render` turns the entries appended since a stored cursor into
+  one bounded text: `Bounds` caps a single entry's payload and the whole
+  window separately, oldest entries are dropped from the front with an
+  `[N earlier entries omitted]` line, and a tool result too long for its cap
+  is cut from the middle so both the command and its verdict survive.
+  Assistant thinking never renders, redacted markers included. `Slice.newest`
+  is the seq of the newest entry the scan saw whether or not it rendered, so
+  an entry the rules skip still advances the cursor. Advice and nudges land
+  in the primary's branch as ordinary user messages and come back in the next
+  slice labelled `advisor (your earlier advice):` and
+  `advisor (your earlier nudges):`, because unlabelled they would read to
+  the advisor as operator instructions. The module is pure — no store, no
+  process, no clock — and borrows `notes.{clip, byte_size, fence_safe}`
+  rather than keeping a second copy of the byte arithmetic and the fence
+  defence.
 - `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
   bounding the sidecar read, which the lifecycle producer moved onto the
   strand driver's hot path: `max_sidecar_bytes` (four times the render
