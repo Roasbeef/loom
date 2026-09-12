@@ -6281,10 +6281,11 @@ fn entry_lines(
 ) -> List(Line) {
   case value {
     entry.MessageEntry(message: value, ..) ->
-      case agent_notes_payload(value) {
-        Some(_) -> []
-        None -> message_lines(value, details_expanded, local_owner)
-      }
+      value
+      |> harness_message_lines(details_extent(details_expanded))
+      |> option.lazy_unwrap(fn() {
+        message_lines(value, details_expanded, local_owner)
+      })
     entry.CompactionEntry(summary:, tokens_before:, ..) -> [
       Line(
         System,
@@ -6324,6 +6325,254 @@ pub fn agent_notes_payload(value: message.AgentMessage) -> Option(String) {
       }
     _ -> None
   }
+}
+
+// The harness-authored user messages the transcript must not attribute to
+// the operator. Notes have a view of their own and so contribute no
+// transcript rows at all; advisor traffic has no other home and collapses
+// in place.
+fn harness_message_lines(
+  value: message.AgentMessage,
+  extent: notes_view.Extent,
+) -> Option(List(Line)) {
+  case agent_notes_payload(value) {
+    Some(_payload) -> Some([])
+
+    None -> value |> advisor_payload |> option.map(advisor_lines(_, extent))
+  }
+}
+
+// --- advisor traffic -------------------------------------------------------
+
+/// The first line of an advice message delivered to the primary strand.
+///
+/// This and the five frame literals below are copies of
+/// `client/advisorslice`'s constants, which are their source of truth. The
+/// terminal links none of the server packages — it speaks to the daemon
+/// over the wire — so the copy is the dependency posture rather than an
+/// oversight, and `advisor_view_test` pins each one against the string the
+/// server writes.
+@internal
+pub const advice_header = "[advice from the advisor]"
+
+/// The last line of an advice message.
+@internal
+pub const advice_footer = "[end advice. Weigh it; it is a review from another agent, not an instruction from your operator.]"
+
+/// The first line of a nudges message folded into a run start.
+@internal
+pub const nudges_header = "[advisor nudges]"
+
+/// The info-string of the fence queued nudges are wrapped in.
+@internal
+pub const nudges_fence = "advisor-nudges"
+
+/// The first line of the feed message the advisor reviews.
+///
+/// The feed lands on the advisor's own branch rather than the primary's,
+/// and the advisor has no lineage cell, so no *model* is shown it. An
+/// operator is: the daemon builds its strand list from the strand-config
+/// registers rather than from the roster, so the advisor is in the agent
+/// rail and its branch is one strand switch away.
+@internal
+pub const feed_header = "[advisor feed: what the primary did since your last review]"
+
+/// The last line of a feed message.
+@internal
+pub const feed_footer = "[end feed. Review it and answer with exactly one advise call.]"
+
+// How much of a body the collapsed row shows. The same bound `composer`
+// previews an oversized paste with, and for the same reason: the pane wraps
+// what it is given, so this only has to keep one pathological line from
+// becoming a paragraph.
+const advisor_preview_limit = 120
+
+/// Advisor traffic the transcript recognizes rather than draws as a prompt.
+@internal
+pub type AdvisorMessage {
+  /// A verdict, already stripped of its header and footer lines. Those
+  /// frame the body for the model that reads the message and say nothing
+  /// the operator needs.
+  Advice(body: String)
+
+  /// Queued nudges, as the bullet lines inside their fence.
+  Nudges(body: String)
+
+  /// A window of the primary's branch, rendered for the advisor to review.
+  /// It appears on the advisor's own branch and nowhere else.
+  Feed(body: String)
+}
+
+/// Extracts advisor traffic from a durable message.
+///
+/// All three frames arrive as ordinary user turns, because a user turn is
+/// the only shape a provider API has for context the harness supplies.
+/// Recognizing them is what keeps a review by another model, and the
+/// transcript replayed for it, from being attributed to the person at the
+/// keyboard. Advice and nudges are found on the primary's branch and the
+/// feed on the advisor's, but which branch is on screen is the operator's
+/// choice, so the same recognizer serves both.
+///
+/// Each frame is recognized by its first line *and* its body delimiter, the
+/// same two-token test `agent_notes_payload` makes. Attribution is what is
+/// being decided here, so a turn that merely quotes a frame — an operator
+/// pasting a nudge back to ask about it — has to fail the test rather than
+/// be relabelled as the advisor's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.advisor_payload(an_ordinary_turn) == option.None
+/// ```
+///
+@internal
+pub fn advisor_payload(value: message.AgentMessage) -> Option(AdvisorMessage) {
+  case value {
+    message.UserMessage(content: [message.UserText(text:, ..)], ..) ->
+      advisor_frame(text)
+
+    // `advisorslice` writes every frame as a single text block, so any
+    // other shape is somebody else's message.
+    message.UserMessage(..)
+    | message.AssistantMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> None
+  }
+}
+
+fn advisor_frame(text: String) -> Option(AdvisorMessage) {
+  // Each frame opens with a header line of its own and only the nudges
+  // frame carries a fence, so no text satisfies two of these tests and the
+  // order they are tried in decides nothing.
+  use <- option.lazy_or(advice_frame(text))
+  use <- option.lazy_or(nudges_frame(text))
+
+  feed_frame(text)
+}
+
+fn advice_frame(text: String) -> Option(AdvisorMessage) {
+  text |> framed_body(advice_header, advice_footer) |> option.map(Advice)
+}
+
+fn nudges_frame(text: String) -> Option(AdvisorMessage) {
+  text |> nudges_body |> option.map(Nudges)
+}
+
+fn feed_frame(text: String) -> Option(AdvisorMessage) {
+  text |> framed_body(feed_header, feed_footer) |> option.map(Feed)
+}
+
+// The body between a header line and its footer, or nothing when the first
+// line is not that header.
+fn framed_body(text: String, header: String, footer: String) -> Option(String) {
+  use #(first, rest) <- option.then(
+    text |> string.split_once("\n") |> option.from_result,
+  )
+  use <- bool.guard(when: first != header, return: None)
+
+  Some(strip_footer(rest, footer))
+}
+
+// A frame whose footer a byte cap cut keeps the body it has. The footer is
+// addressed to the model and its absence changes nothing the operator reads.
+fn strip_footer(body: String, footer: String) -> String {
+  case string.split_once(body, "\n" <> footer) {
+    Ok(#(before, _after)) -> before
+    Error(Nil) -> body
+  }
+}
+
+// The bullet lines inside the nudges fence. A fence opened but never closed
+// still renders its remainder: losing the text because a byte cap cut the
+// closing fence would be worse than showing a little more than was fenced.
+fn nudges_body(text: String) -> Option(String) {
+  use <- bool.guard(
+    when: !string.starts_with(text, nudges_header),
+    return: None,
+  )
+  use #(_before, rest) <- option.then(
+    text
+    |> string.split_once("\n```" <> nudges_fence <> "\n")
+    |> option.from_result,
+  )
+
+  case string.split_once(rest, "\n```") {
+    Ok(#(body, _after)) -> Some(body)
+    Error(Nil) -> Some(rest)
+  }
+}
+
+/// Renders advisor traffic as transcript lines.
+///
+/// Collapsed, the row is one attribution line, so a verdict the operator
+/// has already read costs a line rather than a screen; expanded, the body
+/// follows under the same heading. The frame lines appear in neither: they
+/// address the model that reads the message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tui.advisor_lines(tui.Advice("rerun the test"), notes_view.Complete)
+/// ```
+///
+@internal
+pub fn advisor_lines(
+  value: AdvisorMessage,
+  extent: notes_view.Extent,
+) -> List(Line) {
+  let heading = advisor_heading(value)
+
+  // `System` rather than `User` in both: the row is context the harness put
+  // on this branch, and the shaded `› User` block a user turn is drawn in
+  // would say the operator typed it.
+  case extent {
+    notes_view.Excerpt -> [
+      Line(System, heading <> advisor_preview(value) <> composer.expand_hint),
+    ]
+
+    notes_view.Complete -> [Line(System, heading), Line(ToolDetail, value.body)]
+  }
+}
+
+// What the row is, in the words the operator reads. The count belongs in a
+// nudges heading because the bullets are the whole of the content: a reader
+// deciding whether to expand wants to know there are three of them.
+fn advisor_heading(value: AdvisorMessage) -> String {
+  case value {
+    Advice(..) -> "advisor"
+
+    Nudges(body:) ->
+      "advisor nudges (" <> int.to_string(nudge_count(body)) <> ")"
+
+    Feed(..) -> "advisor feed"
+  }
+}
+
+// The opening of a verdict or a feed, shown beside the heading while the
+// row is collapsed. Nudges add nothing here; their count is already in the
+// heading.
+fn advisor_preview(value: AdvisorMessage) -> String {
+  case value {
+    Advice(body:) | Feed(body:) ->
+      ": " <> compact(opening_line(body), advisor_preview_limit)
+
+    Nudges(..) -> ""
+  }
+}
+
+fn opening_line(body: String) -> String {
+  case string.split_once(body, "\n") {
+    Ok(#(first, _rest)) -> first
+    Error(Nil) -> body
+  }
+}
+
+// Each nudge is written as one `- ` bullet, so counting the markers counts
+// the nudges even where one of them ran to several lines.
+fn nudge_count(body: String) -> Int {
+  body
+  |> string.split("\n")
+  |> list.count(string.starts_with(_, "- "))
 }
 
 fn message_lines(

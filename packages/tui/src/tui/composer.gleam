@@ -271,6 +271,13 @@ pub fn admit_attachment(
 /// standing instruction fired and let the reader open it if they care.
 pub const harness_injection_prefix = "[loom] "
 
+/// The suffix a collapsed transcript row ends with, so the reader knows
+/// the detail toggle will open it.
+///
+/// `tui` collapses advisor traffic the same way and ends those rows with
+/// the same words, so one spelling serves both and neither can drift.
+pub const expand_hint = "  [Ctrl+G to expand]"
+
 /// The single line a harness injection collapses to, or `None` when this
 /// is not one.
 ///
@@ -329,7 +336,7 @@ pub fn harness_injection_summary(text: String) -> Option(String) {
 pub fn transcript_text(text: String, details_expanded: Bool) -> String {
   use <- bool.lazy_guard(when: details_expanded, return: fn() { text })
   case harness_injection_summary(text) {
-    Some(attribution) -> attribution <> "  [Ctrl+G to expand]"
+    Some(attribution) -> attribution <> expand_hint
     None -> bounded_paste(text)
   }
 }
