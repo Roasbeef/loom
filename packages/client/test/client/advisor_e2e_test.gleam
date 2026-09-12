@@ -67,6 +67,7 @@ import client/schedule
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/clock
+import core/ids
 import core/json
 import core/message
 import gleam/bit_array
@@ -75,6 +76,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import machine/acceptance
 import machine/operation
 import machine/strand as machine_strand
 import provider/adapter/anthropic
@@ -323,8 +325,22 @@ fn latest_with(bodies: List(String), marker: String) -> Result(String, Nil) {
 // to settlement. A block delivered into the open run steers it rather than
 // starting a new one, which costs the run one more provider request and
 // still settles it as the assistant's own completion.
+//
+// Admission is retried while the strand is busy. A block delivered onto an
+// idle primary starts a run of its own, and how long that run stays open
+// depends on the host's scheduling: the advice can be visible in a request
+// body while the run that carries it has not settled yet, and an operator
+// prompt admitted at that moment is refused as busy rather than queued.
 fn complete(instance: serve.Instance, text: String) -> Nil {
-  let assert Ok(op) = api.prompt(instance.runtime, [user(text)])
+  let admitted: poll.Outcome(ids.OpId, Nil) =
+    poll.until(within: await_ms, every: 100, attempt: fn() {
+      case api.prompt(instance.runtime, [user(text)]) {
+        Ok(op) -> poll.Done(op)
+        Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> poll.Retry
+        Error(other) -> panic as string.inspect(other)
+      }
+    })
+  let assert poll.Answered(value: op) = admitted
     as "the instance must admit the operator's turn through its own writer"
   let assert Ok(operation.RunLastResult(outcome: completion, ..)) =
     api.await_result(instance.runtime, op, within_ms: 60_000)
