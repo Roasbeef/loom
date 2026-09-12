@@ -82,7 +82,10 @@ that tree separately from the self-contained server.
   replacement clears a different session's history; same-session reconnect
   preserves the reading endpoint without reusing mutation authority.
 - User messages have a shaded, labelled block. Agent prose and reasoning have
-  explicit labels; non-redacted reasoning remains visible in compact mode.
+  explicit labels. In compact mode a reasoning block is one `ReasoningDigest`
+  row — the line count while it streams, its opening line and the expand hint
+  once it settles — and `Ctrl+G` shows the block itself; a redacted block is
+  its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
@@ -213,7 +216,9 @@ that tree separately from the self-contained server.
   step, source_index, call_id, stream}`, replaced whole on every frame, drawn by
   `tui.tool_tail_lines` as one `ToolResult` line under the live region:
   the stream's name and byte count so far, then the last
-  `tail_lines_shown` lines of the window.
+  `tail_lines_shown` lines of the window. That drawing happens only with
+  details expanded; a compact transcript draws no window, because the row
+  the settle replaces has to be the only row the call ever occupied.
 - `tui/connection.Connection` is a thin typed adapter over `host/websocket`.
   The shared host transport owns Stratus and deadline-bounded handshake
   startup. The terminal owns the destination inbox. After handshake, the
@@ -548,6 +553,17 @@ that tree separately from the self-contained server.
 
 ## Invariants
 
+- **A settle never changes the transcript's height in compact mode.** A live
+  region and the durable projection that replaces it occupy the same number
+  of wrapped rows, so a reader following the tail sees text change and not
+  the transcript grow and shrink under them. The two regions this covers are
+  a running tool call — whose output window is detail, drawn only with
+  details expanded — and a reasoning block, whose live and settled forms are
+  both one `ReasoningDigest` row when collapsed.
+- **Reasoning is collapsed unless details are expanded.** A digest is drawn
+  literally rather than through the Markdown renderer, so a fence or a list
+  marker in the model's own prose cannot turn a one-row indicator into
+  several. `Ctrl+G` renders the block in full, as it always did.
 - **The global endpoint fences the native VM.** Shared `host/endpoint` paths
   retain one Starting/Ready record, native PID and birth identity. A live or
   unknown identity is never replaced after a failed probe; killing a BEAM root
