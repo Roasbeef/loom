@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/roasbeef/.claude/hooks/precompact/save_important_context.sh"
+            "command": "~/.claude/hooks/precompact/save_important_context.sh"
           }
         ]
       },
@@ -95,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/roasbeef/.claude/hooks/sessionstart/load_project_context.sh"
+            "command": "~/.claude/hooks/sessionstart/load_project_context.sh"
           }
         ]
       },
@@ -147,15 +147,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/roasbeef/.claude/hooks/ultrathink_hook.py"
+            "command": "~/.claude/hooks/ultrathink_hook.py"
           },
           {
             "type": "command",
-            "command": "/Users/roasbeef/.claude/hooks/userpromptsubmit/context_enhancer.py"
+            "command": "~/.claude/hooks/userpromptsubmit/context_enhancer.py"
           },
           {
             "type": "command",
-            "command": "/Users/roasbeef/.claude/hooks/userpromptsubmit/session_context.py"
+            "command": "~/.claude/hooks/userpromptsubmit/session_context.py"
           }
         ]
       },
