@@ -25,9 +25,10 @@ Two formats are accepted, the way Codex accepts two:
   documented locations, never rewritten.
 - **Loom shape**, native TOML: `[[hooks.PreToolUse]]` matcher tables
   with nested `[[hooks.PreToolUse.hooks]]` handler tables, inline in
-  `loom.toml` or in a standalone hooks file. A `loom hooks convert`
-  CLI command turns the Claude shape into this one, losslessly, for
-  operators who prefer their configs native.
+  `loom.toml` or in a standalone hooks file. The lossless render is
+  implemented (`hookcompat.to_toml`, with the round-trip as a tested
+  property); the `loom hooks convert` command that would expose it is
+  **follow-up work and does not exist in the tree**.
 
 Both shapes produce the same in-memory model, so there is one bus, one
 runner, and one trust story regardless of which format a hook arrived
@@ -49,7 +50,7 @@ boundary, and the native extension API (`[[hook]]` in
 |---|---|---|
 | `SessionStart` | session boot, before first prompt (bus `session_start`); re-fired on compaction continuation for `source: "compact"` | plain stdout → run-start context; JSON `additionalContext` the same |
 | `UserPromptSubmit` | prompt admission, before a queued turn is placed | plain stdout / `additionalContext` → injected beside the prompt; `decision: "block"` rejects the prompt |
-| `PreToolUse` | tool clearance, after the harness's own clearance passed (`cleared` in `client/extension/hooks.gleam`) | `permissionDecision: allow/deny/ask`, exit 2 = deny; `updatedInput` rewrites arguments |
+| `PreToolUse` | tool clearance, after the harness's own clearance passed (`cleared` in `client/extension/hooks.gleam`) | `permissionDecision: allow/deny/ask`, exit 2 = deny; `updatedInput` rewrites arguments, and the rewritten call is put back through the harness's clearance before it runs |
 | `PostToolUse` | tool settled, before the reply is committed (`ran`/`fold_tool_result`) | `decision: "block"` + `reason` becomes the visible result beside the original; `updatedToolOutput` rewrites content |
 | `PreCompact` | compaction decided, before the summary request (`compaction_note`) | `additionalContext`-style note appended to summarizer input |
 | `Stop` | run may finish (`run_end`, consulted at `finish_boundary`, `machine/planner.gleam:1020`) | `decision: "block"` + `reason` → the born-placed follow-up message; the run continues |
@@ -69,10 +70,14 @@ exists: `finish_boundary` consults `run_end` at every may-finish
 boundary, and a `Some(message)` follow-up commits a new user entry and
 continues with `NeedAssistant`. That is exactly Claude's "decision:
 block continues the conversation," with the harness's own durability
-replay rules. `stop_hook_active` maps to a per-operation count of
-follow-ups this gate has placed; the 8-consecutive-block override maps
-to a harness-side cap on that count, after which the gate stops asking
-and the run finishes.
+replay rules. The 8-consecutive-block override maps to a harness-side
+cap on a per-operation count of follow-ups this gate has placed, after
+which the gate stops asking and the run finishes.
+
+The contract's `stop_hook_active` field would let a hook self-limit on
+the same count. **It is not in the payload this build sends**, so a
+`Stop` hook that checks it sees nothing and runs to the cap instead;
+carrying it is follow-up work.
 
 ## The runner: commands go through the broker
 
@@ -87,10 +92,21 @@ runs take — with:
 
 - **cwd** = the session workspace;
 - **env** = the session environment (`serve.session_environment`
-  plus the `[tools] env` names), **plus** the documented Claude hook
-  variables where they have a meaning (`CLAUDE_PROJECT_DIR`, and
-  `CLAUDE_ENV_FILE` pointing at a session-owned env file appended to
-  subsequent tool environments);
+  plus the `[tools] env` names), **plus** `CLAUDE_PROJECT_DIR`, which
+  names the session workspace, and with `HOME` re-pointed at the
+  operator's own home (`serve.hook_environment`). A jailed tool's
+  `HOME` is workspace-local so that what a toolchain writes to it stays
+  off the operator's tree; a hook's cannot be, because the scripts an
+  imported collection names live at `~/.claude/hooks/...` and the shell
+  finds them by expanding `~` against `HOME`. That substitution is why
+  nothing rewrites the command string: `sh` expands `~` in every
+  position, and a rewriter would have agreed with it in one. Every name
+  here is also granted on the session base
+  (`serve.allowing_imported_hook_env`), because the runner asks for
+  exactly these names and a name the base withholds refuses the whole
+  call. `CLAUDE_ENV_FILE` is **not implemented**: nothing writes a
+  session-owned env file and nothing appends one to a later tool
+  environment;
 - **stdin** = the event's JSON input, exactly the pinned contract's
   field set for that event;
 - **stdout/stderr/exit code** captured with per-hook `timeout` seconds
@@ -101,7 +117,11 @@ runs take — with:
 **The allow decision retains Loom's authority.** A `PreToolUse` hook's
 `permissionDecision: "allow"` feeds the gate after the harness's own
 clearance; the hook cannot raise authority, only lower it — the same
-direction every other in-tree decision carries.
+direction every other in-tree decision carries. An `updatedInput`
+rewrite is the one place that direction could have been reversed, since
+every upstream gate answered about the arguments the model sent, so the
+rewritten call is cleared a second time and the narrower verdict
+stands.
 
 **Two documented differences, accepted up front:** (1) the hook runs
 jailed under the session's sandbox policy, so a hook that reaches for
@@ -122,8 +142,23 @@ extension trust story already treats seriously (`extension/record.gleam`
 is the template: who/when/what, re-derived, refused on drift). The
 owner's own user-level collection is a user trust decision recorded
 once; a project-level hooks file is a project trust decision surfaced
-at session open. `loom hooks` (list/trust/revoke/convert) is the CLI
-surface, mirroring `loom ext`.
+at session open. A user-level file is trusted the first time it is
+seen and re-enters review whenever its hooks change; a project or
+plugin source is skipped with a logged line until a record exists for
+it.
+
+The pin covers the **declaration** — the command strings a source
+names — and not the scripts those commands point at. A trusted
+`command: "./scripts/pre.sh"` keeps its hash while the bytes of
+`pre.sh` change underneath it, and inside a workspace the model's own
+`fs_write` can be what changes them. Pinning script contents would
+mean resolving and hashing an argv the shell has not expanded yet, and
+that is not attempted here.
+
+`loom hooks` (list/trust/revoke/convert), mirroring `loom ext`, is the
+intended CLI surface and **does not exist in the tree**. Until it
+does, the only source that can become trusted is the user-level one,
+on first sight; recording trust for anything else is follow-up work.
 
 ## Code mode: the boundary, stated once
 
