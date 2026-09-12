@@ -69,10 +69,7 @@ pub type Wiring {
 /// own table: tool events match on the tool name, `SessionStart` on
 /// its source, `PreCompact` on its trigger — and events with no
 /// matcher support (`Stop`, `UserPromptSubmit`, …) match everything.
-pub fn group_matches(
-  group: hookcompat.Group,
-  field: String,
-) -> Bool {
+pub fn group_matches(group: hookcompat.Group, field: String) -> Bool {
   case group.matcher {
     hookcompat.All -> True
     hookcompat.Exact(names) -> list.contains(names, field)
@@ -92,8 +89,18 @@ pub fn group_matches(
   }
 }
 
-/// The handlers of every group whose matcher wants this occurrence,
-/// in declaration order — the contract's "all matching hooks run".
+/// The command handlers of every group whose matcher wants this
+/// occurrence, in declaration order — the contract's "all matching
+/// hooks run".
+///
+/// The kind filter is here, once, rather than at each of the five
+/// gates. This build runs command hooks only, which the parity matrix
+/// states and `hookcompat.notes` says again at load time; an `http`,
+/// `mcp_tool`, `prompt` or `agent` handler carries no command at all,
+/// so a gate that fanned it out spawned `sh -c ""` and folded its exit
+/// 0 into the combination as though a hook had answered. Filtering
+/// where the matching happens makes "parsed, not run" structural: a
+/// non-command handler is not something a gate can reach.
 pub fn matching_handlers(
   wiring: Wiring,
   event: Event,
@@ -104,7 +111,10 @@ pub fn matching_handlers(
       groups
       |> list.filter(fn(group) { group_matches(group, field) })
       |> list.flat_map(fn(group) { group.handlers })
-      |> list.map(fn(handler) { #(hookcompat.describes_handler(handler), handler) })
+      |> list.filter(fn(handler) { handler.kind == hookcompat.Command })
+      |> list.map(fn(handler) {
+        #(hookcompat.describes_handler(handler), handler)
+      })
     Error(Nil) -> []
   }
 }
@@ -145,11 +155,12 @@ pub fn ask(
   handler: hookcompat.Handler,
   payload: JsonValue,
 ) -> Result(hookrunner.Outcome, hookrunner.RunError) {
-  let command = hookrunner.Command(
-    command: option.unwrap(handler.command, ""),
-    args: handler.args,
-    timeout_s: handler.timeout_s,
-  )
+  let command =
+    hookrunner.Command(
+      command: option.unwrap(handler.command, ""),
+      args: handler.args,
+      timeout_s: handler.timeout_s,
+    )
   hookrunner.run(
     runner,
     command,
@@ -186,27 +197,30 @@ pub fn common_payload(
 pub fn combine_permissions(
   verdicts: List(hookdecisions.ToolPermission),
 ) -> hookdecisions.ToolPermission {
-  let deny = list.filter_map(verdicts, fn(verdict) {
-    case verdict {
-      hookdecisions.Deny(reason) -> Ok(reason)
-      _ -> Error(Nil)
-    }
-  })
+  let deny =
+    list.filter_map(verdicts, fn(verdict) {
+      case verdict {
+        hookdecisions.Deny(reason) -> Ok(reason)
+        _ -> Error(Nil)
+      }
+    })
   case deny {
     [reason, ..] -> hookdecisions.Deny(reason)
     [] -> {
-      let asks = list.filter_map(verdicts, fn(verdict) {
-        case verdict {
-          hookdecisions.Ask(reason) -> Ok(reason)
-          _ -> Error(Nil)
-        }
-      })
+      let asks =
+        list.filter_map(verdicts, fn(verdict) {
+          case verdict {
+            hookdecisions.Ask(reason) -> Ok(reason)
+            _ -> Error(Nil)
+          }
+        })
       case asks {
         [reason, ..] -> hookdecisions.Ask(reason)
         [] ->
           list.find_map(verdicts, fn(verdict) {
             case verdict {
-              hookdecisions.Rewrite(updated) -> Ok(hookdecisions.Rewrite(updated))
+              hookdecisions.Rewrite(updated) ->
+                Ok(hookdecisions.Rewrite(updated))
               _ -> Error(Nil)
             }
           })
@@ -236,12 +250,13 @@ pub fn combine_continuations(
 pub fn combine_injections(
   verdicts: List(hookdecisions.ContextInjection),
 ) -> hookdecisions.ContextInjection {
-  let blocked = list.filter_map(verdicts, fn(verdict) {
-    case verdict {
-      hookdecisions.Blocked(reason) -> Ok(reason)
-      _ -> Error(Nil)
-    }
-  })
+  let blocked =
+    list.filter_map(verdicts, fn(verdict) {
+      case verdict {
+        hookdecisions.Blocked(reason) -> Ok(reason)
+        _ -> Error(Nil)
+      }
+    })
   case blocked {
     [reason, ..] -> hookdecisions.Blocked(reason)
     [] -> {
@@ -286,7 +301,9 @@ pub fn combine_feedback(
   )
 }
 
-fn first_rewrite(verdicts: List(hookdecisions.ToolFeedback)) -> Option(JsonValue) {
+fn first_rewrite(
+  verdicts: List(hookdecisions.ToolFeedback),
+) -> Option(JsonValue) {
   list.find_map(verdicts, fn(verdict) {
     case verdict {
       hookdecisions.Rewritten(replacement) -> Ok(replacement)

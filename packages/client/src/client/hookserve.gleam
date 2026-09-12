@@ -4,18 +4,23 @@
 ////
 //// # The load, and what trust means here
 ////
-//// Four sources merge, in the precedence the design note fixes:
-//// the operator's `~/.claude/settings.json`, the workspace's
-//// `.claude/settings.json`, its gitignored `.claude/settings.local.json`,
-//// and the `[hooks]` tables of Loom's own `loom.toml`. Merging is
-//// concatenation — no layer replaces another's hooks — and each
-//// source is trust-checked on its own, against the record
+//// Three sources merge, in the precedence the design note fixes: the
+//// operator's `~/.claude/settings.json`, the workspace's
+//// `.claude/settings.json`, and its gitignored
+//// `.claude/settings.local.json`. The design note names a fourth —
+//// the `[hooks]` tables of Loom's own `loom.toml` — and `Shape`
+//// carries the parser for it, but `locations` does not emit one yet,
+//// so nothing in a session reads the Loom shape today.
+////
+//// Merging is concatenation — no layer replaces another's hooks — and
+//// each source is trust-checked on its own, against the record
 //// `client/hooktrust` keeps: a source whose current hash is not the
 //// trusted one is **skipped with a logged line**, not a boot failure
 //// and not a silent pass. The operator's own user-level file is the
-//// one source trusted by default the first time it is seen, the same
-//// trust an operator's `loom.toml` carries; a *project* file arrives
-//// with the repository and so asks first.
+//// one source trusted by default the *first* time it is seen, the
+//// same trust it carries in Claude; a project file arrives with the
+//// repository and so asks first, and a user-level file whose hooks
+//// changed since the record was written asks again like any other.
 ////
 //// # What is composed, and what is not
 ////
@@ -36,7 +41,12 @@
 //// decision through the same `Effects` slots the native extension
 //// bus uses — which is what keeps one authority story: a compat
 //// hook's `allow` lands after the harness's own clearance, exactly
-//// where the native `tool_call` hook's does.
+//// where the native `tool_call` hook's does, and can only narrow it.
+//// A hook that rewrites the arguments does not escape that, because
+//// the rewritten call is put back through the harness's clearance
+//// and the narrower of the two verdicts is the one that stands: the
+//// arguments upstream approved and the arguments that run are the
+//// same arguments.
 
 import client/hookcompat
 import client/hookdecisions
@@ -69,10 +79,20 @@ pub type Located {
   )
 }
 
-/// Which parser a located file feeds.
+/// Which parser a located file feeds. The distinction between the two
+/// Claude shapes is the caller's to make and not the parser's: a
+/// settings file that declares no hooks and a bare hooks object that
+/// declares no events are the same bytes, and guessing between them
+/// from an absent `hooks` key read `permissions` as an event name and
+/// refused the ordinary user settings file.
 pub type Shape {
-  /// A Claude settings file or a plugin's `hooks/hooks.json`.
-  ClaudeJson
+  /// A Claude settings file: hooks live under its `hooks` key, beside
+  /// `permissions`, `model` and everything else Claude reads there.
+  ClaudeSettings
+
+  /// A bare hooks object — a plugin's `hooks/hooks.json`, whose whole
+  /// document is the event map.
+  ClaudeHooks
 
   /// Loom's `loom.toml` with its `[hooks]` tables.
   LoomToml
@@ -80,43 +100,69 @@ pub type Shape {
 
 /// Everything the session needs to serve imported hooks, or nothing
 /// when no source yielded a trusted entry.
+///
+/// The merged configuration lives in `wiring` and nowhere else. It was
+/// briefly a field here as well, and the two diverged the moment the
+/// caller's wiring was passed through unchanged: every gate reads
+/// `wiring.config`, so a second copy is a second answer to the one
+/// question that decides whether any hook fires at all.
 pub type Serving {
   Serving(
-    /// The merged, trust-checked configuration.
-    config: hookcompat.Config,
-    /// The identity facts every payload's common fields carry.
+    /// The identity facts every payload's common fields carry, over
+    /// the merged, trust-checked configuration.
     wiring: hookwire.Wiring,
     /// The runner context the gates execute hooks under.
     runner: hookrunner.Context,
-    /// How many sources were skipped for trust, for the boot log.
-    skipped: List(String),
+    /// The sources that contributed nothing, with the reason each
+    /// one did not, for the boot log.
+    skipped: List(Skipped),
+    /// The load-time findings of every source that did contribute:
+    /// handler kinds this build parses but does not run, `once`
+    /// declarations it ignores, and events with no moment to fire on.
+    notes: List(hookcompat.LoadNote),
+  )
+}
+
+/// One located source that contributed no hooks, and why.
+///
+/// The reason is carried rather than flattened because the three ways
+/// a source contributes nothing are three different things for an
+/// operator to do about it: a file that will not parse names the event
+/// or field it refused on, and a file whose definition is not the
+/// trusted one names the record it does not match.
+pub type Skipped {
+  Skipped(
+    /// The path as discovered, reported verbatim.
+    path: String,
+    /// The sentence the boot log carries.
+    reason: String,
   )
 }
 
 /// The default file locations for a session: the operator's home and
-/// the workspace, in merge order. The home is the daemon home this
-/// server was configured with, which is where Claude itself would
-/// look on this machine; the workspace files are relative to the
-/// session workspace the way a repo commits them.
+/// the workspace, in merge order. The home is the operator's own
+/// `HOME` as this server read it (`Settings.home`), which is where
+/// Claude itself would look on this machine; the workspace files are
+/// relative to the session workspace the way a repo commits them.
 pub fn locations(home: Option(String), workspace: String) -> List(Located) {
   [
     case home {
       Some(home) ->
         Located(
           home <> "/.claude/settings.json",
-          ClaudeJson,
+          ClaudeSettings,
           hookcompat.UserSettings,
         )
-      None -> Located("", ClaudeJson, hookcompat.UserSettings)
+      None -> Located("", ClaudeSettings, hookcompat.UserSettings)
     },
     Located(
       workspace <> "/.claude/settings.json",
-      ClaudeJson,
+      ClaudeSettings,
       hookcompat.ProjectSettings,
     ),
     Located(
       workspace <> "/.claude/settings.local.json",
-      ClaudeJson,
+      ClaudeSettings,
       hookcompat.LocalSettings,
     ),
   ]
@@ -137,87 +183,206 @@ pub fn load(
   wiring: hookwire.Wiring,
   runner: hookrunner.Context,
 ) -> Serving {
-  // Reading, parsing, and trust are one step per file because a file
-  // nobody trusts is a file whose parse errors the operator cannot
-  // act on yet anyway — the trust prompt is what surfaces them next.
-  // A source that does not exist is not an event: absent files are
-  // how an operator says "no hooks here", and one broken source
-  // cannot take the session's hooks down with it.
-  let #(configs, skipped) =
-    list.fold(located, #([], []), fn(state, one) {
-      let #(configs, skipped) = state
+  let #(configs, skipped, notes) =
+    list.fold(located, #([], [], []), fn(state, one) {
+      let #(configs, skipped, notes) = state
       case read(one, trust_root) {
-        Ok(#(config, _located)) -> #([config, ..configs], skipped)
-        Error(_located) -> #(configs, [one, ..skipped])
+        // A file that is not there is not a diagnostic. Every session
+        // whose operator keeps no `~/.claude` would otherwise open
+        // with a warning about a decision nobody made.
+        Absent -> state
+
+        Loaded(config:, notes: found) -> #([config, ..configs], skipped, [
+          found,
+          ..notes
+        ])
+
+        Refused(reason:) -> #(
+          configs,
+          [Skipped(path: one.path, reason:), ..skipped],
+          notes,
+        )
       }
     })
   let merged = hookcompat.merge(list.reverse(configs))
   Serving(
-    config: merged,
-    wiring:,
+    wiring: hookwire.Wiring(..wiring, config: merged),
     runner:,
-    skipped: list.map(list.reverse(skipped), fn(one) { one.path }),
+    skipped: list.reverse(skipped),
+    notes: list.flatten(list.reverse(notes)),
   )
 }
 
-// One located file as a trusted config, or the word that it was
-// skipped. Reading, parsing, and trust are one step because a file
-// nobody trusts is a file whose parse errors the operator cannot act
-// on yet anyway — the trust prompt is what surfaces them next.
-fn read(
+// What one located file contributed. The three answers are three
+// different facts and the loader reports them differently: a file that
+// is not there was never a decision, a file that parsed is hooks —
+// possibly none of them — and a file that refused or is untrusted is a
+// line an operator has to be able to act on, which means carrying the
+// reason rather than flattening all three into "skipped".
+type Reading {
+  Absent
+  Loaded(config: hookcompat.Config, notes: List(hookcompat.LoadNote))
+  Refused(reason: String)
+}
+
+// One located file read, parsed, and trust-checked.
+fn read(located: Located, trust_root: Option(String)) -> Reading {
+  case simplifile.read(located.path) {
+    Ok(text) -> parsed(located, trust_root, text)
+    Error(simplifile.Enoent) -> Absent
+    Error(other) ->
+      Refused(
+        "the file could not be read: " <> simplifile.describe_error(other),
+      )
+  }
+}
+
+// The text as this shape's parser reads it. Which parser is the
+// caller's decision, recorded in `Located.shape` when the file was
+// located, because only whoever knows where a file came from knows
+// whether its whole document is the hooks object.
+fn parsed(
   located: Located,
   trust_root: Option(String),
-) -> Result(#(hookcompat.Config, Located), Located) {
-  use text <- result.try(
-    simplifile.read(located.path)
-    |> result.replace_error(located),
-  )
+  text: String,
+) -> Reading {
   let source = hookcompat.Source(label: located.path, origin: located.origin)
-  let parsed = case located.shape {
-    ClaudeJson -> hookcompat.parse_claude(text, source)
+  let outcome = case located.shape {
+    ClaudeSettings -> hookcompat.parse_claude_settings(text, source)
+    ClaudeHooks -> hookcompat.parse_claude(text, source)
     LoomToml -> hookcompat.parse_loom(text, source)
   }
-  use config <- result.try(parsed |> result.replace_error(located))
-  case trusted(trust_root, located, config) {
-    hooktrust.Trusted -> Ok(#(config, located))
-    hooktrust.NeedsReview -> Error(located)
+  case outcome {
+    Ok(config) -> checked(located, trust_root, config)
+    Error(reason) -> Refused(reason)
   }
 }
 
-// Whether this source's current definition is the trusted one. A
-// first-seen user-level source is trusted on sight: it is the
-// operator's own file on the operator's own machine, the same trust
-// `~/.claude/settings.json` carries in Claude itself. A project file
-// is code the repository brought, and so asks before it runs.
+// A parsed configuration the operator's trust record admits, or the
+// sentence saying why it does not.
+fn checked(
+  located: Located,
+  trust_root: Option(String),
+  config: hookcompat.Config,
+) -> Reading {
+  case trusted(trust_root, located, config) {
+    Ok(Nil) -> Loaded(config:, notes: hookcompat.notes(config))
+    Error(reason) -> Refused(reason)
+  }
+}
+
+// Whether this source's current definition is one the operator has
+// admitted, and the sentence for the boot log when it is not.
 fn trusted(
   trust_root: Option(String),
   located: Located,
   config: hookcompat.Config,
-) -> hooktrust.Verdict {
+) -> Result(Nil, String) {
+  case located.origin {
+    // Hooks declared in Loom's own configuration are not imported
+    // code. The operator wrote that file or pointed this server at it,
+    // so there is no second party whose yes the record would stand
+    // for.
+    hookcompat.LoomInline -> Ok(Nil)
+
+    hookcompat.UserSettings
+    | hookcompat.ProjectSettings
+    | hookcompat.LocalSettings
+    | hookcompat.Plugin(_) -> imported(trust_root, located, config)
+  }
+}
+
+// An imported source against the record directory, when there is one.
+//
+// With no home there is nowhere a yes could have been written, and so
+// nowhere one could have been read: a trust decision that fails open
+// on a missing directory fails in the direction that runs a
+// repository's scripts on a daemon started under a stripped
+// environment.
+fn imported(
+  trust_root: Option(String),
+  located: Located,
+  config: hookcompat.Config,
+) -> Result(Nil, String) {
   case trust_root {
-    None -> hooktrust.Trusted
-    Some(root) -> {
-      let path = hooktrust.record_path(root, located.path)
-      let record = hooktrust.load(path) |> option.from_result
-      case hooktrust.check(record, config) {
-        hooktrust.Trusted -> hooktrust.Trusted
+    Some(root) -> against_the_record(root, located, config)
+    None ->
+      Error(
+        "this server has no home directory to keep a trust record in, so "
+        <> "no imported hook source runs",
+      )
+  }
+}
+
+// The record for one source, and what it decides.
+//
+// The two cases the previous reading collapsed are the whole of the
+// pin: *no record* is a source seen for the first time, and a record
+// whose hash does not match is a file that changed after it was
+// trusted. Only the first can be waived by origin. Waiving the second
+// meant a user-level file re-entered no review it had ever left, which
+// is the property the module doc and the parity matrix both claim.
+fn against_the_record(
+  root: String,
+  located: Located,
+  config: hookcompat.Config,
+) -> Result(Nil, String) {
+  let path = hooktrust.record_path(root, located.path)
+  case hooktrust.load(path) |> option.from_result {
+    None -> first_sight(located.origin, path)
+
+    Some(record) ->
+      case hooktrust.check(Some(record), config) {
+        hooktrust.Trusted -> Ok(Nil)
         hooktrust.NeedsReview ->
-          case located.origin {
-            hookcompat.UserSettings -> hooktrust.Trusted
-            _ -> hooktrust.NeedsReview
-          }
+          Error(
+            "its hooks changed since they were trusted; the record at "
+            <> path
+            <> " is for an earlier version of this file",
+          )
       }
-    }
+  }
+}
+
+// A source with no record yet. The operator's own user-level file is
+// trusted on sight — it is their file on their machine, the trust
+// `~/.claude/settings.json` carries in Claude itself — and every other
+// imported source arrived with a repository or a plugin and asks
+// first.
+fn first_sight(origin: hookcompat.Origin, path: String) -> Result(Nil, String) {
+  case origin {
+    hookcompat.UserSettings | hookcompat.LoomInline -> Ok(Nil)
+
+    hookcompat.ProjectSettings
+    | hookcompat.LocalSettings
+    | hookcompat.Plugin(_) ->
+      Error(
+        "it has no trust record at "
+        <> path
+        <> "; a source the repository or a plugin brought runs only once one "
+        <> "is recorded there, and the command that records it is follow-up "
+        <> "work",
+      )
   }
 }
 
 // --- the gates ---------------------------------------------------------------
 
 /// Whether any trusted, matching handler exists for one occurrence.
-/// The gates call this before they spend a process: an event with no
-/// matching handler is not an event at all, and a gate that ran an
-/// empty fan-out would add a process spawn's latency to every tool
-/// call for nothing.
+///
+/// The gates do not need this — their fan-out over an empty match list
+/// already spawns nothing — so it is the loader's question rather than
+/// the gate's: whether what this session loaded would answer at all
+/// for a given event and field. That is the assertion a boot check or
+/// a test makes, and the one whose absence let a `Serving` ship whose
+/// every gate matched nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert hookserve.has_matching(serving, hookcompat.PreToolUse, "Bash")
+/// ```
+///
 pub fn has_matching(
   serving: Serving,
   event: hookcompat.Event,
@@ -235,7 +400,8 @@ pub fn has_matching(
 /// decided; `Deny` carries the reason the model reads; `Ask` rides
 /// the harness's own escalation; `Rewrite` replaces the arguments —
 /// but only after the harness's own clearance, so a hook's rewrite
-/// of a call the harness would refuse is a rewrite of nothing.
+/// of a call the harness would refuse is a rewrite of nothing, and
+/// the replacement itself is cleared before it runs (`recleared`).
 pub fn tool_gate(
   serving: Serving,
   tool: String,
@@ -439,13 +605,27 @@ pub fn wire(
   clock: Clock,
 ) -> Result(Effects, String) {
   let counters =
-    actor.new(dict.new())
+    actor.new(Counters(placed: dict.new(), started: FirstRun))
     |> actor.on_message(fn(counters, message) {
       case message {
         Tally(operation, reply) -> {
-          let count = dict.get(counters, operation) |> result.unwrap(0)
+          let count = dict.get(counters.placed, operation) |> result.unwrap(0)
           process.send(reply, count)
-          actor.continue(dict.insert(counters, operation, count + 1))
+          actor.continue(
+            Counters(
+              ..counters,
+              placed: dict.insert(counters.placed, operation, count + 1),
+            ),
+          )
+        }
+
+        // The first run start of this composed `Effects` is the
+        // session's own start, and every later one is a turn. The flag
+        // flips as it is read, so two run starts racing on separate
+        // driver processes still see one `FirstRun` between them.
+        Position(reply) -> {
+          process.send(reply, counters.started)
+          actor.continue(Counters(..counters, started: LaterRun))
         }
       }
     })
@@ -467,23 +647,32 @@ pub fn wire(
         run_start: fn(operation) {
           list.append(
             built.run_start(operation),
-            started_context(serving, clock),
+            started_context(serving, clock, counters),
           )
         },
         run_end: fn(operation) {
-          // A notification beside the existing slot, never instead of it,
-          // and the continuation gate asked only when the harness itself
-          // had no follow-up to place: a harness follow-up and a hook
-          // continuation are the same slot, and the harness's own wins.
-          let follow_up = built.run_end(operation)
-          case
-            follow_up,
-            stop_block(ids.op_id_to_string(operation), serving, counters)
-          {
-            Some(_harness), _ -> follow_up
-            None, hookdecisions.Continue(reason) ->
-              Some(continuation_message(reason, clock))
-            None, hookdecisions.Finish -> None
+          // A notification beside the existing slot, never instead of
+          // it, and the continuation gate asked only when the harness
+          // itself had no follow-up to place: a harness follow-up and a
+          // hook continuation are the same slot, and the harness's own
+          // wins.
+          //
+          // The nesting is what makes that true. Gleam evaluates both
+          // subjects of a two-subject `case` before it matches, so
+          // asking the two questions side by side spawned every
+          // matching `Stop` hook — side effects, cap counter and all —
+          // on runs whose answer was thrown away before it was read.
+          case built.run_end(operation) {
+            Some(_harness) as placed -> placed
+
+            None ->
+              case
+                stop_block(ids.op_id_to_string(operation), serving, counters)
+              {
+                hookdecisions.Continue(reason) ->
+                  Some(hook_message(hookcompat.Stop, reason, clock))
+                hookdecisions.Finish -> None
+              }
           }
         },
         compaction_note: fn(operation, cue) {
@@ -498,20 +687,40 @@ pub fn wire(
       ),
       tools: effects.ToolSurface(
         ..tools,
-        clear: fn(query) { cleared(serving, tools.clear(query), query) },
+        clear: fn(query) { cleared(serving, tools.clear, query) },
         run: fn(run) { ran(serving, tools.run(run), run) },
       ),
     ),
   )
 }
 
-// One question to the continuation counter: how many follow-ups
-// has the gate placed for this operation so far, incrementing as it
-// answers. A `call` rather than a cast because the run-end slot is
-// about to decide on the answer, and a decision on a count it has
+// The two questions the composed slots ask the one small actor that
+// owns their state. Both are calls rather than casts because the slot
+// is about to decide on the answer, and a decision on a count it has
 // not read is not a decision.
 type CounterMessage {
+  // How many follow-ups the gate has placed for this operation so far,
+  // incrementing as it answers.
   Tally(operation: String, reply: Subject(Int))
+
+  // Whether this run start is the session's first, flipping the flag
+  // as it answers.
+  Position(reply: Subject(RunPosition))
+}
+
+// What the counter actor holds: the per-operation continuation tally
+// the `Stop` cap binds on, and whether a run start has been seen yet.
+type Counters {
+  Counters(placed: dict.Dict(String, Int), started: RunPosition)
+}
+
+// Where one run start sits in the session's life. `SessionStart` is a
+// session event in the contract, and the harness's only per-session
+// moment on this path is "the first time the per-run slot is called",
+// so the question is named rather than carried as a boolean.
+type RunPosition {
+  FirstRun
+  LaterRun
 }
 
 // The Stop gate with the cap applied: the count is read (and
@@ -534,20 +743,29 @@ fn stop_block(
   }
 }
 
-// The follow-up message the gate places when a Stop hook continues:
-// a user message carrying the hook's reason, attributed in its text
-// the way the contract's continuation prompt is — the hook said it,
-// and the model reading it should know that.
-fn continuation_message(reason: String, clock: Clock) -> AgentMessage {
+// The message a gate places into a message slot: a user message
+// carrying the hook's text, attributed in that text the way the
+// contract's continuation prompt is — the hook said it, and the model
+// reading it should know that rather than reading it as the operator's
+// own words.
+//
+// The event is a parameter because two different gates place one of
+// these and they are two different claims to the model. A run-end
+// continuation is a `Stop` hook refusing to let the run finish; a
+// run-start injection is a `SessionStart` hook contributing context
+// before anything has run. Both were once stamped `[Stop hook]`, which
+// told the model a stop hook had blocked at a moment no stop had been
+// attempted.
+fn hook_message(
+  event: hookcompat.Event,
+  text: String,
+  clock: Clock,
+) -> AgentMessage {
   let #(now, _clock) = clock.read(clock)
   message.UserMessage(
     content: [
       message.UserText(
-        // The attribution is the contract's own shape: the
-        // continuation prompt is the hook's reason, and the model
-        // reading it should know a hook said it rather than the
-        // operator.
-        text: "[Stop hook] " <> reason,
+        text: "[" <> hookcompat.event_name(event) <> " hook] " <> text,
         text_signature: None,
       ),
     ],
@@ -556,15 +774,39 @@ fn continuation_message(reason: String, clock: Clock) -> AgentMessage {
   )
 }
 
-// The SessionStart injection as one run-start message: fired once
-// per composed Effects, at the first run start, in the shape the
-// native bus renders its own injections in so both kinds of hook
-// read identically in the transcript.
-fn started_context(serving: Serving, clock: Clock) -> List(AgentMessage) {
-  case session_context(serving, "startup") {
-    hookdecisions.Injected(text) -> [continuation_message(text, clock)]
-    hookdecisions.NoContext | hookdecisions.Blocked(_) -> []
+// The SessionStart injection as one run-start message: fired once per
+// composed Effects, at the first run start, in the shape the native
+// bus renders its own injections in so both kinds of hook read
+// identically in the transcript.
+//
+// `run_start` is the per-*operation* slot, so the once-per-session
+// promise is the counter's to keep. Without it a `SessionStart` hook
+// ran on every turn of the session, each time announcing itself as
+// `startup`. The contract's other sources (`resume`, `compact`,
+// `clear`) have no moment here, which is why the one this does fire
+// on is the one it names.
+fn started_context(
+  serving: Serving,
+  clock: Clock,
+  counters: Subject(CounterMessage),
+) -> List(AgentMessage) {
+  case position(counters) {
+    LaterRun -> []
+
+    FirstRun ->
+      case session_context(serving, "startup") {
+        hookdecisions.Injected(text) -> [
+          hook_message(hookcompat.SessionStart, text, clock),
+        ]
+        hookdecisions.NoContext | hookdecisions.Blocked(_) -> []
+      }
   }
+}
+
+// Whether this run start is the session's first, asked of the actor
+// that owns the flag.
+fn position(counters: Subject(CounterMessage)) -> RunPosition {
+  actor.call(counters, waiting: 1000, sending: fn(reply) { Position(reply) })
 }
 
 // The PreCompact note for one cue, in the cue's own trigger names.
@@ -590,12 +832,12 @@ fn trigger_of(cause: effects.CompactionCause) -> String {
 // reason.
 fn cleared(
   serving: Serving,
-  clearance: effects.Clearance,
+  clear: fn(effects.ClearanceQuery) -> effects.Clearance,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
-  case clearance {
-    effects.ClearanceRefused(..) -> clearance
-    effects.Cleared(effective_arguments: _, replay:) -> {
+  case clear(query) {
+    effects.ClearanceRefused(..) as refused -> refused
+    effects.Cleared(effective_arguments: _, replay: _) as clearance -> {
       let verdict =
         tool_gate(serving, query.call.name, query.call.id, query.call.arguments)
       case verdict {
@@ -617,11 +859,50 @@ fn cleared(
             <> ": "
             <> reason,
           )
-        hookdecisions.Rewrite(updated) ->
-          effects.Cleared(effective_arguments: updated, replay:)
+        hookdecisions.Rewrite(updated) -> recleared(clear, query, updated)
       }
     }
   }
+}
+
+// A rewritten call re-enters the harness's own clearance before it is
+// allowed to run.
+//
+// Everything upstream — the permission tables, the escalation ledger,
+// whatever a native extension hook contributes — answered about the
+// arguments the model sent. Returning the hook's replacement on the
+// strength of that answer is how an imported hook widens what runs:
+// `{"command": "ls"}` is what got cleared and `{"command": "curl … | sh"}`
+// is what executes. So the second clearance is asked on the arguments
+// that will actually reach the tool, and the narrower of the two
+// verdicts stands.
+//
+// Only the harness is re-consulted; the hooks are not re-asked. A gate
+// allowed to rewrite the input of its own next ask has no fixed point,
+// and one pass is what the contract describes.
+//
+// The second clearance's whole answer is returned, `effective_arguments`
+// included, rather than the hook's `updated` literal. A clearance is
+// entitled to hand back arguments that are not the ones it was asked
+// about — a wrapping layer that normalizes a path or fills a default
+// does exactly that — and this composition sits under an unknown stack
+// of them. Returning `updated` here would have discarded whatever the
+// layer did on the second pass while keeping it on the first, so the
+// arguments that ran would not be the arguments the harness last
+// approved. Today the in-tree clearance echoes what it is given and the
+// two are equal; this is the arm that stays correct when one stops
+// echoing.
+fn recleared(
+  clear: fn(effects.ClearanceQuery) -> effects.Clearance,
+  query: effects.ClearanceQuery,
+  updated: JsonValue,
+) -> effects.Clearance {
+  clear(
+    effects.ClearanceQuery(
+      ..query,
+      call: message.ToolCall(..query.call, arguments: updated),
+    ),
+  )
 }
 
 // The PostToolUse feedback folded over a settled result: the

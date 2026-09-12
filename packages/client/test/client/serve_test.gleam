@@ -1577,6 +1577,42 @@ pub fn the_default_tools_table_keeps_the_development_policy_test() {
   assert unchanged == base
 }
 
+/// Every environment name an imported hook's process asks for is a
+/// name the session base allows.
+///
+/// The subset is the whole of it. `hookrunner.call_spec` derives its
+/// `env_allow` requirement from the keys of the environment the server
+/// composed, `policy.meet` intersects that with the base, and the
+/// spec's `RefuseNarrowed` response turns any shortfall into a
+/// refusal before a process exists — so a name the base withholds is
+/// not a missing variable, it is every hook of the session refused.
+pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
+  // The base a session actually composes, not a pipeline retyped here:
+  // a step dropped from `session_base` has to be what this notices.
+  let settings = settings_under("build/serve-test-hook-env")
+  let base =
+    serve.session_base(
+      settings,
+      settings.session_path <> ".index",
+      settings.session_path <> ".memory",
+      settings.session_path <> ".digest",
+      Error("no toolchain for this fixture"),
+    )
+
+  // The names `with_imported_hooks` puts in the runner's environment:
+  // the session's own three, plus the contract's project directory.
+  let asked =
+    list.append(
+      list.map(serve.session_environment(settings.workspace, None), fn(pair) {
+        pair.0
+      }),
+      ["CLAUDE_PROJECT_DIR"],
+    )
+
+  assert list.contains(base.env_allow, "CLAUDE_PROJECT_DIR")
+  assert list.all(asked, fn(name) { list.contains(base.env_allow, name) })
+}
+
 const networked_root = "build/serve-test-network"
 
 // The whole boot on an egress-on catalogue: the composed base policy is

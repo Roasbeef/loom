@@ -74,9 +74,28 @@ command = \"third.sh\"
       source,
     )
   let wiring = wiring_of(config)
-  let handlers =
-    hookwire.matching_handlers(wiring, hc.PreToolUse, "Edit")
-  assert list.length(handlers) == 2
+  let handlers = hookwire.matching_handlers(wiring, hc.PreToolUse, "Edit")
+
+  // The order is the declaration order, which is what the contract's
+  // "all matching hooks run" promises and what the first-deny-wins
+  // combination then depends on: a length alone would not notice the
+  // two arriving the other way round.
+  assert list.map(handlers, fn(pair) { { pair.1 }.command })
+    == [Some("second.sh"), Some("third.sh")]
+}
+
+/// This build runs command hooks only, so a matching `http` handler is
+/// not something a gate can reach. Before the filter it was fanned out
+/// as `sh -c ""`, whose exit 0 folded into the combination as a hook's
+/// answer.
+pub fn matching_handlers_skips_kinds_this_build_does_not_run_test() {
+  let assert Ok(config) =
+    hc.parse_claude(
+      "{\"PreToolUse\":[{\"hooks\":[{\"type\":\"http\",\"url\":\"https://hooks.example.net/x\"}]}]}",
+      source,
+    )
+  let wiring = wiring_of(config)
+  assert hookwire.matching_handlers(wiring, hc.PreToolUse, "Bash") == []
 }
 
 pub fn combine_permissions_first_deny_wins_test() {
@@ -111,7 +130,10 @@ pub fn combine_permissions_rewrite_survives_when_nothing_harder_test() {
 
 pub fn combine_permissions_all_quiet_is_proceed_test() {
   assert hookdecisions.Proceed
-    == hookwire.combine_permissions([hookdecisions.Proceed, hookdecisions.Proceed])
+    == hookwire.combine_permissions([
+      hookdecisions.Proceed,
+      hookdecisions.Proceed,
+    ])
 }
 
 pub fn combine_continuations_first_block_continues_test() {
@@ -126,7 +148,10 @@ pub fn combine_continuations_first_block_continues_test() {
 
 pub fn combine_continuations_silent_finishes_test() {
   assert hookdecisions.Finish
-    == hookwire.combine_continuations([hookdecisions.Finish, hookdecisions.Finish])
+    == hookwire.combine_continuations([
+      hookdecisions.Finish,
+      hookdecisions.Finish,
+    ])
 }
 
 pub fn combine_injections_join_in_order_test() {
@@ -188,7 +213,8 @@ pub fn common_payload_carries_the_contract_fields_test() {
       hookwire.tool_fields("bash", json.Object([]), "call-1"),
     )
   let assert json.Object(fields) = payload
-  let assert Ok(json.String("session-fixture")) = list.key_find(fields, "session_id")
+  let assert Ok(json.String("session-fixture")) =
+    list.key_find(fields, "session_id")
   let assert Ok(json.String("/work")) = list.key_find(fields, "cwd")
   let assert Ok(json.String("PreToolUse")) =
     list.key_find(fields, "hook_event_name")

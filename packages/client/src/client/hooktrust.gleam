@@ -254,11 +254,15 @@ fn keeps(codepoint: UtfCodepoint) -> Bool {
 
 /// The full path of a source's record inside a trust directory.
 ///
+/// The directory a session passes is `<home>/hooktrust`, where `<home>`
+/// is the operator's own `HOME` as the server read it — the same home
+/// the located sources are discovered under.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// assert hooktrust.record_path("/home/a/.loom/hooktrust", "user settings")
-///   == "/home/a/.loom/hooktrust/user-settings.json"
+/// assert hooktrust.record_path("/home/a/hooktrust", "user settings")
+///   == "/home/a/hooktrust/user-settings.json"
 /// ```
 ///
 pub fn record_path(dir: String, label: String) -> String {
@@ -358,8 +362,12 @@ fn describe_write(
 }
 
 /// Records trust for a source's current definition: the config's hash
-/// as of this call, stamped with `now`. This is what `loom hooks trust`
-/// runs.
+/// as of this call, stamped with `now`.
+///
+/// No CLI calls this yet. `loom hooks trust` is the intended surface
+/// and does not exist in the tree, so the only source that serves
+/// today is the user-level file trusted on first sight
+/// (`client/hookserve.trusted`).
 ///
 /// ## Examples
 ///

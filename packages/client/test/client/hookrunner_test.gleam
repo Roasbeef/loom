@@ -25,7 +25,7 @@ pub fn shell_form_hook_runs_and_reports_test() {
   assert outcome.stdout == "out\n"
   assert outcome.stderr == "err\n"
   assert outcome.ending == hookrunner.RanToExit
-  assert !outcome.truncated
+  assert outcome.capture == hookrunner.Whole
 }
 
 pub fn stdin_reaches_the_hook_test() {
@@ -45,12 +45,61 @@ pub fn exec_form_passes_arguments_without_a_shell_test() {
   assert outcome.stdout == "a;b c|d"
 }
 
-pub fn a_tilde_prefix_expands_to_the_workspace_test() {
+/// A `~` in an imported command means the operator's home, the way it
+/// does under Claude — and it means it because the hook process runs
+/// with `HOME` pointed there, not because anything rewrote the command.
+/// The command reaches `sh -c` verbatim, so the shell expands the `~`
+/// in every position it would expand one.
+pub fn a_tilde_resolves_to_the_operator_home_test() {
   let #(ctx, _helper) = fixture()
   let cmd = hookrunner.Command("echo ~/x", None, Some(3))
   let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
   assert outcome.code == 0
-  assert outcome.stdout == ctx.workspace <> "/x\n"
+  assert outcome.stdout == operator_home(ctx.workspace) <> "/x\n"
+}
+
+/// The case the whole ruling is for: ten of the sixteen entries in the
+/// reference collection name `~/.claude/hooks/...`, so the script has
+/// to be found and executed where the operator keeps it. The `~` here
+/// is the first character of the command, which is exactly the position
+/// the deleted rewriter used to claim for the workspace.
+pub fn a_script_under_the_operator_home_runs_by_tilde_path_test() {
+  let #(ctx, _helper) = fixture()
+  let home = operator_home(ctx.workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(home <> "/hooks")
+    as "the fixture's hook directory must be creatable"
+  let assert Ok(Nil) =
+    simplifile.write(home <> "/hooks/x.sh", "#!/bin/sh\necho ran\n")
+    as "the stub hook script must be writable"
+  let assert Ok(Nil) =
+    simplifile.set_permissions_octal(home <> "/hooks/x.sh", 0o755)
+    as "the stub hook script must be executable"
+
+  let cmd = hookrunner.Command("~/hooks/x.sh", None, Some(3))
+  let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
+  assert outcome.code == 0
+  assert outcome.stdout == "ran\n"
+}
+
+/// A daemon started with `HOME` unset has no operator home to point at,
+/// and `serve.resolve` records that rather than guessing one. The jail's
+/// own home stands, `~` means it, and the hook still runs — a missing
+/// name is not a failure here.
+pub fn without_a_home_the_jail_home_stands_test() {
+  let #(ctx, _helper) = fixture()
+  let ctx =
+    hookrunner.Context(
+      ..ctx,
+      env: serve.hook_environment(
+        serve.session_environment(ctx.workspace, None),
+        None,
+        ctx.workspace,
+      ),
+    )
+  let cmd = hookrunner.Command("echo ~/x", None, Some(3))
+  let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
+  assert outcome.code == 0
+  assert outcome.stdout == serve.tool_home_directory(ctx.workspace) <> "/x\n"
 }
 
 pub fn a_timed_out_hook_reports_no_output_test() {
@@ -81,27 +130,43 @@ pub fn the_env_allowlist_reaches_the_hook_test() {
   assert outcome.stdout == "visible\n"
 }
 
-pub fn the_env_allowlist_hides_names_the_hook_did_not_list_test() {
+/// A name in the hook's environment that the session base does not
+/// allow does not reach the hook as an empty variable — it refuses the
+/// call outright, before any process exists.
+///
+/// That is the whole reason `serve.allowing_imported_hook_env` has to
+/// widen the base for `CLAUDE_PROJECT_DIR`: `call_spec` derives its
+/// `env_allow` requirement from the keys of `ctx.env`, `policy.meet`
+/// intersects it with the base, and the spec's `RefuseNarrowed`
+/// response turns the shortfall into a refusal. This asserts the
+/// mechanism is live, which the previous reading of this test — a
+/// variable no environment sets, echoed with a default — could not:
+/// deleting the `env_allow` requirement left that one green.
+pub fn a_name_outside_the_base_allowlist_refuses_the_hook_test() {
   let #(ctx, _helper) = fixture()
   let ctx =
-    hookrunner.Context(..ctx, env: [
-      #("PATH", "/usr/bin:/bin"),
-      ..delete(ctx.env, "PATH")
-    ])
-  let cmd = hookrunner.Command("echo ${HOOK_UNSEEN:-unset}", None, Some(3))
-  let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
-  assert outcome.stdout == "unset\n"
+    hookrunner.Context(..ctx, env: [#("HOOK_UNGRANTED", "x"), ..ctx.env])
+  let cmd = hookrunner.Command("echo ${HOOK_UNGRANTED:-unset}", None, Some(3))
+  let assert Error(hookrunner.Refused(_denial)) =
+    hookrunner.run(ctx, cmd, "{}", 30)
+    as "a narrowed environment refuses rather than hiding the name"
 }
 
-fn delete(
-  pairs: List(#(String, String)),
-  key: String,
-) -> List(#(String, String)) {
-  case pairs {
-    [#(k, _), ..rest] if k == key -> delete(rest, key)
-    [head, ..rest] -> [head, ..delete(rest, key)]
-    [] -> []
-  }
+/// A hook that prints past the output cap has its text discarded, the
+/// same way a timed-out hook's is: a stream cut mid-object is not a
+/// decision, and a clipped capture that classified as plain text would
+/// read as a clean proceed.
+pub fn a_hook_that_overruns_the_output_cap_reports_no_text_test() {
+  let #(ctx, _helper) = fixture()
+  let cmd =
+    hookrunner.Command(
+      "yes aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | head -c 2000000",
+      None,
+      Some(30),
+    )
+  let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
+  assert outcome.capture == hookrunner.Clipped
+  assert outcome.stdout == ""
 }
 
 // One jailed fixture: a workspace, a session-shaped base policy, the
@@ -119,10 +184,19 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
   let temp = serve.tool_tmp_directory(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(home)
   let assert Ok(Nil) = simplifile.create_directory_all(temp)
+  let assert Ok(Nil) = simplifile.create_directory_all(operator_home(workspace))
 
   let base = serve.base_policy(workspace) |> serve.merging_mounts
 
-  let base = policy.SandboxPolicy(..base, env_allow: ["PATH", "HOME", "TMPDIR"])
+  // The base grants every name these tests put in `ctx.env`, because
+  // that is what the session base does: `call_spec` asks for the keys
+  // of `ctx.env` and `RefuseNarrowed` refuses the call over any name
+  // the base withholds. `HOOK_UNGRANTED` is deliberately absent, which
+  // is what the refusal test turns on.
+  let base =
+    policy.SandboxPolicy(..base, env_allow: [
+      "PATH", "HOME", "TMPDIR", "CLAUDE_PROJECT_DIR", "HOOK_MARKER",
+    ])
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(
       helper_path: here <> "/../sandbox/loom-exec",
@@ -152,7 +226,11 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
       op_id:,
       step_id: "hookcompat-fixture",
       workspace:,
-      env: serve.session_environment(workspace, None),
+      env: serve.hook_environment(
+        serve.session_environment(workspace, None),
+        Some(operator_home(workspace)),
+        workspace,
+      ),
       demand: exec.PlatformEnforcement,
       clock: wall,
       session_id: "hookrunner-fixture",
@@ -160,4 +238,12 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
     ),
     helper,
   )
+}
+
+// Where this fixture puts the operator's home: beside the workspace,
+// never the machine's real `HOME`. A test that read the developer's own
+// home would pass on their machine for a reason it could not state, and
+// the scripts it writes would land in a directory they did not ask for.
+fn operator_home(workspace: String) -> String {
+  workspace <> "-home"
 }

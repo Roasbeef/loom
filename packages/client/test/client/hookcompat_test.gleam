@@ -9,11 +9,13 @@
 
 import client/hookcompat.{
   type Config, type Handler, type LoadNote, Agent, All, BackgroundAsync, Command,
-  Config, Exact, ForegroundSync, Prompt, Regex, Source, UserSettings,
+  Config, Exact, ForegroundSync, ProjectSettings, Prompt, Regex, Source,
+  UserSettings,
 }
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import simplifile
 
 // The shared source label every fixture in this file carries.
 const source = Source(label: "test", origin: UserSettings)
@@ -134,7 +136,8 @@ status_message = \"Compacting...\"
 // The Stop group carries no matcher in the fixture, so both parsers
 // must read All — this helper is the one assertion both shapes share.
 pub fn both_shapes_parse_to_the_same_model_test() {
-  let assert Ok(json_config) = hookcompat.parse_claude(json_fixture, source)
+  let assert Ok(json_config) =
+    hookcompat.parse_claude_settings(json_fixture, source)
     as "the json fixture must parse"
   let assert Ok(toml_config) = hookcompat.parse_loom(toml_fixture, source)
     as "the toml fixture must parse"
@@ -175,7 +178,8 @@ pub fn both_shapes_parse_to_the_same_model_test() {
 
 // A Stop group with no matcher is All in both shapes.
 pub fn a_missing_matcher_is_all_test() {
-  let assert Ok(json_config) = hookcompat.parse_claude(json_fixture, source)
+  let assert Ok(json_config) =
+    hookcompat.parse_claude_settings(json_fixture, source)
   let assert Ok(stop) = hookcompat.decode_event("Stop")
   let assert Ok(#(_, groups)) =
     list.find(json_config.entries, fn(e) { e.0 == stop })
@@ -192,7 +196,7 @@ pub fn a_missing_matcher_is_all_test() {
 // --- matcher classification --------------------------------------------------
 
 pub fn matcher_classification_follows_the_character_rules_test() {
-  let assert Ok(config) = hookcompat.parse_claude(json_fixture, source)
+  let assert Ok(config) = hookcompat.parse_claude_settings(json_fixture, source)
   let assert Ok(pre_tool_use) = hookcompat.decode_event("PreToolUse")
   let assert Ok(#(_, groups)) =
     list.find(config.entries, fn(e) { e.0 == pre_tool_use })
@@ -356,7 +360,8 @@ pub fn merge_concatenates_in_the_order_given_test() {
 // --- render and round-trip ------------------------------------------------------
 
 pub fn to_toml_round_trips_both_sources_models_test() {
-  let assert Ok(json_config) = hookcompat.parse_claude(json_fixture, source)
+  let assert Ok(json_config) =
+    hookcompat.parse_claude_settings(json_fixture, source)
   let assert Ok(from_json) =
     hookcompat.parse_loom(hookcompat.to_toml(json_config), source)
   assert strip_source(from_json) == strip_source(json_config)
@@ -393,6 +398,20 @@ pub fn an_empty_document_loads_empty_test() {
   assert empty_toml.entries == []
 }
 
+// The ordinary settings file: keys Claude reads for other reasons and
+// no `hooks` key at all. It declares no hooks, which is not the same
+// thing as a file that will not parse — reading the settings object
+// itself as the hooks object made `permissions` an unknown event name
+// and refused the commonest file on the machine.
+pub fn a_settings_file_with_no_hooks_key_loads_empty_test() {
+  let assert Ok(config) =
+    hookcompat.parse_claude_settings(
+      "{\"model\":\"opus\",\"permissions\":{\"allow\":[\"Bash(ls:*)\"]},\"env\":{\"A\":\"b\"}}",
+      source,
+    )
+  assert config.entries == []
+}
+
 // --- hash ------------------------------------------------------------------------
 
 pub fn hash_differs_when_a_handler_changes_test() {
@@ -418,6 +437,27 @@ pub fn hash_differs_when_a_handler_changes_test() {
 
   // And the digest is stable across calls.
   assert hookcompat.hash(base) == hookcompat.hash(base)
+}
+
+// The digest covers the hooks and not the file they arrived in. The
+// trust record depends on it: a record written for a source is checked
+// against a config the loader re-parsed under the same label, and a
+// hash that moved with the label would re-open review for a file
+// nobody touched.
+pub fn hash_ignores_the_source_it_was_read_from_test() {
+  let declaration =
+    "{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"lint.sh\"}]}]}"
+  let assert Ok(as_user) =
+    hookcompat.parse_claude(
+      declaration,
+      Source(label: "user settings", origin: UserSettings),
+    )
+  let assert Ok(as_project) =
+    hookcompat.parse_claude(
+      declaration,
+      Source(label: "/repo/.claude/settings.json", origin: ProjectSettings),
+    )
+  assert hookcompat.hash(as_user) == hookcompat.hash(as_project)
 }
 
 // --- load-time diagnostics -------------------------------------------------------
@@ -467,6 +507,49 @@ pub fn a_no_moment_event_reports_once_not_per_handler_test() {
   assert list.length(found) == 1
   let assert Ok(note) = list.first(found)
   assert string.contains(note.what, "SessionEnd")
+}
+
+// --- the shipped collection --------------------------------------------------------
+
+/// The reference collection in `docs/fixtures/hooks-compat/` parses as
+/// it stands, with no edit of any kind.
+///
+/// That file is the whole of what issue #350 means by compatibility: a
+/// real operator's `~/.claude/settings.json` hook entries, sixteen
+/// handlers across ten events, six of which this build has no moment
+/// for. Until this test existed the file was documentation — nothing
+/// read it, so a parser change could have refused it and every gate
+/// would still have been green. Reading it here is what turns the
+/// README's claim about it into something that can fail.
+pub fn the_reference_collection_parses_unedited_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test process must know where it is"
+  let assert Ok(text) =
+    simplifile.read(
+      here <> "/../../docs/fixtures/hooks-compat/owner-collection.json",
+    )
+    as "the reference collection must be readable from the repository"
+
+  let assert Ok(config) = hookcompat.parse_claude_settings(text, source)
+    as "the reference collection must parse with no edit"
+
+  assert list.length(config.entries) == 10
+  assert handler_count(config) == 16
+
+  // The events with no harness moment load and are named once each at
+  // load time rather than refusing the collection — the whole of the
+  // "declared and skipped" middle the parity matrix argues for.
+  let assert Ok(notification) = hookcompat.decode_event("Notification")
+    as "Notification must decode"
+  assert list.any(config.entries, fn(entry) { entry.0 == notification })
+  assert hookcompat.notes(config) != []
+}
+
+fn handler_count(config: Config) -> Int {
+  config.entries
+  |> list.flat_map(fn(entry) { entry.1 })
+  |> list.flat_map(fn(group) { group.handlers })
+  |> list.length
 }
 
 // --- helpers ----------------------------------------------------------------------

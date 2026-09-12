@@ -108,6 +108,15 @@ pub type Context {
     /// The session environment plus the compat layer's additions,
     /// allowlist-constructed by the caller. The runner does not read
     /// the host environment and never composes secrets.
+    ///
+    /// `HOME` is load-bearing and lives only here. It is what the
+    /// shell expands a `~` in a command against, and the compat layer
+    /// points it at the operator's own home so a command written for
+    /// Claude means under Loom what it means there. Keeping it in the
+    /// environment rather than in a field of its own is what stops the
+    /// two from disagreeing: `call_spec` derives the `env_allow`
+    /// requirement from these keys, so the name the process runs with
+    /// and the name the policy was asked for are the same value.
     env: List(#(String, String)),
     /// The enforcement demand of the session.
     demand: EnforcementDemand,
@@ -136,15 +145,31 @@ pub type Outcome {
     stdout: String,
     /// stderr, decoded; empty when the run was cancelled.
     stderr: String,
-    /// Whether either stream was truncated at the output cap. The
-    /// caller surfaces this rather than trusting a short `stdout` to
-    /// be the whole one.
-    truncated: Bool,
+    /// Whether what came back is the whole of what the hook printed.
+    /// A `Clipped` capture carries no text at all, for the reason the
+    /// contract discards a timed-out hook's: half a document is not a
+    /// decision.
+    capture: Capture,
     /// How the run ended: its own exit, or the wall's. A timed-out
     /// hook's output is discarded by contract, so a wall-cancelled
     /// outcome carries no text.
     ending: Ending,
   )
+}
+
+/// Whether a finished run's captured output is the whole of what the
+/// process wrote, or a prefix the output cap cut short.
+///
+/// This is a named question rather than a boolean because the decision
+/// readers branch on it: a stream cut at the cap can end mid-token, and
+/// a `permissionDecision` read out of half an object is a decision the
+/// hook never made.
+pub type Capture {
+  /// Both streams arrived whole.
+  Whole
+
+  /// At least one stream hit the output cap.
+  Clipped
 }
 
 /// How one hook process's run ended, decoded from the broker's
@@ -240,32 +265,6 @@ pub fn run(
   }
 }
 
-/// Runs one hook command, cancelling it when the waiting window lapses.
-///
-/// The only difference from `run` is the failure story: a call that
-/// never settled is cancelled here, by the runner that started it,
-/// rather than handed back to a caller who would have to know the
-/// ladder. `NeverSettled` cannot come back.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // let assert Ok(outcome) = hookrunner.run_cancelling(ctx, cmd, "{}", 30)
-/// ```
-///
-pub fn run_cancelling(
-  ctx: Context,
-  command: Command,
-  input: String,
-  default_timeout_s: Int,
-) -> Result(Outcome, RunError) {
-  case run(ctx, command, input, default_timeout_s) {
-    Ok(outcome) -> Ok(outcome)
-    Error(Refused(refusal)) -> Error(Refused(refusal))
-    Error(NeverSettled) -> Error(NeverSettled)
-  }
-}
-
 // The derived requirements for a hook process: the session base's own
 // roots, mounts and network posture, asked for the way the bash tool
 // asks — intersection with the base can never widen past the base —
@@ -292,7 +291,7 @@ fn call_spec(
     grants: [],
     response: broker.RefuseNarrowed,
     demand: ctx.demand,
-    argv: argv(ctx.workspace, command),
+    argv: argv(command),
     env: ctx.env,
     cwd: ctx.workspace,
     budget: budget.Budget(
@@ -308,25 +307,18 @@ fn call_spec(
 // and every in-tree spawn being argv-only is a convention of *harness*
 // code, not a rule the imported hooks can inherit. Exec form resolves
 // no shell: `command` is the executable and `args` the vector, verbatim.
-fn argv(workspace: String, command: Command) -> List(String) {
+//
+// The command string reaches `sh -c` untouched. Nothing here rewrites a
+// leading `~`: the hook process runs with `HOME` set to the operator's
+// own home (`serve.hook_environment`), so the shell expands `~` to the
+// directory it names under Claude, wherever in the command it appears.
+// A rewriter would have caught only the one position its own parser
+// looked at, and would have disagreed with the shell everywhere else.
+// `CLAUDE_PROJECT_DIR` is the name that means the workspace.
+fn argv(command: Command) -> List(String) {
   case command.args {
     Some(args) -> [command.command, ..args]
-    None -> ["sh", "-c", expanded(command.command, workspace)]
-  }
-}
-
-// The `~` in an imported command means the workspace the session runs
-// in, which is what `${CLAUDE_PROJECT_DIR}` names too: the contract's
-// project directory and Loom's session workspace are the same answer
-// for a session, and pre-expanding `~` keeps a script written against
-// `~/...` paths working without a home-dir guess. Only a leading `~`
-// or `~/` is expanded, which is the shell's own rule; a `~` anywhere
-// else stays for the shell itself.
-fn expanded(command: String, workspace: String) -> String {
-  case command {
-    "~" -> workspace
-    "~/" <> rest -> workspace <> "/" <> rest
-    _ -> command
+    None -> ["sh", "-c", command.command]
   }
 }
 
@@ -343,43 +335,68 @@ fn settled(collected: tool.Collected) -> Outcome {
         code: 1,
         stdout: "",
         stderr: "the sandbox did not settle the hook",
-        truncated: False,
+        capture: Whole,
         ending: RanToExit,
       )
 
     broker.CallExited(result:) -> {
-      // The two questions the caller reads off a settlement, answered
-      // once: whether the wall killed this run — a cancelled payload
-      // reports no text at all, since the contract discards a
-      // timed-out hook's output and a decision read out of a
-      // half-written stdout would be worse than no decision — and
-      // whether what survived was the whole of it.
+      // Whether the wall killed this run. The contract discards a
+      // timed-out hook's output, so the answer decides whether any
+      // text reaches the caller at all.
       let ending = case result.cancelled || result.timed_out {
         True -> WallCancelled
         False -> RanToExit
       }
+
+      // Whether what survived the output cap was the whole of it. The
+      // helper reports its own truncation and the collector reports
+      // the cap it applied; either one means the text is a prefix.
+      let capture = case
+        collected.stdout_truncated
+        || collected.stderr_truncated
+        || result.stdout_truncated
+        || result.stderr_truncated
+      {
+        True -> Clipped
+        False -> Whole
+      }
+
+      // A clipped capture is discarded on exactly the contract's
+      // argument for discarding a timed-out one: a stream cut at the
+      // cap can end mid-object, and `{"permissionDecision":"all` would
+      // otherwise classify as plain text and read as a clean proceed.
+      // Blanking here is what keeps that unrepresentable downstream
+      // rather than asking every decision reader to remember it.
+      let legibility = case ending, capture {
+        RanToExit, Whole -> Legible
+        RanToExit, Clipped -> Discarded
+        WallCancelled, Whole -> Discarded
+        WallCancelled, Clipped -> Discarded
+      }
       Outcome(
         code: result.code,
-        stdout: case ending {
-          WallCancelled -> ""
-          RanToExit -> text(collected.stdout)
+        stdout: case legibility {
+          Legible -> text(collected.stdout)
+          Discarded -> ""
         },
-        stderr: case ending {
-          WallCancelled -> ""
-          RanToExit -> text(collected.stderr)
+        stderr: case legibility {
+          Legible -> text(collected.stderr)
+          Discarded -> ""
         },
-        truncated: case ending {
-          WallCancelled -> False
-          RanToExit ->
-            collected.stdout_truncated
-            || collected.stderr_truncated
-            || result.stdout_truncated
-            || result.stderr_truncated
-        },
-        ending: ending,
+        capture:,
+        ending:,
       )
     }
   }
+}
+
+// Whether a settlement's captured text may be read as a decision at
+// all. The two ways it may not — the wall killed the process, or the
+// cap cut the stream — produce the same answer, and naming it once is
+// what keeps the two blanking rules from drifting apart.
+type Legibility {
+  Legible
+  Discarded
 }
 
 fn text(bytes: BitArray) -> String {

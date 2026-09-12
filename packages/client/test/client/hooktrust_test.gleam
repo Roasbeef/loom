@@ -29,13 +29,13 @@ fn fresh_dir() {
 }
 
 fn config_a() {
-  let assert Ok(config) = hookcompat.parse_claude(fixture_a, source())
+  let assert Ok(config) = hookcompat.parse_claude_settings(fixture_a, source())
     as "fixture a must parse"
   config
 }
 
 fn config_b() {
-  let assert Ok(config) = hookcompat.parse_claude(fixture_b, source())
+  let assert Ok(config) = hookcompat.parse_claude_settings(fixture_b, source())
     as "fixture b must parse"
   config
 }

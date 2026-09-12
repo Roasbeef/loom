@@ -1451,6 +1451,16 @@ catalogue without opening runtimes. Explicit admission invokes
   registry produces reaches a session once: the prompt index and
   `active_tool_names` are both fixed at session creation, so an
   extension installed later is seen by the next session, not this one.
+- `client/serve.session_base(Settings, String, String, String,
+  Result(Toolchain, String))` — the whole composed session base in one
+  named function: the index and memory protections, `allowing_tool_tmpdir`,
+  `allowing_imported_hook_env`, `under_tools_config`,
+  `widening_linked_worktree`, `admitting_codemode`, `merging_mounts`, in
+  that order. `assemble_in` calls it and `base_policy_fault` validates the
+  result. It is a function rather than an inline pipeline so a test can
+  read the composed allowlist back — `policy.meet` intersects `env_allow`
+  against this, so a step left out is not a missing convenience but every
+  call that wanted the name refused.
 - `client/serve.protecting_index(SandboxPolicy, String)` — the base
   policy with the search index added to `protected`. A security property,
   not hygiene: snippets from that index are read back into *future*
@@ -2028,20 +2038,49 @@ question each, and one composition point in `serve`:
   Claude settings JSON verbatim and the native `[[hooks.Event]]` TOML.
   Both parsers are total with worded errors; unknown handler *fields* are
   ignored (Claude ignores them), an unknown event or handler type is a
-  refusal. `merge` concatenates in the caller's precedence order and
-  never replaces; `to_toml` renders the native shape losslessly for the
-  converter; `hash` digests the model canonically for the trust record;
-  `notes` reports unsupported kinds and no-moment events at load time
-  rather than loading them silently.
+  refusal. Two entry points for the Claude shape, because the caller is
+  the one who knows which document it located: `parse_claude` reads a
+  **bare hooks object** (a plugin's `hooks/hooks.json`), and
+  `parse_claude_settings` reads a **whole settings file**, descending its
+  `hooks` key and returning an empty `Config` when there is none. Choosing
+  between them by guessing at the absent key read `permissions` as an
+  event name and refused the ordinary user settings file. `merge`
+  concatenates in the caller's precedence order and never replaces;
+  `to_toml` renders the native shape losslessly (no CLI exposes it yet);
+  `hash` digests the model canonically for the trust record and ignores
+  the `Source` it was read from; `notes` reports unsupported kinds and
+  no-moment events at load time rather than loading them silently.
 - `client/hookrunner` — one imported command hook as one jailed
   process through `broker.clear_call`, the worktree observation's own
   pattern: `sh -c` shell form or `args` exec form, the event JSON on stdin
   closed after, the handler's `timeout` seconds as the wall limit and
   the budget deadline, a timed-out run reporting `WallCancelled` with no
-  output for the caller to read a decision out of. The environment is the
-  session's (`session_environment` plus `CLAUDE_PROJECT_DIR`), the cwd is
+  output for the caller to read a decision out of. `Outcome.capture`
+  (`Whole | Clipped`) is the same story for the output cap: a stream cut
+  at the cap is blanked exactly as a cancelled one is, so a half-written
+  object cannot classify as a clean decision. The environment is the
+  session's, composed by `serve.hook_environment`; the cwd is
   the workspace, and the jail is the session's base policy — never a
-  grant the hook could widen.
+  grant the hook could widen. **The requirement is the keys of that
+  environment under `RefuseNarrowed`**, so every name it carries has to
+  be on the session base's allowlist or the whole call is refused before
+  a process exists; `serve.allowing_imported_hook_env` is what grants
+  `CLAUDE_PROJECT_DIR` there, beside `allowing_tool_tmpdir`'s `TMPDIR`.
+  Nothing rewrites the command string: `Context.env` carries `HOME` and
+  the shell expands `~` against it, so the substitution
+  `serve.hook_environment` makes is the whole of the tilde story. `HOME`
+  is deliberately not a field of `Context` — `call_spec` derives the
+  `env_allow` requirement from the keys of `env`, and a second copy
+  could disagree with the one the process actually runs with.
+- `client/serve.hook_environment(List(#(String, String)),
+  Option(String), String)` — the environment one imported hook runs
+  under: the session's, with `HOME` replaced by the operator's home when
+  there is one, plus `CLAUDE_PROJECT_DIR` naming the workspace. A jailed
+  *tool* keeps the workspace-local `tool_home_directory` so what a
+  toolchain writes to `$HOME` stays off the operator's tree; a hook
+  cannot, because an imported collection names scripts at
+  `~/.claude/hooks/...`. `None` — a daemon started with `HOME` unset —
+  leaves the jail home standing.
 - `client/hookdecisions` — a finished outcome read back as the decision
   the pinned contract (`docs/design-notes/claude-hooks-contract.md`)
   specifies, per event: exit 2's block, the `hookSpecificOutput` field
@@ -2052,27 +2091,60 @@ question each, and one composition point in `serve`:
   rule), the payload's common fields, the Loom↔Claude tool-name mapping
   (`bash`→`Bash`, `fs_write`→`Write`, …) applied to matching only, and
   the verdict combination rules — first deny wins, a rewrite survives
-  only when nothing harder landed.
+  only when nothing harder landed. `matching_handlers` keeps only
+  `Command` handlers, which is what makes "parsed, not run" structural
+  for the other four kinds rather than a promise each gate has to keep.
 - `client/hookserve` — source loading with per-source trust (`client/hooktrust`)
   and the composed gates: `tool_gate` at the clearance, `tool_feedback` at
   the result fold, `session_context` at run start, `compaction_note` at
-  the summarizer, `stop_gate` at the run-end boundary. `wire` wraps a
-  session's `Effects` the way the native extension bus's `wire` does, so
-  both layers coexist; the Stop gate's consecutive-continuation cap is
-  counted in a small `weft/actor` because the `run_end` slot is a plain
-  function that can keep no state of its own.
+  the summarizer, `stop_gate` at the run-end boundary. `Located.shape`
+  (`ClaudeSettings | ClaudeHooks | LoomToml`) is what picks the parser.
+  `Serving` carries the merged configuration **only inside `wiring`** —
+  a second copy diverged from it and every gate matched nothing — plus
+  `skipped: List(Skipped)` (path and the reason, so the boot log can
+  say which of "unreadable", "will not parse" and "not trusted" it was)
+  and `notes` for `hookcompat.notes`' findings. `wire` wraps a session's
+  `Effects` the way the native extension bus's `wire` does, so both
+  layers coexist; one small `weft/actor` holds both pieces of state the
+  wrapped slots need — the Stop gate's per-operation continuation tally
+  and the `FirstRun | LaterRun` flag that keeps `SessionStart` to once
+  per composed `Effects` — because those slots are plain functions that
+  can keep no state of their own. The Stop gate is asked only when
+  `built.run_end` placed nothing, which is why that `case` is nested:
+  Gleam evaluates both subjects of a two-subject `case` before matching.
+  The composed `clear` slot takes the wrapped `clear` **function**, not
+  its answer, because a `PreToolUse` `Rewrite` has to re-enter it: every
+  upstream gate answered about the arguments the model sent, so
+  `recleared` puts the replacement back through the harness's clearance
+  and returns that second clearance's whole answer, `effective_arguments`
+  included: a wrapping layer that normalizes or fills a default hands
+  back arguments other than the ones it was asked about, and returning
+  the hook's own literal would have kept that layer's work on the first
+  pass and dropped it on the second. The hooks are not asked a second
+  time — a gate that could rewrite the input of its own next ask has no
+  fixed point. The messages the gates place carry the placing event's
+  own name (`hook_message`), so a `SessionStart` injection reads as one
+  rather than as a stop that never happened.
 - `client/hooktrust` — the recorded, hash-pinned trust a non-managed
-  source needs before it runs: one JSON record per source under the
-  trust root, so a changed file re-enters review. The operator's
-  user-level settings are trusted on first sight; a project file asks
-  first.
+  source needs before it runs: one JSON record per source under
+  `<home>/hooktrust`, so a changed file re-enters review. The operator's
+  user-level settings are trusted on **first** sight and re-enter review
+  once their hooks change; a project, local or plugin source asks first,
+  and nothing in the tree can answer yet — `loom hooks trust` is
+  follow-up work, so those sources stay skipped. A server with no home
+  has nowhere to keep a record and therefore trusts no imported source.
+  The pin covers the declaration, not the scripts the commands name.
 
 `serve.with_imported_hooks` is the one composition point, called after
 `with_extension_hooks` so an imported hook's verdict lands after the
 native bus's and the harness's own clearance — one authority story.
 A session with no imported sources composes nothing. The parity
-matrix is `docs/architecture/hooks-compat.md`; the fixtures are
-`docs/fixtures/hooks-compat/`.
+matrix is `docs/architecture/hooks-compat.md`, whose "What is verified
+where" says which layer each claim is tested at; the fixtures are
+`docs/fixtures/hooks-compat/`. `hookserve_e2e_test` is the acceptance
+case: a real `serve.open_instance` under a temporary `Settings.home`,
+an unedited user-level collection, and all four composed events firing
+across one operation a `Stop` block holds open.
 
 ## Relationships
 

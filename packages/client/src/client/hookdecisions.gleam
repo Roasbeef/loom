@@ -134,7 +134,7 @@ pub fn tool_permission(
     WallCancelled -> Proceed
     RanToExit ->
       case code {
-        _ if code == blocking_code -> Deny(reason_for_block(stderr, stdout))
+        _ if code == blocking_code -> deny(reason_for_block(stderr, stdout))
         _ ->
           case classify(stdout) {
             Silent -> Proceed
@@ -155,7 +155,7 @@ fn permission_of(
   let specific = specific_fields("PreToolUse", fields)
   case string_field(specific, "permissionDecision") {
     Some("deny") ->
-      Deny(
+      deny(
         string_field(specific, "permissionDecisionReason")
         |> option.lazy_unwrap(fn() { reason_for_block(stderr, "") }),
       )
@@ -209,7 +209,7 @@ pub fn tool_feedback(
     WallCancelled -> Nothing
     RanToExit ->
       case code {
-        _ if code == blocking_code -> Feedback(stderr)
+        _ if code == blocking_code -> feedback(stderr)
         _ ->
           case classify(stdout) {
             Silent -> Nothing
@@ -228,7 +228,7 @@ fn feedback_of(fields: List(#(String, JsonValue))) -> ToolFeedback {
     None ->
       case string_field(fields, "decision") {
         Some("block") ->
-          Feedback(string_field(fields, "reason") |> option.unwrap(""))
+          feedback(string_field(fields, "reason") |> option.unwrap(""))
         _ ->
           case context {
             Some(text) -> Context(text)
@@ -338,7 +338,7 @@ pub fn context_injection(
         _ ->
           case classify(stdout) {
             Silent -> NoContext
-            Plain(text) -> Injected(text)
+            Plain(text) -> injected(text)
             Json(fields) -> injected_of(event, fields, stdout)
           }
       }
@@ -389,13 +389,13 @@ fn injected_of(
 ) -> ContextInjection {
   let specific = specific_fields(event, fields)
   case string_field(specific, "additionalContext") {
-    Some(text) -> Injected(text)
+    Some(text) -> injected(text)
     None ->
       // Plain stdout still counts as context on these events even
       // when a JSON object carried no context field, per the
       // contract's both-channels rule.
       case classify(stdout) {
-        Plain(text) -> Injected(text)
+        Plain(text) -> injected(text)
         _ -> NoContext
       }
   }
@@ -470,6 +470,26 @@ fn object_fields(value: JsonValue) -> List(#(String, JsonValue)) {
     json.Object(fields) -> fields
     _ -> []
   }
+}
+
+// The three decisions that carry hook text into the session, each
+// built through the contract's cap rather than around it.
+//
+// The cap belongs here and not at the call sites for the reason every
+// bound does: a reader that has to remember to apply it is a reader
+// that will one day forget, and the text these three carry is written
+// by a process whose output the harness does not otherwise bound to
+// anything smaller than a megabyte.
+fn deny(reason: String) -> ToolPermission {
+  Deny(capped(reason))
+}
+
+fn feedback(reason: String) -> ToolFeedback {
+  Feedback(capped(reason))
+}
+
+fn injected(text: String) -> ContextInjection {
+  Injected(capped(text))
 }
 
 /// Clamps one hook output string to the contract's cap, with the same

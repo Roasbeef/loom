@@ -498,9 +498,10 @@ pub type Config {
 
 // --- parse: the Claude JSON shape ------------------------------------------
 
-/// Parses the `hooks` object of a Claude settings file — or a plugin's
-/// `hooks/hooks.json`, which is the same shape. Total: every failure
-/// is a worded `Error` naming the event or field it came from.
+/// Parses a bare hooks object — the shape a plugin's
+/// `hooks/hooks.json` carries, and the inner object of a settings
+/// file. Total: every failure is a worded `Error` naming the event or
+/// field it came from.
 ///
 /// Keys are event names; each value is an array of matcher groups,
 /// each group an object with an optional `matcher` and a required
@@ -508,16 +509,19 @@ pub type Config {
 /// ignored — Claude ignores them, and refusing an entry Claude Code
 /// runs would break the parity the issue is about.
 ///
-/// The whole settings file is also accepted: when a top-level `hooks`
-/// object is present it is descended into, so a caller can hand this
-/// the file it read rather than extracting the field first.
+/// A whole settings file is `parse_claude_settings`, not this. Which
+/// of the two a document is belongs to the caller that located it: a
+/// settings file with no hooks at all is indistinguishable from a
+/// bare hooks object declaring no events, and guessing from the
+/// absent key read `permissions` as an event name and refused the
+/// ordinary file.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// parse_claude(
-///   "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Bash\",
-///     \"hooks\":[{\"type\":\"command\",\"command\":\"lint.sh\"}]}]}}",
+///   "{\"PreToolUse\":[{\"matcher\":\"Bash\",
+///     \"hooks\":[{\"type\":\"command\",\"command\":\"lint.sh\"}]}]}",
 ///   source,
 /// )
 /// // -> Ok(config) with one PreToolUse group matching Bash
@@ -527,17 +531,43 @@ pub fn parse_claude(text: String, source: Source) -> Result(Config, String) {
     json.parse(text)
     |> result.map_error(describe_json_error),
   )
-  use fields <- result.try(object_fields(value, "the hooks configuration"))
+  hooks_object(value, source)
+}
 
-  // Accept either the bare `hooks` object or a whole settings file
-  // with `hooks` as one of its top-level keys. The bare object has no
-  // `hooks` key (an event is not named that), so the two are
-  // distinguishable by exactly the field the contract nests under.
-  let hooks = case list.key_find(fields, "hooks") {
-    Ok(nested) -> nested
-    Error(Nil) -> value
+/// Parses a whole Claude settings file: the `hooks` object under its
+/// own key, and an empty configuration when the file has no such key.
+///
+/// A settings file carries `permissions`, `model`, `env` and whatever
+/// else Claude reads beside its hooks, so a file that declares no
+/// hooks is the ordinary case and is not an error — it contributes
+/// nothing and says nothing. Only a malformed `hooks` value refuses,
+/// and it refuses naming the event or field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// parse_claude_settings("{\"model\":\"opus\"}", source)
+/// // -> Ok(config) with no entries
+/// ```
+pub fn parse_claude_settings(
+  text: String,
+  source: Source,
+) -> Result(Config, String) {
+  use value <- result.try(
+    json.parse(text)
+    |> result.map_error(describe_json_error),
+  )
+  use fields <- result.try(object_fields(value, "the settings file"))
+  case list.key_find(fields, "hooks") {
+    Ok(nested) -> hooks_object(nested, source)
+    Error(Nil) -> Ok(Config(entries: [], source:))
   }
-  use event_fields <- result.try(object_fields(hooks, "the hooks object"))
+}
+
+// The hooks object itself, whichever document carried it: event keys
+// to matcher-group arrays, in the order declared.
+fn hooks_object(value: JsonValue, source: Source) -> Result(Config, String) {
+  use event_fields <- result.try(object_fields(value, "the hooks object"))
   use entries <- result.try(
     event_fields
     |> list.map(parse_event)

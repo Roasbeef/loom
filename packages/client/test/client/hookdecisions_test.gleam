@@ -340,3 +340,31 @@ pub fn output_caps_at_ten_thousand_test() {
   assert string.length(capped) < 11_200
   assert string.contains(capped, "hook output capped")
 }
+
+/// The cap is applied where the decisions are built, not left to the
+/// caller. Each of the three that carry hook text into the session —
+/// a `PreToolUse` deny, a `PostToolUse` feedback, a `SessionStart`
+/// injection — comes back capped, so a hook that printed a database
+/// cannot put it in front of the model.
+pub fn the_three_text_carrying_decisions_are_capped_test() {
+  let long = string.repeat("x", 20_000)
+
+  let assert hookdecisions.Deny(reason) =
+    hookdecisions.tool_permission(2, long, "", RanToExit)
+  assert string.contains(reason, "hook output capped")
+
+  let assert hookdecisions.Feedback(feedback) =
+    hookdecisions.tool_feedback(2, long, "", RanToExit)
+  assert string.contains(feedback, "hook output capped")
+
+  let assert hookdecisions.Injected(text) =
+    hookdecisions.context_injection(
+      "SessionStart",
+      hookdecisions.CannotBlock,
+      0,
+      "",
+      long,
+      RanToExit,
+    )
+  assert string.contains(text, "hook output capped")
+}
