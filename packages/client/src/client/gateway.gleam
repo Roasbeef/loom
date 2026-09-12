@@ -612,8 +612,12 @@ type Emit {
   Emit(seq: Int, event: WireEvent)
 }
 
-// The drain policy belongs to the items whose custody it changes. Removing
-// an empty queue also removes its batch intent, so a later run cannot inherit it.
+/// One strand's held messages together with the policy deciding how many
+/// of them the next successor run receives.
+///
+/// The drain policy belongs to the items whose custody it changes. Removing
+/// an empty queue also removes its batch intent, so a later run cannot
+/// inherit it.
 type HeldQueue {
   HeldQueue(
     /// Messages retain their admitted order and original author.
@@ -623,6 +627,7 @@ type HeldQueue {
   )
 }
 
+/// How many held messages one successor run receives.
 type HeldDrain {
   /// Ordinary settlement opens one successor per held prompt.
   OnlyHead
@@ -4257,9 +4262,13 @@ fn held_items(state: State, strand: String) -> List(Held) {
 }
 
 fn put_held(state: State, strand: String, queue: List(Held)) -> State {
+  // A replacement queue inherits the strand's existing drain intent, which is
+  // what lets input submitted after an abort join the batch that abort marked.
+  // The intent dies only with the dictionary entry, so a caller meaning
+  // "install a fresh queue" must delete the strand's entry first.
   let drain =
     dict.get(state.held, strand)
-    |> result.map(fn(queue) { queue.drain })
+    |> result.map(fn(existing) { existing.drain })
     |> result.unwrap(OnlyHead)
   let state = case queue {
     // An emptied strand leaves the dictionary rather than sitting in it

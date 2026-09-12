@@ -3377,14 +3377,22 @@ pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
     as "every held message commits before the replacement provider is released"
 
   release_gate(gate)
+
+  // The first poll already proved the batch committed while the provider was
+  // parked, so repeating it proves nothing. What release adds is settlement:
+  // the replacement run reaches the end of the batch and leaves the strand
+  // with no live operation, having admitted nothing beyond those three.
   let assert poll.Answered(_) =
     poll.until(within: 15_000, every: 25, attempt: fn() {
-      case user_prompt_texts(harness) == expected {
-        True -> poll.Done(Nil)
-        False -> poll.Retry
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
       }
     })
-    as "Escape preserves every remaining queued turn"
+    as "the replacement run settles once the provider is released"
+  assert user_prompt_texts(harness) == expected
+    as "Escape admitted every queued turn exactly once"
 }
 
 /// Batch admission transfers original messages rather than joining their text.
@@ -3447,6 +3455,57 @@ pub fn abort_batch_preserves_each_authors_complete_message_test() {
       Some(message.Origin("bob", "Bob")),
     )
   assert queued_rows(alice, 834) == []
+  release_gate(gate)
+}
+
+/// An Escape pressed with nothing held marks no batch, which is the arm
+/// `protocol-change/032` chose: an empty queue carries no pending intent, so
+/// input submitted after it keeps ordinary behavior. Two corrections typed
+/// inside the cancellation window therefore open one successor run between
+/// them, the second waiting on the first rather than joining its admission.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match abort_with_an_empty_queue` runs this arm.
+pub fn abort_with_an_empty_queue_admits_only_the_next_message_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let _ = queued_request(alice, 840, protocol.Prompt("main", "open"))
+
+  // Escape reaches a strand whose queue is empty, so no queue is marked and
+  // nothing survives the abort to carry a batch intent into what follows.
+  let _ = queued_request(alice, 841, protocol.Abort("main"))
+
+  // Both corrections are typed inside the cancellation window. Whether the
+  // aborted operation has already retired decides only which of the two is
+  // held; neither ordering produces a batch, which is what this pins.
+  let _ =
+    queued_request(alice, 842, protocol.Prompt("main", "first correction"))
+  let _ =
+    queued_request(alice, 843, protocol.Prompt("main", "second correction"))
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "first correction"] {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the first correction opens the successor run on its own"
+
+  // Reading the queue is a round trip through the gateway actor, so every
+  // drain the gateway was going to perform has already been decided when
+  // these rows are built. A batched admission would have emptied them.
+  let assert [row] = queued_rows(alice, 844)
+    as "the second correction is still held"
+  assert queue_field(row, "text") == json.String("second correction")
+  assert user_prompt_texts(harness) == ["open", "first correction"]
+    as "the parked successor run holds the second correction back"
   release_gate(gate)
 }
 
