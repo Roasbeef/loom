@@ -39,6 +39,12 @@ max_output_tokens = 16000
 # with no reasoning mode; like "off" it sends no reasoning field at
 # all. Omitting the key means "off".
 thinking = "unsupported"
+# Whether the endpoint reads image blocks. Omitting the key means
+# false — the honest default, since an image sent to a model that
+# cannot read it is silently ignored by the provider. An entry with
+# vision = true can serve the `vision` role: a request carrying a
+# fresh image from an entry without it routes through the vision
+# chain, or is refused with a worded reason when none is routed.
 
 # A second Baseten entry, this one priced. The optional
 # [models.<name>.pricing] table is what turns the usage ledger's cost
@@ -113,9 +119,11 @@ cache_read = 0.075
 # and the head is always tried first: nothing here tracks health or
 # remembers that a model was busy a moment ago.
 #
-# `main`, `subagent` and `summarize` are dispatched on. `plan` and
-# `vision` are reserved: parsed, validated and listed, with no caller in
-# the harness yet to route.
+# `main`, `subagent` and `summarize` are dispatched on. `plan` is
+# reserved: parsed, validated and listed, with no caller in the
+# harness yet to route. `vision` serves image-bearing requests whose
+# strand model declares itself unable to read images (issue #358):
+# route it to an entry carrying `vision = true`.
 [roles]
 main = ["baseten-oss", "anthropic-opus"]
 subagent = ["baseten-oss", "gemini-flash"]

@@ -1375,6 +1375,20 @@ catalogue without opening runtimes. Explicit admission invokes
   because a grant that cannot be attributed to the call in hand must
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
+- `client/vision` — the vision routing rule (issue #358): a request
+  whose newest user message carries an image, on a strand whose
+  catalogue entry declares `TextOnly`, dispatches through the routed
+  `vision` chain (`ForRole(Vision)`, admitted and accounted against
+  the vision head's own facts) or is refused in band at admission with
+  a worded reason — `image_unsupported` when no chain resolves,
+  `vision_misconfigured` when the routed head is itself declared
+  `TextOnly`. Every other request to a text-only identity carries its
+  `UserImage` blocks replaced with a text placeholder, in the transient
+  projection only; the durable transcript keeps the images. The
+  classifier skips the notes reminder, which is the harness speaking,
+  not the operator. `Config.facts` carries the entry's
+  `catalog.ImageReading` beside its resolved facts and api, so the
+  capability and the accounting read one seam and cannot drift.
   the one conversion across it. `run_tool` always settles as
   `effects.ToolCompleted`, and its `terminate` is now the outcome's own
   `tool.Terminate` rather than the hardcoded `False` it was: `terminates`
