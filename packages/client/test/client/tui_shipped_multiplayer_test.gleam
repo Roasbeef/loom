@@ -648,11 +648,19 @@ fn live_tool_switches(
   // The owner acknowledgement precedes Enter. A2 refusal cannot detach A1
   // or release the tool, even though its durable operation is still live.
   owner_command(address, owner, epoch, ["revoke", a2, "alice"])
+
+  // `notice` is a last-writer-wins scalar, and so is the transcript that
+  // carries the same text: `render_cut` replaces both on every cut whose
+  // metadata changed, which the revocation above guarantees in this window.
+  // The attempt counter and the candidate slot survive a cut, so the refusal
+  // is observed as one whole provisional lifetime instead: `begin_open`
+  // advances the counter, and only an outcome returns the slot to idle.
+  let attempts = highlighted.model.next_attempt
   let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
   let refused =
     tui_v2_test.await(alice.data, fn(sample) {
-      !attachment.busy(sample.model.candidate)
-      && sample.model.notice == "open session: not_found: request refused"
+      sample.model.next_attempt > attempts
+      && !attachment.busy(sample.model.candidate)
       && held_tool(sample)
     })
   assert attachment_of(refused) == original_alice
@@ -940,11 +948,19 @@ fn failed_switch_preserves_channel(
     as "revocation is scoped to the highlighted target, not Alice's credential"
   let assert Ok(_) = admin.exchange(address, owner, epoch, revoke)
     as "the owner observes target membership removal before selection executes"
+
+  // `notice` is a last-writer-wins scalar, and so is the transcript that
+  // carries the same text: `render_cut` replaces both on every cut whose
+  // metadata changed, which the revocation above guarantees in this window.
+  // The attempt counter and the candidate slot survive a cut, so the refusal
+  // is observed as one whole provisional lifetime instead: `begin_open`
+  // advances the counter, and only an outcome returns the slot to idle.
+  let attempts = highlighted.model.next_attempt
   let _ = tui_driver.play(alice.data, [backend.KeyPress("enter")])
   let refused =
     tui_v2_test.await(alice.data, fn(sample) {
-      !attachment.busy(sample.model.candidate)
-      && sample.model.notice == "open session: not_found: request refused"
+      sample.model.next_attempt > attempts
+      && !attachment.busy(sample.model.candidate)
       && writable(sample)
     })
 
