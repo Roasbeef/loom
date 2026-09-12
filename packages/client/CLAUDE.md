@@ -632,6 +632,21 @@ catalogue without opening runtimes. Explicit admission invokes
   process, no clock — and borrows `notes.{clip, byte_size, fence_safe}`
   rather than keeping a second copy of the byte arithmetic and the fence
   defence.
+- `client/advisor.{strand, primary, cursor_key, guard_key, brief, Settings,
+  Wiring, Message, start, supervised, hooks, seam, ensure_strand,
+  active_tools}` — the actor that joins the two pure halves above to the
+  session. `ensure_strand` seeds the advisor through
+  `api.create_idle_strand` and never through the Agency, so it carries no
+  `lineage/` cell: the primary cannot address it, it can address nothing,
+  and `strand.roster` does not list it. `hooks` wraps three slots —
+  `run_end` casts `PrimaryRunEnded`/`AdvisorRunEnded` and returns the inner
+  answer unchanged, `run_start` drains the queued nudges with a bounded
+  call and folds them in after the inner injections, and `context`
+  prepends `brief` to the advisor's own requests transiently. `seam` is
+  the `advise` door, which refuses any caller whose durable strand name is
+  not `advisor`. The actor owns `cursor_key` and `guard_key`, reads them
+  lazily on its first message because the runtime it borrows may not be up
+  at start.
 - `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
   bounding the sidecar read, which the lifecycle producer moved onto the
   strand driver's hot path: `max_sidecar_bytes` (four times the render
@@ -2245,6 +2260,18 @@ across one operation a `Stop` block holds open.
   joins the `Outputs` topic alone and turns each `ToolOutput` into a
   pushed `tool_output` frame without pulling; every other `BusHint` is a
   pull. The host fixture joins every topic.
+- `advisor.Message` — `PrimaryRunEnded(operation)` and
+  `AdvisorRunEnded(operation)` (casts, from the wrapped `run_end` slot on
+  the strand driver's own process), `Judge(strand, verdict, reply)` (a
+  call, from the `advise` tool's effect process, bounded at
+  `judge_timeout_ms`), and `TakePending(reply)` (a call, from the wrapped
+  `run_start` slot, bounded at `pending_timeout_ms`). Both calls go
+  through a monitored send-and-select rather than `process.call`, so an
+  absent or wedged actor degrades to no nudges and an in-band refusal
+  instead of killing a strand driver or a live tool effect. The run-end
+  notifications are casts on purpose: a driver that waited on a branch
+  scan and a provider round trip would stop serving `Nudge`,
+  `RequestAbort` and `PollTick` for the length of a review.
 - `history.Message` — `Pull` (a cast: a commit landed, go sync),
   `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
   limit, scope, reply)` (a call, from the tool seam), and `Stop`.
@@ -2324,6 +2351,40 @@ across one operation a `Stop` block holds open.
   `user-invocable`; neither path changes broker policy. Existing sessions retain
   their configured active tool names, including deliberate deactivations.
 
+- **The advisor actor is the only writer of `advisor/feed/cursor` and
+  `advisor/guard`.** Both are `fact.custom` cells under a harness-owned
+  prefix, and nothing model-facing can name them: the only fact write a
+  model reaches is the Agency blackboard, which prefixes every key with
+  `agent/` and the calling strand's own name. The cursor advances only
+  after a feed has been committed onto the advisor's branch, or when a
+  scan found entries that all rendered to nothing — a stretch of custom
+  rows would otherwise be rescanned and re-skipped at every run end
+  forever. A feed that fails to send leaves the cursor alone, so the next
+  run end offers the same stretch again.
+- **Backpressure is coalescing, and the advisor's own run end is exempt.**
+  A primary run end whose advisor already has a run open sends nothing and
+  leaves the cursor, so the stretch it has not seen arrives later in one
+  larger slice rather than in a queue of small ones. `AdvisorRunEnded` does
+  not make that check: the driver resolves `run_end` before the run closes,
+  so the advisor still reads as busy at exactly the moment its review
+  finishes, and a catch-up that yielded to that would never catch up on
+  anything. The stretch itself terminates the loop instead — a scan that
+  finds nothing past the cursor sends nothing.
+- **The strand driver never waits on a review.** The advisor's `run_end`
+  hook casts and returns the inner answer; nothing about a feed — the
+  branch scan, the render, the send, the durable writes — runs on the
+  driver. The one bounded wait is `run_start`'s nudge drain, because the
+  nudges have to be in the message list that slot returns, and a slow or
+  absent actor yields no nudges rather than a stalled run.
+- **`advise` is registered for the session and granted to one strand.**
+  The tool registry is per session, so the definition exists once; the
+  primary's `active_tool_names` withholds it and
+  `advisor.ensure_strand` adds it to the advisor's. The seam refuses a
+  call by the caller's durable strand name in any case, so a registration
+  mistake is a refusal rather than a second operator. A host that
+  deactivated `advise` seeds no advisor strand at all: `ensure_strand`
+  refuses by name rather than leaving a strand with a driver, a model and
+  nothing it can say.
 - **A linked git worktree widens the session base to its git directories.**
   `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a
   `gitdir:` file, the named directory and the main repository's `.git`
