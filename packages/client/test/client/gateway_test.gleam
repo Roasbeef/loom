@@ -3336,8 +3336,8 @@ pub fn steer_preempts_and_precedes_a_full_turn_queue_test() {
     as "all queued turns survive preemption and retain their order"
 }
 
-/// Escape stops only current work. The first queued turn starts as soon as
-/// cancellation drains, and later queued turns remain available afterward.
+/// Escape submits every held message before the replacement provider runs.
+/// Long multiline prompts must remain complete rather than becoming excerpts.
 pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
   let gate = start_gate()
   let harness = parked_network_harness(gate)
@@ -3349,7 +3349,10 @@ pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
       operator("alice", "Alice"),
       access.Participant(access.Operator),
     )
-  list.each([#(820, "open"), #(821, "next"), #(822, "last")], fn(item) {
+  let next = string.repeat("Keep this complete line.\n", 256)
+  let last = "First line\n\nLast queued instruction"
+  let expected = ["open", next, last]
+  list.each([#(820, "open"), #(821, next), #(822, last)], fn(item) {
     let assert Ok(_) =
       gateway.connection_request(socket, prompt_frame(item.0, "main", item.1))
       as "the prompt or queued turn is accepted"
@@ -3366,22 +3369,144 @@ pub fn abort_stops_current_work_and_runs_all_queued_turns_test() {
     as "Escape is acknowledged"
   let assert poll.Answered(_) =
     poll.until(within: 5000, every: 10, attempt: fn() {
-      case user_prompt_texts(harness) == ["open", "next"] {
+      case user_prompt_texts(harness) == expected {
         True -> poll.Done(Nil)
         False -> poll.Retry
       }
     })
-    as "the next queued turn starts after cancellation without another key"
+    as "every held message commits before the replacement provider is released"
 
   release_gate(gate)
+
+  // The first poll already proved the batch committed while the provider was
+  // parked, so repeating it proves nothing. What release adds is settlement:
+  // the replacement run reaches the end of the batch and leaves the strand
+  // with no live operation, having admitted nothing beyond those three.
   let assert poll.Answered(_) =
     poll.until(within: 15_000, every: 25, attempt: fn() {
-      case user_prompt_texts(harness) == ["open", "next", "last"] {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the replacement run settles once the provider is released"
+  assert user_prompt_texts(harness) == expected
+    as "Escape admitted every queued turn exactly once"
+}
+
+/// Batch admission transfers original messages rather than joining their text.
+/// Another author's image and all text blocks survive before provider settlement.
+pub fn abort_batch_preserves_each_authors_complete_message_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let bob =
+    queued_socket(
+      harness,
+      operator("bob", "Bob"),
+      access.Participant(access.Operator),
+    )
+  let _ = queued_request(alice, 830, protocol.Prompt("main", "open"))
+  let first = string.repeat("Full first message\n", 300)
+  let content = [
+    message.UserText("Before the image\n", None),
+    message.UserImage("AQID", "image/png"),
+    message.UserText(string.repeat("After the image\n", 300), None),
+  ]
+  assert_queue_outcome(queued_request(
+    alice,
+    831,
+    protocol.Prompt("main", first),
+  ))
+  assert_queue_outcome(queued_request(
+    bob,
+    832,
+    protocol.PromptContent("main", content),
+  ))
+  let #(submitted_at, _) = clock.read(harness.runtime.effects.clock)
+  let _ = queued_request(alice, 833, protocol.Abort("main"))
+  let assert poll.Answered(messages) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      let messages = queue_messages(harness)
+      case list.length(messages) == 3 {
+        True -> poll.Done(messages)
+        False -> poll.Retry
+      }
+    })
+    as "both messages commit while the replacement provider remains parked"
+  let assert [_, first_message, image_message] = messages
+    as "the batch retains two distinct user messages"
+  assert first_message
+    == message.UserMessage(
+      [message.UserText(first, None)],
+      submitted_at,
+      Some(message.Origin("alice", "Alice")),
+    )
+  assert image_message
+    == message.UserMessage(
+      content,
+      submitted_at,
+      Some(message.Origin("bob", "Bob")),
+    )
+  assert queued_rows(alice, 834) == []
+  release_gate(gate)
+}
+
+/// An Escape pressed with nothing held marks no batch, which is the arm
+/// `protocol-change/032` chose: an empty queue carries no pending intent, so
+/// input submitted after it keeps ordinary behavior. Two corrections typed
+/// inside the cancellation window therefore open one successor run between
+/// them, the second waiting on the first rather than joining its admission.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match abort_with_an_empty_queue` runs this arm.
+pub fn abort_with_an_empty_queue_admits_only_the_next_message_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let alice =
+    queued_socket(
+      harness,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let _ = queued_request(alice, 840, protocol.Prompt("main", "open"))
+
+  // Escape reaches a strand whose queue is empty, so no queue is marked and
+  // nothing survives the abort to carry a batch intent into what follows.
+  let _ = queued_request(alice, 841, protocol.Abort("main"))
+
+  // Both corrections are typed inside the cancellation window. Whether the
+  // aborted operation has already retired decides only which of the two is
+  // held; neither ordering produces a batch, which is what this pins.
+  let _ =
+    queued_request(alice, 842, protocol.Prompt("main", "first correction"))
+  let _ =
+    queued_request(alice, 843, protocol.Prompt("main", "second correction"))
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) == ["open", "first correction"] {
         True -> poll.Done(Nil)
         False -> poll.Retry
       }
     })
-    as "Escape preserves every remaining queued turn"
+    as "the first correction opens the successor run on its own"
+
+  // Reading the queue is a round trip through the gateway actor, so every
+  // drain the gateway was going to perform has already been decided when
+  // these rows are built. A batched admission would have emptied them.
+  let assert [row] = queued_rows(alice, 844)
+    as "the second correction is still held"
+  assert queue_field(row, "text") == json.String("second correction")
+  assert user_prompt_texts(harness) == ["open", "first correction"]
+    as "the parked successor run holds the second correction back"
+  release_gate(gate)
 }
 
 /// Two peers submitting inside one catch-up window is the case issue #240
