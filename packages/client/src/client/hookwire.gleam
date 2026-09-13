@@ -35,7 +35,7 @@
 import client/hookcompat.{type Config, type Event}
 import client/hookdecisions
 import client/hookrunner
-import core/json.{type JsonValue, Object, String}
+import core/json.{type JsonValue, Bool, Object, String}
 import gleam/list
 import gleam/option.{type Option}
 import gleam/regexp
@@ -174,6 +174,18 @@ pub fn ask(
 /// event's own name. `session_id` and `workspace` come from the
 /// wiring's runner context, which is the one place the session's
 /// identity already lives.
+///
+/// The `extra` fields are appended after the common four, so a
+/// caller can carry an event's own fields — or one of the contract's
+/// common fields this wiring does not know — without this function
+/// having to know which event asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hookwire.common_payload(wiring, hookcompat.Stop, [])
+/// ```
+///
 pub fn common_payload(
   wiring: Wiring,
   event: Event,
@@ -186,6 +198,68 @@ pub fn common_payload(
     #("hook_event_name", String(hookcompat.event_name(event))),
     ..extra
   ])
+}
+
+/// Where a run end sits in the `Stop` cycle the contract's
+/// `stop_hook_active` field describes: whether a `Stop` hook has
+/// already blocked this cycle, or whether this is the first ask.
+///
+/// Two variants rather than a boolean for the reason R9 gives every
+/// such field — `stop_fields(True)` names nothing at a call site and
+/// cannot be told from `stop_fields(False)` by reading, while
+/// `stop_fields(AlreadyBlocked)` states the question itself. This is
+/// the same move `hookserve`'s `RunPosition` (`FirstRun | LaterRun`)
+/// makes for the other per-moment question on this path.
+///
+/// The names are the hook author's, not the harness's: the field is a
+/// claim about a hook having blocked, and a hook reading it is asking
+/// `has one of my siblings already blocked, or is this the first
+/// time?`.
+///
+pub type StopCycle {
+  /// No `Stop` hook has blocked yet this cycle — the first ask, and a
+  /// hook is free to block.
+  FirstBlock
+
+  /// A `Stop` hook has already blocked this cycle, so a hook that
+  /// self-limits on the contract's field should let the run finish.
+  AlreadyBlocked
+}
+
+/// The `Stop`/`SubagentStop` fields the contract carries beyond the
+/// common four, of which this build sends exactly one.
+///
+/// `stop_hook_active` is the contract's signal that a previous `Stop`
+/// hook has already blocked this cycle, and a hook that self-limits on
+/// it is written to let the run finish rather than block again. Its
+/// absence was a known gap (`docs/architecture/hooks-compat.md`); it is
+/// carried now because without it a collection written against Claude
+/// loops: the hook blocks every turn-end, sees no signal that it has
+/// already blocked, and blocks again.
+///
+/// The harness's question is a `StopCycle` rather than a raw boolean,
+/// for the reason R9 gives every such field: `stop_fields(True)` at a
+/// call site names nothing and cannot be got the right way round by
+/// reading it, while `stop_fields(AlreadyBlocked)` says what the
+/// question is. The two variants are the contract's own two states.
+///
+/// It is a parameter rather than a field on `Wiring` because it
+/// changes within one operation while the wiring does not — the first
+/// run-end ask happens before anything has been placed, and the second
+/// after.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hookwire.stop_fields(FirstBlock)      // nothing has blocked yet
+/// // hookwire.stop_fields(AlreadyBlocked)  // it already blocked once
+/// ```
+///
+pub fn stop_fields(cycle: StopCycle) -> List(#(String, JsonValue)) {
+  case cycle {
+    FirstBlock -> [#("stop_hook_active", Bool(False))]
+    AlreadyBlocked -> [#("stop_hook_active", Bool(True))]
+  }
 }
 
 /// Combines several `PreToolUse` verdicts into the one the clearance

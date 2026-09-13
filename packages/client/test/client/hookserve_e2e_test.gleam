@@ -202,6 +202,20 @@ pub fn an_unedited_user_collection_serves_a_real_session_test_() -> EunitTest {
     assert string.contains(first, "[SessionStart hook]")
     assert string.contains(second, "[Stop hook] " <> stop_block_reason)
 
+    // What the `Stop` hook itself was handed, read back from the
+    // payload the runner wrote to the hook's stdin. The first ask of
+    // the run is the first block of the cycle and the second is the
+    // repeat the contract's field exists to prevent, so the two must
+    // differ: `false` then `true`. A gate that sent the field but
+    // always sent `false` would leave a self-limiting hook blocking
+    // forever, and this is the assertion that fails on it.
+    let assert Ok(asked) = simplifile.read(rig.workspace <> "/stop.jsonl")
+      as "the stop hook must have kept its payload"
+    let assert [first_ask, second_ask, ..] = string.split(asked, "\n")
+      as "the stop hook must be asked at least twice"
+    assert string.contains(first_ask, "\"stop_hook_active\":false")
+    assert string.contains(second_ask, "\"stop_hook_active\":true")
+
     // Nothing was skipped. A user-level source with no trust record is
     // trusted on sight, so a skip line here would mean the collection
     // never loaded and every assertion above was about some other
@@ -255,16 +269,25 @@ fn rig() -> Rig {
 // read it would leave that half of the contract unexercised. Then it
 // appends its own line to the workspace log.
 fn stubs(rig: Rig) -> Nil {
-  stub(rig, "session-start", "echo '" <> session_start_line <> "'\n")
-  stub(rig, "pre-tool", "")
-  stub(rig, "post-tool", "")
+  stub(
+    rig,
+    "session-start",
+    DiscardStdin,
+    "echo '" <> session_start_line <> "'\n",
+  )
+  stub(rig, "pre-tool", DiscardStdin, "")
+  stub(rig, "post-tool", DiscardStdin, "")
 
   // The gate that makes the run's shape observable: it blocks until the
   // `bash` call has created the marker, so the first boundary continues
-  // the run and the second finishes it.
+  // the run and the second finishes it. It is the one stub that keeps
+  // its payload, because the contract's `stop_hook_active` is the field
+  // this fixture asserts on and a field is only observable where it was
+  // actually received.
   stub(
     rig,
     "stop",
+    KeepStdin,
     "if [ -e \"$CLAUDE_PROJECT_DIR/"
       <> marker_name
       <> "\" ]; then exit 0; fi\n"
@@ -275,15 +298,35 @@ fn stubs(rig: Rig) -> Nil {
   )
 }
 
+// What a stub does with the event payload it is handed on stdin.
+// Every stub must read it, because the runner writes one document and
+// closes the pipe. What differs is whether the stub *keeps* it: a
+// stub that only proves it ran discards the payload, while the one
+// whose assertions are about the payload's fields writes it out so a
+// test can read back what the harness actually sent.
+type StdinUse {
+  // Drain and discard.
+  DiscardStdin
+
+  // Append the payload to `$CLAUDE_PROJECT_DIR/<name>.jsonl`, one
+  // line per ask, because a `Stop` hook is asked more than once in a
+  // run and the question here is what *each* ask carried.
+  KeepStdin
+}
+
 // One stub script, written executable. The event's own name is the
 // first word of the line it logs, which is what lets one `fired.log`
 // answer for all four.
-fn stub(rig: Rig, name: String, tail: String) -> Nil {
+fn stub(rig: Rig, name: String, stdin_use: StdinUse, tail: String) -> Nil {
   let path = rig.home <> "/hooks/" <> name <> ".sh"
+  let stdin_line = case stdin_use {
+    DiscardStdin -> "cat > /dev/null\n"
+    KeepStdin -> "cat >> \"$CLAUDE_PROJECT_DIR/" <> name <> ".jsonl\"\n"
+  }
   write(
     path,
     "#!/bin/sh\n"
-      <> "cat > /dev/null\n"
+      <> stdin_line
       <> "echo '"
       <> logged(name)
       <> "' >> \"$CLAUDE_PROJECT_DIR/fired.log\"\n"

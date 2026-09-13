@@ -445,9 +445,25 @@ pub fn tool_gate(
 /// follow-up the run-end slot already commits, which is what makes a
 /// compat stop gate durable under the harness's replay rules rather
 /// than a second completion path bolted beside the machine's.
-pub fn stop_gate(serving: Serving) -> hookdecisions.Continuation {
+///
+/// `cycle` is the contract's `stop_hook_active`, derived by the caller
+/// from the same per-operation tally the cap binds on. Passing it in
+/// rather than reading it here is what keeps the two questions
+/// identical: `stop_block` has already read the count to decide whether
+/// to ask at all, and deriving the field from that read means the
+/// payload cannot report a cycle the cap does not agree with.
+///
+pub fn stop_gate(
+  serving: Serving,
+  cycle: hookwire.StopCycle,
+) -> hookdecisions.Continuation {
   let matched = hookwire.matching_handlers(serving.wiring, hookcompat.Stop, "")
-  let payload = hookwire.common_payload(serving.wiring, hookcompat.Stop, [])
+  let payload =
+    hookwire.common_payload(
+      serving.wiring,
+      hookcompat.Stop,
+      hookwire.stop_fields(cycle),
+    )
   matched
   |> list.filter_map(fn(pair) {
     let #(_description, handler) = pair
@@ -728,6 +744,12 @@ type RunPosition {
 // worth of continuations stops asking and lets the run finish — the
 // contract's own override, expressed as the harness's bound rather
 // than a new one.
+//
+// The count read here is also the contract's `stop_hook_active`. It
+// is read *before* it is incremented, so a zero is the first ask of
+// this operation and anything else means a `Stop` hook has already
+// blocked this cycle — which is exactly the interval the contract's
+// field describes, since an operation is one conversational run.
 fn stop_block(
   operation: String,
   serving: Serving,
@@ -739,7 +761,15 @@ fn stop_block(
     })
   case placed >= stop_block_cap {
     True -> hookdecisions.Finish
-    False -> stop_gate(serving)
+
+    // The harness's cap and the hook's own self-limit are the same
+    // question, so a hook that trusts the field stops asking at the
+    // moment the cap would have stopped asking anyway.
+    False ->
+      stop_gate(serving, case placed {
+        0 -> hookwire.FirstBlock
+        _ -> hookwire.AlreadyBlocked
+      })
   }
 }
 

@@ -74,10 +74,14 @@ replay rules. The 8-consecutive-block override maps to a harness-side
 cap on a per-operation count of follow-ups this gate has placed, after
 which the gate stops asking and the run finishes.
 
-The contract's `stop_hook_active` field would let a hook self-limit on
-the same count. **It is not in the payload this build sends**, so a
-`Stop` hook that checks it sees nothing and runs to the cap instead;
-carrying it is follow-up work.
+The contract's `stop_hook_active` field is carried, and it is the
+harness's own count rather than a second one: `hookserve`'s counter
+actor already tallies follow-ups per operation, and an operation is
+one conversational run, so "this gate has placed a follow-up for this
+operation" and "a stop hook already blocked this cycle" describe the
+same interval. A hook that self-limits on the field therefore stops
+asking at exactly the moment the cap would have stopped asking
+anyway, and the two bounds cannot disagree.
 
 ## The runner: commands go through the broker
 
