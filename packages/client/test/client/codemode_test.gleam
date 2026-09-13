@@ -34,6 +34,7 @@ import codemode/identity
 import codemode/launch
 import codemode/orchestration
 import codemode/satellite
+import codemode/search as search_router
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
@@ -57,6 +58,8 @@ import support/addresses
 import support/tool_registry
 import tools/agent
 import tools/codemode as codemode_tool
+import tools/fs
+import tools/search
 import tools/tool
 import weft/actor
 
@@ -1540,4 +1543,120 @@ pub fn a_mount_path_is_canonical_before_it_reaches_a_policy_test() {
     )
   assert list.map(codemode.toolchain_mounts(found), fn(mount) { mount.path })
     == ["/usr", "/srv/loom/build/seed", "/opt/homebrew/bin"]
+}
+
+// --- the search bridge (#365) -------------------------------------------------
+
+pub fn the_workspace_seam_advertises_the_search_capabilities_test() {
+  // The description a model reads names what the router answers. Before
+  // the search arm was composed into `workspace_router` this list held
+  // the `fs.*` names alone, so a program could import `cap/search`,
+  // compile, and meet `unsupported_cap` on its first call — the same
+  // shape as issue #91's `report.emit`.
+  let advertised = codemode.seam_caps(vet_policy.WorkspaceSeam)
+  list.each(search_router.serviced_caps, fn(cap) {
+    assert list.contains(advertised, cap)
+  })
+  // And the orchestration seam gains none of them: reading the workspace
+  // is not what an orchestration program is for.
+  list.each(search_router.serviced_caps, fn(cap) {
+    assert !list.contains(codemode.seam_caps(vet_policy.OrchestrationSeam), cap)
+  })
+}
+
+// A workspace with one ordinary file, one file behind a symlink pointing
+// out of the tree, and the escape target itself.
+type SearchFixture {
+  SearchFixture(workspace: String, outside: String)
+}
+
+fn search_fixture(name: String) -> SearchFixture {
+  let base = short_scratch_root() <> "/search-" <> name
+  let _gone = simplifile.delete(base)
+  let workspace = base <> "/work"
+  let outside = base <> "/outside"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/src")
+    as "the fixture workspace must be creatable"
+  let assert Ok(Nil) = simplifile.create_directory_all(outside)
+    as "the escape target must be creatable"
+  let assert Ok(Nil) = simplifile.write(workspace <> "/src/app.gleam", "one\n")
+    as "the fixture file must be writable"
+  let assert Ok(Nil) = simplifile.write(outside <> "/secret.txt", "shh\n")
+    as "the escape target's file must be writable"
+  let assert Ok(Nil) = simplifile.create_symlink(outside, workspace <> "/away")
+    as "the escaping symlink must be creatable"
+  SearchFixture(workspace:, outside:)
+}
+
+// The narrowest query that matches anything, so what a test observes is
+// the resolution rather than the pattern language.
+fn a_glob() -> search.GlobQuery {
+  search.GlobQuery(
+    pattern: "*",
+    max_entries: 10,
+    hidden: search.SkipHidden,
+    prune: [],
+  )
+}
+
+pub fn a_search_root_above_the_workspace_is_refused_test() {
+  // The containment claim, against a real filesystem: this is
+  // `tools/fs.resolve_real`'s decision and the bridge's contribution is
+  // to keep it structured. A scripted closure could not prove it, which
+  // is why it is tested here and not in the router's own suite.
+  let fixture = search_fixture("above")
+  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  assert seam.glob("../", a_glob())
+    == Error(search_router.PathRefused(fs.EscapesWorkspace(path: "../")))
+}
+
+pub fn a_search_root_through_an_escaping_symlink_is_refused_test() {
+  // The lexical hole the resolution closes: `away` is inside the
+  // workspace and its target is not, so walking it would put the whole of
+  // `outside` in reach of a read-only capability.
+  let fixture = search_fixture("through")
+  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  assert seam.glob("away", a_glob())
+    == Error(search_router.PathRefused(fs.EscapesWorkspace(path: "away")))
+  // And so is a read through it, which resolves exactly as `fs.read`
+  // does.
+  assert seam.read_lines("away/secret.txt", 1, 1)
+    == Error(
+      search_router.PathRefused(fs.EscapesWorkspace(path: "away/secret.txt")),
+    )
+}
+
+pub fn a_stat_reports_an_escaping_link_as_a_link_test() {
+  // `stat` resolves the *parent* and lstats the leaf, so it answers what
+  // is there — a symlink, with its stored target — rather than following
+  // it and being refused. That is the whole reason the leaf is not
+  // resolved: a program has to be able to see the link to route around
+  // it.
+  let fixture = search_fixture("stat")
+  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  let assert Ok(entry) = seam.stat("away")
+    as "an lstat of a contained link must succeed"
+  assert entry.path == "away"
+  assert entry.kind == search.Symlink(target: fixture.outside)
+  // And an ordinary file renders workspace-relative, so the path can be
+  // handed straight back to `read_lines`.
+  let assert Ok(file) = seam.stat("src/app.gleam")
+    as "an lstat of an ordinary file must succeed"
+  assert file.path == "src/app.gleam"
+  assert file.kind == search.File
+  assert seam.read_lines(file.path, 1, 1)
+    == Ok(search.Lines(text: "one", first: 1, last: 1, total: 1))
+}
+
+pub fn a_glob_renders_its_entries_workspace_relative_test() {
+  // The path an entry carries has to be usable as the argument of the
+  // next call, which is what makes a walk composable at all. It is
+  // rendered against the *resolved* workspace root, so a workspace that
+  // itself sits behind a symlink still yields relative paths.
+  let fixture = search_fixture("relative")
+  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  let assert Ok(listing) = seam.glob("src", a_glob())
+    as "a walk of a contained root must succeed"
+  assert list.map(listing.entries, fn(entry) { entry.path })
+    == ["src/app.gleam"]
 }
