@@ -652,6 +652,7 @@ fn entry(
     context_window: 100_000,
     max_output_tokens: 4096,
     thinking: model.ThinkingOff,
+    vision: catalog.TextOnly,
     pricing: None,
   )
 }
