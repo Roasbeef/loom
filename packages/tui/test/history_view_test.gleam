@@ -12,9 +12,11 @@ import etui/geometry
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import tui
 import tui/connection
 import tui/history_view
+import tui/protocol
 import tui/session_channel
 import tui/snapshot
 import tui/snapshot_view
@@ -488,4 +490,202 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
   assert list.map(finished.records, fn(record) { record.entry.seq })
     == [1200, 1]
   assert finished.scrollback.request == history_view.Quiet
+}
+
+// The strand-switch fixture below needs two real ancestry chains sharing one
+// global sequence space, because the defect it pins is a size difference: the
+// cut window holds the newest hundred records of the whole session, while
+// scrollback holds up to six hundred of one strand's proved ancestry.
+
+/// Parent of one interleaved fixture entry, within its own strand's chain.
+///
+/// Every twentieth sequence starting at one belongs to `main`; the rest form
+/// a second chain. Neither chain is the other's ancestor, so a projection of
+/// one strand cannot borrow the other's entries to fill a missing parent.
+fn interleaved_parent(seq: Int) -> option.Option(Int) {
+  case seq % 20 == 1 {
+    True ->
+      case seq > 20 {
+        True -> Some(seq - 20)
+        False -> None
+      }
+    False -> {
+      let previous = case { seq - 1 } % 20 == 1 {
+        True -> seq - 2
+        False -> seq - 1
+      }
+      case previous >= 2 {
+        True -> Some(previous)
+        False -> None
+      }
+    }
+  }
+}
+
+fn interleaved(count) {
+  list.repeat(Nil, count)
+  |> list.index_map(fn(_, index) {
+    let seq = index + 1
+    snapshot.Loaded(
+      entry.MessageEntry(
+        id(seq),
+        option.map(interleaved_parent(seq), id),
+        seq,
+        1000,
+        message.UserMessage(
+          [message.UserText("identical message", None)],
+          1000,
+          None,
+        ),
+        False,
+      ),
+      100,
+    )
+  })
+  |> list.reverse
+}
+
+fn two_strand_view(main_leaf: Int, sub_leaf: Int) {
+  snapshot_view.View(
+    ..view(main_leaf),
+    strands: [
+      protocol.Strand("main", Some("main"), None),
+      protocol.Strand("sub:reviewer", Some("reviewer"), None),
+    ],
+    leaves: dict.from_list([
+      #("main", Some(id(main_leaf))),
+      #("sub:reviewer", Some(id(sub_leaf))),
+    ]),
+  )
+}
+
+/// Drives one bounded older page for whatever the model currently demands.
+fn deliver_page(model: tui.Model, all) {
+  let assert Some(#(after, before)) = history_view.range(model.scrollback)
+    as "a strand missing its parent keeps one bounded demand alive"
+  let page =
+    window(
+      list.filter(all, fn(item) {
+        snapshot.sequence(item) > after && snapshot.sequence(item) < before
+      }),
+    )
+  tui.Model(..model, scrollback: history_view.sent(model.scrollback, before))
+  |> tui.apply_channel_update(session_channel.HistoryPage(page, before, after))
+  |> tui.update(backend.Tick, _)
+}
+
+/// Scrolls to the oldest retained row, which is where a demand is raised.
+///
+/// An accepted page adds older rows above the reading position, which leaves
+/// the reader well short of the top; the next demand is only raised once the
+/// reader has scrolled back to it.
+fn scroll_to_top(model: tui.Model) {
+  list.fold(list.repeat(Nil, 200), model, fn(model, _) {
+    tui.update(backend.MouseScroll(5, 5, True), model)
+  })
+}
+
+/// Types a slash command into the composer and submits it.
+fn run_command(model: tui.Model, text: String) {
+  string.to_graphemes(text)
+  |> list.fold(model, fn(model, key) {
+    tui.update(backend.KeyPress(key), model)
+  })
+  |> tui.update(backend.KeyPress("enter"), _)
+  |> tui.update(backend.Tick, _)
+}
+
+fn two_strand_model(all, current) {
+  tui.new_model_with_clock(
+    connection.new_inbox(),
+    workspace.Context("/work", None),
+    fn() { 0 },
+  )
+  |> tui.apply_channel_update(session_channel.Captured(
+    captured_window(list.take(all, 100), 301, 401),
+    current,
+    session_channel.Requested,
+  ))
+  |> tui.update(backend.Resize(170, 104), _)
+  |> tui.update(backend.MouseScroll(5, 5, True), _)
+}
+
+pub fn switching_strands_and_back_preserves_loaded_history_test() {
+  let all = interleaved(400)
+  let current = two_strand_view(381, 400)
+  let loaded =
+    list.fold(list.repeat(Nil, 3), two_strand_model(all, current), fn(model, _) {
+      deliver_page(model, all)
+    })
+  let full = list.length(loaded.records)
+  assert history_view.branch(loaded.scrollback, current).unloaded == None
+  assert full == 20
+    as "three pages recover the whole main chain the cut window omitted"
+
+  // The cut window alone projects five main entries. Anything close to that
+  // after the round trip means the retained window was thrown away and the
+  // transcript rebuilt from the newest hundred global records.
+  let returned =
+    loaded
+    |> run_command("/strand sub:reviewer")
+    |> run_command("/strand main")
+  assert returned.active_strand == "main"
+  assert list.length(returned.records) == full
+  assert history_view.branch(returned.scrollback, current).unloaded == None
+  assert list.first(returned.transcript)
+    == Ok(tui.Line(tui.System, "Beginning of this conversation."))
+  assert returned.scrollback.request == history_view.Quiet
+}
+
+pub fn returning_to_a_sub_strand_preserves_its_loaded_history_test() {
+  let all = interleaved(400)
+  let current = two_strand_view(381, 400)
+  let visited =
+    two_strand_model(all, current)
+    |> run_command("/strand sub:reviewer")
+  let loaded =
+    list.fold(list.repeat(Nil, 3), visited, fn(model, _) {
+      scroll_to_top(model) |> deliver_page(all)
+    })
+  let full = list.length(loaded.records)
+  assert history_view.branch(loaded.scrollback, current).unloaded == None
+  assert full > 300 as "the sub chain holds every sequence that is not main's"
+  let returned =
+    loaded
+    |> run_command("/strand main")
+    |> run_command("/strand sub:reviewer")
+  assert returned.active_strand == "sub:reviewer"
+  assert list.length(returned.records) == full
+  assert history_view.branch(returned.scrollback, current).unloaded == None
+}
+
+pub fn a_retired_strand_releases_its_parked_scrollback_test() {
+  let all = interleaved(400)
+  let current = two_strand_view(381, 400)
+  let visited =
+    two_strand_model(all, current)
+    |> run_command("/strand sub:reviewer")
+    |> run_command("/strand main")
+  assert dict.has_key(visited.parked_scrollback, "sub:reviewer")
+
+  // A cut that no longer carries the reviewer retires it: no later switch can
+  // select that strand, so its parked window is unreachable and is released
+  // rather than accumulating for the life of the session.
+  let alone =
+    snapshot_view.View(..current, strands: [
+      protocol.Strand("main", Some("main"), None),
+    ])
+  let retired =
+    tui.apply_channel_update(
+      visited,
+      session_channel.Captured(
+        captured_window(list.take(all, 100), 301, 402),
+        alone,
+        session_channel.Notified,
+      ),
+    )
+    |> tui.update(backend.Tick, _)
+  assert dict.has_key(retired.parked_scrollback, "sub:reviewer") == False
+  assert dict.has_key(retired.parked_scrollback, "main") == False
+    as "the active strand's window is held directly, not parked beside it"
 }

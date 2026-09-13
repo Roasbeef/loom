@@ -6,9 +6,12 @@
 //// differ from a provider delta: a later frame for the same stream
 //// replaces the earlier one instead of joining it, two streams of one
 //// call and two calls of one step are kept apart, and the transcript
-//// draws the tail as one result line under the running call. The frames
-//// enter as real wire text through the adopted channel, as every pushed
-//// fixture here does.
+//// draws the tail as one result line under the running call. That last
+//// one is a property of the *expanded* transcript: a collapsed one draws
+//// no window at all, so that a settle cannot change its height, and the
+//// fixtures which check the drawing open details first. The frames enter
+//// as real wire text through the adopted channel, as every pushed fixture
+//// here does.
 
 import core/json
 import gleam/int
@@ -18,6 +21,12 @@ import gleam/string
 import tui
 import tui/connection
 import tui_test/pushed
+
+// Details open, which is where a running command's output window is
+// drawn. `tool_tail_lines` is the whole of what this toggle changes here.
+fn expanded(model: tui.Model) -> tui.Model {
+  tui.Model(..model, details_expanded: True)
+}
 
 fn output(
   operation: String,
@@ -106,13 +115,15 @@ pub fn the_tail_is_drawn_as_one_result_line_under_the_running_call_test() {
       "compiling core\ncompiling tools\n",
       31,
     ))
-  assert tui.tool_tail_lines(model)
+  assert tui.tool_tail_lines(expanded(model))
     == [
       tui.Line(
         tui.ToolResult,
         "stdout · 31 B so far\ncompiling core\ncompiling tools",
       ),
     ]
+  assert tui.tool_tail_lines(model) == []
+    as "a collapsed transcript holds one height across the call's settle"
 }
 
 pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
@@ -128,7 +139,8 @@ pub fn only_the_last_lines_of_a_long_tail_are_drawn_test() {
       list.fold(lines, "", fn(acc, line) { acc <> line <> "\n" }),
       2048,
     ))
-  let assert [tui.Line(tui.ToolResult, drawn)] = tui.tool_tail_lines(model)
+  let assert [tui.Line(tui.ToolResult, drawn)] =
+    tui.tool_tail_lines(expanded(model))
   let assert ["stdout · 2 KiB so far", first, ..rest] =
     string.split(drawn, "\n")
   assert first == "line 13"
@@ -139,7 +151,7 @@ pub fn a_binary_tail_draws_its_heading_alone_test() {
   let model =
     pushed.attached()
     |> tui.accept_connection_message(output("op-1", "step-1", "stdout", "", 300))
-  assert tui.tool_tail_lines(model)
+  assert tui.tool_tail_lines(expanded(model))
     == [tui.Line(tui.ToolResult, "stdout · 300 B so far")]
 }
 
@@ -165,7 +177,8 @@ pub fn another_strands_tail_is_not_drawn_here_test() {
       ]),
     )
   assert list.length(model.tool_tails) == 1
-  assert tui.tool_tail_lines(model) == []
+  assert tui.tool_tail_lines(expanded(model)) == []
+    as "an expanded transcript still draws only the active strand's window"
 }
 
 pub fn two_calls_in_one_step_keep_separate_tails_test() {

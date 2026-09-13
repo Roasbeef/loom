@@ -124,6 +124,58 @@ fn assistant_message(
   )
 }
 
+/// One durable assistant turn of reasoning, the block a collapsed
+/// transcript stands in for with a single row.
+pub fn thinking_entry(strand: String, thinking: String, seq: Int) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([
+      message.AssistantThinking(
+        thinking:,
+        redacted: False,
+        thinking_signature: None,
+      ),
+    ]),
+  )
+}
+
+/// One durable assistant turn of reasoning the provider withheld. There is
+/// no text behind the marker, so expanding it can only show the marker
+/// again.
+pub fn redacted_thinking_entry(strand: String, seq: Int) -> String {
+  message_entry(
+    strand,
+    seq,
+    assistant_message([
+      message.AssistantThinking(
+        thinking: "",
+        redacted: True,
+        thinking_signature: None,
+      ),
+    ]),
+  )
+}
+
+/// One durable tool result which succeeded, the shape that settles a
+/// running call without adding a failure row beside it.
+pub fn tool_result_ok_entry(strand: String, text: String, seq: Int) -> String {
+  message_entry(
+    strand,
+    seq,
+    message.ToolResultMessage(
+      tool_call_id: "call-1",
+      tool_name: "bash",
+      content: [message.ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+  )
+}
+
 /// One durable tool result, as the failing shape a reader most wants to see.
 pub fn tool_result_entry(strand: String, text: String, seq: Int) -> String {
   message_entry(

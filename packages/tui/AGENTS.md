@@ -78,6 +78,15 @@ that tree separately from the self-contained server.
   retains proved ancestry so unrelated reviewer traffic cannot evict a missing
   parent's endpoint. The newer end is evicted when paging backward past the
   cache bound. End with an empty composer returns to the latest captured leaf.
+- A strand switch parks the outgoing strand's scrollback in
+  `Model.parked_scrollback` and restores the incoming strand's, so switching
+  never discards loaded history. The window is per strand because ancestry is,
+  and the cut window alone holds only the newest hundred records of the whole
+  session across every strand. `render_cut` prunes the parked dictionary to
+  the strands the cut still carries, and adopting a different session clears
+  it, because strand names are reused. `history_view.capture` still discards a
+  window whose strand does not match, as the safety net for paths that change
+  strands without going through the switch.
 - `tui/transcript_anchor.Row` identifies a durable entry and its source block
   or tool call. Wrapped row offsets relocate the reading position through
   incoming output, older pages, detail changes and width changes. Equal text
@@ -89,7 +98,10 @@ that tree separately from the self-contained server.
   replacement clears a different session's history; same-session reconnect
   preserves the reading endpoint without reusing mutation authority.
 - User messages have a shaded, labelled block. Agent prose and reasoning have
-  explicit labels; non-redacted reasoning remains visible in compact mode.
+  explicit labels. In compact mode a reasoning block is one `ReasoningDigest`
+  row — the line count while it streams, its opening line and the expand hint
+  once it settles — and `Ctrl+G` shows the block itself; a redacted block is
+  its one-line marker in either mode.
   Compact tool rows retain every call while folding arguments and results.
   The wide changes pane opens automatically, leaves the composer focused, and
   remembers explicit dismissal. One requested refresh survives an in-flight
@@ -200,6 +212,15 @@ that tree separately from the self-contained server.
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what
   `loom replay` prints, so the two cannot disagree about a frame.
+- `tui/pacing` is the arithmetic of the terminal loop's two rates, with no
+  model in sight: `FrameDebt`, `FrameBoundary`, `CacheFreshness` and
+  `FrameDecision` with `frame_boundary` and `frame_decision` for frame
+  pacing; `ViewportPacing`, `TickTraffic`, `ViewportAddress` and
+  `PacePolicy` with `pace`, `policy`, `viewport_pacing`, `tick_traffic` and
+  `viewport_address` for the viewport walk; and `poll_timeout_for`,
+  `paced_poll_timeout` and `next_quiet_for` for the poll cadence. The
+  functions in `tui` that read and write the model call these and stay
+  thin.
 - `tui/selection.Selection` is a left-button drag in progress or settled:
   an anchor and a head in screen cells, clipped to the panel interior the
   press landed in (`tui.hit_area`), so the transcript's border glyphs and
@@ -220,7 +241,9 @@ that tree separately from the self-contained server.
   step, source_index, call_id, stream}`, replaced whole on every frame, drawn by
   `tui.tool_tail_lines` as one `ToolResult` line under the live region:
   the stream's name and byte count so far, then the last
-  `tail_lines_shown` lines of the window.
+  `tail_lines_shown` lines of the window. That drawing happens only with
+  details expanded; a compact transcript draws no window, because the row
+  the settle replaces has to be the only row the call ever occupied.
 - `tui/connection.Connection` is a thin typed adapter over `host/websocket`.
   The shared host transport owns Stratus and deadline-bounded handshake
   startup. The terminal owns the destination inbox. After handshake, the
@@ -344,9 +367,18 @@ that tree separately from the self-contained server.
   exact, prefix, substring, and initials matching is presentation state only;
   a selection returns the catalogue name for `set_config`.
 - `tui/markdown` walks Mork's public CommonMark tree and emits etui
-  spans directly. Preformatted rows bypass prose wrapping so source
-  indentation remains visible. It never passes model text through HTML or an
-  ANSI renderer.
+  spans directly. `render(markdown, width)` takes the width the rows will
+  occupy because a table is the one block whose shape must be settled before
+  it is drawn: columns are measured in terminal cells with `etui/text`,
+  narrowed by max-min fair share when the grid is wider than the width, and
+  abandoned for one labelled record per source row only when no column can
+  keep three cells. Callers subtract whatever prefix they will add, since a
+  speaker mark or list marker is cells the grid does not have. Code rows
+  carry a `▎ ` gutter rather than the block quote's `│ `, which is how
+  `wrap_lines` recognises them without comparing styles, and they are
+  hard-wrapped on cell boundaries so source indentation survives. GFM alerts
+  are detected here, not by Mork, on the marker inlines of a quote's first
+  paragraph. It never passes model text through HTML or an ANSI renderer.
 - `tui/agents` projects the server's strand snapshot and `live_op`
   phase into a hidden-by-default rail and an inspector. It owns no second
   agent-lifecycle state.
@@ -555,6 +587,26 @@ that tree separately from the self-contained server.
 
 ## Invariants
 
+- **A successful settle never changes the transcript's height in compact
+  mode.** A live region and the durable projection that replaces it occupy
+  the same number of wrapped rows, so a reader following the tail sees text
+  change and not the transcript grow and shrink under them. The two regions
+  this covers are a running tool call — whose output window is detail, drawn
+  only with details expanded — and a reasoning block, whose live and settled
+  forms are both one `ReasoningDigest` row when collapsed. A result the
+  reader has to see still costs the rows it needs: a failure adds its result
+  text under the failure summary, and `fs_edit` and `context_remaining` draw
+  their own rows. What the rule removes is growth that carried no
+  information.
+- **A collapsed reasoning digest is one row at every width.** The row is
+  clipped to the pane rather than wrapped, and `markdown.wrap_lines`
+  recognises it by `markdown.digest_mark` and leaves it fixed. A character
+  limit on the digest text alone would only move the width at which the mark
+  and the expand hint pushed it onto a second row.
+- **Reasoning is collapsed unless details are expanded.** A digest is drawn
+  literally rather than through the Markdown renderer, so a fence or a list
+  marker in the model's own prose cannot turn a one-row indicator into
+  several. `Ctrl+G` renders the block in full, as it always did.
 - **The global endpoint fences the native VM.** Shared `host/endpoint` paths
   retain one Starting/Ready record, native PID and birth identity. A live or
   unknown identity is never replaced after a failed probe; killing a BEAM root
@@ -617,13 +669,65 @@ that tree separately from the self-contained server.
 - **Bursts are paced as well as batched.** Etui applies up to sixty-four queued
   events before drawing, but every event still advances the immutable model
   through `update`, where Loom maintains its completed-frame cache, and a long
-  input run can span etui batches. `frame_decision` therefore renders a stale
+  input run can span etui batches. `pacing.frame_decision` therefore renders a stale
   cache at most once every 16 ms while paced events keep arriving and records
   the rest as `FrameDeferred`; the tick that follows the drained queue flushes
-  it, and `paced_poll_timeout` shortens that tick's wait to 8 ms so the final
-  position lands within a frame of the hand stopping. Ticks and resizes always
-  render. The pacing clock is the monotonic clock, seeded at startup because a
-  fresh node's monotonic time is negative.
+  it, and `pacing.paced_poll_timeout` shortens that tick's wait to 8 ms so the final
+  position lands within a frame of the hand stopping. The pacing clock is the
+  monotonic clock, seeded at startup because a fresh node's monotonic time is
+  negative.
+- **A tick is paced by what it carried.** A tick is both the idle event that
+  flushes a deferred frame and the carrier for every stream delta, so
+  `pacing.frame_boundary` classifies it by `TickTraffic` rather than by its
+  constructor: a tick that moved the transcript is `Paced` and waits out the
+  frame interval like any other streamed frame, while a tick that moved
+  nothing is a `FlushPoint`, because a deferred frame has no other event
+  waiting to pay it off. A resize always flushes.
+- **The viewport is paced, not teleported.** A provider chunk lands as two to
+  five rows at once. `Model.revealed_rows` is how many of `rendered_rows` the
+  bottom-anchored viewport has shown, and `pacing.pace` advances it toward
+  the tail one row per rendered frame, in proportion to the backlog once
+  that passes the catch-up threshold `pacing.policy` fixes. Three growths bypass the walk
+  and are adopted whole: a viewport that has revealed nothing has no position
+  to stay continuous with, a shrink must not leave retired rows on screen, and
+  a growth taller than the viewport replaced everything the reader could see.
+  An idle strand holds nothing back, which is what makes a replayed or
+  scripted run settle on the complete frame. `pacing.viewport_address` classifies an
+  input event as `AddressesTranscript` or `AddressesElsewhere`, and only the
+  former closes the backlog at once: a wheel, a click, a resize, and the keys
+  that move, submit to, or reshape the transcript (page keys, Home, End,
+  Escape, Enter, the details toggle) address it, while ordinary composition —
+  typing or pasting into the draft, arrow-key editing — does not, because
+  composing a prompt while an answer streams says nothing about where the
+  transcript should be. A scroll gesture measures its motion from the row the
+  reader is actually looking at, the stored offset plus whatever the walk is
+  still holding back, not the bare stored offset alone — folding in anything
+  less would answer a request for older text by jumping the backlog toward
+  the tail instead. While rows remain, `viewport_pacing` reports
+  `ViewportCatchingUp`, which makes the painted frame stale whatever the
+  revision says and holds `terminal_poll_timeout` at the frame interval: the
+  deltas that produced those rows are already drained, so nothing else would
+  wake the loop to finish showing them. A full-width changes view is the one
+  surface painted without the paced offset, so a backlog behind it answers
+  `ViewportSettled` rather than holding the loop on a repaint nothing on
+  screen would show.
+- **`update` is a dispatch and a settle.** `update` records the event, calls
+  `apply_input` to dispatch on it, and hands the result to `settle_update`
+  for the worktree request, context sync, Herdr report, projection, viewport
+  snap and frame decision. `settle_update` taking the dispatched model as a
+  parameter is what keeps the module compiling in seconds; `apply_input` is
+  a readability split. The Erlang inliner attempts every local call and, on
+  abandoning an attempt for effort, restores the state it began from,
+  including its cache of visited expressions; a settling step applied to the
+  dispatched expression therefore re-visits the whole dispatch, every arm
+  and the tick's drain chain beneath it, once per step, and six steps in one
+  body cost about sixty-four visits and over a minute of compile time.
+  Applied to a parameter, the same steps visit it a constant number of
+  times. Folding the steps back into `update` restores the blow-up, and
+  hiding the dispatch behind a call while the steps stay in `update`
+  measures worse than the original; `erlc +time` on the generated `tui.erl`
+  shows it as `core_inline_module`, and `docs/execution.md` has the
+  measurement.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read
@@ -657,17 +761,31 @@ that tree separately from the self-contained server.
   discarded branches and superseded outcome text leave the cache. Session
   adoption, full snapshots and `/clear` empty it. This saves repeated Markdown
   parsing, sanitizing, span tokenization and cell-width calculation; it does
-  not bound the durable history itself. `dev/tui_replay_dev.gleam` validates
+  not bound the durable history itself.
+- **A cache is invalidated by a changed input, not by an event.** A capture
+  arrives four times a second throughout a turn, and most of them move only
+  usage, a phase or a timestamp. `render_cut` therefore compares what the
+  record projection actually reads — the records, the transcript header lines,
+  the active strand and the solo-owner identity — and keeps
+  `record_cache_valid` when all four are unchanged. In compact history a
+  settled record can re-group a tool block, which is a rewrite of rows already
+  projected rather than an append; `tool_activity.regroups` is where that
+  question is answered, and only a record it names forces a rebuild. Prose, a
+  user turn and structural history take the append path, which extends
+  `record_rows` and merges its own hints into the three layout caches rather
+  than replacing them. `dev/tui_replay_dev.gleam` validates
   admitted record counts and failure notices before reporting replay time.
 - **Model text never becomes terminal control traffic.** The text-hygiene
   pass replaces C0/C1, bidirectional, zero-width, variation-selector, and tag
   codepoints before data reaches etui spans. Newlines survive only where the
   markdown block parser needs them.
 - **Markdown stays structured.** Mork parses CommonMark and the adapter emits
-  etui styles and OSC 8 links. Tables become stacked labelled records so their
-  relationships survive narrow terminals. Fenced Gleam token styling
-  preserves the exact model-authored text; it never acts as a formatter or
-  compiler. No raw model-authored ANSI or HTML is executed.
+  etui styles and OSC 8 links. A table is drawn as a bordered grid measured
+  against the caller's width, and becomes stacked labelled records only where
+  even the minimum grid will not fit, so the relationships survive a narrow
+  terminal either way. Fenced Gleam token styling preserves the exact
+  model-authored text; it never acts as a formatter or compiler. No raw
+  model-authored ANSI or HTML is executed.
 - **Executed programs stay inspectable.** A structured `code_mode.program`
   renders through the fenced Gleam path instead of appearing as escaped JSON.
   The normal view bounds long programs to twelve rows; detail mode reveals the

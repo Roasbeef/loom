@@ -3,9 +3,11 @@
 package server_test
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +41,14 @@ func (h *harness) waitStopped(t *testing.T) error {
 
 func newHarness(t *testing.T, pol policy.Policy) *harness {
 	t.Helper()
+	return newHarnessWrapped(t, pol, nil)
+}
+
+// newHarnessWrapped is newHarness with the server's outbound stream
+// wrapped. A test that needs to observe or delay a particular frame's
+// write supplies wrap; everything else passes nil.
+func newHarnessWrapped(t *testing.T, pol policy.Policy, wrap func(io.Writer) io.Writer) *harness {
+	t.Helper()
 	// Real kernel pipes, not io.Pipe: production speaks over stdio
 	// pipes with kernel buffering, and io.Pipe's rendezvous semantics
 	// would manufacture write-write deadlocks no real deployment has.
@@ -55,7 +65,12 @@ func newHarness(t *testing.T, pol policy.Policy) *harness {
 		fromServerR.Close()
 		fromServerW.Close()
 	})
-	srv := server.New(framing.NewConn(toServerR, fromServerW), jail.DetectFeatures(), testbin.Helper(t), pol)
+	var out io.Writer = fromServerW
+	if wrap != nil {
+		out = wrap(out)
+	}
+
+	srv := server.New(framing.NewConn(toServerR, out), jail.DetectFeatures(), testbin.Helper(t), pol)
 	h := &harness{
 		conn:    framing.NewConn(fromServerR, toServerW),
 		rawW:    toServerW,
@@ -276,6 +291,150 @@ func TestBusyRefusesSecondExec(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// frameGate holds the first write whose bytes contain match until the
+// test releases it. Conn.Write emits a whole frame in one Write call
+// under its own mutex, so holding that call holds exactly that frame.
+type frameGate struct {
+	w        io.Writer
+	match    []byte
+	reached  chan struct{} // closed once the matching write has begun
+	release  chan struct{} // closed by the test to let it through
+	announce sync.Once
+	freed    sync.Once
+}
+
+func (g *frameGate) Write(p []byte) (int, error) {
+	if bytes.Contains(p, g.match) {
+		g.announce.Do(func() { close(g.reached) })
+		<-g.release
+	}
+	return g.w.Write(p)
+}
+
+// letThrough releases the held frame. Idempotent, so a test can defer it
+// and still release early on the happy path.
+func (g *frameGate) letThrough() {
+	g.freed.Do(func() { close(g.release) })
+}
+
+// A helper is free the moment its child has been reaped, not the moment
+// the exit frame it reports with has finished being written. The broker
+// moves its own state machine to Idle on reading exec_exit and may
+// dispatch the next exec_start immediately, so a helper that only
+// stopped calling itself busy after that write refused a strictly
+// sequential caller whenever the two orders raced. It was seen once on
+// CI and passed on rerun, which is what a window this narrow looks like.
+//
+// The test closes the window deterministically instead of racing it: the
+// first execution's exec_exit write is held inside the writer, so at the
+// moment the second exec_start is dispatched the frame provably has not
+// been written and the old "free" signal provably has not fired. The
+// second execution's own child creating a file inside the writable root
+// is the witness that it started, since every frame it would otherwise
+// send is queued behind the held write.
+//
+// What it does not prove: nothing about the broker's side of the
+// dispatch, and nothing about an execution overlapping another for real
+// — one at a time still holds, and the second start here is only
+// admitted because the first child is gone.
+func TestExitFrameWriteDoesNotHoldTheHelperBusy(t *testing.T) {
+	dir := t.TempDir()
+	pol := testPol(t)
+	pol.WritableRoots = []string{dir}
+
+	gate := &frameGate{
+		match:   []byte(framing.KindExecExit),
+		reached: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	h := newHarnessWrapped(t, pol, func(w io.Writer) io.Writer {
+		gate.w = w
+		return gate
+	})
+	defer gate.letThrough()
+
+	expectHello(t, h)
+	sendHello(t, h)
+
+	if err := h.conn.Write(50, framing.KindExecStart, framing.ExecStart{
+		Argv:  []string{"/bin/true"},
+		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
+		Cwd:   "/",
+		Token: make([]byte, 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-gate.reached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("first execution never reached its exec_exit write")
+	}
+
+	// From here until letThrough, the helper is between reaping its
+	// child and finishing the report of it. That is the whole window
+	// the bug lived in.
+	marker := dir + "/second-started"
+	if err := h.conn.Write(51, framing.KindExecStart, framing.ExecStart{
+		Argv:  []string{"/bin/sh", "-c", "> " + marker},
+		Env:   map[string]string{"PATH": "/usr/bin:/bin"},
+		Cwd:   "/",
+		Token: make([]byte, 32),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	started := false
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			started = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	gate.letThrough()
+	if !started {
+		// Drain what the helper did say; a busy refusal for id 51 is
+		// the regression and deserves to be named rather than left as
+		// an unexplained timeout.
+		for {
+			f, err := h.conn.Read()
+			if err != nil {
+				t.Fatal("second execution never started, and no frame explained why")
+			}
+			if f.Kind == framing.KindError {
+				var e framing.ErrorBody
+				_ = framing.DecodeBody(f.Body, &e)
+				t.Fatalf("second exec_start refused: id=%d %+v", f.ID, e)
+			}
+			if f.Kind == framing.KindExecExit && f.ID == 51 {
+				t.Fatal("second execution exited without creating its marker")
+			}
+		}
+	}
+
+	// Both executions must still settle in order, each under its own id.
+	seen := []uint64{}
+	for len(seen) < 2 {
+		f, err := h.conn.Read()
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if f.Kind == framing.KindError {
+			var e framing.ErrorBody
+			_ = framing.DecodeBody(f.Body, &e)
+			t.Fatalf("error frame: id=%d %+v", f.ID, e)
+		}
+		if f.Kind == framing.KindExecExit {
+			seen = append(seen, f.ID)
+		}
+	}
+	if seen[0] != 50 || seen[1] != 51 {
+		t.Fatalf("exec_exit ids = %v, want [50 51]", seen)
 	}
 }
 

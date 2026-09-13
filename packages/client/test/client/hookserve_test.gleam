@@ -468,6 +468,12 @@ fn assembled(
   broker_actor: broker.Broker,
   cleared: Subject(Clearances),
 ) -> Rig {
+  // `BestEffort`, for the reason `hookrunner_test`'s fixture states at
+  // length: `PlatformEnforcement` turns any `skip:` entry in the
+  // enforcement report into a failed call, a test host need not supply
+  // every layer, and the two gate tests that run a real hook would then
+  // read a failure where the hook had in fact printed its decision.
+  let demand = exec.BestEffort
   Rig(
     home: ground.home,
     workspace: ground.workspace,
@@ -483,7 +489,7 @@ fn assembled(
         Some(ground.home),
         ground.workspace,
       ),
-      demand: exec.PlatformEnforcement,
+      demand:,
       clock: ground.clock,
       session_id: "hookserve-fixture",
       transcript_path: ground.workspace <> "/session.db",

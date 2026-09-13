@@ -67,6 +67,7 @@ import tui/live_jobs
 import tui/markdown
 import tui/model_selector
 import tui/notes_view
+import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
 import tui/recording
@@ -93,6 +94,15 @@ pub type Speaker {
   User
   Assistant
   Reasoning
+
+  /// One reasoning block stood in for by a single literal row.
+  ///
+  /// The digest bypasses the Markdown renderer, so a fence or a list
+  /// marker inside the model's own prose cannot turn the indicator into
+  /// several rows. That is what lets a reasoning block hold one height
+  /// from its first live fragment through to its settle.
+  ReasoningDigest
+
   ToolCall
   ToolResult
   ToolDetail
@@ -430,28 +440,6 @@ pub type ControlEvent {
   )
 }
 
-// Recent terminal or websocket activity keeps input and stream latency below a
-// perceptible delay. After a quiet window, the loop backs off so reading a
-// completed response does not keep waking and rebuilding the terminal.
-const active_poll_ms = 40
-
-const quiet_poll_ms = 400
-
-const quiet_after_ms = 320
-
-/// The shortest gap between two rendered frames while events keep arriving.
-///
-/// Sixty frames a second is faster than any terminal repaints a full
-/// viewport, so a burst paced to this never shows less motion than the
-/// terminal could have drawn.
-const frame_interval_ms = 16
-
-/// How long a poll waits for more input before a deferred frame is rendered.
-///
-/// The read only starts once etui's event queue is empty, so this is the gap
-/// that separates one burst from the next rather than a delay added to each.
-const deferred_frame_poll_ms = 8
-
 /// The last completed frame, keyed by the screen and revision it was for.
 @internal
 pub type FrameCache {
@@ -501,6 +489,19 @@ pub type Model {
     records: List(protocol.EntryRecord),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
+    /// Retained scrollback of every strand other than the active one, keyed
+    /// by strand name. The window is per strand because ancestry is: the
+    /// projection walks one leaf's parent chain, and the six hundred
+    /// descriptors retained for `main` say nothing about a sub-agent. A
+    /// switch therefore has to put one window down and pick another up.
+    /// Parking here rather than holding a window per strand inside
+    /// `history_view` keeps that module owning exactly one reading endpoint,
+    /// which is what `freeze`, `older` and `accept` are written against;
+    /// only the switch knows that two endpoints exist. `history_view.capture`
+    /// still discards a window whose strand does not match, which remains the
+    /// safety net for every path that changes strands without coming through
+    /// here.
+    parked_scrollback: dict.Dict(String, history_view.State),
     notice: String,
     /// A complete queue draft never borrows the ordinary composer.
     queue_editor: queue_editor.State,
@@ -639,6 +640,10 @@ pub type Model {
     rendered_revision: Int,
     rendered_row_count: Int,
     rendered_rows: List(span.Line),
+    /// How many of `rendered_rows` the bottom-anchored viewport has shown.
+    /// Never above `rendered_row_count`; the difference is the backlog the
+    /// pacing walk is working off, and a gesture closes it at once.
+    revealed_rows: Int,
     /// Durable provenance for wrapped rows; transient rows have no anchor.
     rendered_anchors: List(Option(transcript_anchor.Row)),
     record_rows: List(span.Line),
@@ -660,7 +665,7 @@ pub type Model {
     record_cache_details: Bool,
     frame_revision: Int,
     frame_cache: Option(FrameCache),
-    frame_debt: FrameDebt,
+    frame_debt: pacing.FrameDebt,
     /// The presentation clock, shared by pacing, activity, and throughput.
     /// Scripts inject this clock without changing transport deadlines.
     monotonic_time_ms: fn() -> Int,
@@ -688,59 +693,6 @@ pub type Model {
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
   )
-}
-
-/// Whether the cached frame still shows every visible change.
-///
-/// Etui draws one frame per input event, and a wheel flick or a held Page key
-/// arrives as a burst of events decoded from one read. Rendering each of them
-/// costs a full frame and a viewport-sized terminal diff per event, so a change
-/// that lands inside the pacing interval is recorded here instead and rendered
-/// once the burst has drained or the interval has passed.
-@internal
-pub type FrameDebt {
-  /// The cached frame shows every visible change.
-  FrameSettled
-
-  /// A visible change is on screen only as a stale frame, waiting for the
-  /// next tick or the next event outside the pacing interval.
-  FrameDeferred
-}
-
-/// How one input event relates to frame pacing.
-@internal
-pub type FrameBoundary {
-  /// A tick or a resize. A tick only arrives once the input queue has drained
-  /// and the read has waited without more bytes, so it is where a deferred
-  /// frame is flushed; a resize always redraws because the screen changed
-  /// shape under the stale frame.
-  FlushPoint
-
-  /// A keyboard, paste, or mouse event, which may be one of a burst.
-  Paced
-}
-
-/// Whether the cached frame matches the current screen and revision.
-@internal
-pub type CacheFreshness {
-  /// The cached frame is the frame this model would render.
-  FrameCurrent
-
-  /// The cache is empty, sized for another screen, or behind the revision.
-  FrameStale
-}
-
-/// What the terminal loop does with the frame after one event.
-@internal
-pub type FrameDecision {
-  /// The cached frame is current; return the exact same term.
-  KeepCachedFrame
-
-  /// Render now and restart the pacing interval.
-  RenderFrame
-
-  /// Leave the stale frame on screen and render at the next flush point.
-  DeferFrame
 }
 
 /// Runs the interactive terminal client.
@@ -903,6 +855,7 @@ pub fn new_model_with_clock(
     ],
     records: [],
     scrollback: history_view.empty(),
+    parked_scrollback: dict.new(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
     worktree: worktree_view.new(),
@@ -973,6 +926,7 @@ pub fn new_model_with_clock(
     rendered_revision: -1,
     rendered_row_count: 0,
     rendered_rows: [],
+    revealed_rows: 0,
     rendered_anchors: [],
     record_rows: [],
     record_line_cache: dict.new(),
@@ -985,11 +939,11 @@ pub fn new_model_with_clock(
     record_cache_details: False,
     frame_revision: 0,
     frame_cache: None,
-    frame_debt: FrameSettled,
+    frame_debt: pacing.FrameSettled,
     monotonic_time_ms:,
     last_frame_ms: monotonic_time_ms(),
     activity_revision: 0,
-    quiet_for_ms: quiet_after_ms,
+    quiet_for_ms: pacing.quiet_after_ms,
     recorder: None,
     herdr_reporter: None,
     herdr_published: None,
@@ -2370,7 +2324,13 @@ fn render_transcript(
 ) -> buffer.Buffer {
   case main_shows_diff(model) {
     True -> render_diff_view(buf, area, model)
-    False -> render_rows(buf, area, model.rendered_rows, model.scroll_offset)
+    False ->
+      render_rows(
+        buf,
+        area,
+        model.rendered_rows,
+        model.scroll_offset + viewport_backlog(model),
+      )
   }
 }
 
@@ -2420,18 +2380,19 @@ fn transcript_title(model: Model) -> String {
   <> " "
 }
 
-fn transcript_content(lines: List(Line)) -> span.Text {
+fn transcript_content(lines: List(Line), width: Int) -> span.Text {
   lines
-  |> list.flat_map(render_line)
+  |> list.flat_map(render_line(_, width))
   |> span.text_new
 }
 
-fn render_line(line: Line) -> List(span.Line) {
+fn render_line(line: Line, width: Int) -> List(span.Line) {
   let #(mark, mark_style) = case line.speaker {
     System -> #("◇ ", theme.quiet_text())
     User -> #("› ", theme.signal_bold())
     Assistant -> #("◆ Agent  ", theme.current_bold())
     Reasoning -> #("∴ Reasoning  ", theme.quiet_text())
+    ReasoningDigest -> #(markdown.digest_mark, theme.quiet_text())
     ToolCall -> #("● ", theme.success_text())
     ToolResult -> #("└ ", theme.quiet_text())
     ToolDetail | ToolPatch -> #("  ", theme.quiet_text())
@@ -2462,12 +2423,20 @@ fn render_line(line: Line) -> List(span.Line) {
     }
     Assistant | Reasoning -> [
       span.line_plain(""),
-      ..markdown.render(line.text)
+      ..markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     ]
     ToolPatch -> markdown.diff(line.text)
+
+    // A digest stands in for a whole reasoning block, and the one property
+    // it has to keep is its height: the collapsed live row and the
+    // collapsed settled row are the same row with different words in it.
+    // So it is drawn literally, with no blank above or below it and no
+    // Markdown pass which could answer a stray fence with a second row.
+    ReasoningDigest -> [digest_row(line.text, mark, mark_style, width)]
+
     ToolDetail ->
-      markdown.render(line.text)
+      markdown.render(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     System | ToolCall | ToolResult | ToolFailure | Failure ->
       line.text
@@ -2488,6 +2457,7 @@ fn render_line(line: Line) -> List(span.Line) {
         System
         | User
         | Reasoning
+        | ReasoningDigest
         | Failure
         | Assistant
         | ToolDetail
@@ -2496,6 +2466,36 @@ fn render_line(line: Line) -> List(span.Line) {
         ]
       })
   }
+}
+
+// One row, whatever the pane is. Clipping rather than wrapping is what makes
+// the height invariant hold at every width: bounding the digest text by a
+// character count only moves the width at which it wraps, because the mark
+// and the expand hint are a further thirty-four cells the count knows nothing
+// about. The hint is the part a reader acts on, so the opening line gives up
+// cells for it; when the pane cannot hold even the hint, the whole body is
+// clipped and the hint goes with it rather than crowding out the words.
+fn digest_row(
+  text: String,
+  mark: String,
+  mark_style: style.Style,
+  width: Int,
+) -> span.Line {
+  let body = text_hygiene.single_line(text)
+  let room = width - text.cell_width(mark)
+  let #(opening, hint) = case string.ends_with(body, expand_hint) {
+    True -> #(string.drop_end(body, string.length(expand_hint)), expand_hint)
+    False -> #(body, "")
+  }
+  let for_opening = room - text.cell_width(hint)
+  let clipped = case for_opening > 0 {
+    True -> text.truncate(opening, for_opening, "…") <> hint
+    False -> text.truncate(body, room, "…")
+  }
+  span.line_new([
+    span.span_styled(mark, mark_style),
+    span.span_plain(clipped),
+  ])
 }
 
 fn prefix_rendered_lines(
@@ -2548,10 +2548,10 @@ fn refresh_notes(model: Model) -> Model {
   )
 }
 
-fn notes_content(model: Model) -> span.Text {
+fn notes_content(model: Model, width: Int) -> span.Text {
   case model.note_board {
-    None -> historical_notes_content(model)
-    Some(board) -> current_notes_content(board, model)
+    None -> historical_notes_content(model, width)
+    Some(board) -> current_notes_content(board, model, width)
   }
 }
 
@@ -2594,10 +2594,15 @@ fn raw_note_line(text: String) -> Line {
   }
 }
 
-fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
+fn current_notes_content(
+  board: notes_view.Board,
+  model: Model,
+  width: Int,
+) -> span.Text {
   let active_strand = model.active_strand
   case board.strand == active_strand {
-    False -> transcript_content([Line(System, "refresh notes for this strand")])
+    False ->
+      transcript_content([Line(System, "refresh notes for this strand")], width)
     True -> {
       let heading =
         "notes for "
@@ -2638,16 +2643,19 @@ fn current_notes_content(board: notes_view.Board, model: Model) -> span.Text {
         ]
         False -> []
       }
-      transcript_content([
-        Line(System, heading),
-        Line(System, note_read_status(board, model)),
-        ..list.append(rows, tail)
-      ])
+      transcript_content(
+        [
+          Line(System, heading),
+          Line(System, note_read_status(board, model)),
+          ..list.append(rows, tail)
+        ],
+        width,
+      )
     }
   }
 }
 
-fn historical_notes_content(model: Model) -> span.Text {
+fn historical_notes_content(model: Model, width: Int) -> span.Text {
   let latest =
     model.records
     |> list.find_map(fn(record) {
@@ -2662,17 +2670,26 @@ fn historical_notes_content(model: Model) -> span.Text {
     |> result.unwrap(None)
   case latest {
     Some(payload) ->
-      transcript_content([
-        Line(System, "historical run-start digest · r to fetch current notes"),
-        case model.details_expanded {
-          True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
-          False -> Line(ToolDetail, notes_view.historical(payload))
-        },
-      ])
+      transcript_content(
+        [
+          Line(System, "historical run-start digest · r to fetch current notes"),
+          case model.details_expanded {
+            True -> Line(ToolDetail, "```text\n" <> payload <> "\n```")
+            False -> Line(ToolDetail, notes_view.historical(payload))
+          },
+        ],
+        width,
+      )
     None ->
-      transcript_content([
-        Line(System, "no agent notes are available for " <> model.active_strand),
-      ])
+      transcript_content(
+        [
+          Line(
+            System,
+            "no agent notes are available for " <> model.active_strand,
+          ),
+        ],
+        width,
+      )
   }
 }
 
@@ -3436,7 +3453,28 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
   // was given rather than what it made of it.
   recording.note_input(model.recorder, event)
 
-  let updated = case event {
+  let updated = apply_input(event, model)
+  settle_update(event, model, updated)
+}
+
+// The dispatch on the event and the settling of its result are two functions
+// rather than one body. `apply_input` is a readability split the build does
+// not depend on. `settle_update` is load-bearing, and the property it
+// carries is that its steps apply to a function parameter. The Erlang
+// inliner tries to expand every local call, and an attempt it abandons for
+// effort restores the state it started from, including its cache of visited
+// expressions. When the settling steps sat in this body, each step's attempt
+// visited the whole dispatched expression — every arm, and the tick's drain
+// chain beneath it — and threw the visit away for the next step to repeat.
+// Six steps made that about sixty-four visits, and the module took over a
+// minute to compile. A parameter is cheap to re-visit, so the same steps in
+// `settle_update` cost a constant number of visits and the module compiles
+// in a few seconds. Hiding the dispatch behind a call while the steps stay
+// in the caller does not help and measured worse. Folding the steps back
+// into `update` restores the blow-up; measure with `erlc +time` on the
+// generated module before doing so.
+fn apply_input(event: backend.InputEvent, model: Model) -> Model {
+  case event {
     // A selection is screen cells over a layout the resize just replaced,
     // so it goes with the old layout rather than surviving as a highlight
     // over whatever now occupies those cells.
@@ -3487,15 +3525,53 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     | backend.MouseRelease(_, _, backend.MouseRight)
     | backend.MouseMove(..) -> model
   }
+}
+
+// Everything an event does after its own handler: the worktree request a
+// newly shown diff needs, the context sync, the Herdr report, the transcript
+// projection, the viewport snap and the frame decision. `model` is the
+// state before the event and `updated` the state its handler produced.
+fn settle_update(
+  event: backend.InputEvent,
+  model: Model,
+  updated: Model,
+) -> Model {
   let updated = case !diff_shown(model) && diff_shown(updated) {
     True -> request_visible_worktree(updated)
     False -> updated
   }
   let updated = sync_context(model, updated)
   let published = publish_herdr(updated)
-  refresh_render_cache(model, published)
-  |> request_history_for_view
-  |> refresh_frame_cache(frame_boundary(event))
+
+  // The snap runs after the projection, because a gesture closes the
+  // backlog against the row count this event produced rather than the one
+  // the previous frame was built from.
+  let settled =
+    refresh_render_cache(model, published)
+    |> request_history_for_view
+    |> snap_viewport_for(event)
+  refresh_frame_cache(
+    settled,
+    pacing.frame_boundary(
+      event,
+      pacing.tick_traffic(
+        before: model.render_revision,
+        after: settled.render_revision,
+      ),
+    ),
+  )
+}
+
+// A gesture aimed at the transcript owns the viewport outright: pacing
+// exists to smooth output the reader did not ask for, and making a scroll,
+// a page key or a resize wait on it would put the walk in front of the
+// hand.
+fn snap_viewport_for(model: Model, event: backend.InputEvent) -> Model {
+  case pacing.viewport_address(event) {
+    pacing.AddressesElsewhere -> model
+    pacing.AddressesTranscript ->
+      Model(..model, revealed_rows: model.rendered_row_count)
+  }
 }
 
 // Starts the Herdr pane reporter when the launch environment carries a
@@ -3563,22 +3639,6 @@ fn publish_herdr(model: Model) -> Model {
   }
 }
 
-// Ticks and resizes flush; everything a person or a terminal can produce in a
-// burst is paced. Mouse buttons are listed rather than swept up by a catch-all
-// so a new etui event variant is a compile error here, not a silent default.
-fn frame_boundary(event: backend.InputEvent) -> FrameBoundary {
-  case event {
-    backend.Tick | backend.Resize(..) -> FlushPoint
-    backend.KeyPress(_)
-    | backend.Paste(_)
-    | backend.MouseScroll(..)
-    | backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..)
-    | backend.MouseMove(..) -> Paced
-  }
-}
-
 // A terminal tick is the only idle-time event. Visible socket traffic marks
 // activity while it is drained; otherwise the accumulated quiet time advances
 // by the timeout that led to this tick. A live operation animates at this
@@ -3594,7 +3654,7 @@ fn update_tick(model: Model) -> Model {
       ),
     )
   let quiet_for_ms =
-    next_quiet_for(
+    pacing.next_quiet_for(
       model.quiet_for_ms,
       terminal_poll_timeout(model),
       drained.activity_revision != model.activity_revision,
@@ -3642,6 +3702,12 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
         scrollback: case model.session == cut.attachment.expected.session {
           True -> history_view.cancel(model.scrollback)
           False -> history_view.empty()
+        },
+        parked_scrollback: case
+          model.session == cut.attachment.expected.session
+        {
+          True -> model.parked_scrollback
+          False -> dict.new()
         },
         note_board: None,
         approvals: [],
@@ -3717,75 +3783,103 @@ fn advance_activity_indicator(model: Model) -> Model {
 // a longer burst can span batches. A stale cache inside the pacing interval is
 // left in place and recorded as debt; the next tick, which cannot arrive before
 // the queue has drained, renders the final state once.
-fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
+fn refresh_frame_cache(model: Model, boundary: pacing.FrameBoundary) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
-  let freshness = case model.frame_cache {
-    Some(FrameCache(screen: cached_screen, revision:, ..))
-      if cached_screen == screen && revision == model.frame_revision
-    -> FrameCurrent
-    None | Some(_) -> FrameStale
+  let freshness = case viewport_pacing(model) {
+    // Rows the model holds but the viewport has not shown make the painted
+    // frame stale by definition, whatever the revision says. Without this
+    // the walk would stop after one step: revealing a row changes the frame
+    // without changing any of the inputs the revision counts.
+    pacing.ViewportCatchingUp -> pacing.FrameStale
+    pacing.ViewportSettled ->
+      case model.frame_cache {
+        Some(FrameCache(screen: cached_screen, revision:, ..))
+          if cached_screen == screen && revision == model.frame_revision
+        -> pacing.FrameCurrent
+        None | Some(_) -> pacing.FrameStale
+      }
   }
 
   // The clock is read once per event and only compared against itself, so a
   // wall-clock step cannot stretch or collapse the interval.
   let now = model.monotonic_time_ms()
-  case frame_decision(boundary, freshness, now - model.last_frame_ms) {
-    KeepCachedFrame -> model
-    DeferFrame -> Model(..model, frame_debt: FrameDeferred)
-    RenderFrame ->
+  case pacing.frame_decision(boundary, freshness, now - model.last_frame_ms) {
+    pacing.KeepCachedFrame -> model
+    pacing.DeferFrame -> Model(..model, frame_debt: pacing.FrameDeferred)
+    pacing.RenderFrame -> {
+      // The step is taken before the frame is built, so the frame that is
+      // cached and the position it was built from are the same moment.
+      let paced = advance_viewport(model)
       Model(
-        ..model,
-        frame_debt: FrameSettled,
+        ..paced,
+        frame_debt: pacing.FrameSettled,
         last_frame_ms: now,
         frame_cache: Some(FrameCache(
           screen:,
-          revision: model.frame_revision,
-          rendered: render_frame(model, screen),
+          revision: paced.frame_revision,
+          rendered: render_frame(paced, screen),
         )),
       )
+    }
   }
 }
 
-/// Decides whether an event's visible change is rendered now or deferred.
+// The snap bound is the viewport rather than a constant: what makes a jump
+// worth smoothing is that the reader can still see where the text came
+// from, and a growth taller than the screen leaves nothing of it.
+fn pace_policy(model: Model) -> pacing.PacePolicy {
+  pacing.policy(snap_above: transcript_viewport_height(model))
+}
+
+// Rows held back from the bottom-anchored viewport. Added to the scroll
+// offset, which counts from the same end, this is what walks the view down
+// to the tail a frame at a time.
+fn viewport_backlog(model: Model) -> Int {
+  int.max(0, model.rendered_row_count - model.revealed_rows)
+}
+
+/// Reports whether the viewport still has rows to reveal.
 ///
-/// A current cache is always kept. A stale one is rendered at a flush point,
-/// or once `frame_interval_ms` has passed since the previous frame; inside the
-/// interval it is deferred, which caps a burst at one frame per interval
-/// instead of one per event while still moving the screen as the burst runs.
+/// A full-width changes view is the one surface painted without the paced
+/// offset, so rows held back behind it are not on their way to any screen
+/// and the frame they would make stale shows none of them. Answering
+/// settled there keeps the loop off a sixteen millisecond repaint of a
+/// frame the walk cannot change. Help and notes are not exempt: both are
+/// painted through the same offset as the transcript, so a backlog under
+/// them is a position the reader is actually being shown.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert tui.frame_decision(tui.Paced, tui.FrameCurrent, 0)
-///   == tui.KeepCachedFrame
-/// assert tui.frame_decision(tui.Paced, tui.FrameStale, 3) == tui.DeferFrame
-/// assert tui.frame_decision(tui.Paced, tui.FrameStale, 16) == tui.RenderFrame
-/// assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 3)
-///   == tui.RenderFrame
+/// assert tui.viewport_pacing(model) == tui.ViewportSettled
 /// ```
 @internal
-pub fn frame_decision(
-  boundary: FrameBoundary,
-  freshness: CacheFreshness,
-  elapsed_ms: Int,
-) -> FrameDecision {
-  case freshness, boundary {
-    FrameCurrent, _ -> KeepCachedFrame
-    FrameStale, FlushPoint -> RenderFrame
-    FrameStale, Paced ->
-      case elapsed_ms >= frame_interval_ms {
-        True -> RenderFrame
-        False -> DeferFrame
-      }
-  }
+pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
+  use <- bool.guard(main_shows_diff(model), pacing.ViewportSettled)
+  pacing.viewport_pacing(backlog: viewport_backlog(model))
 }
 
-/// Returns the active or quiet poll timeout for an inactivity duration.
-@internal
-pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
-  case quiet_for_ms >= quiet_after_ms {
-    True -> quiet_poll_ms
-    False -> active_poll_ms
+// One step of the walk, taken as the frame it belongs to is rendered. Tying
+// it to the render rather than to the tick is what bounds the shift between
+// two consecutive frames: a tick that renders nothing reveals nothing.
+//
+// An idle strand holds no rows back at all. The walk exists to smooth output
+// that is still arriving, and a viewport lagging a source that has stopped
+// producing shows the reader stale text for no gain. It is also why a
+// replayed or scripted run settles on the complete frame rather than on
+// however far a fixed number of ticks happened to walk.
+fn advance_viewport(model: Model) -> Model {
+  case active_strand_live(model) {
+    False -> Model(..model, revealed_rows: model.rendered_row_count)
+    True ->
+      Model(
+        ..model,
+        revealed_rows: pacing.pace(
+          model.revealed_rows,
+          model.rendered_row_count,
+          pace_policy(model),
+        ),
+      )
   }
 }
 
@@ -3798,50 +3892,32 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
 /// ```
 @internal
 pub fn terminal_poll_timeout(model: Model) -> Int {
-  let ordinary = paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
-  case attachment.busy(model.candidate), model.channel {
-    True, _ -> int.min(ordinary, 8)
-    False, Some(channel) ->
-      case session_channel.in_flight(channel) {
-        True -> int.min(ordinary, 8)
-        False -> int.min(ordinary, 250)
+  let ordinary = pacing.paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+
+  // A loading session candidate is read from disk rather than from the
+  // socket, so its short wait survives a backlog: nothing it drains can
+  // lengthen the walk.
+  let ordinary = case attachment.busy(model.candidate) {
+    True -> int.min(ordinary, 8)
+    False -> ordinary
+  }
+  case viewport_pacing(model) {
+    // A backlog is work the loop owes the screen with nothing left to wake
+    // it: the deltas that produced those rows are already drained. One row
+    // is revealed per rendered frame, so the wait between wakes is the
+    // interval between rows, and the shorter in-flight wait is deliberately
+    // not taken — draining the socket sooner would only lengthen a backlog
+    // the viewport has yet to show.
+    pacing.ViewportCatchingUp -> int.min(ordinary, pacing.frame_interval_ms)
+    pacing.ViewportSettled ->
+      case model.channel {
+        Some(channel) ->
+          case session_channel.in_flight(channel) {
+            True -> int.min(ordinary, 8)
+            False -> int.min(ordinary, 250)
+          }
+        None -> ordinary
       }
-    False, None -> ordinary
-  }
-}
-
-/// Returns the poll timeout, shortened while a deferred frame is waiting.
-///
-/// The deferred frame is rendered by the tick that follows the burst, and the
-/// tick arrives only after a read has waited this long without more bytes.
-/// Holding the wait short keeps the last position of a flick from lagging the
-/// hand by a whole quiet poll.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert tui.paced_poll_timeout(tui.FrameDeferred, 0) == 8
-/// assert tui.paced_poll_timeout(tui.FrameSettled, 0) == 40
-/// assert tui.paced_poll_timeout(tui.FrameSettled, 320) == 400
-/// ```
-@internal
-pub fn paced_poll_timeout(debt: FrameDebt, quiet_for_ms: Int) -> Int {
-  case debt {
-    FrameDeferred -> deferred_frame_poll_ms
-    FrameSettled -> poll_timeout_for(quiet_for_ms)
-  }
-}
-
-/// Advances inactivity after one poll, resetting immediately on activity.
-@internal
-pub fn next_quiet_for(
-  quiet_for_ms: Int,
-  elapsed_ms: Int,
-  activity_seen: Bool,
-) -> Int {
-  case activity_seen {
-    True -> 0
-    False -> int.min(quiet_after_ms, quiet_for_ms + elapsed_ms)
   }
 }
 
@@ -3927,11 +4003,26 @@ fn refresh_render_cache(before: Model, after: Model) -> Model {
           )
           |> option.unwrap(after.scroll_offset)
       }
+
+      // Reading history owns the viewport through the scroll offset, and a
+      // strand or session switch replaced the rows rather than extending
+      // them: neither has a tail to walk toward. Otherwise the count only
+      // needs clamping, since a shrunk projection must not leave the
+      // viewport claiming rows that no longer exist.
+      let revealed_rows = case
+        reading_history(after)
+        || before.active_strand != after.active_strand
+        || before.session != after.session
+      {
+        True -> rendered_row_count
+        False -> int.min(after.revealed_rows, rendered_row_count)
+      }
       Model(
         ..cached,
         rendered_revision: cached.render_revision,
         rendered_row_count:,
         rendered_rows:,
+        revealed_rows:,
         rendered_anchors:,
         scroll_offset: bounded_scroll_offset(
           anchored,
@@ -4038,12 +4129,22 @@ pub fn viewport_height_changed(before: Int, after: Int) -> Bool {
 // a changed outcome has a different key and cannot retain its pending label.
 // Expanded append-only history still extends the row list as one small batch.
 fn refresh_record_cache(model: Model, width: Int) -> Model {
+  // Expanded history is append-only, so a pending record there can only add
+  // rows. Compact history groups consecutive calls, and `tool_activity`
+  // answers which records can rewrite a group already projected; the rest —
+  // prose, a user turn, structural history — end the group with the rows it
+  // already had and keep the append path.
+  let regrouped =
+    !model.details_expanded
+    && list.any(model.pending_records, fn(record) {
+      tool_activity.regroups(record.entry)
+    })
   let cache_matches =
     model.record_cache_valid
     && model.record_cache_width == width
     && model.record_cache_strand == model.active_strand
     && model.record_cache_details == model.details_expanded
-    && { model.details_expanded || list.is_empty(model.pending_records) }
+    && !regrouped
   case cache_matches, model.pending_records {
     False, _ -> {
       let previous = case model.record_cache_width == width {
@@ -4071,16 +4172,20 @@ fn refresh_record_cache(model: Model, width: Int) -> Model {
     }
     True, [] -> model
     True, pending -> {
-      let newest_rows =
-        pending
-        |> record_lines(model)
-        |> fn(projection) { projection.0 }
-        |> transcript_content
-        |> fn(content) { markdown.wrap_lines(content.lines, width) }
-        |> list.reverse
+      let #(lines, calls, narratives) = record_lines(pending, model)
+      let #(newest_rows, appended) =
+        cached_record_lines(lines, width, model.record_line_cache)
+
+      // Every cache here describes the current projection, and the appended
+      // records have just joined it. Merging rather than replacing keeps the
+      // hints for the rows already on screen, which this path never rebuilds;
+      // the release of retired text belongs to the full rebuild.
       Model(
         ..model,
         record_rows: list.append(newest_rows, model.record_rows),
+        record_line_cache: dict.merge(model.record_line_cache, appended),
+        compact_call_cache: dict.merge(model.compact_call_cache, calls),
+        compact_entry_cache: dict.merge(model.compact_entry_cache, narratives),
         pending_records: [],
       )
     }
@@ -4102,7 +4207,7 @@ fn cached_record_lines(
     let rendered =
       dict.get(previous, line)
       |> result.lazy_unwrap(fn() {
-        render_line(line) |> markdown.wrap_lines(width)
+        render_line(line, width) |> markdown.wrap_lines(width)
       })
     #(
       list.append(list.reverse(rendered), rows),
@@ -4191,7 +4296,7 @@ fn record_anchors_for(
       let rendered =
         dict.get(model.record_line_cache, pair.0)
         |> result.lazy_unwrap(fn() {
-          render_line(pair.0) |> markdown.wrap_lines(width)
+          render_line(pair.0, width) |> markdown.wrap_lines(width)
         })
       list.index_map(rendered, fn(_, wrapped) {
         case block.0 {
@@ -4240,6 +4345,11 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   }
 }
 
+// The live tail is parsed afresh on every call rather than memoized: a memo
+// would pin one more generation of the live region than the retained-bytes
+// gate on streaming has headroom for, and it would save a few parses a
+// second rather than one per frame.
+//
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
 fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
@@ -4247,12 +4357,12 @@ fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
     True, _ ->
       help_content().lines |> markdown.wrap_lines(width) |> list.reverse
     False, True ->
-      notes_content(model).lines
+      notes_content(model, width).lines
       |> markdown.wrap_lines(width)
       |> list.reverse
     False, False ->
       option.lazy_unwrap(model.reading_lines, fn() { transient_lines(model) })
-      |> transcript_content
+      |> transcript_content(width)
       |> fn(content) { markdown.wrap_lines(content.lines, width) }
       |> list.reverse
       |> list.append(model.record_rows)
@@ -4265,7 +4375,7 @@ fn transient_lines(model: Model) -> List(Line) {
   stream_lines(
     display_streams(model),
     model.active_strand,
-    model.details_expanded,
+    details_extent(model.details_expanded),
   )
   |> list.append(tool_tail_lines(model))
   |> list.append(pending_input_lines(model))
@@ -4390,10 +4500,19 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // and a sent request keeps that identity rather than acquiring the new
       // session's.
       let model = retire_previous(model)
+
+      // Parked windows are keyed by strand name alone, and two sessions reuse
+      // the same names. Adopting a different session must drop them, or a
+      // later switch to `main` would restore another session's ancestry.
       let model = case model.session == cut.attachment.expected.session {
         True ->
           Model(..model, scrollback: history_view.cancel(model.scrollback))
-        False -> Model(..model, scrollback: history_view.empty())
+        False ->
+          Model(
+            ..model,
+            scrollback: history_view.empty(),
+            parked_scrollback: dict.new(),
+          )
       }
 
       // Only then is the old inbox drained. Draining first would discard
@@ -4797,6 +4916,25 @@ fn render_cut(
         history_view.Quiet -> "Scroll up to load older conversation."
       }
   }
+  let transcript = [
+    Line(System, boundary),
+    Line(System, attachment_banner),
+    ..list.append(
+      configuration_lines(view, active),
+      list.append(unconfirmed_lines(model.unconfirmed), approval_lines(reviews)),
+    )
+  ]
+
+  // Everything the record projection reads, so a cut that moved only usage,
+  // phases or timestamps leaves the cache standing. Cuts arrive on a
+  // quarter-second cadence throughout a turn, and invalidating on every one
+  // of them made each a full re-projection of the whole session.
+  let record_cache_valid =
+    model.record_cache_valid
+    && model.active_strand == active
+    && model.records == branch.records
+    && model.transcript == transcript
+    && solo_owner(model.captured) == solo_owner(Some(#(cut, view)))
 
   // Request-scoped pushes outrun captures: a cut may have started before
   // the request that is streaming now. Retain those observations, including
@@ -4826,6 +4964,14 @@ fn render_cut(
       )
       && !snapshot_view.has_result(view, tail.strand, tail.operation)
     })
+
+  // A strand the cut no longer carries cannot be selected again, so its
+  // parked window is unreachable. Dropping it here is what bounds the
+  // dictionary over a long session that retires sub-agents continuously.
+  let parked =
+    dict.filter(model.parked_scrollback, fn(strand, _) {
+      is_known_strand(view.strands, strand)
+    })
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -4840,6 +4986,7 @@ fn render_cut(
     ),
     records: branch.records,
     scrollback: history,
+    parked_scrollback: parked,
     activity_started_ms: case same_operation {
       True -> model.activity_started_ms
       False -> None
@@ -4858,19 +5005,9 @@ fn render_cut(
       None -> model.queued
     },
     submitting: None,
-    record_cache_valid: False,
+    record_cache_valid:,
     notice: notice,
-    transcript: [
-      Line(System, boundary),
-      Line(System, attachment_banner),
-      ..list.append(
-        configuration_lines(view, active),
-        list.append(
-          unconfirmed_lines(model.unconfirmed),
-          approval_lines(reviews),
-        ),
-      )
-    ],
+    transcript:,
   )
   |> invalidate_transcript
   // A completed cut can make the operation idle before the next animation
@@ -5136,6 +5273,7 @@ fn adopt_session(
     rendered_revision: -1,
     rendered_row_count: 0,
     rendered_rows: [],
+    revealed_rows: 0,
     rendered_anchors: [],
     record_rows: [],
     record_line_cache: dict.new(),
@@ -5837,22 +5975,50 @@ pub const tail_lines_shown = 8
 /// covers a client which misses enough captures to evict the matching result.
 pub const max_tool_tails = 128
 
-/// What the transcript draws for the active strand's running tool calls:
-/// one `ToolResult` line per stream, headed by the stream's name and how
-/// much it has carried, followed by the last `tail_lines_shown` lines of
-/// its window. A tail whose text is empty — a binary stream, or a command
-/// that has printed nothing to that stream yet — draws its heading alone,
-/// so the reader still sees that the command is alive and how much it has
-/// written.
+/// What the transcript draws for the active strand's running tool calls,
+/// which with details collapsed is nothing at all.
+///
+/// A tool call that succeeds settles without changing the transcript's
+/// height. The durable projection already gives a running call one row — its
+/// summary followed by `· awaiting result` — and a plain successful result
+/// replaces that row one for one. Drawing the command's output window beside
+/// it would add a heading and up to `tail_lines_shown` more rows and take
+/// them away again two hundred milliseconds later, which is what made the
+/// transcript jump by eight rows on every tool call of a turn and back. The
+/// window is detail, so `Ctrl+g` is where it belongs, alongside the expanded
+/// result the settle will draw in its place.
+///
+/// A result which carries something a reader has to see still costs the rows
+/// it needs: a failure draws its summary and the result text under it, and
+/// `fs_edit` and `context_remaining` draw their own rows. Suppressing those
+/// would be trading the reader's information for a smooth scroll, which is
+/// the wrong way round. What this removes is the growth that carried no
+/// information — the window that appeared and vanished within a few hundred
+/// milliseconds.
+///
+/// Expanded, the window is one `ToolResult` line per stream, headed by the
+/// stream's name and how much it has carried, followed by the last
+/// `tail_lines_shown` lines of it. A tail whose text is empty — a binary
+/// stream, or a command that has printed nothing to that stream yet —
+/// draws its heading alone, so the reader still sees that the command is
+/// alive and how much it has written.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // tui.tool_tail_lines(model)
+/// // tui.tool_tail_lines(tui.Model(..model, details_expanded: True))
 /// //   == [tui.Line(tui.ToolResult, "stdout · 31 B so far\ncompiling core")]
 /// ```
 @internal
 pub fn tool_tail_lines(model: Model) -> List(Line) {
+  case details_extent(model.details_expanded) {
+    notes_view.Excerpt -> []
+    notes_view.Complete -> expanded_tool_tail_lines(model)
+  }
+}
+
+// The window itself, once the reader has asked for detail.
+fn expanded_tool_tail_lines(model: Model) -> List(Line) {
   model.tool_tails
   |> list.filter(fn(tail) { tail.strand == model.active_strand })
   |> list.map(fn(tail) {
@@ -5994,7 +6160,7 @@ fn preview_stream(strand: String, sample: snapshot_view.Preview) -> Stream {
 fn stream_lines(
   streams: List(Stream),
   active_strand: String,
-  _details_expanded: Bool,
+  extent: notes_view.Extent,
 ) -> List(Line) {
   streams
   |> list.filter_map(fn(stream) {
@@ -6004,7 +6170,7 @@ fn stream_lines(
       True -> {
         let text = fragments |> list.reverse |> string.concat
         Ok(case kind {
-          "thinking" -> Line(Reasoning, text)
+          "thinking" -> live_reasoning_line(text, extent)
           "tool_call" -> Line(ToolCall, live_tool_call_summary(text))
           _ -> Line(Assistant, text)
         })
@@ -6012,6 +6178,115 @@ fn stream_lines(
     }
   })
 }
+
+// The live and settled forms of one reasoning block are drawn by different
+// code paths a few hundred milliseconds apart — this one from the stream
+// the provider is still writing, the other from the record the daemon has
+// committed — so the two functions below are deliberately the same shape.
+// Collapsed, each is exactly one `ReasoningDigest` row — clipped to the pane
+// rather than wrapped, so the count holds at every width — and the settle
+// therefore changes the row's words and not the transcript's height.
+fn live_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
+  case extent {
+    notes_view.Complete -> Line(Reasoning, text)
+    notes_view.Excerpt -> Line(ReasoningDigest, live_reasoning_digest(text))
+  }
+}
+
+fn settled_reasoning_line(text: String, extent: notes_view.Extent) -> Line {
+  case extent {
+    notes_view.Complete -> Line(Reasoning, text)
+    notes_view.Excerpt -> Line(ReasoningDigest, settled_reasoning_digest(text))
+  }
+}
+
+/// The collapsed stand-in for a reasoning block the provider is still
+/// writing: how much of it has arrived, and nothing of what it says.
+///
+/// An excerpt would be the obvious thing to show and is the wrong one. The
+/// opening words of a block that is still growing are rewritten under the
+/// reader as fragments land, and a line that changes is far harder to
+/// ignore than a counter that climbs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.live_reasoning_digest("one thought") == "1 line so far"
+/// ```
+///
+/// ```gleam
+/// assert tui.live_reasoning_digest("one\ntwo") == "2 lines so far"
+/// ```
+@internal
+pub fn live_reasoning_digest(text: String) -> String {
+  let count = text |> string.split("\n") |> list.length
+  int.to_string(count)
+  <> case count {
+    1 -> " line so far"
+    _ -> " lines so far"
+  }
+}
+
+/// The collapsed stand-in for a reasoning block the daemon has committed.
+///
+/// The block no longer moves, so the reader can be given something to
+/// decide on: its opening line, clipped, and the key that opens the rest.
+/// The row bypasses the Markdown renderer, so a line that only opens a
+/// construct — a fence, or a heading's or a quotation's marker — would reach
+/// the reader as punctuation standing in for a whole block of reasoning. A
+/// fence line is skipped and the markers are stripped, leaving the first
+/// line that actually says something. A block of only blank lines and
+/// markers has no such line, and falls back to its own text so the row is
+/// never empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.settled_reasoning_digest("First.\n\nSecond.")
+///   == "First.  [Ctrl+G to expand]"
+/// ```
+///
+/// ```gleam
+/// assert tui.settled_reasoning_digest("## Plan")
+///   == "Plan  [Ctrl+G to expand]"
+/// ```
+@internal
+pub fn settled_reasoning_digest(text: String) -> String {
+  let opening =
+    text
+    |> string.split("\n")
+    |> list.filter_map(digest_opening_line)
+    |> list.first
+    |> result.unwrap(text)
+  compact(opening, reasoning_digest_limit) <> expand_hint
+}
+
+// Whether one source line can open a digest, and what it reads as if it can.
+// A blank line and a fence delimiter say nothing on their own; a heading or
+// quotation marker says something only about the line that carries it, so it
+// is shed and the remainder is judged again — a line of markers alone falls
+// through to the next candidate.
+fn digest_opening_line(line: String) -> Result(String, Nil) {
+  let trimmed = string.trim(line)
+  case trimmed {
+    "" -> Error(Nil)
+    "```" <> _ | "~~~" <> _ -> Error(Nil)
+    "#" <> rest | ">" <> rest -> digest_opening_line(rest)
+    body -> Ok(body)
+  }
+}
+
+/// How much of a settled reasoning block's opening line a digest keeps.
+///
+/// A budget for the reader's attention, not for the layout: about a line of
+/// prose is as much as a collapsed row should ask anyone to read. The row
+/// holds its single row because it is clipped to the pane, so this limit
+/// only decides how much of the opening line a wide terminal shows.
+pub const reasoning_digest_limit = 64
+
+/// How the transcript names the key that opens a collapsed row, in the
+/// wording `composer` already uses for a bounded user turn.
+pub const expand_hint = "  [Ctrl+G to expand]"
 
 /// Bounds a partial tool call to its name until durable arguments arrive.
 @internal
@@ -6682,8 +6957,13 @@ fn assistant_block_lines(
     message.AssistantText(text:, ..) -> [Line(Assistant, text)]
     message.AssistantThinking(thinking:, redacted:, ..) ->
       case redacted {
-        True -> [Line(Reasoning, "redacted")]
-        False -> [Line(Reasoning, thinking)]
+        // A redacted block has no text behind the marker, so expanding it
+        // would show the same row again. It stays one row in both modes.
+        True -> [Line(ReasoningDigest, "redacted")]
+
+        False -> [
+          settled_reasoning_line(thinking, details_extent(details_expanded)),
+        ]
       }
     message.AssistantToolCall(call:) -> {
       let message.ToolCall(name:, arguments:, ..) = call
@@ -7826,9 +8106,16 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   |> result.unwrap(screen)
 }
 
+// The gesture starts from the row the reader is looking at, which is the
+// stored offset plus whatever the paced walk is still holding back: the
+// viewport is drawn from that sum, and measuring a scroll against the
+// stored offset alone would answer a request for older text by jumping the
+// backlog forward to the tail. Folding it in also leaves the paths that
+// ask for the latest row landing at zero, since they scroll by the whole
+// row count and the bound clamps there.
 fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
   let offset =
-    scroll_offset(model.scroll_offset, older, rows)
+    scroll_offset(model.scroll_offset + viewport_backlog(model), older, rows)
     |> bounded_scroll_offset(
       model.rendered_row_count,
       transcript_viewport_height(model),
@@ -9230,11 +9517,28 @@ fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
 
 fn switch_active_strand(model: Model, strand: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
+
+  // The outgoing strand's window is put down before the incoming one is
+  // picked up, so the switch never discards loaded history. Without this the
+  // only surviving history would be whatever `cut.window` holds, and that is
+  // the newest hundred records of the whole session across every strand: with
+  // two busy sub-agents running, a return to `main` would show one or two of
+  // its own entries and then spend the rest of the session scanning the
+  // global sequence space backwards to find the ancestry it already had.
+  let parked =
+    dict.insert(model.parked_scrollback, model.active_strand, model.scrollback)
+  let restored = dict.get(parked, strand) |> result.unwrap(history_view.empty())
+
+  // The incoming strand's window is held directly from here on, so its parked
+  // copy is removed rather than left to go stale behind the live one.
+  let parked = dict.delete(parked, strand)
   let selected =
     Model(
       ..model,
       overlay: NoOverlay,
       active_strand: strand,
+      parked_scrollback: parked,
+      scrollback: restored,
       queued: [],
       awaiting_outcome: None,
       current_model: "loading…",
@@ -10182,7 +10486,7 @@ fn render_summary_surface(buf, cursor, screen, model: Model) {
       let lines =
         summary_lines(model)
         |> list.flat_map(fn(text) {
-          markdown.render(text_hygiene.multiline(text))
+          markdown.render(text_hygiene.multiline(text), inner.size.width)
         })
         |> markdown.wrap_lines(inner.size.width)
       let offset =
@@ -10458,7 +10762,7 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
       let lines =
         context_view.lines(model.context)
         |> list.flat_map(fn(line) {
-          markdown.render(text_hygiene.multiline(line))
+          markdown.render(text_hygiene.multiline(line), inner.size.width)
         })
         |> markdown.wrap_lines(inner.size.width)
       let offset =
