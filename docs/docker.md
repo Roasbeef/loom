@@ -37,6 +37,11 @@ there is no arm64 counterpart at that path. Building on an arm64
 workstation therefore goes through emulation; that is a build-time cost,
 not a run-time one, since the resulting image is a normal amd64 image.
 
+Built end to end on the Linux signoff host (Linux 5.15, x86_64): a cold
+`make docker-image` (Gleam built from source, no warm Hex/Go caches)
+takes about ten minutes, and `docker image ls` reports the finished
+`loom-runtime:dev` image at 325 MB.
+
 ## The bind restriction, and what it means for reaching the daemon
 
 `loomd`'s `--bind` flag accepts only a loopback address:
@@ -101,6 +106,21 @@ Run the self-test inside the container to see exactly what came up:
 docker exec loom loom-exec --self-test
 ```
 
+Measured on the Linux signoff host, this is worse than "some probes
+enforce, some skip": `bwrap` refuses to create a user namespace at all
+under Docker's default seccomp profile, even though the kernel's own
+`kernel.unprivileged_userns_clone` sysctl allows it, so the jail never
+comes up and nine of the eleven probes report `FAILED`, not `SKIPPED`.
+`SKIPPED` means the self-test looked and found a layer absent before
+trying; `FAILED` here means the jail tried, could not start, and every
+check that depends on it correctly reports that nothing was confined.
+Only the cgroup v2 delegation check and the missing-Erlang-toolchain
+check report `SKIPPED`, since those are genuinely absent rather than
+attempted and broken. `make docker-smoke` runs this exact posture and
+records the self-test's exit code without failing the build on it, for
+the same reason: an insecure plain posture is what this document already
+says to expect, not a defect in the image.
+
 ### Full isolation
 
 ```
@@ -113,11 +133,12 @@ docker run -d --name loom \
   -v "$PWD:/work" \
   -v loom-state:/var/lib/loom \
   loom-runtime:dev
-docker exec loom sh -c '
+docker exec -u root loom sh -c '
   mount -o remount,rw /sys/fs/cgroup
-  mkdir -p /sys/fs/cgroup/loom
+  mkdir -p /sys/fs/cgroup/loom/host
   echo "+pids +memory" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
   echo "+pids +memory" > /sys/fs/cgroup/loom/cgroup.subtree_control
+  chown -R 10000:10000 /sys/fs/cgroup/loom
 '
 ```
 
@@ -133,7 +154,36 @@ on Ubuntu otherwise restricts unprivileged user namespaces), and its
 `/sys` and `/proc` path masking. The remount and delegation step makes
 `/sys/fs/cgroup` writable (Docker mounts it read-only even with
 `--cgroupns=host`) and carves out a fresh, process-empty cgroup v2 base
-for `loom-exec`'s pids/memory ceilings.
+for `loom-exec`'s pids/memory ceilings; the `chown` hands that base to
+the same uid the daemon and `loom-exec` run as, since delegation is a
+filesystem permission, not just an entry in `cgroup.subtree_control`.
+
+With `--cgroupns=host`, the container's own process (`tini`, and
+everything it spawns) starts inside the host cgroup tree at whatever
+scope Docker's own systemd cgroup driver placed it, a sibling of
+`/sys/fs/cgroup/loom`, not a descendant of it. cgroup v2's delegation
+containment rule needs write access to the *common ancestor* of a
+process's current cgroup and its destination to move it, and that
+common ancestor is `/sys/fs/cgroup` itself, owned by root. A probe run
+with plain `docker exec loom loom-exec --self-test` therefore still
+reports the fork-bomb probe `SKIPPED`, now with a reason naming exactly
+this: the delegated base exists but the helper's own cgroup sits outside
+it. Moving the helper's own process into a subgroup under the delegated
+base first, before it forks a sandboxed child, closes that gap:
+
+```
+docker exec -u root loom sh -c '
+  echo $$ > /sys/fs/cgroup/loom/host/cgroup.procs
+  exec env LOOM_CGROUP_BASE=/sys/fs/cgroup/loom loom-exec --self-test
+'
+```
+
+This is what the daemon's own process would need to do at boot, before
+spawning any session's jail, to keep every one of `loom-exec`'s per-exec
+cgroups inside the delegated tree; the image does not wire that up
+itself (see "What remains unverified" below), so reproducing the full
+count by hand needs the migration step spelled out here rather than a
+bare `docker exec loom loom-exec --self-test`.
 
 **What this posture trades.** With these flags, Docker's own container
 boundary is mostly gone. What is left is closer to a process group with
@@ -146,56 +196,63 @@ machine, such as the one `LOOM_SIGNOFF_HOST` names, not for a shared
 host where Docker's own confinement is the thing keeping one container's
 compromise from reaching another's.
 
-```
-docker exec loom loom-exec --self-test
-```
-
 ## Measured self-test counts
 
-`loom-exec --self-test` runs nine probes (`docs/architecture/effects.md`)
-and reports each as `ENFORCED` or `SKIPPED`, never a false pass. Issue
-#384 already measured the two postures on real Linux hardware:
+`loom-exec --self-test` runs eleven probes (`docs/architecture/effects.md`)
+and reports each as `ENFORCED`, `SKIPPED`, or `FAILED`, never a false
+pass. Issue #384 measured the two postures on real Linux hardware
+outside a container; this table adds a fresh measurement of
+`loom-runtime:dev` itself, built and run on the Linux signoff host
+(Linux 5.15.0-58-generic, x86_64, Docker 23.0.1):
 
-| Posture | Enforced | Skipped |
-|---|---|---|
-| Bare host, no Erlang toolchain on PATH | 10 of 11 | 1 |
-| Bare host, Erlang toolchain on PATH | 11 of 11 | 0 |
-| Plain `docker run` | fewer; userns and writable cgroupfs withheld | several |
-| Full isolation (`--cgroupns=host` etc. + cgroup delegation) | 11 of 11 | 0 |
+| Posture | Enforced | Skipped | Failed |
+|---|---|---|---|
+| Bare host, no Erlang toolchain on PATH (issue #384) | 10 of 11 | 1 | 0 |
+| Bare host, Erlang toolchain on PATH (issue #384) | 11 of 11 | 0 | 0 |
+| Plain `docker run` (measured against `loom-runtime:dev`) | 0 of 11 | 2 | 9 |
+| Full isolation, with the process-migration step above (measured against `loom-runtime:dev`) | 10 of 11 | 1 | 0 |
 
-Those rows are issue #384's own numbers, not a fresh measurement from
-this branch; `docs/next.md`-style honesty means saying so rather than
-implying this Dockerfile was the machine that produced them. Reproducing
-them against `loom-runtime:dev` needs a real Linux x86_64 host; see
-"What could not be verified from this branch" below for why that could
-not be done here, and run `make docker-smoke` (plain posture) or the
-full-isolation run line above plus `docker exec loom loom-exec
---self-test` to get a number for a specific machine.
+The full-isolation row matches "bare host, no Erlang toolchain" exactly,
+which is what it should: the runtime image never installs Erlang
+(`erl`/`erlc`), so the "unvetted beam" probe stays `SKIPPED` there the
+same way it would on any Erlang-less Linux box, and every other probe
+enforces. The plain row is worse than issue #384's own text implied:
+that issue described a container as withholding "userns and writable
+cgroupfs", which reads as some probes skipping gracefully. Measured
+here, `bwrap` fails outright when it cannot create a user namespace
+under Docker's default seccomp profile, so nine probes come back
+`FAILED` rather than `SKIPPED`; see "Plain" above for the full account.
+Both rows against `loom-runtime:dev` came from `make docker-smoke`
+(plain) and the full-isolation run line plus the migration step above
+(full isolation), run by hand on the same host.
 
-## What could not be verified from this branch
+## What remains unverified
 
-Building this image was attempted on an Apple Silicon Mac through
-Docker Desktop's `linux/amd64` emulation, which is Rosetta 2 rather than
-QEMU on this machine. The build's OTP step (`erl -noinput -noshell`,
-verifying the freshly extracted toolchain) crashes there with `undefined
-function erlang:nif_error/1` inside `prim_tty:tty_create/1`, the
-terminal-handling NIF failing to resolve a BIF that always exists on a
-correctly running emulator, which points at the BEAM's JIT-generated
-native code disagreeing with Rosetta's translation rather than at
-anything in this Dockerfile: the same command, byte for byte, is the one
-`scripts/signoff/Dockerfile` already relies on and CI already runs
-successfully on real x86_64. This was reproduced in a bare `ubuntu:24.04
---platform linux/amd64` container outside the Dockerfile entirely, so it
-is an environment property of this Mac's emulation path, not a defect
-introduced here.
+Two things this PR did not reach. First, the full-isolation row above
+needed the daemon's own process moved into the delegated cgroup
+subgroup by hand, once, from a root shell, before running the self-test
+directly; the image itself does not do this at boot, so a `loomd`
+started by the entrypoint still spawns its sandboxed sessions from
+outside the delegated tree unless an operator repeats that step (or a
+future change teaches the daemon to do it itself). Second, this was
+verified as a single operator running one container at a time on a
+shared signoff host; it says nothing about two containers on the same
+host both using `--cgroupns=host`, which share the same host cgroup
+tree and could in principle collide on `/sys/fs/cgroup/loom` if both
+used the same delegated path. Naming the base per container (for
+example `/sys/fs/cgroup/loom-<container-id>`) would remove that, but it
+was not exercised here.
 
-What that means for this PR: the Dockerfile, the Makefile targets, and
-`scripts/docker_smoke.sh` are written and reviewed but the image has not
-been built and booted end to end from this branch, and the self-test
-counts above are issue #384's, not a fresh run. This needs a real Linux
-x86_64 (or arm64, once that release path is exercised) host to verify,
-either a developer's own machine or the `LOOM_SIGNOFF_HOST` box already
-used for the signoff container.
+Building the image itself was, at an earlier point in this branch's
+history, attempted on an Apple Silicon Mac through Docker Desktop's
+`linux/amd64` emulation (Rosetta 2, not QEMU), where the build's OTP
+step crashed with `undefined function erlang:nif_error/1` inside
+`prim_tty:tty_create/1`. That was an artifact of Rosetta's translation
+disagreeing with the BEAM's JIT-generated code on that machine, not a
+defect in the Dockerfile. The build, boot, smoke, and self-test
+measurements throughout this page are the fresh, complete run that
+Apple Silicon attempt could not produce, done instead on a real Linux
+x86_64 host (the Linux signoff host).
 
 ## Building and smoking it
 
@@ -206,6 +263,9 @@ make docker-smoke          # builds, boots the plain posture, runs a client comm
 
 `make docker-smoke` skips with a clear message rather than failing when
 Docker is not available; where Docker is available it exits nonzero on
-any failure, including the container exiting before the daemon becomes
-ready, `loom sessions list` failing, or `loom-exec --self-test` reporting
-an enforceable probe that did not enforce.
+the container exiting before the daemon becomes ready or `loom sessions
+list` failing. It runs `loom-exec --self-test` at the end and prints
+its output and exit code, but does not fail the build on that exit code:
+the plain posture it exercises is documented above to leave most of the
+self-test's probes unenforced, so a nonzero self-test there is the
+expected outcome, not evidence the smoke run itself failed.

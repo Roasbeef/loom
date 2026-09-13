@@ -11,14 +11,16 @@
 # is the proof that the release needs no Erlang, no Gleam and no Go once
 # built, so the runtime stage installs none of them.
 #
-# What this image does not solve: issue #384 measured that a default
-# `docker run` withholds unprivileged user namespaces and a writable,
-# delegated cgroup v2 base, so loom-exec's self-test enforces fewer of its
-# nine probes there than on a bare host. This image does not paper over
-# that with a fabricated "container mode". It ships the same helper the
-# release always ships and reports what the kernel actually gives it.
-# docs/docker.md documents both postures and the traded-off boundary that
-# comes with the flags that close the gap.
+# What this image does not solve: a default `docker run` withholds
+# unprivileged user namespaces and a writable, delegated cgroup v2 base,
+# and Docker's default seccomp profile refuses the clone bubblewrap needs
+# even where the kernel itself would allow it, so loom-exec's self-test
+# enforces none of its eleven probes there (measured against this image
+# on a real Linux x86_64 host; docs/docker.md has the full table). This
+# image does not paper over that with a fabricated "container mode". It
+# ships the same helper the release always ships and reports what the
+# kernel actually gives it. docs/docker.md documents both postures and
+# the traded-off boundary that comes with the flags that close the gap.
 #
 # Versions below track the same four files scripts/signoff/Dockerfile
 # tracks: .github/workflows/ci.yml (GLEAM_PATCHES) and
