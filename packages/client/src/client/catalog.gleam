@@ -150,7 +150,7 @@ pub type CatalogModel {
     /// is an unpriced model, whose usage records keep a zero cost.
     pricing: Option(pricing.Pricing),
     /// Whether the endpoint reads image blocks (`vision` in the
-    /// catalogue, default `TextOnly`).
+    /// catalogue, default `ReadsImages`).
     vision: ImageReading,
   )
 }
@@ -161,12 +161,17 @@ pub type CatalogModel {
 /// boolean is a thing every reader must carry in their head; a name
 /// reads at the case arm (`ReadsImages` cannot be got backwards).
 ///
-/// `vision = false` is the default for a reason: an image sent to a
-/// model that cannot read it is silently accepted by the wire and
-/// silently ignored or refused by the provider, so the harness must
-/// route or refuse before dispatch. Only an operator who has confirmed
-/// the endpoint actually accepts image blocks (issue #358: GLM-5.3
-/// does not, GLM-5.3-Flash does) declares `vision = true`.
+/// `vision = false` is a declaration, not a default. Nothing on the wire
+/// marks whether a model reads images: an OpenAI-compatible listing has
+/// no capability field, and a model that cannot read one answers in
+/// prose that it cannot see it rather than rejecting the request. The
+/// fact is learned by probing (issue #358: GLM-5.3 does not, GLM-5.3-Flash
+/// does), so the honest thing to write down is the negative on the
+/// entries an operator has actually tested. An absent key therefore
+/// means `ReadsImages`, which is what every catalogue written before the
+/// key existed already assumed; treating an undeclared entry as blind
+/// would placeholder or refuse image turns on models that read them
+/// perfectly well, on a fact nobody stated.
 pub type ImageReading {
   /// The endpoint reads image blocks.
   ReadsImages
@@ -442,16 +447,16 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   // `vision` is the one capability the request path routes on (issue
   // #358): whether an entry reads image blocks decides whether an
   // image-bearing request is admitted there, re-routed through the
-  // `vision` chain, or refused. Absent means `TextOnly` rather than
-  // `ReadsImages`, because the failure the default protects against —
-  // an image silently ignored by a text-only endpoint — is invisible on
-  // the wire, while the failure of the honest default is a worded
-  // refusal an operator can act on.
+  // `vision` chain, or refused. Absent means `ReadsImages`: the routing
+  // and the refusal act only on an entry the operator has declared
+  // blind, so a catalogue that predates the key keeps the behaviour it
+  // had, and the one silent failure that remains — an undeclared blind
+  // model — is exactly the one the catalogue had before the key existed.
   use vision <- result.try(case dict.get(fields, "vision") {
     Ok(tom.Bool(True)) -> Ok(ReadsImages)
     Ok(tom.Bool(False)) -> Ok(TextOnly)
     Ok(_other) -> Error(place <> ".vision must be true or false")
-    Error(Nil) -> Ok(TextOnly)
+    Error(Nil) -> Ok(ReadsImages)
   })
   Ok(CatalogModel(
     name:,

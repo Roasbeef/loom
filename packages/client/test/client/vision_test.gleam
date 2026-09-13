@@ -583,7 +583,7 @@ pub fn catalogue_parses_vision_test() {
   assert entry.vision == catalog.ReadsImages
 }
 
-pub fn catalogue_vision_defaults_to_text_only_test() {
+pub fn catalogue_vision_defaults_to_reading_images_test() {
   let assert Ok(catalogue) =
     catalog.parse(
       "[models.acme]\n"
@@ -597,7 +597,7 @@ pub fn catalogue_vision_defaults_to_text_only_test() {
       <> "main = [\"acme\"]\n",
     )
   let assert [entry] = catalogue.models
-  assert entry.vision == catalog.TextOnly
+  assert entry.vision == catalog.ReadsImages
 }
 
 pub fn catalogue_refuses_a_text_only_vision_chain_test() {
@@ -609,6 +609,7 @@ pub fn catalogue_refuses_a_text_only_vision_chain_test() {
       <> "model_id = \"loom-text\"\n"
       <> "context_window = 200000\n"
       <> "max_output_tokens = 8192\n"
+      <> "vision = false\n"
       <> "\n"
       <> "[models.eyes]\n"
       <> "dialect = \"anthropic\"\n"

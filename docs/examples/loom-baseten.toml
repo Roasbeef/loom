@@ -7,6 +7,8 @@ dialect = "openai"
 base_url = "https://inference.baseten.co/v1"
 api_key_env = "BASETEN_API_KEY"
 model_id = "moonshotai/Kimi-K3"
+# Probed blind (issue #358): an image_url block returns empty content.
+vision = false
 context_window = 1048576
 max_output_tokens = 32768
 # Kimi reasons internally, but this endpoint does not accept the
@@ -29,6 +31,9 @@ dialect = "openai"
 base_url = "https://inference.baseten.co/v1"
 api_key_env = "BASETEN_API_KEY"
 model_id = "zai-org/GLM-5.3"
+# Probed blind (issue #358): an image_url block is accepted and answered
+# as unseen. Image turns on this entry route through the vision role.
+vision = false
 context_window = 1048576
 max_output_tokens = 262144
 thinking = "medium"
@@ -46,6 +51,7 @@ thinking = "medium"
 # faster models, while planning keeps the deeper GLM route.
 [roles]
 main = ["baseten-kimi-k3", "baseten-glm-5-3"]
+vision = ["baseten-glm-5-3-flash"]
 subagent = ["baseten-deepseek-v4-flash", "baseten-glm-5-3-flash"]
 plan = ["baseten-glm-5-3"]
 summarize = ["baseten-glm-5-3-flash"]

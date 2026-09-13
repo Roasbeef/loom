@@ -579,13 +579,11 @@ type ModelFacts {
   )
 }
 
-// The fallback reading is `ReadsImages`, not `TextOnly`: an identity
-// the catalogue does not know was switched to by an operator or
-// seeded from an environment the catalogue never described, and the
-// honest default for a *known* entry (`TextOnly`, which refuses
-// rather than silently dropping an image) would break such a strand's
-// image turns on a fact nobody stated. Routing consults the positive
-// declarations the catalogue actually made.
+// The fallback reading is `ReadsImages`, the same answer the catalogue
+// gives an entry that never wrote the key: an identity the catalogue
+// does not know was switched to by an operator or seeded from an
+// environment the catalogue never described, and routing consults only
+// the blind declarations the catalogue actually made.
 fn model_facts(config: Config, identity: ModelIdentity) -> ModelFacts {
   case config.facts(identity) {
     Ok(#(resolved, api, reading)) ->
@@ -676,9 +674,13 @@ pub fn strand_window(
 // vision route resolves. The image classification reads the strand's
 // durable projection, the same place the threshold and overflow hooks
 // decide from, so a decision taken before a crash is taken again after
-// it. A store that will not answer classifies as imageless: a read
-// that fails must not strand the conversation (the `strand_facts`
-// rule above).
+// it. Dispatch classifies the request context instead, which is that
+// projection after the `context` hook; the run-start digests are
+// durable, so the two agree unless an extension rewrites the current
+// turn, and then the request is placeholdered rather than sent blind.
+// A store that will not answer classifies as imageless: a read that
+// fails must not strand the conversation (the `strand_facts` rule
+// above).
 fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
   let identity = query.configuration.model
   let facts = model_facts(config, identity)
@@ -692,7 +694,7 @@ fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
         context_window: facts.context_window,
         api: facts.api,
       )
-    True -> admit_image_bearing(config, query, identity, facts)
+    True -> admit_image_bearing(config, query, identity)
   }
 }
 
@@ -700,13 +702,11 @@ fn admit(config: Config, query: effects.AdmissionQuery) -> RequestAdmission {
 // cannot read: through the vision chain when one resolves and its
 // head reads images, or refused in band. The head's facts — not the
 // strand's — are what the request is admitted against, because they
-// are the facts of the identity the request will actually reach. The
-// unused `facts` argument names the arm the caller already took.
+// are the facts of the identity the request will actually reach.
 fn admit_image_bearing(
   config: Config,
   query: effects.AdmissionQuery,
   identity: ModelIdentity,
-  _facts: ModelFacts,
 ) -> RequestAdmission {
   case gateway.resolve(config.gateway, model.Vision) {
     Error(_missing) -> vision.no_route_refusal(identity)
@@ -714,7 +714,10 @@ fn admit_image_bearing(
       case config.facts(identity_of(head)) {
         Ok(#(_resolved, _api, catalog.TextOnly)) ->
           vision.blind_route_refusal(head)
-        _ -> {
+
+        // A head the catalogue declares reading, or one it does not
+        // know, which reads by the same default.
+        Ok(#(_resolved, _api, catalog.ReadsImages)) | Error(Nil) -> {
           let head_facts = model_facts(config, identity_of(head))
           Admitted(
             stream_options: query.stream_options,
@@ -733,8 +736,8 @@ fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
   ModelIdentity(provider: resolved.provider, model_id: resolved.model_id)
 }
 
-// Whether the newest user message on this operation's strand
-// projection carries an image.
+// Whether the current turn of this operation's strand projection
+// carries an image.
 fn image_bearing(config: Config, operation: OpId) -> Bool {
   case notes.strand_of(config.session, operation) {
     Error(Nil) -> False
