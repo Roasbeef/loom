@@ -15,7 +15,6 @@ import broker/exec
 import broker/policy
 import broker/token
 import client/catalog
-import client/checkpoint
 import client/escalate
 import client/vision as client_vision
 import client/wiring
@@ -570,6 +569,59 @@ pub fn catalogue_vision_defaults_to_text_only_test() {
   assert entry.vision == catalog.TextOnly
 }
 
+pub fn catalogue_refuses_a_text_only_vision_chain_test() {
+  let assert Error(reason) =
+    catalog.parse(
+      "[models.texty]\n"
+      <> "dialect = \"anthropic\"\n"
+      <> "api_key_env = \"TEXT_KEY\"\n"
+      <> "model_id = \"loom-text\"\n"
+      <> "context_window = 200000\n"
+      <> "max_output_tokens = 8192\n"
+      <> "\n"
+      <> "[models.eyes]\n"
+      <> "dialect = \"anthropic\"\n"
+      <> "api_key_env = \"VISION_KEY\"\n"
+      <> "model_id = \"loom-eyes\"\n"
+      <> "context_window = 64000\n"
+      <> "max_output_tokens = 8192\n"
+      <> "vision = true\n"
+      <> "\n"
+      <> "[roles]\n"
+      <> "main = [\"texty\"]\n"
+      <> "vision = [\"eyes\", \"texty\"]\n",
+    )
+  assert string.contains(reason, "roles.vision")
+  assert string.contains(reason, "\"texty\"")
+  assert string.contains(reason, "vision = false")
+}
+
+pub fn catalogue_accepts_an_all_reading_vision_chain_test() {
+  let assert Ok(catalogue) =
+    catalog.parse(
+      "[models.texty]\n"
+      <> "dialect = \"anthropic\"\n"
+      <> "api_key_env = \"TEXT_KEY\"\n"
+      <> "model_id = \"loom-text\"\n"
+      <> "context_window = 200000\n"
+      <> "max_output_tokens = 8192\n"
+      <> "\n"
+      <> "[models.eyes]\n"
+      <> "dialect = \"anthropic\"\n"
+      <> "api_key_env = \"VISION_KEY\"\n"
+      <> "model_id = \"loom-eyes\"\n"
+      <> "context_window = 64000\n"
+      <> "max_output_tokens = 8192\n"
+      <> "vision = true\n"
+      <> "\n"
+      <> "[roles]\n"
+      <> "main = [\"texty\"]\n"
+      <> "vision = [\"eyes\"]\n",
+    )
+  let assert Ok(chain) = list.key_find(catalogue.roles, model.Vision)
+  assert chain == ["eyes"]
+}
+
 pub fn catalogue_refuses_a_non_boolean_vision_test() {
   let assert Error(reason) =
     catalog.parse(
@@ -589,22 +641,38 @@ pub fn catalogue_refuses_a_non_boolean_vision_test() {
 
 // --- the classification ---------------------------------------------------
 
-// The reminder is the harness speaking; a reminder appended after an
-// image-bearing turn must not mask the image from the classifier.
-pub fn reminder_does_not_mask_the_image_test() {
-  let #(now, _clock) = clock.read(clock.fixed(at: 99))
-  let reminder =
-    message.UserMessage(
-      content: [
-        message.UserText(
-          text: checkpoint.reminder_text(1200),
-          text_signature: None,
-        ),
-      ],
-      timestamp: now,
-      origin: None,
-    )
-  assert client_vision.image_bearing([image_user(), reminder])
+// The current-turn boundary is what keeps run-start injections from
+// masking the operator's image: the notes digest, the memory digest
+// and the reminder are all user messages the harness appends *after*
+// the operator's prompt, and a newest-user-message walk would
+// classify one of them instead — the exact silent placeholder the
+// rule exists to remove. Any user message in the unanswered segment
+// counts, injections included, which is the whole point.
+pub fn a_run_start_injection_does_not_mask_the_image_test() {
+  let digest = text_user("Your own notes for strand `main`, newest first.")
+  let reminder = text_user("[loom] Your context window is nearly full.")
+  assert client_vision.image_bearing([image_user(), digest, reminder])
+}
+
+// A reminder alone — the operator's turn answered, only the harness
+// speaking since — is not image-bearing.
+pub fn a_lone_reminder_classifies_imageless_test() {
+  assert !client_vision.image_bearing([
+    image_user(),
+    assistant_answer(),
+    text_user("[loom] Your context window is nearly full."),
+  ])
+}
+
+// Once an assistant has answered the image turn, the image is a past
+// turn: a text follow-up routes to the strand's own model, and the
+// placeholderer — not the router — handles the image.
+pub fn an_answered_image_is_a_past_turn_test() {
+  assert !client_vision.image_bearing([
+    image_user(),
+    assistant_answer(),
+    text_user("and in prose?"),
+  ])
 }
 
 pub fn text_only_projection_classifies_imageless_test() {

@@ -1385,8 +1385,14 @@ catalogue without opening runtimes. Explicit admission invokes
   `TextOnly`. Every other request to a text-only identity carries its
   `UserImage` blocks replaced with a text placeholder, in the transient
   projection only; the durable transcript keeps the images. The
-  classifier skips the notes reminder, which is the harness speaking,
-  not the operator. `Config.facts` carries the entry's
+  classifier walks the *current turn* — everything after the newest
+  settled assistant response — because the run-start hooks inject the
+  notes and memory digests as user messages after the operator's
+  prompt, and a newest-user-message walk would classify a digest and
+  silently placeholder the image, the exact failure the rule removes.
+  The catalogue parse refuses a `vision` chain that names a
+  `vision = false` entry, so a retryable walk cannot deliver an image
+  to a model that cannot read it. `Config.facts` carries the entry's
   `catalog.ImageReading` beside its resolved facts and api, so the
   capability and the accounting read one seam and cannot drift.
   the one conversion across it. `run_tool` always settles as

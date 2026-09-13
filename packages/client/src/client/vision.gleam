@@ -46,14 +46,11 @@
 //// model (the model may need to refer back) and is placeholdered on a
 //// text-only one (the model cannot read it on any turn).
 
-import client/catalog.{type ImageReading}
-import client/checkpoint
 import core/message.{
   type AgentMessage, type UserBlock, UserImage, UserMessage, UserText,
 }
 import gleam/list
-import gleam/option.{type Option, None, Some}
-import gleam/string
+import gleam/option.{type Option, None}
 import machine/operation.{OperationError}
 import machine/planner.{type RequestAdmission, AdmissionUnavailable}
 import machine/strand.{type ModelIdentity}
@@ -79,16 +76,25 @@ pub fn placeholder(mime_type: String) -> UserBlock {
   )
 }
 
-/// Whether the newest user message of a projection carries an image —
-/// the classification admission routes on.
+/// Whether the projection's *current turn* carries an image — the
+/// classification admission routes on.
 ///
-/// The walk skips the notes reminder: `wiring`'s `context` slot appends
-/// the reminder as a user message *after* the operator's turn, and a
-/// reminder is the harness speaking, not the operator — an
-/// image-bearing turn right before a reminder still decides the
-/// request's shape. The reminder is recognized by the checkpoint's own
-/// fixed prefix, which nothing else in the harness writes user messages
-/// under.
+/// The current turn is everything after the newest settled assistant
+/// message. That boundary, rather than "the newest user message", is
+/// what makes the classification hold on a real session: the run-start
+/// hooks inject the notes digest, the memory digest and extension
+/// notes as user messages *after* the operator's prompt, so the
+/// newest-user-message walk would classify a digest and silently
+/// placeholder the operator's image — the exact failure the rule
+/// exists to remove. Injections are harness-authored context inside the
+/// current turn only when the operator's image is there too, and
+/// everything an assistant has already answered is a past turn whose
+/// images a vision model may still read and a text-only one is
+/// placeholdered on anyway.
+///
+/// No prefix-sniffing and no authorship check: the boundary is the
+/// conversation's own shape, so a reminder, a digest, or a future
+/// injection kind needs no enumeration here.
 ///
 /// ## Examples
 ///
@@ -97,39 +103,36 @@ pub fn placeholder(mime_type: String) -> UserBlock {
 /// ```
 ///
 pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
-  case newest_user_blocks(messages) {
-    Some(blocks) -> list.any(blocks, is_image)
-    None -> False
-  }
+  current_turn(messages)
+  |> list.any(fn(entry) {
+    case entry {
+      UserMessage(content:, ..) -> list.any(content, is_image)
+      _ -> False
+    }
+  })
+}
+
+// The messages after the newest settled assistant response, or the
+// whole projection when no assistant has answered yet — a fresh
+// session's first turn is all current turn.
+fn current_turn(messages: List(AgentMessage)) -> List(AgentMessage) {
+  // The tail after the newest assistant message, when one has
+  // settled; `list.take_right` over the reversed list is the same
+  // walk without naming the constructor at all.
+  messages
+  |> list.reverse
+  |> list.take_while(fn(entry) {
+    case entry {
+      UserMessage(..) -> True
+      _ -> False
+    }
+  })
+  |> list.reverse
 }
 
 fn is_image(block: UserBlock) -> Bool {
   case block {
     UserImage(..) -> True
-    _ -> False
-  }
-}
-
-fn newest_user_blocks(messages: List(AgentMessage)) -> Option(List(UserBlock)) {
-  messages
-  |> list.reverse
-  |> list.find_map(fn(entry) {
-    case entry {
-      UserMessage(content:, ..) ->
-        case is_reminder(content) {
-          True -> Error(Nil)
-          False -> Ok(content)
-        }
-      _ -> Error(Nil)
-    }
-  })
-  |> option.from_result
-}
-
-fn is_reminder(blocks: List(UserBlock)) -> Bool {
-  case blocks {
-    [UserText(text:, ..)] ->
-      string.starts_with(text, checkpoint.reminder_prefix)
     _ -> False
   }
 }
@@ -173,23 +176,6 @@ pub fn blind_route_refusal(head: ResolvedModel) -> RequestAdmission {
       <> ", which the catalogue declares unable to read images",
     details: None,
   ))
-}
-
-/// Whether a vision head actually reads images, as far as the harness
-/// knows.
-///
-/// `None` is an identity the catalogue does not know — a chain routed
-/// through a gateway but not through this host's catalogue. The
-/// operator routed the chain, and routing `vision` is the operator's own
-/// statement that its head reads images, so an unknown head is trusted:
-/// the only refusal here is a *positive* `TextOnly` declaration on the
-/// very entry the operator named as the vision model.
-pub fn head_reads_images(reading: Result(ImageReading, Nil)) -> Bool {
-  case reading {
-    Ok(catalog.ReadsImages) -> True
-    Ok(catalog.TextOnly) -> False
-    Error(Nil) -> True
-  }
 }
 
 /// The dispatch target for one image-bearing request whose strand model

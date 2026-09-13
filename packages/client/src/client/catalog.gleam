@@ -787,6 +787,18 @@ fn parse_roles(
       let #(role_name, value) = entry
       use role <- result.try(parse_role(role_name))
       use chain <- result.try(parse_chain(role_name, value, models))
+
+      // A vision chain is the operator's contract that every entry in
+      // it reads images; an entry declaring `vision = false` in that
+      // chain would let a retryable failure walk an image straight to a
+      // model that cannot read it, silently — the one outcome the
+      // `vision` key exists to make impossible. Refuse it at parse,
+      // role and entry named, the same strictness a typoed model name
+      // gets.
+      use Nil <- result.try(case role {
+        model.Vision -> vision_chain_all_read(chain, models)
+        _ -> Ok(Nil)
+      })
       Ok(#(role, chain))
     }),
   )
@@ -848,6 +860,30 @@ fn parse_chain(
     }
   })
   |> result.map(fn(_nil) { names })
+}
+
+// The vision chain's own strictness: every entry it names declares
+// `vision = true`. Reached only for the `vision` role, where a
+// text-only entry would let a retryable failure walk an image to a
+// model that cannot read it — the silent drop the key exists to
+// refuse. The entry exists by the time this runs; `parse_chain`
+// already rejected unknown names.
+fn vision_chain_all_read(
+  chain: List(String),
+  models: List(CatalogModel),
+) -> Result(Nil, String) {
+  list.try_each(chain, fn(name) {
+    case list.find(models, fn(entry) { entry.name == name }) {
+      Ok(CatalogModel(vision: TextOnly, ..)) ->
+        Error(
+          "roles.vision names \""
+          <> name
+          <> "\", which declares vision = false; a vision chain must list"
+          <> " only entries that read images",
+        )
+      _ -> Ok(Nil)
+    }
+  })
 }
 
 // Shared strictness helper: the present keys must all be known ones.

@@ -25,9 +25,13 @@ import broker/policy
 import broker/token
 import client/catalog
 import client/escalate
+import client/notes
 import client/wiring
 import core/clock
+import core/json
 import core/message
+import core/register
+import core/tx.{SetRegister, Tx}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -45,6 +49,7 @@ import provider/http
 import provider/model
 import provider/secret
 import runtime/api
+import runtime/effects as runtime_effects
 import session/session.{type Session}
 import storage/storage
 import support/rig
@@ -357,6 +362,73 @@ pub fn an_image_prompt_routes_to_the_vision_model_test() {
   assert model_id == vision_model_id
 
   let assert Ok(Nil) = api.close(runtime)
+}
+
+// The reviewer's bug, reproduced live (issue #358's own failure mode
+// in its most common configuration): the run-start hooks inject the
+// notes digest as a user message AFTER the operator's image prompt, so
+// a newest-user-message classifier would see the digest, classify the
+// request imageless, and silently placeholder the operator's image on
+// a text-only model. The current-turn boundary is the fix, and this
+// test holds it: with a digest injected at run start, the image still
+// routes to the vision model.
+pub fn a_run_start_digest_does_not_mask_the_image_test() {
+  let counter = tally()
+  let sess = memory_session()
+  let seeded =
+    wiring_config(routed_gateway(transport(counter, image_answer)), sess)
+  let assert Ok(_committed) =
+    storage.commit(
+      sess.store,
+      Tx(
+        writes: [
+          SetRegister(
+            ns: register.FactCustom,
+            key: "agent/main/plan",
+            value: register.RegisterValue(payload: json.String("keep it short")),
+          ),
+        ],
+        expected: [],
+      ),
+    )
+    as "the fixture note must commit"
+  let effects =
+    wiring.build_effects(seeded)
+    |> with_digest_hooks(sess, seeded.clock)
+  let assert Ok(runtime) =
+    api.open(sess, effects, api.default_options(configuration()))
+    as "the digest-injecting session must open"
+  let assert Ok(op) = api.prompt(runtime, [image_prompt()])
+  let assert Ok(outcome) = api.await_result(runtime, op, within_ms: 30_000)
+    as "the image run must reach a terminal result under injections"
+  let assert operation.RunLastResult(
+    outcome: operation.RunCompleted(..),
+    final_assistant: Some(_),
+    ..,
+  ) = outcome
+
+  // The digest was injected (the projection carries it), and still the
+  // vision model answered: the wire saw the vision host, the image
+  // bytes intact, and never the text host.
+  assert requests_to(counter, vision_host) == 1
+  assert requests_to(counter, text_host) == 0
+  let #(_, body) = the_one_request_to(counter, vision_host)
+  assert string.contains(body, image_base64)
+
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+// The production composition: `notes.digest_hooks` over the built
+// record, the same wrap `client/serve` applies.
+fn with_digest_hooks(
+  effects: runtime_effects.Effects,
+  sess: Session,
+  clock: clock.Clock,
+) -> runtime_effects.Effects {
+  runtime_effects.Effects(
+    ..effects,
+    hooks: notes.digest_hooks(effects.hooks, sess, clock),
+  )
 }
 
 // --- the refusal ----------------------------------------------------------
