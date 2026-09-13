@@ -37,7 +37,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -596,6 +596,40 @@ fn count(name) {
   value
 }
 
+/// The two VM-global counters the leak detector compares between cycles.
+///
+/// The atom table only grows, and two things grow it: a module's first
+/// load, which interns every atom in its code, and an atom created at
+/// runtime, which is the leak the soak exists to catch. Sampling the
+/// loaded-module count beside the atom count lets the detector tell the
+/// two apart instead of hoping two warm-up cycles touched every module.
+type Footprint {
+  Footprint(atoms: Int, modules: Int)
+}
+
+// A module loaded for the first time during a measured cycle interned its
+// atoms, which is growth the churn did not cause; the baseline moves with it
+// and the next cycle is measured against the new pair. A leak that hid
+// behind such a load in one cycle is still caught by the cycles after it,
+// since a per-incarnation leak recurs and a first load does not.
+fn settled(warmed: Footprint, footprint: Footprint) -> Option(Footprint) {
+  case footprint.modules > warmed.modules {
+    True -> Some(footprint)
+    False -> {
+      assert footprint.atoms == warmed.atoms
+        as "warmed incarnation churn creates no permanent atoms"
+      Some(warmed)
+    }
+  }
+}
+
+fn loaded_modules() -> Int {
+  let assert Ok(modules) =
+    decode.run(ffi_soak.all_loaded(), decode.list(decode.dynamic))
+    as "code:all_loaded/0 answers a list"
+  list.length(modules)
+}
+
 fn mailbox(pid) {
   let assert Ok(value) =
     decode.run(
@@ -711,11 +745,13 @@ fn sample(
   latency,
 ) {
   let atoms = count("atom_count")
+  let modules = loaded_modules()
   let fields = [
     #("scope", json.String("shared_test_vm")),
     #("stage", json.String(stage)),
     #("cycle", json.Int(cycle)),
     #("atoms", json.Int(atoms)),
+    #("modules", json.Int(modules)),
     #("beam_processes", json.Int(count("process_count"))),
     #("beam_ports", json.Int(count("port_count"))),
     #("beam_allocated_bytes", json.Int(ffi_soak.memory(atom.create("total")))),
@@ -729,7 +765,7 @@ fn sample(
     json.to_string(json.Object(list.append(fields, os_metrics(directory))))
   assert simplifile.append(directory <> "/daemon-soak.jsonl", encoded <> "\n")
     == Ok(Nil)
-  atoms
+  Footprint(atoms:, modules:)
 }
 
 fn close_a(
@@ -895,14 +931,10 @@ fn drive(
         as "B remains resident through every A retirement"
       assert current.runtime.tree.supervisor == b.runtime.tree.supervisor
       assert process.is_alive(b_helper)
-      let atoms = sample(directory, "retired", cycle, daemon, b, 0, latency)
+      let footprint = sample(directory, "retired", cycle, daemon, b, 0, latency)
       case baseline, cycle >= 2 {
-        Some(warmed), True -> {
-          assert atoms == warmed
-            as "warmed incarnation churn creates no permanent atoms"
-          baseline
-        }
-        _, False -> Some(atoms)
+        Some(warmed), True -> settled(warmed, footprint)
+        _, False -> Some(footprint)
         None, True -> panic as "two warmup cycles establish the atom baseline"
       }
     })
