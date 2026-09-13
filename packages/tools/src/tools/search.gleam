@@ -1349,6 +1349,10 @@ fn missing_or_backend(
 fn root_error(root: String, error: simplifile.FileError) -> SearchError {
   case error {
     simplifile.Enotdir -> NotADirectory(path: root)
+
+    // The root was there for the lstat a moment ago; a directory removed
+    // between the two calls is still a missing path, not a backend fault.
+    simplifile.Enoent -> Missing(path: root)
     other -> backend_error(root, other)
   }
 }
