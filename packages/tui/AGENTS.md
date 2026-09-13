@@ -71,6 +71,15 @@ that tree separately from the self-contained server.
   retains proved ancestry so unrelated reviewer traffic cannot evict a missing
   parent's endpoint. The newer end is evicted when paging backward past the
   cache bound. End with an empty composer returns to the latest captured leaf.
+- A strand switch parks the outgoing strand's scrollback in
+  `Model.parked_scrollback` and restores the incoming strand's, so switching
+  never discards loaded history. The window is per strand because ancestry is,
+  and the cut window alone holds only the newest hundred records of the whole
+  session across every strand. `render_cut` prunes the parked dictionary to
+  the strands the cut still carries, and adopting a different session clears
+  it, because strand names are reused. `history_view.capture` still discards a
+  window whose strand does not match, as the safety net for paths that change
+  strands without going through the switch.
 - `tui/transcript_anchor.Row` identifies a durable entry and its source block
   or tool call. Wrapped row offsets relocate the reading position through
   incoming output, older pages, detail changes and width changes. Equal text

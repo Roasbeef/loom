@@ -531,6 +531,19 @@ pub type Model {
     records: List(protocol.EntryRecord),
     /// Bounded scrollback is independent of the authoritative live cut.
     scrollback: history_view.State,
+    /// Retained scrollback of every strand other than the active one, keyed
+    /// by strand name. The window is per strand because ancestry is: the
+    /// projection walks one leaf's parent chain, and the six hundred
+    /// descriptors retained for `main` say nothing about a sub-agent. A
+    /// switch therefore has to put one window down and pick another up.
+    /// Parking here rather than holding a window per strand inside
+    /// `history_view` keeps that module owning exactly one reading endpoint,
+    /// which is what `freeze`, `older` and `accept` are written against;
+    /// only the switch knows that two endpoints exist. `history_view.capture`
+    /// still discards a window whose strand does not match, which remains the
+    /// safety net for every path that changes strands without coming through
+    /// here.
+    parked_scrollback: dict.Dict(String, history_view.State),
     notice: String,
     /// A complete queue draft never borrows the ordinary composer.
     queue_editor: queue_editor.State,
@@ -986,6 +999,7 @@ pub fn new_model_with_clock(
     ],
     records: [],
     scrollback: history_view.empty(),
+    parked_scrollback: dict.new(),
     notice: "interactive design preview",
     queue_editor: queue_editor.new(),
     worktree: worktree_view.new(),
@@ -3860,6 +3874,12 @@ fn apply_replay_change(model: Model, change: attempt_replay.Change) -> Model {
           True -> history_view.cancel(model.scrollback)
           False -> history_view.empty()
         },
+        parked_scrollback: case
+          model.session == cut.attachment.expected.session
+        {
+          True -> model.parked_scrollback
+          False -> dict.new()
+        },
         note_board: None,
         approvals: [],
         inspecting_approval: None,
@@ -4765,10 +4785,19 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       // and a sent request keeps that identity rather than acquiring the new
       // session's.
       let model = retire_previous(model)
+
+      // Parked windows are keyed by strand name alone, and two sessions reuse
+      // the same names. Adopting a different session must drop them, or a
+      // later switch to `main` would restore another session's ancestry.
       let model = case model.session == cut.attachment.expected.session {
         True ->
           Model(..model, scrollback: history_view.cancel(model.scrollback))
-        False -> Model(..model, scrollback: history_view.empty())
+        False ->
+          Model(
+            ..model,
+            scrollback: history_view.empty(),
+            parked_scrollback: dict.new(),
+          )
       }
 
       // Only then is the old inbox drained. Draining first would discard
@@ -5220,6 +5249,14 @@ fn render_cut(
       )
       && !snapshot_view.has_result(view, tail.strand, tail.operation)
     })
+
+  // A strand the cut no longer carries cannot be selected again, so its
+  // parked window is unreachable. Dropping it here is what bounds the
+  // dictionary over a long session that retires sub-agents continuously.
+  let parked =
+    dict.filter(model.parked_scrollback, fn(strand, _) {
+      is_known_strand(view.strands, strand)
+    })
   Model(
     ..model,
     captured: Some(#(cut, view)),
@@ -5234,6 +5271,7 @@ fn render_cut(
     ),
     records: branch.records,
     scrollback: history,
+    parked_scrollback: parked,
     activity_started_ms: case same_operation {
       True -> model.activity_started_ms
       False -> None
@@ -9507,11 +9545,28 @@ fn is_known_strand(strands: List(protocol.Strand), name: String) -> Bool {
 
 fn switch_active_strand(model: Model, strand: String) -> Model {
   let model = cancel_pending(model, "target change from " <> model.session)
+
+  // The outgoing strand's window is put down before the incoming one is
+  // picked up, so the switch never discards loaded history. Without this the
+  // only surviving history would be whatever `cut.window` holds, and that is
+  // the newest hundred records of the whole session across every strand: with
+  // two busy sub-agents running, a return to `main` would show one or two of
+  // its own entries and then spend the rest of the session scanning the
+  // global sequence space backwards to find the ancestry it already had.
+  let parked =
+    dict.insert(model.parked_scrollback, model.active_strand, model.scrollback)
+  let restored = dict.get(parked, strand) |> result.unwrap(history_view.empty())
+
+  // The incoming strand's window is held directly from here on, so its parked
+  // copy is removed rather than left to go stale behind the live one.
+  let parked = dict.delete(parked, strand)
   let selected =
     Model(
       ..model,
       overlay: NoOverlay,
       active_strand: strand,
+      parked_scrollback: parked,
+      scrollback: restored,
       queued: [],
       awaiting_outcome: None,
       current_model: "loading…",
