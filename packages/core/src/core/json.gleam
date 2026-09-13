@@ -308,11 +308,9 @@ fn excerpt(rest: BitArray) -> String {
       // Up to 96 bytes covers 24 codepoints of any width; a cut that lands
       // inside a codepoint is backed off until the prefix is valid UTF-8.
       let window = int.min(size, 96)
-      let shown = valid_prefix(rest, window) |> string.slice(0, 24)
-      case
-        window < size
-        || string.length(shown) < string.length(valid_prefix(rest, window))
-      {
+      let prefix = valid_prefix(rest, window)
+      let shown = string.slice(prefix, 0, 24)
+      case window < size || string.length(shown) < string.length(prefix) {
         True -> shown <> "…"
         False -> shown
       }
@@ -551,14 +549,13 @@ fn cut(
   length: Int,
 ) -> Result(#(String, BitArray), CorruptionReport) {
   let size = bit_array.byte_size(cursor.rest)
-  let taken =
-    bit_array.slice(cursor.rest, 0, length)
-    |> result.try(bit_array.to_string)
-  let after = bit_array.slice(cursor.rest, length, size - length)
-  case taken, after {
-    Ok(text), Ok(rest) -> Ok(#(text, rest))
-    _, _ -> Error(fail(cursor, "a valid utf-8 string"))
+  let pieces = {
+    use run <- result.try(bit_array.slice(cursor.rest, 0, length))
+    use text <- result.try(bit_array.to_string(run))
+    use after <- result.try(bit_array.slice(cursor.rest, length, size - length))
+    Ok(#(text, after))
   }
+  result.map_error(pieces, fn(_) { fail(cursor, "a valid utf-8 string") })
 }
 
 fn parse_escape(
@@ -686,11 +683,11 @@ fn parse_fraction(
 ) -> Result(#(String, Cursor), CorruptionReport) {
   case cursor.rest {
     <<0x2E, rest:bits>> -> {
-      let cursor = advance(cursor, rest, by: 1)
-      use #(digits, cursor) <- result.try(take_digits(cursor))
+      let after = advance(cursor, rest, by: 1)
+      use #(digits, after) <- result.try(take_digits(after))
       case digits {
         "" -> Error(fail(cursor, "digits after the decimal point"))
-        _ -> Ok(#(digits, cursor))
+        _ -> Ok(#(digits, after))
       }
     }
     _ -> Ok(#("", cursor))
