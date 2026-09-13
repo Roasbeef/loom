@@ -126,7 +126,9 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     // into (`client/serve_test`), and a quote is escaped there.
     prompt_snippet: option.Some(
       "`bash` runs a shell command in the workspace, jailed and offline; "
-      <> "`mode: background` starts it as a job instead.",
+      <> "`mode: background` starts it as a job instead. A pipeline that "
+      <> "exists to find, filter, or count across files belongs in "
+      <> "`code_mode` with `cap/search`, which answers structured.",
     ),
     schema: tool.object_schema(
       [
