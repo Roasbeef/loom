@@ -1,6 +1,7 @@
 import core/json
 import gleam/list
 import gleam/string
+import gleam/string_tree
 import support/generate
 
 // --- parsing basics -----------------------------------------------------
@@ -251,4 +252,78 @@ pub fn adversarial_corpus_test() {
   list.each(corpus, fn(text) {
     let assert Error(_report) = json.parse(text)
   })
+}
+
+// --- the byte-run string codec ------------------------------------------
+
+// The run-based encoder must print exactly what the codepoint encoder
+// prints. The oracle is kept in the module for this comparison; the
+// strings mix escapes at the start, the middle and the end of a run with
+// multi-byte neighbours on both sides, which is where a byte scan that
+// split a codepoint or missed an escape would show.
+pub fn run_encoder_matches_the_codepoint_oracle_test() {
+  let crafted = [
+    "",
+    "\"",
+    "\\",
+    "plain ascii",
+    "quote \" inside",
+    "tab\there and newline\nthere",
+    "\u{0001}control first",
+    "control last\u{001f}",
+    "ünïcödé \"quoted\" ünïcödé",
+    "日本語\\日本語",
+    "emoji 🎉 then \u{0008} then 🎉",
+    "\"\"\"\\\\\\",
+    "ends with a backslash\\",
+  ]
+  let #(generated, _seed) =
+    generate.list_of(generate.seed(23), 300, generate.small_string)
+  list.each(list.append(crafted, generated), fn(text) {
+    assert json.to_string(json.String(text))
+      == string_tree.to_string(json.build_string_by_codepoint(text))
+  })
+}
+
+// A parse must cut runs at the same places the encoder did and rebuild
+// the same string, escapes and multi-byte neighbours included.
+pub fn escapes_beside_multibyte_text_round_trip_test() {
+  let texts = [
+    "日本語\"日本語",
+    "🎉\\🎉",
+    "ü\nü\tü",
+    "a\u{0000}b",
+    "\"日本語\"",
+  ]
+  list.each(texts, fn(text) {
+    assert json.parse(json.to_string(json.String(text)))
+      == Ok(json.String(text))
+  })
+}
+
+// A raw control character inside a string is still a corruption report,
+// wherever in the run it sits.
+pub fn a_raw_control_character_is_corruption_test() {
+  let assert Error(_) = json.parse("\"ok\u{0001}\"")
+  let assert Error(_) = json.parse("\"日本語\u{001f}日本語\"")
+  let assert Error(_) = json.parse("\"\u{000a}\"")
+}
+
+// A long string with nothing to escape takes the fast path and comes back
+// byte for byte; one with a single escape in the middle takes the run path
+// and comes back the same.
+pub fn long_strings_round_trip_test() {
+  let clean =
+    string.repeat("the quick brown fox jumps over the lazy dog ", 2000)
+  assert json.parse(json.to_string(json.String(clean)))
+    == Ok(json.String(clean))
+  let escaped = clean <> "\"" <> clean
+  assert json.parse(json.to_string(json.String(escaped)))
+    == Ok(json.String(escaped))
+}
+
+// The report still counts the offset in codepoints, not bytes.
+pub fn a_report_offset_counts_codepoints_test() {
+  let assert Error(report) = json.parse("\"日本語\" x")
+  assert string.contains(report.subject, "codepoint offset 6")
 }

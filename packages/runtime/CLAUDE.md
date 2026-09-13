@@ -191,11 +191,19 @@ extended by the M3 runtime wave.
   four for a not-yet-priced message, pi's newest-durable-usage fold for
   a whole context, the one preparation builder, and the two signals
   built over them.
+- `runtime/effects.ThresholdQuery` — `{operation, strand, messages,
+  carried, previous_summary}`, asked at every checkpoint boundary. It
+  carries the strand's projection rather than asking the hook to read
+  one: the driver has projected the branch for the step already, and a
+  hook that projected again on its own was doing the step's largest
+  piece of work a second time (issue #359). The three trailing fields
+  are `hooks.Projected` spelled out, because `effects` sits beneath
+  `hooks`.
 - `runtime/effects.OverflowQuery` — `{operation, strand}`, asked once
   when a settlement classifies as a run's first context overflow. It
-  names the strand for the same reason `ThresholdQuery` does: a
-  preparation is built from a *strand's* durable projection, and one
-  `Effects` record serves every strand of a session.
+  names the strand because a preparation is built from a *strand's*
+  durable projection, and one `Effects` record serves every strand of a
+  session.
 - `runtime/escalation.{Escalation, CallScope, Action, Claim, Status,
   claimed, scoped_to, bound_to}` — the durable record of a broker denial
   awaiting a decision, its decision, and its single consumed
@@ -641,15 +649,22 @@ extended by the M3 runtime wave.
   `Hooks` and wraps the function already in the slot, calling it and
   adding to its result. A layer that set the slot instead would silently
   drop whatever the layer beneath it installed.
-- **The threshold is computed on every pass, and that is a cost.**
-  `PlannerInputs.threshold` is a value rather than a thunk (frozen, spec
-  Part 1), so an open operation pays one branch scan and one projection
-  per driver message. An idle strand never reaches `build_inputs`, and
-  `hooks.threshold` checks `settings.enabled` before calling a
-  projection at all, so compaction-off costs nothing; the scan stops at
-  the newest compaction, so its size is bounded by the very thing it
-  triggers. A memo keyed on the strand leaf's register seq is the
-  available fix if it ever shows in a profile.
+- **The threshold is computed on every pass, from one projection per
+  step.** `PlannerInputs.threshold` is a value rather than a thunk
+  (frozen, spec Part 1), so an open operation projects its branch on
+  every driver message. The driver makes that projection once, in
+  `plan`, hands it to the threshold hook inside `ThresholdQuery` and
+  reads it again for the generation request, so the request and the
+  threshold see one branch and the branch is scanned once. The scan is
+  memoised in `State.projection`, keyed by the leaf it was made from:
+  a step whose leaf has not moved reuses it, and one whose leaf moved
+  forward scans only the entries past the cached leaf's seq and joins
+  them on when the oldest of them names the cached leaf as its parent
+  and none is a compaction; anything else, a rewind, a fork, a
+  compaction, is a full rescan. It caches write-once entries and
+  nothing else, and a fresh incarnation starts without one, which is
+  the replay rule every projection here is held to. Before this a
+  1,200-entry branch was decoded three times per step (issue #359).
 - **Read-only context inspection shares the compaction projection.**
   `hooks.project_from_scan` accepts a newest-first branch stopped inclusively at
   compaction, so observers can capture their own immutable endpoint without

@@ -29,3 +29,17 @@ pub fn process_info(pid: Pid, item: Atom) -> Dynamic
 /// `memory(atom.create("total"))` reports allocated bytes across the test VM.
 @external(erlang, "erlang", "memory")
 pub fn memory(item: Atom) -> Int
+
+/// Lists every module the VM has loaded so far, one pair per module.
+///
+/// The atom-leak detector reads only the length. A module's first load
+/// interns its name, its function names and every atom literal in its
+/// code, so a growth in this list is the one benign reason the atom
+/// table may grow between two samples of an otherwise warmed VM.
+///
+/// ## Examples
+///
+/// `all_loaded()` grows by one after the first call into a lazily loaded
+/// module.
+@external(erlang, "code", "all_loaded")
+pub fn all_loaded() -> Dynamic

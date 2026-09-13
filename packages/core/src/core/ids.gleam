@@ -508,56 +508,41 @@ fn parse_uuid(text: String) -> Result(Uuid, CorruptionReport) {
 
 // Parses exactly `width` hexadecimal digits. Stricter than
 // `int.base_parse`, which would accept signs and mixed lengths.
+// Hex digits are ASCII, so the group is walked as bytes: a byte pattern
+// advances a match context without allocating, where a grapheme walk made
+// one binary per digit and was a visible share of every branch decode
+// (issue #359). A byte outside the hex ranges, multi-byte text included,
+// fails the digit test rather than being mistaken for one.
 fn parse_hex(text: String, width: Int) -> Result(Int, Nil) {
-  parse_hex_loop(string.to_graphemes(text), width, 0)
+  parse_hex_loop(<<text:utf8>>, width, 0)
 }
 
-// The width is counted down through the digits rather than measured
-// first. `list.length` walks the whole string to answer a question about
-// its first `width` characters, and this runs per parsed id; counting
-// down settles both ways of being wrong — a place missing, or a digit
-// past the width — at the bound itself.
 fn parse_hex_loop(
-  digits: List(String),
+  digits: BitArray,
   remaining: Int,
   accumulator: Int,
 ) -> Result(Int, Nil) {
   case digits, remaining {
-    [], 0 -> Ok(accumulator)
+    <<>>, 0 -> Ok(accumulator)
 
-    // Short: the text ran out with places still owed.
-    [], _ -> Error(Nil)
+    <<>>, _ -> Error(Nil)
 
-    // Long: a digit sits past the width, which the length check caught
-    // and a bare fold would have silently consumed.
-    [_, ..], 0 -> Error(Nil)
-    [digit, ..rest], _ ->
+    _, 0 -> Error(Nil)
+    <<digit, rest:bits>>, _ ->
       case hex_digit_value(digit) {
         Ok(value) ->
           parse_hex_loop(rest, remaining - 1, accumulator * 16 + value)
         Error(Nil) -> Error(Nil)
       }
+    _, _ -> Error(Nil)
   }
 }
 
-fn hex_digit_value(digit: String) -> Result(Int, Nil) {
+fn hex_digit_value(digit: Int) -> Result(Int, Nil) {
   case digit {
-    "0" -> Ok(0)
-    "1" -> Ok(1)
-    "2" -> Ok(2)
-    "3" -> Ok(3)
-    "4" -> Ok(4)
-    "5" -> Ok(5)
-    "6" -> Ok(6)
-    "7" -> Ok(7)
-    "8" -> Ok(8)
-    "9" -> Ok(9)
-    "a" | "A" -> Ok(10)
-    "b" | "B" -> Ok(11)
-    "c" | "C" -> Ok(12)
-    "d" | "D" -> Ok(13)
-    "e" | "E" -> Ok(14)
-    "f" | "F" -> Ok(15)
+    _ if digit >= 0x30 && digit <= 0x39 -> Ok(digit - 0x30)
+    _ if digit >= 0x61 && digit <= 0x66 -> Ok(digit - 0x61 + 10)
+    _ if digit >= 0x41 && digit <= 0x46 -> Ok(digit - 0x41 + 10)
     _ -> Error(Nil)
   }
 }

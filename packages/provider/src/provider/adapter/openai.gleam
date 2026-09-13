@@ -512,7 +512,7 @@ fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
 }
 
 fn excerpt(text: String) -> String {
-  case string.length(text) > 400 {
+  case string.byte_size(text) > 400 && string.length(text) > 400 {
     True -> string.slice(text, 0, 400) <> "…"
     False -> text
   }

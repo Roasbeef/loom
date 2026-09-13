@@ -319,8 +319,24 @@ pub type AdmissionQuery {
 }
 
 /// The threshold-compaction query answered at every checkpoint boundary.
+///
+/// It carries the strand's projection rather than asking the hook to read
+/// one. The driver has projected the branch for this step already, and a
+/// projection is a scan and decode of every entry on the branch, so a
+/// hook that projected again on its own was doing the step's largest
+/// piece of work a second time (issue #359). `messages` is the projected
+/// context, `carried` how many of its head messages the latest compaction
+/// carried forward, and `previous_summary` that compaction's summary; the
+/// three are `runtime/hooks.Projected` by another name, spelled out here
+/// because this module sits beneath that one.
 pub type ThresholdQuery {
-  ThresholdQuery(operation: OpId, strand: String)
+  ThresholdQuery(
+    operation: OpId,
+    strand: String,
+    messages: List(AgentMessage),
+    carried: Int,
+    previous_summary: Option(String),
+  )
 }
 
 /// The overflow-preparation query, asked once when a settled response
