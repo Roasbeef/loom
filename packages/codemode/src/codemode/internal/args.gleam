@@ -121,6 +121,106 @@ pub fn binary(value: MsgPackValue, key: String) -> Result(BitArray, CapDenial) {
   }
 }
 
+/// One field of a call's argument map, as a whole number.
+///
+/// A msgpack float is refused rather than rounded: every integer
+/// argument on this wire is a bound or a line number, and a caller that
+/// sent `2.5` for one of those meant something the harness cannot
+/// recover, so guessing which way to round would answer a question
+/// nobody asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // args.int(request.args, "max_entries")
+/// ```
+///
+pub fn int(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
+  use found <- result.try(field(value, key))
+  case found {
+    msgpack.IntValue(number) -> Ok(number)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..)
+    | msgpack.MapValue(..) ->
+      Error(invalid("`" <> key <> "` must be a whole number"))
+  }
+}
+
+/// One field of a call's argument map, as a boolean.
+///
+/// Required rather than optional, and strictly a msgpack boolean: the
+/// prelude's own marshalling always writes the field, so an absent or
+/// differently-typed one means the two ends disagree about the wire
+/// rather than that a caller left a default in place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // args.bool(request.args, "include_hidden")
+/// ```
+///
+pub fn bool(value: MsgPackValue, key: String) -> Result(Bool, CapDenial) {
+  use found <- result.try(field(value, key))
+  case found {
+    msgpack.BoolValue(flag) -> Ok(flag)
+    msgpack.NilValue
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.ArrayValue(..)
+    | msgpack.MapValue(..) ->
+      Error(invalid("`" <> key <> "` must be true or false"))
+  }
+}
+
+/// One field of a call's argument map, as an array of text.
+///
+/// An empty array is a legitimate value and never a missing one — it is
+/// how a caller says "prune nothing" or "filter by no glob" — so the
+/// emptiness is the caller's to mean and this decoder does not judge it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // args.string_array(request.args, "prune")
+/// ```
+///
+pub fn string_array(
+  value: MsgPackValue,
+  key: String,
+) -> Result(List(String), CapDenial) {
+  use found <- result.try(field(value, key))
+  use items <- result.try(case found {
+    msgpack.ArrayValue(items:) -> Ok(items)
+    msgpack.NilValue
+    | msgpack.BoolValue(..)
+    | msgpack.IntValue(..)
+    | msgpack.FloatValue(..)
+    | msgpack.StringValue(..)
+    | msgpack.BinaryValue(..)
+    | msgpack.MapValue(..) ->
+      Error(invalid("`" <> key <> "` must be an array of text"))
+  })
+  list.try_map(items, fn(item) {
+    case item {
+      msgpack.StringValue(text) -> Ok(text)
+      msgpack.NilValue
+      | msgpack.BoolValue(..)
+      | msgpack.IntValue(..)
+      | msgpack.FloatValue(..)
+      | msgpack.BinaryValue(..)
+      | msgpack.ArrayValue(..)
+      | msgpack.MapValue(..) ->
+        Error(invalid("every entry of `" <> key <> "` must be text"))
+    }
+  })
+}
+
 /// One structurally invalid argument, as the denial a program reads.
 ///
 /// ## Examples

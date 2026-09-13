@@ -13,10 +13,17 @@ There are **four seams over one pipeline**, and a submission is vetted
 against exactly one of them (`vet/policy.Seam`). Three of them admit
 source that runs today; the fourth is frozen for a tier that does not
 exist. The *workspace* seam is
-`cap/{fs, proc, net, git, lsp, report, task, actor, kv}`, routed by
-`satellite.default_router` for the jailed `proc.run` and by
+`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
+search}`, routed by
+`satellite.default_router` for the jailed `proc.run`, by
 `codemode/workspace` for the harness-side `fs.read`, `fs.list` and
-`kv.*`. The *orchestration* seam is `cap/strand` + `cap/report` and
+`kv.*`, and by `codemode/search` for the four read-only `search.*` names.
+`codemode/search` is its own router rather than four more arms on
+`codemode/workspace` because the module a program imports is the unit of
+authorization: `cap/search` has no write arm, so a program that imports it
+instead of `cap/fs` has said so where vetting can see it, and the harness
+side keeps that split visible instead of asking a reader to subtract the
+write arms out of one list by eye. The *orchestration* seam is `cap/strand` + `cap/report` and
 nothing else, routed by `codemode/orchestration` onto the Agency closures
 the `agent_*` tools call. `report.emit` is the one capability **both**
 seams service, by one mechanism (`codemode/artifact`), because
