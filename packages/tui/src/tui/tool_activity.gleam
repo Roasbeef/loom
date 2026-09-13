@@ -135,7 +135,17 @@ fn running_batch(entries: List(entry.Entry), batch: operation.ToolBatch) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert tool_activity.regroups(entry.CustomEntry(..)) == False
+/// let #(id, _) = ids.mint_entry(generator)
+/// let note =
+///   entry.CustomEntry(
+///     id:,
+///     parent: None,
+///     seq: 1,
+///     ts: 0,
+///     custom_type: "note",
+///     data: None,
+///   )
+/// assert tool_activity.regroups(note) == False
 /// ```
 pub fn regroups(value: entry.Entry) -> Bool {
   case value {

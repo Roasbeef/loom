@@ -3668,27 +3668,92 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
   )
 }
 
-// A person's gesture owns the viewport outright: pacing exists to smooth
-// output the reader did not ask for, and making a scroll, a key, a paste, a
-// click or a resize wait on it would put the walk in front of the hand. The
-// click matters as much as the key, because the jump hint under a scrolled
-// viewport is a mouse press and it promises the newest row.
+// A gesture aimed at the transcript owns the viewport outright: pacing
+// exists to smooth output the reader did not ask for, and making a scroll,
+// a page key or a resize wait on it would put the walk in front of the
+// hand.
+fn snap_viewport_for(model: Model, event: backend.InputEvent) -> Model {
+  case viewport_address(event) {
+    AddressesElsewhere -> model
+    AddressesTranscript ->
+      Model(..model, revealed_rows: model.rendered_row_count)
+  }
+}
+
+/// Whether an input event asks the transcript to move.
+///
+/// The distinction is what keeps typing from undoing the pacing. Composing a
+/// prompt while an answer streams says nothing about where the transcript
+/// should be, and snapping on each inserted character would restore the very
+/// motion the walk removes; the reference terminal never moves its
+/// transcript for a keystroke either. A wheel, a click, a page key or a
+/// resize does address it, and the walk must not stand in front of them.
+type ViewportAddress {
+  /// The event asks for a transcript position, so the walk ends here.
+  AddressesTranscript
+
+  /// The event is aimed at the composer, at another surface, or at nothing
+  /// at all, and the walk continues under it.
+  AddressesElsewhere
+}
+
+// The mouse addresses the transcript whatever it lands on. A press is how
+// the jump hint under a scrolled viewport is taken and it promises the
+// newest row, and a selection drag is a reader holding a position that must
+// not move under the pointer.
 //
 // A tick and a bare mouse move are the two events that ask for nothing. The
 // move is listed with the tick rather than with the other buttons for that
 // reason: hover reporting during a generation would otherwise snap the
-// transcript on every motion event and undo the pacing entirely.
-fn snap_viewport_for(model: Model, event: backend.InputEvent) -> Model {
+// transcript on every motion event and undo the pacing entirely. A paste
+// goes with them because it is composer text arriving in one piece.
+fn viewport_address(event: backend.InputEvent) -> ViewportAddress {
   case event {
-    backend.Tick | backend.MouseMove(..) -> model
+    backend.Tick | backend.MouseMove(..) | backend.Paste(_) ->
+      AddressesElsewhere
     backend.Resize(..)
-    | backend.KeyPress(_)
-    | backend.Paste(_)
     | backend.MouseScroll(..)
     | backend.MousePress(..)
     | backend.MouseRelease(..)
-    | backend.MouseDrag(..) ->
-      Model(..model, revealed_rows: model.rendered_row_count)
+    | backend.MouseDrag(..) -> AddressesTranscript
+    backend.KeyPress(raw) -> key_viewport_address(keys.match(raw))
+  }
+}
+
+// The keys that move, submit to, or reshape the transcript. Escape closes
+// help, notes and the changes view, each of which returns the reader to a
+// transcript that was projected while another surface owned the screen;
+// Enter is the submitted prompt appearing at the tail; Ctrl+g re-expands
+// every tool block and so replaces the rows outright. A strand or session
+// switch needs no key here because the projection it produces is adopted
+// whole by `refresh_render_cache`.
+//
+// Everything else is composition or navigation inside the composer, and the
+// modifier keys are listed rather than swept up by a catch-all so a new
+// binding is a decision taken here.
+fn key_viewport_address(key: keys.Key) -> ViewportAddress {
+  case key {
+    keys.PageUp
+    | keys.PageDown
+    | keys.Home
+    | keys.End
+    | keys.Escape
+    | keys.Enter -> AddressesTranscript
+    keys.Ctrl("g") -> AddressesTranscript
+    keys.Char(_)
+    | keys.Up
+    | keys.Down
+    | keys.Left
+    | keys.Right
+    | keys.Backspace
+    | keys.Delete
+    | keys.Tab
+    | keys.BackTab
+    | keys.Insert
+    | keys.F(_)
+    | keys.Ctrl(_)
+    | keys.Alt(_)
+    | keys.Unknown(_) -> AddressesElsewhere
   }
 }
 
@@ -4076,7 +4141,7 @@ fn pace_policy(model: Model) -> PacePolicy {
   PacePolicy(
     rows_per_frame: pace_rows_per_frame,
     catch_up_threshold: pace_catch_up_threshold,
-    snap_above: int.max(1, transcript_viewport_height(model)),
+    snap_above: transcript_viewport_height(model),
   )
 }
 
@@ -4089,6 +4154,14 @@ fn viewport_backlog(model: Model) -> Int {
 
 /// Reports whether the viewport still has rows to reveal.
 ///
+/// A full-width changes view is the one surface painted without the paced
+/// offset, so rows held back behind it are not on their way to any screen
+/// and the frame they would make stale shows none of them. Answering
+/// settled there keeps the loop off a sixteen millisecond repaint of a
+/// frame the walk cannot change. Help and notes are not exempt: both are
+/// painted through the same offset as the transcript, so a backlog under
+/// them is a position the reader is actually being shown.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -4096,6 +4169,7 @@ fn viewport_backlog(model: Model) -> Int {
 /// ```
 @internal
 pub fn viewport_pacing(model: Model) -> ViewportPacing {
+  use <- bool.guard(main_shows_diff(model), ViewportSettled)
   case viewport_backlog(model) > 0 {
     True -> ViewportCatchingUp
     False -> ViewportSettled
@@ -4145,6 +4219,14 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
 @internal
 pub fn terminal_poll_timeout(model: Model) -> Int {
   let ordinary = paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+
+  // A loading session candidate is read from disk rather than from the
+  // socket, so its short wait survives a backlog: nothing it drains can
+  // lengthen the walk.
+  let ordinary = case attachment.busy(model.candidate) {
+    True -> int.min(ordinary, 8)
+    False -> ordinary
+  }
   case viewport_pacing(model) {
     // A backlog is work the loop owes the screen with nothing left to wake
     // it: the deltas that produced those rows are already drained. One row
@@ -4154,14 +4236,13 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
     // the viewport has yet to show.
     ViewportCatchingUp -> int.min(ordinary, frame_interval_ms)
     ViewportSettled ->
-      case attachment.busy(model.candidate), model.channel {
-        True, _ -> int.min(ordinary, 8)
-        False, Some(channel) ->
+      case model.channel {
+        Some(channel) ->
           case session_channel.in_flight(channel) {
             True -> int.min(ordinary, 8)
             False -> int.min(ordinary, 250)
           }
-        False, None -> ordinary
+        None -> ordinary
       }
   }
 }
@@ -4625,16 +4706,11 @@ fn anchored_entry_blocks(value: entry.Entry, model: Model) {
   }
 }
 
-// The live tail is a pure function of the lines it projects and the width it
-// wraps to, and most of what invalidates the transcript leaves both alone: a
-// settled record, the quarter-second cut, a worktree observation. Re-deriving
-// it there means parsing the whole accumulated answer again for rows that did
-// not change, which is why the key is the lines themselves and not the
-// revision every one of those events bumps.
+// The live tail is parsed afresh on every call rather than memoized: a memo
+// would pin one more generation of the live region than the retained-bytes
+// gate on streaming has headroom for, and it would save a few parses a
+// second rather than one per frame.
 //
-// This is refreshed beside the record cache, and for the same reason:
-// `rendered_rows_for` reads both as already current for the width it was
-// handed, rather than deciding for itself what to rebuild.
 // The viewport consumes rows newest-first. Keeping that order in the cache
 // makes each live frame prepend only the small transient stream projection.
 fn rendered_rows_for(model: Model, width: Int) -> List(span.Line) {
@@ -8141,9 +8217,16 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
   |> result.unwrap(screen)
 }
 
+// The gesture starts from the row the reader is looking at, which is the
+// stored offset plus whatever the paced walk is still holding back: the
+// viewport is drawn from that sum, and measuring a scroll against the
+// stored offset alone would answer a request for older text by jumping the
+// backlog forward to the tail. Folding it in also leaves the paths that
+// ask for the latest row landing at zero, since they scroll by the whole
+// row count and the bound clamps there.
 fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
   let offset =
-    scroll_offset(model.scroll_offset, older, rows)
+    scroll_offset(model.scroll_offset + viewport_backlog(model), older, rows)
     |> bounded_scroll_offset(
       model.rendered_row_count,
       transcript_viewport_height(model),

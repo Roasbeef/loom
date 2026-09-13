@@ -15,6 +15,7 @@
 
 import etui/backend
 import etui/buffer
+import etui/geometry
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
@@ -22,6 +23,7 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/protocol
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -254,4 +256,205 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
 
 fn at(model: tui.Model, now: Int) -> tui.Model {
   tui.Model(..model, monotonic_time_ms: fn() { now })
+}
+
+// A backlog long enough to survive a few frames, built the same way the
+// shipped loop builds one: an anchor delivery (exempt from pacing, since
+// nothing has been revealed yet) followed by a second delivery that lands
+// on a viewport that already has a position to hold.
+fn build_backlog() -> tui.Model {
+  let inbox = connection.new_inbox()
+  let base =
+    tui.new_model_with_clock(inbox, workspace.Context("/work", None), fn() { 0 })
+    |> fn(model) { tui.Model(..model, transcript: [], records: []) }
+    |> fn(model) { tui.update(backend.Resize(84, 24), model) }
+  process.send(
+    inbox,
+    connection.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      numbered_lines("anchor", 40),
+    )),
+  )
+  let anchored =
+    tui.update(backend.Tick, base)
+    |> fn(model) { tui.update(backend.Tick, model) }
+  process.send(
+    inbox,
+    connection.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      numbered_lines("filler", 4),
+    )),
+  )
+  tui.update(backend.Tick, anchored)
+}
+
+// Numbered rather than repeated, so a row cannot be mistaken for one of its
+// neighbours: a shift measured against identical repeated text is blind to
+// exactly the off-by-a-multiple-of-the-period errors this suite exists to
+// catch.
+fn numbered_lines(prefix: String, count: Int) -> String {
+  counting_to(count)
+  |> list.map(fn(index) { prefix <> " " <> string.inspect(index) <> ".\n\n" })
+  |> string.join("")
+}
+
+pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
+  let backlogged = build_backlog()
+  assert backlogged.revealed_rows < backlogged.rendered_row_count
+    as "the fixture must actually carry a backlog, or the scroll below tests nothing"
+
+  let before =
+    tui.view(
+      tui.Model(..backlogged, frame_cache: None),
+      geometry.rect_new(0, 0, 84, 24),
+    ).0
+  let scrolled = tui.update(backend.MouseScroll(5, 5, True), backlogged)
+  let after =
+    tui.view(
+      tui.Model(..scrolled, frame_cache: None),
+      geometry.rect_new(0, 0, 84, 24),
+    ).0
+
+  // A wheel-up asks for three rows of older text. Measured against the
+  // window the reader was actually looking at (the paced offset, not the
+  // bare stored one), that is a three-row shift toward older text and
+  // nothing else.
+  assert older_shift(transcript_rows(before), transcript_rows(after)) == 3
+    as "a wheel-up during a backlog must move the same window three rows older, not jump toward the tail"
+}
+
+// The mirror of `row_shift`: a scroll toward older text adds rows at the
+// front and drops them off the back, the opposite direction from a stream
+// appending at the tail, so the two cannot share one measure of "how far".
+fn older_shift(before: List(String), after: List(String)) -> Int {
+  case after {
+    [] -> 0
+    [_, ..rest] ->
+      case list.take(before, list.length(after)) == after {
+        True -> 0
+        False -> 1 + older_shift(before, rest)
+      }
+  }
+}
+
+pub fn a_resize_mid_backlog_closes_it_test() {
+  let backlogged = build_backlog()
+  assert backlogged.revealed_rows < backlogged.rendered_row_count
+    as "the fixture must actually carry a backlog, or the resize below tests nothing"
+
+  // Height only, so the row count itself does not rewrap and the closing
+  // of the backlog is the only thing this resize could have caused.
+  let resized = tui.update(backend.Resize(84, 30), backlogged)
+  assert resized.revealed_rows == resized.rendered_row_count
+    as "a resize addresses the transcript and must close the backlog like any other gesture"
+}
+
+pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
+  let backlogged = build_backlog()
+  assert backlogged.revealed_rows < backlogged.rendered_row_count
+    as "the fixture must actually carry a backlog, or the idle snap below tests nothing"
+
+  // The strand stops producing without any gesture from the reader: the
+  // walk has nothing left to lag behind, so the next tick must adopt the
+  // complete projection at once rather than keep crawling toward it.
+  let ended_strands =
+    list.map(backlogged.strands, fn(strand) {
+      case strand.id == backlogged.active_strand {
+        True -> protocol.Strand(..strand, live_phase: None)
+        False -> strand
+      }
+    })
+  let idled = tui.Model(..backlogged, strands: ended_strands, submitting: None)
+  let settled = tui.update(backend.Tick, idled)
+  assert settled.revealed_rows == settled.rendered_row_count
+    as "an idle strand has no tail to walk toward, so the trailing frame must be the complete one"
+
+  let #(buffer, _) =
+    tui.view(
+      tui.Model(..settled, frame_cache: None),
+      geometry.rect_new(0, 0, 84, 24),
+    )
+  let assert Ok(_) =
+    frame.buffer_to_lines(buffer)
+    |> list.find(fn(row) { string.contains(row, "filler") })
+    as "the trailing frame must show the accumulated output, not the stale backlog"
+}
+
+pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
+  let inbox = connection.new_inbox()
+  let clocked =
+    tui.new_model_with_clock(inbox, workspace.Context("/work", None), fn() { 0 })
+    |> fn(model) { tui.Model(..model, transcript: [], records: []) }
+    |> fn(model) { tui.update(backend.Resize(84, 60), at(model, 0)) }
+
+  process.send(
+    inbox,
+    connection.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      string.join(list.repeat("anchor line.\n\n", 5), ""),
+    )),
+  )
+  let anchored = tui.update(backend.Tick, at(clocked, 16))
+
+  // One delivery of thirty short lines pushes the backlog past the
+  // twenty-four row catch-up threshold in a single step.
+  process.send(
+    inbox,
+    connection.Incoming(gateway.stream_delta(
+      "main",
+      "text",
+      string.join(list.repeat("filler line.\n\n", 15), ""),
+    )),
+  )
+  let backlogged = tui.update(backend.Tick, at(anchored, 32))
+  assert backlogged.rendered_row_count - backlogged.revealed_rows > 24
+    as "the fixture must actually push the backlog past the threshold, or the catch-up arm below is untested"
+
+  // A real clock advancing sixteen milliseconds a tick, not a frozen one:
+  // the ordinary arm alone would need more than twenty frames to close a
+  // backlog this size.
+  let stepped = tui.update(backend.Tick, at(backlogged, 48))
+  assert stepped.revealed_rows - backlogged.revealed_rows > 1
+    as "a backlog past the catch-up threshold must accelerate, not crawl one row a frame"
+}
+
+pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
+  let base =
+    tui.new_model_with_clock(
+      connection.new_inbox(),
+      workspace.Context("/work", None),
+      fn() { 0 },
+    )
+  let behind_diff =
+    tui.Model(
+      ..base,
+      rendered_row_count: 40,
+      revealed_rows: 10,
+      diff_view: tui.DiffVisible,
+      width: 90,
+    )
+  assert tui.viewport_pacing(behind_diff) == tui.ViewportSettled
+    as "a backlog behind a full-width diff view is not on its way to any screen the loop is painting"
+}
+
+pub fn typing_leaves_a_backlog_alone_but_a_page_key_closes_it_test() {
+  let backlogged = build_backlog()
+  assert backlogged.revealed_rows < backlogged.rendered_row_count
+    as "the fixture must actually carry a backlog, or neither assertion below tests anything"
+
+  let typed =
+    ["a", "b", "c"]
+    |> list.fold(backlogged, fn(model, key) {
+      tui.update(backend.KeyPress(key), model)
+    })
+  assert typed.revealed_rows == backlogged.revealed_rows
+    as "typing into the composer says nothing about the transcript and must not move it"
+  assert typed.rendered_row_count == backlogged.rendered_row_count
+
+  let paged = tui.update(backend.KeyPress("pageup"), typed)
+  assert paged.revealed_rows == paged.rendered_row_count
+    as "a page key addresses the transcript and must close the backlog"
 }

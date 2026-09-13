@@ -676,13 +676,25 @@ that tree separately from the self-contained server.
   to stay continuous with, a shrink must not leave retired rows on screen, and
   a growth taller than the viewport replaced everything the reader could see.
   An idle strand holds nothing back, which is what makes a replayed or
-  scripted run settle on the complete frame. Any gesture — key, paste, scroll,
-  click, resize — closes the backlog at once, so the walk never stands between
-  the operator and the tail. While rows remain, `viewport_pacing` reports
+  scripted run settle on the complete frame. `viewport_address` classifies an
+  input event as `AddressesTranscript` or `AddressesElsewhere`, and only the
+  former closes the backlog at once: a wheel, a click, a resize, and the keys
+  that move, submit to, or reshape the transcript (page keys, Home, End,
+  Escape, Enter, the details toggle) address it, while ordinary composition —
+  typing or pasting into the draft, arrow-key editing — does not, because
+  composing a prompt while an answer streams says nothing about where the
+  transcript should be. A scroll gesture measures its motion from the row the
+  reader is actually looking at, the stored offset plus whatever the walk is
+  still holding back, not the bare stored offset alone — folding in anything
+  less would answer a request for older text by jumping the backlog toward
+  the tail instead. While rows remain, `viewport_pacing` reports
   `ViewportCatchingUp`, which makes the painted frame stale whatever the
   revision says and holds `terminal_poll_timeout` at the frame interval: the
   deltas that produced those rows are already drained, so nothing else would
-  wake the loop to finish showing them.
+  wake the loop to finish showing them. A full-width changes view is the one
+  surface painted without the paced offset, so a backlog behind it answers
+  `ViewportSettled` rather than holding the loop on a repaint nothing on
+  screen would show.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read
