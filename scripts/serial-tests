@@ -36,6 +36,7 @@
 runtime|runtime@service_lifetime_test|asserts erlang:system_info(atom_count) is unchanged across a session lifecycle; the counter is node-wide
 runtime|runtime@registry_test|asserts erlang:system_info(atom_count) is unchanged across strand address allocation and factory replacement; the counter is node-wide
 client|client@serve_test|asserts erlang:system_info(atom_count) is unchanged across repeated instance assembly; the counter is node-wide
+client|client@daemon_soak_test|asserts erlang:system_info(atom_count) is unchanged across measured daemon incarnations; the counter is node-wide, and sibling test modules loading beside it were the growth it reported
 
 # --- the capability channel's persistent_term slot -------------------------
 # `packages/cap/src/cap/internal/dispatch.gleam:16` installs the capability
