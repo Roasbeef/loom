@@ -169,9 +169,9 @@ fn encode_anthropic(rig: Rig) -> http.HttpRequest {
   )
 }
 
-/// One driver step's worth of the paths above, in the order the driver
-/// takes them: the driver's own projection, the threshold hook's, the
-/// reminder's, and the request encode. For the profiler.
+/// A run's first step: the branch scanned and decoded, projected, counted
+/// for the threshold and encoded for the request. Later steps reuse the
+/// driver's cached scan and pay only `step_cached`.
 ///
 /// ## Examples
 ///
@@ -179,11 +179,24 @@ fn encode_anthropic(rig: Rig) -> http.HttpRequest {
 /// // client_dev.step(rig)
 /// ```
 pub fn step(rig: Rig) -> Int {
-  let _driver = scan(rig)
-  let _threshold = project(rig.session)
-  let _reminder = project(rig.session)
-  let _estimate = estimate(rig)
-  string.byte_size(encode_openai(rig).body)
+  let entries = scan(rig)
+  let projected = hooks.project_from_scan(entries)
+  let _threshold = hooks.context_tokens(projected, hooks.estimate_message)
+  string.byte_size(encode_openai(Rig(..rig, projected:)).body)
+}
+
+/// A later step of the same run: the cached entries re-projected, counted,
+/// and encoded, with no scan.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // client_dev.step_cached(rig, entries)
+/// ```
+pub fn step_cached(rig: Rig, entries: List(Entry)) -> Int {
+  let projected = hooks.project_from_scan(entries)
+  let _threshold = hooks.context_tokens(projected, hooks.estimate_message)
+  string.byte_size(encode_openai(Rig(..rig, projected:)).body)
 }
 
 fn run(path: String) -> Nil {
@@ -221,7 +234,10 @@ fn run(path: String) -> Nil {
           bench.Function("encode anthropic", fn(rig: Rig) {
             string.byte_size(encode_anthropic(rig).body)
           }),
-          bench.Function("driver step", step),
+          bench.Function("step (first, scans)", step),
+          bench.Function("step (cached scan)", fn(rig: Rig) {
+            step_cached(rig, entries)
+          }),
         ],
         [bench.Warmup(2), bench.Duration(4000), bench.Decimals(2)],
       )
