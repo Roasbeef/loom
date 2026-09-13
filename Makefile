@@ -218,6 +218,15 @@ run-tui: binaries server-shipment ## Open the daemon session picker: [STATE_DIR=
 bench-tui: ## Benchmark the TUI frame-rendering hot paths
 	@cd packages/tui && gleam dev
 
+# The server's per-step hot paths over a real session store: branch scan
+# and decode, projection, the threshold estimate, and the provider request
+# encode. Point DB at a copy of a session .db, never at a live daemon's
+# file: the session layer takes a writer lease on open.
+.PHONY: bench-server
+bench-server: ## Benchmark the server's per-step hot paths (DB=<copy of a session .db>)
+	@test -n "$(DB)" || { echo "usage: make bench-server DB=<copy of a session .db>"; exit 2; }
+	@cd packages/client && gleam dev -- "$(DB)"
+
 .PHONY: dev
 dev: ## Build a scratch daemon and open its session picker (interactive)
 	@scripts/dev.sh

@@ -36,7 +36,7 @@
 
 import core/clock.{type Clock}
 import core/corruption
-import core/entry
+import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
 import core/json.{type JsonValue}
 import core/message.{
@@ -70,10 +70,11 @@ import machine/strand.{type StrandConfiguration, type StrandState}
 import provider/stream
 import runtime/effects.{type Effects}
 import runtime/escalation
+import runtime/hooks
 import runtime/internal/ffi_sup
 import runtime/internal/provider_custodian
+import runtime/projection
 import runtime/writer
-import session/session
 import storage/storage
 import telemetry/context
 import telemetry/field
@@ -230,6 +231,14 @@ type State {
     observations: List(Observation),
     poll_permit: Bool,
     retry_wake: Option(Int),
+    // The branch as last scanned, keyed by the leaf it was scanned from.
+    // A step projects the branch once for the planner's threshold and once
+    // for the request; both read this, and a later step whose leaf has
+    // moved scans only the entries past the cached leaf and joins them on.
+    // It is a cache of write-once entries and nothing else: a fresh
+    // incarnation starts without one and scans the whole branch, which is
+    // the replay rule every projection here is held to.
+    projection: Option(projection.Cached),
     /// The grants the most recent tool clearance consumed, held only
     /// between that clearance and the dispatch it authorizes. It is a
     /// one-slot carry rather than durable state because that is exactly
@@ -341,6 +350,7 @@ pub fn start(
       poll_permit: False,
       retry_wake: None,
       cleared: None,
+      projection: None,
     ))
     |> actor.selecting(selector)
     |> actor.returning(subject)
@@ -884,7 +894,22 @@ fn plan(
 ) -> Outcome {
   use <- bool.guard(when: fuel <= 0, return: out_of_fuel)
   let #(now, state) = read_clock(state)
-  let inputs = build_inputs(state, loaded, observation, now)
+  case project_for(state, loaded.leaf) {
+    Error(reason) -> Halt(reason)
+    Ok(#(projected, state)) ->
+      plan_with(state, loaded, observation, now, projected, fuel)
+  }
+}
+
+fn plan_with(
+  state: State,
+  loaded: Loaded,
+  observation: Observation,
+  now: Int,
+  projected: hooks.Projected,
+  fuel: Int,
+) -> Outcome {
+  let inputs = build_inputs(state, loaded, observation, now, projected)
   case planner.next_action(loaded.op, loaded.op_state, inputs) {
     planner.Fault(report:) ->
       Halt("planner fault: " <> corruption.describe(report))
@@ -1316,7 +1341,9 @@ fn start_effect(
       response_entry:,
       ..,
     ) -> {
-      use projected <- with_projection(state, loaded.leaf)
+      // The projection was made for this step's planning and is read from
+      // the cache here, so the request and the threshold saw one branch.
+      use #(projected, state) <- result.try(project_for(state, loaded.leaf))
 
       // The last place the request's message list is still ours to
       // change. The `context` hook is handed the projection rather than
@@ -1324,7 +1351,8 @@ fn start_effect(
       // request and never the store; re-planning after a crash projects
       // again and transforms again, which is the replay rule the whole
       // hook surface is held to.
-      let transformed = state.effects.hooks.context(operation, projected)
+      let transformed =
+        state.effects.hooks.context(operation, projected.messages)
       let spec =
         effects.GenerationRequest(
           operation:,
@@ -1578,26 +1606,85 @@ fn take_cleared(
   #(grants, State(..state, cleared: None))
 }
 
-fn with_projection(
+// The step's projection of the strand's branch, from the cache when the
+// leaf has not moved and by scanning only the new entries when it has.
+//
+// The extension reads the entries past the cached leaf's seq, oldest
+// first, and joins them on when the oldest of them names the cached leaf
+// as its parent and none of them is a compaction. The parent check is
+// what makes a rewind or a fork a full rescan rather than a wrong join:
+// a leaf that moved anywhere but forward from the cached one yields new
+// entries whose oldest parent is not the cached leaf, or no new entries
+// at all under a leaf that differs. A compaction among the new entries
+// restarts the projection at itself, which is what the full scan's
+// stop-at-compaction already expresses.
+fn project_for(
   state: State,
   leaf: Option(EntryId),
-  continue: fn(List(AgentMessage)) -> Result(State, String),
-) -> Result(State, String) {
-  case leaf {
-    None -> continue([])
-    Some(start) -> {
+) -> Result(#(hooks.Projected, State), String) {
+  case leaf, state.projection {
+    None, _ -> Ok(#(hooks.project_from_scan([]), state))
+    Some(leaf), Some(projection.Cached(leaf: cached_leaf, newest_first:))
+      if leaf == cached_leaf
+    -> Ok(#(hooks.project_from_scan(newest_first), state))
+    Some(leaf), Some(cached) -> {
+      use extended <- result.try(extend_scan(state, leaf, cached))
+      case extended {
+        Some(newest_first) -> Ok(remember(state, leaf, newest_first))
+        None -> full_scan(state, leaf)
+      }
+    }
+    Some(leaf), None -> full_scan(state, leaf)
+  }
+}
+
+fn full_scan(
+  state: State,
+  leaf: EntryId,
+) -> Result(#(hooks.Projected, State), String) {
+  let q =
+    storage.branch_scan(from: leaf)
+    |> storage.branch_stop_at_kind(storage.Compaction)
+  use newest_first <- result.try(scan(state, q))
+  Ok(remember(state, leaf, newest_first))
+}
+
+// The entries newer than the cached leaf, joined onto the cache when they
+// continue it, or `None` when the branch has to be rescanned.
+fn extend_scan(
+  state: State,
+  leaf: EntryId,
+  cached: projection.Cached,
+) -> Result(Option(List(Entry)), String) {
+  case cached.newest_first {
+    [] -> Ok(None)
+    [newest, ..] -> {
       let q =
-        storage.branch_scan(from: start)
-        |> storage.branch_stop_at_kind(storage.Compaction)
-      use entries <- result.try(
-        writer.scan_branch(state.writer, q)
-        |> result.map_error(fn(error) {
-          "context projection failed: " <> describe_read_error(error)
-        }),
-      )
-      continue(session.project_scan(entries))
+        storage.branch_scan(from: leaf)
+        |> storage.branch_order(storage.OldestFirst)
+        |> storage.branch_cursor(newest.seq)
+      use added <- result.try(scan(state, q))
+      Ok(projection.join(cached, added))
     }
   }
+}
+
+fn remember(
+  state: State,
+  leaf: EntryId,
+  newest_first: List(Entry),
+) -> #(hooks.Projected, State) {
+  #(
+    hooks.project_from_scan(newest_first),
+    State(..state, projection: Some(projection.Cached(leaf:, newest_first:))),
+  )
+}
+
+fn scan(state: State, q: storage.BranchScan) -> Result(List(Entry), String) {
+  writer.scan_branch(state.writer, q)
+  |> result.map_error(fn(error) {
+    "context projection failed: " <> describe_read_error(error)
+  })
 }
 
 // --- the effect reaper -----------------------------------------------------
@@ -2554,6 +2641,7 @@ fn build_inputs(
   loaded: Loaded,
   observation: Observation,
   now: Int,
+  projected: hooks.Projected,
 ) -> planner.PlannerInputs {
   planner.PlannerInputs(
     now:,
@@ -2580,6 +2668,9 @@ fn build_inputs(
     threshold: state.effects.hooks.threshold(effects.ThresholdQuery(
       operation: loaded.op.id,
       strand: state.strand,
+      messages: projected.messages,
+      carried: projected.carried,
+      previous_summary: projected.previous_summary,
     )),
     poll_permit: state.poll_permit,
     observation:,

@@ -688,25 +688,32 @@ fn cut(
 /// `preparation`'s. Deciding from the durable projection (not process
 /// state) makes the decision crash-stable.
 ///
-/// `projection` reads the named strand's current durable projection;
-/// `estimate` prices one not-yet-reported message.
+/// The strand's projection arrives in the query, made once by the driver
+/// for the step; `estimate` prices one not-yet-reported message.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // hooks.threshold(settings, context_window: 200_000,
-/// //   projection: read_projection, estimate: hooks.estimate_message)
+/// //   estimate: hooks.estimate_message)
 /// ```
 ///
 pub fn threshold(
   settings: CompactionSettings,
   context_window context_window: Int,
-  projection projection: fn(String) -> Projected,
   estimate estimate: fn(AgentMessage) -> Int,
 ) -> fn(ThresholdQuery) -> ThresholdStatus {
   fn(query: ThresholdQuery) {
     use <- bool.guard(when: !settings.enabled, return: ThresholdNotExceeded)
-    let projected = projection(query.strand)
+
+    // The projection arrives in the query: the driver made it for this
+    // step and re-reading the branch here would double the step's cost.
+    let projected =
+      Projected(
+        messages: query.messages,
+        carried: query.carried,
+        previous_summary: query.previous_summary,
+      )
     let total = context_tokens(projected, estimate)
     let exceeded = total > 0 && total > context_window - settings.reserve_tokens
     use <- bool.guard(when: !exceeded, return: ThresholdNotExceeded)
