@@ -492,7 +492,9 @@ pub fn tool_for(mode: CodeMode) -> Tool {
     description: description(mode),
     prompt_snippet: option.Some(
       "Prefer `code_mode` for batches of reads, searches, or checks, and "
-      <> "dependent steps whose intermediate results a program can handle. "
+      <> "dependent steps whose intermediate results a program can handle: "
+      <> "finding files, filtering or counting matches, joining results "
+      <> "across files (`cap/search` does the walk and the grep, no shell). "
       <> "Return a concise summary; use a direct tool when the next step "
       <> "needs your judgment.",
     ),

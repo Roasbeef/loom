@@ -1767,3 +1767,243 @@ fn wall_clock() -> clock.Clock {
 fn broker_entropy() -> fn(Int) -> BitArray {
   token.production_entropy()
 }
+
+// --- the search bridge, end to end (#365) -----------------------------------
+
+// The fixture tree the search program walks. Four facts are being set up
+// at once, and each one is a claim the program's outcome has to carry:
+// an ordinary source file to find and read, a file that is not source so
+// the glob has something to *not* match, a hidden directory whose
+// contents must stay invisible to a default walk, and a symlink out of
+// the workspace whose target must stay unreachable while the link itself
+// stays visible.
+const searched_dir = "sfind"
+
+const searched_file = "sfind/a.gleam"
+
+const searched_line = "pub fn needle() -> Nil"
+
+const searched_other = "sfind/b.txt"
+
+const searched_hidden = "sfind/.hidden/c.gleam"
+
+const searched_link = "sfind/away"
+
+// The two labels the refusal legs report. Written as labels rather than
+// asserted on the harness's sentence because the claim is that the
+// *program* observed `PermissionDenied` and `InvalidArgument` — a
+// substring of a message would pass on any refusal at all.
+const escape_denied = "escape-denied"
+
+const bad_regex_refused = "bad-regex-refused"
+
+const wrong_refusal_label = "wrong-refusal"
+
+/// A program of the kind a model would submit against `cap/search`: one
+/// glob, one grep, one stat of a symlink, one read, one read through an
+/// escaping link, and one regex that does not compile.
+///
+/// One program for all six legs, for the reason `bridge_program_source`
+/// gives: they are one seam record and one router, and a suite reaching
+/// them one at a time would not notice an arm wired to its neighbour's
+/// closure.
+pub fn search_program_source() -> String {
+  "import cap/report\n"
+  <> "import cap/search\n"
+  <> "\n"
+  <> "pub fn main() -> report.Outcome {\n"
+  <> "  case search.glob(search.glob_query(under: \""
+  <> searched_dir
+  <> "\", matching: \"*.gleam\")) {\n"
+  <> "    Error(_error) -> report.failure(\"search.glob did not settle\")\n"
+  <> "    Ok(listing) -> after_glob(listing)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_glob(listing: search.Listing) -> report.Outcome {\n"
+  <> "  case search.grep(search.grep_query(under: \""
+  <> searched_dir
+  <> "\", matching: \"needle\")) {\n"
+  <> "    Error(_error) -> report.failure(\"search.grep did not settle\")\n"
+  <> "    Ok(found) -> after_grep(listing, found)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_grep(listing: search.Listing, found: search.Found)"
+  <> " -> report.Outcome {\n"
+  <> "  case search.stat(\""
+  <> searched_link
+  <> "\") {\n"
+  <> "    Error(_error) -> report.failure(\"search.stat did not settle\")\n"
+  <> "    Ok(entry) -> after_stat(listing, found, entry)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_stat(listing: search.Listing, found: search.Found,"
+  <> " entry: search.Entry) -> report.Outcome {\n"
+  <> "  case search.read_lines(\""
+  <> searched_file
+  <> "\", from: 1, to: 1) {\n"
+  <> "    Error(_error) -> report.failure(\"search.read_lines did not settle\")\n"
+  <> "    Ok(lines) -> after_read(listing, found, entry, lines)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn after_read(listing: search.Listing, found: search.Found,"
+  <> " entry: search.Entry, lines: search.Lines) -> report.Outcome {\n"
+  <> "  let escaped = case search.read_lines(\""
+  <> searched_link
+  <> "/secret.gleam\", from: 1, to: 1) {\n"
+  <> "    Error(search.PermissionDenied(_path)) -> \""
+  <> escape_denied
+  <> "\"\n"
+  <> "    Error(_other) -> \""
+  <> wrong_refusal_label
+  <> "\"\n"
+  <> "    Ok(_read) -> \"not-refused\"\n"
+  <> "  }\n"
+  <> "  let refused = case search.grep(search.grep_query(under: \""
+  <> searched_dir
+  <> "\", matching: \"[\")) {\n"
+  <> "    Error(search.InvalidArgument(_message)) -> \""
+  <> bad_regex_refused
+  <> "\"\n"
+  <> "    Error(_other) -> \""
+  <> wrong_refusal_label
+  <> "\"\n"
+  <> "    Ok(_found) -> \"not-refused\"\n"
+  <> "  }\n"
+  <> "  report.value(\n"
+  <> "    report.object([\n"
+  <> "      #(\"globbed\", report.int(count(listing.entries, 0))),\n"
+  <> "      #(\"first\", report.string(first_path(listing.entries))),\n"
+  <> "      #(\"matched\", report.int(count(found.matches, 0))),\n"
+  <> "      #(\"scanned\", report.int(found.files_scanned)),\n"
+  <> "      #(\"link\", report.string(kind_label(entry.kind))),\n"
+  <> "      #(\"line\", report.string(lines.text)),\n"
+  <> "      #(\"escaped\", report.string(escaped)),\n"
+  <> "      #(\"refused\", report.string(refused)),\n"
+  <> "    ]),\n"
+  <> "  )\n"
+  <> "}\n"
+  <> "\n"
+  // `gleam/list` is on the seam's stdlib allowlist, but counting by hand
+  // keeps the program's imports to the two modules the claim is about.
+  <> "fn count(items: List(a), so_far: Int) -> Int {\n"
+  <> "  case items {\n"
+  <> "    [] -> so_far\n"
+  <> "    [_one, ..rest] -> count(rest, so_far + 1)\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn first_path(entries: List(search.Entry)) -> String {\n"
+  <> "  case entries {\n"
+  <> "    [] -> \"none\"\n"
+  <> "    [entry, ..] -> entry.path\n"
+  <> "  }\n"
+  <> "}\n"
+  <> "\n"
+  <> "fn kind_label(kind: search.Kind) -> String {\n"
+  <> "  case kind {\n"
+  <> "    search.Symlink(target: _target) -> \"symlink\"\n"
+  <> "    search.File -> \"file\"\n"
+  <> "    search.Directory -> \"directory\"\n"
+  <> "    search.Other -> \"other\"\n"
+  <> "  }\n"
+  <> "}\n"
+}
+
+pub fn a_program_navigates_and_searches_through_the_bridge_test() {
+  case prerequisites() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP a_program_navigates_and_searches_through_the_bridge: " <> reason,
+      )
+    Ok(ready) -> run_search(ready)
+  }
+}
+
+// The whole of #365's wiring against the real pipeline: a real vet
+// against the workspace allowlist (which now carries `cap/search`), a
+// real hermetic build, a real jailed satellite, and four capabilities
+// answered by the harness through `tools/fs.resolve_real` and
+// `tools/search`.
+//
+// The two decisive assertions are the negative ones. Nothing under the
+// hidden directory and nothing behind the escaping symlink may appear in
+// any answer, and the read through that symlink must be refused rather
+// than served — those are the properties the walk's never-follow rule and
+// the single resolution boundary exist for, and a walk that quietly
+// widened itself would still produce a green count.
+fn run_search(ready: Ready) -> Nil {
+  let rig = rig(ready, under: ready.root)
+  let outside = ready.root <> "/outside-the-workspace"
+  let assert Ok(Nil) = simplifile.create_directory_all(outside)
+    as "the escape target must be creatable"
+  let assert Ok(Nil) =
+    simplifile.write(outside <> "/secret.gleam", "pub const secret = 1\n")
+    as "the escape target's file must be writable"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(rig.workspace <> "/" <> searched_dir)
+    as "the fixture directory must be creatable"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      rig.workspace <> "/" <> searched_dir <> "/.hidden",
+    )
+    as "the hidden fixture directory must be creatable"
+  let assert Ok(Nil) =
+    simplifile.write(
+      rig.workspace <> "/" <> searched_file,
+      searched_line <> "\n",
+    )
+    as "the fixture source file must be writable"
+  let assert Ok(Nil) =
+    simplifile.write(rig.workspace <> "/" <> searched_other, "needle\n")
+    as "the fixture text file must be writable"
+  let assert Ok(Nil) =
+    simplifile.write(rig.workspace <> "/" <> searched_hidden, "needle\n")
+    as "the hidden fixture file must be writable"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(outside, rig.workspace <> "/" <> searched_link)
+    as "the escaping symlink must be creatable"
+
+  let seam =
+    codemode.seam(codemode.default_config(
+      broker: rig.broker,
+      clock: wall_clock(),
+      workspace: rig.workspace,
+      toolchain: rig.toolchain,
+    ))
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      json.Object([
+        #("program", json.String(search_program_source())),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  let text = rendered_text(outcome)
+  assert !outcome.is_error
+  // One `*.gleam` under the root: the hidden directory's is not visited
+  // and the symlink is not descended, so neither can inflate the count.
+  assert string.contains(text, "\"globbed\":1,")
+  assert string.contains(text, "\"first\":\"" <> searched_file <> "\"")
+  assert !string.contains(text, ".hidden")
+  assert !string.contains(text, "secret.gleam")
+  // The grep read the two ordinary files and found `needle` in both; the
+  // hidden one and everything behind the link were never opened.
+  assert string.contains(text, "\"matched\":2")
+  assert string.contains(text, "\"scanned\":2")
+  // The link is reported as a link rather than followed, and the one-line
+  // read came back through `resolve_real`.
+  assert string.contains(text, "\"link\":\"symlink\"")
+  assert string.contains(text, "\"line\":\"" <> searched_line <> "\"")
+  // And the two refusals the program pattern-matched on the variant.
+  assert string.contains(text, "\"escaped\":\"" <> escape_denied <> "\"")
+  assert string.contains(text, "\"refused\":\"" <> bad_regex_refused <> "\"")
+  io.println(
+    "code-mode search e2e: search.glob + grep + stat + read_lines through "
+    <> "the real pipeline; the hidden tree and the escaping link stayed out",
+  )
+  stop_rig(rig)
+}

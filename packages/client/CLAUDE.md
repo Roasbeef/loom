@@ -555,7 +555,8 @@ catalogue without opening runtimes. Explicit admission invokes
   escalation record *mintable* from inside code mode (#97). Public
   because it is the wrapper's entire decision and the only part of it a
   hermetic test can hold still.
-- `client/codemode.{workspace_seam, workspace_seam_for, over_scratch,
+- `client/codemode.{workspace_seam, workspace_seam_for, search_seam_for,
+  over_scratch,
   over_jobs, into_blobs, blob_directory}` — the harness-side capability
   bridge (issue #16), and
   the half of it that lives on this side of the seam. `workspace_seam`
@@ -572,7 +573,18 @@ catalogue without opening runtimes. Explicit admission invokes
   argument offers a job from a tool call whether or not a program can
   start one. `workspace_seam_for` is the same bridge bound to coordinates
   a caller supplies rather than a request's, which is how
-  `client/extension/dispatch` builds an extension invocation's. `blob_directory` is the one
+  `client/extension/dispatch` builds an extension invocation's.
+  `search_seam_for` is the read-only sibling `codemode/search`'s router
+  calls (issue #365), composed under `workspace.routing` on both the
+  code-mode and the extension path, and it takes the workspace and
+  nothing else — a search reaches no store, no schedule and no job.
+  Its four closures differ only in which path they put through
+  `resolve_real`: `glob` and `grep` resolve the query's root and let
+  `tools/search` keep containment by never following a symlink,
+  `read_lines` resolves the whole path exactly as `fs_read` does, and
+  `stat` resolves the path's **parent** and lstats the leaf beneath it,
+  because a `stat` that resolved the leaf would follow the very link it
+  was asked to report. `blob_directory` is the one
   place `.blobs` is written down, read by both this module and
   `client/serve`, so an artifact a program emits and an oversized `bash`
   output that overflowed land in one store under one address. Listing is

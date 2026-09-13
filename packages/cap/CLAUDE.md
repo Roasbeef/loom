@@ -13,10 +13,9 @@ it can one day be published on its own. WP-J, and WP-N for `cap/strand`.
 
 The prelude serves **three seams**, and a submission is vetted against one
 of them (`codemode/vet/policy.Seam`). The *workspace* seam is
-`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job}` — a
-program that
-orchestrates effects. The *orchestration* seam is `cap/strand` +
-`cap/report` and nothing else — a program that orchestrates agents. Those
+`cap/{fs, proc, net, git, lsp, report, task, actor, kv, schedule, job,
+search}` — a program that orchestrates effects. The *orchestration* seam
+is `cap/strand` + `cap/report` and nothing else — a program that orchestrates agents. Those
 two sets are disjoint but for `cap/report`, and that disjointness is the
 point: an orchestrator that could also write files is a materially worse
 thing to hand a model than one that cannot. The *extension* seam is the
