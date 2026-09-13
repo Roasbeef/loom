@@ -269,3 +269,13 @@ its output and exit code, but does not fail the build on that exit code:
 the plain posture it exercises is documented above to leave most of the
 self-test's probes unenforced, so a nonzero self-test there is the
 expected outcome, not evidence the smoke run itself failed.
+
+Hosted CI runs the same smoke through `.github/workflows/docker.yml`,
+but only when one of the files that define the image changes: the
+Dockerfile, `.dockerignore`, the smoke script, or the workflow itself.
+The build compiles Gleam from source and takes on the order of twenty
+minutes on a hosted runner, which is too much to add to every push, and a
+Dockerfile nothing exercises is the one that drifts. The workflow proves
+the plain posture only; the full-isolation counts above come from a real
+host, because a hosted runner does not offer the cgroup delegation that
+posture needs.

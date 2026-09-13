@@ -1,0 +1,55 @@
+# The runnable image is built by hand on a Linux host (docs/docker.md), and
+# nothing in ci.yml touches it, so a Dockerfile that drifts from the
+# Makefile it wraps would only be found by the next person who builds it.
+# This workflow builds the image and runs the smoke whenever one of the
+# files that define it changes. It is deliberately its own workflow rather
+# than a job in ci.yml: the build compiles Gleam from source and takes on
+# the order of twenty minutes on a hosted runner, which is too much to add
+# to every push, and a path filter on a single job is not something the
+# Actions schema offers.
+#
+# What it proves is exactly what `make docker-smoke` proves: the image
+# builds, a container boots in the plain posture, the daemon becomes ready,
+# a client command answers through `docker exec`, and the self-test runs and
+# is recorded. The full-isolation posture is not exercised here; a hosted
+# runner does not offer the cgroup delegation it needs, and docs/docker.md
+# carries the measured counts from a real host instead.
+name: docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - scripts/docker_smoke.sh
+      - .github/workflows/docker.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - scripts/docker_smoke.sh
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: build and smoke the runtime image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # BuildKit is what the Dockerfile's cache mounts need, and the
+      # Makefile target sets DOCKER_BUILDKIT=1 itself; setting up buildx
+      # here only makes the runner's default builder BuildKit-backed so
+      # the same `docker build` line behaves as it does on a developer's
+      # machine.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: make docker-smoke
+        run: make docker-smoke DOCKER_IMAGE=loom-runtime:ci
