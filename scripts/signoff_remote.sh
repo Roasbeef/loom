@@ -194,6 +194,24 @@ find "$runs" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || 
 # tree. No network round trip, and nothing survives from a previous run
 # because no previous run ever wrote into this path.
 work=$(mktemp -d "$runs/$short.XXXXXX")
+
+# mktemp defaults a fresh directory to mode 700, world-shut, and it is
+# owned by the ssh session's own user (a login account, not root). The
+# container runs as root to do the cgroup work above, but the payload
+# a lane's own test spawns runs the way the whole design demands: under
+# a dropped, unprivileged identity that is neither root nor this login
+# account. That identity has no path into a 700 directory it owns
+# neither by uid nor by root, and every jailed exec inside the
+# container failed on it — bwrap and the sandbox's own probes alike, all
+# with the same `readlink("/work/packages", ...)  = -1 EACCES`, because
+# path resolution for a bind source has to pass through this directory
+# before it ever reaches the file being bound. Opening the top directory
+# to `o+rx` costs nothing this run does not already give up by handing
+# root the whole tree, and every file underneath already inherited a
+# permissive mode from `git clone`'s own umask; this was the one
+# directory mktemp made restrictive.
+chmod o+rx "$work"
+
 git clone --quiet "$PWD" "$work"
 git -C "$work" checkout --quiet --detach "$LOOM_SHA"
 
