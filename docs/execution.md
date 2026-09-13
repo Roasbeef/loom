@@ -302,10 +302,11 @@ setting every package passed three runs of three at on a 32-core box;
 `SIGNOFF_PARALLEL=1` reproduces the sequential run when a failure has
 to be told apart from a concurrency effect.
 
-`LOOM_SIGNOFF_HOST=<ssh alias> LOOM_SIGNOFF_CONTAINER=1 make
-signoff-remote` runs the same gate inside a fresh container on the
-remote box instead of directly in the checkout it owns. The hazard this
-removes: that checkout persists between runs by design, so anything a
+`LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote` runs the same gate
+inside a fresh container on the remote box; `LOOM_SIGNOFF_CONTAINER=0`
+opts out and runs directly in the checkout the script owns, which is
+kept for a box without Docker and for telling a container effect apart
+from a real failure. The hazard the container removes: that checkout persists between runs by design, so anything a
 run leaves behind — a shipment directory, a stale `build/` tree — is
 inherited by the next one, which is exactly what happened on PR #378
 (2026-09-13): the first `make signoff-remote` found

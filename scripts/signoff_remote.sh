@@ -23,7 +23,12 @@
 # told apart from a concurrency effect, so leaving it behind on this side
 # of the ssh session would make that distinction unavailable remotely.
 #
-# --- LOOM_SIGNOFF_CONTAINER=1: run the gate inside a fresh container ---
+# --- The container is the default; LOOM_SIGNOFF_CONTAINER=0 opts out ---
+#
+# The gate runs inside a fresh container unless LOOM_SIGNOFF_CONTAINER=0
+# asks for the bare-checkout path. The bare path is kept for a box
+# without Docker and for telling a container effect apart from a real
+# failure; it is not the path a verdict is normally posted from.
 #
 # Why. $LOOM_SIGNOFF_DIR persists between runs by design (it is cloned
 # once and re-fetched), so anything a run leaves behind under it — a
@@ -134,14 +139,14 @@ host=${LOOM_SIGNOFF_HOST:?set LOOM_SIGNOFF_HOST to an ssh destination (an alias 
 dir=${LOOM_SIGNOFF_DIR:-loom-signoff}
 sha=$(git -C "$root" rev-parse HEAD)
 origin=$(git -C "$root" remote get-url origin)
-container=${LOOM_SIGNOFF_CONTAINER:-0}
+container=${LOOM_SIGNOFF_CONTAINER:-1}
 
 if [ -z "$(git -C "$root" branch -r --contains "$sha")" ]; then
 	echo "signoff_remote: $sha is on no remote branch; push first" >&2
 	exit 2
 fi
 
-if [ "$container" = 1 ]; then
+if [ "$container" != 0 ]; then
 	# Container mode moves the posting step out of signoff.sh (see the
 	# block comment above), so it needs to know, from the caller's own
 	# args, whether this run intends to post at all and where.
