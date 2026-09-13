@@ -373,6 +373,26 @@ only Go module.
 - **One execution at a time per helper**; a second `exec_start` gets a
   `busy` error. Concurrency lives in the broker's pool, which keeps "the
   pgroup" in the cancel contract unambiguous.
+- **Busy ends when the child is reaped, not when the exit frame has been
+  written.** `internal/server` keeps two signals for the running
+  execution and closes them either side of the terminal write:
+  `execFreed` closes as soon as `jail.Exec.Wait` returns and is what
+  `handleExecStart` consults, and `waitDone` closes after the `exec_exit`
+  frame is on the channel and is what `reapRunning` waits on before
+  native exit. One signal cannot serve both. The broker moves its own
+  state machine to `Idle` on reading `exec_exit` and may dispatch the
+  next `exec_start` at once, so a helper freeing itself only after the
+  write refused a strictly sequential caller whenever the two orders
+  raced — seen once on CI as `RefusedByHelper("busy", …)` on a `git
+  commit` that had already settled, and green on rerun. Freeing early
+  costs nothing: `Wait` joins the output pumps, so no further `exec_out`
+  can be emitted for the finished id, and the one frame still owed
+  carries that id rather than the next execution's. `framing.Conn`
+  serializes writes and emits a frame in a single `Write`, so it cannot
+  interleave with the next execution's bytes either. `reapRunning`
+  joining only the current execution stays sufficient for the same
+  reason: a later execution's exit frame cannot have been written until
+  the earlier one released the connection mutex.
 - **Shutdown preserves the native exit witness.** After the hello exchange,
   `shutdown` with an empty map body stops command dispatch, cancels the active
   jail, and joins its existing `Wait` path before the helper exits with status
