@@ -395,6 +395,30 @@ tree and that it must not write anything.
 - **The lint warnings are the backlog.** `make lint` exits 0 with hundreds of
   warnings by design; four rules gate. Read them — they are the argument for
   promoting the next rule, and they are only useful if somebody looks.
+- **A Gleam module's compile time can go exponential in the Erlang
+  inliner, and the symptom is a CI deadline, not a build error.** Gleam
+  compiles every module with `inline`. The inliner attempts each local
+  call and, when it abandons an attempt for effort, restores the state it
+  began from, including its cache of visited expressions (an attempt
+  abandoned for size keeps its state, which is why a larger
+  `inline_effort` makes the same module compile in seconds). A function
+  that computes an expensive expression and then applies N local steps to
+  it re-visits that expression about 2^N times. `packages/tui`'s `update` hit
+  this at N = 6: the tui package took 75 s to compile on a laptop and 200 s
+  on a CI runner, which pushed the shipped-multiplayer and bootstrap
+  fixtures past their 180 s deadlines in three lanes at once, each looking
+  like a hung test. Diagnose with `erlc +time` on the generated
+  `build/dev/erlang/<pkg>/_gleam_artefacts/<module>.erl` (add `-I` for the
+  package's `include` and `-pa` for each `build/dev/erlang/*/ebin`); if
+  `core_inline_module` is the whole time, ablate the suspect function's
+  stages and expect a halving per stage. The fix is structural, not a
+  flag: move the steps into a function that takes the expensive value as
+  a parameter (`tui.update` now hands its dispatched model to
+  `settle_update`, and the package compiles in 6 s). Making the callee
+  `pub`, flattening nested calls into pipes, or hiding the expensive
+  expression behind a local call while the steps stay in the caller does
+  nothing, and the last of those measures worse; only the parameter shape
+  or a cross-module call changes the count.
 
 ---
 
