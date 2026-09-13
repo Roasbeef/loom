@@ -1067,7 +1067,9 @@ fn read_denial(error: fs.ReadError) -> CapDenial {
   }
 }
 
-fn fs_error_code(error: tool.FsError) -> String {
+/// The refusal code for a backend filesystem failure, shared with the
+/// search router so the two seams cannot name the same errno differently.
+pub fn fs_error_code(error: tool.FsError) -> String {
   case error {
     tool.FsNotFound(..) -> not_found_code
     tool.FsPermissionDenied(..) -> permission_denied_code
@@ -1075,7 +1077,9 @@ fn fs_error_code(error: tool.FsError) -> String {
   }
 }
 
-fn fs_error_text(error: tool.FsError) -> String {
+/// The refusal sentence for a backend filesystem failure, the other half
+/// of `fs_error_code`.
+pub fn fs_error_text(error: tool.FsError) -> String {
   case error {
     tool.FsNotFound(path:) -> "file not found: " <> path
     tool.FsPermissionDenied(path:) -> "permission denied: " <> path
