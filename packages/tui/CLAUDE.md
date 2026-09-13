@@ -213,8 +213,7 @@ that tree separately from the self-contained server.
   `viewport_address` for the viewport walk; and `poll_timeout_for`,
   `paced_poll_timeout` and `next_quiet_for` for the poll cadence. The
   functions in `tui` that read and write the model call these and stay
-  thin. The boundary is also load-bearing for the build, for the reason
-  under "`update` is a dispatch and a settle" below.
+  thin.
 - `tui/selection.Selection` is a left-button drag in progress or settled:
   an anchor and a head in screen cells, clipped to the panel interior the
   press landed in (`tui.hit_area`), so the transcript's border glyphs and
@@ -708,17 +707,20 @@ that tree separately from the self-contained server.
 - **`update` is a dispatch and a settle.** `update` records the event, calls
   `apply_input` to dispatch on it, and hands the result to `settle_update`
   for the worktree request, context sync, Herdr report, projection, viewport
-  snap and frame decision. Keeping those two bodies out of `update` is what
-  keeps the module compiling in seconds. The Erlang inliner attempts every
-  local call and, on abandoning an attempt for effort, restores the state it
-  began from, including its cache of visited expressions; a settling step
-  applied to the dispatched expression therefore re-visits the whole
-  dispatch, every arm and the tick's drain chain beneath it, once per step,
-  and six steps in one body cost about sixty-four visits and over a minute
-  of compile time. Applied to a parameter, the same steps visit it a
-  constant number of times. Folding either half back in restores the
-  blow-up; `erlc +time` on the generated `tui.erl` shows it as
-  `core_inline_module`, and `docs/execution.md` has the measurement.
+  snap and frame decision. `settle_update` taking the dispatched model as a
+  parameter is what keeps the module compiling in seconds; `apply_input` is
+  a readability split. The Erlang inliner attempts every local call and, on
+  abandoning an attempt for effort, restores the state it began from,
+  including its cache of visited expressions; a settling step applied to the
+  dispatched expression therefore re-visits the whole dispatch, every arm
+  and the tick's drain chain beneath it, once per step, and six steps in one
+  body cost about sixty-four visits and over a minute of compile time.
+  Applied to a parameter, the same steps visit it a constant number of
+  times. Folding the steps back into `update` restores the blow-up, and
+  hiding the dispatch behind a call while the steps stay in `update`
+  measures worse than the original; `erlc +time` on the generated `tui.erl`
+  shows it as `core_inline_module`, and `docs/execution.md` has the
+  measurement.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read

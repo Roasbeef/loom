@@ -10,14 +10,9 @@
 //// classification of the event that arrived, which is why they take those
 //// values rather than the model that owns them.
 ////
-//// The boundary is deliberate and it is load-bearing for the build as much
-//// as for the design. Every function in the main `tui` module that touches
-//// the model is a candidate for the Erlang inliner to expand into
-//// `update`, and the inliner's cost compounds with the depth of the call
-//// chain under that one function. The pacing chain grew deep enough to
-//// double the module's compile time and push a test harness past its
-//// deadline. A call across a module boundary is never inlined, so keeping
-//// the pure half of the chain here caps that cost at the boundary; the
+//// The boundary is a design one. Everything here is testable without a
+//// `Model`, and a call across a module boundary is never an inline attempt,
+//// so the Erlang inliner has nothing to expand at these call sites. The
 //// glue that reads and writes the model stays in `tui`, and is thin.
 
 import etui/backend

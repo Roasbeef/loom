@@ -3458,19 +3458,21 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 }
 
 // The dispatch on the event and the settling of its result are two functions
-// rather than one body, and the seam is load-bearing for the build rather
-// than for the design. The Erlang inliner tries to expand every local call,
-// and an attempt it abandons for effort restores the state it started from,
-// including its cache of visited expressions. Each settling step below
-// takes the dispatched model as an argument, so each attempt visits the
-// whole dispatch — every arm, and the tick's drain chain beneath it — and
-// then throws the visit away for the next step to repeat. Six steps made
-// that about sixty-four visits, and the module took over a minute to
-// compile. With the dispatch behind a call and the settling steps applied
-// to a plain parameter, the expensive expression is visited a constant
-// number of times and the same module compiles in a few seconds. Folding
-// either function back into `update` restores the blow-up; measure with
-// `erlc +time` on the generated module before doing so.
+// rather than one body. `apply_input` is a readability split the build does
+// not depend on. `settle_update` is load-bearing, and the property it
+// carries is that its steps apply to a function parameter. The Erlang
+// inliner tries to expand every local call, and an attempt it abandons for
+// effort restores the state it started from, including its cache of visited
+// expressions. When the settling steps sat in this body, each step's attempt
+// visited the whole dispatched expression — every arm, and the tick's drain
+// chain beneath it — and threw the visit away for the next step to repeat.
+// Six steps made that about sixty-four visits, and the module took over a
+// minute to compile. A parameter is cheap to re-visit, so the same steps in
+// `settle_update` cost a constant number of visits and the module compiles
+// in a few seconds. Hiding the dispatch behind a call while the steps stay
+// in the caller does not help and measured worse. Folding the steps back
+// into `update` restores the blow-up; measure with `erlc +time` on the
+// generated module before doing so.
 fn apply_input(event: backend.InputEvent, model: Model) -> Model {
   case event {
     // A selection is screen cells over a layout the resize just replaced,
