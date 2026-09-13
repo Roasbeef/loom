@@ -688,14 +688,14 @@ fn cut(
 /// `preparation`'s. Deciding from the durable projection (not process
 /// state) makes the decision crash-stable.
 ///
-/// `projection` reads the named strand's current durable projection;
-/// `estimate` prices one not-yet-reported message.
+/// The strand's projection arrives in the query, made once by the driver
+/// for the step; `estimate` prices one not-yet-reported message.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // hooks.threshold(settings, context_window: 200_000,
-/// //   projection: read_projection, estimate: hooks.estimate_message)
+/// //   estimate: hooks.estimate_message)
 /// ```
 ///
 pub fn threshold(

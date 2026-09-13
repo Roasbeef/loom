@@ -223,7 +223,7 @@ fn run(path: String) -> Nil {
         [bench.Input("store", rig)],
         [
           bench.Function("scan+decode", fn(rig: Rig) { list.length(scan(rig)) }),
-          bench.Function("project", fn(rig: Rig) {
+          bench.Function("scan+project", fn(rig: Rig) {
             list.length(project(rig.session).messages)
           }),
           bench.Function("estimate (graphemes)", estimate),
