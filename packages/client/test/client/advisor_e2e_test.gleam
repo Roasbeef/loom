@@ -654,6 +654,7 @@ fn entry(
     thinking: model.ThinkingOff,
     vision: catalog.TextOnly,
     pricing: None,
+    vision: catalog.TextOnly,
   )
 }
 

@@ -199,7 +199,10 @@ deferred hardening.
 
 The **cap prelude** is the set of modules a code-mode program may import:
 `cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/lsp`, `cap/task`,
-`cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, and `cap/job`. Each
+`cap/actor`, `cap/report`, `cap/kv`, `cap/schedule`, `cap/job`, and
+`cap/search` — read-only navigation and search over the workspace, so a
+program that needs to find its way around a tree can import it instead of
+`cap/fs` and say in its imports that it will not write. Each
 is an ordinary typed Gleam
 module whose functions look like local calls but whose bodies are stubs: a
 call marshals its arguments and sends them as a `cap_call` over the framed
@@ -223,8 +226,12 @@ one capability, `proc.run`, onto a jailed `broker.clear_call`, and a
 caller stacks the harness-side bridges over it, since the host is
 generic over the table: `codemode/workspace.routing` serves `fs.*`,
 `kv.*`, `schedule.*`, `job.*` and `report.emit` against the session's own
-tools,
-`client/mcp.routing` serves the generated per-server modules, and for an
+tools, `codemode/search.routing` serves `search.glob`, `search.grep`,
+`search.stat` and `search.read_lines` over `tools/search`'s walk — its own
+module rather than four more arms on the workspace one, because the module
+a program imports is the unit of authorization and `cap/search` grants
+strictly less than `cap/fs` — `client/mcp.routing` serves the generated
+per-server modules, and for an
 installed extension `client/extension/seam.routing` serves `net.request`
 and nothing else. What no layer in a given stack answers comes back
 refused in band as `unsupported_cap` — `lsp.*` is the one still owed
@@ -401,13 +408,16 @@ one layer the code-mode path does not.
 client/extension/seam.routing        net.request
   codemode/workspace.routing         fs.*, kv.*, schedule.*, job.*,
                                      report.emit
-    codemode/satellite.default_router  proc.run, then unsupported_cap
+    codemode/search.routing          search.glob, search.grep,
+                                     search.stat, search.read_lines
+      codemode/satellite.default_router  proc.run, then unsupported_cap
 ```
 
 The bridge in the middle is the very one a code-mode program on this host
 gets — `client/codemode.workspace_seam_for`, which `workspace_seam`
 delegates to — so an extension reads and writes exactly what a program
-reads and writes, under the same containment. The MCP arm is absent by
+reads and writes, under the same containment. The search arm beneath it is
+the same arrangement over `client/codemode.search_seam_for`. The MCP arm is absent by
 construction: `cap/mcp` is a harness-only capability on no seam, so an
 extension cannot name it and an arm for it would be a claim about reach
 the allowlist has already denied.

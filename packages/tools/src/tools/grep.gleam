@@ -62,7 +62,8 @@ pub fn tool() -> tool.Tool {
       <> "lines as path:line:text plus structured match details.",
     prompt_snippet: Some(
       "`grep` searches file contents with ripgrep and answers with "
-      <> "path:line:text plus structured matches.",
+      <> "path:line:text plus structured matches; when the matches need "
+      <> "shaping before you read them, use `code_mode` with `cap/search`.",
     ),
     schema: tool.object_schema(
       [

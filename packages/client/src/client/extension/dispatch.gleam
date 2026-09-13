@@ -78,6 +78,7 @@ import codemode/compile
 import codemode/identity
 import codemode/launch
 import codemode/satellite
+import codemode/search
 import codemode/workspace
 import core/clock
 import core/ids.{type OpId}
@@ -694,7 +695,17 @@ fn router(
       egress: reaching(config, written, decoded, egress),
       memory: remembering(config.memory, written),
     ),
-    over: workspace.routing(bridge(config, at), over: satellite.default_router),
+    over: workspace.routing(
+      bridge(config, at),
+      // The same read-only navigation arm a code-mode program reaches,
+      // built from the same closures: an extension's tool is a workspace
+      // program with a different entry point, so `search.*` must mean the
+      // same thing on both paths or the seam has two answers.
+      over: search.routing(
+        codemode.search_seam_for(workspace: at.workspace),
+        over: satellite.default_router,
+      ),
+    ),
   )
 }
 
