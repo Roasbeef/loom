@@ -158,7 +158,9 @@ pub type GlobQuery {
     /// The pattern. `*` and `?` match within one path segment, `**`
     /// matches zero or more whole segments. A pattern with no `/`
     /// matches an entry's basename at any depth; one with a `/` matches
-    /// the whole workspace-relative path. Matching is case-sensitive.
+    /// the path relative to `root`, so `src/**/*.gleam` is spelled
+    /// `**/*.gleam` when `root` is already `src`. Matching is
+    /// case-sensitive.
     pattern: String,
     /// How many entries to return at most.
     max_entries: Int,
