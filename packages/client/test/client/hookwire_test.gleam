@@ -221,6 +221,32 @@ pub fn common_payload_carries_the_contract_fields_test() {
   let assert Ok(json.String("bash")) = list.key_find(fields, "tool_name")
 }
 
+/// The one `Stop` field this build sends beyond the common four. The
+/// contract's `stop_hook_active` is what a self-limiting hook reads to
+/// decide whether to block again; without it a collection written
+/// against Claude blocks on every ask and runs to the harness's cap.
+pub fn stop_fields_carry_the_cycle_as_the_contract_boolean_test() {
+  let first =
+    hookwire.common_payload(
+      wiring_of(hc.Config(entries: [], source:)),
+      hc.Stop,
+      hookwire.stop_fields(hookwire.FirstBlock),
+    )
+  let assert json.Object(first_fields) = first
+  let assert Ok(json.Bool(False)) =
+    list.key_find(first_fields, "stop_hook_active")
+
+  let later =
+    hookwire.common_payload(
+      wiring_of(hc.Config(entries: [], source:)),
+      hc.Stop,
+      hookwire.stop_fields(hookwire.AlreadyBlocked),
+    )
+  let assert json.Object(later_fields) = later
+  let assert Ok(json.Bool(True)) =
+    list.key_find(later_fields, "stop_hook_active")
+}
+
 // --- fixtures ----------------------------------------------------------------
 
 fn group_with_matcher(raw: String) -> hc.Group {
