@@ -219,6 +219,22 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
       ),
     )
   let #(op_id, _generator) = ids.mint_op(ids.generator(wall, seed: 20_260_911))
+
+  // The enforcement demand the fixture runs under, and the one place
+  // this suite deliberately does not copy production.
+  // `PlatformEnforcement` refuses any run whose enforcement report
+  // carries a `skip:` entry, and a test host is under no obligation to
+  // supply every layer. A Linux box whose cgroup v2 root is not
+  // delegated reports `skip:cgroup-v2 ... memory.max and pids.max NOT
+  // applied`, so the broker settles the call as `DegradedExecution`
+  // even though the hook ran and exited with the code the test asked
+  // for. That reaches the runner as its blanket failure outcome — code
+  // 1, no text — and every assertion here about stdin, argv, `~` and
+  // exit codes then fails for a reason none of them is about.
+  // `BestEffort` is what every other jailed fixture in the tree asks
+  // for; the enforcement layers themselves are proven by `make
+  // selftest` and the broker's own demand tests.
+  let demand = exec.BestEffort
   #(
     hookrunner.Context(
       broker: broker_actor,
@@ -231,7 +247,7 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
         Some(operator_home(workspace)),
         workspace,
       ),
-      demand: exec.PlatformEnforcement,
+      demand:,
       clock: wall,
       session_id: "hookrunner-fixture",
       transcript_path: workspace <> "/session.db",
