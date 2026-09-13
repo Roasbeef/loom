@@ -1154,6 +1154,7 @@ fn record_line(
     )
   let taken =
     Scan(..scan, matches: [found, ..scan.matches], taken: scan.taken + 1)
+
   // One match past the bound is taken on purpose: it is what tells a
   // scan that filled exactly from one that had more to give, the same
   // way `glob` looks one entry past `max_entries`. `grep` drops it.
