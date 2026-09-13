@@ -36,11 +36,12 @@
 ////   9f573452d1333b42e16a9521c08a7c3597e4daa4cb09a937307095641b1a232f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
+////   ef9822d3e4d204332996b28b780432d21eeed26c32faf90e71e222bc9e4bed2f  packages/cap/src/cap/search.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 50be672535d4c0b5502f0cdf267624f57c74ea2bbf9ff2101465e9a634dafeb9
+//// Body digest (every line after the marker): 0bf6db5b41bf6915262bda6c8b2618851f4b0bcc9f9ae5fa4fcfe3da9fc55da1
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1018,6 +1019,157 @@ pub fn every_within(String, Int, Bounds, Wake, String) -> Result(Created, Schedu
 ///
 /// Capability: `schedule.list`.
 pub fn list() -> Result(List(Schedule), ScheduleError)
+",
+  ),
+  #(
+    "cap/search",
+    "### cap/search
+`cap/search` — read-only workspace navigation and search, as typed calls
+over the capability channel.
+
+/// Whether a listing is everything that matched, or everything the call
+/// was allowed to reach.
+pub type Completeness {
+  /// The walk finished and the listing is every match.
+  Complete
+  /// The walk stopped on a bound — `max_entries`, or the harness's
+  /// ceiling on entries visited — and there may be more.
+  Truncated
+}
+/// How complete a `grep`'s answer is.
+pub type Coverage {
+  /// Every candidate file was scanned to the end.
+  Exhaustive
+  /// The scan stopped because `max_matches` was reached; there may be
+  /// more matches in files or lines not yet reached.
+  MatchesCapped
+  /// The scan stopped on the harness's budget for entries visited or
+  /// bytes read, short of the match cap.
+  ScanTruncated
+}
+/// One entry a walk reached, or one `stat` answer.
+pub type Entry {
+  Entry(path: String, kind: Kind, size: Int, mtime_seconds: Int)
+}
+/// The answer to a `grep`.
+pub type Found {
+  Found(matches: List(Match), files_scanned: Int, files_skipped: Int, coverage: Coverage)
+}
+/// A path-pattern walk. Build one with `glob_query` and override fields
+/// with record update syntax.
+pub type GlobQuery {
+  GlobQuery(root: String, pattern: String, max_entries: Int, hidden: Hidden, prune: List(String))
+}
+/// A content search. Build one with `grep_query` and override fields with
+/// record update syntax.
+pub type GrepQuery {
+  GrepQuery(root: String, pattern: String, globs: List(String), context: Int, max_matches: Int, hidden: Hidden, prune: List(String))
+}
+/// Whether a walk visits entries whose name begins with a dot.
+pub type Hidden {
+  /// Skip dot-prefixed names. The default.
+  SkipHidden
+  /// Visit dot-prefixed names too. `prune` still applies, so this alone
+  /// does not walk into `.git`.
+  IncludeHidden
+}
+/// What an entry is, as `lstat` reports the final component — so a link
+/// is a link here and not the thing it points at.
+pub type Kind {
+  /// A regular file.
+  File
+  /// A directory.
+  Directory
+  /// A symbolic link, carrying the stored target verbatim. The target is
+  /// as written on disk, so it may be relative and may not resolve.
+  Symlink(target: String)
+  /// Anything else: a socket, a fifo, a device node.
+  Other
+}
+/// A span of lines read out of one file.
+pub type Lines {
+  Lines(text: String, first: Int, last: Int, total: Int)
+}
+/// The answer to a `glob`.
+pub type Listing {
+  Listing(entries: List(Entry), completeness: Completeness)
+}
+/// One line that matched a `grep` pattern, with the context lines around
+/// it that the query asked for.
+pub type Match {
+  Match(path: String, line: Int, column: Int, text: String, before: List(String), after: List(String))
+}
+/// Why a search call failed. The descriptive variants are the causes a
+/// program branches on; `SearchFailed` carries any other broker code
+/// verbatim; `SearchUnavailable` is a transport failure or a result the
+/// harness sent in a shape this module cannot read.
+pub type SearchError {
+  /// No such path.
+  NotFound(path: String)
+  /// The path is outside the workspace, or the policy refuses it.
+  PermissionDenied(path: String)
+  /// An operation/kind mismatch: a `glob` root that is a file, a
+  /// `read_lines` target that is a directory.
+  WrongKind(path: String, message: String)
+  /// A structurally invalid argument: a bound past its ceiling, a glob or
+  /// regex that does not compile, a line span that is inverted or too
+  /// wide.
+  InvalidArgument(message: String)
+  /// Any other in-band broker refusal, code preserved.
+  SearchFailed(code: String, message: String)
+  /// The capability channel could not carry the call, or its answer was
+  /// not the shape this module decodes.
+  SearchUnavailable(reason: String)
+}
+/// The context lines a `grep_query` asks for when the caller does not
+/// say: none. `tools/search` caps how many may be asked for.
+pub const default_context: Int
+/// The number of entries a `glob_query` asks for when the caller does not
+/// say. The harness module `tools/search` is the enforcer and holds the
+/// same number plus the ceiling above it; asking for more than that
+/// ceiling is refused as `InvalidArgument` rather than quietly clamped.
+pub const default_max_entries: Int
+/// The number of matches a `grep_query` asks for when the caller does not
+/// say. `tools/search` is the enforcer, as for `default_max_entries`.
+pub const default_max_matches: Int
+/// The directory names a `glob_query` or `grep_query` refuses to descend
+/// when the caller does not say. Pass `prune: []` to walk everything.
+/// `tools/search` holds the same list and is the enforcer.
+pub const default_prune: List(String)
+/// Walks `root` and returns the entries whose path matches the query's
+/// pattern, ordered by path. Symlinks are reported and never descended.
+///
+/// Capability: `search.glob`.
+pub fn glob(GlobQuery) -> Result(Listing, SearchError)
+/// A query that walks `root` for `pattern` with every bound at its
+/// default: `default_max_entries`, `SkipHidden`, `default_prune`.
+pub fn glob_query(under: String, matching: String) -> GlobQuery
+/// Searches the files under `root` for lines matching the query's regular
+/// expression. Files that are too large or not valid UTF-8 are counted in
+/// `files_skipped` rather than failing the call.
+///
+/// Capability: `search.grep`.
+pub fn grep(GrepQuery) -> Result(Found, SearchError)
+/// A query that searches `root` for `pattern` with every bound at its
+/// default: no globs, `default_context`, `default_max_matches`,
+/// `SkipHidden`, `default_prune`.
+pub fn grep_query(under: String, matching: String) -> GrepQuery
+/// Reads the lines of `path` from `first` to `last`, both 1-based and
+/// inclusive. `last` past the end of the file is clamped and the clamped
+/// value comes back in `Lines.last`; an inverted or over-wide span is
+/// `InvalidArgument`.
+///
+/// Unlike a walk, this resolves through symlinks exactly as `fs.read`
+/// does, so a contained link reads its target and an escaping one is
+/// refused.
+///
+/// Capability: `search.read_lines`.
+pub fn read_lines(String, from: Int, to: Int) -> Result(Lines, SearchError)
+/// Reports what is at `path`, without following a final symlink: a link
+/// answers `Symlink(target:)` rather than the kind of its target.
+///
+/// Capability: `search.stat`.
+pub fn stat(String) -> Result(Entry, SearchError)
 ",
   ),
   #(
