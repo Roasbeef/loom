@@ -1467,7 +1467,10 @@ catalogue without opening runtimes. Explicit admission invokes
   `max_notes_bytes`, and an operator's `compact` instructions quoted in
   their own fence. A prior checkpoint is named by session and entry ID
   for exact retrieval of inherited context. `reminder_point` is one reserve below the threshold's
-  cut, `reminder` the user message the `context` slot appends past it.
+  cut, `reminder` the user message the `context` slot appends past it;
+  that slot counts the messages the request already carries rather than
+  reading the branch again, which cost a scan and decode per request
+  (issue #359).
   `remaining_seam` fills `tools/context`'s seam from the same projection
   and token fold the threshold reads. `docs/architecture/compaction.md`
   carries the argument for a checkpoint over a summary.

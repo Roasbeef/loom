@@ -27,7 +27,19 @@ import runtime/hooks
 import support/fake
 
 fn query() -> effects.ThresholdQuery {
-  ThresholdQuery(operation: an_op(), strand: "main")
+  query_of(hooks.uncompacted([]))
+}
+
+// The driver hands the hook its projection in the query; a test does the
+// same rather than lending the hook a reader.
+fn query_of(projected: hooks.Projected) -> effects.ThresholdQuery {
+  ThresholdQuery(
+    operation: an_op(),
+    strand: "main",
+    messages: projected.messages,
+    carried: projected.carried,
+    previous_summary: projected.previous_summary,
+  )
 }
 
 fn an_op() -> core_ids.OpId {
@@ -242,7 +254,7 @@ pub fn nothing_older_than_the_tail_is_an_empty_preparation_test() {
 pub fn the_threshold_is_the_window_less_the_reserve_test() {
   // Three sizeable turns, then a priced assistant response and one
   // message after it: 85_000 reported plus one estimated.
-  let projection = fn(_strand) {
+  let projected =
     hooks.uncompacted([
       bulky(),
       bulky(),
@@ -250,21 +262,18 @@ pub fn the_threshold_is_the_window_less_the_reserve_test() {
       fake.answer("turn", 85_000),
       fake.user("next"),
     ])
-  }
   // 85_001 against a 100_000 window: under a 10k reserve, over a 20k one.
   let quiet =
     hooks.threshold(
       settings(20_000, 10_000),
       context_window: 100_000,
-      projection:,
       estimate: hooks.estimate_message,
     )
-  assert quiet(query()) == ThresholdNotExceeded
+  assert quiet(query_of(projected)) == ThresholdNotExceeded
   let firing =
     hooks.threshold(
       settings(20_000, 20_000),
       context_window: 100_000,
-      projection:,
       estimate: hooks.estimate_message,
     )
   let assert ThresholdExceeded(outcome: Prepared(preparation: CompactionPreparation(
@@ -272,7 +281,7 @@ pub fn the_threshold_is_the_window_less_the_reserve_test() {
     retained_tail:,
     tokens_before: 85_001,
     ..,
-  ))) = firing(query())
+  ))) = firing(query_of(projected))
   // The keep-recent budget of 20_000 holds one bulky turn and the two
   // small messages after it; the two older bulky turns are summarized.
   assert messages_to_summarize == [bulky(), bulky()]
@@ -294,20 +303,14 @@ pub fn disabled_settings_never_fire_test() {
         keep_recent_tokens: 0,
       ),
       context_window: 1,
-      projection: fn(_strand) { hooks.uncompacted([fake.user("m1")]) },
       estimate: fn(_message) { 1000 },
     )
-  assert signal(query()) == ThresholdNotExceeded
+  assert signal(query_of(hooks.uncompacted([fake.user("m1")])))
+    == ThresholdNotExceeded
 }
 
 pub fn an_empty_strand_never_fires_test() {
-  let signal =
-    hooks.threshold(
-      settings(0, 0),
-      context_window: 0,
-      projection: fn(_strand) { hooks.uncompacted([]) },
-      estimate: one,
-    )
+  let signal = hooks.threshold(settings(0, 0), context_window: 0, estimate: one)
   assert signal(query()) == ThresholdNotExceeded
 }
 

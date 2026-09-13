@@ -335,7 +335,6 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
     hooks.threshold(
       config.compaction,
       context_window: strand_facts(config, strand).context_window,
-      projection:,
       estimate: hooks.estimate_message,
     )
   }
@@ -437,12 +436,18 @@ fn near_limit_reminder(
 // and fires the reminder on every request for the rest of the session.
 // One projection per generation request, against the threshold's one
 // per driver pass. The window is the strand's, as the threshold's is.
+// The count is over the messages this request will carry, which the
+// driver projected and every earlier `context` hook has already shaped.
+// Reading the branch again here cost a full scan and decode per request
+// for a number the request already holds (issue #359); counting from the
+// head with nothing carried lets `context_tokens` find the newest usage
+// report wherever it sits.
 fn reminded(
   config: Config,
   strand: String,
   messages: List(AgentMessage),
 ) -> List(AgentMessage) {
-  let projected = hooks.project(config.session, strand)
+  let projected = hooks.Projected(messages:, carried: 0, previous_summary: None)
   let total = hooks.context_tokens(projected, hooks.estimate_message)
   let window = strand_facts(config, strand).context_window
   case total > checkpoint.reminder_point(window, config.compaction) {
