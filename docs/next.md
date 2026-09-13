@@ -4,32 +4,29 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
-Re-baselined September 12, 2026 against merged main `87df00a5`. Since the
-previous edition, the native Herdr integration (#354) and the imported
-Claude-hooks compatibility layer (#355) are merged, each on a green
-`signoff/linux` at its exact head: #354 at `759080b0` (main `a39a6a5f`) and
-#355 at `ed6349f1`. The next work is the follow-ups those two left named
-rather than implied, and the Escape cancellation proof-delivery race.
+Re-baselined September 13, 2026 against merged main `10b77fc4`, the merge of
+`cap/search` (#378, closing issue #365) on a green `signoff/linux` at its exact
+head `374f6362`. Every claim below was checked against the tree, the cited
+issue or PR, or a command run against this commit — not carried forward from
+the previous edition. That matters here more than usual: the previous edition
+said it was baselined against `87df00a5`, but its own table already described
+the advisor strand (#360) and terminal parity (#366) as merged, work that
+lands later in the log. Those rows were kept accurate by being amended inside
+the feature branches that carried them, commit by commit, rather than by a
+fresh rewrite at the end — exactly the append-instead-of-rewrite failure mode
+this file exists to avoid. This edition is a full rewrite, checked line by
+line against the tree at `10b77fc4`.
 
-This edition adds the vision routing work (issue #358) on branch
-`vision-routing`, ready for its PR: the catalogue's `vision` key, the
-request-time routing of image-bearing requests through the `vision`
-chain, text placeholders for images on text-only targets, and the
-worded in-band refusal when nothing usable is routed. Adversarial
-review found the rule misclassifying its most common real
-configuration — the run-start digest injections masked the operator's
-image from a newest-user-message classifier — fixed by classifying the
-*current turn*, and pinned by a live e2e that reproduces the
-configuration. A second review at takeover moved the turn boundary
-past tool calls, since the request carrying a tool's result back had
-been classified imageless and handed to the text-only model, and
-flipped the key's default: an entry that never wrote `vision` reads
-images, because nothing on the wire marks the capability and the fact
-is learned by probing, so the routing and the refusal act only on an
-entry declared `vision = false`. The follow-ups it leaves named: the
-models snapshot could carry the capability (additive, no protocol
-change needed), and `ToolResultImage` placeholdering is latent only (no
-in-tree tool constructs one).
+Since that stale baseline, three bodies of work reached main: the advisor
+strand's phase 1 (#360, already reflected in the previous table), vision
+routing (#362, closing #358), and `cap/search` (#378, closing #365, the work
+this rewrite follows). Two unrelated defects were also found and fixed on
+main in the same window, independent of any of the three: a busy-refusal race
+in `loom-exec` between the exit frame it writes and the state it reports
+(#375), and two imported-hook test fixtures asking Linux for enforcement
+tolerance no jailed fixture in the tree actually gets (#376). Neither opens
+new work; both are folded into "Corrections to the previous edition" below
+because the previous edition's picture of a fully green tree predates them.
 
 ## Where the tree is
 
@@ -43,85 +40,166 @@ in-tree tool constructs one).
 | Escape and held input | Merged in #352. An explicit abort now admits every message held for that strand into one successor run, not just the first ([protocol 032](../protocol-change/032-abort-held-batch.md)). |
 | Transcript reading and drafts | Merged in #353. A reading viewport is preserved even at offset zero, expanded tool results keep the compact call's anchor, bracketed paste inserts at the cursor without replacing a draft, and an aborted turn renders as Stopped with its diagnostic visible. |
 | Herdr integration | Merged in #354. The terminal reports idle, working and blocked to a Herdr pane over its unix socket, sequenced from the wall clock, announcing the session when its identity is first known and on every switch. `done` is Herdr's own derivation from an idle report on an unseen tab and is never sent. |
-| Imported hooks | Merged in #355 (issue #350, first wave). A Claude Code hook collection loads unchanged from the operator's `~/.claude/settings.json`, trusted on first sight and re-reviewed on change; the composed gates fire at run start, tool clearance (after the harness's own, with a rewrite re-cleared), the result fold, the summarizer, and run end. A committed acceptance fixture boots a real instance and proves each gate fires. |
+| Imported hooks | Merged in #355 (issue #350, first wave). A Claude Code hook collection loads unchanged from the operator's `~/.claude/settings.json`, trusted on first sight and re-reviewed on change; the composed gates fire at run start, tool clearance (after the harness's own, with a rewrite re-cleared), the result fold, the summarizer, and run end. A committed acceptance fixture boots a real instance and proves each gate fires. Its follow-ups are gathered in #369, superseding the looser list a previous edition carried here; see "What to do next" below. |
 | Terminal parity | Merged in #366. The bottom-anchored viewport walks to the tail one row per frame instead of jumping by each provider chunk, a tick that carried transcript traffic is a paced boundary under the frame budget, and the record projection is rebuilt only when its inputs change. A running tool and streaming reasoning keep the height their settled form will have in compact mode; reasoning collapses to one row that Ctrl+G expands. Markdown renders tables as a bordered grid measured in terminal cells, inline code in its own colour, code with a gutter distinct from a quote, wrapping code rows, strikethrough as strikethrough, GitHub alerts as callouts, and headings by weight. A strand switch parks the loaded scrollback instead of discarding it (#361). etui is pinned past the emoji-presentation width table and synchronized output. The pure pacing arithmetic lives in `tui/pacing`, and `tui.update` is split into a dispatch and a settle because the Erlang inliner re-visited the dispatch once per settling step and had doubled the package's compile time past three CI deadlines (`docs/execution.md` §8). |
-| Advisor strand | Merged in #360 (issue #137, phase 1). A catalogue that routes an `advisor` role gets a second strand beside `main`, created by the harness rather than by the Agency, that reads a rendering of what `main` did since a stored cursor at each of its run ends and answers with one `advise` call: `quiet`, `nudge` folded into `main`'s next run start, or `block` delivered now. An emission guard downgrades a block inside its cooldown and drops advice already given. Unrouted, nothing is created. |
+| Advisor strand | Merged in #360, closing issue #137. A catalogue that routes an `advisor` role gets a second strand beside `main`, created by the harness rather than by the Agency, that reads a rendering of what `main` did since a stored cursor at each of its run ends and answers with one `advise` call: `quiet`, `nudge` folded into `main`'s next run start, or `block` delivered now. An emission guard downgrades a block inside its cooldown and drops advice already given. Unrouted, nothing is created. #137 is closed; its phase-1 deferrals live on in `docs/architecture/advisor.md` and in "What to do next" below, no longer gated by that issue number. |
+| Vision routing | Merged in #362, closing issue #358. The catalogue's `vision` key routes an image-bearing request through the `vision` chain; a text-only target gets a text placeholder for each image instead of a silent drop; a request routed nowhere usable gets a worded in-band refusal. Two rounds of adversarial review moved the design twice before landing: the first found the classifier reading the newest user message, which misclassified the common case where a run-start digest injection sits after the operator's actual image-bearing turn, fixed by classifying the *current turn*; the second found the turn boundary sitting before a tool call, so the request carrying a tool's result back was classified imageless and handed to the text-only model, fixed by moving the boundary past tool calls. The key's default flipped for the same reason nothing on the wire marks the capability: an entry that never wrote `vision` reads images, and the routing and the refusal act only on an entry explicitly declared `vision = false`. |
+| `cap/search` | Merged in #378, closing issue #365. A read-only navigation and search capability — `glob`, `grep`, `stat`, `read_lines` — on the workspace and extension seams, served entirely in the harness with no process spawn. See "The `cap/search` rulings" below for what it settled and "Deliberately open" for what it left unmeasured. |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
 ### Corrections to the previous edition
 
-The previous handoff (September 11) was written before #348 merged and called
-for landing it as the next step; it is merged at `6a484a4f`. That edition
-predates the UX series, which was reviewed adversarially, fixed, signed off, and
-merged on September 12. During that series the Escape "cancellation could not be
-confirmed" report was diagnosed: it is a proof-delivery race, not a failed stop
-(see "Deliberately open"). The previous edition's verification block referenced
-tool-output test matches that are now merged; the block below is refreshed.
+The previous edition's stated baseline (`87df00a5`, September 12) was already
+behind its own table by the time it was last touched; see the preamble above.
+Two claims in it are now plainly wrong rather than merely stale:
 
-The previous edition listed #354 and #355 as the next work. Both landed after
-adversarial review found defects the original branches' own tests could not
-see. #354 encoded a `done` state Herdr's request schema rejects and seeded its
-sequence from the monotonic clock, which is negative on this platform, so every
-report failed validation; a schema-validated drive through a unix-socket
-listener found both. #355's composition layer had never run: its merged
-configuration never reached the wiring, its environment requirement was never
-granted by the jail, and its trust pin was inert; it is reworked and proven by
-a committed session-level fixture rather than the shell demo it shipped with,
-which could not run.
+The preamble described vision routing as "ready for its PR" on a branch. It
+merged as #362, after the two rounds of adversarial review described in the
+table above; that work is no longer pending, it is a settled body of work
+with its own row.
 
-### The UX series and its verification
+Item 2 of "What to do next" told the reader to record advisor block/nudge
+counts "on #137" before building the awaited run-end hard block. #137 is
+closed — phase 1 shipped and the issue tracked exactly that, nothing more.
+The counts still need recording, but there is no open issue to record them
+on until one is filed; the exit criterion below is corrected to say so
+rather than point at a closed issue. The same audit found
+`docs/architecture/advisor.md`'s deferred list had grown a sixth item,
+**interrupt-policy nuance** (plan mode, terminal-answer suppression), added
+by #360's own final commits after this file's item 2 was last written. It is
+included below for the first time.
 
-Three PRs landed after one adversarial review each (Opus), every finding
-verified against the code before acting:
+Item 1's imported-hooks follow-up list was accurate in kind but looser than
+what now exists: #369 gathers the same follow-ups with the exact shape each
+takes (an `import = "on" | "off"` switch, the `loom hooks trust` CLI,
+`SubagentStop` for `sub:` strands, a Loom-native TOML hook source, and
+`UserPromptSubmit`/async hooks). The list below cites #369 directly instead
+of repeating a paraphrase that could drift from it again.
 
-- **#351 context usage.** The inspector and footer read the server's captured
-  configuration and branch, never presentation state. Review removed a
-  redundant eight-MiB encode guard (the 4096-entry scan and the board's
-  47,000-byte budget already bound the read) and moved the footer refresh from
-  once per committed entry to the operation boundary, so a long turn no longer
-  starts a server-side scan per entry.
-- **#352 held input after abort.** The held queue owns its drain policy as a
-  two-variant type, so an emptied queue drops its batch intent and a later idle
-  transition cannot inherit it. The empty-queue-at-abort arm is deliberate
-  (protocol 032) and pinned by a regression.
-- **#353 transcript reading.** The load-bearing fix: an aborted turn keeps the
-  "Stopped" headline and shows its diagnostic beneath it, because a clean abort
-  carries no diagnostic and the only aborted turns that carry text are the ones
-  the harness could not confirm. The shipped multiplayer fixture no longer
-  asserts on the last-writer-wins `notice` scalar; it observes the refusal by
-  the attempt lifecycle, which survives a render cut.
+Two defects unrelated to any of the above were found and fixed on main in
+this window, neither opening new work: #375 fixed a busy-refusal race
+between `loom-exec`'s exit-frame write and the channel closure the broker's
+dispatch check reads, reproduced once in CI and now regression-tested with
+the write and the close on separate signals. #376 lowered two imported-hook
+test fixtures from `PlatformEnforcement` to `BestEffort`, the level every
+other jailed fixture in the tree already asks for; the two outliers were
+failing all twelve `check (linux, client)` cases on an unrelated
+`skip:cgroup-v2` degradation, not the hook behaviour the assertions named.
 
-Each PR was rebased current, re-signed off green on its exact merged head, and
-verified live against a real provider (GLM 5.3): the context footer and
-inspector with a provider-total update, held input batching into one successor
-after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
+Two smaller repairs, made inside the `cap/search` branch itself because main
+had drifted under it between the advisor-strand and vision-routing merges,
+are not corrections to a previous edition but are worth naming here so a
+reader of the log is not puzzled by them: two citations in
+`docs/architecture/advisor.md` had moved when vision routing shifted
+`client/catalog.gleam`'s line numbers, and
+`client/test/client/advisor_e2e_test.gleam` constructed `CatalogModel`
+without the `vision` field vision routing had added, which had left the
+client suite not compiling on main. Both are fixed on main as of `10b77fc4`.
+
+### The `cap/search` rulings
+
+Issue #365 proposed `cap/search` and left six open questions; its closing
+comment settles each, and this section is the durable home for that ruling
+now that the issue itself is closed:
+
+**Names.** The draft's `walk`, `find` and `read_slice` shipped as `glob`,
+`grep` and `read_lines`. The cap exists to replace the `bash grep` fallback,
+so the model should reach for `search.grep` on unix priors without reading
+docs; `find` in unix searches paths, not contents, so it was rejected as a
+name for content search.
+
+**Result shape.** `capped` and `truncated` are exclusive — hitting the match
+cap stops the scan — so they are one three-variant `Coverage`
+(`Exhaustive`, `MatchesCapped`, `ScanTruncated`,
+`packages/cap/src/cap/search.gleam:263`) rather than two `Bool`s. There is
+no score field on a workspace hit; the seam shared with #226 (deferred) is
+`path`, `line`, `column`, `text` plus context, and a future hybrid ranker
+adds its own score on its own type.
+
+**Symlinks are never followed inside a walk**, with no opt-in. `glob`
+classifies with `lstat` and reports a link as `Symlink(target:)`, never
+descending into or reading through one. `read_lines` resolves the whole
+path the way `fs.read` does, so reading through a *contained* link works
+and an escaping one is refused; `stat` resolves the parent and lstat's the
+leaf, so a link is reported as a link. This makes containment hold by
+construction for everything a walk reaches, from the one `resolve_real`
+call at the boundary, rather than by a check repeated at every entry.
+
+**Pattern language.** Glob is the ripgrep `-g` subset (`*`, `?`, `**`; a
+pattern without `/` matches basenames at any depth, stated where the model
+reads it in `packages/cap/src/cap/search.gleam`); content search is
+`gleam_regexp`. Both are bounded by pattern length, entries visited, bytes
+scanned, and the serving call's own execution deadline, and both `glob` and
+`grep` look one past their bound so an exact fill is reported `Exhaustive`
+rather than as a truncated miss — the fix for the one defect an adversarial
+review pass found in `grep`, which had reported capped coverage on an exact
+fill; `glob` had the same shape fixed during the build, with a regression
+for each.
+
+**Ordering.** Results are path-sorted, deterministically. No mtime mode
+shipped; `mtime_seconds` rides on every entry for a caller that wants one.
+
+**Ignore files are not honoured.** `.gitignore` and its relatives are read
+by neither call. Hidden entries are skipped by default, overridable with
+`IncludeHidden`; a fixed `prune` list (`.git`, `_build`, `build`,
+`node_modules`, `target`, `deps`) is never descended, overridable with
+`prune: []`. Parsing `.gitignore` correctly is real complexity, deferred
+until a trace shows it is needed.
+
+**`cap/history` stays deferred and tool-only**, as the issue's draft leaned.
+Durable-history recall sits behind an index that is a trusted host object
+and an embedding runtime that is native inference; neither belongs behind a
+model-authored import, and #226 (Spindle) is building the retrieval
+underneath the tool-only door in the meantime.
+
+Two gates fire on any new `cap/*` module and are easy to forget when
+planning similar work: the extension seam's exact-set freeze test, and the
+prelude coverage check in `scripts/gen-prelude.sh`. Both fired here and
+both are why `ad6dda59`, `3627d168` and `0914a3fc` each regenerate the
+prelude.
+
+The prompt steers a model toward this cap rather than a shell pipeline: the
+`code_mode` and `grep` snippets, and a new paragraph in the system prompt's
+`tool_discipline` section (`packages/prompt/src/prompt/default.gleam`), say
+that finding, filtering, counting or joining across files belongs in a
+`code_mode` program using `cap/search`, because a shell pipeline prints its
+intermediate output into the model's context and hands back the shaping
+anyway. Whether that nudge actually moves real traces off the bash fallback
+is unmeasured; see "Deliberately open".
 
 ## What to do next
 
-1. **Finish the imported-hooks layer's follow-ups.** The matrix names them:
-   the `loom hooks trust` command, without which project and local sources can
-   never be approved (the trust module already has `trust`, `revoke` and
-   `scan`; the CLI is surface beside `loom ext`); the prompt-admission seam
-   (`UserPromptSubmit`), which touches surfaces protocol 024 froze and may need
-   a `protocol-change/NNN.md`; and asynchronous hooks on the job plane.
-   **Exit:** each as its own PR with a regression and a matrix row moved from
-   follow-up to tested.
+1. **Finish the imported-hooks layer's follow-ups**, tracked in #369: an
+   `[hooks] import = "on" | "off"` switch (default `on`); the `loom hooks
+   trust` CLI, without which project and local sources can never be
+   approved (the trust module already has `trust`, `revoke` and `scan`; the
+   CLI is surface beside `loom ext`); `SubagentStop` for `sub:` strands
+   (and a ruling on whether the advisor counts); a Loom-native
+   `~/.loom/loom.toml` `[[hooks.Event]]` source, which already parses and
+   round-trips but is wired to nowhere; and the `UserPromptSubmit` seam,
+   which touches surfaces protocol 024 froze and may need a
+   `protocol-change/NNN.md`. **Exit:** each as its own PR with a regression
+   and #369 closed or narrowed to what remains.
 
 2. **Carry the advisor's phase-1 deferrals.** Each is named in
-   `docs/architecture/advisor.md` with what it waits on. The **awaited run-end
-   hard block** — holding the run boundary open until the advisor answers —
-   waits on counts of how often `block` fires and how often the re-wake came
-   too late; the machinery for an awaited run-end key already exists in the
-   assistant path, so this is an evidence question rather than a build one.
-   **Extraction to an extension** waits on two capabilities the satellite does
-   not have: a transcript read on the cap prelude, and an `AgentEnd` hook that
-   carries more than an operation id. A **code-mode `cap/advise`** surface, a
-   **brief override file** in place of today's constant, and **advisor status
-   in the terminal** — the branch is reachable through the strand list, but
-   nothing reports that a review is in flight or when the last verdict landed
-   — are each their own small piece. **Exit:** counts recorded on #137 before
-   the hard block is built; each of the other four as its own PR with a
-   regression.
+   `docs/architecture/advisor.md` with what it waits on; #137 tracked phase
+   1 only and is closed, so none of these has an open issue yet. The
+   **awaited run-end hard block** — holding the run boundary open until the
+   advisor answers — waits on counts of how often `block` fires and how
+   often the re-wake came too late; the machinery for an awaited run-end
+   key already exists in the assistant path, so this is an evidence
+   question rather than a build one, and the first step is filing an issue
+   to hold the counts. **Extraction to an extension** waits on two
+   capabilities the satellite does not have: a transcript read on the cap
+   prelude, and an `AgentEnd` hook that carries more than an operation id.
+   A **code-mode `cap/advise`** surface, a **brief override file** in place
+   of today's constant, **interrupt-policy nuance** (plan mode,
+   terminal-answer suppression, beyond the one cooldown policy shipped),
+   and **advisor status in the terminal** — the branch is reachable through
+   the strand list, but nothing reports that a review is in flight or when
+   the last verdict landed — are each their own small piece. **Exit:**
+   an issue filed and counts recorded before the hard block is built; each
+   of the other five as its own PR with a regression.
 
 3. **Land the Herdr-side half.** The Herdr repo needs the `Loom` registry
    variant, the `("herdr:loom", "loom")` resume-plan entry mapping to
@@ -154,6 +232,30 @@ after Escape, and an aborted turn rendering Stopped with a visible diagnostic.
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
+
+**`cap/search` is a separate module, not four more arms on `cap/fs`.**
+Issue #365's closing comment is the record; see "The `cap/search` rulings"
+above for the full settlement, including names, result shape, symlink
+policy, pattern language, ordering, ignore-file scope, and the deferral of
+`cap/history`.
+
+**A code-mode program's traversal and shaping belong in `code_mode` with
+`cap/search`, not a shell pipeline.** `packages/prompt/src/prompt/default.gleam`'s
+`tool_discipline` section states this as policy: a pipeline that shapes
+output is a program written in the wrong language, and it prints its
+intermediate output into the model's context on top of forcing the shaping
+back out through text. `bash` remains the reach for a real tool the
+workspace provides, and `grep` for a case where the model will read the
+matches itself. Whether the nudge measurably moves traces is open; see
+"Deliberately open".
+
+**A vision-routing entry's default is to read images.** Issue #358's work,
+merged as #362: nothing on the wire marks whether a model reads images, so
+the fact is learned by probing rather than declared, and the routing and
+the in-band refusal act only on an entry explicitly declared
+`vision = false`. The turn that decides routing is the *current* turn, past
+any tool calls in it, not the newest user message — both were the subject
+of an adversarial-review correction each, recorded in the table above.
 
 **Context inspection reads captured state, never presentation.**
 [Protocol 030](../protocol-change/030-context-observation.md) captures the
@@ -303,6 +405,17 @@ streaming has no headroom for it.
 
 None of these is unfinished work somebody forgot.
 
+- **Whether the `tool_discipline` prompt nudge actually moves traces off the
+  bash fallback and onto `code_mode` with `cap/search`** is unmeasured. The
+  right next step is reading real traces, not adding more prompt bytes on
+  the strength of intuition.
+- **If `search.grep` proves slow on a large monorepo**, the designed fix is
+  a jailed `rg` behind the same typed `Coverage`/`Found` result, not a
+  change to the capability's API. No measurement has shown this yet.
+- **Ignore-file support (`.gitignore` and relatives) is deferred**, not
+  designed away. It waits on a trace that actually needs it; parsing them
+  correctly is real complexity that a hidden-entries-plus-`prune` default
+  has so far made unnecessary.
 - **The Escape cancellation proof-delivery race** (item 4 above) has a diagnosed
   root cause but no fix yet. The #353 presentation stands on its own: it renders
   the retained diagnostic honestly rather than hiding it.
@@ -336,6 +449,15 @@ once more on the #355 signoff and cleared on the bounded re-run; the same run
 exposed a genuine fixture-hygiene race in `hooktrust_test`, fixed with
 per-test directories, which is the distinction the rule exists to force.
 
+A related but distinct hazard surfaced building `cap/search`, worth keeping
+apart from a flake because re-running does not fix it: a test module that
+installs a fake capability channel into `cap/internal/dispatch`'s VM-global
+`persistent_term` slot (as `cap_test` and `cap@mcp_test` already did, and as
+`cap/search_test` now does) must be listed in `scripts/serial-tests`, or the
+signoff's eight-way parallel EUnit hands it a sibling's fake reply instead of
+its own. The failure looks exactly like a flake — a handful of assertions
+fail on what reads as the wrong data — until the serial list is checked.
+
 ## How to verify
 
 ```sh
@@ -354,6 +476,7 @@ bash scripts/test.sh client --match protocol_conformance
 bash scripts/test.sh client --match tool_output
 bash scripts/test.sh client --match advisor
 bash scripts/test.sh tools --match advise
+bash scripts/test.sh tools --match search
 bash scripts/test.sh tui --match advisor_view
 ```
 
@@ -365,4 +488,20 @@ acceptance. The Linux signoff runs `scripts/signoff.sh` on a pushed head.
 **Capture each command's own exit status.** A successful log reader is not a
 successful gate. **Use one build/gate at a time per checkout.** Keep enforced
 code-mode worktrees outside `/tmp`, where the jail replaces sockets with scratch.
+
+Three hazards from landing `cap/search` cost real time and are worth
+carrying forward:
+
+- **Adding a hex dependency to a package requires hand-updating that
+  package's `requirements` line in every downstream `manifest.toml`**
+  (`client`, `conformance` for `tools`'s new `gleam_regexp`). The released
+  `gleam 1.18.1` silently heals a stale line locally; the patched compiler
+  CI builds against does not, so a green local `make check` proves nothing
+  about this.
+- **A test module calling `cap/internal/dispatch.install` must be listed in
+  `scripts/serial-tests`**, or the signoff's eight-way parallel EUnit hands
+  it a sibling's fake reply. See "Known flakes" above.
+- **The remote signoff checkout can hold a stale `packages/*/build/erlang-shipment`
+  directory** that fails prep on an otherwise clean run.
+
 See [execution](execution.md) for the remaining operational rules.
