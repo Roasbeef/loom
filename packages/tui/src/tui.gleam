@@ -67,6 +67,7 @@ import tui/live_jobs
 import tui/markdown
 import tui/model_selector
 import tui/notes_view
+import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/queue_editor
 import tui/recording
@@ -439,49 +440,6 @@ pub type ControlEvent {
   )
 }
 
-// Recent terminal or websocket activity keeps input and stream latency below a
-// perceptible delay. After a quiet window, the loop backs off so reading a
-// completed response does not keep waking and rebuilding the terminal.
-const active_poll_ms = 40
-
-const quiet_poll_ms = 400
-
-const quiet_after_ms = 320
-
-/// The shortest gap between two rendered frames while events keep arriving.
-///
-/// Sixty frames a second is faster than any terminal repaints a full
-/// viewport, so a burst paced to this never shows less motion than the
-/// terminal could have drawn.
-const frame_interval_ms = 16
-
-/// How many transcript rows one rendered frame reveals.
-///
-/// One row is what makes a streamed answer read as scrolling rather than as
-/// a sequence of jumps. At the frame interval it is still sixty rows a
-/// second, which is faster than any provider produces them.
-const pace_rows_per_frame = 1
-
-/// The backlog past which a frame reveals more than `pace_rows_per_frame`.
-///
-/// Twenty-four rows at one row a frame is about four hundred milliseconds
-/// of lag. Beyond that the reader is watching output the model already
-/// finished with, which is a worse fault than a slightly larger step.
-const pace_catch_up_threshold = 24
-
-/// How much of a backlog above the threshold one frame takes.
-///
-/// An eighth is a decay rather than a fixed rate: the step shrinks as the
-/// backlog does, so the walk lands back on single rows instead of stopping
-/// dead at the threshold.
-const pace_catch_up_divisor = 8
-
-/// How long a poll waits for more input before a deferred frame is rendered.
-///
-/// The read only starts once etui's event queue is empty, so this is the gap
-/// that separates one burst from the next rather than a delay added to each.
-const deferred_frame_poll_ms = 8
-
 /// The last completed frame, keyed by the screen and revision it was for.
 @internal
 pub type FrameCache {
@@ -707,7 +665,7 @@ pub type Model {
     record_cache_details: Bool,
     frame_revision: Int,
     frame_cache: Option(FrameCache),
-    frame_debt: FrameDebt,
+    frame_debt: pacing.FrameDebt,
     /// The presentation clock, shared by pacing, activity, and throughput.
     /// Scripts inject this clock without changing transport deadlines.
     monotonic_time_ms: fn() -> Int,
@@ -735,108 +693,6 @@ pub type Model {
     /// The pane state and session last reported, so only a change sends.
     herdr_published: Option(herdr.Publication),
   )
-}
-
-/// Whether the cached frame still shows every visible change.
-///
-/// Etui draws one frame per input event, and a wheel flick or a held Page key
-/// arrives as a burst of events decoded from one read. Rendering each of them
-/// costs a full frame and a viewport-sized terminal diff per event, so a change
-/// that lands inside the pacing interval is recorded here instead and rendered
-/// once the burst has drained or the interval has passed.
-@internal
-pub type FrameDebt {
-  /// The cached frame shows every visible change.
-  FrameSettled
-
-  /// A visible change is on screen only as a stale frame, waiting for the
-  /// next tick or the next event outside the pacing interval.
-  FrameDeferred
-}
-
-/// How one input event relates to frame pacing.
-@internal
-pub type FrameBoundary {
-  /// A tick or a resize. A tick only arrives once the input queue has drained
-  /// and the read has waited without more bytes, so it is where a deferred
-  /// frame is flushed; a resize always redraws because the screen changed
-  /// shape under the stale frame.
-  FlushPoint
-
-  /// A keyboard, paste, or mouse event, which may be one of a burst.
-  Paced
-}
-
-/// Whether the cached frame matches the current screen and revision.
-@internal
-pub type CacheFreshness {
-  /// The cached frame is the frame this model would render.
-  FrameCurrent
-
-  /// The cache is empty, sized for another screen, or behind the revision.
-  FrameStale
-}
-
-/// What the terminal loop does with the frame after one event.
-@internal
-pub type FrameDecision {
-  /// The cached frame is current; return the exact same term.
-  KeepCachedFrame
-
-  /// Render now and restart the pacing interval.
-  RenderFrame
-
-  /// Leave the stale frame on screen and render at the next flush point.
-  DeferFrame
-}
-
-/// Whether the bottom-anchored transcript has shown every row it holds.
-///
-/// A provider chunk lands as two to five new rows at once. Moving the
-/// viewport by all of them in one frame reads as a jump, so the viewport
-/// keeps its own position and walks toward the newest row a frame at a
-/// time. This says which of the two states that walk is in, and it is the
-/// reason a loop with no socket traffic left must still be woken: the rows
-/// already in the model have not all been shown yet.
-@internal
-pub type ViewportPacing {
-  /// Every rendered row has been revealed; the viewport is at the tail.
-  ViewportSettled
-
-  /// Rows are still being revealed a frame at a time.
-  ViewportCatchingUp
-}
-
-/// What a terminal tick found when it drained the connection.
-///
-/// A tick is both the idle event that flushes a burst's last deferred frame
-/// and the carrier for every stream delta. Those two want opposite pacing,
-/// so the tick reports which one it was rather than being classified by its
-/// event constructor alone.
-@internal
-pub type TickTraffic {
-  /// The tick moved the transcript, so its frame belongs to the stream and
-  /// is paced with every other streamed frame.
-  TranscriptMoved
-
-  /// The tick changed no transcript row. It is the boundary at which an
-  /// earlier burst's deferred frame is rendered.
-  TranscriptQuiet
-}
-
-/// How fast a bottom-anchored viewport catches up with rows it has not shown.
-///
-/// The three bounds answer three different questions, so they are named
-/// rather than folded into one rate. `rows_per_frame` is the ordinary step
-/// and is what makes streaming read as scrolling. `catch_up_threshold` is
-/// the backlog past which a fixed step would leave the reader watching
-/// stale output, so the step grows with the backlog. `snap_above` is the
-/// growth at which there is no continuity left to preserve — a jump larger
-/// than the viewport replaced everything the reader could see — and the
-/// viewport moves to the tail in one frame.
-@internal
-pub type PacePolicy {
-  PacePolicy(rows_per_frame: Int, catch_up_threshold: Int, snap_above: Int)
 }
 
 /// Runs the interactive terminal client.
@@ -1083,11 +939,11 @@ pub fn new_model_with_clock(
     record_cache_details: False,
     frame_revision: 0,
     frame_cache: None,
-    frame_debt: FrameSettled,
+    frame_debt: pacing.FrameSettled,
     monotonic_time_ms:,
     last_frame_ms: monotonic_time_ms(),
     activity_revision: 0,
-    quiet_for_ms: quiet_after_ms,
+    quiet_for_ms: pacing.quiet_after_ms,
     recorder: None,
     herdr_reporter: None,
     herdr_published: None,
@@ -3664,7 +3520,13 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     |> snap_viewport_for(event)
   refresh_frame_cache(
     settled,
-    frame_boundary(event, tick_traffic(model, settled)),
+    pacing.frame_boundary(
+      event,
+      pacing.tick_traffic(
+        before: model.render_revision,
+        after: settled.render_revision,
+      ),
+    ),
   )
 }
 
@@ -3673,97 +3535,10 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
 // a page key or a resize wait on it would put the walk in front of the
 // hand.
 fn snap_viewport_for(model: Model, event: backend.InputEvent) -> Model {
-  case viewport_address(event) {
-    AddressesElsewhere -> model
-    AddressesTranscript ->
+  case pacing.viewport_address(event) {
+    pacing.AddressesElsewhere -> model
+    pacing.AddressesTranscript ->
       Model(..model, revealed_rows: model.rendered_row_count)
-  }
-}
-
-/// Whether an input event asks the transcript to move.
-///
-/// The distinction is what keeps typing from undoing the pacing. Composing a
-/// prompt while an answer streams says nothing about where the transcript
-/// should be, and snapping on each inserted character would restore the very
-/// motion the walk removes; the reference terminal never moves its
-/// transcript for a keystroke either. A wheel, a click, a page key or a
-/// resize does address it, and the walk must not stand in front of them.
-type ViewportAddress {
-  /// The event asks for a transcript position, so the walk ends here.
-  AddressesTranscript
-
-  /// The event is aimed at the composer, at another surface, or at nothing
-  /// at all, and the walk continues under it.
-  AddressesElsewhere
-}
-
-// The mouse addresses the transcript whatever it lands on. A press is how
-// the jump hint under a scrolled viewport is taken and it promises the
-// newest row, and a selection drag is a reader holding a position that must
-// not move under the pointer.
-//
-// A tick and a bare mouse move are the two events that ask for nothing. The
-// move is listed with the tick rather than with the other buttons for that
-// reason: hover reporting during a generation would otherwise snap the
-// transcript on every motion event and undo the pacing entirely. A paste
-// goes with them because it is composer text arriving in one piece.
-fn viewport_address(event: backend.InputEvent) -> ViewportAddress {
-  case event {
-    backend.Tick | backend.MouseMove(..) | backend.Paste(_) ->
-      AddressesElsewhere
-    backend.Resize(..)
-    | backend.MouseScroll(..)
-    | backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..) -> AddressesTranscript
-    backend.KeyPress(raw) -> key_viewport_address(keys.match(raw))
-  }
-}
-
-// The keys that move, submit to, or reshape the transcript. Escape closes
-// help, notes and the changes view, each of which returns the reader to a
-// transcript that was projected while another surface owned the screen;
-// Enter is the submitted prompt appearing at the tail; Ctrl+g re-expands
-// every tool block and so replaces the rows outright. A strand or session
-// switch needs no key here because the projection it produces is adopted
-// whole by `refresh_render_cache`.
-//
-// Everything else is composition or navigation inside the composer, and the
-// modifier keys are listed rather than swept up by a catch-all so a new
-// binding is a decision taken here.
-fn key_viewport_address(key: keys.Key) -> ViewportAddress {
-  case key {
-    keys.PageUp
-    | keys.PageDown
-    | keys.Home
-    | keys.End
-    | keys.Escape
-    | keys.Enter -> AddressesTranscript
-    keys.Ctrl("g") -> AddressesTranscript
-    keys.Char(_)
-    | keys.Up
-    | keys.Down
-    | keys.Left
-    | keys.Right
-    | keys.Backspace
-    | keys.Delete
-    | keys.Tab
-    | keys.BackTab
-    | keys.Insert
-    | keys.F(_)
-    | keys.Ctrl(_)
-    | keys.Alt(_)
-    | keys.Unknown(_) -> AddressesElsewhere
-  }
-}
-
-// The transcript revision is bumped at every mutation of the projection's
-// source data and nowhere else, so comparing it across the event is the
-// same question as "did this tick carry a delta, a record or a cut".
-fn tick_traffic(before: Model, after: Model) -> TickTraffic {
-  case after.render_revision != before.render_revision {
-    True -> TranscriptMoved
-    False -> TranscriptQuiet
   }
 }
 
@@ -3832,49 +3607,6 @@ fn publish_herdr(model: Model) -> Model {
   }
 }
 
-/// Classifies one event for frame pacing.
-///
-/// A resize always flushes, because the screen changed shape under the
-/// stale frame. Everything a person or a terminal can produce in a burst is
-/// paced. A tick is decided by what it carried rather than by being a tick:
-/// a tick is both the idle event that flushes a burst's last frame and the
-/// carrier for every stream delta, and the second of those was, until this
-/// split, the one path with the most traffic and no budget at all. A tick
-/// that carried nothing keeps its flushing duty, because a deferred frame
-/// has no other event waiting to pay it off.
-///
-/// Mouse buttons are listed rather than swept up by a catch-all so a new
-/// etui event variant is a compile error here, not a silent default.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert tui.frame_boundary(backend.Tick, tui.TranscriptQuiet)
-///   == tui.FlushPoint
-/// assert tui.frame_boundary(backend.Tick, tui.TranscriptMoved) == tui.Paced
-/// ```
-@internal
-pub fn frame_boundary(
-  event: backend.InputEvent,
-  traffic: TickTraffic,
-) -> FrameBoundary {
-  case event {
-    backend.Resize(..) -> FlushPoint
-    backend.Tick ->
-      case traffic {
-        TranscriptQuiet -> FlushPoint
-        TranscriptMoved -> Paced
-      }
-    backend.KeyPress(_)
-    | backend.Paste(_)
-    | backend.MouseScroll(..)
-    | backend.MousePress(..)
-    | backend.MouseRelease(..)
-    | backend.MouseDrag(..)
-    | backend.MouseMove(..) -> Paced
-  }
-}
-
 // A terminal tick is the only idle-time event. Visible socket traffic marks
 // activity while it is drained; otherwise the accumulated quiet time advances
 // by the timeout that led to this tick. A live operation animates at this
@@ -3890,7 +3622,7 @@ fn update_tick(model: Model) -> Model {
       ),
     )
   let quiet_for_ms =
-    next_quiet_for(
+    pacing.next_quiet_for(
       model.quiet_for_ms,
       terminal_poll_timeout(model),
       drained.activity_revision != model.activity_revision,
@@ -4019,36 +3751,36 @@ fn advance_activity_indicator(model: Model) -> Model {
 // a longer burst can span batches. A stale cache inside the pacing interval is
 // left in place and recorded as debt; the next tick, which cannot arrive before
 // the queue has drained, renders the final state once.
-fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
+fn refresh_frame_cache(model: Model, boundary: pacing.FrameBoundary) -> Model {
   let screen = geometry.rect_new(0, 0, model.width, model.height)
   let freshness = case viewport_pacing(model) {
     // Rows the model holds but the viewport has not shown make the painted
     // frame stale by definition, whatever the revision says. Without this
     // the walk would stop after one step: revealing a row changes the frame
     // without changing any of the inputs the revision counts.
-    ViewportCatchingUp -> FrameStale
-    ViewportSettled ->
+    pacing.ViewportCatchingUp -> pacing.FrameStale
+    pacing.ViewportSettled ->
       case model.frame_cache {
         Some(FrameCache(screen: cached_screen, revision:, ..))
           if cached_screen == screen && revision == model.frame_revision
-        -> FrameCurrent
-        None | Some(_) -> FrameStale
+        -> pacing.FrameCurrent
+        None | Some(_) -> pacing.FrameStale
       }
   }
 
   // The clock is read once per event and only compared against itself, so a
   // wall-clock step cannot stretch or collapse the interval.
   let now = model.monotonic_time_ms()
-  case frame_decision(boundary, freshness, now - model.last_frame_ms) {
-    KeepCachedFrame -> model
-    DeferFrame -> Model(..model, frame_debt: FrameDeferred)
-    RenderFrame -> {
+  case pacing.frame_decision(boundary, freshness, now - model.last_frame_ms) {
+    pacing.KeepCachedFrame -> model
+    pacing.DeferFrame -> Model(..model, frame_debt: pacing.FrameDeferred)
+    pacing.RenderFrame -> {
       // The step is taken before the frame is built, so the frame that is
       // cached and the position it was built from are the same moment.
       let paced = advance_viewport(model)
       Model(
         ..paced,
-        frame_debt: FrameSettled,
+        frame_debt: pacing.FrameSettled,
         last_frame_ms: now,
         frame_cache: Some(FrameCache(
           screen:,
@@ -4060,89 +3792,11 @@ fn refresh_frame_cache(model: Model, boundary: FrameBoundary) -> Model {
   }
 }
 
-/// Decides whether an event's visible change is rendered now or deferred.
-///
-/// A current cache is always kept. A stale one is rendered at a flush point,
-/// or once `frame_interval_ms` has passed since the previous frame; inside the
-/// interval it is deferred, which caps a burst at one frame per interval
-/// instead of one per event while still moving the screen as the burst runs.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert tui.frame_decision(tui.Paced, tui.FrameCurrent, 0)
-///   == tui.KeepCachedFrame
-/// assert tui.frame_decision(tui.Paced, tui.FrameStale, 3) == tui.DeferFrame
-/// assert tui.frame_decision(tui.Paced, tui.FrameStale, 16) == tui.RenderFrame
-/// assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 3)
-///   == tui.RenderFrame
-/// ```
-@internal
-pub fn frame_decision(
-  boundary: FrameBoundary,
-  freshness: CacheFreshness,
-  elapsed_ms: Int,
-) -> FrameDecision {
-  case freshness, boundary {
-    FrameCurrent, _ -> KeepCachedFrame
-    FrameStale, FlushPoint -> RenderFrame
-    FrameStale, Paced ->
-      case elapsed_ms >= frame_interval_ms {
-        True -> RenderFrame
-        False -> DeferFrame
-      }
-  }
-}
-
-/// Advances a revealed row count one frame's worth toward the newest row.
-///
-/// Walking is for a viewport that already holds a position worth keeping, so
-/// three shapes bypass it. A viewport that has revealed nothing has no such
-/// position: its first projection is the screen the reader has yet to see,
-/// and revealing it a row at a time would animate an arrival rather than a
-/// change. A shrink — a tool tail collapsing, a generation cleared — is
-/// adopted at once, because there is nothing to reveal and holding retired
-/// rows would show text the model no longer has. A growth of `snap_above`
-/// or more replaced everything the viewport could show, so there is no
-/// continuity left to preserve. Everything else is the ordinary case: one
-/// step, enlarged in proportion to the backlog once a fixed step would lag.
-///
-/// The result never passes `target` and never moves away from it, so the
-/// walk terminates for any policy whose `rows_per_frame` is at least one.
-///
-/// ## Examples
-///
-/// ```gleam
-/// let policy = tui.PacePolicy(1, 24, 200)
-/// assert tui.pace(10, 15, policy) == 11
-/// assert tui.pace(10, 10, policy) == 10
-/// assert tui.pace(10, 4, policy) == 4
-/// assert tui.pace(0, 15, policy) == 15
-/// ```
-@internal
-pub fn pace(revealed: Int, target: Int, policy: PacePolicy) -> Int {
-  let backlog = target - revealed
-  use <- bool.guard(
-    revealed <= 0 || backlog <= 0 || backlog >= policy.snap_above,
-    target,
-  )
-
-  let step = case backlog > policy.catch_up_threshold {
-    True -> int.max(policy.rows_per_frame, backlog / pace_catch_up_divisor)
-    False -> policy.rows_per_frame
-  }
-  revealed + int.min(step, backlog)
-}
-
 // The snap bound is the viewport rather than a constant: what makes a jump
 // worth smoothing is that the reader can still see where the text came
 // from, and a growth taller than the screen leaves nothing of it.
-fn pace_policy(model: Model) -> PacePolicy {
-  PacePolicy(
-    rows_per_frame: pace_rows_per_frame,
-    catch_up_threshold: pace_catch_up_threshold,
-    snap_above: transcript_viewport_height(model),
-  )
+fn pace_policy(model: Model) -> pacing.PacePolicy {
+  pacing.policy(snap_above: transcript_viewport_height(model))
 }
 
 // Rows held back from the bottom-anchored viewport. Added to the scroll
@@ -4168,12 +3822,9 @@ fn viewport_backlog(model: Model) -> Int {
 /// assert tui.viewport_pacing(model) == tui.ViewportSettled
 /// ```
 @internal
-pub fn viewport_pacing(model: Model) -> ViewportPacing {
-  use <- bool.guard(main_shows_diff(model), ViewportSettled)
-  case viewport_backlog(model) > 0 {
-    True -> ViewportCatchingUp
-    False -> ViewportSettled
-  }
+pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
+  use <- bool.guard(main_shows_diff(model), pacing.ViewportSettled)
+  pacing.viewport_pacing(backlog: viewport_backlog(model))
 }
 
 // One step of the walk, taken as the frame it belongs to is rendered. Tying
@@ -4191,21 +3842,12 @@ fn advance_viewport(model: Model) -> Model {
     True ->
       Model(
         ..model,
-        revealed_rows: pace(
+        revealed_rows: pacing.pace(
           model.revealed_rows,
           model.rendered_row_count,
           pace_policy(model),
         ),
       )
-  }
-}
-
-/// Returns the active or quiet poll timeout for an inactivity duration.
-@internal
-pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
-  case quiet_for_ms >= quiet_after_ms {
-    True -> quiet_poll_ms
-    False -> active_poll_ms
   }
 }
 
@@ -4218,7 +3860,7 @@ pub fn poll_timeout_for(quiet_for_ms: Int) -> Int {
 /// ```
 @internal
 pub fn terminal_poll_timeout(model: Model) -> Int {
-  let ordinary = paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
+  let ordinary = pacing.paced_poll_timeout(model.frame_debt, model.quiet_for_ms)
 
   // A loading session candidate is read from disk rather than from the
   // socket, so its short wait survives a backlog: nothing it drains can
@@ -4234,8 +3876,8 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
     // interval between rows, and the shorter in-flight wait is deliberately
     // not taken — draining the socket sooner would only lengthen a backlog
     // the viewport has yet to show.
-    ViewportCatchingUp -> int.min(ordinary, frame_interval_ms)
-    ViewportSettled ->
+    pacing.ViewportCatchingUp -> int.min(ordinary, pacing.frame_interval_ms)
+    pacing.ViewportSettled ->
       case model.channel {
         Some(channel) ->
           case session_channel.in_flight(channel) {
@@ -4244,41 +3886,6 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
           }
         None -> ordinary
       }
-  }
-}
-
-/// Returns the poll timeout, shortened while a deferred frame is waiting.
-///
-/// The deferred frame is rendered by the tick that follows the burst, and the
-/// tick arrives only after a read has waited this long without more bytes.
-/// Holding the wait short keeps the last position of a flick from lagging the
-/// hand by a whole quiet poll.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert tui.paced_poll_timeout(tui.FrameDeferred, 0) == 8
-/// assert tui.paced_poll_timeout(tui.FrameSettled, 0) == 40
-/// assert tui.paced_poll_timeout(tui.FrameSettled, 320) == 400
-/// ```
-@internal
-pub fn paced_poll_timeout(debt: FrameDebt, quiet_for_ms: Int) -> Int {
-  case debt {
-    FrameDeferred -> deferred_frame_poll_ms
-    FrameSettled -> poll_timeout_for(quiet_for_ms)
-  }
-}
-
-/// Advances inactivity after one poll, resetting immediately on activity.
-@internal
-pub fn next_quiet_for(
-  quiet_for_ms: Int,
-  elapsed_ms: Int,
-  activity_seen: Bool,
-) -> Int {
-  case activity_seen {
-    True -> 0
-    False -> int.min(quiet_after_ms, quiet_for_ms + elapsed_ms)
   }
 }
 

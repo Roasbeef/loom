@@ -205,6 +205,16 @@ that tree separately from the self-contained server.
   continuation cell into the glyph and dropping the trailing blanks a
   full-rectangle paint always leaves. It is what a golden file holds and what
   `loom replay` prints, so the two cannot disagree about a frame.
+- `tui/pacing` is the arithmetic of the terminal loop's two rates, with no
+  model in sight: `FrameDebt`, `FrameBoundary`, `CacheFreshness` and
+  `FrameDecision` with `frame_boundary` and `frame_decision` for frame
+  pacing; `ViewportPacing`, `TickTraffic`, `ViewportAddress` and
+  `PacePolicy` with `pace`, `policy`, `viewport_pacing`, `tick_traffic` and
+  `viewport_address` for the viewport walk; and `poll_timeout_for`,
+  `paced_poll_timeout` and `next_quiet_for` for the poll cadence. The
+  functions in `tui` that read and write the model call these and stay
+  thin. The boundary is also load-bearing for the build, for the reason
+  under "`update` is a dispatch and a settle" below.
 - `tui/selection.Selection` is a left-button drag in progress or settled:
   an anchor and a head in screen cells, clipped to the panel interior the
   press landed in (`tui.hit_area`), so the transcript's border glyphs and
@@ -653,30 +663,30 @@ that tree separately from the self-contained server.
 - **Bursts are paced as well as batched.** Etui applies up to sixty-four queued
   events before drawing, but every event still advances the immutable model
   through `update`, where Loom maintains its completed-frame cache, and a long
-  input run can span etui batches. `frame_decision` therefore renders a stale
+  input run can span etui batches. `pacing.frame_decision` therefore renders a stale
   cache at most once every 16 ms while paced events keep arriving and records
   the rest as `FrameDeferred`; the tick that follows the drained queue flushes
-  it, and `paced_poll_timeout` shortens that tick's wait to 8 ms so the final
+  it, and `pacing.paced_poll_timeout` shortens that tick's wait to 8 ms so the final
   position lands within a frame of the hand stopping. The pacing clock is the
   monotonic clock, seeded at startup because a fresh node's monotonic time is
   negative.
 - **A tick is paced by what it carried.** A tick is both the idle event that
   flushes a deferred frame and the carrier for every stream delta, so
-  `frame_boundary` classifies it by `TickTraffic` rather than by its
+  `pacing.frame_boundary` classifies it by `TickTraffic` rather than by its
   constructor: a tick that moved the transcript is `Paced` and waits out the
   frame interval like any other streamed frame, while a tick that moved
   nothing is a `FlushPoint`, because a deferred frame has no other event
   waiting to pay it off. A resize always flushes.
 - **The viewport is paced, not teleported.** A provider chunk lands as two to
   five rows at once. `Model.revealed_rows` is how many of `rendered_rows` the
-  bottom-anchored viewport has shown, and `pace` advances it toward the tail
-  by `pace_rows_per_frame` per rendered frame, in proportion to the backlog
-  once that passes `pace_catch_up_threshold`. Three growths bypass the walk
+  bottom-anchored viewport has shown, and `pacing.pace` advances it toward
+  the tail one row per rendered frame, in proportion to the backlog once
+  that passes the catch-up threshold `pacing.policy` fixes. Three growths bypass the walk
   and are adopted whole: a viewport that has revealed nothing has no position
   to stay continuous with, a shrink must not leave retired rows on screen, and
   a growth taller than the viewport replaced everything the reader could see.
   An idle strand holds nothing back, which is what makes a replayed or
-  scripted run settle on the complete frame. `viewport_address` classifies an
+  scripted run settle on the complete frame. `pacing.viewport_address` classifies an
   input event as `AddressesTranscript` or `AddressesElsewhere`, and only the
   former closes the backlog at once: a wheel, a click, a resize, and the keys
   that move, submit to, or reshape the transcript (page keys, Home, End,

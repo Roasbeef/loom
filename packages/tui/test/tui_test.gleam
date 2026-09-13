@@ -30,6 +30,7 @@ import tui/internal/ffi_file
 import tui/internal/workspace_file
 import tui/markdown
 import tui/model_selector
+import tui/pacing
 import tui/protocol.{ModelInfo, Strand}
 import tui/recording
 import tui/selection
@@ -274,36 +275,40 @@ pub fn cached_frame_keeps_a_deferred_frame_on_screen_test() {
 }
 
 pub fn frame_decision_keeps_a_current_cache_test() {
-  assert tui.frame_decision(tui.Paced, tui.FrameCurrent, 0)
-    == tui.KeepCachedFrame
-  assert tui.frame_decision(tui.FlushPoint, tui.FrameCurrent, 1000)
-    == tui.KeepCachedFrame
+  assert pacing.frame_decision(pacing.Paced, pacing.FrameCurrent, 0)
+    == pacing.KeepCachedFrame
+  assert pacing.frame_decision(pacing.FlushPoint, pacing.FrameCurrent, 1000)
+    == pacing.KeepCachedFrame
 }
 
 pub fn frame_decision_paces_a_burst_test() {
   // Inside the interval a stale frame waits; at or past it, it renders. A
   // wheel flick decoded from one read therefore costs one frame per interval
   // rather than one per event.
-  assert tui.frame_decision(tui.Paced, tui.FrameStale, 0) == tui.DeferFrame
-  assert tui.frame_decision(tui.Paced, tui.FrameStale, 15) == tui.DeferFrame
-  assert tui.frame_decision(tui.Paced, tui.FrameStale, 16) == tui.RenderFrame
-  assert tui.frame_decision(tui.Paced, tui.FrameStale, 400) == tui.RenderFrame
+  assert pacing.frame_decision(pacing.Paced, pacing.FrameStale, 0)
+    == pacing.DeferFrame
+  assert pacing.frame_decision(pacing.Paced, pacing.FrameStale, 15)
+    == pacing.DeferFrame
+  assert pacing.frame_decision(pacing.Paced, pacing.FrameStale, 16)
+    == pacing.RenderFrame
+  assert pacing.frame_decision(pacing.Paced, pacing.FrameStale, 400)
+    == pacing.RenderFrame
 }
 
 pub fn frame_decision_flushes_at_a_tick_or_resize_test() {
   // The tick that follows a drained queue renders whatever was deferred, no
   // matter how recently the previous frame was drawn.
-  assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 0)
-    == tui.RenderFrame
-  assert tui.frame_decision(tui.FlushPoint, tui.FrameStale, 3)
-    == tui.RenderFrame
+  assert pacing.frame_decision(pacing.FlushPoint, pacing.FrameStale, 0)
+    == pacing.RenderFrame
+  assert pacing.frame_decision(pacing.FlushPoint, pacing.FrameStale, 3)
+    == pacing.RenderFrame
 }
 
 pub fn paced_poll_timeout_shortens_the_wait_for_a_deferred_frame_test() {
-  assert tui.paced_poll_timeout(tui.FrameDeferred, 0) == 8
-  assert tui.paced_poll_timeout(tui.FrameDeferred, 320) == 8
-  assert tui.paced_poll_timeout(tui.FrameSettled, 0) == 40
-  assert tui.paced_poll_timeout(tui.FrameSettled, 320) == 400
+  assert pacing.paced_poll_timeout(pacing.FrameDeferred, 0) == 8
+  assert pacing.paced_poll_timeout(pacing.FrameDeferred, 320) == 8
+  assert pacing.paced_poll_timeout(pacing.FrameSettled, 0) == 40
+  assert pacing.paced_poll_timeout(pacing.FrameSettled, 320) == 400
 }
 
 pub fn panel_inner_trims_the_border_test() {
@@ -379,26 +384,26 @@ pub fn cached_frame_rebuilds_for_resize_test() {
 }
 
 pub fn adaptive_poll_enters_quiet_only_after_hysteresis_test() {
-  assert tui.poll_timeout_for(0) == 40
-  assert tui.poll_timeout_for(319) == 40
-  assert tui.poll_timeout_for(320) == 400
+  assert pacing.poll_timeout_for(0) == 40
+  assert pacing.poll_timeout_for(319) == 40
+  assert pacing.poll_timeout_for(320) == 400
 
   let after_seven_ticks =
     [1, 2, 3, 4, 5, 6, 7]
     |> list.fold(0, fn(quiet_for, _) {
-      tui.next_quiet_for(quiet_for, 40, False)
+      pacing.next_quiet_for(quiet_for, 40, False)
     })
   assert after_seven_ticks == 280
-  assert tui.poll_timeout_for(after_seven_ticks) == 40
-  let quiet = tui.next_quiet_for(after_seven_ticks, 40, False)
+  assert pacing.poll_timeout_for(after_seven_ticks) == 40
+  let quiet = pacing.next_quiet_for(after_seven_ticks, 40, False)
   assert quiet == 320
-  assert tui.poll_timeout_for(quiet) == 400
+  assert pacing.poll_timeout_for(quiet) == 400
 }
 
 pub fn adaptive_poll_activity_immediately_restores_fast_cadence_test() {
-  let reset = tui.next_quiet_for(320, 400, True)
+  let reset = pacing.next_quiet_for(320, 400, True)
   assert reset == 0
-  assert tui.poll_timeout_for(reset) == 40
+  assert pacing.poll_timeout_for(reset) == 40
 }
 
 pub fn slash_command_palette_filters_and_completes_test() {

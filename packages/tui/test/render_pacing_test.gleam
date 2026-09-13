@@ -23,31 +23,32 @@ import gleam/string
 import tui
 import tui/connection
 import tui/frame
+import tui/pacing
 import tui/protocol
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
 
-const policy = tui.PacePolicy(
+const policy = pacing.PacePolicy(
   rows_per_frame: 1,
   catch_up_threshold: 24,
   snap_above: 200,
 )
 
 pub fn pace_reveals_one_row_per_frame_test() {
-  assert tui.pace(10, 11, policy) == 11
-  assert tui.pace(10, 15, policy) == 11
-  assert tui.pace(10, 10, policy) == 10
+  assert pacing.pace(10, 11, policy) == 11
+  assert pacing.pace(10, 15, policy) == 11
+  assert pacing.pace(10, 10, policy) == 10
 }
 
 pub fn pace_never_passes_or_retreats_from_the_tail_test() {
   // A shrink is adopted at once: retired rows must not stay on screen.
-  assert tui.pace(30, 4, policy) == 4
-  assert tui.pace(30, 0, policy) == 0
+  assert pacing.pace(30, 4, policy) == 4
+  assert pacing.pace(30, 0, policy) == 0
 
   // And a step never overshoots a target one row away, at any backlog.
   assert list.all(counting_to(60), fn(target) {
-    let next = tui.pace(1, target, policy)
+    let next = pacing.pace(1, target, policy)
     next <= int_max(target, 1) && next >= 1
   })
     as "a step lands on or before the target and never moves backwards"
@@ -56,10 +57,10 @@ pub fn pace_never_passes_or_retreats_from_the_tail_test() {
 pub fn pace_accelerates_out_of_a_long_backlog_test() {
   // At the threshold the step is still one row; past it the step grows with
   // the backlog, so the lag cannot keep lengthening while output arrives.
-  assert tui.pace(0, 24, tui.PacePolicy(1, 24, 200)) == 24
-  assert tui.pace(1, 25, policy) == 2
-  assert tui.pace(1, 26, policy) == 4
-  assert tui.pace(1, 105, policy) == 14
+  assert pacing.pace(0, 24, pacing.PacePolicy(1, 24, 200)) == 24
+  assert pacing.pace(1, 25, policy) == 2
+  assert pacing.pace(1, 26, policy) == 4
+  assert pacing.pace(1, 105, policy) == 14
 }
 
 pub fn pace_reaches_the_tail_in_bounded_frames_test() {
@@ -74,25 +75,30 @@ pub fn pace_reaches_the_tail_in_bounded_frames_test() {
 pub fn an_unrevealed_viewport_adopts_its_first_projection_test() {
   // Nothing is on screen yet, so there is no position to stay continuous
   // with and a walk would animate an arrival rather than a change.
-  assert tui.pace(0, 40, policy) == 40
-  assert tui.pace(0, 1, policy) == 1
+  assert pacing.pace(0, 40, policy) == 40
+  assert pacing.pace(0, 1, policy) == 1
 }
 
 pub fn a_jump_wider_than_the_viewport_is_taken_at_once_test() {
   // Attaching to a long session, or paging in history, replaces every row
   // the reader could see. Walking that would scroll history nobody read.
-  let screen = tui.PacePolicy(1, 24, 20)
-  assert tui.pace(5, 25, screen) == 25
-  assert tui.pace(5, 24, screen) == 6
+  let screen = pacing.PacePolicy(1, 24, 20)
+  assert pacing.pace(5, 25, screen) == 25
+  assert pacing.pace(5, 24, screen) == 6
 }
 
 // Runs the walk to the tail and reports how many steps it took, with a bound
 // so a policy that failed to converge ends the test rather than the suite.
-fn frames_to_settle(revealed: Int, target: Int, policy: tui.PacePolicy) -> Int {
+fn frames_to_settle(
+  revealed: Int,
+  target: Int,
+  policy: pacing.PacePolicy,
+) -> Int {
   case revealed >= target, revealed > 400 {
     True, _ | _, True -> 0
     False, False ->
-      1 + frames_to_settle(tui.pace(revealed, target, policy), target, policy)
+      1
+      + frames_to_settle(pacing.pace(revealed, target, policy), target, policy)
   }
 }
 
@@ -218,22 +224,24 @@ pub fn a_tick_carrying_a_delta_waits_for_the_frame_interval_test() {
   let carried = tui.update(backend.Tick, at(drawn, drawn.last_frame_ms + 1))
   assert carried.render_revision != drawn.render_revision
     as "the fixture must deliver a delta the transcript actually admits"
-  assert carried.frame_debt == tui.FrameDeferred
+  assert carried.frame_debt == pacing.FrameDeferred
     as "a tick that drained a delta is one frame of a stream, not a flush"
 
   // The same instant, with nothing left to drain, still renders: a deferred
   // frame has no other event waiting to pay it off.
   let flushed = tui.update(backend.Tick, carried)
-  assert flushed.frame_debt == tui.FrameSettled
+  assert flushed.frame_debt == pacing.FrameSettled
 }
 
 pub fn frame_boundary_paces_only_the_tick_that_carried_traffic_test() {
-  assert tui.frame_boundary(backend.Tick, tui.TranscriptMoved) == tui.Paced
-  assert tui.frame_boundary(backend.Tick, tui.TranscriptQuiet) == tui.FlushPoint
-  assert tui.frame_boundary(backend.Resize(80, 24), tui.TranscriptMoved)
-    == tui.FlushPoint
-  assert tui.frame_boundary(backend.KeyPress("a"), tui.TranscriptQuiet)
-    == tui.Paced
+  assert pacing.frame_boundary(backend.Tick, pacing.TranscriptMoved)
+    == pacing.Paced
+  assert pacing.frame_boundary(backend.Tick, pacing.TranscriptQuiet)
+    == pacing.FlushPoint
+  assert pacing.frame_boundary(backend.Resize(80, 24), pacing.TranscriptMoved)
+    == pacing.FlushPoint
+  assert pacing.frame_boundary(backend.KeyPress("a"), pacing.TranscriptQuiet)
+    == pacing.Paced
 }
 
 pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
@@ -243,13 +251,13 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
       workspace.Context("/work", None),
       fn() { 0 },
     )
-  assert tui.viewport_pacing(settled) == tui.ViewportSettled
+  assert tui.viewport_pacing(settled) == pacing.ViewportSettled
 
   // The quiet timeout would strand the walk for a whole quiet poll a step,
   // with no socket traffic left to wake the loop.
   let catching_up =
     tui.Model(..settled, rendered_row_count: 40, revealed_rows: 10)
-  assert tui.viewport_pacing(catching_up) == tui.ViewportCatchingUp
+  assert tui.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
   assert tui.terminal_poll_timeout(catching_up) == 16
   assert tui.terminal_poll_timeout(settled) > 16
 }
@@ -436,7 +444,7 @@ pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
       diff_view: tui.DiffVisible,
       width: 90,
     )
-  assert tui.viewport_pacing(behind_diff) == tui.ViewportSettled
+  assert tui.viewport_pacing(behind_diff) == pacing.ViewportSettled
     as "a backlog behind a full-width diff view is not on its way to any screen the loop is painting"
 }
 
