@@ -20,12 +20,21 @@ import (
 
 // Server drives the protocol loop.
 type Server struct {
-	conn     *framing.Conn
-	feat     jail.Features
-	selfExe  string
-	basePol  policy.Policy
-	nextID   uint64 // ids for frames the helper originates
-	running  *jail.Exec
+	conn    *framing.Conn
+	feat    jail.Features
+	selfExe string
+	basePol policy.Policy
+	nextID  uint64 // ids for frames the helper originates
+	running *jail.Exec
+
+	// execFreed is closed as soon as the running execution's Wait has
+	// returned, before its exec_exit frame is written. It answers
+	// "is the helper free to start another execution".
+	execFreed chan struct{}
+
+	// waitDone is closed after that exec_exit frame has been written.
+	// It answers "has the terminal frame reached the channel", which is
+	// the weaker moment reapRunning must not exit before.
 	waitDone chan struct{}
 }
 
@@ -132,9 +141,14 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) handleExecStart(f framing.Frame) {
+	// Busy is decided by the child, not by the frame that reports it.
+	// execFreed closes when Wait returns, which is strictly before the
+	// exec_exit write; consulting waitDone here instead made a broker
+	// that dispatched the moment it read exec_exit race the helper's own
+	// close and get a spurious busy refusal for a sequential caller.
 	if s.running != nil {
 		select {
-		case <-s.waitDone:
+		case <-s.execFreed:
 			s.running = nil
 		default:
 			_ = s.conn.WriteError(f.ID, framing.ErrCodeBusy, "an execution is already running")
@@ -179,10 +193,28 @@ func (s *Server) handleExecStart(f framing.Frame) {
 	}
 
 	s.running = ex
+
+	// Two signals, closed either side of the terminal write. Freeing
+	// before the write is what makes a strictly sequential broker
+	// sequential: it reads exec_exit and dispatches the next
+	// exec_start, and by then the child has long been reaped. Signalling
+	// only after the write leaves a window in which the helper is idle
+	// and still calls itself busy.
+	//
+	// Nothing is lost by freeing early. Wait joins the output pumps, so
+	// no further exec_out can be emitted for this id, and the one frame
+	// still owed carries this execution's id, which is not the next
+	// one's. Conn.Write is mutex-serialized and emits a frame in a
+	// single Write, so that frame cannot interleave with the next
+	// execution's bytes even if a broker dispatched without waiting for
+	// it.
+	freed := make(chan struct{})
 	done := make(chan struct{})
+	s.execFreed = freed
 	s.waitDone = done
 	go func() {
 		res := ex.Wait()
+		close(freed)
 		_ = s.conn.Write(f.ID, framing.KindExecExit, framing.ExecExit{
 			Code:            res.Code,
 			Signal:          res.Signal,
@@ -231,6 +263,15 @@ func (s *Server) outputSink(id uint64) jail.OutputSink {
 // reapRunning cancels and joins any in-flight execution before server exit.
 // Joining proves completion of the jail runner's existing cleanup, not a
 // stronger descendant-containment guarantee than the platform provides.
+//
+// This waits on waitDone rather than execFreed, and the difference is the
+// whole point of keeping two signals: the shutdown witness the broker
+// relies on is that the terminal frame reached the channel before native
+// exit, and only waitDone says that. It joins the *current* execution,
+// which is enough even in the out-of-contract case where a broker started
+// a second execution while the first exit frame was still being written:
+// that write holds the connection mutex, so the second execution's own
+// exit frame cannot have been written until the first one was.
 func (s *Server) reapRunning() {
 	if s.running == nil {
 		return

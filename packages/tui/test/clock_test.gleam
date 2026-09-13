@@ -11,6 +11,7 @@ import gleam/option.{None, Some}
 import tui
 import tui/connection
 import tui/frame
+import tui/pacing
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -41,19 +42,19 @@ pub fn initial_frame_uses_the_injected_epoch_test() {
 pub fn real_event_handler_paces_frames_on_the_injected_clock_test() {
   let drawn = tui.update(backend.Resize(80, 24), initial(-10_000))
   let deferred = tui.update(backend.KeyPress("a"), at(drawn, -9999))
-  assert deferred.frame_debt == tui.FrameDeferred
+  assert deferred.frame_debt == pacing.FrameDeferred
   assert deferred.last_frame_ms == -10_000
   assert deferred.frame_cache == drawn.frame_cache
 
   let refreshed = tui.update(backend.KeyPress("b"), at(deferred, -9984))
-  assert refreshed.frame_debt == tui.FrameSettled
+  assert refreshed.frame_debt == pacing.FrameSettled
   assert refreshed.last_frame_ms == -9984
   assert refreshed.frame_cache != drawn.frame_cache
 
   let again = tui.update(backend.KeyPress("c"), at(refreshed, -9983))
-  assert again.frame_debt == tui.FrameDeferred
+  assert again.frame_debt == pacing.FrameDeferred
   let flushed = tui.update(backend.Tick, again)
-  assert flushed.frame_debt == tui.FrameSettled
+  assert flushed.frame_debt == pacing.FrameSettled
   assert flushed.last_frame_ms == -9983
 }
 

@@ -38,6 +38,7 @@ placeholdering is latent only (no in-tree tool constructs one).
 | Transcript reading and drafts | Merged in #353. A reading viewport is preserved even at offset zero, expanded tool results keep the compact call's anchor, bracketed paste inserts at the cursor without replacing a draft, and an aborted turn renders as Stopped with its diagnostic visible. |
 | Herdr integration | Merged in #354. The terminal reports idle, working and blocked to a Herdr pane over its unix socket, sequenced from the wall clock, announcing the session when its identity is first known and on every switch. `done` is Herdr's own derivation from an idle report on an unseen tab and is never sent. |
 | Imported hooks | Merged in #355 (issue #350, first wave). A Claude Code hook collection loads unchanged from the operator's `~/.claude/settings.json`, trusted on first sight and re-reviewed on change; the composed gates fire at run start, tool clearance (after the harness's own, with a rewrite re-cleared), the result fold, the summarizer, and run end. A committed acceptance fixture boots a real instance and proves each gate fires. |
+| Terminal parity | Merged in #366. The bottom-anchored viewport walks to the tail one row per frame instead of jumping by each provider chunk, a tick that carried transcript traffic is a paced boundary under the frame budget, and the record projection is rebuilt only when its inputs change. A running tool and streaming reasoning keep the height their settled form will have in compact mode; reasoning collapses to one row that Ctrl+G expands. Markdown renders tables as a bordered grid measured in terminal cells, inline code in its own colour, code with a gutter distinct from a quote, wrapping code rows, strikethrough as strikethrough, GitHub alerts as callouts, and headings by weight. A strand switch parks the loaded scrollback instead of discarding it (#361). etui is pinned past the emoji-presentation width table and synchronized output. The pure pacing arithmetic lives in `tui/pacing`, and `tui.update` is split into a dispatch and a settle because the Erlang inliner re-visited the dispatch once per settling step and had doubled the package's compile time past three CI deadlines (`docs/execution.md` §8). |
 | Release dependencies | SQLite, hosted latency, joined fault/pressure coverage, schedules, and memory-off observations retain their separate issue acceptance. |
 
 ### Corrections to the previous edition
@@ -243,6 +244,17 @@ selected transcript cells stay frozen while live metadata progresses. In a
 reading viewport, Reading mode owns the endpoint even at offset zero, so
 returning to live output is an explicit End or click, not a consequence of
 scrolling to the newest row.
+
+**The transcript moves at frame rate, never at chunk rate.** The provider
+delivers text in chunks and the viewport reveals it one row per rendered
+frame, accelerating above a backlog of a screen's worth so it is never more
+than about a second behind; only a gesture that addresses the transcript
+snaps it to the tail, and typing into the composer does not. A live region
+in compact mode has the height its settled form will have, so a settle
+changes text and never height; a failing tool's failure row is the stated
+exception. The live tail's markdown parse is not memoized, because any memo
+pins one extra generation of the live region and the retained-bytes gate on
+streaming has no headroom for it.
 
 ## Deliberately open
 

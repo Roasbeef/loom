@@ -4,15 +4,23 @@
 //// wire reducer, compare styled rows against a cold render, and check that a
 //// replacement snapshot releases text from the previous conversation.
 
+import core/entry
 import etui/backend
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{None}
 import gleam/string
 import tui
 import tui/connection
+import tui/protocol
+import tui/session_channel
+import tui/snapshot
+import tui/tool_activity
 import tui/workspace
+import tui_test/ffi_term
 import tui_test/gateway
+import tui_test/pushed
 
 fn model() {
   let base =
@@ -118,4 +126,101 @@ pub fn identical_text_keeps_each_speakers_own_style_test() {
     |> checked_layout(120)
   assert dict.size(both.record_line_cache) > dict.size(user.record_line_cache)
     as "plain user text and assistant markdown are distinct presentation keys"
+}
+
+// One complete credited capture, applied through the shipped channel reducer
+// so the cut reaches `render_cut` the way the daemon's does. The capture is
+// named by `seq`, which is what makes a second one a new cut rather than a
+// repeat the lane discards; a fresh replay channel per capture is what lets
+// both reuse one set of frame numbers.
+fn captured(model: tui.Model, data: String, seq: Int) -> tui.Model {
+  let channel =
+    session_channel.replay(snapshot.Expected("A", "epoch", "incarnation"))
+  let #(_, applied) =
+    list.fold(
+      pushed.transfer_with_metadata(
+        1,
+        "1:" <> int.to_string(seq),
+        "recent",
+        seq,
+        data,
+      ),
+      #(channel, model),
+      fn(acc, incoming) {
+        let #(channel, changes) = session_channel.receive(acc.0, incoming)
+        #(channel, list.fold(changes, acc.1, tui.apply_channel_update))
+      },
+    )
+  applied
+}
+
+pub fn an_unchanged_cut_leaves_the_record_projection_standing_test() {
+  // Cuts arrive four times a second throughout a turn. One that moved only
+  // usage or a phase has changed nothing the transcript rows are built from,
+  // and rebuilding on it re-projected the whole session at that cadence.
+  let first =
+    model()
+    |> received(gateway.user_entry("main", "a settled turn", 1))
+    |> checked_layout(120)
+    |> captured(pushed.metadata(), 10)
+    |> checked_layout(120)
+  assert first.record_cache_valid
+    as "the first capture rebuilds and leaves a valid cache behind it"
+  assert first.record_rows != []
+    as "the fixture must project rows, or term identity proves nothing"
+
+  let second = captured(first, pushed.metadata(), 11) |> checked_layout(120)
+  assert ffi_term.same_term(second.record_rows, first.record_rows)
+    as "a cut that moved no projection input must not rebuild the rows"
+}
+
+pub fn settled_prose_appends_and_a_tool_record_regroups_test() {
+  let base =
+    model()
+    |> received(gateway.user_entry("main", "run the tests", 1))
+    |> checked_layout(120)
+  let appended =
+    base
+    |> received(gateway.assistant_entry("main", "Looking at it now.", 2))
+    |> checked_layout(120)
+  assert same_tail(appended.record_rows, base.record_rows)
+    as "settled prose extends rows already projected instead of rebuilding"
+
+  // A call joins the open group, whose heading and pending row are already on
+  // screen, so those rows have to be projected again.
+  let regrouped =
+    appended
+    |> received(gateway.tool_call_entry("main", "bash", "printf 'x'", 3))
+    |> checked_layout(120)
+  assert !same_tail(regrouped.record_rows, appended.record_rows)
+    as "a tool call can re-group an open block, so its rows are rebuilt"
+}
+
+pub fn tool_records_regroup_and_prose_does_not_test() {
+  assert !tool_activity.regroups(entry_of(gateway.user_entry("main", "hi", 1)))
+  assert !tool_activity.regroups(
+    entry_of(gateway.assistant_entry("main", "prose", 2)),
+  )
+  assert tool_activity.regroups(
+    entry_of(gateway.tool_call_entry("main", "bash", "x", 3)),
+  )
+  assert tool_activity.regroups(
+    entry_of(gateway.tool_result_entry("main", "out", 4)),
+  )
+}
+
+fn entry_of(wire: String) -> entry.Entry {
+  let assert Ok(protocol.EntryAdded(record)) = protocol.decode_event(wire)
+    as "the fixture must be one durable entry"
+  record.entry
+}
+
+// Whether `rows` ends in the exact list `older` is, rather than in an equal
+// copy of it. Term identity is the only evidence that separates an append
+// from a rebuild that happened to produce the same text.
+fn same_tail(rows: List(a), older: List(a)) -> Bool {
+  ffi_term.same_term(
+    list.drop(rows, list.length(rows) - list.length(older)),
+    older,
+  )
 }
