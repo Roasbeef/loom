@@ -204,6 +204,14 @@ pub fn glob_query(under root: String, matching pattern: String) -> GlobQuery {
 /// Walks `root` and returns the entries whose path matches the query's
 /// pattern, ordered by path. Symlinks are reported and never descended.
 ///
+/// The pattern language is ripgrep's `-g` subset: `*` and `?` match
+/// within one path segment and `**` spans whole segments. A pattern
+/// with no `/` matches an entry's basename at any depth, so `*.gleam`
+/// finds every Gleam file under `root`; a pattern with a `/` matches
+/// the path relative to `root`, so under `root: "src"` write
+/// `**/*.gleam`, not `src/**/*.gleam`. `grep` filters its files with
+/// the same language.
+///
 /// Capability: `search.glob`.
 ///
 /// ## Examples
