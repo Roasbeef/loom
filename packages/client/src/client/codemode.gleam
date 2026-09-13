@@ -196,6 +196,7 @@ import codemode/identity
 import codemode/launch
 import codemode/orchestration
 import codemode/satellite
+import codemode/search as search_router
 import codemode/seed
 import codemode/vet
 import codemode/vet/policy as vet_policy
@@ -217,6 +218,7 @@ import tools/blob
 import tools/codemode as codemode_tool
 import tools/fs
 import tools/schedule as schedule_tool
+import tools/search
 import tools/tool
 
 /// The smallest pooled outstanding-effect cap a satellite can live under:
@@ -632,23 +634,28 @@ pub fn surface_seam(surface: Surface) -> vet_policy.Seam {
 ///
 /// ## Examples
 ///
-/// The workspace seam's list is two routers' worth: `satellite.default_
-/// router`'s jailed `proc.run`, and `codemode/workspace`'s harness-side
-/// arm. Both are read off the modules that answer them rather than
-/// written out here, so a capability that stops being serviced stops
-/// being advertised in the same commit.
+/// The workspace seam's list is three routers' worth: `satellite.default_
+/// router`'s jailed `proc.run`, `codemode/workspace`'s harness-side arm,
+/// and `codemode/search`'s read-only navigation arm. All three are read
+/// off the modules that answer them rather than written out here, so a
+/// capability that stops being serviced stops being advertised in the
+/// same commit.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // codemode.seam_caps(vet_policy.WorkspaceSeam)
-/// //   == ["proc.run", "fs.read", "fs.list", "kv.get", …]
+/// //   == ["proc.run", "fs.read", "fs.list", "kv.get", "search.glob", …]
 /// ```
 ///
 pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
   case seam {
     vet_policy.WorkspaceSeam ->
-      list.append(serviced_caps, workspace.serviced_caps)
+      list.flatten([
+        serviced_caps,
+        workspace.serviced_caps,
+        search_router.serviced_caps,
+      ])
     vet_policy.OrchestrationSeam -> orchestration.serviced_caps
 
     // Phase 1 installs and compiles an extension; nothing dispatches one
@@ -2045,7 +2052,10 @@ fn workspace_router(
 ) -> satellite.CapRouter {
   workspace.routing(
     workspace_seam(config, request),
-    over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+    over: search_router.routing(
+      search_seam_for(workspace: request.workspace),
+      over: mcp_wiring.routing(config.mcp, over: satellite.default_router),
+    ),
   )
 }
 
@@ -2164,6 +2174,224 @@ fn jobs_in(
   case door {
     None -> workspace.no_jobs()
     Some(door) -> jobtools.capability_door(door, strand:, operation:)
+  }
+}
+
+/// The harness-side closures the search router calls, bound to one
+/// execution's workspace root.
+///
+/// Public for the reason `workspace_seam_for` is: it is the whole of what
+/// `cap/search` authorizes, and a test that wants to prove a root is
+/// contained should be able to hold exactly these four functions still
+/// rather than standing up a satellite to reach them. It takes the
+/// workspace and nothing else, because a read-only search reaches no
+/// store, no schedule and no job — there is nothing else for it to be
+/// bound to.
+///
+/// **Every path decision here is `tools/fs.resolve_real`'s**, the same
+/// single boundary the `fs.*` arms go through. What each closure adds is
+/// which path it resolves, and the three answers differ:
+///
+/// - `glob` and `grep` resolve the query's `root`, and the engine keeps
+///   containment true for everything the walk reaches by never following
+///   a symlink.
+/// - `read_lines` resolves the whole path exactly as `fs.read` does, so
+///   reading *through* a contained link works and an escaping one is
+///   refused.
+/// - `stat` resolves the path's **parent** and then names the final
+///   component beneath it, because the whole point of `stat` is to report
+///   a link as a link. Resolving the leaf too would follow it, and a
+///   contained link pointing outside the workspace would either be
+///   refused (an answer `stat` should be able to give) or, worse, report
+///   its target's kind.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.search_seam_for(workspace: "/w").stat("src/app.gleam")
+/// ```
+///
+pub fn search_seam_for(
+  workspace workspace_root: String,
+) -> search_router.Search {
+  let filesystem = fs.real_filesystem()
+  let root = workspace_root
+  search_router.Search(
+    glob: fn(under, query) { glob_in(filesystem, root, under, query) },
+    grep: fn(under, query) { grep_in(filesystem, root, under, query) },
+    stat: fn(path) { stat_in(filesystem, root, path) },
+    read_lines: fn(path, first, last) {
+      read_lines_in(filesystem, root, path, first, last)
+    },
+  )
+}
+
+// The workspace root as the real filesystem sees it, which is what
+// `tools/search` renders every entry's path against.
+//
+// Resolved rather than taken verbatim because `resolve_real` resolves the
+// root too, and comparing a resolved entry against an unresolved root
+// would leave every path absolute the moment the workspace itself sat
+// behind a symlink — which is what `/tmp` is on macOS.
+fn resolved_workspace(
+  filesystem: tool.FileSystem,
+  root: String,
+) -> Result(String, fs.PathError) {
+  fs.resolve_real(filesystem:, workspace: root, path: ".")
+}
+
+// `search.glob`: resolve the workspace and the root through the one
+// boundary, then walk. Every bound is checked inside the engine.
+fn glob_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  under: String,
+  query: search.GlobQuery,
+) -> Result(search.Listing, search_router.SearchRefusal) {
+  use workspace_root <- result.try(
+    resolved_workspace(filesystem, root)
+    |> result.map_error(search_router.PathRefused),
+  )
+  use resolved <- result.try(
+    fs.resolve_real(filesystem:, workspace: root, path: under)
+    |> result.map_error(search_router.PathRefused),
+  )
+  search.glob(workspace: workspace_root, root: resolved, query:)
+  |> result.map_error(search_router.QueryRefused)
+}
+
+// `search.grep`: the same two resolutions, then the content scan.
+fn grep_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  under: String,
+  query: search.GrepQuery,
+) -> Result(search.Found, search_router.SearchRefusal) {
+  use workspace_root <- result.try(
+    resolved_workspace(filesystem, root)
+    |> result.map_error(search_router.PathRefused),
+  )
+  use resolved <- result.try(
+    fs.resolve_real(filesystem:, workspace: root, path: under)
+    |> result.map_error(search_router.PathRefused),
+  )
+  search.grep(workspace: workspace_root, root: resolved, query:)
+  |> result.map_error(search_router.QueryRefused)
+}
+
+// `search.stat`: resolve the parent, name the leaf beneath it, and let
+// the engine `lstat` that. See `search_seam_for`'s doc for why the leaf
+// is deliberately not resolved.
+//
+// `display` is the leaf's path relative to the resolved workspace root,
+// which is what the engine echoes back into `Entry.path` — so a program
+// can hand the answer straight to `read_lines` or `fs.read`.
+fn stat_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  path: String,
+) -> Result(search.Entry, search_router.SearchRefusal) {
+  use workspace_root <- result.try(
+    resolved_workspace(filesystem, root)
+    |> result.map_error(search_router.PathRefused),
+  )
+  use absolute <- result.try(
+    resolved_leaf(filesystem, root, path)
+    |> result.map_error(search_router.PathRefused),
+  )
+  search.stat(path: absolute, display: relative_to(workspace_root, absolute))
+  |> result.map_error(search_router.QueryRefused)
+}
+
+// `search.read_lines`: resolve the whole path exactly as `read_in` does,
+// then read the window. A contained symlink reads its target and an
+// escaping one is refused before the engine sees it.
+fn read_lines_in(
+  filesystem: tool.FileSystem,
+  root: String,
+  path: String,
+  first: Int,
+  last: Int,
+) -> Result(search.Lines, search_router.SearchRefusal) {
+  use resolved <- result.try(
+    fs.resolve_real(filesystem:, workspace: root, path:)
+    |> result.map_error(search_router.PathRefused),
+  )
+  search.read_lines(path: resolved, from: first, to: last)
+  |> result.map_error(search_router.QueryRefused)
+}
+
+// Where a path's final component sits, once the trailing slash is gone.
+type Leaf {
+  // The path names no component that could be a symlink of its own —
+  // it is `.`, `..`, or a bare root — so resolving the whole of it
+  // follows nothing that `stat` was asked about.
+  NoLeaf
+
+  // The final component, and the directory it sits in.
+  Leaf(parent: String, name: String)
+}
+
+fn leaf_of(path: String) -> Leaf {
+  let trimmed = case path != "/" && string.ends_with(path, "/") {
+    True -> string.drop_end(path, 1)
+    False -> path
+  }
+  case list.reverse(string.split(trimmed, "/")) {
+    [] -> NoLeaf
+
+    ["", ..] -> NoLeaf
+
+    [".", ..] -> NoLeaf
+
+    ["..", ..] -> NoLeaf
+
+    [name, ..above] -> Leaf(parent: parent_of(list.reverse(above)), name:)
+  }
+}
+
+// The directory a leaf sits in, as a path `resolve_real` will accept: no
+// segments at all is this directory, and one empty segment is the
+// filesystem root rather than the empty path `resolve_real` refuses.
+fn parent_of(segments: List(String)) -> String {
+  case segments {
+    [] -> "."
+
+    [""] -> "/"
+
+    named -> string.join(named, "/")
+  }
+}
+
+// The absolute path of a leaf whose parent has been resolved.
+fn resolved_leaf(
+  filesystem: tool.FileSystem,
+  root: String,
+  path: String,
+) -> Result(String, fs.PathError) {
+  case leaf_of(path) {
+    NoLeaf -> fs.resolve_real(filesystem:, workspace: root, path:)
+
+    Leaf(parent:, name:) -> {
+      use directory <- result.try(fs.resolve_real(
+        filesystem:,
+        workspace: root,
+        path: parent,
+      ))
+      Ok(directory <> "/" <> name)
+    }
+  }
+}
+
+// How an absolute path under the resolved workspace root is rendered
+// back to a program. The fallback is the absolute path itself, which is
+// unreachable while `resolve_real` is the only way to obtain one of
+// these — containment is exactly the claim that it lies under the root.
+fn relative_to(workspace_root: String, absolute: String) -> String {
+  use <- bool.guard(when: absolute == workspace_root, return: ".")
+  case string.starts_with(absolute, workspace_root <> "/") {
+    True -> string.drop_start(absolute, string.length(workspace_root) + 1)
+    False -> absolute
   }
 }
 
