@@ -483,6 +483,23 @@ pub fn grep_caps_the_match_list_and_says_so_test() {
   assert list.map(matches, fn(found) { found.line }) == [1, 2]
 }
 
+pub fn grep_is_exhaustive_when_the_matches_fill_the_cap_exactly_test() {
+  let root = fresh_dir("grep-exact-fill")
+  write(root <> "/a.txt", "needle\nneedle\nhay\n")
+
+  // Two matches against a cap of two: the scan looked past the second
+  // match and found nothing, so the answer is the whole truth. A scan
+  // that reported the cap here would tell a program it missed matches
+  // that do not exist.
+  let query = GrepQuery(..regex_query("needle"), max_matches: 2)
+  let assert Ok(Found(matches:, coverage:, ..)) =
+    search.grep(workspace: root, root: root, query:)
+    as "an exactly filled grep must succeed"
+
+  assert coverage == Exhaustive
+  assert list.map(matches, fn(found) { found.line }) == [1, 2]
+}
+
 pub fn grep_is_exhaustive_when_the_cap_is_never_reached_test() {
   let root = fresh_dir("grep-uncapped")
   write(root <> "/a.txt", "needle\nneedle\n")
