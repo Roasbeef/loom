@@ -398,6 +398,18 @@ lint-%: ## Lint one package's src, e.g. make lint-core
 doc-check: ## Check the doc graph (coverage, AGENTS.md mirror, staleness, citations)
 	@scripts/doc_check.sh
 
+# ---------------------------------------------------------------- the image
+
+DOCKER_IMAGE ?= loom-runtime:dev
+
+.PHONY: docker-image
+docker-image: ## Build the runnable loomd image (BuildKit; DOCKER_IMAGE=name:tag)
+	@DOCKER_BUILDKIT=1 docker build -t "$(DOCKER_IMAGE)" .
+
+.PHONY: docker-smoke
+docker-smoke: ## Build the image, boot it, run a client command and the self-test, then stop it
+	@bash scripts/docker_smoke.sh "$(DOCKER_IMAGE)"
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	@rm -rf packages/*/build $(HELPER) bin build dist
