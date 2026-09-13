@@ -1,0 +1,8 @@
+# Keeps the build context to source only. build/ and bin/ hold host-built
+# artifacts from a developer's own checkout (a stale bin/loom-exec built
+# for macOS has broken a Linux build stage before); dist/ and .git carry
+# nothing the Dockerfile needs and only slow down the context upload.
+build/
+bin/
+dist/
+.git/
