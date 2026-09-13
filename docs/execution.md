@@ -302,6 +302,30 @@ setting every package passed three runs of three at on a 32-core box;
 `SIGNOFF_PARALLEL=1` reproduces the sequential run when a failure has
 to be told apart from a concurrency effect.
 
+`LOOM_SIGNOFF_HOST=<ssh alias> make signoff-remote` runs the same gate
+inside a fresh container on the remote box; `LOOM_SIGNOFF_CONTAINER=0`
+opts out and runs directly in the checkout the script owns, which is
+kept for a box without Docker and for telling a container effect apart
+from a real failure. The hazard the container removes: that checkout persists between runs by design, so anything a
+run leaves behind — a shipment directory, a stale `build/` tree — is
+inherited by the next one, which is exactly what happened on PR #378
+(2026-09-13): the first `make signoff-remote` found
+`packages/tui/build/erlang-shipment` from an earlier run still there and
+refused to overwrite it, going red in prep before a single lane started.
+In container mode the working tree is a brand-new local clone into a
+brand-new directory on every run, so a later run cannot see what an
+earlier one left behind; only two things persist across runs at all, the
+Hex/gleam package cache and the Go module cache, both named Docker
+volumes chosen because a cold dependency resolution on every run trips
+Hex's rate limit (issue #248) within minutes. `scripts/signoff/Dockerfile`
+carries the toolchain — the same versions `.github/workflows/ci.yml`
+pins, including the patched Gleam compiler CI builds — and
+`scripts/signoff_remote.sh`'s own comment has the container flags this
+needed and why, along with what was tried and turned out not to be
+necessary. The container runs `signoff.sh --dry-run` and posts the
+verdict itself afterward from the host's own `gh`, which is the
+arrangement that keeps a GitHub token out of the image.
+
 ### Watch for the push race
 
 An agent can commit between your verification and your push. `git push` sends

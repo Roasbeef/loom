@@ -300,7 +300,7 @@ signoff: ## Run this platform's gate in parallel and post signoff/<platform> (SI
 	@bash scripts/signoff.sh $(SIGNOFF_ARGS)
 
 .PHONY: signoff-remote
-signoff-remote: ## Run the gate for HEAD on LOOM_SIGNOFF_HOST over ssh and post its signoff
+signoff-remote: ## Run the gate for HEAD in a fresh container on LOOM_SIGNOFF_HOST and post its signoff (LOOM_SIGNOFF_CONTAINER=0 for the bare checkout)
 	@bash scripts/signoff_remote.sh $(SIGNOFF_ARGS)
 
 # ------------------------------------------------------------ the simulator
