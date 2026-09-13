@@ -18,6 +18,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/catalog
 import client/escalate
 import client/grants
 import client/wiring
@@ -84,10 +85,17 @@ fn routed_model(model_id: String, context_window: Int) -> model.ResolvedModel {
 // catalogue does not know.
 fn entry_facts(
   identity: ModelIdentity,
-) -> Result(#(model.ResolvedModel, String), Nil) {
+) -> Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
   list.key_find(
     [
-      #("loom-1", #(routed_model("loom-1", routed_context_window), "acme-api")),
+      #(
+        "loom-1",
+        #(
+          routed_model("loom-1", routed_context_window),
+          "acme-api",
+          catalog.ReadsImages,
+        ),
+      ),
     ],
     identity.model_id,
   )
