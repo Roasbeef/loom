@@ -516,7 +516,15 @@ pub fn extension_authority_modules() -> List(String) {
 
 /// The capability-prelude modules in the default allowlist. The union of the
 /// sets named in design §6.2 (`fs proc net git lsp task actor report`) and
-/// spec WP-J (`fs proc git lsp report task actor kv`).
+/// spec WP-J (`fs proc git lsp report task actor kv`), widened since by
+/// `cap/schedule`, `cap/job` and `cap/search`.
+///
+/// `cap/search` is here on the same argument that puts `cap/fs` here and
+/// on one more of its own: it is read-only navigation and search over the
+/// workspace, so it grants strictly less than `cap/fs` already grants, and
+/// a program that imports it instead of `cap/fs` has said in its imports
+/// that it cannot write. It is deliberately not on the orchestration seam,
+/// where reading the workspace is not the job.
 ///
 /// `cap/strand` is deliberately not here. A workspace program that imports
 /// it is rejected by exactly the same rule that rejects an orchestration
@@ -539,7 +547,7 @@ pub fn extension_authority_modules() -> List(String) {
 pub fn default_cap_modules() -> List(String) {
   [
     "cap/fs", "cap/proc", "cap/net", "cap/git", "cap/lsp", "cap/report",
-    "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job",
+    "cap/task", "cap/actor", "cap/kv", "cap/schedule", "cap/job", "cap/search",
   ]
 }
 
