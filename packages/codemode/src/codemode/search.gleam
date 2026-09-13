@@ -66,7 +66,6 @@ import gleam/list
 import gleam/result
 import tools/fs
 import tools/search
-import tools/tool
 
 // --- the capability names ----------------------------------------------------
 
@@ -432,33 +431,12 @@ fn query_denial(error: search.SearchError) -> CapDenial {
         message: "nothing exists at path `" <> path <> "`",
       )
 
-    search.Backend(error:) -> backend_denial(error)
-  }
-}
-
-// The two errnos a program can act on are pulled out of the backend
-// crowd, exactly as `codemode/workspace` pulls them out, so a missing
-// file reaches `cap/search.NotFound` rather than the catch-all. The rest
-// keep the backend's own description: inventing a sentence for an errno
-// nobody anticipated is how a refusal starts lying.
-fn backend_denial(error: tool.FsError) -> CapDenial {
-  case error {
-    tool.FsNotFound(path:) ->
+    // The backend vocabulary is `codemode/workspace`'s, so a missing file
+    // reaches `cap/search.NotFound` under the same code `fs.*` uses.
+    search.Backend(error:) ->
       CapDenial(
-        code: workspace.not_found_code,
-        message: "file not found: " <> path,
-      )
-
-    tool.FsPermissionDenied(path:) ->
-      CapDenial(
-        code: workspace.permission_denied_code,
-        message: "permission denied: " <> path,
-      )
-
-    tool.FsFailure(path:, reason:) ->
-      CapDenial(
-        code: workspace.fs_failure_code,
-        message: "filesystem error on " <> path <> ": " <> reason,
+        code: workspace.fs_error_code(error),
+        message: workspace.fs_error_text(error),
       )
   }
 }
