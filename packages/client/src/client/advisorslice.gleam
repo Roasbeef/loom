@@ -280,6 +280,15 @@ fn framed(body: String) -> Option(String) {
 // and losing the text because a cap cut the closing fence would be worse
 // than rendering a little more than was fenced.
 fn nudges_body(text: String) -> Option(String) {
+  // The header has to open the message, as the terminal's recogniser
+  // also insists. A fence found anywhere would let any user-role text on
+  // the primary's branch — a subagent's `agent_send`, which is framed but
+  // not fence-escaped — read back to the advisor as its own earlier
+  // nudges.
+  use <- bool.guard(
+    !string.starts_with(text, nudges_header <> "\n" <> fence_open <> "\n"),
+    None,
+  )
   use #(_before, rest) <- option.then(split(text, fence_open <> "\n"))
 
   case split(rest, "\n" <> fence_close) {
