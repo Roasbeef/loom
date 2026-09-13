@@ -28,6 +28,7 @@
 //// context_window = 200000
 //// max_output_tokens = 32000
 //// thinking = "off"                   # off|low|medium|high|unsupported
+//// vision = false                     # optional; reads image blocks? default false
 ////
 //// [models.<name>.pricing]            # optional; US dollars per million
 //// input = 3.00                       # tokens, the unit providers publish
@@ -152,7 +153,36 @@ pub type CatalogModel {
     /// What the endpoint charges, if the operator wrote it down. `None`
     /// is an unpriced model, whose usage records keep a zero cost.
     pricing: Option(pricing.Pricing),
+    /// Whether the endpoint reads image blocks (`vision` in the
+    /// catalogue, default `ReadsImages`).
+    vision: ImageReading,
   )
+}
+
+/// Whether a catalogue entry's endpoint reads images at all.
+///
+/// Two variants rather than a `Bool` field because the polarity of a
+/// boolean is a thing every reader must carry in their head; a name
+/// reads at the case arm (`ReadsImages` cannot be got backwards).
+///
+/// `vision = false` is a declaration, not a default. Nothing on the wire
+/// marks whether a model reads images: an OpenAI-compatible listing has
+/// no capability field, and a model that cannot read one answers in
+/// prose that it cannot see it rather than rejecting the request. The
+/// fact is learned by probing (issue #358: GLM-5.3 does not, GLM-5.3-Flash
+/// does), so the honest thing to write down is the negative on the
+/// entries an operator has actually tested. An absent key therefore
+/// means `ReadsImages`, which is what every catalogue written before the
+/// key existed already assumed; treating an undeclared entry as blind
+/// would placeholder or refuse image turns on models that read them
+/// perfectly well, on a fact nobody stated.
+pub type ImageReading {
+  /// The endpoint reads image blocks.
+  ReadsImages
+
+  /// The endpoint does not read images; image-bearing requests must
+  /// route through the `vision` chain or be refused at admission.
+  TextOnly
 }
 
 /// One configured MCP server: the stdio process code mode reaches as
@@ -399,7 +429,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     dict.keys(fields),
     [
       "dialect", "base_url", "api_key_env", "model_id", "context_window",
-      "max_output_tokens", "thinking", "pricing",
+      "max_output_tokens", "thinking", "pricing", "vision",
     ],
     place,
   ))
@@ -435,6 +465,21 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     Error(message) -> Error(message)
   })
   use pricing <- result.try(parse_pricing(fields, place))
+
+  // `vision` is the one capability the request path routes on (issue
+  // #358): whether an entry reads image blocks decides whether an
+  // image-bearing request is admitted there, re-routed through the
+  // `vision` chain, or refused. Absent means `ReadsImages`: the routing
+  // and the refusal act only on an entry the operator has declared
+  // blind, so a catalogue that predates the key keeps the behaviour it
+  // had, and the one silent failure that remains — an undeclared blind
+  // model — is exactly the one the catalogue had before the key existed.
+  use vision <- result.try(case dict.get(fields, "vision") {
+    Ok(tom.Bool(True)) -> Ok(ReadsImages)
+    Ok(tom.Bool(False)) -> Ok(TextOnly)
+    Ok(_other) -> Error(place <> ".vision must be true or false")
+    Error(Nil) -> Ok(ReadsImages)
+  })
   Ok(CatalogModel(
     name:,
     dialect:,
@@ -445,6 +490,7 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     max_output_tokens:,
     thinking:,
     pricing:,
+    vision:,
   ))
 }
 
@@ -768,6 +814,18 @@ fn parse_roles(
       let #(role_name, value) = entry
       use role <- result.try(parse_role(role_name))
       use chain <- result.try(parse_chain(role_name, value, models))
+
+      // A vision chain is the operator's contract that every entry in
+      // it reads images; an entry declaring `vision = false` in that
+      // chain would let a retryable failure walk an image straight to a
+      // model that cannot read it, silently — the one outcome the
+      // `vision` key exists to make impossible. Refuse it at parse,
+      // role and entry named, the same strictness a typoed model name
+      // gets.
+      use Nil <- result.try(case role {
+        model.Vision -> vision_chain_all_read(chain, models)
+        _ -> Ok(Nil)
+      })
       Ok(#(role, chain))
     }),
   )
@@ -831,6 +889,30 @@ fn parse_chain(
     }
   })
   |> result.map(fn(_nil) { names })
+}
+
+// The vision chain's own strictness: every entry it names declares
+// `vision = true`. Reached only for the `vision` role, where a
+// text-only entry would let a retryable failure walk an image to a
+// model that cannot read it — the silent drop the key exists to
+// refuse. The entry exists by the time this runs; `parse_chain`
+// already rejected unknown names.
+fn vision_chain_all_read(
+  chain: List(String),
+  models: List(CatalogModel),
+) -> Result(Nil, String) {
+  list.try_each(chain, fn(name) {
+    case list.find(models, fn(entry) { entry.name == name }) {
+      Ok(CatalogModel(vision: TextOnly, ..)) ->
+        Error(
+          "roles.vision names \""
+          <> name
+          <> "\", which declares vision = false; a vision chain must list"
+          <> " only entries that read images",
+        )
+      _ -> Ok(Nil)
+    }
+  })
 }
 
 // Shared strictness helper: the present keys must all be known ones.

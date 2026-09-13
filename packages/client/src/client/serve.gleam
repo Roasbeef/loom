@@ -1281,10 +1281,10 @@ fn compaction_settings(context_window: Int) -> operation.CompactionSettings {
 fn catalogue_facts(
   catalogue: catalog.Catalog,
 ) -> fn(machine_strand.ModelIdentity) ->
-  Result(#(model.ResolvedModel, String), Nil) {
+  Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
   fn(identity: machine_strand.ModelIdentity) {
     use entry <- result.map(catalog.find(catalogue, identity.provider))
-    #(catalog.resolved(entry), adapter_api(entry.dialect))
+    #(catalog.resolved(entry), adapter_api(entry.dialect), entry.vision)
   }
 }
 
@@ -1610,6 +1610,10 @@ fn env_catalog() -> catalog.Catalog {
         max_output_tokens: env_int_or("LOOM_MAX_OUTPUT_TOKENS", 32_000),
         thinking: model.ThinkingOff,
         pricing: None,
+        // The environment fallback is a real hosted model, so it
+        // reads images; a catalogue entry gets its say from its own
+        // `vision` key.
+        vision: catalog.ReadsImages,
       ),
     ],
     roles: [#(model.Main, ["anthropic"])],

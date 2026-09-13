@@ -11,6 +11,26 @@ Claude-hooks compatibility layer (#355) are merged, each on a green
 #355 at `ed6349f1`. The next work is the follow-ups those two left named
 rather than implied, and the Escape cancellation proof-delivery race.
 
+This edition adds the vision routing work (issue #358) on branch
+`vision-routing`, ready for its PR: the catalogue's `vision` key, the
+request-time routing of image-bearing requests through the `vision`
+chain, text placeholders for images on text-only targets, and the
+worded in-band refusal when nothing usable is routed. Adversarial
+review found the rule misclassifying its most common real
+configuration — the run-start digest injections masked the operator's
+image from a newest-user-message classifier — fixed by classifying the
+*current turn*, and pinned by a live e2e that reproduces the
+configuration. A second review at takeover moved the turn boundary
+past tool calls, since the request carrying a tool's result back had
+been classified imageless and handed to the text-only model, and
+flipped the key's default: an entry that never wrote `vision` reads
+images, because nothing on the wire marks the capability and the fact
+is learned by probing, so the routing and the refusal act only on an
+entry declared `vision = false`. The follow-ups it leaves named: the
+models snapshot could carry the capability (additive, no protocol
+change needed), and `ToolResultImage` placeholdering is latent only (no
+in-tree tool constructs one).
+
 ## Where the tree is
 
 | Body of work | Current state |

@@ -53,6 +53,7 @@ pub fn settings() -> serve.Settings {
           max_output_tokens: 4096,
           thinking: model.ThinkingOff,
           pricing: None,
+          vision: catalog.TextOnly,
         ),
       ],
       roles: [#(model.Main, ["test"])],

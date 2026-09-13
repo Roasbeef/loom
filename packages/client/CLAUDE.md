@@ -1433,6 +1433,31 @@ catalogue without opening runtimes. Explicit admission invokes
   because a grant that cannot be attributed to the call in hand must
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
+- `client/vision` — the vision routing rule (issue #358): a request
+  whose current turn carries an image, on a strand whose catalogue
+  entry declares `vision = false`, dispatches through the routed
+  `vision` chain (`ForRole(Vision)`, admitted and accounted against
+  the vision head's own facts) or is refused in band at admission with
+  a worded reason — `image_unsupported` when no chain resolves,
+  `vision_misconfigured` when the routed head is itself declared
+  `TextOnly`. Every other request to a text-only identity carries its
+  `UserImage` blocks replaced with a text placeholder, in the transient
+  projection only; the durable transcript keeps the images. The
+  classifier walks the *current turn* — everything after the newest
+  assistant message that ended its turn, so a tool call and its result
+  are steps inside the turn and the second request of an image turn
+  stays on the model that saw the image — because the run-start hooks
+  inject the notes and memory digests as user messages after the
+  operator's prompt, and a newest-user-message walk would classify a
+  digest and silently placeholder the image, the exact failure the rule
+  removes. An entry that never wrote `vision` reads images: the flag is
+  a declaration learned by probing, since nothing on the wire marks the
+  capability, and the routing and the refusal act only on the negative.
+  The catalogue parse refuses a `vision` chain that names a
+  `vision = false` entry, so a retryable walk cannot deliver an image
+  to a model that cannot read it. `Config.facts` carries the entry's
+  `catalog.ImageReading` beside its resolved facts and api, so the
+  capability and the accounting read one seam and cannot drift.
   the one conversion across it. `run_tool` always settles as
   `effects.ToolCompleted`, and its `terminate` is now the outcome's own
   `tool.Terminate` rather than the hardcoded `False` it was: `terminates`

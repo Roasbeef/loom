@@ -29,6 +29,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
+import client/catalog
 import client/escalate
 import client/wiring
 import core/clock
@@ -105,11 +106,17 @@ fn configuration() -> StrandConfiguration {
 
 fn entry_facts(
   identity: ModelIdentity,
-) -> Result(#(model.ResolvedModel, String), Nil) {
+) -> Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
   list.key_find(
     [
-      #(head_model_id, #(head_target(), anthropic.api_name)),
-      #(tail_model_id, #(tail_target(), anthropic.api_name)),
+      #(
+        head_model_id,
+        #(head_target(), anthropic.api_name, catalog.ReadsImages),
+      ),
+      #(
+        tail_model_id,
+        #(tail_target(), anthropic.api_name, catalog.ReadsImages),
+      ),
     ],
     identity.model_id,
   )
