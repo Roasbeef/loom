@@ -134,6 +134,7 @@ import client/escalate.{type Escalations}
 import client/grants
 import client/notes
 import core/clock.{type Clock}
+import core/entry
 import core/ids.{type OpId}
 import core/message.{type AgentMessage}
 import gleam/bool
@@ -159,6 +160,7 @@ import provider/stream.{type StreamHandle}
 import runtime/effects.{type Effects}
 import runtime/hooks
 import session/session.{type Session}
+import storage/storage
 import tools/fs
 import tools/history
 import tools/tool.{type Registry}
@@ -439,15 +441,23 @@ fn near_limit_reminder(
 // The count is over the messages this request will carry, which the
 // driver projected and every earlier `context` hook has already shaped.
 // Reading the branch again here cost a full scan and decode per request
-// for a number the request already holds (issue #359); counting from the
-// head with nothing carried lets `context_tokens` find the newest usage
-// report wherever it sits.
+// for a number the request already holds (issue #359). What the count
+// still needs from the store is one entry: the newest compaction, whose
+// retained tail heads the projection and whose priced turns report the
+// context as it stood before the compaction. `carried` is how the usage
+// fold skips those, and without it the first request after a compaction
+// read a stale total and raised the reminder against room that was there.
 fn reminded(
   config: Config,
   strand: String,
   messages: List(AgentMessage),
 ) -> List(AgentMessage) {
-  let projected = hooks.Projected(messages:, carried: 0, previous_summary: None)
+  let projected =
+    hooks.Projected(
+      messages:,
+      carried: carried_by(config, strand),
+      previous_summary: None,
+    )
   let total = hooks.context_tokens(projected, hooks.estimate_message)
   let window = strand_facts(config, strand).context_window
   case total > checkpoint.reminder_point(window, config.compaction) {
@@ -459,6 +469,30 @@ fn reminded(
           remaining: window - config.compaction.reserve_tokens - total,
         ),
       ])
+  }
+}
+
+// How many head messages of the strand's projection the newest compaction
+// carried forward: its summary plus its retained tail. Read as one entry,
+// the compaction itself, which is the only part of the branch the count
+// needs; a strand with no compaction, or a store that will not answer,
+// carries nothing.
+fn carried_by(config: Config, strand: String) -> Int {
+  case session.strand_leaf(config.session, strand) {
+    Ok(Some(session.Cell(value: Some(leaf), ..))) -> {
+      let newest =
+        storage.branch_scan(from: leaf)
+        |> storage.branch_stop_at_kind(storage.Compaction)
+        |> storage.branch_kind(storage.Compaction)
+        |> storage.branch_limit(1)
+        |> storage.scan_branch(config.session.store, _)
+      case newest {
+        Ok([entry.CompactionEntry(retained_tail:, ..)]) ->
+          1 + list.length(retained_tail)
+        Ok(_) | Error(_) -> 0
+      }
+    }
+    Ok(Some(_)) | Ok(None) | Error(_) -> 0
   }
 }
 
