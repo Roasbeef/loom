@@ -1986,7 +1986,7 @@ fn run_search(ready: Ready) -> Nil {
   assert !outcome.is_error
   // One `*.gleam` under the root: the hidden directory's is not visited
   // and the symlink is not descended, so neither can inflate the count.
-  assert string.contains(text, "\"globbed\":1")
+  assert string.contains(text, "\"globbed\":1,")
   assert string.contains(text, "\"first\":\"" <> searched_file <> "\"")
   assert !string.contains(text, ".hidden")
   assert !string.contains(text, "secret.gleam")
