@@ -29,6 +29,7 @@ import broker/egress
 import broker/exec.{type EnforcementDemand, type Pool}
 import broker/policy
 import broker/token
+import client/advisor
 import client/agency
 import client/catalog
 import client/checkpoint
@@ -117,6 +118,7 @@ import storage/sqlite
 import telemetry/field
 import telemetry/log.{type Logger}
 import tom
+import tools/advise
 import tools/agent.{type Agency}
 import tools/history as history_tool
 import tools/remember
@@ -135,6 +137,7 @@ import weft/registry as address
 // process is attributed the same way a native hook satellite's is.
 fn with_imported_hooks(
   built: effects.Effects,
+  opened: session.Session,
   settings: Settings,
   clock: Clock,
   environment: List(#(String, String)),
@@ -192,8 +195,13 @@ fn with_imported_hooks(
   })
   case serving.wiring.config.entries {
     [] -> built
-    _ ->
-      case hookserve.wire(built, serving, clock) {
+    _ -> {
+      // Imported `Stop` hooks are asked at the primary's run ends only;
+      // the advisor and every subagent finish their runs without them.
+      let stops = fn(operation) {
+        notes.strand_of(opened, operation) == Ok(advisor.primary)
+      }
+      case hookserve.wire(built, serving, clock, stops) {
         Ok(composed) -> composed
         Error(reason) -> {
           log.warn(logger, "hooks.unavailable", [
@@ -202,6 +210,7 @@ fn with_imported_hooks(
           built
         }
       }
+    }
   }
 }
 
@@ -411,6 +420,12 @@ pub type Settings {
     /// jail every session has had until an operator writes otherwise, and
     /// is what the environment-shaped configuration path takes.
     tools: catalog.ToolsConfig,
+    /// The advisor strand's resolved identity and policy, or `None` when
+    /// the catalogue routes no `advisor` role. `None` is the ordinary
+    /// case and starts no advisor at all, the posture `rules` and
+    /// `schedules` take: a server nobody configured an advisor for runs
+    /// exactly the strands it ran before advisors existed.
+    advisor: Option(advisor.Settings),
   )
 }
 
@@ -830,6 +845,7 @@ pub fn build_domain(
       _tools,
       entries,
       _workspace,
+      _advisor,
     )
   <- result.try(load_config(configuration))
 
@@ -1039,6 +1055,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       tools,
       secret_entries,
       workspace_config,
+      advisor_config,
     )
   <- result.try(load_config(flags.config))
 
@@ -1071,6 +1088,20 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     )
   let secret_store = secrets.store(resolved, beneath: secret.env())
   let clock = clock.from_function(ffi_os.system_time_ms)
+
+  // The gateway is named rather than built inside the literal below,
+  // because the advisor route is resolved through it: the advisor takes
+  // the same fallback walk every other role does, so a chain whose head
+  // names an unregistered provider falls through to the next usable
+  // entry exactly as `main` would.
+  let gateway =
+    catalog.gateway(
+      catalogue,
+      transport: http.httpc_transport(),
+      secrets: secret_store,
+      clock:,
+    )
+
   Ok(Settings(
     session_path:,
     bind_host:,
@@ -1089,12 +1120,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     helper_pool_size:,
     session_id: session_id_of(session_path),
     demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
-    gateway: catalog.gateway(
-      catalogue,
-      transport: http.httpc_transport(),
-      secrets: secret_store,
-      clock:,
-    ),
+    gateway:,
     catalog: catalogue,
     secrets: secret_store,
     secret_failures:,
@@ -1120,7 +1146,65 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       ..tools,
       network: option.unwrap(flags.network, tools.network),
     ),
+    advisor: advisor_settings(gateway, advisor_config),
   ))
+}
+
+// The advisor strand's identity and policy, or `None` when the catalogue
+// routes no `advisor` role. An unrouted role is the ordinary case rather
+// than a failure, so `MissingIdentity` becomes absence here instead of
+// halting a boot over a strand the operator never asked for.
+//
+// The error is discarded because it carries nothing a caller could act
+// on: `resolve` answers `MissingIdentity` and nothing else, and the one
+// case worth a word — a catalogue that routes the role to models this
+// gateway cannot serve — is a question about the catalogue rather than
+// about the error. `advisor_unresolved` asks it where there is a logger.
+fn advisor_settings(
+  gateway: provider_gateway.Gateway,
+  config: catalog.AdvisorConfig,
+) -> Option(advisor.Settings) {
+  provider_gateway.resolve(gateway, catalog.advisor_role)
+  |> result.map(fn(resolved) {
+    advisor.Settings(
+      model: machine_strand.ModelIdentity(
+        provider: resolved.provider,
+        model_id: resolved.model_id,
+      ),
+      thinking: wiring.strand_thinking_level(resolved.thinking),
+      tools: config.tools,
+      block_cooldown_runs: config.block_cooldown_runs,
+    )
+  })
+  |> option.from_result
+}
+
+/// Whether the catalogue routes an advisor that resolved to nothing.
+///
+/// `boot` warns on this and starts no advisor. It separates the two
+/// silences an operator cannot otherwise tell apart: a catalogue with no
+/// `[roles] advisor` line, which is the ordinary posture and deserves no
+/// output, and one that routes the role to a chain the gateway cannot
+/// serve, which is a configuration mistake whose only symptom is a
+/// reviewer that never says anything.
+///
+/// The question is asked of the catalogue rather than of the gateway's
+/// error because `resolve` reports only that an identity is missing,
+/// which is the same answer for both cases.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.advisor_unresolved(catalogue, settings.advisor)
+/// ```
+///
+@internal
+pub fn advisor_unresolved(
+  catalogue: catalog.Catalog,
+  settings: Option(advisor.Settings),
+) -> Bool {
+  option.is_none(settings)
+  && result.is_ok(list.key_find(catalogue.roles, catalog.advisor_role))
 }
 
 // A comma-separated tool list from the environment. Blank entries are
@@ -1261,6 +1345,7 @@ fn load_config(
     catalog.ToolsConfig,
     List(secrets.Entry),
     catalog.WorkspaceConfig,
+    catalog.AdvisorConfig,
   ),
   String,
 ) {
@@ -1276,6 +1361,7 @@ fn load_config(
         catalog.default_tools(),
         [],
         catalog.default_workspace(),
+        catalog.default_advisor(),
       ))
     Some(path) -> {
       use text <- result.try(
@@ -1313,6 +1399,9 @@ fn load_config(
       use workspace_config <- result.try(
         catalog.parse_workspace(text) |> result.map_error(named),
       )
+      use advisor_config <- result.try(
+        catalog.parse_advisor(text) |> result.map_error(named),
+      )
       Ok(#(
         catalogue,
         rule_list,
@@ -1323,6 +1412,7 @@ fn load_config(
         tools,
         secret_entries,
         workspace_config,
+        advisor_config,
       ))
     }
   }
@@ -2621,6 +2711,21 @@ fn assemble_in(
   // never the command's output.
   log_secret_failures(settings.secret_failures, logger)
 
+  // A routed advisor the gateway could not resolve is the same class of
+  // event, and the same treatment: one warned line, and a session that
+  // runs without a reviewer rather than a boot that refuses.
+  case advisor_unresolved(settings.catalog, settings.advisor) {
+    False -> Nil
+    True ->
+      log.warn(logger, "advisor.unresolved", [
+        field.text(
+          key: "reason",
+          value: "the [roles] advisor chain names no model this host can"
+            <> " serve; the session runs with no advisor",
+        ),
+      ])
+  }
+
   // A configured name the host has not set is one warned line and not a
   // boot failure: the operator learns it here, and the tool that wanted
   // it says so in band when it runs.
@@ -2714,6 +2819,30 @@ fn assemble_in(
         fallback: settings.context_window,
       )
     })
+
+  // The advisor, on the same two-name pattern as the scratch store and
+  // the satellite registry: the address is minted now so the `advise`
+  // seam and the hook wrapper can close over it, and the actor that
+  // answers it starts under the service supervisor below. A catalogue
+  // that routes no `advisor` role produces no wiring, and then nothing
+  // downstream — no tool, no hook, no strand, no actor — exists at all.
+  let advisor_name = address.new_address(namespace)
+  let advisor_wiring =
+    option.map(settings.advisor, fn(advisor_settings) {
+      advisor.Wiring(
+        session: opened,
+        // Borrowed through the Agency's holder rather than held, for the
+        // reason `schedule_wiring` borrows: `api.open` takes the effects
+        // record this wiring is composed into and returns the runtime,
+        // so a captured runtime would be a value cycle.
+        runtime: fn() { agency.borrow_runtime(agency_config) },
+        settings: advisor_settings,
+        clock:,
+        logger:,
+        name: advisor_name,
+      )
+    })
+
   let skills = skill.discover(skill.directories(settings.home))
   list.each(skill.warnings(skills), fn(warning) {
     log.warn(logger, "skill.warning", [
@@ -2741,6 +2870,16 @@ fn assemble_in(
           contributions.BuiltIn,
           skill_tool.tools(skills),
         ),
+        // `advise` is registered for the whole session because a registry
+        // is per session rather than per strand; `configuration` below
+        // withholds it from the primary's active list, and
+        // `advisor.ensure_strand` grants it to the advisor alone. The
+        // seam refuses a call from any other strand in any case, by the
+        // caller's durable name.
+        contributions.Contribution(contributions.BuiltIn, case advisor_wiring {
+          None -> []
+          Some(wiring) -> [advise.tool(advisor.seam(wiring))]
+        }),
         ..list.map(extensions, fn(registration) { registration.contribution })
       ],
     )
@@ -2794,7 +2933,10 @@ fn assemble_in(
         settings,
         base_policy,
         pool,
-        tool.names(tool_registry),
+        // The prompt is one string for every strand, so the advisor's
+        // own tool is left out of the index the primary reads; the
+        // advisor is told about it by its brief instead.
+        list.filter(tool.names(tool_registry), fn(name) { name != advise.name }),
         tool.snippets(tool_registry),
       )
     }),
@@ -2811,8 +2953,13 @@ fn assemble_in(
       thinking_level: seed_thinking(settings),
       // `tool.names` is sorted, which is what a durable active list must
       // be: the render order of the tool array is the provider cache's
-      // byte prefix (see `gateway.canonical_tool_names`).
-      active_tool_names: tool.names(tool_registry),
+      // byte prefix (see `gateway.canonical_tool_names`). Dropping
+      // `advise` preserves that order, and it is the primary's half of
+      // the one-way channel: the advisor may reach the primary, and the
+      // primary cannot answer back.
+      active_tool_names: list.filter(tool.names(tool_registry), fn(name) {
+        name != advise.name
+      }),
     )
 
   // The event bus is the node-global `pg` scope, and `bus.start` is the
@@ -2892,7 +3039,22 @@ fn assemble_in(
         |> memory.digest_hooks(
           memory.digest_reader(memory_digest, logger),
           clock,
-        ),
+        )
+        // The advisor's three slots go on after the harness's own
+        // digests and before the extension bus, so that its standing
+        // instructions lead the advisor's request and an extension's
+        // `context` fold still gets the last word on the primary's.
+        //
+        // Its run-end cast is *first* rather than last, and deliberately
+        // so: the slot casts and then calls the inner one, because the
+        // driver must not wait on a review and a cast placed after the
+        // inner call would still not wait for it. So the advisor's
+        // notification can overtake a later layer's follow-up. Nothing
+        // rests on the ordering — the cast carries only an operation id,
+        // the actor reads the branch itself, and a follow-up appended by
+        // a later layer is picked up by the next feed, one run boundary
+        // behind.
+        |> with_advisor(advisor_wiring),
     )
 
   // The extension hook bus goes on last, over the composed record, so an
@@ -2914,6 +3076,7 @@ fn assemble_in(
   let effects_record =
     with_imported_hooks(
       effects_record,
+      opened,
       settings,
       clock,
       environment,
@@ -2985,6 +3148,13 @@ fn assemble_in(
     settings.demand,
   ))
 
+  // The advisor strand is seeded here, once the writer that claims its
+  // three registers exists. A failure is one warned line rather than a
+  // refused boot: a session whose advisor could not be created runs
+  // exactly the strands it ran before advisors existed, and an operator
+  // who configured one deserves to be told which reason stopped it.
+  seed_advisor(runtime, advisor_wiring, tool_registry, logger)
+
   // The restartable half of the per-child policy. These children hold
   // no state a restart cannot rebuild and — crucially — none of them is
   // addressed by pid: each registers under a name and every caller
@@ -3043,6 +3213,12 @@ fn assemble_in(
         entropy,
       ),
     ))
+    // The advisor actor is in this tier because everything it holds is
+    // durable: the guard and the feed cursor are two `fact.custom`
+    // cells, and a replacement reads both on its first message. A crash
+    // costs at most one skipped review, which the next run end offers
+    // again.
+    |> with_advisor_actor(advisor_wiring)
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -3621,7 +3797,11 @@ pub fn hook_coordinates(
 }
 
 /// The strand a hook's harness-side reads are attributed to.
-const root_strand = "main"
+///
+/// Defined in `client/advisor` rather than here because that module
+/// needs the same name — it is the strand the advisor reviews — and it
+/// cannot import this one without a cycle.
+const root_strand = advisor.primary
 
 /// The step every hook invocation clears under. One name, because the
 /// hooks of a session are one long-running step rather than a sequence of
@@ -5412,6 +5592,73 @@ fn with_schedule_admin(
   case admin {
     None -> options
     Some(admin) -> hub.with_schedules(options, admin)
+  }
+}
+
+// The advisor's hooks, added to a hook record only when this session
+// routes an advisor at all. A function rather than a `case` inline for
+// the reason `schedule_reaping` below is one: `option.map` would answer
+// an `Option(Hooks)` that the composition pipeline would then have to
+// unwrap back to the hooks it started with.
+fn with_advisor(
+  hooks: effects.Hooks,
+  wiring: Option(advisor.Wiring),
+) -> effects.Hooks {
+  case wiring {
+    None -> hooks
+    Some(wiring) -> advisor.hooks(hooks, wiring)
+  }
+}
+
+// The advisor actor, added to the service tier only when this session
+// routes an advisor, on the posture `with_rule_scanner` takes: a plane
+// nobody configured should cost a host a process of exactly nothing.
+fn with_advisor_actor(
+  builder: sup.Builder,
+  wiring: Option(advisor.Wiring),
+) -> sup.Builder {
+  case wiring {
+    None -> builder
+    Some(wiring) -> sup.add(builder, advisor.supervised(wiring))
+  }
+}
+
+// Seeds the advisor strand and says, in one line, either which model is
+// reviewing with which tools or why nothing is.
+fn seed_advisor(
+  runtime: api.Runtime,
+  wiring: Option(advisor.Wiring),
+  registry: tool.Registry,
+  logger: Logger,
+) -> Nil {
+  case wiring {
+    None -> Nil
+    Some(wiring) -> announce_advisor(runtime, wiring, registry, logger)
+  }
+}
+
+fn announce_advisor(
+  runtime: api.Runtime,
+  wiring: advisor.Wiring,
+  registry: tool.Registry,
+  logger: Logger,
+) -> Nil {
+  let names = tool.names(registry)
+
+  case advisor.ensure_strand(runtime, wiring.settings, names) {
+    Error(reason) ->
+      log.warn(logger, "advisor.unavailable", [
+        field.text(key: "detail", value: reason),
+      ])
+
+    Ok(Nil) ->
+      log.info(logger, "advisor.ready", [
+        field.ident(key: "model", value: wiring.settings.model.model_id),
+        field.text(
+          key: "tools",
+          value: string.join(advisor.active_tools(wiring.settings, names), ","),
+        ),
+      ])
   }
 }
 

@@ -38,6 +38,13 @@ that tree separately from the self-contained server.
   Raw inspection pretty-prints complete JSON; excerpts remain literal.
   `session_selector.prioritize` sorts exact workspace matches first, related
   directories next, and preserves order within each group and selection by ID.
+- `tui.AdvisorMessage` names the three advisor frames the transcript
+  recognizes — `Advice`, `Nudges` and `Feed` — each carrying the body left
+  after its frame lines are stripped. `tui.advisor_payload` extracts one from
+  a durable message and `tui.advisor_lines` renders it, collapsed or whole,
+  against `notes_view.Extent`. `composer.expand_hint` is the suffix every
+  collapsed row ends with, shared with the `[loom] ` injection collapse so
+  the two spellings cannot drift.
 
 - `Model.reading_lines` retains one bounded transient projection when scrolling
   above the live tail. Incoming streams continue collecting without changing
@@ -789,6 +796,18 @@ that tree separately from the self-contained server.
   client recognizes only the exact server-owned preamble and `agent-notes`
   fence, hides that envelope from conversation, and exposes it through
   historical fallback of `/notes`. Do not broaden this into heuristic filtering.
+- **Advisor traffic is not operator speech either.** Advice, queued nudges and
+  the feed a review is made from are all stored as user messages.
+  `tui.advisor_payload` recognizes each by its whole frame — a header line
+  with its footer, or the header with the `advisor-nudges` fence — and
+  `tui.advisor_lines` draws the row as `System` under the advisor's name:
+  collapsed to one attribution line, expanded to the body with the frame
+  lines dropped, since those address the model rather than the operator. Both
+  tokens are required, so an operator quoting a verdict back keeps their own
+  attribution. The frame literals are copies of `client/advisorslice`'s,
+  because this package links no server package; `advisor_view_test` pins all
+  six against the strings the server writes and the server's own test should
+  pin the same ones.
 - **Large context stays bounded without data loss.** Compact paste indicators
   are presentation state only. Submission expands the original bytes, and a
   durable large user turn stays previewed until detail mode asks for it.

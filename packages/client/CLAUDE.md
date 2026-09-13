@@ -613,6 +613,64 @@ catalogue without opening runtimes. Explicit admission invokes
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
+- `client/advisorslice.{Bounds, Slice, default_bounds, render, feed_message,
+  advice_message, nudges_message, is_advice, advice_header, advice_footer,
+  feed_header, feed_footer, nudges_header, nudges_fence}` — what the advisor
+  strand is shown of the primary's branch, and the frames that carry text
+  both ways. `render` turns the entries appended since a stored cursor into
+  one bounded text: `Bounds` caps a single entry's payload and the whole
+  window separately, oldest entries are dropped from the front with an
+  `[N earlier entries omitted]` line, and a tool result too long for its cap
+  is cut from the middle so both the command and its verdict survive.
+  Assistant thinking never renders, redacted markers included. `Slice.newest`
+  is the seq of the newest entry the scan saw whether or not it rendered, so
+  an entry the rules skip still advances the cursor. Advice and nudges land
+  in the primary's branch as ordinary user messages and come back in the next
+  slice labelled `advisor (your earlier advice):` and
+  `advisor (your earlier nudges):`, because unlabelled they would read to
+  the advisor as operator instructions. A frame is recognized by its header
+  *and* its footer, so an operator quoting a verdict back keeps their own
+  attribution, and `advice_message` makes the body frame-safe — either
+  advice token occurring inside it has its brackets replaced with
+  parentheses — so model-written text cannot close the frame early and
+  continue in the operator's voice. The module is pure — no store, no
+  process, no clock — and borrows `notes.{clip, byte_size, fence_safe}`
+  rather than keeping a second copy of the byte arithmetic and the fence
+  defence.
+- `client/advisorguard.{Verdict, Policy, Guard, Decision, default_policy, new,
+  runs, pending, primary_run_ended, decide, take_pending, encode, decode}` —
+  what one `advise` verdict becomes, as pure data. `decide` applies four
+  rules in order: empty text is dropped, advice whose normalized digest is
+  already in the ring is dropped, a `Block` inside the cooldown window is
+  downgraded to a nudge carrying the reason, and a nudge that does not fit
+  the queue's count or byte cap is dropped. `Quiet` records nothing at all,
+  so a quiet advisor cannot age its own history away. One ring serves both
+  channels, and a drained nudge stays in it: repeating advice the primary
+  has read is the duplicate the ring exists to stop. Identity is the text
+  lowercased with whitespace runs collapsed, SHA-256, truncated to 128
+  bits. `Guard` is opaque because two of its four fields are invariants —
+  `last_block_run` indexes the same clock `runs` carries, and a value past
+  it would make the elapsed arithmetic negative and shut the block channel
+  for the session, which is why `decode` re-checks it. `decode` is lenient
+  about an absent field (it takes the empty guard's value) and strict about
+  a present one of the wrong type. `default_policy` is a two-run cooldown,
+  a ring of thirty-two, and eight nudges or four kilobytes pending; only
+  the cooldown is configurable.
+- `client/advisor.{strand, primary, cursor_key, guard_key, brief, Settings,
+  Wiring, Message, start, supervised, hooks, seam, ensure_strand,
+  active_tools}` — the actor that joins the two pure halves above to the
+  session. `ensure_strand` seeds the advisor through
+  `api.create_idle_strand` and never through the Agency, so it carries no
+  `lineage/` cell: the primary cannot address it, it can address nothing,
+  and `strand.roster` does not list it. `hooks` wraps three slots —
+  `run_end` casts `PrimaryRunEnded`/`AdvisorRunEnded` and returns the inner
+  answer unchanged, `run_start` drains the queued nudges with a bounded
+  call and folds them in after the inner injections, and `context`
+  prepends `brief` to the advisor's own requests transiently. `seam` is
+  the `advise` door, which refuses any caller whose durable strand name is
+  not `advisor`. The actor owns `cursor_key` and `guard_key`, reads them
+  lazily on its first message because the runtime it borrows may not be up
+  at start.
 - `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
   bounding the sidecar read, which the lifecycle producer moved onto the
   strand driver's hot path: `max_sidecar_bytes` (four times the render
@@ -2226,6 +2284,18 @@ across one operation a `Stop` block holds open.
   joins the `Outputs` topic alone and turns each `ToolOutput` into a
   pushed `tool_output` frame without pulling; every other `BusHint` is a
   pull. The host fixture joins every topic.
+- `advisor.Message` — `PrimaryRunEnded(operation)` and
+  `AdvisorRunEnded(operation)` (casts, from the wrapped `run_end` slot on
+  the strand driver's own process), `Judge(strand, verdict, reply)` (a
+  call, from the `advise` tool's effect process, bounded at
+  `judge_timeout_ms`), and `TakePending(reply)` (a call, from the wrapped
+  `run_start` slot, bounded at `pending_timeout_ms`). Both calls go
+  through a monitored send-and-select rather than `process.call`, so an
+  absent or wedged actor degrades to no nudges and an in-band refusal
+  instead of killing a strand driver or a live tool effect. The run-end
+  notifications are casts on purpose: a driver that waited on a branch
+  scan and a provider round trip would stop serving `Nudge`,
+  `RequestAbort` and `PollTick` for the length of a review.
 - `history.Message` — `Pull` (a cast: a commit landed, go sync),
   `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
   limit, scope, reply)` (a call, from the tool seam), and `Stop`.
@@ -2305,6 +2375,53 @@ across one operation a `Stop` block holds open.
   `user-invocable`; neither path changes broker policy. Existing sessions retain
   their configured active tool names, including deliberate deactivations.
 
+- **The advisor actor is the only writer of `advisor/feed/cursor` and
+  `advisor/guard`.** Both are `fact.custom` cells under
+  `api.advisor_fact_prefix`, a reserved corner of the namespace: the
+  ordinary `put_fact` refuses the prefix and `facts` hides it, so the
+  actor writes through `put_reserved_fact` and reads back with the plain
+  `fact`. Forging either therefore takes two independent failures rather
+  than one, because the fact write a model reaches is the Agency
+  blackboard and that composes every key from `agent/` and the calling
+  strand's own name. The cursor is the cell that matters: a large integer
+  written under it would move the reviewer past everything the primary
+  will ever append, and the symptom would be a quiet advisor rather than
+  an error anybody sees. The cursor advances only
+  after a feed has been committed onto the advisor's branch, or when a
+  scan found entries that all rendered to nothing — a stretch of custom
+  rows would otherwise be rescanned and re-skipped at every run end
+  forever. A feed that fails to send leaves the cursor alone, so the next
+  run end offers the same stretch again.
+- **Backpressure is coalescing, and the advisor's own run end is exempt.**
+  A primary run end whose advisor already has a run open sends nothing and
+  leaves the cursor, so the stretch it has not seen arrives later in one
+  larger slice rather than in a queue of small ones. `AdvisorRunEnded` does
+  not make that check: the driver resolves `run_end` before the run closes,
+  so the advisor still reads as busy at exactly the moment its review
+  finishes, and a catch-up that yielded to that would never catch up on
+  anything. What gates it instead is a debt: a coalesced feed sets
+  `Memory.owed`, and a review end with nothing owed sends nothing. Without
+  the debt the catch-up would send any delta past the cursor, and since
+  the primary appends throughout its own run, every advisor run end would
+  find something, feed it and be asked again — one inference per tool
+  round trip against a primary that has not decided anything yet. The debt
+  lives in the actor's heap, not in a cell: a restart that forgets one
+  delays a review to the primary's next run end.
+- **The strand driver never waits on a review.** The advisor's `run_end`
+  hook casts and returns the inner answer; nothing about a feed — the
+  branch scan, the render, the send, the durable writes — runs on the
+  driver. The one bounded wait is `run_start`'s nudge drain, because the
+  nudges have to be in the message list that slot returns, and a slow or
+  absent actor yields no nudges rather than a stalled run.
+- **`advise` is registered for the session and granted to one strand.**
+  The tool registry is per session, so the definition exists once; the
+  primary's `active_tool_names` withholds it and
+  `advisor.ensure_strand` adds it to the advisor's. The seam refuses a
+  call by the caller's durable strand name in any case, so a registration
+  mistake is a refusal rather than a second operator. A host that
+  deactivated `advise` seeds no advisor strand at all: `ensure_strand`
+  refuses by name rather than leaving a strand with a driver, a model and
+  nothing it can say.
 - **A linked git worktree widens the session base to its git directories.**
   `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a
   `gitdir:` file, the named directory and the main repository's `.git`
@@ -3312,6 +3429,10 @@ their existing unknown-outcome semantics.
 - [packages/prompt/CLAUDE.md](../prompt/CLAUDE.md) — the pure half:
   the pack format, the renderer, the summarization pack, and what
   `Environment` may never grow.
+- [docs/architecture/advisor.md](../../docs/architecture/advisor.md) — the
+  advisor strand: why it is a peer rather than an Agency child, the feed's
+  cadence and its coalescing backpressure, the three verdicts and the guard
+  that rations them, the two cells, and what is deferred.
 - [packages/tui/CLAUDE.md](../tui/CLAUDE.md) — the other end of the wire.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
 

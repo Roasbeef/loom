@@ -473,6 +473,7 @@ fn settings(
     // Offline, three names: the jail every session had before the
     // `[tools]` table existed.
     tools: catalog.default_tools(),
+    advisor: None,
   )
 }
 

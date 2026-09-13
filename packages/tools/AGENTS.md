@@ -59,6 +59,18 @@ blind, and the rendering that turns a vetting rejection, a compile error, a
 dead satellite or a program's own reported failure into something a model
 can repair from.
 
+And `advise`, the whole outward surface of an *advisor* strand — a second
+strand that reads what the primary has been doing and says whether it
+should carry on. Same shape once more, and the reason is the sharpest of
+the set: the advisor has no authority at all. It cannot steer the
+primary, cannot queue text into the primary's next run, and cannot write
+anything durable; its one call leaves through an **Advice** record of one
+closure, judged against `Ctx.strand`. What this side owns is the
+three-point verdict vocabulary and the total decoder over it. What the
+far side owns is what a verdict actually costs, which is why the call
+answers with what happened rather than with an acknowledgement that it
+was asked.
+
 ## Key Types
 
 - `tools/tool.Tool` — the record every tool is: `name`, `description`,
@@ -202,6 +214,29 @@ can repair from.
   threshold reads (`client/checkpoint.remaining_seam`), so asked and told
   are one number. Read-only, `Safe`, `Concurrent`, no sandbox
   requirements.
+- `tools/advise.{Advice, Verdict, Ack, name, tool, decode_verdict}` — the
+  `advise` tool: an advisor strand's entire outward surface, a value over
+  a seam the host fills, exactly as `remember` and `schedule` are.
+  `Verdict` is the three-point vocabulary — `Quiet`, `Nudge(text)`,
+  `Block(text)` — ordered by what it costs the primary: nothing, a
+  paragraph at its next prompt, an interruption now. `Ack` is what the
+  harness decided to do with one (`Delivered(how)` | `Queued` |
+  `Downgraded(reason)` | `Dropped(reason)` | `Acknowledged`), and it is
+  the reason the call answers with an outcome rather than an
+  acknowledgement: an emission guard downgrades a block raised inside its
+  cooldown and drops advice the primary has already been given, and an
+  advisor reading a downgrade as a delivery would believe it had stopped
+  the primary when it had not.
+  `Advice.judge` is handed `Ctx.strand` — the driver's own durable name,
+  never an argument — so a verdict cannot be attributed to a strand that
+  did not produce it. `decode_verdict` is total and public because both
+  sides of the seam pin the same vocabulary against it; it decodes the
+  verdict and its text as one pair, so a `nudge` with nothing to say and
+  a `quiet` carrying text are in-band errors rather than half-decoded
+  advice. `Never`/`Exclusive`: a replayed call would say the same thing
+  twice or burn a cooldown the first call paid for, and two verdicts
+  racing for one window would make which of them was downgraded a matter
+  of scheduling. No sandbox requirements at all.
 - `tools/schedule.{Schedules, Limits, Request, RequestedTiming, Created,
   Listed, Wake, Refusal, tools, create_tool_name, list_tool_name,
   cancel_tool_name, refusal_outcome, refusal_reason}` — the model's own
@@ -662,6 +697,10 @@ can repair from.
   anchor hash choice, `execution_mode`, workspace-relative requirements,
   the `fs_read` overflow exemption, harness-side filesystem tools, blob-ref
   readability, the timeout ceiling, ripgrep-missing detection.
+- [docs/architecture/advisor.md](../../docs/architecture/advisor.md) — the
+  far side of the `advise` seam: who may call it, what the harness does
+  with each verdict, and the guard that decides whether a block is
+  delivered, downgraded or dropped.
 - [packages/broker/CLAUDE.md](../broker/CLAUDE.md) — the door every jailed
   call goes through.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.

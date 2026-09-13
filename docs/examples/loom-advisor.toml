@@ -1,0 +1,62 @@
+# loom-advisor.toml is the smallest catalogue that demonstrates the
+# advisor pairing: a fast model does the work and a slower, stronger one
+# watches it.
+#
+# At each end of a main run the harness renders what the main strand did
+# since the last check into one message and sends it to a second strand
+# seeded from the `advisor` route. That strand answers with exactly one
+# `advise` call: `quiet` emits nothing, `nudge` is folded into the start
+# of main's next run, and `block` reaches main immediately — steering an
+# open run, or starting one on an idle main.
+#
+# The pairing is the point. The advisor is asked once per run boundary
+# rather than once per turn, so a model too slow to drive the session can
+# still afford to check it; and a fast main model is exactly the one
+# whose wrong turns are worth catching early. Reverse the two and you pay
+# the slow model's latency on every turn to be second-guessed by the fast
+# one.
+#
+# The server reads the credential from BASETEN_API_KEY only when it
+# dispatches a request; no value ever lives in this file.
+
+[models.baseten-glm-5-3-flash]
+dialect = "openai"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "zai-org/GLM-5.3-Flash"
+context_window = 1048576
+max_output_tokens = 262144
+thinking = "medium"
+
+[models.baseten-glm-5-3]
+dialect = "openai"
+base_url = "https://inference.baseten.co/v1"
+api_key_env = "BASETEN_API_KEY"
+model_id = "zai-org/GLM-5.3"
+context_window = 1048576
+max_output_tokens = 262144
+thinking = "medium"
+
+# Flash drives the session and summarizes it; the full model advises.
+# `main` is the only route a session cannot run without, so dropping the
+# `advisor` line here leaves a working catalogue with no advisor at all.
+[roles]
+main = ["baseten-glm-5-3-flash"]
+advisor = ["baseten-glm-5-3"]
+summarize = ["baseten-glm-5-3-flash"]
+
+# What the advisor may look at besides the feed it is handed, and how
+# long one delivered block quiets the next.
+#
+# The tools are read-only: an advisor exists to look at what main did and
+# say something about it, and a second agent that can edit the workspace
+# is a second writer racing the first. `advise` itself is registered
+# whatever this list says.
+#
+# `block_cooldown_runs = 2` means a block that reached main downgrades
+# the next two runs' blocks to nudges. Without the window, an advisor
+# that has decided main is wrong interrupts every run until it agrees.
+# Zero turns the window off and lets every block through.
+[advisor]
+tools = ["fs_read", "grep"]
+block_cooldown_runs = 2

@@ -140,6 +140,21 @@ structural decisions, threshold checks, and the run-end hook carry no
 effect intent and are safe to rerun, so they arrive as observations and
 the transition consuming one commits once.
 
+A hook slot is a plain function called on the driver's own process, so
+nothing expensive may happen inside one: a slot that waited on a branch
+scan and a provider round trip would stop the driver serving `Nudge`,
+`RequestAbort` and `PollTick` for the length of that wait. Layers that
+need real work at a run boundary therefore wrap the slot to *cast* and
+return the inner slot's answer unchanged, doing the work on an actor of
+their own. `client/agency`'s reaping, `client/notes`' digest, the
+imported-hooks Stop gate and the advisor feed all compose this way, and
+each wraps rather than sets, because a builder that set a slot would
+silently drop whatever an earlier layer put there. The advisor is the
+longest of those: `docs/architecture/advisor.md` covers how a run end
+becomes a review, why the review's backpressure is coalescing rather
+than a queue, and why its one bounded wait is on the run-*start* slot,
+whose injections have to be in the list that slot returns.
+
 ## The state space at a glance
 
 Three constructors, matching the three intents. A state whose kind

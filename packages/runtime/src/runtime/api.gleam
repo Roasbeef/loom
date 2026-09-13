@@ -1679,12 +1679,31 @@ pub const run_settings_key = "client/run_settings"
 /// job by rewriting a cell that a poll would otherwise have shown.
 pub const job_fact_prefix = "job/"
 
+/// The reserved `fact.custom` key prefix the advisor loop keeps its two
+/// cells under: `advisor/feed/cursor`, the newest seq of the primary's
+/// branch the reviewer has been shown, and `advisor/guard`, the emission
+/// guard's cooldown, duplicate ring and queued nudges
+/// (`client/advisor`).
+///
+/// Reserved so that forging either takes two independent failures rather
+/// than one. The cells are already out of a model's reach through the
+/// Agency blackboard, which composes every key it writes from `agent/`
+/// and the calling strand's own name — but that is one lock, and the
+/// cursor is the cell that decides whether a session is reviewed at all.
+/// A `put_fact` of a large integer under `advisor/feed/cursor` moves the
+/// reviewer past everything the primary will ever append, and the
+/// symptom is an advisor that is quiet rather than an error anybody
+/// sees. The guard is the same shape from the other side: a rewritten
+/// `lastBlockRun` holds the block channel shut for the rest of the
+/// session.
+pub const advisor_fact_prefix = "advisor/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The ten corners, and what each would let a forged write do:
+/// The eleven corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -1701,7 +1720,9 @@ pub const job_fact_prefix = "job/"
 /// a background job terminal while its process still runs, so the
 /// restart sweep skips it and nothing ever reaps it, or hide a running
 /// job from the poll that is the only way a model or an operator learns
-/// one exists.
+/// one exists; `advisor/` — move the advisor's feed cursor past
+/// everything the primary will ever append, which silences the session's
+/// reviewer without raising anything.
 ///
 /// ## Examples
 ///
@@ -1724,6 +1745,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, schedule_fact_prefix)
   || string.starts_with(key, ext_fact_prefix)
   || string.starts_with(key, job_fact_prefix)
+  || string.starts_with(key, advisor_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

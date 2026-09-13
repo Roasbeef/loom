@@ -527,16 +527,20 @@ extended by the M3 runtime wave.
   still queued in the mailbox commits under its reserved ids as `aborted`
   **retaining its reported usage** (ORCH-M3), while one that dies unreported
   settles through the monitor as a synthetic zero-usage abort.
-- **Nine corners of `fact.custom` are reserved, and reserving hides as
+- **Eleven corners of `fact.custom` are reserved, and reserving hides as
   well as refuses.** `escalation/`, `operation-result/`, `lineage/`,
-  `prompt/`, `session/`, `rule/`, `schedule/`, `ext/` and `client/` are
+  `prompt/`, `session/`, `rule/`, `schedule/`, `ext/`, `job/`,
+  `advisor/` and `client/` are
   refused to
   `put_fact` and filtered out of `facts`, so no blackboard write can
   forge an approval, shadow a terminal result, rewrite a parent edge,
   overwrite the pinned system prompt, re-point the session's own
   identity, mark an operator's triggered project rule or scheduled
   heartbeat as already fired so that it never fires, forge and read
-  an installed extension's durable memory, or rewrite the shared run
+  an installed extension's durable memory, mark a background job
+  terminal while its process still runs, move the advisor's feed cursor
+  past everything the primary will ever append and so silence the
+  session's reviewer, or rewrite the shared run
   settings — `client/run_settings`, the one cell under `client/` — that
   every admission compares against, and so choose the queue mode and
   tool-execution mode of every later run of the session. Both are named

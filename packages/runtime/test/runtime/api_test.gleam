@@ -282,6 +282,46 @@ pub fn put_fact_refuses_the_job_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// The advisor's two cells are closed to the model's own door.
+//
+// `advisor/feed/cursor` is the newest seq of the primary's branch the
+// reviewer has been shown. A write of a large integer under it moves the
+// reviewer past everything the primary will ever append, and the symptom
+// is a session that is quietly unreviewed rather than an error anybody
+// sees. The Agency blackboard already composes its keys from `agent/`
+// and the caller's own strand name, so this is the second lock: forging
+// a cursor takes two independent failures rather than one.
+pub fn put_fact_refuses_the_advisor_prefix_test() {
+  let rt = fact_runtime()
+  assert api.reserved_fact_key("advisor/feed/cursor")
+  assert api.reserved_fact_key(api.advisor_fact_prefix)
+  assert !api.reserved_fact_key("agent/main/advisor")
+
+  let assert Error(api.ReservedFactKey(key: "advisor/feed/cursor")) =
+    api.put_fact(rt, "advisor/feed/cursor", json.Int(999_999))
+    as "the feed cursor is not the model's to write"
+
+  let assert Error(api.ReservedFactKey(key: "advisor/guard")) =
+    api.put_fact_expecting(
+      rt,
+      "advisor/guard",
+      json.String("forged"),
+      expected: None,
+    )
+    as "the compare-and-set door is not a way into the namespace either"
+
+  // And what the advisor actor wrote there is not listed to a reader of
+  // the ordinary blackboard, so a model cannot find the cursor through
+  // its own view of the cells either.
+  let assert Ok(Nil) =
+    api.put_reserved_fact(rt, "advisor/feed/cursor", json.Int(12))
+    as "the harness door writes the same key"
+  let assert Ok(listed) = api.facts(rt, prefix: None)
+    as "the blackboard must list"
+  assert !list.any(listed, fn(cell) { cell.0 == "advisor/feed/cursor" })
+  process.kill(rt.tree.supervisor)
+}
+
 // And the door that makes the concurrent case expressible: the same
 // write with the seq it was read at asserted, so the loser is told it
 // lost instead of never finding out.

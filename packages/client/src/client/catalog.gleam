@@ -37,7 +37,7 @@
 ////
 //// [roles]
 //// main = ["<name>", "<fallback-name>", ...]
-//// # likewise: subagent, plan, summarize, vision
+//// # likewise: subagent, plan, summarize, vision, advisor
 ////
 //// [mcp.<name>]                       # optional; one table per server
 //// command = ["server-binary", "arg"] # the stdio server's argv
@@ -53,6 +53,10 @@
 //// env = ["GH_TOKEN"]                 # host env var *names*
 //// [tools.set]
 //// GH_CONFIG_DIR = "/home/me/.config/gh"
+////
+//// [advisor]                          # optional; see `parse_advisor`
+//// tools = ["fs_read", "grep"]        # what the advisor may read with
+//// block_cooldown_runs = 2            # runs a delivered block silences
 ////
 //// [workspace]                        # optional; see `parse_workspace`
 //// mounts = [{ path = "/srv/data", access = "ro" }]
@@ -225,7 +229,7 @@ pub type ToolsConfig {
 /// construction): entry names are unique; every chain is non-empty and
 /// names only existing entries; `model.Main` is routed; `models`,
 /// `roles` and `mcp_servers` are in the deterministic orders `parse`
-/// produces (entries and servers sorted by name, roles in the five-role
+/// produces (entries and servers sorted by name, roles in the six-role
 /// canonical order).
 pub type Catalog {
   Catalog(
@@ -238,13 +242,31 @@ pub type Catalog {
   )
 }
 
-// The five routable roles, in the canonical order listings use.
+/// The role an advisor strand is seeded from: a `Custom` role rather than
+/// a sixth named one, because `provider/model.Role`'s five names are the
+/// design-doc vocabulary and `Custom` is what that type provides for a
+/// role an application defines. Routing it is optional — `main` is still
+/// the only route a session cannot run without — and a catalogue that
+/// omits it simply has no advisor.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.advisor_role == model.Custom("advisor")
+/// ```
+///
+pub const advisor_role = model.Custom("advisor")
+
+// The six routable roles, in the canonical order listings use. The
+// advisor comes last because it is the only one no session needs, and
+// this order is the one an operator reads down.
 const routable_roles = [
   model.Main,
   model.Subagent,
   model.Plan,
   model.Summarize,
   model.Vision,
+  advisor_role,
 ]
 
 // --- parsing ---------------------------------------------------------------
@@ -294,7 +316,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
-      "tools", "jobs", "secrets", "workspace",
+      "tools", "jobs", "secrets", "workspace", "advisor",
     ],
     "the top level",
   ))
@@ -770,11 +792,13 @@ fn parse_role(name: String) -> Result(model.Role, String) {
     "plan" -> Ok(model.Plan)
     "summarize" -> Ok(model.Summarize)
     "vision" -> Ok(model.Vision)
+    "advisor" -> Ok(advisor_role)
     other ->
       Error(
         "roles."
         <> other
-        <> " is not a routable role (main, subagent, plan, summarize, vision)",
+        <> " is not a routable role (main, subagent, plan, summarize,"
+        <> " vision, advisor)",
       )
   }
 }
@@ -1300,6 +1324,137 @@ fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
   }
 }
 
+// --- the [advisor] table ---------------------------------------------------
+
+/// The `[advisor]` table: what the advisor strand may read with, and how
+/// long a delivered block quiets the next one.
+///
+/// Constructor invariants: `block_cooldown_runs` is not negative.
+///
+/// `tools` names built-in tools, and naming `advise` among them changes
+/// nothing: the harness registers it for the advisor whatever this says,
+/// and `advisor.active_tools` prepends and deduplicates, so the name is
+/// accepted rather than refused — a strand that could not answer a feed
+/// would have no reason to exist.
+pub type AdvisorConfig {
+  AdvisorConfig(
+    /// Tools the advisor strand is registered with besides `advise`, in
+    /// file order. The default pair is read-only on purpose: an advisor
+    /// exists to look at what the primary did and say something about
+    /// it, and a second agent that can edit the workspace is a second
+    /// writer racing the first.
+    tools: List(String),
+    /// How many of the primary's runs a delivered block silences the
+    /// next one for. Inside that window a further block is downgraded to
+    /// a nudge, which is what stops an advisor that has decided the
+    /// primary is wrong from interrupting every run until it agrees.
+    /// Zero turns the window off and lets every block through.
+    block_cooldown_runs: Int,
+  )
+}
+
+/// The advisor posture a catalogue with no `[advisor]` table gets, and
+/// the value each absent key falls back to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.default_advisor().block_cooldown_runs == 2
+/// ```
+///
+pub fn default_advisor() -> AdvisorConfig {
+  AdvisorConfig(tools: ["fs_read", "grep"], block_cooldown_runs: 2)
+}
+
+/// Parses the optional `[advisor]` table out of the same `loom.toml` the
+/// catalogue comes from.
+///
+/// It reads the document itself rather than taking one `parse` already
+/// produced, the arrangement `parse_tools`, `client/rules` and
+/// `client/distillpass` established: each parser owns its own table and
+/// its own worded failure, and `parse`'s top-level key check is what
+/// keeps a typoed table name from being ignored by every parser at once.
+///
+/// Total and strict, for the reason `parse_tools` is: an unknown key, a
+/// non-string tool name and a negative cooldown are each a worded
+/// `Error` the boot halts on, because a mistyped key that silently kept
+/// the default would look exactly like a host that ignored the table.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_advisor("") == Ok(catalog.default_advisor())
+/// ```
+///
+/// ```gleam
+/// // catalog.parse_advisor("[advisor]\nblock_cooldown_runs = 0\n")
+/// // -> Ok(catalog.AdvisorConfig(tools: ["fs_read", "grep"], ..))
+/// ```
+///
+pub fn parse_advisor(text: String) -> Result(AdvisorConfig, String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(describe_parse_error),
+  )
+  case dict.get(document, "advisor") {
+    Error(Nil) -> Ok(default_advisor())
+    Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) -> advisor_table(fields)
+    Ok(_other) -> Error("advisor must be an [advisor] table")
+  }
+}
+
+fn advisor_table(
+  fields: Dict(String, tom.Toml),
+) -> Result(AdvisorConfig, String) {
+  use Nil <- result.try(known_keys(
+    dict.keys(fields),
+    ["tools", "block_cooldown_runs"],
+    "[advisor]",
+  ))
+  use tools <- result.try(advisor_tools(fields))
+  use block_cooldown_runs <- result.try(advisor_cooldown(fields))
+  Ok(AdvisorConfig(tools:, block_cooldown_runs:))
+}
+
+// File order, because a tool list is read down rather than looked up,
+// and an operator who put the one they care about first should see it
+// first. An explicit `tools = []` is honoured as written: an advisor
+// that only reasons over the feed it was handed is a posture, not a
+// mistake.
+fn advisor_tools(
+  fields: Dict(String, tom.Toml),
+) -> Result(List(String), String) {
+  case dict.get(fields, "tools") {
+    Ok(tom.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          tom.String("") -> Error("advisor.tools names must be non-empty")
+          tom.String(tool_name) -> Ok(tool_name)
+          _other -> Error("advisor.tools must be an array of tool names")
+        }
+      })
+    Ok(_other) -> Error("advisor.tools must be an array of tool names")
+    Error(Nil) -> Ok(default_advisor().tools)
+  }
+}
+
+// Zero is legal and negative is not. Zero is the operator saying every
+// block should land, which is a posture a reviewer-shaped advisor might
+// want; a negative window is a number with no reading at all, and
+// clamping it would hide the typo that produced it.
+fn advisor_cooldown(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
+  case dict.get(fields, "block_cooldown_runs") {
+    Ok(tom.Int(runs)) if runs >= 0 -> Ok(runs)
+    Ok(tom.Int(runs)) ->
+      Error(
+        "advisor.block_cooldown_runs must not be negative, got "
+        <> int.to_string(runs),
+      )
+    Ok(_other) -> Error("advisor.block_cooldown_runs must be an integer")
+    Error(Nil) -> Ok(default_advisor().block_cooldown_runs)
+  }
+}
+
 // --- lookups ---------------------------------------------------------------
 
 /// Finds an entry by catalogue name.
@@ -1342,7 +1497,7 @@ pub fn main_model(catalog: Catalog) -> Result(CatalogModel, Nil) {
 pub fn routed_roles(catalog: Catalog, name: String) -> List(String) {
   catalog.roles
   |> list.filter(fn(route) { list.contains(route.1, name) })
-  |> list.map(fn(route) { model.role_to_string(route.0) })
+  |> list.map(fn(route) { role_key(route.0) })
 }
 
 /// The roles the named entry currently resolves for — the chains it
@@ -1358,7 +1513,25 @@ pub fn routed_roles(catalog: Catalog, name: String) -> List(String) {
 pub fn active_roles(catalog: Catalog, name: String) -> List(String) {
   catalog.roles
   |> list.filter(fn(route) { list.first(route.1) == Ok(name) })
-  |> list.map(fn(route) { model.role_to_string(route.0) })
+  |> list.map(fn(route) { role_key(route.0) })
+}
+
+// A role as the `[roles]` table keys it, which is what these two
+// listings report. `provider/model.role_to_string` is the wrong renderer
+// here: it prefixes an application role with `custom:` so an error
+// message about a durable summary can say which kind it met, and an
+// operator reading a listing back should instead meet the word they
+// typed. Every variant is named rather than delegated, so a further role
+// reaches this decision through the compiler.
+fn role_key(role: model.Role) -> String {
+  case role {
+    model.Main -> "main"
+    model.Subagent -> "subagent"
+    model.Plan -> "plan"
+    model.Summarize -> "summarize"
+    model.Vision -> "vision"
+    model.Custom(name:) -> name
+  }
 }
 
 /// The wire name of a dialect, as the `models` listing carries it.

@@ -185,6 +185,21 @@ steer first; if the target reports no active run it accepts a new run,
 and if a run opens in that gap it retries the steer — so a target
 flipping between busy and idle never drops the message.
 
+Not every peer is a child. The **advisor** strand is created by the
+harness through `api.create_idle_strand` rather than by the Agency, so
+it has no `lineage/` cell, and the whole of its isolation follows from
+that absence: `agent_send` and `agent_wait` check the cell before one
+strand may address another and `strand.roster` lists from it, so the
+primary cannot address the advisor, the advisor can address nothing, and
+neither appears in the other's roster. The one channel between them runs
+the other way and is built by the harness out of the machinery above:
+the advisor calls a tool, the harness decides what that verdict costs,
+and only then does a `send_to_strand` carry the text to the primary. A
+peer created this way is owned by the session rather than by a parent,
+so no parent's run end reaps it and no detached deadline retires it.
+`docs/architecture/advisor.md` has the loop, the guard that rations it,
+and the two `fact.custom` cells it keeps.
+
 ### Blackboard
 
 The **blackboard** is `fact.custom`, the one register namespace shared
@@ -336,6 +351,7 @@ a rule, may start a fresh run on an idle strand.
 | `client/schedulescan.gleam` | The timer-driven scanner: one marked admission per due occurrence, `steer_marking` or `send_to_strand_marking` depending on `wake`, and the settled-target check that ends a schedule with the strand it fires onto. |
 | `client/scheduleseam.gleam` | The model's door: the claim on a config cell's absence, the lineage-checked target, `retire`, and the `run_end` reaper. |
 | `client/scheduleadmin.gleam` | The operator's door over the protocol: list everything, cancel what a strand wrote, through the same `retire`. |
+| `client/advisor.gleam` | The advisor loop: the run-boundary hooks, the branch scan from a stored cursor, the framed feed, and the `advise` seam that refuses any caller but the advisor strand. |
 
 Each path is relative to its package's source root:
 `runtime/api.gleam` is `packages/runtime/src/runtime/api.gleam`. For the

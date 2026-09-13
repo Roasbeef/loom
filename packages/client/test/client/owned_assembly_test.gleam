@@ -99,6 +99,7 @@ pub fn settings() -> serve.Settings {
     deactivated_tools: [],
     memory: distillpass.no_pass(),
     tools: catalog.default_tools(),
+    advisor: None,
   )
 }
 

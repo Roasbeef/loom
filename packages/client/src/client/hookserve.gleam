@@ -54,7 +54,7 @@ import client/hookrunner
 import client/hooktrust
 import client/hookwire
 import core/clock.{type Clock}
-import core/ids
+import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import gleam/dict
@@ -593,16 +593,25 @@ pub const stop_block_cap = 8
 /// somebody else owns, and an actor keyed on the operation is the house
 /// shape for that (`weft/actor`, per the mapping in `docs/weft.md`).
 ///
+/// `stops` says whether an operation's run end is one the imported `Stop`
+/// hooks were written for. In Claude a `Stop` hook fires when the main
+/// agent finishes responding and `SubagentStop` when a subagent does;
+/// Loom runs more than one strand under a session, the advisor among
+/// them, and a `Stop` hook asked at every strand's run end steered the
+/// advisor with instructions meant for the primary. The caller answers
+/// from the operation's strand; `SubagentStop` is not composed yet.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // let composed = hookserve.wire(effects, serving, logger)
+/// // let composed = hookserve.wire(effects, serving, clock, fn(_) { True })
 /// ```
 ///
 pub fn wire(
   effects: Effects,
   serving: Serving,
   clock: Clock,
+  stops: fn(OpId) -> Bool,
 ) -> Result(Effects, String) {
   let counters =
     actor.new(Counters(placed: dict.new(), started: FirstRun))
@@ -665,14 +674,21 @@ pub fn wire(
           case built.run_end(operation) {
             Some(_harness) as placed -> placed
 
-            None ->
-              case
-                stop_block(ids.op_id_to_string(operation), serving, counters)
-              {
+            None -> {
+              // A run end on a strand the `Stop` hooks were not written
+              // for finishes without asking them, so none of their side
+              // effects run and the continuation cap is not spent.
+              let continuation = case stops(operation) {
+                True ->
+                  stop_block(ids.op_id_to_string(operation), serving, counters)
+                False -> hookdecisions.Finish
+              }
+              case continuation {
                 hookdecisions.Continue(reason) ->
                   Some(hook_message(hookcompat.Stop, reason, clock))
                 hookdecisions.Finish -> None
               }
+            }
           }
         },
         compaction_note: fn(operation, cue) {

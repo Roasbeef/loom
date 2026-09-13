@@ -184,7 +184,12 @@ pub fn the_stop_gate_is_not_asked_when_the_harness_already_placed_one_test() {
   write(rig.home <> "/.claude", "settings.json", settings_with_hooks)
   let serving = load(rig, Some(rig.trust_root))
   let assert Ok(composed) =
-    hookserve.wire(effects_placing(Some(follow_up())), serving, rig.clock)
+    hookserve.wire(
+      effects_placing(Some(follow_up())),
+      serving,
+      rig.clock,
+      fn(_) { True },
+    )
     as "the composition must start its counter"
 
   let placed = composed.hooks.run_end(rig.operation)
@@ -201,13 +206,32 @@ pub fn the_stop_gate_is_asked_when_the_harness_placed_nothing_test() {
   write(rig.home <> "/.claude", "settings.json", settings_with_hooks)
   let serving = load(rig, Some(rig.trust_root))
   let assert Ok(composed) =
-    hookserve.wire(effects_placing(None), serving, rig.clock)
+    hookserve.wire(effects_placing(None), serving, rig.clock, fn(_) { True })
     as "the composition must start its counter"
 
   let placed = composed.hooks.run_end(rig.operation)
 
   assert placed == None
   assert asks(rig) == 1
+}
+
+/// A `Stop` hook is written for the main agent's run end. Loom runs the
+/// advisor and subagents under the same session, and asking the hook at
+/// their run ends steered the advisor with the operator's instructions
+/// for the primary. A run end the caller does not claim finishes without
+/// the gate: no ask, no continuation, no cap spent.
+pub fn the_stop_gate_is_not_asked_for_another_strands_run_test() {
+  let rig = rig()
+  write(rig.home <> "/.claude", "settings.json", settings_with_hooks)
+  let serving = load(rig, Some(rig.trust_root))
+  let assert Ok(composed) =
+    hookserve.wire(effects_placing(None), serving, rig.clock, fn(_) { False })
+    as "the composition must start its counter"
+
+  let placed = composed.hooks.run_end(rig.operation)
+
+  assert placed == None
+  assert asks(rig) == 0
 }
 
 /// `SessionStart` is a session event and `run_start` is the
@@ -219,7 +243,7 @@ pub fn session_start_is_asked_once_per_composed_effects_test() {
   write(rig.home <> "/.claude", "settings.json", settings_with_hooks)
   let serving = load(rig, Some(rig.trust_root))
   let assert Ok(composed) =
-    hookserve.wire(effects_placing(None), serving, rig.clock)
+    hookserve.wire(effects_placing(None), serving, rig.clock, fn(_) { True })
     as "the composition must start its counter"
 
   let _first = composed.hooks.run_start(rig.operation)
@@ -245,7 +269,9 @@ pub fn a_rewrite_the_harness_refuses_refuses_the_call_test() {
   )
   let serving = load(rig, Some(rig.trust_root))
   let assert Ok(composed) =
-    hookserve.wire(clearing_unless(rig, "curl"), serving, rig.clock)
+    hookserve.wire(clearing_unless(rig, "curl"), serving, rig.clock, fn(_) {
+      True
+    })
     as "the composition must start its counter"
 
   let verdict = composed.tools.clear(bash_call(rig, "echo hello"))
@@ -263,7 +289,9 @@ pub fn a_rewrite_the_harness_clears_is_applied_test() {
   write(rig.home <> "/.claude", "settings.json", rewriting_to(rig, "ls -a"))
   let serving = load(rig, Some(rig.trust_root))
   let assert Ok(composed) =
-    hookserve.wire(clearing_unless(rig, "curl"), serving, rig.clock)
+    hookserve.wire(clearing_unless(rig, "curl"), serving, rig.clock, fn(_) {
+      True
+    })
     as "the composition must start its counter"
 
   let verdict = composed.tools.clear(bash_call(rig, "echo hello"))
@@ -282,7 +310,7 @@ pub fn a_rewrite_the_harness_clears_is_applied_test() {
   // once: the second ask carried the rewritten arguments, and its answer
   // is the one applied.
   let assert Ok(normalizing) =
-    hookserve.wire(wrapping_clearance(rig), serving, rig.clock)
+    hookserve.wire(wrapping_clearance(rig), serving, rig.clock, fn(_) { True })
     as "the composition must start its counter"
   let assert effects.Cleared(effective_arguments: normalized, replay: _) =
     normalizing.tools.clear(bash_call(rig, "echo hello"))
