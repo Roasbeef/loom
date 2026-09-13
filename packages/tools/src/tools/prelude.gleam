@@ -36,7 +36,7 @@
 ////   9f573452d1333b42e16a9521c08a7c3597e4daa4cb09a937307095641b1a232f  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   97797941122361e8deafe0ed9f59636c83acbe68e747a27425257d8ededffcbc  packages/cap/src/cap/schedule.gleam
-////   ef9822d3e4d204332996b28b780432d21eeed26c32faf90e71e222bc9e4bed2f  packages/cap/src/cap/search.gleam
+////   1a8a20900d9baca94f1070c40dbc4c8ad918eee77815c55b6472aeddf6c6f5e9  packages/cap/src/cap/search.gleam
 ////   aa37ad78ac1cf27f2be26a8f29630c5e4f41f37c6c4a568989a523ed304d5679  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   c18b0e9fa7fe45a958d4281cd5760a38bdf673ea8eaf51b1e203ccb4bc75b3c7  scripts/gen-prelude.py
