@@ -705,6 +705,20 @@ that tree separately from the self-contained server.
   surface painted without the paced offset, so a backlog behind it answers
   `ViewportSettled` rather than holding the loop on a repaint nothing on
   screen would show.
+- **`update` is a dispatch and a settle.** `update` records the event, calls
+  `apply_input` to dispatch on it, and hands the result to `settle_update`
+  for the worktree request, context sync, Herdr report, projection, viewport
+  snap and frame decision. Keeping those two bodies out of `update` is what
+  keeps the module compiling in seconds. The Erlang inliner attempts every
+  local call and, on abandoning an attempt for effort, restores the state it
+  began from, including its cache of visited expressions; a settling step
+  applied to the dispatched expression therefore re-visits the whole
+  dispatch, every arm and the tick's drain chain beneath it, once per step,
+  and six steps in one body cost about sixty-four visits and over a minute
+  of compile time. Applied to a parameter, the same steps visit it a
+  constant number of times. Folding either half back in restores the
+  blow-up; `erlc +time` on the generated `tui.erl` shows it as
+  `core_inline_module`, and `docs/execution.md` has the measurement.
 - **Presentation uses one caller-owned clock.** `new_model` supplies the
   host's monotonic clock; `new_model_with_clock` lets a test supply its own.
   Frame pacing, generation throughput, and activity elapsed time all read

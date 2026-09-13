@@ -3453,7 +3453,26 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
   // was given rather than what it made of it.
   recording.note_input(model.recorder, event)
 
-  let updated = case event {
+  let updated = apply_input(event, model)
+  settle_update(event, model, updated)
+}
+
+// The dispatch on the event and the settling of its result are two functions
+// rather than one body, and the seam is load-bearing for the build rather
+// than for the design. The Erlang inliner tries to expand every local call,
+// and an attempt it abandons for effort restores the state it started from,
+// including its cache of visited expressions. Each settling step below
+// takes the dispatched model as an argument, so each attempt visits the
+// whole dispatch — every arm, and the tick's drain chain beneath it — and
+// then throws the visit away for the next step to repeat. Six steps made
+// that about sixty-four visits, and the module took over a minute to
+// compile. With the dispatch behind a call and the settling steps applied
+// to a plain parameter, the expensive expression is visited a constant
+// number of times and the same module compiles in a few seconds. Folding
+// either function back into `update` restores the blow-up; measure with
+// `erlc +time` on the generated module before doing so.
+fn apply_input(event: backend.InputEvent, model: Model) -> Model {
+  case event {
     // A selection is screen cells over a layout the resize just replaced,
     // so it goes with the old layout rather than surviving as a highlight
     // over whatever now occupies those cells.
@@ -3504,6 +3523,17 @@ pub fn update(event: backend.InputEvent, model: Model) -> Model {
     | backend.MouseRelease(_, _, backend.MouseRight)
     | backend.MouseMove(..) -> model
   }
+}
+
+// Everything an event does after its own handler: the worktree request a
+// newly shown diff needs, the context sync, the Herdr report, the transcript
+// projection, the viewport snap and the frame decision. `model` is the
+// state before the event and `updated` the state its handler produced.
+fn settle_update(
+  event: backend.InputEvent,
+  model: Model,
+  updated: Model,
+) -> Model {
   let updated = case !diff_shown(model) && diff_shown(updated) {
     True -> request_visible_worktree(updated)
     False -> updated
