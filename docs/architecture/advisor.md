@@ -61,7 +61,7 @@ model's request, and carries a `lineage/` cell naming its parent. That
 cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
-`ensure_strand` (`client/advisor.gleam:1028`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:1101`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1007`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
@@ -221,7 +221,7 @@ decodes the arguments and hands the pair to a single closure on an
 Two things the model does not supply. The first is its own identity:
 `judge` is handed `Ctx.strand`, which the driver set from its own
 durable name, so a verdict cannot be attributed to a strand that did not
-produce it. `judge` (`client/advisor.gleam:747`) refuses any caller
+produce it. `judge` (`client/advisor.gleam:817`) refuses any caller
 whose name is not `advisor`. The second is what a verdict costs.
 
 `decode_verdict` (`tools/advise.gleam:203`) is total and decodes the
@@ -293,7 +293,7 @@ The shipped bounds are `default_policy`
 thirty-two digests, and at most eight nudges or four kilobytes waiting
 for the next run start. Only the cooldown is configurable.
 
-The actor's `decide` (`client/advisor.gleam:767`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:841`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the send
 costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -342,7 +342,7 @@ cannot combine with the surrounding text to spell the literal again.
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:330`).
+The constant is `brief` (`client/advisor.gleam:357`).
 
 Three properties follow from the prepend. A durable first message would
 be summarized away by the advisor's own compaction and would sit in the
@@ -396,8 +396,21 @@ session.
 The cursor is one integer and its decoder is one `case` rather than a
 module: an absent cell and anything that is not an integer both yield no
 cursor, because a value under this key that this actor did not write is
-a reason to review the branch from its root rather than to trust it. A
-wasted slice is the safe reading; a wrong one is not.
+not one to trust. No cursor means the position the primary's branch held
+when the actor started, which the actor reads once from the store at
+start. An advisor enabled on a session with hours of history therefore
+reviews from now rather than delivering verdicts about the past five
+hundred entries at a time, and a fresh session's primary has no leaf at
+boot, so its first run is still reviewed from its first entry. Losing
+the stretch nobody recorded a position for is the safe reading; a wrong
+one is not.
+
+The actor also remembers the one operation whose review end it has
+processed. The driver resolves `run_end` before the settlement that
+clears `current_operation`, so for one commit after a review ends the
+store still shows the advisor busy; a primary run end landing there would
+otherwise coalesce its feed against a review that has already ended and
+wait on a catch-up that never comes.
 
 ## Failure behaviour
 
@@ -420,8 +433,9 @@ costs at most one review.
   `advise` call gets a worded refusal and a run start gets no nudges.
   Nothing waits out a timeout for an answer that was never coming.
 - **A cell will not read or will not write.** A warned line; an
-  unreadable guard or cursor yields the empty value, which costs a
-  wasted slice and never a wrong one.
+  unreadable guard yields the empty guard and an unreadable cursor the
+  branch's position at actor start, which costs at most the stretch
+  between and never a wrong slice.
 - **A feed or a delivery fails to send.** The cursor is left in place
   and the next run end offers the stretch again; a failed delivery is
   reported to the advisor in its tool result.
@@ -501,8 +515,8 @@ user turns they would claim the operator typed them — the same reason
 the run-start notes digest is already suppressed — so the terminal
 recognizes them and draws them in the system voice instead.
 
-`advisor_payload` (`tui.gleam:6429`) extracts one of three
-`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:6519`) renders
+`advisor_payload` (`tui.gleam:6704`) extracts one of three
+`AdvisorMessage` variants and `advisor_lines` (`tui.gleam:6795`) renders
 it: collapsed, one attribution row (`advisor`, `advisor nudges (3)`,
 `advisor feed`) with an opening excerpt and the expand hint; expanded,
 the body under the same heading with the frame lines dropped, since

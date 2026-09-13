@@ -302,6 +302,105 @@ pub fn the_advisors_own_run_end_catches_up_test() {
   stop(rig)
 }
 
+// The window between the advisor's review ending and its settlement
+// clearing the store. The driver resolves `run_end` first, so a primary
+// run end that lands in that gap reads a cell that still says busy. The
+// actor has already seen that review end, so it must feed rather than
+// coalesce: a debt recorded here would wait on a review end that has
+// already happened, which on an idle session is forever.
+pub fn a_primary_run_end_after_a_seen_review_end_is_fed_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+
+  // The advisor holds a run that never settles: the fixture provider
+  // hangs, so the store shows it busy for the rest of the test. That is
+  // the stale cell the race exposes.
+  let assert Ok(_busy) =
+    api.send_to_strand(
+      rig.runtime,
+      to: advisor.strand,
+      message: user("an earlier feed"),
+    )
+    as "the advisor must take the fixture feed"
+  let assert Some(open) = advisor_operation(rig.opened)
+    as "the advisor must be mid-run"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  process.send(subject, advisor.AdvisorRunEnded(operation: open))
+  let _quiet = settle(subject)
+  assert cursor(rig.runtime) == None
+
+  process.send(subject, advisor.PrimaryRunEnded(operation: an_op_id(2)))
+  let _fed = settle(subject)
+
+  // The cursor moved: the primary's stretch was sent rather than owed to
+  // a review end that will never come again.
+  assert cursor(rig.runtime) != None
+  stop(rig)
+}
+
+// A different run on the advisor is a live review, whatever run end the
+// actor last saw. Only the one operation it has seen end is disbelieved.
+pub fn a_later_advisor_run_still_reads_as_busy_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(_accepted) =
+    api.accept_quietly(rig.runtime, [user("write the migration")])
+    as "the primary must accept the fixture run"
+  let assert Ok(_busy) =
+    api.send_to_strand(
+      rig.runtime,
+      to: advisor.strand,
+      message: user("an earlier feed"),
+    )
+    as "the advisor must take the fixture feed"
+
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+  process.send(subject, advisor.AdvisorRunEnded(operation: an_op_id(9)))
+  let _quiet = settle(subject)
+  process.send(subject, advisor.PrimaryRunEnded(operation: an_op_id(2)))
+  let _coalesced = settle(subject)
+
+  assert cursor(rig.runtime) == None
+  stop(rig)
+}
+
+// An advisor enabled on a session that already has history reviews what
+// happens from now. The actor takes the primary's position at its start
+// as the cursor when no cell exists, so the first run end after boot
+// offers nothing older than boot.
+pub fn an_advisor_started_over_history_reviews_from_now_test() {
+  let assert Ok(#(rig, history)) = a_rig_over_history()
+    as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  process.send(subject, advisor.PrimaryRunEnded(operation: history))
+  let _quiet = settle(subject)
+  assert advisor_texts(rig.opened) == []
+
+  // The fixture provider never answers, so the history run is ended by
+  // hand before the primary can take a second one.
+  api.abort(rig.runtime)
+  let assert Ok(_aborted) =
+    api.await_result(rig.runtime, history, within_ms: 5000)
+    as "the history run must settle once aborted"
+  let assert Ok(second) =
+    api.accept_quietly(rig.runtime, [user("now add the index")])
+    as "the primary must accept the second run"
+  process.send(subject, advisor.PrimaryRunEnded(operation: second))
+  let _fed = settle(subject)
+
+  let assert [feed] = advisor_texts(rig.opened)
+    as "the second run end must feed exactly once"
+  assert string.contains(feed, "now add the index")
+  assert !string.contains(feed, "write the migration")
+  stop(rig)
+}
+
 // A review that ended with nothing owed reviews nothing, even though the
 // primary's branch has moved.
 //
@@ -556,6 +655,62 @@ fn a_rig() -> Result(Rig, String) {
     |> result.replace_error("the advisor actor did not start"),
   )
   Ok(Rig(opened:, runtime:, name:))
+}
+
+// The advisor's open operation as the store shows it, which is what
+// `reviewing` reads.
+fn advisor_operation(opened: Session) -> Option(OpId) {
+  case session.strand_state(opened, advisor.strand) {
+    Ok(Some(session.Cell(value: current, ..))) -> current.current_operation
+    Ok(None) | Error(_) -> None
+  }
+}
+
+// `a_rig`, with one primary run already on the branch before the advisor
+// strand and actor exist: the enable-on-a-live-session shape.
+fn a_rig_over_history() -> Result(#(Rig, OpId), String) {
+  use opened <- result.try(
+    session.open_memory(clock.fixed(at: 1_756_000_000_000))
+    |> result.replace_error("the memory session did not open"),
+  )
+  use entropy <- result.try(start_entropy())
+  use runtime <- result.try(
+    api.open(
+      opened,
+      effects.Effects(
+        clock: clock.fixed(at: 1_756_000_000_000),
+        entropy:,
+        timers: effects.real_timers(),
+        provider: hanging_provider(),
+        tools: refusing_tools(),
+        hooks: effects.default_hooks(),
+      ),
+      api.default_options(a_configuration()),
+    )
+    |> result.map_error(string.inspect),
+  )
+  use history <- result.try(
+    api.accept_quietly(runtime, [user("write the migration")])
+    |> result.replace_error("the primary did not accept its history"),
+  )
+  let settings = some_settings([])
+  use Nil <- result.try(advisor.ensure_strand(runtime, settings, [advise.name]))
+
+  let name = addresses.new()
+  let wiring =
+    advisor.Wiring(
+      session: opened,
+      runtime: fn() { Ok(runtime) },
+      settings:,
+      clock: clock.fixed(at: 1_756_000_000_000),
+      logger: log.discard(),
+      name:,
+    )
+  use _started <- result.try(
+    advisor.start(wiring)
+    |> result.replace_error("the advisor actor did not start"),
+  )
+  Ok(#(Rig(opened:, runtime:, name:), history))
 }
 
 fn stop(rig: Rig) -> Nil {

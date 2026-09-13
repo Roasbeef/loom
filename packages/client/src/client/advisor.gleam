@@ -258,10 +258,25 @@ pub type Message {
   TakePending(reply: Subject(List(String)))
 }
 
-// What the actor remembers between messages: the two cells, and whether
-// a feed the advisor was too busy to take is still owed to it.
+// What the actor remembers between messages: the two cells, whether a
+// feed the advisor was too busy to take is still owed to it, and which
+// review the actor has already seen the end of.
+//
+// `reviewed` closes an ordering window. The driver resolves `run_end`
+// before the run's settlement clears `current_operation`, so for a
+// moment after the advisor's review has ended the store still shows it
+// busy. A primary run end that lands in that moment would read the
+// stale cell, coalesce its feed and record a debt that no later review
+// end will ever pay, because the review it waited on has already ended.
+// Remembering the ended operation lets `reviewing` disbelieve exactly
+// that one cell value and nothing else.
 type Memory {
-  Memory(guard: advisorguard.Guard, cursor: Option(Seq), owed: Owed)
+  Memory(
+    guard: advisorguard.Guard,
+    cursor: Option(Seq),
+    owed: Owed,
+    reviewed: Option(OpId),
+  )
 }
 
 // Whether a primary run end was coalesced away and its delta is still
@@ -286,8 +301,20 @@ type Recall {
   Read(memory: Memory)
 }
 
+// `origin` is where the primary's branch stood when this actor started:
+// the newest seq under its leaf, or nothing when the primary has no leaf
+// yet. It is the cursor's value when no cell exists. An advisor enabled
+// on a session with hours of history should review what happens from
+// now, not deliver verdicts about the past one slice of five hundred
+// entries per run end; a fresh session's primary has no leaf at boot, so
+// its first run is still reviewed from its first entry.
 type State {
-  State(wiring: Wiring, policy: advisorguard.Policy, recall: Recall)
+  State(
+    wiring: Wiring,
+    policy: advisorguard.Policy,
+    recall: Recall,
+    origin: Option(Seq),
+  )
 }
 
 // Which run boundary is asking for a feed. The two differ in what makes
@@ -373,7 +400,12 @@ pub fn start(wiring: Wiring) -> actor.StartResult(Subject(Message)) {
       block_cooldown_runs: wiring.settings.block_cooldown_runs,
     )
 
-  actor.new(State(wiring:, policy:, recall: Unread))
+  actor.new(State(
+    wiring:,
+    policy:,
+    recall: Unread,
+    origin: present_seq(wiring.session),
+  ))
   |> actor.on_message(handle)
   |> actor.addressed(wiring.name)
   |> actor.start
@@ -443,14 +475,26 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     }
 
     AdvisorRunEnded(operation:) ->
-      feed(state, runtime, memory, operation, ReviewFinished)
+      feed(
+        state,
+        runtime,
+        Memory(..memory, reviewed: Some(operation)),
+        operation,
+        ReviewFinished,
+      )
 
     Judge(strand: caller, verdict:, reply:) ->
       judge(state, runtime, memory, caller, verdict, reply)
 
     TakePending(reply:) -> {
       let #(nudges, drained) = advisorguard.take_pending(memory.guard)
-      let memory = store_guard(state, runtime, memory, drained)
+
+      // An empty queue drains to an equal guard, and committing that on
+      // every primary run start is a durable write for no change.
+      let memory = case nudges {
+        [] -> memory
+        _queued -> store_guard(state, runtime, memory, drained)
+      }
       process.send(reply, nudges)
       remembering(state, memory)
     }
@@ -463,11 +507,13 @@ fn remembering(state: State, memory: Memory) -> State {
 
 // --- the two cells ---------------------------------------------------------
 
-// The durable pair, read once per actor lifetime. A cell that is absent
-// or will not decode yields the empty guard and no cursor: the advisor
-// then reviews the branch from its root, which is a wasted slice and
-// never a wrong one, and the alternative — refusing to start a loop
-// because a cell is corrupt — costs the session its reviewer for good.
+// The durable pair, read once per actor lifetime. A guard cell that is
+// absent or will not decode yields the empty guard, and a cursor cell in
+// that state yields no cursor, which `recall` fills from the branch's
+// position at actor start: the advisor then reviews from now, which
+// loses at most the stretch nobody recorded a position for, and the
+// alternative — refusing to start a loop because a cell is corrupt —
+// costs the session its reviewer for good.
 fn recall(state: State, runtime: Runtime) -> Memory {
   case state.recall {
     Read(memory:) -> memory
@@ -475,8 +521,9 @@ fn recall(state: State, runtime: Runtime) -> Memory {
     Unread ->
       Memory(
         guard: read_guard(state, runtime),
-        cursor: read_cursor(state, runtime),
+        cursor: option.or(read_cursor(state, runtime), state.origin),
         owed: NothingOwed,
+        reviewed: None,
       )
   }
 }
@@ -501,8 +548,8 @@ fn read_guard(state: State, runtime: Runtime) -> advisorguard.Guard {
 
 // The cursor is one integer, so its decoder is one `case` rather than a
 // module: anything that is not an integer was written by something that
-// does not own this cell, and re-reviewing the branch from its root is
-// the safe reading of that.
+// does not own this cell, and reviewing from the position the actor
+// started at is the safe reading of that.
 fn read_cursor(state: State, runtime: Runtime) -> Option(Seq) {
   case read_cell(state, runtime, cursor_key) {
     Some(json.Int(seq)) -> Some(seq)
@@ -619,7 +666,7 @@ fn feed(
 fn owing(opened: Session, memory: Memory, occasion: Occasion) -> Owing {
   case occasion {
     PrimaryFinished ->
-      case reviewing(opened) {
+      case reviewing(opened, memory.reviewed) {
         True -> Coalesce
         False -> FeedNow
       }
@@ -687,14 +734,37 @@ fn deliver_feed(
 // Whether the advisor has a run open. An unreadable cell answers `False`
 // and costs at most one redundant feed, which the advisor's own queue
 // absorbs as a steer.
-fn reviewing(opened: Session) -> Bool {
+//
+// A run whose end this actor has already processed is not open, whatever
+// the cell says: the driver resolves `run_end` before the settlement that
+// clears `current_operation`, so the cell lags the review by one commit,
+// and a primary run end in that gap must be fed rather than owed.
+fn reviewing(opened: Session, reviewed: Option(OpId)) -> Bool {
   case session.strand_state(opened, strand) {
     Ok(Some(session.Cell(value: current, ..))) ->
-      option.is_some(current.current_operation)
+      case current.current_operation {
+        Some(open) -> Some(open) != reviewed
+        None -> False
+      }
 
     Ok(None) -> False
     Error(_unreadable) -> False
   }
+}
+
+// The newest seq under the primary's leaf, or nothing when the primary
+// has no leaf yet. Read straight from the store for the same reason the
+// scan is: this runs on the actor's process at start, never on a driver.
+fn present_seq(opened: Session) -> Option(Seq) {
+  use leaf <- option.then(option.from_result(primary_leaf(opened)))
+  storage.branch_scan(from: leaf)
+  |> storage.branch_order(storage.NewestFirst)
+  |> storage.branch_limit(1)
+  |> storage.scan_branch(opened.store, _)
+  |> result.unwrap([])
+  |> list.first
+  |> option.from_result
+  |> option.map(fn(newest: Entry) { newest.seq })
 }
 
 fn primary_leaf(opened: Session) -> Result(EntryId, Nil) {
