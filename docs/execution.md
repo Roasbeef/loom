@@ -341,6 +341,36 @@ The next reader will find the filing before they find the commit.
 
 ---
 
+### Profile the server before optimising it
+
+The daemon's per-turn CPU (issue #359) was diagnosed wrong by reading the
+code and right by measuring it: the suspected estimator cost 0.01 ms of a
+1015 ms step, and the cost was a JSON codec working one codepoint at a
+time plus a branch decoded three times per step. The tools are in the
+tree and in OTP; use them before proposing a fix.
+
+1. **Copy a real session store**, never a live one: `cp
+   ~/.loom/sessions/<id>.db* <scratch>/`, then `sqlite3 <copy>
+   "delete from writer_lease;"` because the session layer takes a writer
+   lease on open. `make bench-server DB=<copy>` times the per-step paths
+   (scan and decode, projection, the threshold estimate, both request
+   encodes, a first step and a cached step) over that branch.
+2. **Attribute with `tprof`.** An escript that adds every
+   `packages/client/build/dev/erlang/*/ebin` to the code path can call
+   `client_dev:open/1` and `client_dev:step/1` directly. `tprof:profile(fun
+   () -> client_dev:step(Rig) end, #{type => call_time})` names the
+   functions in the calling process; for work done in other processes (the
+   storage actor decodes the scan) use `tprof:start`, `tprof:enable_trace
+   (all)`, `tprof:set_pattern('_','_','_')`, run the step, then
+   `tprof:collect` and `tprof:inspect(Sample, total, measurement)`. The
+   `call_memory` type says who allocates.
+3. **Split the scheduler's time with `msacc`**: `msacc:start()`, run a few
+   steps, `msacc:stop()`, `msacc:print(msacc:stats(), #{system => true})`
+   gives emulator versus gc versus sleep per thread, which is the number
+   the issue's native sample could only guess at.
+4. **Fix the shape, then rerun the bench** and put both numbers in the
+   commit. A change that does not move the bench did not fix the cost.
+
 ## 7. Advisors
 
 ### Protocol changes during the single-daemon work
