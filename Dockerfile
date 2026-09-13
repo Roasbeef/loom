@@ -1,10 +1,10 @@
-# Dockerfile — a runnable image for loomd, the Loom multi-session daemon.
+# Dockerfile: a runnable image for loomd, the Loom multi-session daemon.
 #
 # Two stages. The build stage installs the same toolchain
 # scripts/signoff/Dockerfile (branch build/signoff-container) installs for
-# the test signoff — Ubuntu 24.04, OTP 29, Gleam 1.18.1 built from source
+# the test signoff: Ubuntu 24.04, OTP 29, Gleam 1.18.1 built from source
 # with the CI patch for issue #248, Go, the C toolchain esqlite3_nif.so
-# needs — and runs `make codemode-seed` and `make install` the same way a
+# needs, and runs `make codemode-seed` and `make install` the same way a
 # developer building from source would (docs/distribution.md,
 # "Installing from a checkout"). The runtime stage starts over from a slim
 # Ubuntu base and copies in only the installed tree: `make release-smoke`
@@ -15,7 +15,7 @@
 # `docker run` withholds unprivileged user namespaces and a writable,
 # delegated cgroup v2 base, so loom-exec's self-test enforces fewer of its
 # nine probes there than on a bare host. This image does not paper over
-# that with a fabricated "container mode" — it ships the same helper the
+# that with a fabricated "container mode". It ships the same helper the
 # release always ships and reports what the kernel actually gives it.
 # docs/docker.md documents both postures and the traded-off boundary that
 # comes with the flags that close the gap.
@@ -31,7 +31,7 @@
 # GOOS/GOARCH that is not the build host (docs/distribution.md,
 # "Cross-compilation: there is none") because `esqlite3_nif.so` and the
 # copied ERTS are both native to it, and the OTP tarball this Dockerfile
-# fetches is the ubuntu-24.04 x86_64 build builds.hex.pm publishes — there
+# fetches is the ubuntu-24.04 x86_64 build builds.hex.pm publishes; there
 # is no arm64 counterpart at that path. Pinning the platform makes the
 # image buildable on an arm64 workstation through emulation rather than
 # silently producing a release for whatever architecture happened to run
@@ -150,7 +150,7 @@ RUN --mount=type=cache,target=/root/.cache/gleam \
 # it), so no Erlang, Gleam or Go is installed here.
 FROM --platform=linux/amd64 ubuntu:24.04 AS runtime
 
-# bubblewrap is loom-exec's own namespace-and-mount layer — without it the
+# bubblewrap is loom-exec's own namespace-and-mount layer. Without it the
 # jail degrades to rlimits/pgroup only, which is exactly the posture
 # docs/docker.md's "plain" run line documents rather than hides. sqlite3
 # is the CLI the durability plane's own tooling shells out to; ripgrep
@@ -189,7 +189,7 @@ RUN ln -s /opt/loom/lib/loom/server/bin/loom-exec /opt/loom/bin/loom-exec
 # the owner token, and the discovery record a client reads to find an
 # already-running daemon (docs/architecture/sessions.md,
 # "Implemented shared endpoint boundary"). Declared as a VOLUME so an
-# operator's own persistence choice — a named volume or a bind mount —
+# operator's own persistence choice, a named volume or a bind mount,
 # survives a container replacement instead of being silently discarded
 # with it. The token is never baked into the image: it is written under
 # this directory by the daemon itself on first boot, so reaching it means
@@ -203,7 +203,7 @@ VOLUME ["/var/lib/loom"]
 # takes no opinion on what lives here.
 WORKDIR /work
 
-# main.gleam's bind_address parser accepts only 127.0.0.1 or [::1] —
+# main.gleam's bind_address parser accepts only 127.0.0.1 or [::1]:
 # loomd refuses to bind 0.0.0.0 (packages/client/src/client/daemon/main.gleam,
 # `bind_address`). That is not a container-specific restriction lifted for
 # this image: it is a property of the daemon regardless of where it runs,

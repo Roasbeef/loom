@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docker_smoke.sh — build the runtime image, run it in the plain posture,
+# docker_smoke.sh: build the runtime image, run it in the plain posture,
 # and prove a client can reach the daemon inside it.
 #
 # Usage: scripts/docker_smoke.sh [image-tag]
@@ -19,7 +19,7 @@
 # probe that should have enforced and did not). The container is always
 # stopped, success or failure.
 #
-# This only exercises the plain posture — no docker run flags removing
+# This only exercises the plain posture, no docker run flags removing
 # Docker's own confinement. docs/docker.md's full-isolation line and its
 # measured self-test counts are recorded by hand against the machine they
 # were run on, not by this script, because that machine's identity (the
@@ -58,7 +58,7 @@ docker run -d --name "$container" \
 # state root only after its listener is actually accepting connections. A
 # `status: "starting"` record with no `"ready"` status means not yet, and
 # a missing file means not yet either. Polling that file is the event
-# this waits on — no fixed sleep, and no assumption about how long a cold
+# this waits on: no fixed sleep, and no assumption about how long a cold
 # start takes on the machine running this script.
 echo "== waiting for the daemon to become ready"
 ready=0

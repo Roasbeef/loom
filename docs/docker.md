@@ -19,12 +19,12 @@ in turn builds the code-mode seed, the self-contained server release, and
 the self-contained client release.
 
 The runtime stage starts over from a plain `ubuntu:24.04` and copies in
-only `/opt/loom` — the installed tree. `make release-smoke` is the
+only `/opt/loom`, the installed tree. `make release-smoke` is the
 project's own proof that a built release needs no Erlang, no Gleam, and
 no Go to run (`docs/distribution.md`), and the runtime stage takes that
 proof at face value: none of the three toolchains are installed there.
 What is installed is `bubblewrap` (the sandbox helper's own
-namespace-and-mount layer; without it the jail degrades — see below),
+namespace-and-mount layer; without it the jail degrades, see below),
 `sqlite3`, `ripgrep`, `git`, `ca-certificates`, and `tini` as PID 1. The
 daemon runs as a non-root `loom` user (uid 10000).
 
@@ -32,14 +32,14 @@ Both stages pin `--platform=linux/amd64`. `make release` refuses to build
 for anything but the host it runs on (`docs/distribution.md`,
 "Cross-compilation: there is none"), because the copied ERTS and
 `esqlite3_nif.so` are both native code, and the OTP tarball this build
-fetches is the `ubuntu-24.04` x86_64 build `builds.hex.pm` publishes —
+fetches is the `ubuntu-24.04` x86_64 build `builds.hex.pm` publishes;
 there is no arm64 counterpart at that path. Building on an arm64
 workstation therefore goes through emulation; that is a build-time cost,
 not a run-time one, since the resulting image is a normal amd64 image.
 
 ## The bind restriction, and what it means for reaching the daemon
 
-`loomd`'s `--bind` flag accepts only a loopback address —
+`loomd`'s `--bind` flag accepts only a loopback address:
 `127.0.0.1:<port>` or `[::1]:<port>`
 (`packages/client/src/client/daemon/main.gleam`, `bind_address`). This is
 not a container-specific restriction the image adds; it is a property of
@@ -136,13 +136,13 @@ on Ubuntu otherwise restricts unprivileged user namespaces), and its
 for `loom-exec`'s pids/memory ceilings.
 
 **What this posture trades.** With these flags, Docker's own container
-boundary is mostly gone — what is left is closer to a process group with
+boundary is mostly gone. What is left is closer to a process group with
 a different filesystem view than to a sandboxed container. What replaces
 it is loom's own jail: `loom-exec`'s bubblewrap namespaces, Landlock
 ruleset, seccomp network-off filter, and cgroup v2 ceilings, the same
 layers a bare Linux host provides. This is the right trade for a box the
 operator already controls and uses as a dedicated build or signoff
-machine, such as the one `LOOM_SIGNOFF_HOST` names — not for a shared
+machine, such as the one `LOOM_SIGNOFF_HOST` names, not for a shared
 host where Docker's own confinement is the thing keeping one container's
 compromise from reaching another's.
 
@@ -166,7 +166,7 @@ and reports each as `ENFORCED` or `SKIPPED`, never a false pass. Issue
 Those rows are issue #384's own numbers, not a fresh measurement from
 this branch; `docs/next.md`-style honesty means saying so rather than
 implying this Dockerfile was the machine that produced them. Reproducing
-them against `loom-runtime:dev` needs a real Linux x86_64 host — see
+them against `loom-runtime:dev` needs a real Linux x86_64 host; see
 "What could not be verified from this branch" below for why that could
 not be done here, and run `make docker-smoke` (plain posture) or the
 full-isolation run line above plus `docker exec loom loom-exec
@@ -178,7 +178,7 @@ Building this image was attempted on an Apple Silicon Mac through
 Docker Desktop's `linux/amd64` emulation, which is Rosetta 2 rather than
 QEMU on this machine. The build's OTP step (`erl -noinput -noshell`,
 verifying the freshly extracted toolchain) crashes there with `undefined
-function erlang:nif_error/1` inside `prim_tty:tty_create/1` — the
+function erlang:nif_error/1` inside `prim_tty:tty_create/1`, the
 terminal-handling NIF failing to resolve a BIF that always exists on a
 correctly running emulator, which points at the BEAM's JIT-generated
 native code disagreeing with Rosetta's translation rather than at
@@ -193,7 +193,7 @@ What that means for this PR: the Dockerfile, the Makefile targets, and
 `scripts/docker_smoke.sh` are written and reviewed but the image has not
 been built and booted end to end from this branch, and the self-test
 counts above are issue #384's, not a fresh run. This needs a real Linux
-x86_64 (or arm64, once that release path is exercised) host to verify —
+x86_64 (or arm64, once that release path is exercised) host to verify,
 either a developer's own machine or the `LOOM_SIGNOFF_HOST` box already
 used for the signoff container.
 
