@@ -103,6 +103,15 @@ Independent calls belong in one batch rather than a serial chain. Calls
 in one batch may run at the same time, so a batch of eight is one round
 trip where eight separate calls are eight.
 
+A shell pipeline that exists to shape output is a program written in the
+wrong language. When the work is finding, filtering, counting, or joining
+across files, write it as a `code_mode` program: `cap/search` walks and
+greps without a process, the loop and the arithmetic run inside the
+program, and only what `main` returns enters the conversation. A pipeline
+prints its intermediate output into your context and hands you the
+shaping anyway. Reach for `bash` when you need a real tool the workspace
+provides, and for `grep` when you will read the matches yourself.
+
 %% section available_tools
 {available_tools}
 
