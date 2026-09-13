@@ -158,7 +158,9 @@ pub type Entry {
 
 /// Whether a listing is the whole answer.
 pub type Completeness {
-  /// The walk ran to the end of the tree.
+  /// The walk ran to the end of what it could read. A subdirectory the
+  /// harness cannot open, or an entry removed while the walk was under
+  /// way, is passed over rather than reported: neither is a bound.
   Complete
 
   /// A bound stopped the walk: either `max_entries` filled or
@@ -202,8 +204,9 @@ pub type Coverage {
   /// Every candidate file under the root was read to its end.
   Exhaustive
 
-  /// `max_matches` filled, so the search stopped with files still
-  /// unread. There are more matches.
+  /// `max_matches` filled and at least one further match existed, so
+  /// the search stopped there. A scan whose matches fill the bound
+  /// exactly with nothing after them is `Exhaustive`.
   MatchesCapped
 
   /// `max_visited` entries or `max_scan_bytes` of content were reached,
@@ -580,7 +583,8 @@ fn walk_tree(
   from initial: acc,
 ) -> Result(Cursor(acc), SearchError) {
   use info <- result.try(
-    simplifile.link_info(root) |> result.map_error(backend_error(root, _)),
+    simplifile.link_info(root)
+    |> result.map_error(missing_or_backend(root, _)),
   )
   use <- bool.guard(
     when: simplifile.file_info_type(info) != simplifile.Directory,
@@ -989,13 +993,28 @@ pub fn grep(
     )
   use cursor <- result.try(walk_tree(root:, walker:, from: fresh_scan()))
 
+  // The visitor recorded one match past the bound if the tree held one,
+  // so the overflow is what distinguishes a scan that filled exactly from
+  // one that was cut short. Dropping it here keeps the answer exactly
+  // `max_matches` long and the coverage honest in both directions.
   let scan = cursor.state
-  Ok(Found(
-    matches: list.reverse(scan.matches),
-    files_scanned: scan.files_scanned,
-    files_skipped: scan.files_skipped,
-    coverage: coverage(scan.stopped, cursor.limit),
-  ))
+  let matches = list.reverse(scan.matches)
+  case scan.taken > query.max_matches {
+    True ->
+      Ok(Found(
+        matches: list.take(matches, query.max_matches),
+        files_scanned: scan.files_scanned,
+        files_skipped: scan.files_skipped,
+        coverage: MatchesCapped,
+      ))
+    False ->
+      Ok(Found(
+        matches:,
+        files_scanned: scan.files_scanned,
+        files_skipped: scan.files_skipped,
+        coverage: coverage(scan.stopped, cursor.limit),
+      ))
+  }
 }
 
 fn fresh_scan() -> Scan {
@@ -1135,7 +1154,10 @@ fn record_line(
     )
   let taken =
     Scan(..scan, matches: [found, ..scan.matches], taken: scan.taken + 1)
-  case taken.taken >= lens.max_matches {
+  // One match past the bound is taken on purpose: it is what tells a
+  // scan that filled exactly from one that had more to give, the same
+  // way `glob` looks one entry past `max_entries`. `grep` drops it.
+  case taken.taken > lens.max_matches {
     True -> Halt(state: Scan(..taken, stopped: HitMatches))
     False -> Continue(state: taken)
   }
@@ -1335,7 +1357,6 @@ fn root_error(root: String, error: simplifile.FileError) -> SearchError {
 // lying.
 fn backend_error(path: String, error: simplifile.FileError) -> SearchError {
   case error {
-    simplifile.Enoent -> Backend(error: tool.FsNotFound(path:))
     simplifile.Eacces -> Backend(error: tool.FsPermissionDenied(path:))
     simplifile.Eperm -> Backend(error: tool.FsPermissionDenied(path:))
     other ->
