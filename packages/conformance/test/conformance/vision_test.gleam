@@ -133,6 +133,22 @@ fn transport(
   })
 }
 
+// A transport whose answer depends on how many requests the host has
+// already seen, so one scenario can script a tool call first and an
+// answer second.
+fn stepped_transport(
+  counter: process.Subject(Tally),
+  turn_for: fn(Int) -> script.Turn,
+) -> http.Transport {
+  script.owned_transport(fn(request: http.HttpRequest, subject) {
+    let host = string.replace(request.url, "/v1/messages", "")
+    let seen = requests_to(counter, host)
+    process.send(counter, Saw(host, request.body))
+    let events = settled_events(turn_for(seen))
+    list.each(events, fn(event) { process.send(subject, event) })
+  })
+}
+
 // The scripted turn's SSE body, replayed through the real adapter by
 // borrowing the e2e script's own renderer via a one-turn transport.
 fn settled_events(turn: script.Turn) -> List(http.HttpEvent) {
@@ -360,6 +376,56 @@ pub fn an_image_prompt_routes_to_the_vision_model_test() {
   let assert message.AssistantMessage(provider:, model: model_id, ..) = settled
   assert provider == "eyes"
   assert model_id == vision_model_id
+
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+// The second step of an image turn. The vision model answers the image
+// with a tool call; the tool is not active on the strand, so its result
+// is an in-band refusal, and the request that carries that result back
+// is the same turn's next step. It must reach the vision model too: a
+// turn boundary at the tool call would hand the continuation to the
+// text-only model with a placeholder for an image only the vision model
+// has seen.
+pub fn a_tool_step_in_an_image_turn_stays_on_the_vision_model_test() {
+  let counter = tally()
+  let sess = memory_session()
+  let turn_for = fn(seen: Int) {
+    case seen {
+      0 ->
+        script.ToolUseTurn(
+          call_id: "call_look_1",
+          tool: "fs_read",
+          arguments: json.Object([#("path", json.String("notes.txt"))]),
+          input_tokens: 100,
+          output_tokens: 5,
+        )
+      _ ->
+        script.AnswerTurn(
+          text: image_answer,
+          input_tokens: 100,
+          output_tokens: 9,
+        )
+    }
+  }
+  let effects =
+    wiring.build_effects(wiring_config(
+      routed_gateway(stepped_transport(counter, turn_for)),
+      sess,
+    ))
+  let assert Ok(runtime) =
+    api.open(sess, effects, api.default_options(configuration()))
+    as "the vision session must open"
+  let assert Ok(op) = api.prompt(runtime, [image_prompt()])
+  let assert Ok(outcome) = api.await_result(runtime, op, within_ms: 30_000)
+    as "the image run must reach a terminal result"
+  let assert operation.RunLastResult(outcome: operation.RunCompleted(..), ..) =
+    outcome
+
+  // Both steps went to the vision host and the text host was never
+  // asked; the second body still carries the image bytes.
+  assert requests_to(counter, vision_host) == 2
+  assert requests_to(counter, text_host) == 0
 
   let assert Ok(Nil) = api.close(runtime)
 }

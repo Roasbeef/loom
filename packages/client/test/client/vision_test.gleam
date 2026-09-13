@@ -411,6 +411,37 @@ fn assistant_answer() -> message.AgentMessage {
 }
 
 // A vision-capable model keeps images it can read, on its own route.
+fn assistant_tool_call() -> message.AgentMessage {
+  let assert message.AssistantMessage(..) as answer = assistant_answer()
+    as "the fixture answer is an assistant message"
+  message.AssistantMessage(
+    ..answer,
+    content: [
+      message.AssistantToolCall(message.ToolCall(
+        id: "call_look_1",
+        name: "fs_read",
+        arguments: json.Object([#("path", json.String("notes.txt"))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ],
+    stop_reason: message.ToolUse,
+  )
+}
+
+fn tool_result() -> message.AgentMessage {
+  message.ToolResultMessage(
+    tool_call_id: "call_look_1",
+    tool_name: "fs_read",
+    content: [message.ToolResultText(text: "alpha", text_signature: None)],
+    details: None,
+    usage: None,
+    added_tool_names: None,
+    is_error: False,
+    timestamp: 0,
+  )
+}
+
 pub fn vision_capable_model_keeps_images_test() {
   let capable =
     StrandConfiguration(
@@ -672,6 +703,35 @@ pub fn an_answered_image_is_a_past_turn_test() {
     image_user(),
     assistant_answer(),
     text_user("and in prose?"),
+  ])
+}
+
+// A tool call does not end the turn. The vision model answered the
+// image with a tool call; the request that carries the result back is
+// the same turn, so it must route to the model that saw the image.
+pub fn a_tool_step_in_an_image_turn_is_still_image_bearing_test() {
+  assert client_vision.image_bearing([
+    image_user(),
+    assistant_tool_call(),
+    tool_result(),
+  ])
+}
+
+// Two steps deep is still the same turn, and a settled answer ends it.
+pub fn a_turn_ends_at_the_answer_not_at_the_tool_call_test() {
+  assert client_vision.image_bearing([
+    image_user(),
+    assistant_tool_call(),
+    tool_result(),
+    assistant_tool_call(),
+    tool_result(),
+  ])
+  assert !client_vision.image_bearing([
+    image_user(),
+    assistant_tool_call(),
+    tool_result(),
+    assistant_answer(),
+    tool_result(),
   ])
 }
 

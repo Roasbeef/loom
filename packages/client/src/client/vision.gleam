@@ -17,8 +17,8 @@
 //// original attempt took:
 ////
 //// - **Admission** (`image_bearing`, `admission`). A request whose
-////   newest user message carries an image, on a strand whose model
-////   cannot read images, must find a usable `vision` route or be refused
+////   current turn carries an image, on a strand whose model cannot read
+////   images, must find a usable `vision` route or be refused
 ////   in band with a worded reason — before the planner mints any ids,
 ////   at the same gate that already refuses an unresolvable identity. An
 ////   operator who routes `vision` to an entry that cannot read images
@@ -40,14 +40,18 @@
 ////   the vision model that reads the whole context on a re-routed
 ////   request.
 ////
-//// The newest user message decides because that is the message this
-//// request must be answered against. An older image, on a request whose
-//// newest turn is text, stays in the projection of a vision-capable
-//// model (the model may need to refer back) and is placeholdered on a
-//// text-only one (the model cannot read it on any turn).
+//// The current turn decides because that is what this request must be
+//// answered against, and a turn lasts until an assistant message ends
+//// it: a tool call and its result are steps inside the turn, so the
+//// second request of an image turn stays on the model that saw the
+//// image. An older image, on a request whose current turn is text,
+//// stays in the projection of a vision-capable model (the model may
+//// need to refer back) and is placeholdered on a text-only one (the
+//// model cannot read it on any turn).
 
 import core/message.{
-  type AgentMessage, type UserBlock, UserImage, UserMessage, UserText,
+  type AgentMessage, type UserBlock, AssistantMessage, CustomMessage,
+  ToolResultMessage, ToolUse, UserImage, UserMessage, UserText,
 }
 import gleam/list
 import gleam/option.{type Option, None}
@@ -107,24 +111,29 @@ pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
   |> list.any(fn(entry) {
     case entry {
       UserMessage(content:, ..) -> list.any(content, is_image)
-      _ -> False
+      AssistantMessage(..) | ToolResultMessage(..) | CustomMessage(..) -> False
     }
   })
 }
 
-// The messages after the newest settled assistant response, or the
-// whole projection when no assistant has answered yet — a fresh
-// session's first turn is all current turn.
+// The messages after the newest assistant message that ended its turn,
+// or the whole projection when no turn has ended yet — a fresh session's
+// first turn is all current turn.
+//
+// A tool call does not end a turn. The assistant that answered an image
+// with a tool call is mid-turn, and the request that carries the tool's
+// result back is the same turn's next step; classifying it imageless
+// would hand the continuation to the text-only model with a placeholder
+// for an image only the vision model has seen, which is issue #358's
+// failure on any strand that uses tools.
 fn current_turn(messages: List(AgentMessage)) -> List(AgentMessage) {
-  // The tail after the newest assistant message, when one has
-  // settled; `list.take_right` over the reversed list is the same
-  // walk without naming the constructor at all.
   messages
   |> list.reverse
   |> list.take_while(fn(entry) {
     case entry {
-      UserMessage(..) -> True
-      _ -> False
+      UserMessage(..) | ToolResultMessage(..) | CustomMessage(..) -> True
+      AssistantMessage(stop_reason: ToolUse, ..) -> True
+      AssistantMessage(..) -> False
     }
   })
   |> list.reverse
@@ -133,7 +142,7 @@ fn current_turn(messages: List(AgentMessage)) -> List(AgentMessage) {
 fn is_image(block: UserBlock) -> Bool {
   case block {
     UserImage(..) -> True
-    _ -> False
+    UserText(..) -> False
   }
 }
 
@@ -218,7 +227,7 @@ pub fn placeholdered(messages: List(AgentMessage)) -> List(AgentMessage) {
           timestamp:,
           origin:,
         )
-      other -> other
+      AssistantMessage(..) | ToolResultMessage(..) | CustomMessage(..) -> entry
     }
   })
 }
@@ -226,6 +235,6 @@ pub fn placeholdered(messages: List(AgentMessage)) -> List(AgentMessage) {
 fn replace_image(block: UserBlock) -> UserBlock {
   case block {
     UserImage(_data, mime_type) -> placeholder(mime_type)
-    text -> text
+    UserText(..) -> block
   }
 }
