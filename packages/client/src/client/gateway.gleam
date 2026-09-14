@@ -666,18 +666,28 @@ type HeldQueue {
   HeldQueue(
     /// Messages retain their admitted order and original author.
     items: List(Held),
-    /// Explicit abort admits the existing queue together after retirement.
+    /// Explicit abort halts the existing queue; the next client submission
+    /// joins it and releases the whole batch into one successor.
     drain: HeldDrain,
   )
 }
 
-/// How many held messages one successor run receives.
+/// How many held messages one successor run receives, and whether it may
+/// receive any at all before a human has spoken again.
 type HeldDrain {
   /// Ordinary settlement opens one successor per held prompt.
   OnlyHead
 
-  /// Explicit abort gives the successor every currently held message.
+  /// A client submission released a halted queue: the successor receives
+  /// every currently held message together, the release included.
   AllHeld
+
+  /// Explicit abort. Nothing drains, however idle the strand becomes,
+  /// until a client submits on it (`protocol-change/033`). Escape means
+  /// "stop, and wait for me", and a queue that started a successor on its
+  /// own would be the run the operator just stopped, continued under
+  /// another name.
+  Halted
 }
 
 /// One `prompt` the hub is holding for a strand that was busy when it
@@ -4321,6 +4331,7 @@ fn hold_prompt(
       }
       let state =
         put_held(State(..state, next_held: state.next_held + 1), strand, queue)
+        |> release_halt(strand)
 
       // Custody transfers to the queue before cancellation is requested.
       // The abort can now settle without losing the message that caused it.
@@ -4332,6 +4343,28 @@ fn hold_prompt(
         }
       }
     }
+  }
+}
+
+// A client submission is the one event that ends an Escape's halt. The
+// queue it just joined drains as one batch, so the messages held when the
+// operator stopped the run and the message they typed afterwards reach the
+// successor together and in order. Any other drain mode is left alone: an
+// ordinary busy hold keeps draining one head at a time.
+fn release_halt(state: State, strand: String) -> State {
+  case dict.get(state.held, strand) {
+    Ok(HeldQueue(drain: Halted, ..) as queue) ->
+      State(
+        ..state,
+        held: dict.insert(
+          state.held,
+          strand,
+          HeldQueue(..queue, drain: AllHeld),
+        ),
+      )
+    Ok(HeldQueue(drain: OnlyHead, ..))
+    | Ok(HeldQueue(drain: AllHeld, ..))
+    | Error(Nil) -> state
   }
 }
 
@@ -4631,7 +4664,13 @@ fn drain_strand(state: State, strand: String) -> State {
       let #(batch, rest) = case drain {
         OnlyHead -> #([head], tail)
         AllHeld -> #(items, [])
+
+        // An operator's Escape is waiting on the operator. The strand is
+        // idle and stays idle; nothing here is admitted until a client
+        // submission lifts the halt.
+        Halted -> #([], items)
       }
+      use <- bool.guard(batch == [], state)
       let target = api.on_strand(state.runtime, strand)
       case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
         // Original queue acknowledgements already transferred custody. Each
@@ -4816,12 +4855,14 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       value: machine_strand.StrandState(current_operation: Some(op), ..),
       ..,
     ))) -> {
-      // Mark existing custody before requesting cancellation. The next idle
-      // transition admits these messages together without rebuilding content.
+      // Halt existing custody before requesting cancellation. The queue
+      // keeps every message it holds and starts nothing on the idle
+      // transition that follows; a later client submission on this strand
+      // joins it and releases the whole batch together (`release_halt`).
       let held =
         dict.get(state.held, strand)
         |> result.map(fn(queue) {
-          dict.insert(state.held, strand, HeldQueue(..queue, drain: AllHeld))
+          dict.insert(state.held, strand, HeldQueue(..queue, drain: Halted))
         })
         |> result.unwrap(state.held)
       let state = State(..state, held:)
