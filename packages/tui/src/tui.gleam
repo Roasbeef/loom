@@ -8148,7 +8148,7 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
           let history = case
             older
             && offset + transcript_viewport_height(model)
-            >= model.rendered_row_count - 10
+            >= model.rendered_row_count - history_prefetch_rows(model)
           {
             True ->
               history_view.older(
@@ -8162,6 +8162,12 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       }
     }
   }
+}
+
+// Start the existing bounded read two screens before the loaded boundary,
+// leaving time for the reply while the reader continues scrolling.
+fn history_prefetch_rows(model: Model) -> Int {
+  int.max(10, 2 * transcript_viewport_height(model))
 }
 
 // A page can contain only other strands, and collapsing details can leave
@@ -8181,7 +8187,7 @@ fn request_history_for_view(model: Model) -> Model {
       || model.help_open
       || model.notes_open
       || model.scroll_offset + transcript_viewport_height(model)
-      < model.rendered_row_count - 10,
+      < model.rendered_row_count - history_prefetch_rows(model),
     model,
   )
   case model.captured {

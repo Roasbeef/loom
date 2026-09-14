@@ -54,6 +54,15 @@ The existing user daemon was neither replaced nor restarted. Its roughly
 named diagnostic instance before proposing a memory fix. These packaging
 checks are not a full `make check` or a Linux signoff.
 
+## History prefetch (September 14)
+
+Reading history starts the next fetch two transcript viewport heights before
+the oldest loaded row. Both wheel input and idle demand use that threshold;
+the existing single pending request, hundred-position page, and retained
+window bounds remain. All 476 TUI tests passed, and the new regression rejects
+the previous ten-row threshold. Lint and doc-check passed with zero errors.
+Hosted CI and Linux signoff remain pending.
+
 ## Where the tree is
 
 | Body of work | Current state |
