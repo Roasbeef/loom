@@ -1,7 +1,9 @@
 # Submit held input together after abort
 
-Status: accepted for the requested Escape behavior, subject to the independent
-review and regression gates below. This changes the held-input behavior of
+Status: accepted; its drain ruling is superseded by
+[033](033-abort-halts-held-input.md), which halts the marked queue until the
+next client submission instead of releasing it at retirement. The batch,
+ordering and content guarantees below stand. This changes the held-input behavior of
 `abort` without adding a command or changing its wire shape.
 
 ## Problem

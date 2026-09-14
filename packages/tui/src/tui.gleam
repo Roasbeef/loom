@@ -3222,7 +3222,7 @@ fn input_title(model: Model) -> String {
     active_status_label(model),
     model.submission_mode
   {
-    Some(_), _, _ -> " interrupting · enter steers after stop "
+    Some(_), _, _ -> " stopped · enter sends held input with your message "
     None, None, _ -> " prompt · / commands "
     None, Some(_), SteerNow -> " steer this turn · enter steers · tab queues "
     None, Some(status), PromptNext ->
@@ -8948,26 +8948,35 @@ fn send_user_text(cleared: Model, text: String, before: Model) -> Model {
   }
 }
 
+// `/steer` is an explicit instruction about ordering, so a pending interrupt
+// does not quietly turn it into a prompt. The gateway holds a steer at its own
+// priority and a release keeps that priority, which is what the operator asked
+// for (`protocol-change/033`). Only a legacy host without a gateway queue falls
+// back to the client-side hold.
 fn send_explicit_steer(cleared: Model, text: String, before: Model) -> Model {
+  use <- bool.lazy_guard(before.channel != None, fn() {
+    send_steer(cleared, text)
+  })
   case active_interrupt(before) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None -> send_steer(cleared, text)
   }
 }
 
-// The server refuses steer admissions after cancel_requested and abort drains
-// anything admitted before it. The client therefore retains the instruction
-// until the terminal transition, then starts the replacement turn exactly once.
+// After an Escape the daemon halts everything it holds for the strand and
+// waits for the operator (`protocol-change/033`). What the operator types
+// next is an ordinary prompt: the gateway appends it to the halted queue and
+// releases the whole batch, so it runs after the held input rather than
+// ahead of it as a steer would. A legacy host without a gateway queue keeps
+// the older client-side hold until the terminal transition.
 fn hold_or_send_interrupt(
   cleared: Model,
   before: Model,
   strand: String,
   text: String,
 ) -> Model {
-  // Modern hosts keep human input outside the operation being cancelled.
-  // Send it immediately so its priority is shared across attached terminals.
   use <- bool.lazy_guard(before.channel != None, fn() {
-    send_steer(cleared, text)
+    send_prompt_to(cleared, strand, text)
   })
   case active_strand_live(before) {
     False -> send_prompt_to(Model(..cleared, interrupt: None), strand, text)
@@ -9230,7 +9239,7 @@ fn interrupt_active(model: Model) -> Model {
             pending: None,
           )),
           submission_mode: PromptNext,
-          notice: "interrupt requested; type the replacement steer",
+          notice: "stopping; held input waits · enter sends it with your message",
         ),
         protocol.abort(model.next_id, strand),
       )
