@@ -21,6 +21,7 @@ import argv
 import client/daemon/admin
 import client/daemon/main as daemon
 import client/extension/cli
+import gleam/io
 
 /// Starts the single daemon, or runs `loom ext` or `loomd access`. See `client/daemon/main` for
 /// the flag and environment surface and `client/extension/cli` for the
@@ -35,8 +36,14 @@ import client/extension/cli
 ///
 pub fn main() -> Nil {
   case argv.load().arguments {
+    ["--help"] | ["-h"] | ["help"] -> io.println(usage)
+    ["access", "--help"] | ["access", "-h"] | ["help", "access"] ->
+      io.println(admin.usage)
+    ["ext", "--help"] | ["ext", "-h"] | ["help", "ext"] -> io.println(cli.usage)
     ["access", ..rest] -> admin.main(rest)
     ["ext", ..rest] -> cli.main(rest)
     _other -> daemon.main()
   }
 }
+
+const usage = "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  ext <command>       Manage extensions.\n\nRun `loomd help <command>` for command usage."
