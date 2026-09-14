@@ -3432,6 +3432,90 @@ pub fn abort_halts_held_input_until_the_next_prompt_releases_it_test() {
     as "Escape admitted every queued turn exactly once"
 }
 
+/// A queue that was full when the operator pressed Escape still accepts the
+/// message that releases it. The bound counts messages waiting for a run and
+/// this one ends the wait, so the queue it joins drains rather than grows.
+/// Refusing it would leave the operator's own recovery path as the single
+/// submission a full halted queue can never accept.
+pub fn abort_releases_a_full_queue_on_the_next_prompt_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(840, "main", "open"))
+    as "the first prompt opens the parked run"
+  list.each([841, 842, 843, 844], fn(id) {
+    let assert Ok(frame) =
+      gateway.connection_request(
+        socket,
+        prompt_frame(id, "main", "queued " <> int.to_string(id)),
+      )
+      as "each ordinary prompt is accepted until the bound"
+    assert outcome_status(frame) == "queued"
+  })
+
+  // The bound is live before the abort. Without this refusal the release
+  // below would prove only that the queue had room all along.
+  let assert Ok(refused) =
+    gateway.connection_request(
+      socket,
+      prompt_frame(845, "main", "one too many"),
+    )
+    as "the fifth prompt is answered"
+  let assert Ok(envelope) = protocol.decode_event(refused)
+    as "the refusal decodes"
+  let assert protocol.ErrorEvent(code:, ..) = envelope.event
+    as "a full queue refuses an ordinary prompt while the run is live"
+  assert code == protocol.code_conflict
+
+  let assert Ok(_) =
+    gateway.connection_request(
+      socket,
+      protocol.encode_command(protocol.CommandEnvelope(
+        id: 846,
+        command: protocol.Abort("main"),
+      )),
+    )
+    as "Escape is acknowledged"
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the aborted operation retires and leaves the strand idle"
+  assert user_prompt_texts(harness) == ["open"]
+    as "a full queue starts nothing of its own after the abort"
+
+  // The same fifth message, now a release rather than an addition.
+  let assert Ok(released) =
+    gateway.connection_request(socket, prompt_frame(847, "main", "and now go"))
+    as "the release reaches the gateway"
+  assert outcome_status(released) == "queued"
+    as "the bound does not refuse the message that lifts the halt"
+  let expected = [
+    "open", "queued 841", "queued 842", "queued 843", "queued 844", "and now go",
+  ]
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) == expected {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
+    as "the whole halted queue and its release reach one successor in order"
+  release_gate(gate)
+}
+
 /// Batch admission transfers original messages rather than joining their text.
 /// Another author's image and all text blocks survive before provider
 /// settlement, and the release keeps its own author too.
@@ -3469,6 +3553,22 @@ pub fn abort_batch_preserves_each_authors_complete_message_test() {
   ))
   let #(submitted_at, _) = clock.read(harness.runtime.effects.clock)
   let _ = queued_request(alice, 833, protocol.Abort("main"))
+
+  // The aborted run retires and the gateway is asked what it holds, which is
+  // the round trip that would have drained the queue under 032. Both messages
+  // are still there, so Bob's prompt below releases a halt rather than joining
+  // a batch that was leaving anyway.
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the aborted operation retires and leaves the strand idle"
+  let assert [_, _] = queued_rows(alice, 834)
+    as "both messages are still held after the abort retires"
 
   // Bob's release lifts Alice's halt: the queue belongs to the strand, not
   // to whoever pressed Escape, so any client's next prompt sends the batch.

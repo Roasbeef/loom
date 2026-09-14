@@ -685,8 +685,7 @@ type HeldDrain {
   /// Explicit abort. Nothing drains, however idle the strand becomes,
   /// until a client submits on it (`protocol-change/033`). Escape means
   /// "stop, and wait for me", and a queue that started a successor on its
-  /// own would be the run the operator just stopped, continued under
-  /// another name.
+  /// own would restart the work the operator just stopped.
   Halted
 }
 
@@ -4298,7 +4297,15 @@ fn hold_prompt(
   // asking whether anything is left: that walks four elements however
   // many there are. A queue of exactly four leaves one behind and is
   // full; a queue of three leaves none and has room.
-  case list.drop(same_priority, held_per_strand - 1) != [] {
+  let over_bound = list.drop(same_priority, held_per_strand - 1) != []
+
+  // The bound counts messages waiting for a run, and this one ends the
+  // wait: a halted queue drains on the pull that follows the submission
+  // joining it. Refusing here would make Escape-then-Enter the one
+  // submission a full halted queue can never accept, and nothing else
+  // reaches those messages — no command shortens a queue, and a halt ends
+  // no other way.
+  case over_bound && !halted_queue(state, strand) {
     True -> {
       reply_error(
         state,
@@ -4365,6 +4372,17 @@ fn release_halt(state: State, strand: String) -> State {
     Ok(HeldQueue(drain: OnlyHead, ..))
     | Ok(HeldQueue(drain: AllHeld, ..))
     | Error(Nil) -> state
+  }
+}
+
+// Whether the strand is holding input that an abort halted. Its one caller
+// is the queue bound, which a release is exempt from.
+fn halted_queue(state: State, strand: String) -> Bool {
+  case dict.get(state.held, strand) {
+    Ok(HeldQueue(drain: Halted, ..)) -> True
+    Ok(HeldQueue(drain: OnlyHead, ..))
+    | Ok(HeldQueue(drain: AllHeld, ..))
+    | Error(Nil) -> False
   }
 }
 
@@ -4655,52 +4673,62 @@ fn drain_idle_strands(state: State) -> State {
   })
 }
 
-// The queue owns whether this successor receives its head or every held
-// message. Admission transfers the chosen batch in one runtime transaction;
-// the gateway retains all members until that transaction succeeds.
+// The queue owns whether this successor receives its head, every held
+// message, or nothing at all.
 fn drain_strand(state: State, strand: String) -> State {
   case dict.get(state.held, strand) {
-    Ok(HeldQueue(items: [head, ..tail] as items, drain:)) -> {
-      let #(batch, rest) = case drain {
-        OnlyHead -> #([head], tail)
-        AllHeld -> #(items, [])
-
+    Ok(HeldQueue(items: [head, ..tail] as items, drain:)) ->
+      case drain {
         // An operator's Escape is waiting on the operator. The strand is
         // idle and stays idle; nothing here is admitted until a client
-        // submission lifts the halt.
-        Halted -> #([], items)
-      }
-      use <- bool.guard(batch == [], state)
-      let target = api.on_strand(state.runtime, strand)
-      case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
-        // Original queue acknowledgements already transferred custody. Each
-        // admitted message now reaches the peers through ordinary notices.
-        Ok(_op) -> put_held(state, strand, rest)
+        // submission lifts the halt. Answering with the state rather than
+        // an empty batch is what keeps the refusal arm below from
+        // recursing on a queue it never shortens.
+        Halted -> state
 
-        // Another admission can win between the register read and this call.
-        // Keep both the messages and their drain policy for the next retirement.
-        Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> state
-
-        // A rejected batch cannot wait for a transition it will never cause.
-        // Report the rejection to each original submitter before retiring it.
-        Error(refused) -> {
-          let #(code, message) = describe_api_error(refused, strand)
-          list.each(batch, fn(item) {
-            send_to(
-              state,
-              item.submitter,
-              EventEnvelope(
-                reply_to: None,
-                seq: None,
-                event: protocol.ErrorEvent(code:, message:, details: None),
-              ),
-            )
-          })
-          drain_strand(put_held(state, strand, rest), strand)
-        }
+        OnlyHead -> admit_held(state, strand, [head], tail)
+        AllHeld -> admit_held(state, strand, items, [])
       }
-    }
     Ok(HeldQueue(items: [], ..)) | Error(Nil) -> state
+  }
+}
+
+// Hands one batch to the runtime and keeps the remainder. The gateway
+// retains every member until the admission succeeds, so a refusal loses
+// nothing it had already acknowledged.
+fn admit_held(
+  state: State,
+  strand: String,
+  batch: List(Held),
+  rest: List(Held),
+) -> State {
+  let target = api.on_strand(state.runtime, strand)
+  case api.prompt(target, list.map(batch, fn(item) { item.prompt })) {
+    // Original queue acknowledgements already transferred custody. Each
+    // admitted message now reaches the peers through ordinary notices.
+    Ok(_op) -> put_held(state, strand, rest)
+
+    // Another admission can win between the register read and this call.
+    // Keep both the messages and their drain policy for the next retirement.
+    Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> state
+
+    // A rejected batch cannot wait for a transition it will never cause.
+    // Report the rejection to each original submitter before retiring it.
+    Error(refused) -> {
+      let #(code, message) = describe_api_error(refused, strand)
+      list.each(batch, fn(item) {
+        send_to(
+          state,
+          item.submitter,
+          EventEnvelope(
+            reply_to: None,
+            seq: None,
+            event: protocol.ErrorEvent(code:, message:, details: None),
+          ),
+        )
+      })
+      drain_strand(put_held(state, strand, rest), strand)
+    }
   }
 }
 
