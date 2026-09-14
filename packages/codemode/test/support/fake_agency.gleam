@@ -63,9 +63,13 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
     spawn: fn(caller, request) {
       process.send(into, SawSpawn(caller:, request:))
       let handle = minted(caller, request)
-      Ok(
-        agent.Spawned(handle:, strand: handle.strand, tools: ["bash", "fs_read"]),
-      )
+      Ok(agent.Spawned(
+        handle:,
+        strand: handle.strand,
+        tools: ["bash", "fs_read"],
+        model: "worker",
+        model_id: "worker-id",
+      ))
     },
     wait: fn(caller, handles, within_ms) {
       process.send(into, SawWait(caller:, handles:, within_ms:))
@@ -96,6 +100,7 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
       ])
     },
     max_wait_ms: 30_000,
+    model_names: ["reviewer", "worker"],
   )
 }
 
@@ -110,6 +115,7 @@ pub fn refusing(refusal: Refusal) -> Agency {
     notes: fn(_caller, _prefix) { Error(refusal) },
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
+    model_names: ["reviewer", "worker"],
   )
 }
 

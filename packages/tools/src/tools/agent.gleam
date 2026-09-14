@@ -397,6 +397,8 @@ pub type SpawnRequest {
   SpawnRequest(
     purpose: String,
     brief: String,
+    /// A configured catalogue name, or the host's default subagent route.
+    model: Option(String),
     tools: Option(List(String)),
     within_ms: Option(Int),
     result_schema: Option(ResultSchema),
@@ -407,7 +409,15 @@ pub type SpawnRequest {
 
 /// What a spawn produced.
 pub type Spawned {
-  Spawned(handle: Handle, strand: String, tools: List(String))
+  Spawned(
+    handle: Handle,
+    strand: String,
+    tools: List(String),
+    /// The child's currently configured catalogue name.
+    model: String,
+    /// The provider model identifier in that same durable configuration.
+    model_id: String,
+  )
 }
 
 /// How a child's operation ended.
@@ -576,6 +586,8 @@ pub type Agency {
     roster: fn(Caller) -> Result(List(Peer), Refusal),
     /// The ceiling a wait's budget is clamped to, in milliseconds.
     max_wait_ms: Int,
+    /// Configured catalogue names accepted by an explicit spawn selection.
+    model_names: List(String),
   )
 }
 
@@ -1367,6 +1379,7 @@ pub fn spawn_tool(agency: Agency) -> Tool {
             "the complete task. The child starts with no other context",
           ),
         ),
+        #("model", spawn_model_property(agency.model_names)),
         #(
           "tools",
           tool.string_array_property(
@@ -1419,9 +1432,23 @@ pub fn spawn_tool(agency: Agency) -> Tool {
   )
 }
 
+// The catalogue is the selection boundary. Advertising its names prevents
+// callers from guessing provider identifiers where a configured alias belongs.
+fn spawn_model_property(names: List(String)) -> JsonValue {
+  let description =
+    "Optional configured model name for the child; seeds that model's "
+    <> "thinking level. Omit to use the subagent route, or inherit your "
+    <> "model when no route is configured"
+  case names {
+    [] -> tool.string_property(description <> ". No explicit models configured")
+    [_, ..] -> tool.enum_property(names, description)
+  }
+}
+
 fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use purpose <- tool.with_arg(tool.required_string(args, "purpose"))
   use brief <- tool.with_arg(tool.required_string(args, "brief"))
+  use model <- tool.with_arg(tool.optional_string(args, "model"))
   use tools <- tool.with_arg(tool.optional_string_list(args, "tools"))
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   use result_schema <- tool.with_arg(decode_result_schema(args))
@@ -1431,6 +1458,7 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
     SpawnRequest(
       purpose:,
       brief:,
+      model:,
       tools:,
       within_ms:,
       result_schema:,
@@ -1443,7 +1471,11 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
       tool.success(
         "started `"
         <> spawned.strand
-        <> "` with tools ["
+        <> "` on model `"
+        <> spawned.model
+        <> "` (`"
+        <> spawned.model_id
+        <> "`) with tools ["
         <> string.join(spawned.tools, ", ")
         <> "]. Handle: "
         <> handle_to_string(spawned.handle),
@@ -1452,6 +1484,8 @@ fn run_spawn(agency: Agency, ctx: Ctx, args: JsonValue) -> ToolOutcome {
         json.Object([
           #("handle", json.String(handle_to_string(spawned.handle))),
           #("strand", json.String(spawned.strand)),
+          #("model", json.String(spawned.model)),
+          #("model_id", json.String(spawned.model_id)),
           #("tools", json.Array(list.map(spawned.tools, json.String))),
         ]),
       )

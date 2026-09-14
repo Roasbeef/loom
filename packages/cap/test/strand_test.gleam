@@ -49,6 +49,7 @@ pub fn a_spawn_carries_its_whole_assignment_test() {
     assert cap == "strand.spawn"
     assert wire.string_field(args, "purpose") == Ok("review core")
     assert wire.string_field(args, "brief") == Ok("look for the symbol")
+    assert wire.string_field(args, "model") == Ok("reviewer")
     assert wire.int_field(args, "within_ms") == Ok(5000)
     assert wire.bool_field(args, "detach") == Ok(True)
     assert wire.string_field(args, "context") == Ok("my_conversation")
@@ -63,6 +64,7 @@ pub fn a_spawn_carries_its_whole_assignment_test() {
   })
   let spawned =
     strand.assignment(purpose: "review core", brief: "look for the symbol")
+    |> strand.with_model("reviewer")
     |> strand.within(5000)
     |> strand.detached
     |> strand.from_my_conversation
@@ -81,6 +83,7 @@ pub fn an_unset_assignment_sends_nothing_rather_than_a_default_test() {
   // having named one.
   install_fake(with: fn(_cap, args, _deadline) {
     assert wire.optional_field(args, "within_ms") == None
+    assert wire.optional_field(args, "model") == None
     assert wire.optional_field(args, "tools") == None
     assert wire.optional_field(args, "result_schema") == None
     assert wire.bool_field(args, "detach") == Ok(False)

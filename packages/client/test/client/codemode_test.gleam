@@ -1155,6 +1155,7 @@ fn none_agency() -> agent.Agency {
     notes: fn(_caller, _prefix) { Error(agent.AgencyUnavailable) },
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 30_000,
+    model_names: [],
   )
 }
 
