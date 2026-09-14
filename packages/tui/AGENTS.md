@@ -22,6 +22,9 @@ that tree separately from the self-contained server.
 - Successful `context_remaining` calls retain a compact measurement row. The
   remaining budget names the checkpoint when enabled and the context limit
   otherwise. Older results without structured details retain their text.
+- Compaction entries show the pre-compaction token estimate and count of
+  retained messages. Their checkpoint text remains in the durable entry for
+  the model and exact history reads, but the transcript does not print it.
 
 - Compact successful `fs_edit` rows include a 24-line inline patch preview;
   expanded history uses the same patch projection with the complete result.

@@ -54,6 +54,15 @@ The existing user daemon was neither replaced nor restarted. Its roughly
 named diagnostic instance before proposing a memory fix. These packaging
 checks are not a full `make check` or a Linux signoff.
 
+## Compaction notice (September 14)
+
+The TUI now renders compaction as one short notice with the approximate token
+count before compaction and the number of retained messages. The model-facing
+checkpoint remains in the durable entry and is omitted from the transcript,
+including expanded details. The entry carries no post-compaction token count,
+so the notice does not claim savings. All 476 TUI tests passed locally; full
+CI and Linux signoff remain pending.
+
 ## Where the tree is
 
 | Body of work | Current state |
