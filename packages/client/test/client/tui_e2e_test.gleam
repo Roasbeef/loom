@@ -1846,3 +1846,227 @@ fn skill_transport(requests: process.Subject(String)) -> http.Transport {
     process.send(events, http.ResponseEnd)
   })
 }
+
+// --- Escape halts held input until the operator speaks ----------------------
+//
+// The real terminal against the real daemon, for protocol-change/033. A first
+// turn parks at the provider, a second prompt is held behind it, and Escape
+// aborts the first. Under 032 the held prompt started a successor the moment
+// the abort retired; under 033 the strand goes idle with the prompt still
+// held, and only the operator's next Enter releases it — the held prompt and
+// the new one together, in that order, as one provider request.
+
+const escape_first = "escape fixture first turn"
+
+const escape_held = "escape fixture held while the first turn ran"
+
+const escape_release = "escape fixture typed after the stop"
+
+const escape_answer = "escape-successor-finished"
+
+pub fn escape_halts_held_input_until_the_next_enter_test_() -> EunitTest {
+  Timeout(60 / gleeunit_timeout_scale, escape_drive)
+}
+
+fn escape_drive() -> Nil {
+  let test_root =
+    "build/tui-escape-"
+    <> int.to_string(ffi_os.system_time_ms())
+    <> "-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let assert Ok(Nil) = simplifile.create_directory_all(test_root <> "/work")
+    as "the escape fixture owns its workspace"
+  let assert Ok(script) = ux_controller()
+    as "the scripted provider records requests"
+  let stages = process.new_subject()
+  let base_settings = settings_at(test_root)
+  let settings =
+    serve.Settings(
+      ..base_settings,
+      gateway: catalog.gateway(
+        scripted_catalog(),
+        transport: escape_transport(script.data, stages),
+        secrets: secret.from_list([#("ACME_KEY", "tui-e2e-key")]),
+        clock: clock.fixed(at: 0),
+      ),
+    )
+  let assert Ok(booted) = boot(settings) as "the escape daemon boots"
+  let address =
+    "ws://127.0.0.1:" <> int.to_string(booted.served.port) <> "/v2/control"
+  let outcome = case
+    tui_driver.start(address, booted.served.token, booted.session_id)
+  {
+    Error(reason) -> Error(string.inspect(reason))
+    Ok(driver) -> {
+      let outcome = escape_turns(driver.data, stages)
+      tui_driver.stop(driver.data)
+      outcome
+    }
+  }
+
+  // Cleanup precedes every assertion, so a failed UI wait still releases the
+  // parked provider owner and the daemon's lease.
+  let scripted = actor.call(script.data, 1000, UxRead)
+  list.each(scripted.releases, fn(release) { process.send(release, Nil) })
+  shutdown(booted)
+  case outcome {
+    Error(reason) -> io.println_error(reason)
+    Ok(Nil) -> Nil
+  }
+  assert outcome == Ok(Nil) as string.inspect(outcome)
+
+  // Two requests and only two: the parked first turn, and the one successor
+  // the release opened. A third would mean the held prompt started a run of
+  // its own between the abort and the Enter.
+  assert list.length(scripted.requests) == 2
+    as "Escape started no successor; the release opened exactly one"
+  let assert Ok(#(_, successor)) =
+    list.find(scripted.requests, fn(request) { request.0 == 2 })
+    as "the successor request was recorded"
+  assert escape_texts(successor) == [escape_first, escape_held, escape_release]
+    as "the successor carries the held prompt and then the release, in order"
+}
+
+// Request one parks until released and then ends its stream with no body,
+// which is what a real HTTP owner does when the abort cancels it: the
+// scripted owner cannot be killed while parked (`support/provider`), so the
+// drive releases it right after Escape to stand in for that kill, and the
+// operation retires as aborted rather than completed. Request two is the
+// release's successor and answers at once.
+fn escape_transport(
+  controller: process.Subject(UxScriptMessage),
+  stages: process.Subject(#(Int, process.Subject(Nil))),
+) -> http.Transport {
+  provider_test.transport(fn(request, events) {
+    let release = process.new_subject()
+    let index =
+      actor.call(controller, 1000, UxRequest(request.body, release, _))
+    case index {
+      1 -> {
+        process.send(stages, #(index, release))
+        let _released = process.receive(release, 60_000)
+        Nil
+      }
+      _ -> Nil
+    }
+    process.send(
+      events,
+      http.ResponseStatus(200, [#("content-type", "text/event-stream")]),
+    )
+    case index {
+      1 -> Nil
+      2 ->
+        process.send(
+          events,
+          http.ResponseChunk(
+            bit_array.from_string(sse_transcript(escape_answer)),
+          ),
+        )
+      _ ->
+        process.send(
+          events,
+          http.ResponseChunk(
+            bit_array.from_string(sse_transcript(
+              "unexpected extra provider request",
+            )),
+          ),
+        )
+    }
+    process.send(events, http.ResponseEnd)
+  })
+}
+
+// The typed user text of one provider request, in wire order. Each human
+// message is preceded on the wire by an attribution block naming its author;
+// those are the runtime's, not the operator's, and are left out here.
+fn escape_texts(body: String) -> List(String) {
+  list.filter_map(ux_blocks(body), fn(block) {
+    case ux_field(block, "type"), ux_field(block, "text") {
+      Some(json.String("text")), Some(json.String(text)) ->
+        case string.starts_with(text, "Human author") {
+          True -> Error(Nil)
+          False -> Ok(text)
+        }
+      _, _ -> Error(Nil)
+    }
+  })
+}
+
+fn escape_main_idle(sample: tui_driver.Sample) -> Bool {
+  list.any(sample.model.strands, fn(strand) {
+    strand.id == "main" && strand.live_phase == None
+  })
+}
+
+fn escape_holds_main(sample: tui_driver.Sample) -> Bool {
+  case sample.model.captured {
+    Some(#(_, view)) ->
+      case view.pending_inputs {
+        Some(rows) -> list.any(rows, fn(row) { row.strand == "main" })
+        None -> False
+      }
+    None -> False
+  }
+}
+
+fn escape_turns(
+  driver: process.Subject(tui_driver.Message),
+  stages: process.Subject(#(Int, process.Subject(Nil))),
+) -> Result(Nil, String) {
+  use _ <- result.try(ux_await(driver, "initial attachment", writable))
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste(escape_first),
+      backend.KeyPress("enter"),
+    ])
+  use first <- result.try(
+    process.receive(stages, 20_000)
+    |> result.replace_error("the first turn did not reach the provider"),
+  )
+  use Nil <- result.try(ux_stage(
+    first.0,
+    1,
+    "the parked provider request must be number one",
+  ))
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste(escape_held),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "held second prompt", fn(sample) {
+      writable(sample) && escape_holds_main(sample)
+    }),
+  )
+
+  // Escape, then the parked owner goes away as a cancelled HTTP owner would.
+  // The aborted operation retires and the strand reads idle, and the held
+  // prompt is still in the queue rather than running.
+  let _ = tui_driver.play(driver, [backend.KeyPress("esc")])
+  use _ <- result.try(
+    ux_await(driver, "abort acknowledged", fn(sample) {
+      sample.model.interrupt != None
+    }),
+  )
+  process.send(first.1, Nil)
+  use _ <- result.try(
+    ux_await(driver, "idle strand with its prompt still held", fn(sample) {
+      escape_main_idle(sample) && escape_holds_main(sample)
+    }),
+  )
+
+  // Enter releases the halt: the held prompt and this one go together.
+  let _ =
+    tui_driver.play(driver, [
+      backend.Paste(escape_release),
+      backend.KeyPress("enter"),
+    ])
+  use _ <- result.try(
+    ux_await(driver, "released successor answered", fn(sample) {
+      escape_main_idle(sample)
+      && !escape_holds_main(sample)
+      && string.contains(sample.frame, escape_answer)
+    }),
+  )
+  Ok(Nil)
+}
