@@ -253,6 +253,9 @@ through cancellation. Consumers unwrap for retry and cancellation routing;
 only the original monitor can prove drain. Runtime copies the envelope into
 the existing optional assistant diagnostics field. Role fallback scheduling
 is unchanged; persisted machine retries retain provider backoff hints.
+[Protocol 033](../protocol-change/033-payment-required.md) adds
+`PaymentRequired` and `PaymentDeclined` for a priced provider entry; both are
+terminal beneath `WithContext`.
 
 Fallback chains resolve at dispatch; the durable state stores the resolved `{provider, model_id}`. Adapters must map provider stop reasons totally; unknown → `Failed(UnmappedStopReason)` (in-band), never a crash. Adapter-computable overflow (input+cache_read > context_window, negligible output) settles as `error` with the canonical overflow message pattern.
 

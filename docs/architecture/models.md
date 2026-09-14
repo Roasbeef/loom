@@ -366,6 +366,90 @@ change to the OpenAI adapter at all** — not a header, not a body field,
 not a stream-parsing branch. That is the whole argument for the seam
 in one data point.
 
+## Paying for inference: L402
+
+Every entry above authenticates with a key the operator holds. An L402
+entry does not. It points at a proxy that prices each request and answers
+an unpaid one with `402 Payment Required`, carrying a macaroon and a
+BOLT11 invoice; paying the invoice and retrying with the preimage is what
+turns the 402 into a response. The proxy holds the model's real API key,
+so the operator holds satoshis instead of a vendor credential.
+`protocol-change/033-payment-required.md` is the ruling this section
+describes.
+
+**Built.** What an operator writes is an entry with `auth = "l402"` and
+no `api_key_env`, whose `base_url` is the proxy rather than the vendor.
+`dialect`, `model_id`, `context_window` and the rest are unchanged: the
+proxy speaks the dialect it fronts, so the adapter seam does not move.
+An entry that names both `auth = "l402"` and `api_key_env` is refused in
+the same worded style as every other catalogue error, because the two
+answer the same question differently.
+
+**Built.** The request path is four steps inside one gateway attempt.
+The first request goes out with no authentication header, which is what
+provokes the challenge. The 402 comes back and the adapter hands its
+headers and body to `l402.parse` in `provider/l402.gleam`, a pure module
+that finds the macaroon and the invoice in either carrier — the JSON
+body or `WWW-Authenticate` — and the price in the header, the body, or
+the invoice's human-readable part. A parsed challenge becomes
+`Failed(PaymentRequired(challenge))`; one that does not parse stays the
+`HttpError(402, …)` it was, so an unpaid keyed provider is unaffected.
+The gateway then checks whether a stop was requested, calls
+`Paywall.settle` with the challenge, and on success runs the same target
+once more with `Authorization: L402 <macaroon>:<preimage>`. Whatever the
+second attempt produces is the outcome; a second 402 is delivered rather
+than paid for again. Afterwards `Paywall.credential` hands the settled
+token to every request on that entry proactively, until the proxy
+answers 402 again and the cycle repeats.
+
+**Built.** What this wave contains is the seam and nothing behind it:
+`provider/l402.gleam` for the challenge and the credential,
+`provider/paywall.gleam` for the injected effect, the two error
+variants, and the gateway's settle-once-retry-once rule. The default
+paywall, `paywall.none()`, declines every challenge. An `auth = "l402"`
+entry therefore fails in band as `PaymentDeclined`, naming the provider
+and the reason, until something that can pay is installed. That is the
+same posture an unset `api_key_env` has: the catalogue boots, the entry
+is listed, and the failure is one worded refusal per request rather than
+a boot error.
+
+**Planned.** The thing that pays is a tier-J extension, `loom-402`,
+answering a new `payment_required` hook and settling invoices through a
+`waved` sidecar it owns. The hook is its own proposal against the frame
+vocabulary; the extension is a later wave. Budget policy — what a single
+payment may cost and what a session may spend in total — belongs to
+whatever settles, and the gateway asserts no ceiling of its own.
+Falling back from a declined payment to a keyed entry is also planned
+and deliberately absent here: `PaymentDeclined` is terminal, so a
+declined entry stops its attempt rather than walking the chain, for the
+same reason `NoSecret` does.
+
+### The threat model
+
+The proxy is an origin like any other, and the same rule the egress
+section states holds here: the response is attacker-influenced and every
+field read out of it is treated as hostile input. `l402.parse` is total
+and allocates nothing on the challenge's behalf; a malformed macaroon, a
+missing invoice, or an unknown scheme word produces an ordinary
+`HttpError` rather than a partially built challenge.
+
+**The invoice amount is chosen by the proxy.** Nothing in the harness
+bounds what a challenge may ask for, so the paywall must assert its own
+ceiling before it pays and decline above it. That is the reason the
+ceiling lives with whatever settles rather than in the gateway: the
+gateway cannot know what a request is worth to the operator, and a
+number invented here would be either useless or wrong. Payment happens
+at most once per gateway attempt, which bounds how often a proxy can
+present a price for one request, not how large the price is.
+
+**The macaroon and the invoice stay out of rendered errors.** A
+`PaymentRequired` renders as its amount and challenge identifier;
+`PaymentDeclined` renders as the provider and the paywall's reason.
+Neither the credential nor the payment instruction is diagnostic, and a
+settled token is scrubbed from every error exactly as an API key is, so
+a proxy that reflects the `authorization` header into an error body
+cannot hand it back to the operator through a log line.
+
 ## Switching models while a session runs
 
 Two switches exist, and they scope differently.
@@ -495,6 +579,8 @@ points (boot's `main`, the hub's fork/create_strand, an Agency's child).
 | `provider/gateway.gleam` | `ProviderConfig`, the builder, `resolve`, and the chain walk. |
 | `provider/model.gleam` | `Role`, `ResolvedModel`, `RequestTarget` (whose `ForRole` carries the thinking overlay — `protocol-change/009`), `ThinkingLevel`, `ProviderRequest`. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam` | The three dialects: URLs, headers, body shapes, reasoning fields, stream folds. |
+| `provider/l402.gleam` | `Challenge`, `parse` (headers or JSON body, `L402` or `LSAT`), the invoice-amount decoder, and `authorization` — the credential header value. Pure: no process, no FFI. |
+| `provider/paywall.gleam` | `Paywall`, the injected `credential`/`settle` pair, and `none()` — the default that declines everything. |
 | `provider/retry.gleam` | `classify` — which provider failures count as retryable, for the chain walk and for the runtime's retry ladder alike. |
 | `provider/secret.gleam` | The `fn(name) -> Result(String, Nil)` lookup and its environment backend. |
 | `packages/tui/src/tui/model_selector.gleam` | The `/model` picker: the modal, search ranking, cursor, role tags, and selected catalogue name. |
