@@ -179,6 +179,34 @@ pub fn a_tool_call_hook_answers_a_verdict_test() {
     ))
 }
 
+/// A `payment_required` hook's answer crosses as the JSON text the
+/// harness's paywall reads, marshalled in `ext/hook` and carried here
+/// untouched — the same road a verdict takes, so the money-moving event
+/// costs the satellite no second mechanism.
+pub fn a_payment_required_hook_answers_a_payment_test() {
+  let preimage = string.repeat("cd", 32)
+  let produced =
+    runtime.answer(
+      [],
+      [
+        #(
+          "payment_required",
+          hook.OnPaymentRequired(fn(_challenge) { hook.Paid(preimage) }),
+        ),
+      ],
+      event(
+        "payment_required",
+        "{\"provider\":\"paid-glm\",\"invoice\":\"lnbc2500u1pexample\","
+          <> "\"amount_sat\":2500,\"challenge_id\":\"c-1\","
+          <> "\"route_id\":\"r-1\",\"now_unix_ms\":1757000000000}",
+      ),
+    )
+  assert produced
+    == cap_runtime.Answered(report.string(
+      "{\"payment\":\"paid\",\"preimage\":\"" <> preimage <> "\"}",
+    ))
+}
+
 /// An extension is offered every moment and cares about almost none of
 /// them, so an event with no handler is an ordinary answer under a code
 /// the bus reads, not a fault that costs the satellite its node.
