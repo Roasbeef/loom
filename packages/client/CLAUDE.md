@@ -625,11 +625,17 @@ catalogue without opening runtimes. Explicit admission invokes
   there is no runtime handle and no Agency to ask — and renders them
   newest-written-first by register seq, capped at 4096 bytes, fenced and
   attributed. A strand with no notes gets nothing at all.
-- `client/advisorslice.{Bounds, Slice, default_bounds, render, feed_message,
-  advice_message, nudges_message, is_advice, advice_header, advice_footer,
-  feed_header, feed_footer, nudges_header, nudges_fence}` — what the advisor
-  strand is shown of the primary's branch, and the frames that carry text
-  both ways. `render` turns the entries appended since a stored cursor into
+- `client/advisorslice.{Bounds, Slice, Moment, default_bounds, render,
+  feed_message, advice_message, nudges_message, is_advice, advice_header,
+  advice_footer, feed_header, feed_footer, nudges_header, nudges_fence}` —
+  what the advisor strand is shown of the primary's branch, and the frames
+  that carry text both ways. `Moment` is `RunEnded | RunOpen(steps)` and
+  decides one leading line of the feed body: a mid-run slice says the run
+  is still open and how many steps it has been, because an advisor weighs
+  a `block` against work in progress differently from work its author
+  considers finished. That line is body rather than a second header on
+  purpose — the frame's two tokens are what `is_advice` and the terminal
+  recognize a feed by, and the terminal keeps copies it cannot import. `render` turns the entries appended since a stored cursor into
   one bounded text: `Bounds` caps a single entry's payload and the whole
   window separately, oldest entries are dropped from the front with an
   `[N earlier entries omitted]` line, and a tool result too long for its cap
@@ -661,28 +667,47 @@ catalogue without opening runtimes. Explicit admission invokes
   has read is the duplicate the ring exists to stop. Identity is the text
   lowercased with whitespace runs collapsed, SHA-256, truncated to 128
   bits. `Guard` is opaque because two of its four fields are invariants —
-  `last_block_run` indexes the same clock `runs` carries, and a value past
-  it would make the elapsed arithmetic negative and shut the block channel
-  for the session, which is why `decode` re-checks it. `decode` is lenient
-  about an absent field (it takes the empty guard's value) and strict about
-  a present one of the wrong type. `default_policy` is a two-run cooldown,
-  a ring of thirty-two, and eight nudges or four kilobytes pending; only
-  the cooldown is configurable.
+  `last_block_review` indexes the same clock `reviews` carries, and a value
+  past it would make the elapsed arithmetic negative and shut the block
+  channel for the session, which is why `decode` re-checks it. `decode` is
+  lenient about an absent field (it takes the empty guard's value) and
+  strict about a present one of the wrong type, which is also what carries
+  a cell from the build whose clock counted the primary's runs: its `runs`
+  and `lastBlockRun` are absent under the names read now, so the clock
+  restarts while the ring and the queue survive. `default_policy` is a
+  two-**review** cooldown, a ring of thirty-two, and eight nudges or four
+  kilobytes pending; only the cooldown is configurable. The clock counts
+  reviews rather than runs because one run now holds many: `review_opened`
+  is called when a slice is actually handed over, never on one coalesced
+  away or one whose send failed.
 - `client/advisor.{strand, primary, cursor_key, guard_key, brief, Settings,
   Wiring, Message, start, supervised, hooks, seam, ensure_strand,
   active_tools}` — the actor that joins the two pure halves above to the
   session. `ensure_strand` seeds the advisor through
   `api.create_idle_strand` and never through the Agency, so it carries no
   `lineage/` cell: the primary cannot address it, it can address nothing,
-  and `strand.roster` does not list it. `hooks` wraps three slots —
+  and `strand.roster` does not list it. `hooks` wraps four slots —
   `run_end` casts `PrimaryRunEnded`/`AdvisorRunEnded` and returns the inner
-  answer unchanged, `run_start` drains the queued nudges with a bounded
+  answer unchanged, `usage` casts `PrimaryStepped` for the primary's steps
+  and nobody else's, `run_start` drains the queued nudges with a bounded
   call and folds them in after the inner injections, and `context`
   prepends `brief` to the advisor's own requests transiently. `seam` is
   the `advise` door, which refuses any caller whose durable strand name is
   not `advisor`. The actor owns `cursor_key` and `guard_key`, reads them
   lazily on its first message because the runtime it borrows may not be up
   at start.
+  **The step trigger is what makes a long run legible.** A run is many
+  steps and nothing bounds how many, so with the run end as the only
+  occasion an agentic loop could work indefinitely unreviewed.
+  `Settings.feed_every_steps` (20, or 0 for the run-end-only cadence) is
+  the threshold, and it is a **floor rather than an interval**: a feed owed
+  while the advisor is still reading is coalesced and owed, and the review
+  end pays it, so a continuously working primary is reviewed once per
+  review duration. That is what bounds staleness when the reviewer is the
+  slower model, and it is also what the pairing costs. The trigger rides
+  `usage` because that slot fires once per committed step, returns `Nil`,
+  and lands *after* the commit — `admission` is per-step too and wrong
+  twice: a decision on the critical path, and fired before the request.
 - `client/memory.{max_sidecar_bytes, digest_reader}` — the two halves of
   bounding the sidecar read, which the lifecycle producer moved onto the
   strand driver's hot path: `max_sidecar_bytes` (four times the render
@@ -2341,16 +2366,19 @@ across one operation a `Stop` block holds open.
   pull. The host fixture joins every topic.
 - `advisor.Message` — `PrimaryRunEnded(operation)` and
   `AdvisorRunEnded(operation)` (casts, from the wrapped `run_end` slot on
-  the strand driver's own process), `Judge(strand, verdict, reply)` (a
+  the strand driver's own process), `PrimaryStepped(operation)` (a cast,
+  from the wrapped `usage` slot on the same process, one per committed
+  provider request of the primary's), `Judge(strand, verdict, reply)` (a
   call, from the `advise` tool's effect process, bounded at
   `judge_timeout_ms`), and `TakePending(reply)` (a call, from the wrapped
   `run_start` slot, bounded at `pending_timeout_ms`). Both calls go
   through a monitored send-and-select rather than `process.call`, so an
   absent or wedged actor degrades to no nudges and an in-band refusal
-  instead of killing a strand driver or a live tool effect. The run-end
+  instead of killing a strand driver or a live tool effect. All three
   notifications are casts on purpose: a driver that waited on a branch
   scan and a provider round trip would stop serving `Nudge`,
-  `RequestAbort` and `PollTick` for the length of a review.
+  `RequestAbort` and `PollTick` for the length of a review. A lost step
+  cast costs a threshold reached one step later, never one not reached.
 - `history.Message` — `Pull` (a cast: a commit landed, go sync),
   `Synchronize(reply)` (a call, for a test or an operator), `Query(text,
   limit, scope, reply)` (a call, from the tool seam), and `Stop`.
@@ -2456,15 +2484,24 @@ across one operation a `Stop` block holds open.
   finishes, and a catch-up that yielded to that would never catch up on
   anything. What gates it instead is a debt: a coalesced feed sets
   `Memory.owed`, and a review end with nothing owed sends nothing. Without
-  the debt the catch-up would send any delta past the cursor, and since
-  the primary appends throughout its own run, every advisor run end would
-  find something, feed it and be asked again — one inference per tool
-  round trip against a primary that has not decided anything yet. The debt
-  lives in the actor's heap, not in a cell: a restart that forgets one
-  delays a review to the primary's next run end.
+  the debt a review end would send any delta past the cursor, and since
+  the primary appends throughout its own run it would find something,
+  feed it and be asked again whether or not anybody wanted a mid-run
+  review. The debt lives in the actor's heap, not in a cell: a restart
+  that forgets one delays a review to the primary's next run end.
+- **The step threshold is a floor, and the loop above is what makes it
+  one.** A feed owed part-way through a run while the advisor is reading
+  is coalesced and owed like any other, so the review end pays it and the
+  cadence settles at one review per review duration rather than one per
+  `feed_every_steps`. That is deliberate — it is what bounds staleness
+  when the reviewer is the slower model, which is the documented pairing —
+  and it is the feature's real cost. `feed_every_steps = 0` is the way
+  back to the run-end-only cadence. The count restarts whenever a slice is
+  *offered*, coalesced ones included, so a run end always resets it and a
+  short run cannot inherit a long one's count.
 - **The strand driver never waits on a review.** The advisor's `run_end`
-  hook casts and returns the inner answer; nothing about a feed — the
-  branch scan, the render, the send, the durable writes — runs on the
+  and `usage` hooks cast and return the inner answer; nothing about a feed
+  — the branch scan, the render, the send, the durable writes — runs on the
   driver. The one bounded wait is `run_start`'s nudge drain, because the
   nudges have to be in the message list that slot returns, and a slow or
   absent actor yields no nudges rather than a stalled run.

@@ -2,8 +2,9 @@
 
 A session may run a second strand whose only job is to read what the
 primary strand has been doing and say whether it should carry on. It is
-called the **advisor**. At the end of each of the primary's runs the
-harness renders the entries appended to the primary's branch since a
+called the **advisor**. At the end of each of the primary's runs, and
+again every `feed_every_steps` steps inside a run that is still going,
+the harness renders the entries appended to the primary's branch since a
 stored cursor into one text, sends that text to the advisor as a single
 framed user message, and the advisor answers with exactly one call of a
 built-in tool named `advise`. The verdict is `quiet`, `nudge` or
@@ -26,7 +27,7 @@ below.
 
 ## Vocabulary
 
-Three words that are easy to confuse, fixed here because the feed's
+Four words that are easy to confuse, fixed here because the feed's
 cadence depends on the distinction.
 
 - A **step** is one provider request.
@@ -34,10 +35,26 @@ cadence depends on the distinction.
   steer input drains.
 - A **run** is one admitted prompt driven to a finishable boundary, and
   it is many steps long.
+- A **review** is one feed the advisor was handed and answered. It is the
+  unit the block cooldown is counted in.
 
-**The feed is per run.** Per step would cost one advisor inference per
-tool round trip and would show the advisor a primary that has not
-decided anything yet.
+**The feed fires at a run's end and at a step threshold inside it.** Two
+occasions, and each answers a failure of the other. Per run alone left a
+long run opaque: nothing bounds how many steps a run may take, so an
+agentic loop that keeps finding tool calls to make was reviewed only once
+it finally stopped. Per step alone would cost one advisor inference per
+tool round trip and would show the advisor a primary that has not decided
+anything yet. The threshold — `feed_every_steps`, 20 by default — is
+where those meet.
+
+**The threshold is a floor, not an interval.** A feed owed while the
+advisor is still reading the last one is coalesced away and recorded as a
+debt, and the advisor's own run end pays it. So a continuously working
+primary is reviewed once per *review duration* rather than once per
+threshold, and the real cadence is `max(feed_every_steps, one review)`.
+That is the intent — it is what bounds how stale a verdict can be when
+the reviewer is deliberately the slower model — and it is also the cost.
+"Backpressure is coalescing" below has the whole of it.
 
 ## Where the code lives
 
@@ -46,7 +63,7 @@ decided anything yet.
 | `tools/advise` | The `advise` tool: the three-point verdict vocabulary, its total decoder, the `Ack` the advisor reads back, and the one-closure `Advice` seam the host fills. Depends on neither `runtime` nor `client`. |
 | `client/advisorslice` | Pure rendering. The entries appended since a cursor turned into one bounded text, and the three message frames — feed, advice, nudges — that carry text in both directions. No store, no process, no clock. |
 | `client/advisorguard` | Pure policy. What one verdict becomes, the cooldown and duplicate history that decision needs, and the codec for the cell that outlives the actor. |
-| `client/advisor` | The actor that joins those three to a session: the run-boundary hooks, the branch scan, the sends, the two durable cells, and the `advise` seam. |
+| `client/advisor` | The actor that joins those three to a session: the four hook slots, the step count, the branch scan, the sends, the two durable cells, and the `advise` seam. |
 | `client/catalog` | The `advisor` role and the `[advisor]` table. |
 | `client/serve` | The wiring: resolving the role through the gateway, registering the tool, composing the hooks, seeding the strand, supervising the actor. |
 | `tui` | Recognizing advisor traffic in a transcript and drawing it as harness speech rather than as the operator's. |
@@ -61,7 +78,7 @@ model's request, and carries a `lineage/` cell naming its parent. That
 cell is what `agent_send` and `agent_wait` check before one strand may
 address another, and it is what `strand.roster` lists.
 
-`ensure_strand` (`client/advisor.gleam:1101`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:1269`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1019`) instead, which is the
 runtime's own door and not the Agency's, so the advisor has no lineage
 cell at all. Three consequences follow, and all three are the point.
@@ -84,34 +101,56 @@ success rather than as an error.
 ## Primary to advisor: the feed
 
 The primary's run-end hook casts `PrimaryRunEnded` to the advisor actor
-and returns the inner slot's answer unchanged. `hooks`
-(`client/advisor.gleam:822`) wraps three slots rather than setting them,
-the discipline `agency.reaping_hooks`, `notes.digest_hooks` and the
+and returns the inner slot's answer unchanged, and its `usage` hook casts
+`PrimaryStepped`. `hooks` wraps four slots rather than setting them, the
+discipline `agency.reaping_hooks`, `notes.digest_hooks` and the
 imported-hooks Stop gate already follow: a builder that *set* a slot
 would silently drop whatever an earlier layer put there.
 
-On that cast the actor, on its own process, does the following.
+On either cast the actor, on its own process, does the following.
 
 1. Reads the two cells if it has not already. Both are read lazily on
    the first message rather than at start, because the runtime they are
    read through is borrowed from a holder that may not be up when a
    supervisor starts the actor.
-2. Advances the guard's run clock and writes the guard cell. The clock
-   moves before the feed, so the cooldown is measured against a run that
-   certainly finished even when the feed below is coalesced away.
+2. On a step, counts it and stops unless the count has reached
+   `feed_every_steps`. A count of zero is the run-end-only cadence.
 3. Stops here if the advisor already has a run open. See "Backpressure"
    below.
 4. Scans the primary's branch from its leaf, oldest first, past the
    stored cursor, bounded at `scan_limit` (512) entries. The scan reads
    the store directly rather than through the writer, because a review
    must never queue behind a settlement.
-5. Renders the entries with `render` (`client/advisorslice.gleam:152`).
+5. Renders the entries with `render`.
 6. Sends the result as one framed user message with `send_to_strand`
-   (`runtime/api.gleam:1180`) and, only on success, advances the cursor
-   to the newest seq the scan saw.
+   and, only on success, advances the cursor to the newest seq the scan
+   saw and advances the guard's review clock.
 
-A send that fails leaves the cursor where it was, so the next run end
+A send that fails leaves the cursor where it was, so the next occasion
 offers the same stretch again. A feed is skipped, never faked.
+
+The step count restarts whenever a slice is *offered* — on a feed and on
+a coalesced one alike — because what it measures is the gap since the
+advisor was last shown anything. A run end therefore always restarts it,
+so a short run cannot inherit a long one's count.
+
+### Why the step rides the `usage` slot
+
+`effects.Hooks` has two slots that fire once per step, and only one of
+them can carry this. `usage` is a notification whose return type is the
+whole of its contract, it fires *after* the commit — so the branch scan a
+threshold triggers can see the step that triggered it — and it is already
+documented as lossy and non-replayable, which matches what a lost feed
+costs here: the threshold is reached one step later, never not at all.
+`admission` is the other, and is wrong twice over: it is a decision on
+the critical path, which a reviewer must never touch, and it fires
+*before* the request, so a feed there would describe the step it was
+announcing as work not yet done.
+
+The ledger is not strand-scoped, so the advisor's own requests reach the
+same slot; `stepped` filters on the operation's strand. Counting the
+reviewer's own steps would let a long review trip the threshold it is
+itself the reason for.
 
 ### Backpressure is coalescing
 
@@ -131,14 +170,26 @@ to that could never fire.
 
 **The catch-up is owed rather than offered.** A skipped feed records a
 debt in the actor's `Memory.owed`, and a review end feeds only when one
-is outstanding. The gate is what keeps the loop per-run. Without it the
-catch-up would send any delta past the cursor, and the primary appends
-assistant turns and tool results throughout its own run — so every
-advisor run end would find something new, send it, and be asked again
-when that review ended. The loop would sustain itself for as long as the
-primary kept working, at one advisor inference per iteration against a
-primary that has not decided anything yet, which is exactly the per-step
-review the Vocabulary section rules out.
+is outstanding. The gate is what keeps a *review end* from polling a
+primary nobody asked about: without it the catch-up would send any delta
+past the cursor, and the primary appends assistant turns and tool results
+throughout its own run, so every review end would find something new,
+send it, and be asked again when that review ended — whether or not
+anybody wanted a mid-run review at all.
+
+**With the step threshold, that loop is what we ask for, and the cost
+model changes with it.** A primary working continuously trips the
+threshold while the advisor is reading, records a debt, and is fed the
+moment that review ends. The interval therefore settles at one review per
+review duration rather than one per `feed_every_steps`, and the threshold
+is a floor beneath it. Two things follow that an operator should have in
+front of them. It is what actually bounds staleness: the reviewer is
+deliberately the slower model, so a cadence counted in the primary's
+steps would let it fall arbitrarily far behind, while one paced by its
+own reviews cannot drift past roughly two review durations. And it is not
+free — a long run that used to cost one advisor inference now costs about
+one per review duration for as long as it runs. `feed_every_steps = 0`
+is the way back to the run-end-only cadence, and the examples say so.
 
 The debt is held in the actor's heap and not in a cell. It is derived
 state that gates one catch-up, the durable cursor already says which
@@ -221,7 +272,7 @@ decodes the arguments and hands the pair to a single closure on an
 Two things the model does not supply. The first is its own identity:
 `judge` is handed `Ctx.strand`, which the driver set from its own
 durable name, so a verdict cannot be attributed to a strand that did not
-produce it. `judge` (`client/advisor.gleam:817`) refuses any caller
+produce it. `judge` (`client/advisor.gleam:958`) refuses any caller
 whose name is not `advisor`. The second is what a verdict costs.
 
 `decode_verdict` (`tools/advise.gleam:203`) is total and decodes the
@@ -251,22 +302,32 @@ idle primary".
 
 ### The emission guard
 
-`decide` (`client/advisorguard.gleam:265`) is where the bound lives, and
-it lives there rather than in the advisor's instructions. A prompt
-asking a model to restrain itself is a request; a cooldown counted in
-primary runs and a ring of delivered digests is a decision the harness
-makes and tells the model about afterwards, in the tool result. That is
-the same split the capability broker draws between what a model may ask
-for and what it is granted.
+`decide` is where the bound lives, and it lives there rather than in the
+advisor's instructions. A prompt asking a model to restrain itself is a
+request; a cooldown counted in reviews and a ring of delivered digests is
+a decision the harness makes and tells the model about afterwards, in the
+tool result. That is the same split the capability broker draws between
+what a model may ask for and what it is granted.
 
 Two failure modes are being prevented, and both are about the primary
 rather than about the advisor. A `block` is delivered through
-`send_to_strand`, so an advisor that blocks on consecutive runs steers
+`send_to_strand`, so an advisor that blocks on consecutive reviews steers
 the primary at every checkpoint and the primary never finishes a thought
 of its own. And advice the primary was already given costs a second
 interruption for no new information, because the advisor cannot see that
-it said the same thing two runs ago — its feed carries the primary's
+it said the same thing two reviews ago — its feed carries the primary's
 transcript, not its own answers.
+
+**The clock counts reviews, not the primary's runs.** It counted runs
+while the run end was the feed's only occasion, when the two were the
+same number. They are not any more: one run can now hold many reviews, so
+a clock still counting runs would leave every review inside a run at one
+value — the first block would deliver and every later one would silently
+downgrade until the run ended, whatever `block_cooldown_reviews` said.
+The clock advances only when a slice has actually been handed over: a
+feed coalesced away, or one that failed to send, starts no review, and
+counting either would let a fast primary age a cooldown out without its
+reviewer reading a word.
 
 The rules, in the order `decide` applies them:
 
@@ -288,12 +349,11 @@ The rules, in the order `decide` applies them:
 4. **A nudge that does not fit the queue is dropped.** Both caps are
    checked: a count and a byte total, because one nudge can be a page.
 
-The shipped bounds are `default_policy`
-(`client/advisorguard.gleam:98`): a two-run cooldown, a ring of
+The shipped bounds are `default_policy`: a two-review cooldown, a ring of
 thirty-two digests, and at most eight nudges or four kilobytes waiting
 for the next run start. Only the cooldown is configurable.
 
-The actor's `decide` (`client/advisor.gleam:841`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:978`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the send
 costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -342,7 +402,7 @@ cannot combine with the surrounding text to spell the literal again.
 
 The advisor's instructions are prepended transiently to every one of its
 requests through the wrapped `context` slot, and are **never stored**.
-The constant is `brief` (`client/advisor.gleam:357`).
+The constant is `brief` (`client/advisor.gleam:406`).
 
 Three properties follow from the prepend. A durable first message would
 be summarized away by the advisor's own compaction and would sit in the
@@ -363,10 +423,11 @@ orders.
 | State | Where | Lost on a crash? |
 |---|---|---|
 | The feed cursor | `fact.custom` at `advisor/feed/cursor`, one integer | No. A replacement actor re-reads it. |
-| The guard: run count, last delivered block, digest ring, pending nudges | `fact.custom` at `advisor/guard`, one JSON object | No. |
+| The guard: review count, last delivered block, digest ring, pending nudges | `fact.custom` at `advisor/guard`, one JSON object | No. |
 | The advisor strand itself | Its three strand registers, as any strand's | No. A reboot restores the driver. |
 | The standing brief | Nowhere. Re-applied per request. | Not applicable. |
-| The actor's process state | Its heap, and it is only a cache of the two cells. | Yes, and that costs at most one skipped review. |
+| The coalesced-feed debt and the step count | The actor's heap, deliberately. | Yes, and each costs at most one deferred review. |
+| The actor's process state | Its heap, and it is otherwise only a cache of the two cells. | Yes, and that costs at most one skipped review. |
 
 The advisor actor is the only writer of both cells, and forging either
 takes two independent failures rather than one. The model-facing fact
@@ -487,10 +548,11 @@ strand switch away. That is deliberate: the isolation is between the two
 models, not between the harness and the person running it.
 
 **An extension** reaches the advisor's runs, and the memory digest does
-too. The extension hook bus is composed over the advisor's three slots,
+too. The extension hook bus is composed over the advisor's four slots,
 so an extension's `context` fold receives and may rewrite the advisor's
 brief, its tool gate is consulted on the `advise` call, and `AgentEnd`
-and usage fire for the advisor's runs beside the primary's. The memory
+and usage fire for the advisor's runs beside the primary's — which is the
+same fact the step counter has to filter on, from the other side. The memory
 digest is not strand-scoped either — `memory.digest_hooks` runs at every
 strand's run start — so the operator's distilled memory is appended to
 the advisor's branch as well. Neither is an accident. An extension is
@@ -553,7 +615,8 @@ advisor = ["baseten-glm-5-3"]
 
 [advisor]
 tools = ["fs_read", "grep"]     # default; `advise` is added whatever this says
-block_cooldown_runs = 2         # default; 0 lets every block through
+feed_every_steps = 20           # default; 0 is the run-end-only cadence
+block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
 The `advisor` route is a sixth routable role, parsed to
@@ -580,7 +643,7 @@ advisor` line, which is the ordinary posture and says nothing, and one
 that routes the role to a chain this host cannot serve, whose only other
 symptom is a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1468`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1492`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is: an unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default
@@ -603,17 +666,38 @@ that can edit the workspace is a second writer racing the first.
 `docs/examples/loom-advisor.toml` is the smallest catalogue that
 demonstrates the pairing: a fast model drives the session and a slower,
 stronger one watches it. The pairing is the point — the advisor is asked
-once per run boundary rather than once per turn, so a model too slow to
-drive a session can still afford to check one, and a fast primary is
-exactly the one whose wrong turns are worth catching early.
+at a run boundary and at a step threshold rather than once per turn, so a
+model too slow to drive a session can still afford to check one, and a
+fast primary is exactly the one whose wrong turns are worth catching
+early. That is also why the threshold's floor-not-interval behaviour
+matters here rather than being a footnote: with the slower model
+watching, the loop runs at the reviewer's pace, and the example says so.
 `docs/examples/loom-baseten.toml` carries the same pairing beside its
 existing roles.
 
 ## Where the code refined the design
 
-Six differences from issue #137's September 12 comment, each recorded
+Seven differences from issue #137's September 12 comment, each recorded
 here rather than left for a reader to find.
 
+- **The feed is no longer per run.** This is the one that reverses a
+  ruling rather than sharpening it, so it is first. The September 12
+  comment struck the opening post's proposed on-checkpoint hook and fixed
+  the cadence at one feed per run, on the grounds that per step would
+  cost an inference per tool round trip against a primary that has not
+  decided anything yet. That reasoning holds against a *per step* feed
+  and was over-applied: it also ruled out any mid-run occasion at all,
+  and since nothing in the planner bounds a run's length, it left an
+  agentic loop able to work indefinitely unreviewed. The occasion is back
+  as a step threshold (`feed_every_steps`, 20 by default) rather than as
+  a checkpoint hook, because `usage` already fires once per committed
+  step and no new slot is needed. Two consequences are recorded above
+  rather than buried: the threshold is a floor under an advisor-paced
+  loop, and the block cooldown had to move from runs to reviews or every
+  mid-run block would have silently downgraded. `oh-my-pi`, the harness
+  the opening post modelled this on, feeds per turn and adds a bounded
+  wait (`advisor.syncBacklog`) we still decline — a wait shorter than a
+  review is inert and a longer one is the awaited block under "Deferred".
 - **The silent verdict is spelled `quiet`, not `nil`.** The three words
   the tool accepts are `quiet`, `nudge` and `block`; the design comment
   wrote the first as `nil`.
@@ -664,14 +748,16 @@ waiting on.
 
 **`advisorguard_test`** asserts every rule in the guard with no
 scheduler in the loop, which is what the pure split buys: a first block
-delivered, a block in the same run and one run into the window
-downgraded, a block after the window delivered, the cooldown not
+delivered, a block against the same review and one review into the
+window downgraded, a block after the window delivered, the cooldown not
 reaching a nudge, the same advice in a different shape dropped, a
 delivered block refused when it comes back as a nudge, a drained nudge
 still counting as a duplicate, the oldest digest ageing out, both queue
 caps, the three degenerate policies (a zero count cap, a zero cooldown,
-a zero ring), a scripted session held inside every bound, and the cell's
-round trip plus every malformed shape it must refuse.
+a zero ring), a scripted session held inside every bound, the cell's
+round trip plus every malformed shape it must refuse, and a cell written
+by the run-counting build keeping its ring and its queue while its clock
+starts again.
 
 **`advisorslice_test`** pins what the advisor is shown: the label order
 of a rendered turn, a failed tool result saying so, images as markers,
@@ -683,9 +769,10 @@ naming the newest entry even when it rendered nothing, a single
 oversized block clipped rather than dropped, compaction and branch
 summaries, earlier advice and nudges coming back labelled, an assistant
 turn quoting the header staying assistant text, a user turn that carries
-the header without its footer staying the operator's own, and the three
+the header without its footer staying the operator's own, the three
 frames including a nudge that cannot close its own fence and advice that
-can neither close nor reopen its own.
+can neither close nor reopen its own, and a mid-run feed carrying its
+leading status line inside frame tokens that did not move.
 
 **`advisor_test`** covers the actor and its hooks against a real session
 store: a foreign strand's run start left alone, an absent actor yielding
@@ -702,6 +789,16 @@ nudge reaching the primary's next run start, and the isolation the whole
 design rests on — no lineage cell for the advisor, and an Agency send
 from the primary to it refused as unaddressable.
 
+It also covers the step trigger, which is the half a run-end fixture
+cannot reach: steps below the threshold feeding nothing, the step that
+reaches it feeding a slice that says the run is still open and how many
+steps it has been, the count restarting at each feed so a threshold of
+three is every three steps rather than every step past the third, a zero
+interval never feeding mid-run while its run end still feeds, and — through
+the composed `usage` slot itself — the advisor's own steps and a
+subagent's not counting toward the primary's threshold while the
+primary's own do.
+
 **`runtime/api_test`** pins the reservation: `advisor/` is a reserved
 key, both write doors refuse it, and a cell the harness wrote under it
 is absent from the blackboard listing.
@@ -717,8 +814,10 @@ declarations and empty broker requirements.
 custom role, its place in the canonical order, an unknown role naming it
 among the routable ones, a routed advisor listed by the key an operator
 wrote rather than by a `custom:` prefix, a catalogue without one routing
-none, and the `[advisor]` table's defaults, strictness and refused
-negative cooldown.
+none, and the `[advisor]` table's defaults, strictness, refused negative
+cooldown, honoured zero feed interval and refused negative or mistyped
+one. Two of its cases parse the shipped examples, so a key renamed here
+and not there fails the gate rather than an operator's boot.
 
 **`advisor_view_test`** pins the terminal's half: each frame recognized
 without its frame lines, a collapsed advice row as one attribution line,
@@ -755,6 +854,13 @@ for a slow host. What is fixed is the shape of one review, and the three
 verdicts are drawn in order — one block, one nudge, quiet from then on —
 so the assertions hold however many reviews the host's timing
 produces.
+
+The fixture sets `feed_every_steps = 0` for the same reason, one step
+further on. Mid-run feeds add reviews whose number depends on how fast
+the host answers, and while the by-position script absorbs that, a
+fixture is a poor place to learn it: the step trigger's own coverage is
+in `advisor_test`, where the steps are cast by hand and the count is
+exact.
 
 Beyond the gate, the live proof this repository expects: a drive of
 `docs/examples/loom-advisor.toml` against a real provider, watching a
