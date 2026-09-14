@@ -148,9 +148,14 @@ that tree separately from the self-contained server.
 - `tui.Launch` says what an invocation is: `Demo`, `Local`, `Remote`,
   `Invalid` — and three that are not terminal applications at all,
   `Forward`, `Replay` and `Sessions`.
-  Top-level and subcommand help are also non-interactive: `--help`, `-h`,
-  and `help` print their usage before the logger is silenced, so they do not
-  create state, contact a daemon, or write terminal escape sequences. An
+  Top-level and subcommand help are also non-interactive: the `--help` and
+  `-h` flags anywhere in argv, and the bare word `help` in first position,
+  print usage before the logger is
+  silenced — `loom --demo --help` describes the launch rather than failing
+  on the flags before it, while `help` elsewhere stays a value, so the
+  `ext` passthrough never intercepts a word that belongs to the server.
+  Help does not create state, contact a daemon,
+  or write terminal escape sequences. An
   `Invalid` launch writes its reason to stderr
   and exits nonzero instead of entering the alternate screen.
   `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
