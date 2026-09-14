@@ -1311,6 +1311,8 @@ the aborted operation retires. The next `prompt`, `follow_up` or `steer` from
 any client on that strand joins the queue and releases the whole of it as one
 successor run, so a client sees one `op_transition` sequence rather than one
 per queued row ([protocol 033](../protocol-change/033-abort-halts-held-input.md)).
+The per-priority queue bound does not refuse that release: it counts messages
+waiting for a run, and this one ends the wait.
 A strand with no live operation refuses with `conflict`.
 Source: (`client/gateway.gleam:3780-3823`).
 
@@ -1342,7 +1344,7 @@ Source: (`client/gateway.gleam:3858-3890`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:4992-4632`).
+   is `stale_approval`. Source: (`client/gateway.gleam:5020-4632`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3916-3927`).

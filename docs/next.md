@@ -424,8 +424,9 @@ None of these is unfinished work somebody forgot.
 - **Escape's halt covers held client input only.** Protocol 033 halts the
   gateway's held queue, which is what an operator sees start on its own.
   A run started through `runtime/api` without a client — a live parent's
-  downward `send_to_strand` into an idle child, an advisor `block` — is not
-  halted, because the gateway never sees it. Closing that is a paused mark on
+  downward `send_to_strand` into an idle child, an advisor `block`, a
+  `wake = true` schedule firing on an idle strand — is not halted, because the
+  gateway never sees it. Closing that is a paused mark on
   the strand cell in `machine`/`runtime`, read by `accept_request`, and is
   worth doing only once a trace shows one of those starters undoing an
   operator's Escape.

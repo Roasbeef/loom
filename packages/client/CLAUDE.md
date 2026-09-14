@@ -2600,10 +2600,12 @@ across one operation a `Stop` block holds open.
   Natural completion and steering retain `OnlyHead` draining.
   Removing an empty queue also removes its drain mode; reads and edits preserve
   the mode while retaining each item's identity. Each strand has four normal
-  and four steering slots. `queued` acknowledges transient custody, and a gateway
-  restart can lose unadmitted input. `pending_inputs` exposes bounded excerpts
-  keyed by server-minted monotonic item identity, while `input_queue_changed` requests
-  a refresh even when the durable cursor did not move.
+  and four steering slots, and a submission that lifts a halt is exempt from
+  that bound because it drains the queue rather than growing it. `queued`
+  acknowledges transient custody, and a gateway restart can lose unadmitted
+  input. `pending_inputs` exposes bounded excerpts keyed by server-minted
+  monotonic item identity, while `input_queue_changed` requests a refresh even
+  when the durable cursor did not move.
 - **Held input edits preserve admission identity.** `QueuedInputGet` returns
   complete text and revision only to the currently mutable original principal.
   `EditQueuedInput` compares the held ID and revision in the gateway actor,

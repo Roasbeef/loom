@@ -42,6 +42,13 @@ then ordinary turns, FIFO within each. A prompt lands last, which is what
 what steering has always meant. The release belongs to the strand, not to
 the connection that pressed Escape: any client's next submission lifts it.
 
+The queue bound does not apply to the release. A strand holds four ordinary
+messages and four steers (`held_per_strand`), and a submission that lifts a
+halt is exempt from that count, because the queue it joins drains on the
+next pull rather than growing. Refusing it would make Escape followed by
+Enter the one submission a full halted queue can never accept: no command
+shortens a queue, and a halt ends no other way.
+
 **3. An empty queue at abort is unchanged.** A strand with nothing held has
 no queue to halt, so 032's ruling that an empty queue carries no intent
 stands: input typed after such an abort keeps the ordinary one-head drain.
@@ -56,14 +63,15 @@ unchanged.
 
 The halt is a gateway property of held *client* input. A run started by
 something other than a client submission — a live parent's downward
-`send_to_strand` into an idle child, or an advisor `block` — goes through
+`send_to_strand` into an idle child, an advisor `block`, or a `wake = true`
+schedule firing on an idle strand (`client/schedulescan`) — goes through
 `runtime/api` and never sees the queue, so it is not halted here. Making
 those respect an operator's Escape is a `runtime`-level question (a paused
 mark on the strand cell) and is left open in `docs/next.md`.
 
 ## Cost
 
-One variant and one function in the gateway, and a two-word change in the
+One variant and two functions in the gateway, and a two-word change in the
 client's post-Escape path. The 032 acceptance tests were rewritten rather
 than kept: their premise, that the batch commits with no further input,
 is the behaviour this change removes.
@@ -74,5 +82,7 @@ After `abort`, the aborted operation retires, the strand reads idle, and
 the queue still holds every message it held. A subsequent `prompt` from
 any client commits every held message and then that prompt, each under its
 original author with its full content, in one admission before a parked
-replacement provider is released. An empty-queue abort followed by two
-prompts still admits only the first (032's existing arm).
+replacement provider is released. A queue filled to its ordinary bound
+before the abort still accepts that release, and every message it held
+reaches the successor with it. An empty-queue abort followed by two prompts
+still admits only the first (032's existing arm).
