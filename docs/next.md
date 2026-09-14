@@ -4,9 +4,16 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
+The September 14 scrolling work is recorded in
+[Transcript scrolling](review/scroll-presentation-2026-09-14.md): PR #401
+removes repeated history-anchor projection, and the etui fork implements
+scroll-region presentation for #367. The package docs describe the pinned
+renderer. The broader project audit below remains the September 13 snapshot;
+its unrelated status claims have not been re-audited for this change.
+
 Re-baselined September 13, 2026 against merged main `10b77fc4`, the merge of
 `cap/search` (#378, closing issue #365) on a green `signoff/linux` at its exact
-head `374f6362`. Every claim below was checked against the tree, the cited
+head `374f6362`. At that audit, every claim below was checked against the tree, the cited
 issue or PR, or a command run against this commit — not carried forward from
 the previous edition. That matters here more than usual: the previous edition
 said it was baselined against `87df00a5`, but its own table already described

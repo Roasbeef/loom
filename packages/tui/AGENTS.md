@@ -399,7 +399,9 @@ that tree separately from the self-contained server.
 - **Depends on**: `host` for shared OS bootstrap and WebSocket transport;
   `core` and `machine` for pure total entry/register/state decoding; `weft` for guarded,
   deadline-bounded connection startup; `etui` at commit
-  `ff80e0e21580a4b0077cc6989b6dc551af320505` with bounded input bursts and POSIX flow control disabled in raw mode; Mork
+  `22554e85ecb54e92d3c3afe734f42e0ed2eca5ec` with bounded input bursts,
+  POSIX flow control disabled in raw mode, Unicode emoji widths, synchronized
+  frames, and full-screen scroll-region presentation; Mork
   1.12.x for CommonMark;
   and small Gleam utility packages. Stratus is a host dependency, not a direct
   TUI dependency. Etui is pinned
@@ -775,6 +777,17 @@ that tree separately from the self-contained server.
   `record_rows` and merges its own hints into the three layout caches rather
   than replacing them. `dev/tui_replay_dev.gleam` validates
   admitted record counts and failure notices before reporting replay time.
+- **History anchors share the durable row layout key.** While reading older
+  output, metadata and live fragments may invalidate the outer render cache
+  without changing durable rows. Reuse their source anchors while width,
+  strand, detail mode and record validity match and no records are pending.
+  Empty anchors, including those left by help, force a fresh projection.
+- **Scroll presentation preserves the complete frame.** The etui full-screen
+  renderer samples small vertical shifts, moves the selected terminal rows,
+  and diffs every cell against the shifted previous frame. Fixed sidebar
+  content is repaired inside the same synchronized update. Ordinary cell
+  diffs remain the fallback when cheaper; fixed and inline viewports never
+  issue scroll commands because DECSTBM spans the terminal width.
 - **Model text never becomes terminal control traffic.** The text-hygiene
   pass replaces C0/C1, bidirectional, zero-width, variation-selector, and tag
   codepoints before data reaches etui spans. Newlines survive only where the
