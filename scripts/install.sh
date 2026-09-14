@@ -198,7 +198,13 @@ install_version() {
   version="$3"
   dest="$dir-$version"
   if [ -e "$dest" ] && [ "$LIVE" = 1 ]; then
-    echo "install.sh: $dest exists and a daemon may be using it; leaving it in place"
+    # This is the one silent no-op an operator must not miss: a same-version
+    # reinstall with a daemon live publishes no new tree, so the daemon they
+    # restart picks up the OLD build. Say so loudly enough that the line is
+    # seen beside the install summary, and name the way out.
+    echo "install.sh: WARNING: $dest already exists and a daemon may be using it;" >&2
+    echo "install.sh: WARNING: the freshly built tree was NOT installed. Stop the" >&2
+    echo "install.sh: WARNING: daemon and re-run install, or bump the version." >&2
     return 0
   fi
   staging="$dir-staging.$$"
@@ -232,13 +238,25 @@ case "$CLIENT" in
   bundled) CLIENT_STEM="client" ;;
   slim)    CLIENT_STEM="tui" ;;
 esac
+case "$CLIENT" in
+  bundled) OTHER_STEM="tui" ;;
+  slim)    OTHER_STEM="client" ;;
+esac
 PREV_SERVER="$(previous_target "$LIB/server")"
 PREV_CLIENT="$(previous_target "$LIB/$CLIENT_STEM")"
+# The other shape's previous target matters only when the shapes themselves
+# differ: a shape switch removes that shape's link below, and the client
+# running from its tree gets the same keep-the-previous protection the
+# daemon gets from PREV_SERVER.
+PREV_OTHER="$(previous_target "$LIB/$OTHER_STEM")"
 
 # The launchers on PATH are regular files written in place. That is safe where
 # a tree is not: each is exec'd once and is gone from the filesystem's
 # perspective by the time its daemon or client is running, so rewriting it
-# never changes what a live process is executing.
+# never changes what a live process is executing. The other shape's legacy
+# directory is preserved too: a later `rm -f "$LIB/$OTHER_STEM"` must meet a
+# symlink, not the pre-versioned directory it cannot remove.
+preserve_legacy "$LIB/$OTHER_STEM"
 case "$CLIENT" in
   bundled) preserve_legacy "$LIB/client" ;;
   slim)    preserve_legacy "$LIB/tui" ;;
@@ -344,15 +362,19 @@ fi
 
 # The two client shapes never coexist, so the other shape's symlink and version
 # directories go. Only the symlink and its own trees are touched: the previous
-# shape's version may be what a running client is reading from, so this is
-# skipped entirely under the same liveness rule the prune above uses.
+# shape's previous version is kept, because a still-running client may be
+# reading from it, and the removal is skipped entirely under the same liveness
+# rule the prune above uses.
 if [ "$LIVE" != 1 ]; then
-  case "$CLIENT" in
-    bundled) OTHER_STEM="tui" ;;
-    slim)    OTHER_STEM="client" ;;
-  esac
+  # The link is a symlink by now — `preserve_legacy` renamed any real
+  # directory aside — so `rm -f` cannot meet a directory and fail the
+  # install at the last step.
   rm -f "$LIB/$OTHER_STEM"
-  prune_versions "$OTHER_STEM" "" ""
+  # An empty keep-version would delete every version directory of the other
+  # shape, including the tree a running client was started from. A client
+  # is short-lived where a daemon is not, so the previous target is kept
+  # and anything older goes.
+  prune_versions "$OTHER_STEM" "" "$PREV_OTHER"
 fi
 
 echo "installed:"

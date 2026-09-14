@@ -131,12 +131,37 @@ switch:
 
 ```sh
 ln -sfn server-0.1.0 ~/.local/lib/loom/server.rollback
-mv -f ~/.local/lib/loom/server.rollback ~/.local/lib/loom/server
+mv -hf ~/.local/lib/loom/server.rollback ~/.local/lib/loom/server
 ```
 
 then restart the daemon so it starts from the restored tree. The two
 moves are the same atomic switch `install.sh` performs; doing it by hand
-works because the layout does not distinguish who switched the link.
+works because the layout does not distinguish who switched the link. The
+`-h` is load-bearing on macOS and the BSDs: without it `mv` follows a
+destination that is a symlink to a directory and moves the new link
+*inside* the old tree instead of replacing the link. (GNU `mv` wants
+`-T` for the same guarantee; `install.sh` tries both.)
+
+One forward-compat limit to know before you roll back: a daemon started
+by 0.2.0 or later writes a version-two endpoint record, and a pre-0.2.0
+client reads only version one, so the rolled-back `loom` will not
+*discover* a running newer daemon — it will try to launch one, find the
+daemon already running, and tell you. Stop the newer daemon first, or
+attach the older client by hand; the record itself is rewritten by
+whichever daemon next starts.
+
+The same-version reinstall has the mirror-image wrinkle: with a daemon
+live, `install.sh` will not replace a version directory that already
+exists, so a rebuild at an unchanged version number is NOT installed —
+the installer prints a WARNING naming this, and the way out is to stop
+the daemon and re-run the install, or bump the version.
+
+Finally, the prune's liveness check is a one-way ratchet: if the
+discovery record's PID belongs to a recycled, unrelated process (a
+daemon that died without cleaning up its record), every install keeps
+every version until the record is cleared. Deleting the stale
+`daemon.endpoint` file restores pruning; nothing is lost but disk
+either way.
 
 ## When the versions disagree and you do not expect them to
 

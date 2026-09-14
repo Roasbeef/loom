@@ -59,6 +59,19 @@ with the hello because a launcher reads it to decide whether a daemon is
 alive *before* opening a control socket, and that decision benefits from
 the same fact.
 
+The compatibility is deliberately one direction. A decoder that knows
+version two reads both shapes, but a pre-identity install reads only
+version one and fails closed on a version-two record — so after a
+rollback (the symlink switch `docs/updating.md` documents), the older
+client cannot *discover* a running newer daemon from its record. That
+is accepted rather than engineered around: discovery failure is loud
+(the launcher reports no ready daemon and the record is rewritten by
+whichever daemon next starts), the alternative — a record every future
+schema must keep readable by every past client — costs more than the
+case is worth, and the record is an identity fence whose strictness is
+the point. The rollback runbook carries the instruction: stop the newer
+daemon first.
+
 **4. Mismatch is reported, not refused.** A client that reads a daemon
 build different from its own writes one line naming both — `daemon build
 0.1.0 (4c266dde) differs from this client's 0.2.0 (abcdef12)` — and
