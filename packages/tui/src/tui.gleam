@@ -1721,15 +1721,27 @@ fn reconnect_decision(model: Model) -> ReconnectDecision {
           case model.local_options {
             None -> ReconnectRefused("this attachment was not launched locally")
             Some(options) ->
-              case model.reconnect {
-                ReconnectIdle -> ReconnectWanted(session, options)
-                ReconnectAttempting(..) ->
-                  ReconnectRefused("a reconnect is already running")
-                ReconnectSpent ->
-                  ReconnectRefused("the attempt was already made")
-              }
+              reconnect_state_decision(model.reconnect, session, options)
           }
       }
+  }
+}
+
+// The innermost question, split out so the decision above reads as the
+// three facts it is deciding between rather than four nested cases. A
+// terminal that has already spent its one attempt waits for the operator
+// instead of looping, and one whose attempt is still running must not
+// start a second beside it.
+fn reconnect_state_decision(
+  reconnect: Reconnect,
+  session: String,
+  options: bootstrap.Options,
+) -> ReconnectDecision {
+  case reconnect {
+    ReconnectIdle -> ReconnectWanted(session, options)
+    ReconnectAttempting(..) ->
+      ReconnectRefused("a reconnect is already running")
+    ReconnectSpent -> ReconnectRefused("the attempt was already made")
   }
 }
 
