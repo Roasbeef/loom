@@ -241,6 +241,22 @@ pub type Event {
     message: String,
   )
 
+  /// The server resumed from the sequence the client asked for, instead of
+  /// replaying the session from zero.
+  ///
+  /// This is the one answer that lets a reattaching client keep the
+  /// transcript it already holds: the events after `from_seq` arrive as
+  /// pushes, and the cut the client already has covers everything before
+  /// them, so nothing needs rebuilding. `next_seq` is the cursor that
+  /// stream continues from, so a lane which resumed knows where its next
+  /// catch-up begins. Decoding this marker as an `Ignored` — which is what
+  /// this client did — threw the distinction away and left a client unable
+  /// to tell a resume from a rebuild.
+  Resumed(
+    /// The cursor the resumed stream continues from.
+    next_seq: Int,
+  )
+
   /// A forward-compatible event the current client does not render.
   Ignored(
     /// The unknown event name retained for diagnostics.
@@ -257,6 +273,25 @@ pub type Event {
 /// ```
 pub fn subscribe(id: Int, session: String) -> String {
   command(id, "subscribe", [#("session", json.String(session))])
+}
+
+/// Encodes a subscription which resumes from an already held cursor.
+///
+/// A client that still holds a cut for this session asks the server to
+/// continue from it rather than replay from zero. The server answers with
+/// the `resumed` marker and then pushes everything after the cursor, so the
+/// client keeps the transcript it has already painted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.subscribe_from(1, "session-a", 42)
+/// ```
+pub fn subscribe_from(id: Int, session: String, from_seq: Int) -> String {
+  command(id, "subscribe", [
+    #("session", json.String(session)),
+    #("from_seq", json.Int(from_seq)),
+  ])
 }
 
 /// Encodes a prompt for one strand.
@@ -495,6 +530,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ContextSnapshot(_)
     | LiveJobsSnapshot(_)
     | SchedulesSnapshot(_)
+    | Resumed(_)
     | ServerError(..) -> Ok(event)
     FullSnapshot(..)
     | StrandsSnapshot(_)
@@ -637,7 +673,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       use model_name <- result.try(optional_string(config, "model_name"))
       Ok(ConfigSnapshot(model_name:))
     }
-    "resume" -> Ok(Ignored("snapshot.resume"))
+    "resume" -> {
+      use next_seq <- result.try(required_int(fields, "next_seq"))
+      Ok(Resumed(next_seq:))
+    }
     other -> Ok(Ignored("snapshot." <> other))
   }
 }
