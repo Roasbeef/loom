@@ -4,6 +4,16 @@ Read this first for current work, settled boundaries, and remaining acceptance.
 Rewrite it after the next body of work. Detailed review and measurements belong
 in their own documents.
 
+Issue #383 is implemented on `fix/cli-help`. The shipped `loom` and `loomd`
+launchers answer top-level and subcommand help before terminal or daemon
+startup, including extension help without an installed server. The shipped
+help acceptance, 475 TUI tests, and 1,792 client tests passed locally, and
+the independent review findings are resolved. Hosted CI and Linux signoff
+remain outstanding. The broader shipped multiplayer fixture fails locally
+on both this branch and its unchanged base, `7635d029`: the provider rejects
+the latest-message shape, then the terminal wait expires. That baseline
+failure remains open; the help acceptance is independently green.
+
 The September 14 scrolling work is recorded in
 [Transcript scrolling](review/scroll-presentation-2026-09-14.md): PR #401
 removes repeated history-anchor projection, and the etui fork implements
