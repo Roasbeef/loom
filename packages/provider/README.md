@@ -190,6 +190,21 @@ whose message matches the overflow patterns is *always* terminal, so a
 context-limit failure dressed as a retryable status still reaches the
 overflow path.
 
+Two rules keep a rate limit out of that terminal set, because the
+overflow matcher works on free text and a throttled provider often
+mentions tokens. **An HTTP 429 is never overflow**: the status is checked
+before the overflow patterns, so a body such as "token limit exceeded for
+this minute" is retried with its `retry-after` hint instead of being sent
+to compaction. Every other status stays behind the overflow check, since
+only a 429 says unambiguously that the request was rejected for its rate
+rather than for its size. **A mid-stream `StreamError` whose message says
+throttling is retryable whatever its error type**: an OpenAI-compatible
+proxy may answer 200, open the stream, and then emit a chunk carrying an
+`error` object with an unfamiliar `type` or none at all, so the message
+vocabulary ("rate limit", "rate_limit", "too many requests",
+"throttling", "429") decides it. The rule lives in the classifier, so it
+covers the Anthropic and Gemini `StreamError` sites too.
+
 The adapter computes overflow itself, and the definition is written down
 rather than implied: when reported input plus cache-read plus cache-write
 tokens exceed the resolved model's context window and the output is

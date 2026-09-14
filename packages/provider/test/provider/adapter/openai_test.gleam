@@ -314,6 +314,21 @@ pub fn server_error_with_json_body_test() {
     ]
 }
 
+pub fn untyped_mid_stream_throttle_classifies_retryable_test() {
+  // Baseten and other compatible proxies answer 200, open the stream,
+  // and then report the rate limit in a chunk whose error object has no
+  // `type`. The retry ladder only sees this if the classifier reads the
+  // message.
+  let transcript =
+    sse_data(
+      "{\"error\":{\"message\":\"Rate limit exceeded: too many requests\"}}",
+    )
+    <> done()
+  let events = fixture.drive_ok(machine(), transcript)
+  let assert [stream.Failed(failure)] = events
+  assert retry.classify(failure) == retry.Retryable(backoff_hint_ms: None)
+}
+
 pub fn oversized_http_error_body_fails_at_the_byte_budget_test() {
   let events =
     fixture.drive(machine(), status: 500, headers: [], chunks: [
