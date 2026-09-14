@@ -2043,11 +2043,23 @@ fn escape_turns(
   // The aborted operation retires and the strand reads idle, and the held
   // prompt is still in the queue rather than running.
   let _ = tui_driver.play(driver, [backend.KeyPress("esc")])
+
   use _ <- result.try(
     ux_await(driver, "abort acknowledged", fn(sample) {
       sample.model.interrupt != None
     }),
   )
+
+  // The marker this waits on is the terminal's own, so the release below
+  // relies on the abort reaching the daemon first: the frame is written to
+  // the connection inside the keypress above, and the release cannot be
+  // consumed until this process has sampled the driver twice more. The
+  // daemon publishes nothing observable between the two — a parked owner
+  // keeps the operation from committing its cancellation — so there is no
+  // barrier to wait on instead. If the completion ever won the race, the
+  // first turn would retire as a success and the held prompt would open a
+  // successor of its own, which the request count below reports as a
+  // failure rather than hiding.
   process.send(first.1, Nil)
   use _ <- result.try(
     ux_await(driver, "idle strand with its prompt still held", fn(sample) {
