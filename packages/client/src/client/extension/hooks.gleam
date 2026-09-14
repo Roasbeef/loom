@@ -229,6 +229,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
+import provider/l402
 import runtime/effects.{type CompactionCue, type Effects}
 import runtime/hooks as runtime_hooks
 import session/session.{type Session}
@@ -238,16 +240,16 @@ import weft
 import weft/actor
 import weft/event_manager.{type Handler}
 
-/// How long a hook invocation may take before the harness stops waiting.
+/// How long a hook invocation may take when its `[[hook]]` table named
+/// no `timeout_ms` of its own.
 ///
-/// The manifest has no per-hook timeout to read: `[[hook]]` carries an
-/// event and an entry and nothing else, and adding a key would be a
-/// change to a ruled surface for a number no author has yet wanted to
-/// set. Five seconds is the bound a hook is written against, and it is
-/// the same order as a tool's default: long enough for a satellite round
-/// trip and a decode, short enough that a stalled extension does not
-/// read to an operator as a hung session.
-pub const deadline_ms = 5000
+/// The number is `manifest.default_hook_timeout_ms` and is defined there
+/// rather than here, because this module imports the manifest for the
+/// event names and the manifest cannot import it back. The alias exists
+/// so the bus's own arithmetic — the margin a fan-out adds over its
+/// handlers, the wait `subscribers` uses — reads in this module's
+/// vocabulary while there is still one number.
+pub const deadline_ms = manifest.default_hook_timeout_ms
 
 /// How many tokens a `context` transform may add to the projection it
 /// was given.
@@ -348,8 +350,25 @@ pub fn unwired() -> Invoker {
   fn(_extension, _event, _args, _deadline_ms) { Error(Gone) }
 }
 
+/// One `[[hook]]` an extension declared, as the bus reads it: the event
+/// it fires on and how long that extension may take to answer it.
+///
+/// The deadline is per subscription rather than per extension because
+/// the manifest states it per hook: an extension whose `usage` tracer
+/// answers instantly and whose `payment_required` hook has to pay an
+/// invoice needs two different numbers, and one of them would otherwise
+/// have to be wrong.
+pub type Subscription {
+  Subscription(
+    /// One of `manifest.hook_events`.
+    event: String,
+    /// The invoker's deadline for this event, in milliseconds.
+    deadline_ms: Int,
+  )
+}
+
 /// One installed extension as the bus sees it: the name refusals are
-/// attributed to, the events its manifest declared, and the way to reach
+/// attributed to, the hooks its manifest declared, and the way to reach
 /// it.
 pub type Extension {
   Extension(
@@ -357,10 +376,10 @@ pub type Extension {
     /// because a blocked tool call with no author named is a dead end
     /// for whoever has to fix it.
     name: String,
-    /// The `[[hook]].event` names this extension declared. An event
-    /// outside this list is skipped before any call is made, so an
-    /// extension is never woken for something it did not ask for.
-    events: List(String),
+    /// The `[[hook]]` tables this extension declared. An event outside
+    /// this list is skipped before any call is made, so an extension is
+    /// never woken for something it did not ask for.
+    hooks: List(Subscription),
     /// The seam onto its satellite.
     invoke: Invoker,
   )
@@ -437,6 +456,33 @@ pub type Event {
 
   /// One cost-ledger row was committed. Notify-only.
   Usage(op_id: OpId, row: UsageRow)
+
+  /// The provider gateway holds a priced request it could not make.
+  ///
+  /// The one answering event whose answer is money. The challenge is
+  /// carried whole so this module can build the args document from it,
+  /// and the macaroon is deliberately not part of that document: a hook
+  /// pays an invoice, and the harness composes the credential.
+  PaymentRequired(
+    provider: String,
+    challenge: l402.Challenge,
+    now_unix_ms: Int,
+    reply: Subject(Payment),
+  )
+}
+
+/// What a `payment_required` hook answered.
+///
+/// The bus's own type rather than `ext/hook`'s, for the reason `Verdict`
+/// is: what crosses the wire is a JSON document, and this is what this
+/// side decoded it to. A `Paid` that reaches here has already been held
+/// to the preimage's shape, so a consumer needs no second check.
+pub type Payment {
+  /// The invoice was paid; 64 lowercase hex characters.
+  Paid(preimage_hex: String)
+
+  /// Not paid, with a reason the harness surfaces in `PaymentDeclined`.
+  Declined(reason: String)
 }
 
 /// Which of a bus's two managers a question is about.
@@ -580,7 +626,7 @@ pub fn run_start_injections(
   strand: String,
   now: Int,
 ) -> List(AgentMessage) {
-  fan_out(bus, "before_agent_start", fn(reply) {
+  fan_out(bus, "before_agent_start", fan_out_ms(bus), fn(reply) {
     BeforeAgentStart(op_id: operation, strand:, reply:)
   })
   |> list.map(fn(injection) { injected(injection, now) })
@@ -605,7 +651,7 @@ pub fn gate(
   arguments: JsonValue,
   source_index: Int,
 ) -> Verdict {
-  fan_out(bus, "tool_call", fn(reply) {
+  fan_out(bus, "tool_call", fan_out_ms(bus), fn(reply) {
     ToolCall(op_id: operation, tool:, arguments:, source_index:, reply:)
   })
   |> first_block
@@ -659,7 +705,7 @@ pub fn compaction_notes(
   operation: OpId,
   cue: CompactionCue,
 ) -> List(String) {
-  fan_out(bus, manifest.before_compact_event, fn(reply) {
+  fan_out(bus, manifest.before_compact_event, fan_out_ms(bus), fn(reply) {
     BeforeCompact(op_id: operation, cue:, reply:)
   })
   |> list.map(fn(one) { note_block(one.extension, one.text) })
@@ -677,6 +723,75 @@ pub fn compaction_notes(
 ///
 pub fn usage(bus: Bus, operation: OpId, row: UsageRow) -> Nil {
   event_manager.notify(bus.notices, Usage(op_id: operation, row:))
+}
+
+/// Asks every subscribed extension to pay one priced request, and
+/// answers with the first preimage in load order.
+///
+/// First `Paid` wins, which is the same rule `first_block` applies to a
+/// verdict and the opposite outcome: a request is paid once, so a second
+/// extension's payment would be a second bill for one request. The
+/// harness composes the credential from the preimage and the macaroon it
+/// still holds, so a hook that answers `Paid` has spent money and an
+/// extension that wants a ceiling asserts it on its own side.
+///
+/// A fan-out that answers nothing at all — no subscribed extension, or
+/// none that answered — is an `Error`, never an empty success: the
+/// caller is the provider gateway, which turns it into
+/// `stream.PaymentDeclined` and settles the request in band.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.pay(bus, "proxy", challenge, 1_700_000_000_000)
+/// // -> Error("no extension answered the payment challenge")
+/// ```
+///
+pub fn pay(
+  bus: Bus,
+  provider: String,
+  challenge: l402.Challenge,
+  now_unix_ms: Int,
+) -> Result(String, String) {
+  fan_out(
+    bus,
+    manifest.payment_required_event,
+    fan_out_for(bus, manifest.payment_required_event),
+    fn(reply) { PaymentRequired(provider:, challenge:, now_unix_ms:, reply:) },
+  )
+  |> first_payment
+}
+
+// The first `Paid`, else the first `Declined`'s reason, else the fact
+// that nobody answered. The three are distinct on purpose: an operator
+// reading `PaymentDeclined` needs to know whether an extension decided
+// not to pay or whether none was installed to decide.
+fn first_payment(answers: List(Payment)) -> Result(String, String) {
+  case list.find_map(answers, preimage_of) {
+    Ok(preimage) -> Ok(preimage)
+    Error(Nil) -> Error(first_reason(answers))
+  }
+}
+
+fn preimage_of(answer: Payment) -> Result(String, Nil) {
+  case answer {
+    Paid(preimage_hex:) -> Ok(preimage_hex)
+    Declined(..) -> Error(Nil)
+  }
+}
+
+fn first_reason(answers: List(Payment)) -> String {
+  case list.find_map(answers, reason_of) {
+    Ok(reason) -> reason
+    Error(Nil) -> "no extension answered the payment challenge"
+  }
+}
+
+fn reason_of(answer: Payment) -> Result(String, Nil) {
+  case answer {
+    Declined(reason:) -> Ok(reason)
+    Paid(..) -> Error(Nil)
+  }
 }
 
 // The notes that fit, in load order, and a warn line for each one that
@@ -950,6 +1065,15 @@ fn handle(
 
     Usage(op_id:, row:) ->
       settle(state, manifest.usage_event, usage_args(op_id, row), logger)
+
+    PaymentRequired(provider:, challenge:, now_unix_ms:, reply:) ->
+      answer(
+        state,
+        manifest.payment_required_event,
+        payment_args(provider, challenge, now_unix_ms),
+        logger,
+        fn(value) { forward_payment(value, reply) },
+      )
   }
 }
 
@@ -1100,6 +1224,29 @@ fn forward_verdict(
   }
 }
 
+// An answer this module cannot read costs the handler its place, the
+// judgement `forward_verdict` makes and for a sharper reason: a
+// `payment_required` answer is the harness's only evidence that money
+// changed hands. A `paid` whose preimage is not 64 hex characters is not
+// a preimage, so composing a credential from it would send the proxy a
+// string that cannot settle anything and would cache it for every later
+// request. Nothing is sent on the reply subject in that case, so the
+// gather sees this extension as one that did not answer — which is what
+// it was.
+fn forward_payment(
+  value: JsonValue,
+  reply: Subject(Payment),
+) -> Result(Nil, String) {
+  case payment_of(value) {
+    Ok(payment) -> {
+      process.send(reply, payment)
+      Ok(Nil)
+    }
+
+    Error(reason) -> Error(reason)
+  }
+}
+
 // --- calling an extension -------------------------------------------------
 
 // The one place a `hook_call` is made. The declared-event check sits
@@ -1111,16 +1258,20 @@ fn ask(
   event: String,
   args: JsonValue,
 ) -> Result(JsonValue, HookFailure) {
-  use Nil <- result.try(case list.contains(extension.events, event) {
-    True -> Ok(Nil)
-    False -> Error(Unhandled)
-  })
+  // The subscription is looked up rather than merely tested for, because
+  // it carries the deadline the invoker is given: the manifest states a
+  // timeout per hook, so the number that bounds this call is the one the
+  // operator approved for this event and not a constant.
+  use subscription <- result.try(
+    list.find(extension.hooks, fn(one) { one.event == event })
+    |> result.replace_error(Unhandled),
+  )
   let sent = msgpack.StringValue(json.to_string(args))
   use returned <- result.try(extension.invoke(
     extension.name,
     event,
     sent,
-    deadline_ms,
+    subscription.deadline_ms,
   ))
   read(returned)
 }
@@ -1239,6 +1390,29 @@ fn optional_count(value: Option(Int)) -> JsonValue {
   }
 }
 
+// One priced request, as a paying extension reads it. The macaroon is
+// absent by construction rather than by omission: a hook is asked to pay
+// an invoice, and the credential the proxy accepts is composed by the
+// harness from the challenge it still holds. An extension that never
+// sees the macaroon cannot spend the credential anywhere else.
+//
+// `now_unix_ms` rides on the payload because the extension seam has no
+// wall clock of its own and a spend ledger needs a day boundary.
+fn payment_args(
+  provider: String,
+  challenge: l402.Challenge,
+  now_unix_ms: Int,
+) -> JsonValue {
+  json.Object([
+    #("provider", json.String(provider)),
+    #("invoice", json.String(challenge.invoice)),
+    #("amount_sat", optional_count(challenge.amount_sat)),
+    #("challenge_id", json.String(challenge.challenge_id)),
+    #("route_id", json.String(challenge.route_id)),
+    #("now_unix_ms", json.Int(now_unix_ms)),
+  ])
+}
+
 fn context_args(operation: OpId, messages: List(AgentMessage)) -> JsonValue {
   json.Object([
     #("op_id", json.String(ids.op_id_to_string(operation))),
@@ -1287,6 +1461,56 @@ fn blocked(name: String, value: JsonValue) -> Result(Verdict, String) {
     Ok(_other) | Error(_absent) ->
       Ok(Block(extension: name, reason: "it gave no reason"))
   }
+}
+
+fn payment_of(value: JsonValue) -> Result(Payment, String) {
+  case field(value, "payment") {
+    Ok(json.String(value: "paid")) -> paid(value)
+
+    Ok(json.String(value: "declined")) -> Ok(declined(value))
+
+    Ok(_other) | Error(_absent) -> Error("payment is neither paid nor declined")
+  }
+}
+
+// A claim to have paid is checked against the one thing this side can
+// check: a preimage is a 32-byte hash preimage, so it is 64 lowercase
+// hex characters and nothing else.
+fn paid(value: JsonValue) -> Result(Payment, String) {
+  case field(value, "preimage") {
+    Ok(json.String(value: preimage)) ->
+      case is_preimage(preimage) {
+        True -> Ok(Paid(preimage_hex: preimage))
+        False -> Error("preimage is not 64 lowercase hexadecimal characters")
+      }
+    Ok(_other) | Error(_absent) -> Error("a paid answer carries no preimage")
+  }
+}
+
+// A decline with no readable reason is still a decline, the judgement
+// `blocked` makes about a block: the harness has to report *something*
+// to the caller whose request is unpaid, and "it gave no reason" at
+// least names the shape of the answer.
+fn declined(value: JsonValue) -> Payment {
+  case field(value, "reason") {
+    Ok(json.String(value: reason)) if reason != "" -> Declined(reason:)
+    Ok(_other) | Error(_absent) -> Declined(reason: "it gave no reason")
+  }
+}
+
+// The length is tested at the bound rather than counted: dropping 64
+// graphemes and finding nothing left says the string is exactly 64 long
+// and stops there, where `string.length` would walk whatever a broken
+// extension sent (lint R5).
+fn is_preimage(text: String) -> Bool {
+  string.drop_start(text, 64) == ""
+  && string.drop_start(text, 63) != ""
+  && string.to_utf_codepoints(text) |> list.all(hex_digit)
+}
+
+fn hex_digit(point: UtfCodepoint) -> Bool {
+  let value = string.utf_codepoint_to_int(point)
+  { value >= 0x30 && value <= 0x39 } || { value >= 0x61 && value <= 0x66 }
 }
 
 fn decode_messages(value: JsonValue) -> Result(List(AgentMessage), String) {
@@ -1439,20 +1663,17 @@ fn first_block(verdicts: List(Verdict)) -> Verdict {
 fn fan_out(
   bus: Bus,
   event: String,
+  budget_ms: Int,
   build: fn(Subject(answer)) -> Event,
 ) -> List(answer) {
   let collect = fn() {
     let reply = process.new_subject()
-    event_manager.sync_notify(
-      bus.answers,
-      build(reply),
-      waiting: fan_out_ms(bus),
-    )
+    event_manager.sync_notify(bus.answers, build(reply), waiting: budget_ms)
     Ok(drain(reply, []))
   }
   let ran =
     weft.new([collect])
-    |> weft.deadline(fan_out_ms(bus) + deadline_ms)
+    |> weft.deadline(budget_ms + deadline_ms)
     |> weft.start
   gathered(bus, event, ran)
 }
@@ -1499,6 +1720,32 @@ fn gathered(
 // call happens on a worker whose death nobody feels.
 fn fan_out_ms(bus: Bus) -> Int {
   { list.length(bus.chain) + 1 } * deadline_ms
+}
+
+/// The budget a fan-out of one event is given: the sum of the deadlines
+/// the extensions subscribed to it declared, plus one `deadline_ms` of
+/// margin for the decoding between them.
+///
+/// `fan_out_ms` is the same arithmetic under the assumption every
+/// extension takes the default, and it stays the budget for the three
+/// events whose deadlines nobody has had a reason to set. This one is
+/// what `payment_required` needs: a hook that pays an invoice may
+/// legitimately declare twenty seconds, and a budget computed from the
+/// default would reap it at five.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.fan_out_for(bus, "payment_required")
+/// ```
+///
+pub fn fan_out_for(bus: Bus, event: String) -> Int {
+  list.fold(bus.chain, deadline_ms, fn(budget, extension) {
+    case list.find(extension.hooks, fn(one) { one.event == event }) {
+      Ok(subscription) -> budget + subscription.deadline_ms
+      Error(Nil) -> budget
+    }
+  })
 }
 
 // --- wiring the bus into a session's effects ------------------------------
