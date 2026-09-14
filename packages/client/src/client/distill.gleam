@@ -1663,9 +1663,13 @@ fn bound_gateway_distiller(
           }
         }
       }
+
+      // `describe_error` rather than `string.inspect`: a `Challenged` carries
+      // the proxy's headers and body, which reach the jailed extension and
+      // nobody else.
       Ok(#(_deltas, stream.Failed(error:))) -> {
         stream.release_drain(drain_witness)
-        Error(string.inspect(error))
+        Error(stream.describe_error(error))
       }
       Ok(#(_deltas, stream.Delta(..))) -> {
         stream.release_drain(drain_witness)

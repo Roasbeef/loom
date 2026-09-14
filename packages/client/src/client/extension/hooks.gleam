@@ -33,7 +33,7 @@
 //// A manager is an actor, so its mailbox is a queue and a handler that
 //// takes its whole deadline delays everything behind it. For a fan-out
 //// somebody is *waiting* on that is the bargain: the caller asked, and
-//// the wait is what `fan_out_ms` is computed to cover. For a
+//// the wait is what `fan_out_for` is computed to cover. For a
 //// notification it is not, because the caller has already walked away
 //// and the queue it left behind is somebody else's to pay for.
 ////
@@ -52,7 +52,7 @@
 //// `before_compact`, `provider_request` and `provider_challenge` are
 //// `sync_notify`ed on the answering one. An
 //// answering event now queues only behind other answering events, which
-//// is exactly the wait `fan_out_ms` was sized for.
+//// is exactly the wait `fan_out_for` was sized for.
 ////
 //// The cost is that being dropped is per manager. `event_manager`
 //// removes a handler from the inside, on the answer it has just given,
@@ -659,9 +659,12 @@ pub fn run_start_injections(
   strand: String,
   now: Int,
 ) -> List(AgentMessage) {
-  fan_out(bus, "before_agent_start", fan_out_ms(bus), fn(reply) {
-    BeforeAgentStart(op_id: operation, strand:, reply:)
-  })
+  fan_out(
+    bus,
+    "before_agent_start",
+    fan_out_for(bus, "before_agent_start"),
+    fn(reply) { BeforeAgentStart(op_id: operation, strand:, reply:) },
+  )
   |> list.map(fn(injection) { injected(injection, now) })
 }
 
@@ -684,7 +687,7 @@ pub fn gate(
   arguments: JsonValue,
   source_index: Int,
 ) -> Verdict {
-  fan_out(bus, "tool_call", fan_out_ms(bus), fn(reply) {
+  fan_out(bus, "tool_call", fan_out_for(bus, "tool_call"), fn(reply) {
     ToolCall(op_id: operation, tool:, arguments:, source_index:, reply:)
   })
   |> first_block
@@ -738,9 +741,12 @@ pub fn compaction_notes(
   operation: OpId,
   cue: CompactionCue,
 ) -> List(String) {
-  fan_out(bus, manifest.before_compact_event, fan_out_ms(bus), fn(reply) {
-    BeforeCompact(op_id: operation, cue:, reply:)
-  })
+  fan_out(
+    bus,
+    manifest.before_compact_event,
+    fan_out_for(bus, manifest.before_compact_event),
+    fn(reply) { BeforeCompact(op_id: operation, cue:, reply:) },
+  )
   |> list.map(fn(one) { note_block(one.extension, one.text) })
   |> within_note_cap(bus)
 }
@@ -1338,8 +1344,8 @@ fn forward_headers(
 // `provider_challenge` answer becomes the headers of a *retried*
 // provider request. A `retry` whose headers are not a list of
 // name-and-value pairs is not a header list, so sending it on would put
-// whatever the extension did answer with onto the wire and cache it for
-// every later request. Nothing is sent on the reply subject in that
+// whatever the extension did answer with onto the wire. Nothing is sent
+// on the reply subject in that
 // case, so the gather sees this extension as one that did not answer —
 // which is what it was.
 fn forward_answer(
@@ -1643,6 +1649,11 @@ fn answer_of(value: JsonValue) -> Result(Answer, String) {
 // against a header the adapter owns without a second normalization.
 fn retry(value: JsonValue) -> Result(Answer, String) {
   case field(value, "headers") {
+    // A retry with nothing to send is a decline that did not say so: the
+    // attempt it asks for is the unauthenticated one that was just
+    // challenged, and repeating it can only earn the same challenge.
+    Ok(json.Array(items: [])) -> Ok(Declined(reason: "it answered no headers"))
+
     Ok(json.Array(items:)) ->
       list.try_map(items, header_of)
       |> result.map(fn(headers) { Retry(headers:) })
@@ -1655,10 +1666,30 @@ fn retry(value: JsonValue) -> Result(Answer, String) {
 fn header_of(item: JsonValue) -> Result(#(String, String), String) {
   case item {
     json.Array(items: [json.String(value: name), json.String(value: value)]) ->
-      Ok(#(string.lowercase(name), value))
+      case ends_a_line(name) || ends_a_line(value) {
+        True -> Error("a header carries a line ending")
+        False -> Ok(#(string.lowercase(name), value))
+      }
 
     _other -> Error("a header is not a pair of strings")
   }
+}
+
+// Whether a header string carries CR, LF or NUL. The provider transport
+// writes a header value to the wire verbatim, so one of these would let
+// an extension append headers of its own — a `host` or a
+// `content-length` — behind the names `model.extension_headers` filters
+// on. The check is over code points, not substrings: Gleam strings
+// compare by grapheme cluster and CRLF is one cluster, so
+// `string.contains(value, "\r")` is `False` on the exact sequence a
+// smuggled header uses. `broker/egress` makes the same check for the
+// same reason on the other side of the jail.
+fn ends_a_line(text: String) -> Bool {
+  text
+  |> string.to_utf_codepoints
+  |> list.any(fn(point) {
+    list.contains([13, 10, 0], string.utf_codepoint_to_int(point))
+  })
 }
 
 // A decline with no readable reason is still a decline, the judgement
@@ -1871,26 +1902,20 @@ fn gathered(
   }
 }
 
-// The budget the fan-out itself is given. Every handler may spend the
-// per-call deadline, so the manager's own call has to allow all of them
-// to, plus one deadline's margin for the decoding between them. It is
-// deliberately not the bound the *caller* relies on: queueing behind
-// another strand's notification can outlast it, which is exactly why the
-// call happens on a worker whose death nobody feels.
-fn fan_out_ms(bus: Bus) -> Int {
-  { list.length(bus.chain) + 1 } * deadline_ms
-}
-
 /// The budget a fan-out of one event is given: the sum of the deadlines
 /// the extensions subscribed to it declared, plus one `deadline_ms` of
 /// margin for the decoding between them.
 ///
-/// `fan_out_ms` is the same arithmetic under the assumption every
-/// extension takes the default, and it stays the budget for the three
-/// events whose deadlines nobody has had a reason to set. This one is
-/// what `provider_challenge` needs: a hook that has to reach a third
-/// party before it can answer may legitimately declare twenty seconds,
-/// and a budget computed from the default would reap it at five.
+/// Every answering event is budgeted this way, because a manifest may
+/// declare `timeout_ms` on any hook. The invoker honours the declared
+/// deadline, so a gather budgeted from the default would reap a
+/// `tool_call` handler that declared twenty seconds at ten, answer `[]`,
+/// and `first_block([])` would read a slow block as consent. The budget
+/// and the deadline have to be computed from the same declaration.
+///
+/// It is deliberately not the bound the *caller* relies on: queueing
+/// behind another strand's notification can outlast it, which is
+/// exactly why the call happens on a worker whose death nobody feels.
 ///
 /// ## Examples
 ///

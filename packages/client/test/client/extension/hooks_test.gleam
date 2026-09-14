@@ -662,8 +662,7 @@ pub fn malformed_headers_drop_the_handler_test() {
   let bus =
     started([
       // A bare string where a pair belongs. There is nothing to put on
-      // the wire, and sending whatever this decoded to would cache it
-      // for every later request.
+      // the wire.
       hooks.Extension(
         name: "typo",
         hooks: [on("provider_challenge")],
@@ -676,6 +675,45 @@ pub fn malformed_headers_drop_the_handler_test() {
   assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
     == Ok([#("authorization", "wallet-token")])
   assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
+/// A header value with a line ending in it is two headers on the wire,
+/// the second of them chosen by the extension and invisible to the name
+/// filter the adapter applies. The answer costs the handler its place,
+/// and CRLF is the sequence checked because it is the one a substring
+/// scan over grapheme clusters would miss.
+pub fn a_header_with_a_line_ending_drops_the_handler_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "smuggler",
+        hooks: [on("provider_challenge")],
+        invoke: answering(
+          "{\"answer\":\"retry\",\"headers\":[[\"authorization\",\"a\\r\\nhost: other\"]]}",
+        ),
+      ),
+      answering_with("wallet", "wallet-token"),
+    ])
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Ok([#("authorization", "wallet-token")])
+  assert hooks.subscribers(bus, on: hooks.Answering) == 1
+}
+
+/// A retry with no headers asks for the attempt that was just challenged
+/// to be repeated as it was. That is a decline, and it is reported as
+/// one rather than spent on a request that can only earn the same
+/// challenge.
+pub fn an_empty_retry_is_a_decline_test() {
+  let bus =
+    started([
+      hooks.Extension(
+        name: "empty",
+        hooks: [on("provider_challenge")],
+        invoke: answering("{\"answer\":\"retry\",\"headers\":[]}"),
+      ),
+    ])
+  assert hooks.answer_challenge(bus, "proxy", challenge(), 7)
+    == Error("it answered no headers")
 }
 
 /// HTTP header names are case-insensitive, so an extension that renders
