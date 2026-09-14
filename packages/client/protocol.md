@@ -237,6 +237,21 @@ messages discriminate on `role: user|assistant|toolResult|custom`).
 Note the nested `seq` is the **storage** seq, distinct from the
 envelope's event seq.
 
+### `held_input_returned`
+
+`{strand, id, kind, text, attachment_count}` — pushed, uncorrelated
+(no `reply_to`): the daemon is draining and returns a prompt it was
+holding for a busy strand to the connection that submitted it, unsent.
+This is a custody return, not a rejection; the submission it undoes was
+acknowledged `queued` long before. The held queue is memory-only, so
+this event is the only surviving copy of the text — a client is
+expected to restore it as a local draft (`text` is the complete
+submitted text, not the queue board's clipped preview;
+`attachment_count` counts image blocks the body cannot carry, which the
+client must keep beside the restored draft). `id` matches the `queued`
+acknowledgement's item identity; `kind` is the item's order spelling
+(`"queue"` or `"steer"`). See protocol-change/035.
+
 ### `op_transition`
 
 `{op: string, strand: string, phase: string}` — a display label (the

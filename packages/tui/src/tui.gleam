@@ -5958,10 +5958,23 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
     // frame arriving outside one is nothing to paint.
     protocol.Resumed(_) -> model
     protocol.Ignored(_) -> model
+
+    // The draining daemon handed a held prompt back, unsent. The held
+    // queue is memory-only, so this push is the draft's last copy: restore
+    // it into the composer rather than letting the operator's text die
+    // with the daemon. An empty composer takes the text outright; an
+    // occupied one keeps what the operator is typing, and the return is
+    // appended below it — both are theirs, and neither may be lost.
+    // Attachments never left this terminal (their bytes were local from
+    // the start), so the count only explains what the restored text is
+    // missing.
+    protocol.HeldInputReturned(strand:, kind:, text:, attachment_count:, ..) ->
+      restore_returned_draft(model, strand, kind, text, attachment_count)
   }
   case event {
     protocol.Committed(..) | protocol.MetadataChanged -> updated
     protocol.Resumed(_) -> updated
+    protocol.HeldInputReturned(..) -> updated
     protocol.Ignored(_) -> updated
     protocol.FullSnapshot(..)
     | protocol.StrandsSnapshot(..)
@@ -5985,6 +5998,45 @@ fn apply_event(model: Model, event: protocol.Event) -> Model {
       |> mark_activity
       |> invalidate_frame
   }
+}
+
+// Restores a custody-returned prompt as a local draft (protocol-change/035).
+//
+// The daemon held the prompt only in memory, so the returned text is the
+// last copy in existence. An untouched composer simply becomes the draft.
+// A composer the operator is typing in keeps its text and grows the return
+// below it, separated by a blank line: discarding either half would lose
+// work the operator can see, and silently replacing the draft would move
+// text out from under the cursor. The notice names the strand and the
+// images the text cannot carry, so nothing about the return is invisible.
+fn restore_returned_draft(
+  model: Model,
+  strand: String,
+  kind: String,
+  text: String,
+  attachment_count: Int,
+) -> Model {
+  let current = text_area.value(model.input)
+  let restored = case string.trim(current) {
+    "" -> text
+    _ -> current <> "\n\n" <> text
+  }
+  let images = case attachment_count {
+    0 -> ""
+    n ->
+      " · "
+      <> int.to_string(n)
+      <> " attachment(s) stayed on the dead daemon — re-attach them"
+  }
+  append_notice(
+    Model(..model, input: text_area.state_from_string(restored)),
+    "daemon returned the "
+      <> kind
+      <> " prompt held for "
+      <> strand
+      <> " — restored as a draft"
+      <> images,
+  )
 }
 
 // One line per schedule, in the listing's own order — the operator's

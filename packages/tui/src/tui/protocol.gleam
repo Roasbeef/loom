@@ -257,6 +257,27 @@ pub type Event {
     next_seq: Int,
   )
 
+  /// The draining daemon returned a held prompt to this terminal, unsent.
+  ///
+  /// This is a custody return, not a rejection: the daemon is going away
+  /// and can no longer promise the prompt will ever be admitted, so
+  /// ownership of the text comes back to the client that typed it. The
+  /// held queue is deliberately memory-only (protocol-change/035), so
+  /// this push is the only surviving copy — a client that decodes it as
+  /// `Ignored` loses the operator's draft exactly as if no drain existed.
+  HeldInputReturned(
+    /// The strand whose queue held the prompt.
+    strand: String,
+    /// The held item's own identity, matching the queue board's row.
+    id: String,
+    /// The item's scheduling order: `"queue"` or `"steer"`.
+    kind: String,
+    /// The complete submitted text, never the board's clipped preview.
+    text: String,
+    /// Image blocks the body cannot carry; the client keeps them locally.
+    attachment_count: Int,
+  )
+
   /// A forward-compatible event the current client does not render.
   Ignored(
     /// The unknown event name retained for diagnostics.
@@ -543,6 +564,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | OperationChanged(..)
     | UsageChanged(_)
     | EscalationPending(..)
+    | HeldInputReturned(..)
     | Ignored(_) -> Error("unexpected live presentation response")
   }
 }
@@ -622,8 +644,23 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "usage" -> decode_usage(body)
     "escalation" -> decode_escalation(body)
     "error" -> decode_error(body)
+    "held_input_returned" -> decode_held_input_returned(body)
     other -> Ok(Ignored(other))
   }
+}
+
+// A custody return carries everything a restored draft needs, so each of
+// the five fields is required: a partial return would restore a draft that
+// silently dropped what the operator typed, which is the loss the drain
+// exists to prevent (protocol-change/035).
+fn decode_held_input_returned(body: JsonValue) -> Result(Event, String) {
+  use fields <- result.try(object_fields(body, "held input return body"))
+  use strand <- result.try(required_string(fields, "strand"))
+  use id <- result.try(required_string(fields, "id"))
+  use kind <- result.try(required_string(fields, "kind"))
+  use text <- result.try(required_string(fields, "text"))
+  use attachment_count <- result.try(required_int(fields, "attachment_count"))
+  Ok(HeldInputReturned(strand:, id:, kind:, text:, attachment_count:))
 }
 
 fn decode_snapshot(body: JsonValue) -> Result(Event, String) {

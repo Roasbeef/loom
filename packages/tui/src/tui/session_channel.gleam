@@ -630,8 +630,11 @@ fn apply_pushed(channel: Channel, event: protocol.Event) {
     // A pushed error reports a failure the daemon had on this terminal's
     // behalf — a held prompt that could not be admitted when its turn came.
     // The connection is fine, so this is the same auxiliary refusal a
-    // correlated error is, and the socket stays open.
+    // correlated error is, and the socket stays open. A custody return rides
+    // the same lane: it is pushed, it answers nothing, and the terminal is
+    // the only place the returned draft can be restored.
     protocol.ServerError(..)
+    | protocol.HeldInputReturned(..)
     | protocol.WorktreeSnapshot(_)
     | protocol.ContextSnapshot(_) -> #(channel, [
       Auxiliary(event),

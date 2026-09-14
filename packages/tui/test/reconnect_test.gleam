@@ -7,6 +7,7 @@
 //// daemon sends. No daemon is spawned — this jail cannot start one, and a
 //// fixture that needed one would prove nothing about which branch was chosen.
 
+import etui/widgets/textarea as text_area
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -182,4 +183,73 @@ pub fn an_attempt_announces_itself_and_a_spent_one_does_not_test() {
     tui.ReconnectIdle | tui.ReconnectSpent ->
       panic as "the one attempt stays the one attempt"
   }
+}
+
+pub fn a_custody_return_decodes_to_the_held_input_event_test() {
+  // The drain's custody return is pushed and uncorrelated, and its five
+  // fields are the whole of what a restored draft needs — a missing one
+  // fails the decode rather than restoring a partial draft.
+  let text =
+    "{\"v\":2,\"event\":\"held_input_returned\",\"body\":{\"strand\":\"main\",\"id\":\"h1\",\"kind\":\"queue\",\"text\":\"deploy when green\",\"attachment_count\":2}}"
+  let assert Ok(event) = protocol.decode_v2_pushed(text)
+  assert event
+    == protocol.HeldInputReturned(
+      strand: "main",
+      id: "h1",
+      kind: "queue",
+      text: "deploy when green",
+      attachment_count: 2,
+    )
+
+  let partial =
+    "{\"v\":2,\"event\":\"held_input_returned\",\"body\":{\"strand\":\"main\",\"id\":\"h1\"}}"
+  let assert Error(_) = protocol.decode_v2_pushed(partial)
+}
+
+pub fn a_custody_return_restores_the_draft_in_the_composer_test() {
+  // The held queue is memory-only, so the pushed return is the prompt's
+  // last copy: it must land in the composer, not in the bit bucket. An
+  // empty composer takes the text outright.
+  let model = disconnected()
+  let returned =
+    tui.apply_channel_update(
+      model,
+      session_channel.Auxiliary(protocol.HeldInputReturned(
+        strand: "main",
+        id: "h1",
+        kind: "queue",
+        text: "held for the update",
+        attachment_count: 0,
+      )),
+    )
+  assert textarea_value(returned) == "held for the update"
+  assert string.contains(returned.notice, "restored as a draft")
+}
+
+pub fn a_custody_return_never_overwrites_a_draft_in_progress_test() {
+  // The operator is typing when the return arrives: both texts are theirs,
+  // so the return is appended below the in-progress draft rather than
+  // moved out from under the cursor.
+  let model = disconnected()
+  let typing =
+    tui.Model(..model, input: text_area.state_from_string("half typed"))
+  let returned =
+    tui.apply_channel_update(
+      typing,
+      session_channel.Auxiliary(protocol.HeldInputReturned(
+        strand: "main",
+        id: "h1",
+        kind: "steer",
+        text: "held for the update",
+        attachment_count: 1,
+      )),
+    )
+  assert textarea_value(returned) == "half typed\n\nheld for the update"
+
+  // The count explains what the restored text cannot carry.
+  assert string.contains(returned.notice, "1 attachment")
+}
+
+fn textarea_value(model: tui.Model) -> String {
+  text_area.value(model.input)
 }
