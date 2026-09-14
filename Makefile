@@ -202,15 +202,26 @@ install-debug: ## Install with BEAM debug info, unstripped ERTS, and OTP profili
 WORKSPACE ?= .
 STATE_DIR ?= $(CURDIR)/build/dev/state
 
+# Build identity for the two `run-*` targets, exported so a development daemon
+# or client reports which build it is the same way an installed one does
+# (#392). The version is the package's own, matching what scripts/install.sh
+# and scripts/release.sh read; the commit falls back to `unknown` so a tree
+# without git metadata, or without git at all, still builds.
+SERVER_VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' packages/client/gleam.toml | head -1)
+CLIENT_VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' packages/tui/gleam.toml | head -1)
+BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
 .PHONY: run-server
 run-server: binaries ## Run the daemon from source: [STATE_DIR=path] [ARGS=--best-effort]
-	@cd packages/client && gleam run -m client -- \
+	@export LOOM_BUILD_VERSION="$(SERVER_VERSION)" LOOM_BUILD_COMMIT="$(BUILD_COMMIT)"; \
+		cd packages/client && gleam run -m client -- \
 		--state-dir "$(abspath $(STATE_DIR))" \
 		--helper "$(abspath bin/loom-exec)" $(ARGS)
 
 .PHONY: run-tui
 run-tui: binaries server-shipment ## Open the daemon session picker: [STATE_DIR=path] [WORKSPACE=dir] [SESSION=id]; remote: ADDR=ws://host:port/v2/sessions/id/ws TOKEN_FILE=path
-	@if [ -n "$(ADDR)" ]; then \
+	@export LOOM_BUILD_VERSION="$(CLIENT_VERSION)" LOOM_BUILD_COMMIT="$(BUILD_COMMIT)"; \
+	if [ -n "$(ADDR)" ]; then \
 		test -n "$(SESSION)" && test -n "$(TOKEN_FILE)" || { \
 			echo "remote attachment requires SESSION=id and TOKEN_FILE=path" >&2; exit 1; }; \
 		./bin/loom --addr "$(ADDR)" --session "$(SESSION)" --token-file "$(TOKEN_FILE)"; \
